@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cryptonite-ingest"
+version = "0.1.0"
+description = "Binance market data ingestion, WebSocket streaming, REST recovery, and healthcheck services"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "cryptonite-schemas",
+    "cryptonite-storage",
+    "websockets>=13.0",
+    "httpx>=0.27.0",
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+cryptonite-ingest = "cryptonite_ingest.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cryptonite_ingest"]

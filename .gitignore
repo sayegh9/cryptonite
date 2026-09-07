@@ -1,0 +1,38 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Testing & Linting
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment & Secrets
+.env
+*.pem
+*.key
+*.secret
+
+# Data Storage (keep directory structure via .gitkeep)
+data/nautilus_catalog/*
+!data/nautilus_catalog/.gitkeep
+data/analytics_lake/*
+!data/analytics_lake/.gitkeep
+infra/postgres_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cryptonite_postgres
+    environment:
+      POSTGRES_USER: cryptonite
+      POSTGRES_PASSWORD: cryptonite_dev_pass
+      POSTGRES_DB: cryptonite
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cryptonite -d cryptonite"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ingest:
+    build:
+      context: ..
+      dockerfile: infra/docker/ingest.Dockerfile
+    container_name: cryptonite_ingest
+    user: "1000:1000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
+      ANALYTICS_LAKE_PATH: /app/data/analytics_lake
+      INGEST_SYMBOLS: BTCUSDT,ETHUSDT
+      INGEST_TIMEFRAMES: 1m,1h
+      PORT: 8080
+    volumes:
+      - ../data:/app/data
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
