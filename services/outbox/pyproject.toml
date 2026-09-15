@@ -1,0 +1,15 @@
+[project]
+name = "cryptonite-outbox"
+version = "0.1.0"
+description = "Shared transactional outbox relay service publishing to Redis Streams"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "asyncpg>=0.29.0",
+    "redis>=5.0.0",
+    "pydantic>=2.9.0",
+    "python-dotenv>=1.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

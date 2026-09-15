@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 import asyncpg
+import redis.asyncio as aioredis
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_schemas.identifiers import (
     to_nautilus_bar_type,
@@ -39,17 +40,20 @@ class IngestRecorder:
         nautilus_catalog_path: str,
         analytics_lake_path: str,
         database_url: str | None = None,
+        redis_url: str | None = None,
     ) -> None:
         self.symbols = [s.upper() for s in symbols]
         self.timeframes = [t.lower() for t in timeframes]
         self.nautilus_catalog_path = nautilus_catalog_path
         self.analytics_lake_path = analytics_lake_path
         self.database_url = database_url
+        self.redis_url = redis_url
 
         self.nautilus_manager = NautilusCatalogManager(self.nautilus_catalog_path)
         self.analytics_writer = AnalyticsLakeWriter(self.analytics_lake_path)
         self.rest_client = BinanceRestClient()
         self.pool: asyncpg.Pool | None = None
+        self.redis: aioredis.Redis | None = None
         self.coordinator: TwoStoreCoordinator | None = None
         self.recovery_manager: GapRecoveryManager | None = None
         self.stream_client: BinanceStreamClient | None = None
@@ -63,6 +67,9 @@ class IngestRecorder:
         if self.database_url:
             self.pool = await asyncpg.create_pool(self.database_url, min_size=2, max_size=10)
         
+        if self.redis_url:
+            self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
+
         self.coordinator = TwoStoreCoordinator(
             nautilus_manager=self.nautilus_manager,
             analytics_writer=self.analytics_writer,
@@ -207,6 +214,7 @@ class IngestRecorder:
             symbols=self.symbols,
             timeframes=self.timeframes,
             on_closed_bar=self._on_closed_bar_event,
+            redis=self.redis,
         )
 
         # Launch WebSocket client in background
@@ -239,6 +247,8 @@ class IngestRecorder:
             await self.coordinator.release_process_lock()
         if self.rest_client:
             await self.rest_client.__aexit__(None, None, None)
+        if self.redis:
+            await self.redis.aclose()
         if self.pool:
             await self.pool.close()
         logger.info("IngestRecorder stopped successfully")

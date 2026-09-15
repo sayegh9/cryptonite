@@ -16,6 +16,43 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks:
+      - default
+      - agents_net
+      - isolated_backtester_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: cryptonite_redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - default
+      - isolated_backtester_net
+
+  redis-agents:
+    image: redis:7-alpine
+    container_name: cryptonite_redis_agents
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_agents_data:/data
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - agents_net
 
   ingest:
     build:
@@ -26,9 +63,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       INGEST_SYMBOLS: BTCUSDT,ETHUSDT
@@ -37,13 +77,193 @@ services:
     volumes:
       - ../data:/app/data
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+
+  outbox:
+    build:
+      context: ..
+      dockerfile: infra/docker/outbox.Dockerfile
+    container_name: cryptonite_outbox
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+      PORT: 8081
+    ports:
+      - "127.0.0.1:8081:8081"
     restart: unless-stopped
+
+  scanner:
+    build:
+      context: ..
+      dockerfile: infra/docker/scanner.Dockerfile
+    container_name: cryptonite_scanner
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+      ANALYTICS_LAKE_PATH: /app/data/analytics_lake
+      PORT: 8082
+    volumes:
+      - ../data:/app/data:ro
+    ports:
+      - "127.0.0.1:8082:8082"
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: cryptonite_api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+      ANALYTICS_LAKE_PATH: /app/data/analytics_lake
+      PORT: 8000
+    volumes:
+      - ../data:/app/data:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  backtester:
+    build:
+      context: ..
+      dockerfile: infra/docker/backtester.Dockerfile
+    container_name: cryptonite_backtester
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+      NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
+      ANALYTICS_LAKE_PATH: /app/data/analytics_lake
+      BACKTEST_ARTIFACTS_PATH: /app/data/backtest_artifacts
+      PORT: 8083
+    volumes:
+      - ../data/nautilus_catalog:/app/data/nautilus_catalog:ro
+      - ../data/analytics_lake:/app/data/analytics_lake:ro
+      - ../data/backtest_artifacts:/app/data/backtest_artifacts
+    ports:
+      - "127.0.0.1:8083:8083"
+    networks:
+      - isolated_backtester_net
+    restart: unless-stopped
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: infra/docker/orchestrator.Dockerfile
+    container_name: cryptonite_orchestrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=DEMO
+      - DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      - ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+
+  executor:
+    build:
+      context: ..
+      dockerfile: infra/docker/executor.Dockerfile
+    container_name: cryptonite_executor
+    user: "1000:1000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+      NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
+      PORT: 8084
+      ENVIRONMENT: DEMO
+      ACCOUNT_ID: DEMO-ACCOUNT-001
+      BINANCE_DEMO_BASE_URL: https://demo-api.binance.com
+      BINANCE_DEMO_WS_URL: wss://demo-ws-api.binance.com/ws-api/v3
+      BINANCE_FUTURES_DEMO_BASE_URL: https://testnet.binancefuture.com
+      BINANCE_DEMO_API_KEY: ${BINANCE_DEMO_API_KEY:-}
+      BINANCE_DEMO_PRIVATE_KEY_PATH: /run/secrets/binance_demo_private_key.pem
+      EMERGENCY_MARKER_PATH: /data/executor_state/demo/emergency_kill_switch.marker
+    volumes:
+      - ../data:/data
+    secrets:
+      - binance_demo_private_key.pem
+    ports:
+      - "127.0.0.1:8084:8084"
+    restart: unless-stopped
+
+  agent_worker:
+    build:
+      context: ..
+      dockerfile: infra/docker/agent_worker.Dockerfile
+    container_name: cryptonite_agent_worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis-agents:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_agent_ro:agent_ro_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis-agents:6379/0
+      NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
+      PORT: 8085
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data:ro
+    ports:
+      - "127.0.0.1:8085:8085"
+    restart: unless-stopped
+    networks:
+      - agents_net
 
 volumes:
   postgres_data:
+  redis_data:
+  redis_agents_data:
+
+secrets:
+  binance_demo_private_key.pem:
+    file: ../infra/security/binance_demo_private_key.pem
+
+networks:
+  agents_net:
+    driver: bridge
+  isolated_backtester_net:
+    driver: bridge
+    internal: true
+  default:

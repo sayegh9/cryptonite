@@ -36,3 +36,17 @@ infra/postgres_data/
 # OS
 .DS_Store
 Thumbs.db
+
+# Frontend / Node
+node_modules/
+.next/
+out/
+.pnpm-store/
+test-results/
+playwright-report/
+
+# Scratch & Tooling
+patch*.py
+recovered_compose.txt
+.ua/
+

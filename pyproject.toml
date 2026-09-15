@@ -22,6 +22,24 @@ dependencies = [
     "cryptonite-schemas",
     "cryptonite-storage",
     "cryptonite-ingest",
+    "cryptonite-scanner",
+    "cryptonite-outbox",
+    "cryptonite-scanner-service",
+    "cryptonite-api",
+    "cryptonite-strategies",
+    "cryptonite-backtester",
+    "cryptonite-backtester-service",
+    "cryptonite-execution",
+    "cryptonite-executor",
+    "cryptonite-orchestrator",
+    "redis>=5.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.31.0",
+    "pandas>=3.0.5",
+    "cryptography>=43.0.0",
+    "argon2-cffi>=23.1.0",
+    "pyotp>=2.9.0",
+    "google-antigravity>=0.1.16",
 ]
 
 [project.optional-dependencies]
@@ -35,13 +53,33 @@ dev = [
 members = [
     "packages/schemas",
     "packages/storage",
+    "packages/scanner",
+    "packages/strategies",
+    "packages/backtester",
+    "packages/execution",
     "services/ingest",
+    "services/outbox",
+    "services/scanner",
+    "services/api",
+    "services/backtester",
+    "services/executor",
+    "services/orchestrator",
 ]
 
 [tool.uv.sources]
 cryptonite-schemas = { workspace = true }
 cryptonite-storage = { workspace = true }
 cryptonite-ingest = { workspace = true }
+cryptonite-scanner = { workspace = true }
+cryptonite-outbox = { workspace = true }
+cryptonite-scanner-service = { workspace = true }
+cryptonite-api = { workspace = true }
+cryptonite-strategies = { workspace = true }
+cryptonite-backtester = { workspace = true }
+cryptonite-backtester-service = { workspace = true }
+cryptonite-execution = { workspace = true }
+cryptonite-executor = { workspace = true }
+cryptonite-orchestrator = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -55,3 +93,17 @@ ignore = ["E501"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "performance: long-running multi-chunk memory and throughput benchmarks",
+    "binance_demo: credentialed live Binance Demo venue integration tests",
+    "binance_demo_strict: strict release gate tests for Binance Demo that fail if credentials are missing",
+]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.1.0",
+]

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cryptonite-executor"
+version = "0.1.0"
+description = "Paper trading executor service daemon"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "pydantic>=2.9.0",
+    "asyncpg>=0.29.0",
+    "redis>=5.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.31.0",
+    "cryptonite-schemas",
+    "cryptonite-storage",
+    "cryptonite-strategies",
+    "cryptonite-execution",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cryptonite_executor"]

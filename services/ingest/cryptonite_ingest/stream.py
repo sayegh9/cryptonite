@@ -4,9 +4,11 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from collections.abc import Callable, Coroutine
 from typing import Any
 
+import redis.asyncio as aioredis
 import websockets
 from cryptonite_schemas.bar import RawBinanceKline
 from websockets.exceptions import ConnectionClosed
@@ -14,6 +16,7 @@ from websockets.exceptions import ConnectionClosed
 logger = logging.getLogger("cryptonite.stream")
 
 BINANCE_WS_STREAM_URL = "wss://stream.binance.com:9443/stream"
+BINANCE_FUTURES_WS_STREAM_URL = "wss://fstream.binance.com/stream"
 
 
 class BinanceStreamClient:
@@ -25,16 +28,25 @@ class BinanceStreamClient:
         timeframes: list[str],
         on_closed_bar: Callable[[str, str, RawBinanceKline, int], Coroutine[Any, Any, None]] | None = None,
         base_ws_url: str = BINANCE_WS_STREAM_URL,
+        redis: aioredis.Redis | None = None,
+        enable_quotes: bool = True,
     ) -> None:
         self.symbols = [s.upper() for s in symbols]
         self.timeframes = [t.lower() for t in timeframes]
         self.on_closed_bar = on_closed_bar
         self.base_ws_url = base_ws_url
+        self.redis = redis
+        self.enable_quotes = enable_quotes
 
         self._running = False
         self._ws: Any = None
+        self.ingest_session_id = uuid.uuid4()
         # In-memory buffer for open-candle updates: symbol -> RawBinanceKline
         self.open_kline_buffer: dict[str, RawBinanceKline] = {}
+        # Monotonic update sequence per (symbol, timeframe)
+        self.update_sequences: dict[str, int] = {}
+        # Monotonic quote sequence per symbol
+        self.quote_sequences: dict[str, int] = {}
         # Buffer for closed bars that arrive while reconnecting or backfilling
         self.closed_bar_buffer: asyncio.Queue[tuple[str, str, RawBinanceKline, int]] = asyncio.Queue()
         self.reconnect_count = 0
@@ -46,6 +58,8 @@ class BinanceStreamClient:
         for s in self.symbols:
             for tf in self.timeframes:
                 streams.append(f"{s.lower()}@kline_{tf}")
+            if self.enable_quotes:
+                streams.append(f"{s.lower()}@bookTicker")
         return streams
 
     @property
@@ -86,13 +100,86 @@ class BinanceStreamClient:
                 logger.exception("Unexpected error in WebSocket loop: %s", e)
                 await asyncio.sleep(5.0)
 
+    async def _handle_book_ticker(self, payload: dict[str, Any], arrival_ns: int) -> None:
+        try:
+            symbol = payload["s"].upper()
+            bid_p = str(payload["b"])
+            bid_q = str(payload["B"])
+            ask_p = str(payload["a"])
+            ask_q = str(payload["A"])
+            inst_str = f"{symbol}.BINANCE"
+            seq = self.quote_sequences.get(symbol, 0) + 1
+            self.quote_sequences[symbol] = seq
+
+            if self.redis:
+                from nautilus_trader.model import (
+                    InstrumentId,
+                    Price,
+                    Quantity,
+                    QuoteTick,
+                )
+
+                quote = QuoteTick(
+                    instrument_id=InstrumentId.from_str(inst_str),
+                    bid_price=Price.from_str(bid_p),
+                    ask_price=Price.from_str(ask_p),
+                    bid_size=Quantity.from_str(bid_q),
+                    ask_size=Quantity.from_str(ask_q),
+                    ts_event=arrival_ns,
+                    ts_init=arrival_ns,
+                )
+                bus_record = {
+                    "topic": f"data.quotes.BINANCE.{symbol}",
+                    "type": "QuoteTick",
+                    "payload": quote.to_json_bytes().decode("utf-8"),
+                    "encoding": "JSON",
+                }
+                try:
+                    await self.redis.xadd("nautilus:stream:bus", bus_record, maxlen=5000, approximate=True)
+                except Exception as ex:
+                    logger.debug("Failed to publish QuoteTick to bus: %s", ex)
+
+                health_record = {
+                    "instrument_id": inst_str,
+                    "ingest_session_id": str(self.ingest_session_id),
+                    "publish_sequence": seq,
+                    "event_ts_ns": arrival_ns,
+                    "arrival_ts_ns": arrival_ns,
+                }
+                try:
+                    await self.redis.xadd("cryptonite:stream:ingress_health", {"data": json.dumps(health_record)}, maxlen=5000, approximate=True)
+                except Exception as ex:
+                    logger.debug("Failed to publish ingress health: %s", ex)
+
+                ui_record = {
+                    "instrument_id": inst_str,
+                    "bid_price": bid_p,
+                    "ask_price": ask_p,
+                    "bid_size": bid_q,
+                    "ask_size": ask_q,
+                    "arrival_ns": arrival_ns,
+                }
+                try:
+                    await self.redis.xadd("cryptonite:stream:ui_quote_tick", {"data": json.dumps(ui_record)}, maxlen=1000, approximate=True)
+                except Exception as ex:
+                    logger.debug("Failed to publish ui quote: %s", ex)
+        except Exception as e:
+            logger.error("Error processing bookTicker message: %s", e)
+
     async def _handle_message(self, raw_msg: str | bytes, arrival_ns: int) -> None:
         try:
             data = json.loads(raw_msg)
-            if "data" not in data or data.get("data", {}).get("e") != "kline":
+            payload = data.get("data", data)
+            if not isinstance(payload, dict):
                 return
 
-            payload = data["data"]
+            if payload.get("b") is not None and payload.get("a") is not None and payload.get("s") is not None and "k" not in payload:
+                await self._handle_book_ticker(payload, arrival_ns)
+                return
+
+            if payload.get("e") != "kline" or "k" not in payload:
+                return
+
             k = payload["k"]
             symbol = payload["s"]
             timeframe = k["i"]
@@ -116,6 +203,48 @@ class BinanceStreamClient:
             # Store in open kline buffer
             buffer_key = f"{symbol}:{timeframe}"
             self.open_kline_buffer[buffer_key] = raw_kline
+
+            # Increment monotonic sequence counter
+            seq = self.update_sequences.get(buffer_key, 0) + 1
+            self.update_sequences[buffer_key] = seq
+
+            # Direct lossy publication to Redis open_kline stream
+            if self.redis:
+                duration_ms = raw_kline.close_time_ms - raw_kline.open_time_ms + 1
+                bar_open_ns = raw_kline.open_time_ms * 1_000_000
+                bar_close_inclusive_ns = raw_kline.close_time_ms * 1_000_000
+                interval_end_exclusive_ns = (raw_kline.open_time_ms + duration_ms) * 1_000_000
+
+                open_payload = {
+                    "schema_version": 1,
+                    "producer": "cryptonite-ingest",
+                    "occurred_at_ns": arrival_ns,
+                    "event_id": str(uuid.uuid4()),
+                    "event_type": "open_kline",
+                    "instrument_id": f"{symbol.upper()}.BINANCE",
+                    "timeframe": timeframe,
+                    "update_sequence": seq,
+                    "bar_open_ns": bar_open_ns,
+                    "bar_close_inclusive_ns": bar_close_inclusive_ns,
+                    "interval_end_exclusive_ns": interval_end_exclusive_ns,
+                    "open": raw_kline.open,
+                    "high": raw_kline.high,
+                    "low": raw_kline.low,
+                    "close": raw_kline.close,
+                    "volume": raw_kline.volume,
+                    "quote_volume": raw_kline.quote_volume,
+                    "trades_count": raw_kline.trades_count,
+                    "is_closed": is_closed,
+                }
+                try:
+                    await self.redis.xadd(
+                        "cryptonite:stream:open_kline",
+                        {"event_id": open_payload["event_id"], "data": json.dumps(open_payload)},
+                        maxlen=1000,
+                        approximate=True,
+                    )
+                except Exception as ex:
+                    logger.debug("Failed to publish open tick to Redis: %s", ex)
 
             if is_closed:
                 logger.debug("Received closed kline for %s (%s) close_time=%d", symbol, timeframe, raw_kline.close_time_ms)

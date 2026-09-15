@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -113,7 +114,7 @@ class TwoStoreCoordinator:
 
             # 2. Insert ingest_batches row with status='pending'
             if self.pool:
-                await self._insert_pending_batch(
+                actual_batch_id = await self._insert_pending_batch(
                     batch_id=batch_id,
                     venue=venue,
                     market_type=market_type,
@@ -125,6 +126,8 @@ class TwoStoreCoordinator:
                     payload_checksum=payload_checksum,
                     canonical_payload_json=payload_json,
                 )
+                if actual_batch_id:
+                    batch_id = actual_batch_id
 
             # 3. Write to Nautilus Catalog
             nautilus_bars = [bar_to_nautilus(b, bar_type) for b in sorted_bars]
@@ -159,6 +162,8 @@ class TwoStoreCoordinator:
                     analytics_paths=[analytics_path] if analytics_path else [],
                     nautilus_file_checksum=nautilus_file_checksum,
                     analytics_file_checksum=analytics_file_checksum,
+                    payload_checksum=payload_checksum,
+                    bars=sorted_bars,
                 )
 
             logger.info(
@@ -217,9 +222,10 @@ class TwoStoreCoordinator:
             canonical_payload_json, status
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
         ON CONFLICT (venue, market_type, bar_type, start_ns, end_ns, payload_checksum)
-        DO UPDATE SET status = 'pending', canonical_payload_json = EXCLUDED.canonical_payload_json;
+        DO UPDATE SET status = 'pending', canonical_payload_json = EXCLUDED.canonical_payload_json
+        RETURNING batch_id;
         """
-        await self.pool.execute(
+        row = await self.pool.fetchval(
             query,
             uuid.UUID(batch_id),
             venue,
@@ -232,6 +238,7 @@ class TwoStoreCoordinator:
             payload_checksum,
             json.dumps(canonical_payload_json),
         )
+        return str(row) if row else batch_id
 
     async def _commit_batch_and_checkpoint(
         self,
@@ -248,9 +255,36 @@ class TwoStoreCoordinator:
         analytics_paths: list[str],
         nautilus_file_checksum: str,
         analytics_file_checksum: str,
+        payload_checksum: str = "",
+        bars: list[EnrichedBar] | None = None,
     ) -> None:
         if not self.pool:
             return
+        outbox_event_id = str(uuid.uuid4())
+        step_ns = self._timeframe_to_ns(timeframe)
+        interval_end_exclusive_ns = start_ns + (bar_count * step_ns)
+        event_payload = {
+            "schema_version": 1,
+            "producer": "cryptonite-ingest",
+            "occurred_at_ns": time.time_ns(),
+            "event_id": outbox_event_id,
+            "event_type": "closed_bar_committed",
+            "batch_id": batch_id,
+            "venue": venue,
+            "market_type": market_type,
+            "symbol": symbol,
+            "instrument_id": f"{symbol.upper()}.{venue.upper()}",
+            "timeframe": timeframe,
+            "bar_type": bar_type,
+            "bar_open_ns": start_ns,
+            "bar_close_inclusive_ns": end_ns,
+            "interval_end_exclusive_ns": interval_end_exclusive_ns,
+            "bar_count": bar_count,
+            "payload_checksum": payload_checksum,
+            "analytics_file_checksum": analytics_file_checksum,
+            "nautilus_file_checksum": nautilus_file_checksum,
+        }
+
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 # 1. Update batch status
@@ -298,6 +332,46 @@ class TwoStoreCoordinator:
                     bar_count,
                     uuid.UUID(batch_id),
                 )
+
+                # 3. Insert outbox event for closed_bar_committed
+                await conn.execute(
+                    """
+                    INSERT INTO outbox_events (
+                        event_id, stream_name, event_type, producer, payload,
+                        status, attempt_count, next_attempt_at, created_at
+                    ) VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', 0, now(), now());
+                    """,
+                    outbox_event_id,
+                    "cryptonite:stream:closed_bar_committed",
+                    "closed_bar_committed",
+                    "cryptonite-ingest",
+                    json.dumps(event_payload),
+                )
+
+                # 4. Insert native Bar outbox events for nautilus:stream:bus
+                if bars:
+                    parsed_bt = BarType.from_str(bar_type)
+                    for b in bars:
+                        naut_bar = bar_to_nautilus(b, parsed_bt)
+                        bar_payload = {
+                            "topic": f"data.bars.{bar_type}",
+                            "type": "Bar",
+                            "payload": naut_bar.to_json_bytes().decode("utf-8"),
+                            "encoding": "JSON",
+                        }
+                        await conn.execute(
+                            """
+                            INSERT INTO outbox_events (
+                                event_id, stream_name, event_type, producer, payload,
+                                status, attempt_count, next_attempt_at, created_at
+                            ) VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', 0, now(), now());
+                            """,
+                            str(uuid.uuid4()),
+                            "nautilus:stream:bus",
+                            "Bar",
+                            "cryptonite-ingest",
+                            json.dumps(bar_payload),
+                        )
 
     async def reconcile_pending_batches(self, bar_type: BarType) -> int:
         """Scan and reconcile uncommitted batches on startup."""
