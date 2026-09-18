@@ -271,7 +271,7 @@ class BacktestWorker:
         async with self.pool.acquire() as conn:
             strat_row = await conn.fetchrow(
                 """
-                SELECT s.slug
+                SELECT s.slug, sv.python_code
                 FROM strategy_versions sv
                 JOIN strategies s ON s.id = sv.strategy_id
                 WHERE sv.id = $1
@@ -282,6 +282,7 @@ class BacktestWorker:
                 await self._mark_failed(run_id, f"Strategy version {run_dict['strategy_version_id']} not found.")
                 return
             strategy_slug = strat_row["slug"]
+            python_code = strat_row["python_code"]
 
         raw_params = run_dict["parameters"]
         if isinstance(raw_params, str):
@@ -303,6 +304,7 @@ class BacktestWorker:
             execution_profile=run_dict["execution_profile"],
             attempt_id=attempt_id,
             run_config_hash=run_dict.get("run_config_hash"),
+            python_code=python_code,
         )
 
         try:

@@ -13,6 +13,7 @@ resolution-markers = [
 [manifest]
 members = [
     "cryptonite",
+    "cryptonite-agents",
     "cryptonite-api",
     "cryptonite-backtester",
     "cryptonite-backtester-service",
@@ -492,6 +493,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "click" },
     { name = "cryptography" },
+    { name = "cryptonite-agents" },
     { name = "cryptonite-api" },
     { name = "cryptonite-backtester" },
     { name = "cryptonite-backtester-service" },
@@ -543,6 +545,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.29.0" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "cryptography", specifier = ">=43.0.0" },
+    { name = "cryptonite-agents", editable = "packages/agents" },
     { name = "cryptonite-api", editable = "services/api" },
     { name = "cryptonite-backtester", editable = "packages/backtester" },
     { name = "cryptonite-backtester-service", editable = "services/backtester" },
@@ -583,6 +586,27 @@ provides-extras = ["dev"]
 dev = [{ name = "pytest-cov", specifier = ">=7.1.0" }]
 
 [[package]]
+name = "cryptonite-agents"
+version = "0.1.0"
+source = { editable = "packages/agents" }
+dependencies = [
+    { name = "cryptonite-schemas" },
+    { name = "duckdb" },
+    { name = "google-antigravity" },
+    { name = "pydantic" },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cryptonite-schemas", editable = "packages/schemas" },
+    { name = "duckdb", specifier = ">=1.1.0" },
+    { name = "google-antigravity", specifier = ">=0.1.16" },
+    { name = "pydantic", specifier = ">=2.9.0" },
+    { name = "sqlalchemy", specifier = ">=2.0.0" },
+]
+
+[[package]]
 name = "cryptonite-api"
 version = "0.1.0"
 source = { editable = "services/api" }
@@ -590,6 +614,7 @@ dependencies = [
     { name = "argon2-cffi" },
     { name = "asyncpg" },
     { name = "cryptography" },
+    { name = "cryptonite-agents" },
     { name = "cryptonite-backtester" },
     { name = "cryptonite-execution" },
     { name = "cryptonite-scanner" },
@@ -610,6 +635,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1.0" },
     { name = "asyncpg", specifier = ">=0.29.0" },
     { name = "cryptography", specifier = ">=43.0.0" },
+    { name = "cryptonite-agents", editable = "packages/agents" },
     { name = "cryptonite-backtester", editable = "packages/backtester" },
     { name = "cryptonite-execution", editable = "packages/execution" },
     { name = "cryptonite-scanner", editable = "packages/scanner" },

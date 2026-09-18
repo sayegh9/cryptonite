@@ -179,3 +179,52 @@ export interface BacktestTrade {
   realized_return: number;
 }
 
+export interface MarketTicker24h {
+  symbol: string;
+  last_price: number;
+  price_change_pct: number;
+  high_24h: number;
+  low_24h: number;
+  volume: number;
+  quote_volume: number;
+}
+
+export interface CoinProfile {
+  symbol: string;
+  name?: string;
+  description?: string;
+  categories?: string[];
+  image_url?: string;
+  market_cap_usd?: number;
+  circulating_supply?: number;
+  max_supply?: number;
+  ath_usd?: number;
+  ath_date?: string;
+  last_price?: number;
+  change_24h_pct?: number;
+  high_24h?: number;
+  low_24h?: number;
+  volume_24h_quote?: number;
+  links?: {
+    homepage?: string;
+    twitter?: string;
+    github?: string;
+  };
+}
+
+export interface UserAlert {
+  id: string;
+  instrument_id: string;
+  condition: 'above' | 'below';
+  threshold: number;
+  is_active: boolean;
+  triggered_at?: string | null;
+  created_at: string;
+}
+
+export interface MarketOverviewTicker {
+  symbol: string;
+  last_price: number;
+  change_pct: number;
+  volume_quote: number;
+}

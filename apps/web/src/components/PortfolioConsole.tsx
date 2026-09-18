@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { getStreamClient } from "@/lib/ws";
+
 import {
   ShieldAlert,
   ShieldCheck,
@@ -130,11 +132,28 @@ export function PortfolioConsole() {
     }
   };
 
+
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 2000);
-    return () => clearInterval(interval);
+    const interval = setInterval(fetchData, 5000); // Polling reduced
+    
+    // Listen to WS for live positions
+    const client = getStreamClient();
+    const unsub = client.subscribe((msg: any) => {
+      if (msg.type === "positions_snapshot") {
+        setPositions(msg.positions);
+      }
+    });
+    
+    // Explicitly ask for positions subscription
+    client.send({ action: "subscribe", channels: ["positions_snapshot"] });
+    
+    return () => {
+      clearInterval(interval);
+      unsub();
+    };
   }, []);
+
 
   const handleTripKillSwitch = async () => {
     await fetch("/api/v1/paper/kill-switch", {

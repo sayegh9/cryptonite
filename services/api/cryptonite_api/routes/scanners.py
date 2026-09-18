@@ -312,7 +312,7 @@ async def enqueue_scan_run(
     response.headers["Location"] = f"/api/v1/scanners/jobs/{job_id}"
     return {
         "status": "ACCEPTED",
-        "job_id": str(job_id),
+        "id": str(job_id),
         "request_id": req_id,
         "spec_version_id": str(row["active_version_id"]),
     }

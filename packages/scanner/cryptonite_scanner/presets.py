@@ -127,9 +127,28 @@ PRESET_MACD_MOMENTUM = ScanSpecCreate(
     risk=RiskConfig(stop_loss_atr_mult=2.0, take_profit_atr_mult=4.0, risk_reward_ratio=2.0),
 )
 
+PRESET_SCALP_MULTI_TF = ScanSpecCreate(
+    slug="scalp-multi-tf",
+    name="Execution Strategist Multi-TF",
+    description="Captures 5m, 15m, 1H, 4H, and 1D bar close states for the Execution Strategist Engine.",
+    universe=UniverseConfig(
+        instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
+        timeframes=["5m", "15m", "1h", "4h", "1d"],
+    ),
+    rules=[
+        RuleGroup(
+            category="universe",
+            logic="AND",
+            conditions=[],  # Unconditional capture - engine handles the logic
+        ),
+    ],
+    risk=RiskConfig(stop_loss_atr_mult=0.5, take_profit_atr_mult=2.0, risk_reward_ratio=2.0),
+)
+
 BUILTIN_PRESETS = [
     PRESET_RSI_OVERSOLD,
     PRESET_TREND_PULLBACK,
     PRESET_BOLLINGER_BREAKOUT,
     PRESET_MACD_MOMENTUM,
+    PRESET_SCALP_MULTI_TF,
 ]

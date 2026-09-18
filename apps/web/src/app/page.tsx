@@ -13,11 +13,16 @@ import { ReconciliationLedger } from "@/components/operator/ReconciliationLedger
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
 import { AgentChatPanel } from "@/components/AgentChatPanel";
 import { ScannerBuilder } from "@/components/ScannerBuilder";
+import { CoinProfileModal } from "@/components/CoinProfileModal";
+import { AlertsPanel } from "@/components/AlertsPanel";
+import { MarketOverview } from "@/components/MarketOverview";
+import { SettingsPanel } from "@/components/SettingsPanel";
 import { getStreamClient } from "@/lib/ws";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Activity,
+  Settings,
   Zap,
   ShieldCheck,
   Radio,
@@ -30,7 +35,7 @@ import {
 } from "lucide-react";
 
 export default function TerminalPage() {
-  const [workspaceMode, setWorkspaceMode] = useState<"terminal" | "research" | "portfolio" | "operator">("terminal");
+  const [workspaceMode, setWorkspaceMode] = useState<"terminal" | "research" | "portfolio" | "operator" | "markets" | "alerts" | "settings">("terminal");
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [operatorAuthenticated, setOperatorAuthenticated] = useState(false);
   const [showScannerBuilder, setShowScannerBuilder] = useState(false);
@@ -41,26 +46,29 @@ export default function TerminalPage() {
     candleTime: number;
   } | null>(null);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [profileSymbol, setProfileSymbol] = useState<string | null>(null);
 
   // Initialize global WebSocket stream connection
   useEffect(() => {
     const client = getStreamClient();
     client.connect({
       channels: ["open_kline", "closed_bar_committed", "signal_candidate"],
-      instruments: ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
+      instruments: [],
     });
 
     const unsubscribe = client.subscribe((msg) => {
-      if (msg.type === "subscription_ack") {
+      if (msg.type === "subscription_ack" || msg.status === "subscribed") {
         setWsConnected(true);
-        toast.success("Stream: ONLINE", { description: "WebSocket stream connected (p95 < 16ms)" });
+      } else if (msg.type === "alert_triggered") {
+        toast.success(`Price Alert: ${msg.symbol}`, {
+          description: `Crossed ${msg.condition} $${msg.threshold.toLocaleString()} (current: $${msg.price.toLocaleString()})`,
+          duration: 10000,
+        });
       }
     });
 
-    // Fallback indicator
     const timer = setTimeout(() => {
       setWsConnected(true);
-      toast.success("Stream: ONLINE", { description: "WebSocket stream connected (p95 < 16ms)" });
     }, 1500);
 
     return () => {
@@ -68,6 +76,37 @@ export default function TerminalPage() {
       unsubscribe();
     };
   }, []);
+
+  // Listen for custom select symbol event (e.g., from CommandPalette or Modals)
+  useEffect(() => {
+    const handler = (e: CustomEvent) => {
+      if (e.detail?.symbol) {
+        handleSelectSymbol(e.detail.symbol);
+        setWorkspaceMode("terminal");
+      }
+    };
+    const profileHandler = (e: CustomEvent) => {
+      if (e.detail?.symbol) {
+        setProfileSymbol(e.detail.symbol);
+      }
+    };
+    window.addEventListener("cryptonite:select-symbol" as any, handler);
+    window.addEventListener("cryptonite:open-profile" as any, profileHandler);
+    return () => {
+      window.removeEventListener("cryptonite:select-symbol" as any, handler);
+      window.removeEventListener("cryptonite:open-profile" as any, profileHandler);
+    };
+  }, []);
+
+  // Update subscriptions when selectedSymbol changes
+  useEffect(() => {
+    if (!wsConnected) return;
+    const client = getStreamClient();
+    client.updateSubscriptions(
+      ["open_kline", "closed_bar_committed", "signal_candidate"],
+      [`${selectedSymbol}.BINANCE`, "BTCUSDT.BINANCE", "ETHUSDT.BINANCE", "SOLUSDT.BINANCE", "BNBUSDT.BINANCE"]
+    );
+  }, [selectedSymbol, wsConnected]);
 
   const handleSelectSymbol = (symbol: string) => {
     setSelectedSymbol(symbol);
@@ -103,7 +142,9 @@ export default function TerminalPage() {
           <div className="flex items-center space-x-6 h-full font-mono text-xs font-semibold">
             {[
               { id: "terminal", label: "Terminal" },
+              { id: "markets", label: "Markets" },
               { id: "research", label: "Research Lab" },
+              { id: "alerts", label: "Alerts" },
               { id: "portfolio", label: "Portfolio" },
               { id: "operator", label: "Operator" },
             ].map((tab) => (
@@ -183,6 +224,21 @@ export default function TerminalPage() {
             </div>
           </main>
         </div>
+      ) : workspaceMode === "markets" ? (
+        <div className="flex-1 min-h-0 min-w-0 max-w-4xl mx-auto w-full">
+          <MarketOverview onSelectSymbol={(sym) => {
+            handleSelectSymbol(sym);
+            setWorkspaceMode("terminal");
+          }} />
+        </div>
+      ) : workspaceMode === "alerts" ? (
+        <div className="flex-1 min-h-0 min-w-0 max-w-3xl mx-auto w-full">
+          <AlertsPanel />
+        </div>
+      ) : workspaceMode === "settings" ? (
+        <div className="flex-1 min-h-0 min-w-0 max-w-5xl mx-auto w-full py-4">
+          <SettingsPanel />
+        </div>
       ) : workspaceMode === "research" ? (
         <div className="flex-1 min-h-0 min-w-0">
           <ResearchLab />
@@ -250,6 +306,11 @@ export default function TerminalPage() {
         isOpen={isAgentChatOpen}
         onClose={() => setIsAgentChatOpen(false)}
         activeBacktestId={null} // TODO: Could pass active backtest ID from ResearchLab if lifted
+      />
+
+      <CoinProfileModal 
+        symbol={profileSymbol} 
+        onClose={() => setProfileSymbol(null)} 
       />
 
       {workspaceMode === "operator" && !operatorAuthenticated && (

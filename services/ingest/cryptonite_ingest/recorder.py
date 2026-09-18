@@ -222,6 +222,23 @@ class IngestRecorder:
 
         # Give socket 1s to open connection, then run subscribe-before-backfill gap recovery
         await asyncio.sleep(1.0)
+        
+        # Subscribe to new instrument onboarding events
+        if self.redis:
+            async def _listen_for_new_instruments():
+                pubsub = self.redis.pubsub()
+                await pubsub.subscribe("CHANNEL_INSTRUMENTS_UPDATED")
+                logger.info("Listening for new instruments on CHANNEL_INSTRUMENTS_UPDATED...")
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        new_sym = message["data"]
+                        logger.info(f"Received onboarding event for {new_sym}")
+                        if new_sym not in self.symbols:
+                            self.symbols.append(new_sym)
+                        if self.stream_client:
+                            self.stream_client.add_symbol(new_sym)
+            asyncio.create_task(_listen_for_new_instruments())
+
         if self.recovery_manager:
             for s in self.symbols:
                 for tf in self.timeframes:

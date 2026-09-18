@@ -13,6 +13,7 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
   const [selectedSlug, setSelectedSlug] = useState("");
   const [instrumentId, setInstrumentId] = useState("BTCUSDT.BINANCE");
   const [timeframe, setTimeframe] = useState("1-MINUTE-LAST-EXTERNAL");
+  const [allocationUsd, setAllocationUsd] = useState(10000.0);
   const [parameters, setParameters] = useState<Record<string, any>>({});
 
   useEffect(() => {
@@ -55,7 +56,8 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
           strategy_name: selectedStrategy.slug,
           strategy_version_id: selectedStrategy.active_version_id,
           instrument_id: instrumentId,
-          timeframe: timeframe,
+          timeframe: `${instrumentId}-${timeframe}`,
+          allocation_usd: allocationUsd,
           parameters: parameters,
         }),
       });
@@ -124,6 +126,18 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
                   <option value="15-MINUTE-LAST-EXTERNAL">15 Minute</option>
                   <option value="1-HOUR-LAST-EXTERNAL">1 Hour</option>
                 </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Allocation (USD)</label>
+                <input
+                  type="number"
+                  step="100"
+                  min="0"
+                  value={allocationUsd}
+                  onChange={(e) => setAllocationUsd(Number(e.target.value))}
+                  className="w-full bg-zinc-900 border border-white/5 rounded px-3 py-2 text-sm text-zinc-200 focus:border-cyan-500 focus:outline-none"
+                  required
+                />
               </div>
             </div>
 

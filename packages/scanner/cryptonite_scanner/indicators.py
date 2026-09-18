@@ -86,3 +86,47 @@ def calc_supertrend(
     atr = calc_atr(high_col, low_col, close_col, period=period)
     # Basic basic supertrend anchor
     return hl2 - (multiplier * atr)
+
+
+def calc_stoch_rsi(
+    col: str = "close", rsi_period: int = 14, stoch_period: int = 14, k_smooth: int = 3, d_smooth: int = 3
+) -> tuple[pl.Expr, pl.Expr]:
+    """Stochastic RSI. Returns (K, D)."""
+    rsi = calc_rsi(col, rsi_period)
+    rsi_min = rsi.rolling_min(window_size=stoch_period)
+    rsi_max = rsi.rolling_max(window_size=stoch_period)
+    
+    stoch_rsi = pl.when(rsi_max == rsi_min).then(0.0).otherwise((rsi - rsi_min) / (rsi_max - rsi_min)) * 100.0
+    
+    k = stoch_rsi.rolling_mean(window_size=k_smooth)
+    d = k.rolling_mean(window_size=d_smooth)
+    
+    return k, d
+
+
+def calc_ema_set(col: str = "close") -> tuple[pl.Expr, pl.Expr, pl.Expr]:
+    """EMA 7, 25, 99 set."""
+    return calc_ema(col, 7), calc_ema(col, 25), calc_ema(col, 99)
+
+
+def calc_volume_ma(volume_col: str = "volume", period: int = 5) -> pl.Expr:
+    """Volume Simple Moving Average."""
+    return calc_sma(volume_col, period)
+
+
+def calc_wick_ratio(
+    open_col: str = "open", high_col: str = "high", low_col: str = "low", close_col: str = "close"
+) -> tuple[pl.Expr, pl.Expr]:
+    """Returns (upper_wick_ratio, lower_wick_ratio) relative to the total candle range."""
+    candle_range = pl.col(high_col) - pl.col(low_col)
+    
+    real_body_top = pl.max_horizontal(pl.col(open_col), pl.col(close_col))
+    real_body_bottom = pl.min_horizontal(pl.col(open_col), pl.col(close_col))
+    
+    upper_wick = pl.col(high_col) - real_body_top
+    lower_wick = real_body_bottom - pl.col(low_col)
+    
+    safe_range = pl.when(candle_range == 0.0).then(1e-10).otherwise(candle_range)
+    
+    return (upper_wick / safe_range), (lower_wick / safe_range)
+

@@ -6,6 +6,7 @@ import {
   ColorType,
   CandlestickSeries,
   HistogramSeries,
+  LineSeries,
   createSeriesMarkers,
   IChartApi,
   ISeriesApi,
@@ -15,6 +16,21 @@ import {
 } from "lightweight-charts";
 import { Bar, SignalCandidate } from "@/lib/types";
 import { getStreamClient } from "@/lib/ws";
+import { SMA, EMA, WMA, WEMA, RSI, ATR, ROC, WilliamsR, TRIX, CCI, ForceIndex, MFI, SD, AverageGain, AverageLoss } from "technicalindicators";
+import { Settings2, Plus, X } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+
+
+
+export interface ChartIndicator {
+  id: string;
+  type: "SMA" | "EMA" | "WMA" | "WEMA" | "RSI" | "ATR" | "ROC" | "WilliamsR" | "TRIX" | "CCI" | "ForceIndex" | "MFI" | "SD" | "AverageGain" | "AverageLoss";
+  period: number;
+  color: string;
+  pane: "main" | "bottom";
+}
+const DEFAULT_COLORS = ["#3b82f6", "#eab308", "#ec4899", "#8b5cf6", "#10b981"];
 
 interface Props {
   chartId: string;
@@ -52,6 +68,14 @@ export const TradingViewChart: React.FC<Props> = ({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+
+  const [indicators, setIndicators] = useState<ChartIndicator[]>([]);
+  const [showIndDialog, setShowIndDialog] = useState(false);
+  const [newIndType, setNewIndType] = useState<"SMA"|"EMA"|"RSI">("SMA");
+  const [newIndPeriod, setNewIndPeriod] = useState(14);
+  const indicatorSeriesRef = useRef<Record<string, ISeriesApi<"Line">>>({});
+  const rawBarsRef = useRef<any[]>([]); // Keep track of pure bars for recalculation
+
   const [priceChangePct, setPriceChangePct] = useState<number | null>(null);
 
   // Monotonic sequence tracker for ticks
@@ -59,6 +83,81 @@ export const TradingViewChart: React.FC<Props> = ({
   // Current provisional candle for higher timeframes
   const provisionalCandleRef = useRef<Bar | null>(null);
   const barsCacheRef = useRef<Map<number, Bar>>(new Map());
+
+
+  const updateIndicators = (bars: any[]) => {
+    if (!chartRef.current) return;
+    const chart = chartRef.current;
+    
+    indicators.forEach((ind) => {
+      let values: number[] = [];
+      const closes = bars.map((b) => Number(b.close));
+      
+      const opens = bars.map(b => Number(b.open));
+      const highs = bars.map(b => Number(b.high));
+      const lows = bars.map(b => Number(b.low));
+      const vols = bars.map(b => Number(b.volume));
+
+      if (ind.type === "SMA") values = SMA.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "EMA") values = EMA.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "WMA") values = WMA.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "WEMA") values = WEMA.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "RSI") values = RSI.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "ATR") values = ATR.calculate({ period: ind.period, high: highs, low: lows, close: closes });
+      else if (ind.type === "ROC") values = ROC.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "WilliamsR") values = WilliamsR.calculate({ period: ind.period, high: highs, low: lows, close: closes });
+      else if (ind.type === "TRIX") values = TRIX.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "CCI") values = CCI.calculate({ period: ind.period, high: highs, low: lows, close: closes });
+      else if (ind.type === "ForceIndex") values = ForceIndex.calculate({ period: ind.period, close: closes, volume: vols });
+      else if (ind.type === "MFI") values = MFI.calculate({ period: ind.period, high: highs, low: lows, close: closes, volume: vols });
+      else if (ind.type === "SD") values = SD.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "AverageGain") values = AverageGain.calculate({ period: ind.period, values: closes });
+      else if (ind.type === "AverageLoss") values = AverageLoss.calculate({ period: ind.period, values: closes });
+
+      const offset = bars.length - values.length;
+      if (offset < 0) return;
+
+      const indData = values.map((val, i) => {
+        const b = bars[i + offset];
+        const t = b.time !== undefined ? b.time : Math.floor((b.bar_open_ns || 0) / 1_000_000_000);
+        return {
+          time: t as unknown as Time,
+          value: val,
+        };
+      });
+
+      if (!indicatorSeriesRef.current[ind.id]) {
+        if (ind.pane === "main") {
+          indicatorSeriesRef.current[ind.id] = chart.addSeries(LineSeries, {
+            color: ind.color,
+            lineWidth: 2,
+            crosshairMarkerVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+          });
+        } else {
+          indicatorSeriesRef.current[ind.id] = chart.addSeries(LineSeries, {
+            color: ind.color,
+            lineWidth: 2,
+            priceScaleId: "rsi_scale",
+            crosshairMarkerVisible: false,
+          });
+          chart.priceScale("rsi_scale").applyOptions({
+            scaleMargins: { top: 0.8, bottom: 0 },
+          });
+        }
+      }
+      
+      indicatorSeriesRef.current[ind.id].setData(indData);
+    });
+  };
+
+  useEffect(() => {
+    if (rawBarsRef.current.length > 0) {
+      updateIndicators(rawBarsRef.current);
+    }
+  }, [indicators]);
+
 
   // Initialize Lightweight Chart
   useEffect(() => {
@@ -200,6 +299,8 @@ export const TradingViewChart: React.FC<Props> = ({
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setCurrentPrice(null);
+    setPriceChangePct(null);
     lastSequenceRef.current = -1;
     provisionalCandleRef.current = null;
     barsCacheRef.current.clear();
@@ -213,6 +314,7 @@ export const TradingViewChart: React.FC<Props> = ({
 
         const rawBars = Array.isArray(data) ? data : (data.bars || []);
 
+        rawBarsRef.current = rawBars;
         const candles = rawBars.map((b: any) => ({
           time: b.time as Time,
           open: Number(b.open),
@@ -226,6 +328,8 @@ export const TradingViewChart: React.FC<Props> = ({
           value: Number(b.volume),
           color: Number(b.close) >= Number(b.open) ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
         }));
+        
+        updateIndicators(rawBars);
 
         rawBars.forEach((b: any) => {
           barsCacheRef.current.set(b.time, b);
@@ -294,7 +398,7 @@ export const TradingViewChart: React.FC<Props> = ({
         }
         lastSequenceRef.current = msg.update_sequence;
 
-        setCurrentPrice(msg.close);
+        setCurrentPrice(Number(msg.close));
 
         const openTimeSec = Math.floor(msg.bar_open_ns / 1_000_000_000);
 
@@ -302,15 +406,15 @@ export const TradingViewChart: React.FC<Props> = ({
           // Direct 1m tick update
           candleSeriesRef.current.update({
             time: openTimeSec as unknown as Time,
-            open: msg.open,
-            high: msg.high,
-            low: msg.low,
-            close: msg.close,
+            open: Number(msg.open),
+            high: Number(msg.high),
+            low: Number(msg.low),
+            close: Number(msg.close),
           });
           volumeSeriesRef.current.update({
             time: openTimeSec as unknown as Time,
-            value: msg.volume,
-            color: msg.close >= msg.open ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
+            value: Number(msg.volume),
+            color: Number(msg.close) >= Number(msg.open) ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
           });
         } else {
           // In-memory provisional aggregation for higher timeframes
@@ -327,20 +431,20 @@ export const TradingViewChart: React.FC<Props> = ({
           if (!prov || prov.time !== bucketTimeSec) {
             prov = {
               time: bucketTimeSec,
-              open: msg.open,
-              high: msg.high,
-              low: msg.low,
-              close: msg.close,
-              volume: msg.volume,
+              open: Number(msg.open),
+              high: Number(msg.high),
+              low: Number(msg.low),
+              close: Number(msg.close),
+              volume: Number(msg.volume),
               bar_open_ns: bucketTimeSec * 1_000_000_000,
               bar_close_inclusive_ns: (bucketTimeSec + bucketSeconds) * 1_000_000_000 - 1_000_000,
               interval_end_exclusive_ns: (bucketTimeSec + bucketSeconds) * 1_000_000_000,
             };
           } else {
-            prov.high = Math.max(prov.high, msg.high);
-            prov.low = Math.min(prov.low, msg.low);
-            prov.close = msg.close;
-            prov.volume += msg.volume;
+            prov.high = Math.max(prov.high, Number(msg.high));
+            prov.low = Math.min(prov.low, Number(msg.low));
+            prov.close = Number(msg.close);
+            prov.volume += Number(msg.volume);
           }
           provisionalCandleRef.current = prov;
 
@@ -361,16 +465,28 @@ export const TradingViewChart: React.FC<Props> = ({
         const openTimeSec = Math.floor(msg.bar_open_ns / 1_000_000_000);
         candleSeriesRef.current.update({
           time: openTimeSec as unknown as Time,
-          open: msg.open,
-          high: msg.high,
-          low: msg.low,
-          close: msg.close,
+          open: Number(msg.open),
+          high: Number(msg.high),
+          low: Number(msg.low),
+          close: Number(msg.close),
         });
         volumeSeriesRef.current.update({
           time: openTimeSec as unknown as Time,
-          value: msg.volume,
-          color: msg.close >= msg.open ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
+          value: Number(msg.volume),
+          color: Number(msg.close) >= Number(msg.open) ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
         });
+        
+        // Push to raw bars and recalculate indicators if any exist
+        rawBarsRef.current.push({
+            time: openTimeSec,
+            open: Number(msg.open),
+            high: Number(msg.high),
+            low: Number(msg.low),
+            close: Number(msg.close),
+            volume: Number(msg.volume),
+        });
+        if (rawBarsRef.current.length > 2000) rawBarsRef.current.shift(); // prevent unbounded memory
+        updateIndicators(rawBarsRef.current);
       }
 
       // Handle live signal candidates
@@ -423,7 +539,94 @@ export const TradingViewChart: React.FC<Props> = ({
           )}
         </div>
 
+        
+        <div className="flex items-center space-x-2">
+          {/* Indicators Dialog */}
+          <Dialog open={showIndDialog} onOpenChange={setShowIndDialog}>
+            <DialogTrigger className="flex items-center space-x-1 px-2 py-0.5 text-[11px] font-medium rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 transition-colors border border-transparent hover:border-zinc-700">
+              <Settings2 className="w-3 h-3" />
+              <span>Indicators</span>
+            </DialogTrigger>
+            <DialogContent className="bg-zinc-950 border border-zinc-800 text-zinc-200 max-w-sm">
+              <DialogHeader>
+                <DialogTitle>Chart Indicators</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 pt-2">
+                <div className="flex items-center space-x-2">
+                  <select 
+                    className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-sm focus:outline-none"
+                    value={newIndType} onChange={e => setNewIndType(e.target.value as any)}
+                  >
+                    <option value="SMA">SMA</option>
+                    <option value="EMA">EMA</option>
+                    <option value="WMA">WMA</option>
+                    <option value="WEMA">WEMA</option>
+                    <option value="RSI">RSI</option>
+                    <option value="ATR">ATR</option>
+                    <option value="ROC">ROC</option>
+                    <option value="WilliamsR">Williams %R</option>
+                    <option value="TRIX">TRIX</option>
+                    <option value="CCI">CCI</option>
+                    <option value="ForceIndex">Force Index</option>
+                    <option value="MFI">MFI</option>
+                    <option value="SD">Standard Deviation</option>
+                    <option value="AverageGain">Avg Gain</option>
+                    <option value="AverageLoss">Avg Loss</option>
+                  </select>
+                  <input 
+                    type="number" min="2" max="200"
+                    className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-sm w-20 focus:outline-none"
+                    value={newIndPeriod} onChange={e => setNewIndPeriod(Number(e.target.value))}
+                  />
+                  <Button 
+                    size="sm" variant="secondary" 
+                    className="bg-cyan-600 hover:bg-cyan-500 text-white border-0"
+                    onClick={() => {
+                      setIndicators([...indicators, {
+                        id: Math.random().toString(),
+                        type: newIndType,
+                        period: newIndPeriod,
+                        pane: ["SMA", "EMA", "WMA", "WEMA", "SD"].includes(newIndType) ? "main" : "bottom",
+                        color: DEFAULT_COLORS[indicators.length % DEFAULT_COLORS.length]
+                      }]);
+                    }}
+                  >
+                    <Plus className="w-4 h-4 mr-1" /> Add
+                  </Button>
+                </div>
+                
+                <div className="space-y-2 mt-4">
+                  {indicators.map(ind => (
+                    <div key={ind.id} className="flex items-center justify-between bg-zinc-900/50 border border-zinc-800/50 rounded px-2 py-1.5">
+                      <div className="flex items-center space-x-2">
+                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: ind.color }} />
+                        <span className="text-xs font-mono">{ind.type} ({ind.period})</span>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          if (indicatorSeriesRef.current[ind.id] && chartRef.current) {
+                            chartRef.current.removeSeries(indicatorSeriesRef.current[ind.id]);
+                            delete indicatorSeriesRef.current[ind.id];
+                          }
+                          setIndicators(indicators.filter(i => i.id !== ind.id));
+                        }}
+                        className="text-zinc-500 hover:text-red-400"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {indicators.length === 0 && (
+                    <div className="text-xs text-zinc-500 text-center py-2">No active indicators</div>
+                  )}
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+
         {/* Timeframe selector tabs */}
+
         <div className="flex items-center space-x-1 bg-zinc-950/80 p-0.5 rounded border border-zinc-800/80">
           {TIMEFRAMES.map((tf) => (
             <button

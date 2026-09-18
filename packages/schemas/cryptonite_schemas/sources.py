@@ -4,7 +4,10 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
 
-from cryptonite_schemas.bar import RawBinanceKline
+try:
+    from cryptonite_schemas.bar import RawBinanceKline
+except ImportError:
+    RawBinanceKline = Any  # type: ignore
 
 
 class InstrumentSource(ABC):

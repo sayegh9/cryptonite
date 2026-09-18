@@ -120,16 +120,19 @@ Provides unified persistence layers for relational, column-oriented, and streami
   * Margin requirement enforcement.
 
 ### 2.6 `cryptonite_agents`
-* Autonomous operations layer built on the **Google Antigravity SDK** (`google-antigravity`).
-* Uses Google Gemini models (`gemini-2.5-pro`, `gemini-2.5-flash`) for real-time quantitative reasoning.
-* Equipped with enterprise-grade safety tools:
-  * `query_postgres_readonly`: Queries the database using an unprivileged `cryptonite_agent_ro` PostgreSQL role with session-level `default_transaction_read_only = on`.
-  * `query_parquet_duckdb`: Executes analytical aggregations directly over Parquet files via DuckDB, avoiding token saturation.
-  * `inspect_backtest_run`: Summarizes backtest tearsheets and identifies parameter sensitivities.
 
----
+**Role**: AI Operations & Quantitative Copilot Layer.
+**Tech Stack**: Google Antigravity SDK, Google Gemini API, Local DuckDB, PostgreSQL.
 
-## 3. Data Flow & Execution Pipelines
+This module houses an intelligent multi-agent fleet designed to act as an autonomous trading desk. Each agent is dynamically configurable via the `system_settings` database schema:
+
+1. **Research Agent**: Embeds a read-only DuckDB engine to query the `/data/nautilus_catalog` Parquet files, performing historical tick-level analysis, volume profiling, and data-driven Q&A.
+2. **Explainer Agent**: Interprets complex system logs, Nautilus Tearsheets, and reconciliation anomalies.
+3. **Strategist Agent**: Evaluates live execution strategies and provides institutional-grade risk management recommendations.
+4. **Generator Agent**: Generates zero-shot executable Nautilus Trader Python strategies based on natural language logic descriptions.
+5. **Opportunity Hunter Agent**: Connects directly to the live PostgreSQL state to identify technical crossover opportunities in real-time.
+
+**Architecture Note**: Agent prompts, model selections, and temperatures are completely decoupled from code. They are stored in the PostgreSQL `agent_configs` table and fetched dynamically by the API layer, allowing operators to safely tune agent behavior in real-time via the Settings UI.
 
 ### 3.1 Live Market Data Ingestion Pipeline
 ```mermaid
@@ -250,3 +253,13 @@ cd infra
 docker compose build <service_name> && docker compose up -d <service_name>
 # Examples: agent_worker, backtester, executor, api
 ```
+
+### 4.4 Market Intelligence & Background Alerts Engine
+The platform includes an automated discovery layer decoupled from execution:
+* **Background Alerts**: The `cryptonite_api` runs a continuous background polling loop (`alerts.py`) that cross-references live PostgreSQL `bars` against user-defined thresholds (`user_alerts` table), pushing WebSocket notifications upon breaches.
+* **Onboarding via Command Palette**: Fast HTTP requests directly onboard new spot pairs from the Binance exchange info endpoints, creating immediate catalog entries and triggering historical 1-minute backfills.
+
+### 4.5 Dynamic Configuration Engine
+Rather than relying solely on static `.env` configurations, Cryptonite introduces a hybrid state configuration:
+* **Immutable Security**: Sensitive credentials (`GEMINI_API_KEY`, `BINANCE_API_KEY`) and cluster URLs (`DATABASE_URL`) remain strictly housed in the un-tracked `.env` file, loaded via Docker Compose.
+* **Mutable Logic**: System instructions and hyperparameters for the Antigravity Agent fleet are persisted in PostgreSQL, updated via the `/api/v1/settings/*` REST endpoints, and injected at runtime by the `fleet.py` factory.

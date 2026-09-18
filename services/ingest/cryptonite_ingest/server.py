@@ -179,12 +179,14 @@ async def run_server_standalone():
     db_url = os.getenv("DATABASE_URL")
     port = int(os.getenv("PORT", "8080"))
 
+    redis_url = os.getenv("REDIS_URL")
     recorder = IngestRecorder(
         symbols=symbols,
         timeframes=timeframes,
         nautilus_catalog_path=catalog_path,
         analytics_lake_path=analytics_path,
         database_url=db_url,
+        redis_url=redis_url,
     )
     srv = HealthServer(recorder=recorder, port=port)
     await srv.start()

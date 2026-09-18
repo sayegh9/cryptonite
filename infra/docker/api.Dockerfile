@@ -15,6 +15,7 @@ COPY packages/scanner ./packages/scanner
 COPY packages/strategies ./packages/strategies
 COPY packages/backtester ./packages/backtester
 COPY packages/execution ./packages/execution
+COPY packages/agents ./packages/agents
 COPY services/ingest ./services/ingest
 COPY services/outbox ./services/outbox
 COPY services/scanner ./services/scanner
@@ -27,6 +28,7 @@ RUN uv pip install --system \
     -e ./packages/strategies \
     -e ./packages/backtester \
     -e ./packages/execution \
+    -e ./packages/agents \
     -e ./services/api
 
 USER 1000:1000

@@ -19,11 +19,82 @@ export function AgentChatPanel({
   onClose: () => void;
   activeBacktestId?: string | null;
 }) {
-  const [mode, setMode] = useState<"research" | "explain">("research");
+  const [mode, setMode] = useState<"research" | "explain" | "strategist">("research");
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [backtestIdInput, setBacktestIdInput] = useState("");
+
+  const [savingStrategy, setSavingStrategy] = useState<string | null>(null);
+
+  const handleSaveStrategy = async (code: string) => {
+    setSavingStrategy(code);
+    try {
+      // Prompt for strategy name
+      const name = prompt("Enter a name for this strategy:", "AI_Generated_Strategy");
+      if (!name) return;
+      
+      const payload = {
+        name: name,
+        description: "AI Generated Strategy via Agent",
+        python_code: code,
+      };
+      
+      const res = await fetch("/api/v1/strategies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      
+      if (!res.ok) throw new Error("Failed to save strategy");
+      
+      alert("Strategy saved successfully! You can now backtest or deploy it.");
+    } catch (e: any) {
+      alert("Error: " + e.message);
+    } finally {
+      setSavingStrategy(null);
+    }
+  };
+
+  const renderMessageContent = (content: string) => {
+    const codeBlockRegex = /```(?:python)?\n([\s\S]*?)```/g;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(<span key={lastIndex}>{content.substring(lastIndex, match.index)}</span>);
+      }
+      
+      const codeText = match[1];
+      parts.push(
+        <div key={match.index} className="my-3 bg-zinc-950 border border-zinc-800 rounded-md overflow-hidden">
+          <div className="flex justify-between items-center bg-zinc-900 px-3 py-1.5 border-b border-zinc-800">
+            <span className="text-[10px] text-zinc-400 font-bold">PYTHON</span>
+            <button 
+              onClick={() => handleSaveStrategy(codeText)}
+              className="text-[10px] bg-cyan-600 hover:bg-cyan-500 text-white px-2 py-0.5 rounded transition-colors"
+            >
+              Save Strategy
+            </button>
+          </div>
+          <pre className="p-3 overflow-x-auto text-xs text-zinc-300">
+            {codeText}
+          </pre>
+        </div>
+      );
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    if (lastIndex < content.length) {
+      parts.push(<span key={lastIndex}>{content.substring(lastIndex)}</span>);
+    }
+    
+    return parts.length > 0 ? parts : content;
+  };
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -41,6 +112,7 @@ export function AgentChatPanel({
     e.preventDefault();
     if (mode === "research" && !inputValue.trim()) return;
     if (mode === "explain" && !backtestIdInput.trim()) return;
+    if (mode === "strategist" && !inputValue.trim()) return;
 
     let userMsg = inputValue;
     if (mode === "explain") {
@@ -53,10 +125,12 @@ export function AgentChatPanel({
     setLoading(true);
 
     try {
-      const endpoint = mode === "research" ? "/agents/chat" : "/agents/explain";
+      const endpoint = mode === "research" ? "/agents/chat" : mode === "explain" ? "/agents/explain" : "/agents/strategist";
       const payload = mode === "research" 
         ? { message: userMsg } 
-        : { backtest_id: backtestIdInput, message: "Please explain this backtest." };
+        : mode === "explain"
+        ? { backtest_id: backtestIdInput, message: "Please explain this backtest." }
+        : { message: userMsg, instructions: "" };
 
       // Make raw fetch call since fetchApi uses /api/v1 prefix but agents uses the proxy to 8085
       const res = await fetch(`/api/v1${endpoint}`, {
@@ -107,6 +181,14 @@ export function AgentChatPanel({
           Research Agent
         </button>
         <button
+          onClick={() => setMode("strategist")}
+          className={`flex-1 py-2 text-xs font-bold uppercase rounded ${
+            mode === "strategist" ? "bg-zinc-800 text-cyan-400" : "text-zinc-500 hover:text-zinc-300"
+          }`}
+        >
+          Strategist Agent
+        </button>
+        <button
           onClick={() => setMode("explain")}
           className={`flex-1 py-2 text-xs font-bold uppercase rounded ${
             mode === "explain" ? "bg-zinc-800 text-cyan-400" : "text-zinc-500 hover:text-zinc-300"
@@ -137,7 +219,7 @@ export function AgentChatPanel({
                 <span className="text-[10px] uppercase font-bold tracking-wider">{msg.role}</span>
               </div>
               <div className="text-sm leading-relaxed whitespace-pre-wrap font-mono">
-                {msg.content}
+                {renderMessageContent(msg.content)}
               </div>
             </div>
           </div>
@@ -172,18 +254,22 @@ export function AgentChatPanel({
           )}
           
           <div className="flex items-center space-x-2">
-            {mode === "research" && (
+            {mode !== "explain" && (
               <input
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
-                placeholder="Ask about markets or strategy code..."
+                placeholder={
+                  mode === "strategist"
+                    ? "Ask Execution Strategist or enter trade query..."
+                    : "Ask about markets or strategy code..."
+                }
                 className="flex-1 bg-zinc-950 border border-zinc-800 rounded-full px-4 py-2 text-sm text-zinc-200 focus:border-cyan-500 focus:outline-none"
               />
             )}
             <button
               type="submit"
-              disabled={loading || (mode === "research" && !inputValue.trim()) || (mode === "explain" && !backtestIdInput.trim())}
+              disabled={loading || (mode !== "explain" && !inputValue.trim()) || (mode === "explain" && !backtestIdInput.trim())}
               className="p-2.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Send className="w-4 h-4" />

@@ -112,6 +112,16 @@ The **AI Copilot** gives you an autonomous quantitative operations analyst direc
 ### Available AI Agents:
 1. **Research Agent**: Specializes in backtest analysis, strategy sensitivity audits, and querying historical market data catalogs via embedded DuckDB.
 2. **Explainer Agent**: Interprets complex risk events, breaks down reconciliation anomalies, and answers architectural questions about the trading platform.
+3. **Strategist Agent**: Focuses on institutional-grade execution strategies, risk protection, and identifying high-probability setups.
+4. **Generator Agent**: Generates executable Nautilus Trader Python code (strategy and config classes) from natural language descriptions.
+5. **Opportunity Hunter Agent**: Scans live market data to proactively alert operators to technical indicator crossovers and price action opportunities.
+
+### 6.1 Market Intelligence & Discovery
+The platform now includes a full-featured Market Intelligence suite:
+- **Command Palette**: Press `Ctrl/Cmd + K` anywhere in the app to quickly search for assets and jump to their profiles.
+- **Watchlists**: Pin your favorite instruments to the sidebar for real-time tracking.
+- **Coin Profiles**: View detailed market statistics, 24h volume, and real-time execution depth.
+- **Alerts Engine**: Set custom price alerts (e.g., "BTC > 60000") that evaluate continuously in the background and trigger notifications when breached.
 
 ### Example Prompts to Try:
 * *"Summarize the performance of the latest EMA Cross backtest and suggest optimizations."*
@@ -179,3 +189,8 @@ Nautilus Trader requires strict chronological monotonicity. If this occurs, the 
 
 ### Q3: How do I verify Docker service health?
 Run `docker compose ps` from the `infra/` folder. All services (`postgres`, `redis`, `api`, `ingest`, `scanner`, `backtester`, `executor`, `agent_worker`) should show `Up` or `Healthy`.
+
+### 7.7 System Configuration & Settings Dashboard
+Cryptonite features a dynamic System Configuration panel accessed via the **Settings** (Gear icon) tab in the main sidebar.
+* **Agent Prompt Customization**: Dynamically overwrite the system instructions, LLM model choice (e.g., `gemini-1.5-pro` vs `gemini-1.5-flash`), and temperature for all 5 AI Agents. Changes take effect instantly without restarting containers.
+* **Environment & Security Health**: Provides a read-only audit view of critical `.env` configurations, including the presence of Gemini and Binance API keys, the active Environment Mode (DEMO vs PROD), and the Kill-Switch status.

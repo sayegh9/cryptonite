@@ -64,6 +64,7 @@ class BacktestRunRequest(BaseModel):
     random_seed: int = 42
     attempt_id: str | UUID | None = None
     run_config_hash: str | None = None
+    python_code: str | None = None
 
 
 def compute_run_config_hash(

@@ -211,6 +211,44 @@ async def main():
     asyncio.create_task(sync_strategies())
     asyncio.create_task(command_poller(pool, engine))
 
+    async def publish_positions():
+        """Poll Nautilus portfolio and publish positions to Redis"""
+        while True:
+            try:
+                if not engine._running:
+                    await asyncio.sleep(1)
+                    continue
+                    
+                pos_list = []
+                for p in engine.node.portfolio.positions():
+                    if p.is_closed:
+                        continue
+                        
+                    # Calculate unrealized pnl by calling calculate_pnl() with latest price if available
+                    # Actually, we can just use the last mark price if we have it, or let the frontend do it
+                    # But we'll just send entry price and the frontend can compute it with live ticker.
+                    
+                    pos_dict = {
+                        "position_id": str(p.id.value) if hasattr(p.id, "value") else str(p.id),
+                        "account_id": str(p.account_id.value) if hasattr(p.account_id, "value") else str(p.account_id),
+                        "instance_id": str(p.strategy_id.value) if hasattr(p.strategy_id, "value") else str(p.strategy_id),
+                        "instrument_id": str(p.instrument_id.value) if hasattr(p.instrument_id, "value") else str(p.instrument_id),
+                        "side": str(p.side.name) if hasattr(p.side, "name") else str(p.side),
+                        "quantity": float(p.quantity.as_double()) if hasattr(p.quantity, "as_double") else float(p.quantity),
+                        "entry_price": float(p.avg_px_open.as_double()) if hasattr(p.avg_px_open, "as_double") else float(p.avg_px_open),
+                        "opened_at_ns": int(p.ts_opened),
+                    }
+                    pos_list.append(pos_dict)
+                    
+                # Publish the full snapshot to Redis
+                await redis.publish("CHANNEL_POSITIONS", json.dumps({"type": "positions_snapshot", "positions": pos_list}))
+            except Exception as e:
+                logger.error(f"Error publishing positions: {e}")
+            await asyncio.sleep(1.0)
+            
+    asyncio.create_task(publish_positions())
+
+
     # Stream consumer for nautilus:stream:bus
     stream_name = "nautilus:stream:bus"
     group_name = "orchestrator_group"

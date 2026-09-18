@@ -51,6 +51,48 @@ async def ensure_strategies_seeded(pool: Any) -> None:
                     )
 
 
+
+from pydantic import BaseModel
+import hashlib
+
+class CreateStrategyRequest(BaseModel):
+    name: str
+    description: str
+    python_code: str
+
+@router.post("")
+async def create_strategy(req: CreateStrategyRequest, request: Request):
+    pool = request.app.state.pool
+    
+    # Generate slug and hashes
+    slug = f"ai-gen-{uuid4().hex[:8]}"
+    strat_id = uuid4()
+    version_id = uuid4()
+    code_hash = hashlib.sha256(req.python_code.encode()).hexdigest()
+    
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                '''
+                INSERT INTO strategies (id, name, slug, description, author)
+                VALUES ($1, $2, $3, $4, $5)
+                ''',
+                strat_id, req.name, slug, req.description, "AI Agent"
+            )
+            await conn.execute(
+                '''
+                INSERT INTO strategy_versions (
+                    id, strategy_id, version_num, code_hash, git_commit,
+                    default_parameters, parameter_schema, python_code
+                ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8)
+                ''',
+                version_id, strat_id, 1, code_hash, "ai-generated",
+                "{}", "{}", req.python_code
+            )
+            
+    return {"status": "success", "slug": slug, "id": str(strat_id)}
+
+
 @router.get("")
 async def get_strategies(request: Request) -> list[dict[str, Any]]:
     """List all available strategies with active versions and parameter schemas."""
@@ -66,8 +108,13 @@ async def get_strategies(request: Request) -> list[dict[str, Any]]:
     ORDER BY s.id, sv.created_at DESC;
     """
     rows = await pool.fetch(query)
+    
+    valid_slugs = set(STRATEGY_REGISTRY.keys())
     results = []
     for r in rows:
+        # Include if registered OR if it's an AI generated strategy
+        if r["slug"] not in valid_slugs and not r["slug"].startswith("ai-gen"):
+            continue
         results.append({
             "id": str(r["id"]),
             "name": r["name"],

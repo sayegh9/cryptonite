@@ -32,6 +32,7 @@ dependencies = [
     "cryptonite-execution",
     "cryptonite-executor",
     "cryptonite-orchestrator",
+    "cryptonite-agents",
     "redis>=5.0.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.31.0",
@@ -57,6 +58,7 @@ members = [
     "packages/strategies",
     "packages/backtester",
     "packages/execution",
+    "packages/agents",
     "services/ingest",
     "services/outbox",
     "services/scanner",
@@ -80,6 +82,7 @@ cryptonite-backtester-service = { workspace = true }
 cryptonite-execution = { workspace = true }
 cryptonite-executor = { workspace = true }
 cryptonite-orchestrator = { workspace = true }
+cryptonite-agents = { workspace = true }
 
 [tool.ruff]
 line-length = 100

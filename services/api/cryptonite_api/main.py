@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.routes import (
+    settings,
+    agents,
     auth,
     backtests,
     bars,
@@ -24,6 +27,8 @@ from cryptonite_api.routes import (
     signals,
     strategies,
     ws,
+    alerts,
+    market,
 )
 from cryptonite_api.stream_gateway import ALLOWED_ORIGINS, StreamHub
 
@@ -46,6 +51,11 @@ async def lifespan(app: FastAPI):
     app.state.query_engine = AnalyticsQueryEngine(lake_path)
     app.state.stream_hub = StreamHub(redis_url=redis_url)
     await app.state.stream_hub.start()
+    
+    # Start background alert evaluator
+    from cryptonite_api.routes.alerts import run_alert_evaluator
+    app.state.alert_task = asyncio.create_task(run_alert_evaluator(app.state))
+    
     app.state.auth_manager = OperatorAuthManager(
         db_pool=app.state.pool,
         redis_client=app.state.stream_hub.redis,
@@ -54,6 +64,14 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down API Gateway resources...")
+    # Stop alert evaluator
+    if hasattr(app.state, 'alert_task') and app.state.alert_task:
+        app.state.alert_task.cancel()
+        try:
+            await app.state.alert_task
+        except asyncio.CancelledError:
+            pass
+
     await app.state.stream_hub.stop()
     if app.state.pool:
         await app.state.pool.close()
@@ -77,6 +95,7 @@ def create_app() -> FastAPI:
 
     # Register routers
     app.include_router(auth.router)
+    app.include_router(settings.router)
     app.include_router(control.router)
     app.include_router(bars.router)
     app.include_router(instruments.router)
@@ -86,6 +105,12 @@ def create_app() -> FastAPI:
     app.include_router(backtests.router)
     app.include_router(paper.router)
     app.include_router(ws.router)
+    
+    from cryptonite_api.routes import strategist
+    app.include_router(strategist.router)
+    app.include_router(market.router)
+    app.include_router(alerts.router)
+    app.include_router(agents.router)
 
     start_time = time.monotonic()
 

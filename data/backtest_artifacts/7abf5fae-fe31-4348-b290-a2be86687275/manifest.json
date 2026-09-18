@@ -1,0 +1,54 @@
+{
+  "artifacts": {
+    "equity_curve.parquet": {
+      "sha256": "880c451e6c210735baa6995aa92dcc09b3807d17efcefb2a138a028a5b6315bb",
+      "size_bytes": 1160
+    },
+    "orders.parquet": {
+      "sha256": "af59a3d69e3bafa4caa7619a82b9d68127f11f4d2eebc66c9869ff04572dabb2",
+      "size_bytes": 5590
+    },
+    "trades.parquet": {
+      "sha256": "6eb5cb3a1d97c6c62893e67620e5a53b1bf0e1fac4c1eb2f382ed5ba31cbc080",
+      "size_bytes": 3471
+    }
+  },
+  "attempt_id": "fab9d5d4-c902-485a-afa6-eed7ba12cebd",
+  "bar_type": "BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL",
+  "catalog_manifest": [
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-17T23-56-00-000000000Z_2026-09-18T16-35-00-000000000Z.parquet",
+      "sha256": "e93d0d8f4d51ecd2c45b58f0c9021c9d419dc5b5b27a5d9a8110b3a1030c153d",
+      "size_bytes": 62198
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-17T23-58-00-000000000Z_2026-09-18T16-37-00-000000000Z.parquet",
+      "sha256": "392cc851d4df281fc5cd0dc63c72bf21913e5ac74882066a16d9b1102123a058",
+      "size_bytes": 62208
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-17T23-59-00-000000000Z_2026-09-18T16-38-00-000000000Z.parquet",
+      "sha256": "15e9bf9c36a60970831a7ef0506e158da547e06d3a6fedef3822cbe3d5712026",
+      "size_bytes": 62206
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-18T00-00-00-000000000Z_2026-09-18T16-39-00-000000000Z.parquet",
+      "sha256": "3ae704b8b53dccb97ab67d4a932d0ad07c46f188ba9371f4a7ef9bbb4b91b8a8",
+      "size_bytes": 62196
+    }
+  ],
+  "evaluation_end_ns": 1789749558555593472,
+  "evaluation_start_ns": 1789727958555593216,
+  "execution_profile": "optimistic",
+  "instrument_id": "BTCUSDT.BINANCE",
+  "nautilus_version": "2.0.0rc4",
+  "parameters": {},
+  "realism_disclosure": "OHLCV bar backtesting uses simulated L1 matching and cannot reconstruct order-book depth, spread variation, queue position, or exchange latency. Backtest results are hypothetical and do not represent actual live execution.",
+  "run_config_hash": "070e492d56097a5f9640b2561e5d09292bd94d7498f91f6cd34907894c5d6fa5",
+  "run_id": "7abf5fae-fe31-4348-b290-a2be86687275",
+  "source_tree_hash": "890ca3c1c745f8f8867c29b623479ba6da2e3f21722a72808a87efbe0b2d3e4f",
+  "strategy_slug": "ema-cross",
+  "strategy_version_id": "bd2dcdf7-10ea-452d-a646-5bacb763e0b7",
+  "timeframe": "1m",
+  "warmup_start_ns": 1789706358555591936
+}

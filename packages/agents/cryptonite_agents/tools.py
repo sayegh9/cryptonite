@@ -14,7 +14,13 @@ logger = logging.getLogger(__name__)
 DB_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_agent_ro:agent_ro_pass@postgres:5432/cryptonite")
 CATALOG_PATH = os.getenv("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog")
 
-engine = create_engine(DB_URL)
+_engine = None
+
+def get_engine():
+    global _engine
+    if _engine is None:
+        _engine = create_engine(DB_URL)
+    return _engine
 
 def query_postgres_readonly(sql: str) -> str:
     """Executes a SELECT query against the PostgreSQL database.
@@ -23,7 +29,7 @@ def query_postgres_readonly(sql: str) -> str:
     """
     logger.info("Agent executing DB query: %s", sql)
     try:
-        with engine.connect() as conn:
+        with get_engine().connect() as conn:
             result = conn.execute(text(sql))
             rows = [dict(row._mapping) for row in result]
             return json.dumps(rows, default=str)
@@ -69,3 +75,20 @@ def read_nautilus_tearsheet(backtest_id: str) -> str:
         return tearsheet_path.read_text()
     except Exception as e:
         return f"File Error: {e}"
+
+
+def run_execution_analysis(snapshot_json: str) -> str:
+    """
+    Executes the deterministic StrategistEngine on a JSON representation of a MultiTimeframeSnapshot.
+    Use this to run the 5-rule hierarchical protocol and obtain a precise trading signal.
+    """
+    from cryptonite_schemas.strategist import MultiTimeframeSnapshot
+    from cryptonite_agents.strategist_engine import StrategistEngine
+    
+    try:
+        snapshot = MultiTimeframeSnapshot.model_validate_json(snapshot_json)
+        engine = StrategistEngine()
+        signal = engine.analyze(snapshot)
+        return signal.model_dump_json(indent=2)
+    except Exception as e:
+        return f"Analysis Error: {e}"

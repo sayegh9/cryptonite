@@ -89,11 +89,11 @@ export const ResearchLab: React.FC = () => {
     setSelectedTrade(null);
 
     // Compute standard timestamps (e.g. last 7 days or sample range)
-    // Default to last 2 days for live evaluation with 1 day warmup
+    // Default to last 6 hours for evaluation with 6 hours warmup (total 12 hours) to fit within 1000 Binance bars limit
     const nowMs = Date.now();
     const evalEndNs = nowMs * 1_000_000;
-    const evalStartNs = (nowMs - 24 * 3600 * 1000) * 1_000_000;
-    const warmupStartNs = (nowMs - 48 * 3600 * 1000) * 1_000_000;
+    const evalStartNs = (nowMs - 6 * 3600 * 1000) * 1_000_000;
+    const warmupStartNs = (nowMs - 12 * 3600 * 1000) * 1_000_000;
 
     const payload = {
       strategy_slug: selectedSlug,

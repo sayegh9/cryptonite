@@ -10,14 +10,22 @@ Cryptonite is a self-hosted cryptocurrency intelligence and algorithmic trading 
 ## Project Structure
 ```
 cryptonite/
+├── apps/
+│   └── web/             # Next.js 14 Institutional Web Terminal UI
 ├── docs/                # Architecture specifications & data contracts
 ├── infra/               # Docker Compose, Dockerfiles, and Alembic migrations
 ├── packages/
 │   ├── schemas/         # Shared domain models and abstract source interfaces
-│   └── storage/         # Nautilus ParquetDataCatalog and Enriched Analytics Lake
-├── services/
-│   └── ingest/          # Binance WebSocket stream and REST recovery recorder
-└── tests/               # Offline fixtures and integration test suite
+│   ├── storage/         # Nautilus ParquetDataCatalog and Enriched Analytics Lake
+│   ├── execution/       # Order State Machine and Risk Constraints
+│   ├── backtester/      # Nautilus Backtesting Engine wrapper
+│   ├── strategies/      # Base implementations of Quantitative Strategies
+│   └── agents/          # Antigravity SDK & Gemini Agent Multi-Agent Fleet
+└── services/
+    ├── api/             # FastAPI Gateway, REST, WebSocket & Background Alerts
+    ├── ingest/          # Binance WebSocket stream and REST recovery recorder
+    ├── scanner/         # Polars Vectorized Screening Engine
+    └── outbox/          # Transactional Outbox Poller & Binance Execution Bridge
 ```
 
 ## Quick Start

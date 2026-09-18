@@ -52,6 +52,15 @@ class BinanceStreamClient:
         self.reconnect_count = 0
         self.last_received_ts = 0
 
+    def add_symbol(self, symbol: str) -> None:
+        """Add a new symbol to the active subscriptions and force a reconnect."""
+        sym = symbol.upper()
+        if sym not in self.symbols:
+            self.symbols.append(sym)
+            logger.info("Dynamically added %s to live stream. Triggering reconnect...", sym)
+            if self._ws:
+                asyncio.create_task(self._ws.close())
+
     @property
     def stream_names(self) -> list[str]:
         streams = []

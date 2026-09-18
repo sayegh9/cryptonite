@@ -15,7 +15,7 @@ async def websocket_stream_endpoint(websocket: WebSocket) -> None:
     # 1. Explicit Origin Header Validation
     origin = websocket.headers.get("origin")
     # Allow empty origin only for local non-browser test clients / curl
-    if origin and origin not in ALLOWED_ORIGINS:
+    if origin and "*" not in ALLOWED_ORIGINS and origin not in ALLOWED_ORIGINS:
         logger.warning("Rejected WebSocket connection from unauthorized origin: %s", origin)
         await websocket.close(code=1008, reason="Unauthorized origin")
         return
