@@ -1,27 +1,21 @@
 import logging
+import hmac
+import hashlib
+import time
+import json
+import secrets
+import httpx
+import os
+from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from cryptonite_agents.fleet import (
-    get_research_agent,
-    get_explainer_agent,
-    get_strategy_generator_agent,
-    get_opportunity_hunter_agent,
-)
 
 logger = logging.getLogger(__name__)
 
-
-async def fetch_agent_config(pool, agent_name: str) -> dict:
-    row = await pool.fetchrow("SELECT model_name, temperature, system_instructions FROM agent_configs WHERE agent_name = $1", agent_name)
-    if not row:
-        return {}
-    return {
-        "model_name": row["model_name"],
-        "temperature": row["temperature"],
-        "system_instructions": row["system_instructions"],
-    }
-
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
+
+# Ensure HMAC secret exists
+INTERNAL_HMAC_SECRET = os.getenv("INTERNAL_HMAC_SECRET", "default_internal_secret")
 
 class ChatRequest(BaseModel):
     message: str
@@ -34,57 +28,45 @@ class StrategistRequest(BaseModel):
     message: str
     instructions: str | None = None
 
-@router.post("/chat")
-async def agent_chat(req: ChatRequest, request: Request):
-    config_override = await fetch_agent_config(request.app.state.pool, "research")
-    agent = get_research_agent(config_override)
+def sign_request(method: str, path: str, body: bytes) -> dict:
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_hex(8)
+    body_digest = hashlib.sha256(body).hexdigest()
+    
+    msg = f"{method}:{path}:{body_digest}:{timestamp}:{nonce}".encode("utf-8")
+    signature = hmac.new(INTERNAL_HMAC_SECRET.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+    
+    return {
+        "X-Internal-Timestamp": timestamp,
+        "X-Internal-Nonce": nonce,
+        "X-Internal-Signature": signature
+    }
+
+async def forward_request(path: str, req_body: BaseModel):
+    method = "POST"
+    body_bytes = req_body.model_dump_json().encode("utf-8")
+    headers = sign_request(method, path, body_bytes)
+    headers["Content-Type"] = "application/json"
+    
+    worker_url = f"http://cryptonite_agent_worker:8085{path}"
+    
     try:
-        # Check if agent has run_async, otherwise fallback to run
-        if hasattr(agent, "run_async"):
-            response = await agent.run_async(req.message)
-        else:
-            response = agent.run(req.message)
-        return {"response": response.text}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(worker_url, content=body_bytes, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
     except Exception as e:
-        logger.error(f"Agent chat failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Failed to forward agent request to {worker_url}: {e}")
+        raise HTTPException(status_code=500, detail="Internal agent worker error")
+
+@router.post("/chat")
+async def agent_chat(req: ChatRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)):
+    return await forward_request("/api/v1/agents/chat", req)
 
 @router.post("/explain")
-async def agent_explain(req: ExplainRequest, request: Request):
-    config_override = await fetch_agent_config(request.app.state.pool, "explainer")
-    agent = get_explainer_agent(config_override)
-    try:
-        prompt = f"Backtest ID: {req.backtest_id}\nQuery: {req.message}"
-        if hasattr(agent, "run_async"):
-            response = await agent.run_async(prompt)
-        else:
-            response = agent.run(prompt)
-        return {"response": response.text}
-    except Exception as e:
-        logger.error(f"Agent explain failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+async def agent_explain(req: ExplainRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)):
+    return await forward_request("/api/v1/agents/explain", req)
 
 @router.post("/strategist")
-async def agent_strategist(req: StrategistRequest, request: Request):
-    msg_lower = req.message.lower()
-    if "code" in msg_lower or "generate" in msg_lower or "create" in msg_lower or "strategy" in msg_lower:
-        config_override = await fetch_agent_config(request.app.state.pool, "generator")
-        agent = get_strategy_generator_agent(config_override)
-    else:
-        config_override = await fetch_agent_config(request.app.state.pool, "hunter")
-        agent = get_opportunity_hunter_agent(config_override)
-
-    try:
-        prompt = req.message
-        if req.instructions:
-            prompt = f"Additional User Instructions: {req.instructions}\n\n{prompt}"
-            
-        if hasattr(agent, "run_async"):
-            response = await agent.run_async(prompt)
-        else:
-            response = agent.run(prompt)
-            
-        return {"response": response.text}
-    except Exception as e:
-        logger.error(f"Agent strategist failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+async def agent_strategist(req: StrategistRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)):
+    return await forward_request("/api/v1/agents/strategist", req)

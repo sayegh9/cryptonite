@@ -1,11 +1,14 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Geist } from "next/font/google";
+import localFont from "next/font/local";
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
 import { CommandPalette } from "@/components/CommandPalette";
 
-const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+const geist = localFont({
+  src: "../../public/fonts/geist-latin.woff2",
+  variable: "--font-sans",
+});
 
 export const metadata: Metadata = {
   title: "Cryptonite Terminal | Market Intelligence & Polars Scanner",
