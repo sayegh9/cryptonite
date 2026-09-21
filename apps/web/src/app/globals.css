@@ -18,6 +18,18 @@
   html {
     @apply font-sans;
   }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
 /* Custom scrollbars for high density financial dashboard */
@@ -34,6 +46,24 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #52525b;
+}
+
+@keyframes price-flash-green {
+  0% { background-color: oklch(0.72 0.19 148 / 35%); color: oklch(0.85 0.15 148); }
+  100% { background-color: transparent; }
+}
+
+@keyframes price-flash-red {
+  0% { background-color: oklch(0.65 0.22 25 / 35%); color: oklch(0.85 0.15 25); }
+  100% { background-color: transparent; }
+}
+
+.flash-tick-up {
+  animation: price-flash-green 500ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.flash-tick-down {
+  animation: price-flash-red 500ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @theme inline {
@@ -77,6 +107,21 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Surface Hierarchy */
+  --color-canvas: oklch(0.14 0 0);
+  --color-surface-panel: oklch(0.17 0 0);
+  --color-surface-card: oklch(0.20 0 0);
+  --color-surface-raised: oklch(0.24 0 0);
+  --color-surface-hover: oklch(0.28 0 0);
+  --color-surface-border: oklch(1 0 0 / 7%);
+
+  /* Financial Semantic Accents */
+  --color-bid: oklch(0.72 0.19 148);
+  --color-ask: oklch(0.65 0.22 25);
+  --color-copilot: oklch(0.75 0.14 220);
+  --color-risk: oklch(0.75 0.16 75);
+  --color-agent-pm: oklch(0.65 0.2 280);
 }
 
 :root {

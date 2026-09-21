@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from cryptonite_api.auth import OperatorAuthManager
-from cryptonite_api.routes.auth import get_auth_manager, get_current_session
+from cryptonite_api.routes.auth import get_auth_manager, require_operator, require_csrf
 
 router = APIRouter(prefix="/api/v1/control", tags=["control"])
 
@@ -54,7 +54,7 @@ async def get_kill_switch_status(
     request: Request,
     environment: str = "DEMO",
     account_id: str = "DEMO-ACCOUNT-001",
-    session: dict = Depends(get_current_session),
+    auth: dict = Depends(require_operator),
 ):
     """Retrieve the current state and latch generation of the execution kill switch."""
     async with request.app.state.pool.acquire() as conn:
@@ -89,13 +89,13 @@ async def get_kill_switch_status(
 async def trip_kill_switch(
     req: TripKillSwitchRequest,
     request: Request,
-    session: dict = Depends(get_current_session),
+    auth: dict = Depends(require_operator),
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
     x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
 ):
     """Manually trip the emergency kill switch with full audit logging via SECURITY DEFINER function."""
-    verify_csrf(session, x_csrf_token)
-    username = session["username"]
+    verify_csrf(auth, x_csrf_token)
+    username = auth["username"]
     client_ip = request.client.host if request.client else None
 
     # Latch kill switch in PostgreSQL via SECURITY DEFINER function
@@ -130,7 +130,7 @@ async def trip_kill_switch(
 async def reset_kill_switch(
     req: ResetKillSwitchRequest,
     request: Request,
-    session: dict = Depends(get_current_session),
+    auth: dict = Depends(require_operator),
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
     x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
 ):
@@ -139,8 +139,8 @@ async def reset_kill_switch(
     Enqueues an authenticated KILL_SWITCH_RESET_REQUEST execution command for the executor
     to evaluate against its 7-point safety checklist and execute CAS unlatching.
     """
-    verify_csrf(session, x_csrf_token)
-    username = session["username"]
+    verify_csrf(auth, x_csrf_token)
+    username = auth["username"]
     client_ip = request.client.host if request.client else None
 
     # 1. Step-up password authentication
@@ -228,13 +228,13 @@ async def reset_kill_switch(
 async def update_risk_limits(
     req: UpdateRiskLimitsRequest,
     request: Request,
-    session: dict = Depends(get_current_session),
+    auth: dict = Depends(require_operator),
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
     x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
 ):
     """Update risk limits and guardrails requiring step-up password verification."""
-    verify_csrf(session, x_csrf_token)
-    username = session["username"]
+    verify_csrf(auth, x_csrf_token)
+    username = auth["username"]
     client_ip = request.client.host if request.client else None
 
     # Step-up password verification
@@ -271,7 +271,7 @@ async def update_risk_limits(
 async def get_trading_balances(
     request: Request,
     environment: str = "DEMO",
-    session: dict = Depends(get_current_session),
+    auth: dict = Depends(require_operator),
 ):
     """Retrieve multi-asset balances from trading_balances."""
     async with request.app.state.pool.acquire() as conn:
@@ -305,7 +305,7 @@ async def get_trading_orders(
     request: Request,
     environment: str = "DEMO",
     limit: int = 50,
-    session: dict = Depends(get_current_session),
+    auth: dict = Depends(require_operator),
 ):
     """Retrieve recent orders from trading_orders."""
     async with request.app.state.pool.acquire() as conn:
@@ -348,7 +348,7 @@ async def get_trading_orders(
 async def get_reconciliation_overview(
     request: Request,
     environment: str = "DEMO",
-    session: dict = Depends(get_current_session),
+    auth: dict = Depends(require_operator),
 ):
     """Retrieve latest reconciliation runs and active differences."""
     async with request.app.state.pool.acquire() as conn:

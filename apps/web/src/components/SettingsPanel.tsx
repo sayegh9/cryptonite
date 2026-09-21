@@ -5,6 +5,7 @@ import { fetchApi } from "@/lib/api";
 import { Save, RefreshCw, Cpu, ShieldAlert, Key } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
+import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
 
 interface AgentConfig {
   model_name: string | null;
@@ -24,6 +25,8 @@ export const SettingsPanel: React.FC = () => {
   const [agents, setAgents] = useState<Record<string, AgentConfig>>({});
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [envHealth, setEnvHealth] = useState<EnvHealth | null>(null);
+  const [isUnauthorized, setIsUnauthorized] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(false);
   
   // Edit state
   const [editModel, setEditModel] = useState<string>("");
@@ -38,17 +41,37 @@ export const SettingsPanel: React.FC = () => {
       ]);
       setAgents(agentData);
       setEnvHealth(envData);
+      setIsUnauthorized(false);
+      setShowLoginModal(false);
       if (!selectedAgent && Object.keys(agentData).length > 0) {
         handleSelectAgent("research", agentData);
       }
-    } catch (err) {
-      console.error(err);
-      toast.error("Failed to load settings");
+    } catch (err: any) {
+      if (
+        err?.status === 401 || 
+        err?.message === "Invalid session" || 
+        err?.message === "Authentication required" || 
+        err?.message?.toLowerCase().includes("session")
+      ) {
+        console.warn("Operator authentication required to view Settings");
+        setIsUnauthorized(true);
+      } else {
+        console.error("Failed to load settings:", err);
+        toast.error("Failed to load settings");
+      }
     }
   };
 
   useEffect(() => {
     loadData();
+
+    const handleAuthSuccess = () => {
+      loadData();
+    };
+    window.addEventListener("cryptonite:auth-success" as any, handleAuthSuccess);
+    return () => {
+      window.removeEventListener("cryptonite:auth-success" as any, handleAuthSuccess);
+    };
   }, []);
 
   const handleSelectAgent = (name: string, data = agents) => {
@@ -63,7 +86,10 @@ export const SettingsPanel: React.FC = () => {
     if (!selectedAgent) return;
     try {
       await fetchApi(`/settings/agents/${selectedAgent}`, {
-        method: "PUT",
+        method: "PATCH",
+        headers: {
+          "X-CSRF-Token": localStorage.getItem("csrf_token") || "",
+        },
         body: JSON.stringify({
           model_name: editModel,
           temperature: editTemp,
@@ -72,10 +98,52 @@ export const SettingsPanel: React.FC = () => {
       });
       toast.success(`${selectedAgent} config saved!`);
       loadData();
-    } catch (err) {
-      toast.error("Failed to save config");
+    } catch (err: any) {
+      if (err?.status === 401 || err?.message === "Invalid session") {
+        setIsUnauthorized(true);
+        toast.error("Session expired. Please log in as operator.");
+      } else {
+        toast.error(err?.message || "Failed to save config");
+      }
     }
   };
+
+  if (isUnauthorized) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full min-h-[450px] bg-zinc-950 text-white rounded-lg border border-white/10 p-8">
+        <div className="max-w-md w-full flex flex-col items-center text-center space-y-4">
+          <div className="p-4 bg-cyan-950/40 border border-cyan-900/60 rounded-full">
+            <ShieldAlert className="w-10 h-10 text-cyan-400" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-zinc-100 uppercase tracking-widest font-mono">
+              Operator Access Required
+            </h2>
+            <p className="text-xs text-zinc-400 mt-2 leading-relaxed">
+              Viewing system health, environment keys, and modifying AI agent configurations requires an active operator session.
+            </p>
+          </div>
+          <Button
+            onClick={() => setShowLoginModal(true)}
+            className="w-full bg-cyan-600 hover:bg-cyan-500 text-zinc-950 font-bold uppercase tracking-wider text-xs py-3 mt-4"
+          >
+            Authenticate as Operator
+          </Button>
+        </div>
+
+        {showLoginModal && (
+          <OperatorLoginModal
+            onSuccess={() => {
+              setShowLoginModal(false);
+              setIsUnauthorized(false);
+              loadData();
+            }}
+            onClose={() => setShowLoginModal(false)}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full bg-zinc-950 text-white rounded-lg border border-white/10 overflow-hidden">

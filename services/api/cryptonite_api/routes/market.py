@@ -4,6 +4,7 @@ import json
 import logging
 
 import httpx
+from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Query, Request
 
 logger = logging.getLogger("cryptonite.api.market")

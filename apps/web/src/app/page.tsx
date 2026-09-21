@@ -1,11 +1,10 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import { MultiChartGrid } from "@/components/MultiChartGrid";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 import { ScannerStudio } from "@/components/ScannerStudio";
-import { ResearchLab } from "@/components/ResearchLab/ResearchLab";
-import { PortfolioConsole } from "@/components/PortfolioConsole";
 import { KillSwitchPanel } from "@/components/operator/KillSwitchPanel";
 import { RiskLimitsEditor } from "@/components/operator/RiskLimitsEditor";
 import { StrategyInstancesPanel } from "@/components/operator/StrategyInstancesPanel";
@@ -17,7 +16,36 @@ import { CoinProfileModal } from "@/components/CoinProfileModal";
 import { AlertsPanel } from "@/components/AlertsPanel";
 import { MarketOverview } from "@/components/MarketOverview";
 import { SettingsPanel } from "@/components/SettingsPanel";
+import { DebateDashboard } from "@/components/debate/DebateDashboard";
+import { useDebateStream, useDebateStore } from "@/lib/stores/useDebateStore";
+import { TerminalWorkspace } from "@/components/terminal/TerminalWorkspace";
+import { DebateTranscriptViewer } from "@/components/debate/DebateTranscriptViewer";
+
+const ResearchLab = dynamic(
+  () => import("@/components/ResearchLab/ResearchLab").then((m) => m.ResearchLab),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex-1 flex items-center justify-center font-mono text-xs text-zinc-500">
+        Loading Research Lab...
+      </div>
+    ),
+  }
+);
+
+const PortfolioConsole = dynamic(
+  () => import("@/components/PortfolioConsole").then((m) => m.PortfolioConsole),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex-1 flex items-center justify-center font-mono text-xs text-zinc-500">
+        Loading Portfolio...
+      </div>
+    ),
+  }
+);
 import { getStreamClient } from "@/lib/ws";
+import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,7 +63,7 @@ import {
 } from "lucide-react";
 
 export default function TerminalPage() {
-  const [workspaceMode, setWorkspaceMode] = useState<"terminal" | "research" | "portfolio" | "operator" | "markets" | "alerts" | "settings">("terminal");
+  const [workspaceMode, setWorkspaceMode] = useState<"terminal" | "research" | "portfolio" | "operator" | "markets" | "alerts" | "settings" | "debates">("terminal");
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [operatorAuthenticated, setOperatorAuthenticated] = useState(false);
   const [showScannerBuilder, setShowScannerBuilder] = useState(false);
@@ -47,6 +75,36 @@ export default function TerminalPage() {
   } | null>(null);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [profileSymbol, setProfileSymbol] = useState<string | null>(null);
+
+  useDebateStream(wsConnected ? getStreamClient() : null);
+
+  const activeDebates = useDebateStore((state) => state.activeDebates);
+  const debatesList = Object.values(activeDebates);
+  const activeDebateId = debatesList.length > 0 ? debatesList[0].runId : null;
+
+  // Check active operator session on mount and sync across components
+  useEffect(() => {
+    fetchApi("/auth/me")
+      .then((res) => {
+        if (res?.authenticated) {
+          setOperatorAuthenticated(true);
+          if (res.csrf_token) {
+            localStorage.setItem("csrf_token", res.csrf_token);
+          }
+        }
+      })
+      .catch(() => {
+        setOperatorAuthenticated(false);
+      });
+
+    const handleAuthSuccess = () => {
+      setOperatorAuthenticated(true);
+    };
+    window.addEventListener("cryptonite:auth-success" as any, handleAuthSuccess);
+    return () => {
+      window.removeEventListener("cryptonite:auth-success" as any, handleAuthSuccess);
+    };
+  }, []);
 
   // Initialize global WebSocket stream connection
   useEffect(() => {
@@ -77,7 +135,7 @@ export default function TerminalPage() {
     };
   }, []);
 
-  // Listen for custom select symbol event (e.g., from CommandPalette or Modals)
+  // Listen for custom events (e.g., from CommandPalette, shortcuts or Modals)
   useEffect(() => {
     const handler = (e: CustomEvent) => {
       if (e.detail?.symbol) {
@@ -90,11 +148,25 @@ export default function TerminalPage() {
         setProfileSymbol(e.detail.symbol);
       }
     };
+    const switchWsHandler = (e: CustomEvent) => {
+      if (e.detail?.mode) {
+        setWorkspaceMode(e.detail.mode as any);
+      }
+    };
+    const copilotHandler = () => {
+      setIsAgentChatOpen(true);
+    };
+
     window.addEventListener("cryptonite:select-symbol" as any, handler);
     window.addEventListener("cryptonite:open-profile" as any, profileHandler);
+    window.addEventListener("cryptonite:switch-workspace" as any, switchWsHandler);
+    window.addEventListener("cryptonite:open-copilot" as any, copilotHandler);
+
     return () => {
       window.removeEventListener("cryptonite:select-symbol" as any, handler);
       window.removeEventListener("cryptonite:open-profile" as any, profileHandler);
+      window.removeEventListener("cryptonite:switch-workspace" as any, switchWsHandler);
+      window.removeEventListener("cryptonite:open-copilot" as any, copilotHandler);
     };
   }, []);
 
@@ -146,7 +218,9 @@ export default function TerminalPage() {
               { id: "research", label: "Research Lab" },
               { id: "alerts", label: "Alerts" },
               { id: "portfolio", label: "Portfolio" },
+              { id: "debates", label: "AI Debates" },
               { id: "operator", label: "Operator" },
+              { id: "settings", label: "Settings" },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -179,75 +253,86 @@ export default function TerminalPage() {
         </div>
       </header>
 
-      {/* Main Workspace: Terminal, Research Lab, or Portfolio */}
-      {workspaceMode === "terminal" ? (
-        <div className="flex-1 flex min-h-0 min-w-0">
-          {/* Left Watchlist Sidebar */}
-          <aside className="w-60 flex-none h-full min-h-0 hidden md:flex">
-            <WatchlistPanel
-              selectedSymbol={selectedSymbol}
-              onSelectSymbol={handleSelectSymbol}
+      {/* Persistent Terminal Workspace */}
+      <div className={workspaceMode === "terminal" ? "flex-1 flex min-h-0 min-w-0" : "hidden"}>
+        {/* Left Watchlist Sidebar */}
+        <aside className="w-60 flex-none h-full min-h-0 hidden md:flex border-r border-white/5 z-10">
+          <WatchlistPanel
+            selectedSymbol={selectedSymbol}
+            onSelectSymbol={handleSelectSymbol}
+          />
+        </aside>
+
+        <TerminalWorkspace
+          chartComponent={
+            <MultiChartGrid
+              activeTarget={activeChartTarget}
+              onActiveChartSelect={(sym) => setSelectedSymbol(sym)}
             />
-          </aside>
-
-          {/* Center/Right Content: Split MultiChart and Scanner Studio */}
-          <main className="flex-1 flex flex-col min-h-0 min-w-0">
-            {/* Top Half: MultiChart Grid (60%) */}
-            <div className="flex-[3] min-h-0 min-w-0 overflow-hidden">
-              <MultiChartGrid
-                activeTarget={activeChartTarget}
-                onActiveChartSelect={(sym) => setSelectedSymbol(sym)}
-              />
-            </div>
-
-            {/* Bottom Half: Vectorized Polars Scanner Studio (40%) */}
-            <div className="flex-[2] min-h-0 min-w-0 flex flex-col border-t border-zinc-800 relative">
-
-              {showScannerBuilder ? (
-                <div className="flex-1 overflow-y-auto p-4 relative">
-                  <div className="absolute top-2 right-2 z-10">
-                    <button
-                      onClick={() => setShowScannerBuilder(false)}
-                      className="bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded text-xs font-bold transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                  <ScannerBuilder onCreated={() => setShowScannerBuilder(false)} />
+          }
+          debateSidebarComponent={
+            activeDebateId ? (
+              <DebateTranscriptViewer runId={activeDebateId} />
+            ) : undefined
+          }
+          blotterComponent={
+            showScannerBuilder ? (
+              <div className="flex-1 overflow-y-auto p-4 relative h-full">
+                <div className="absolute top-2 right-2 z-10">
+                  <button
+                    onClick={() => setShowScannerBuilder(false)}
+                    className="bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded text-xs font-bold transition-colors"
+                  >
+                    Cancel
+                  </button>
                 </div>
-              ) : (
-                <ScannerStudio 
-                  onViewOnChart={handleViewOnChart} 
-                  onCreateClick={() => setShowScannerBuilder(true)} 
-                />
-              )}
-            </div>
-          </main>
-        </div>
-      ) : workspaceMode === "markets" ? (
+                <ScannerBuilder onCreated={() => setShowScannerBuilder(false)} />
+              </div>
+            ) : (
+              <ScannerStudio 
+                onViewOnChart={handleViewOnChart} 
+                onCreateClick={() => setShowScannerBuilder(true)} 
+              />
+            )
+          }
+        />
+      </div>
+
+      {/* Persistent AI Debates Workspace */}
+      <div className={workspaceMode === "debates" ? "flex-1 overflow-hidden relative p-1 pb-[33px]" : "hidden"}>
+        <DebateDashboard />
+      </div>
+
+      {/* On-Demand Secondary Workspaces */}
+      {workspaceMode === "markets" && (
         <div className="flex-1 min-h-0 min-w-0 max-w-4xl mx-auto w-full">
           <MarketOverview onSelectSymbol={(sym) => {
             handleSelectSymbol(sym);
             setWorkspaceMode("terminal");
           }} />
         </div>
-      ) : workspaceMode === "alerts" ? (
+      )}
+      {workspaceMode === "alerts" && (
         <div className="flex-1 min-h-0 min-w-0 max-w-3xl mx-auto w-full">
           <AlertsPanel />
         </div>
-      ) : workspaceMode === "settings" ? (
+      )}
+      {workspaceMode === "settings" && (
         <div className="flex-1 min-h-0 min-w-0 max-w-5xl mx-auto w-full py-4">
           <SettingsPanel />
         </div>
-      ) : workspaceMode === "research" ? (
-        <div className="flex-1 min-h-0 min-w-0">
+      )}
+      {workspaceMode === "research" && (
+        <main className="flex-1 overflow-hidden relative p-1 pb-[33px]">
           <ResearchLab />
-        </div>
-      ) : workspaceMode === "portfolio" ? (
+        </main>
+      )}
+      {workspaceMode === "portfolio" && (
         <div className="flex-1 min-h-0 min-w-0">
           <PortfolioConsole />
         </div>
-      ) : (
+      )}
+      {workspaceMode === "operator" && (
         <div className="flex-1 min-h-0 min-w-0 bg-zinc-950 p-6 overflow-y-auto">
           {operatorAuthenticated ? (
             <div className="max-w-7xl mx-auto space-y-6">

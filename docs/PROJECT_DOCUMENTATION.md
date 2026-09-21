@@ -35,22 +35,22 @@ flowchart TB
         RedisAgents[(Redis 7 - Agent Memory)]
     end
 
-    subgraph AIOperations ["AI Operations Layer (Milestone 7)"]
-        AgentWorker["cryptonite_agent_worker (Port 8085)<br/>Google Antigravity SDK + Gemini"]
-        AgentWorker --> PostgresRO[(Postgres Read-Only Replica)]
-        AgentWorker --> ParquetDuckDB[(Embedded DuckDB Engine)]
+    subgraph AIOperations ["AI Operations Layer (Google Antigravity & Gemini)"]
+        AgentWorker["cryptonite_agent_worker (Port 8085)<br/>Google Antigravity SDK + Gemini API"]
+        AgentWorker --> PostgresRO[(Postgres Read-Only Replica<br/>cryptonite_agent_ro)]
+        AgentWorker --> ParquetDuckDB[(Embedded DuckDB Engine<br/>Security Sandboxed)]
         AgentWorker --> RedisAgents
     end
 
     subgraph Interface ["Institutional Interface Layer"]
-        FastAPI["cryptonite_api (Port 8000)<br/>Gateway REST & WS"]
-        WebUI["Next.js 16 Web Terminal (Port 3000)<br/>TradingView, Terminal, Operator Console"]
+        FastAPI["cryptonite_api (Port 8000, 0.0.0.0)<br/>Gateway REST & WS (/ws/stream)"]
+        WebUI["Next.js 16 Web Terminal (Port 3000)<br/>TradingView, Terminal, Operator Console, AI Copilot"]
     end
 
     FastAPI <--> Postgres
     FastAPI <--> RedisExec
-    WebUI <--> FastAPI
-    WebUI <--> AgentWorker
+    WebUI <-->|REST & /agent-api (300s timeout)| FastAPI
+    FastAPI -->|HMAC-SHA256 Signed Requests| AgentWorker
     Executor <--> Postgres
     Executor <--> RedisExec
     Scanner --> RedisPubSub
@@ -66,14 +66,14 @@ Cryptonite is organized as a unified monorepo divided into modular Python core p
 
 | Service Name | Container Name | Port | Base Framework | Primary Responsibilities |
 | :--- | :--- | :--- | :--- | :--- |
-| **API Gateway** | `cryptonite_api` | `8000` | FastAPI / Uvicorn | RESTful control gateway, operator authentication, backtest job dispatch, strategy management, and WebSocket streaming bridge. |
+| **API Gateway** | `cryptonite_api` | `8000` (Bound to `0.0.0.0`) | FastAPI / Uvicorn | RESTful control gateway, operator authentication, backtest job dispatch, strategy management, and WebSocket streaming bridge (`/ws/stream`). Accessible over LAN. |
 | **Ingestion Engine** | `cryptonite_ingest` | `8080` | Python / AsyncIO | Connects to Binance public streams, parses raw k-lines, enforces bar cadence, writes partition-aligned Parquet catalogs, and publishes closed bars. |
 | **Outbox Relay** | `cryptonite_outbox` | `8081` | Python / AsyncIO | Guarantees transactional at-least-once message dispatch for outbound exchange orders using PostgreSQL outbox tables. |
 | **Scanner Engine** | `cryptonite_scanner` | `8082` | Polars / Python | High-throughput vectorized technical screener running complex polars expressions across thousands of bars in under 10ms. |
 | **Backtester Worker**| `cryptonite_backtester` | `8083` | Nautilus Trader / C++ | Executes deterministic, tick/bar-level discrete event backtests with slippage, latency models, and historical data cadence validation. |
 | **Execution Engine** | `cryptonite_executor` | `8084` | Nautilus / Python | Live/testnet order execution engine managing order lifecycles, cross/isolated margin risk, position reconciliation, and fill tracking. |
-| **AI Agent Worker** | `cryptonite_agent_worker` | `8085` | Google Antigravity SDK | Autonomous quantitative operations fleet (Research & Explainer Agents) equipped with read-only database query and DuckDB tools. |
-| **Web Frontend** | Host Process | `3000` | Next.js 16 / React | High-density trading workstation with TradingView charts, real-time WebSocket feeds, research tear sheets, and operator control panel. |
+| **AI Agent Worker** | `cryptonite_agent_worker` | `8085` (Internal) | Google Antigravity SDK | Autonomous quantitative operations fleet (Research, Explainer, Strategist, Generator) equipped with read-only database query and DuckDB tools. Authenticated via HMAC. |
+| **Web Frontend** | Host Process | `3000` (Bound to `0.0.0.0`) | Next.js 16 / React | High-density trading workstation with TradingView charts, real-time WebSocket feeds, research tear sheets, and operator control panel. Accessible over LAN. |
 | **Primary Database** | `cryptonite_postgres` | `5432` | PostgreSQL 16 | Durable state storage for users, strategies, backtest runs, order ledgers, and transactional outbox. |
 | **Execution Redis** | `cryptonite_redis` | `6379` | Redis 7 Alpine | Ultra-low latency pub/sub bus for market data streams, order signals, and execution events. |
 | **Agent Redis** | `cryptonite_redis_agents` | `6380` | Redis 7 Alpine | Dedicated isolated session cache and long-term conversational memory for AI agents. |
@@ -121,20 +121,40 @@ Provides unified persistence layers for relational, column-oriented, and streami
 
 ### 2.6 `cryptonite_agents`
 
-**Role**: AI Operations & Quantitative Copilot Layer.
+**Role**: AI Operations & Quantitative Copilot Layer.  
 **Tech Stack**: Google Antigravity SDK, Google Gemini API, Local DuckDB, PostgreSQL.
 
-This module houses an intelligent multi-agent fleet designed to act as an autonomous trading desk. Each agent is dynamically configurable via the `system_settings` database schema:
+This module houses an intelligent multi-agent fleet designed to act as an autonomous trading desk. The user interface exposes 3 unified operational modes that route to specialized backend agents:
 
-1. **Research Agent**: Embeds a read-only DuckDB engine to query the `/data/nautilus_catalog` Parquet files, performing historical tick-level analysis, volume profiling, and data-driven Q&A.
-2. **Explainer Agent**: Interprets complex system logs, Nautilus Tearsheets, and reconciliation anomalies.
-3. **Strategist Agent**: Evaluates live execution strategies and provides institutional-grade risk management recommendations.
-4. **Generator Agent**: Generates zero-shot executable Nautilus Trader Python strategies based on natural language logic descriptions.
-5. **Opportunity Hunter Agent**: Connects directly to the live PostgreSQL state to identify technical crossover opportunities in real-time.
+1. **Research Agent (`Senior Quantitative Analyst`)**:
+   - Uses `query_postgres_readonly` to inspect active instruments, orders, and scanner states.
+   - Uses `query_parquet_duckdb` to execute sub-second columnar SQL queries over partitioned Parquet historical tick/bar data (`data/bars/**/*.parquet`).
+   - Automatically aggregates analytical metrics (volume profiles, spread distributions, volatility) rather than dumping raw rows into context.
+   - Guardrails: Blocks all destructive SQL keywords (`COPY`, `DROP`, `DELETE`, `UPDATE`, `httpfs`) and strictly enforces directory path containment within `CATALOG_PATH`.
 
-**Architecture Note**: Agent prompts, model selections, and temperatures are completely decoupled from code. They are stored in the PostgreSQL `agent_configs` table and fetched dynamically by the API layer, allowing operators to safely tune agent behavior in real-time via the Settings UI.
+2. **Explainer Agent (`Risk & Performance Manager`)**:
+   - Uses `read_nautilus_tearsheet` to parse backtest simulation runs from `/app/data/backtest_artifacts/{backtest_id}`.
+   - Reads `manifest.json`, `trades.parquet`, and `equity_curve.parquet`.
+   - **DuckDB Metric Synthesis Fallback**: When `tearsheet.json` is missing or in-progress, dynamically synthesizes Sharpe ratio, Max Drawdown %, total return, win rate %, and profit factor directly from underlying Parquet equity curves and trade ledgers.
+   - Provides plain-English attribution of strategy strengths, regime dependency, and execution slippage risks.
 
-### 3.1 Live Market Data Ingestion Pipeline
+3. **Strategist Agent (`Execution & Strategy Architect`)**:
+   - **Automated Nautilus Strategy Coding (`Generator Agent`)**: Generates production-ready, fully typed Python code with `StrategyConfig` and `Strategy` classes conforming to Nautilus Trader standards. Integrated with the UI's one-click "Save Strategy" workflow.
+   - **Opportunity Hunting (`Opportunity Hunter Agent`)**: Continuously monitors market structure, RSI levels, and price action indicators to suggest actionable setups.
+   - **Deterministic 5-Rule Hierarchical Protocol (`StrategistEngine`)**:
+     1. *Macro Context*: Derives 1D & 4H structural floor (support) and ceiling (resistance).
+     2. *Volume Trap Filter*: Fades bull traps, bear traps, and liquidity sweeps on 15m/5m order flow.
+     3. *Momentum Layer*: Validates trend alignment across 1H and 15m timeframes.
+     4. *Micro Trigger*: Verifies 5m candle confirmation before generating directional entry bias.
+     5. *Chop Avoidance*: Enforces flat / no-trade bias when indicators conflict, preserving paper and live capital.
+
+**Security & Dynamic Configuration**:
+- **Isolated PostgreSQL RBAC**: Connects via `cryptonite_agent_ro` (`default_transaction_read_only = 'on'`).
+- **Internal HMAC Authentication**: All gateway-to-worker calls are cryptographically signed with rotating SHA-256 nonces and timestamps (`X-Internal-Timestamp`, `X-Internal-Nonce`, `X-Internal-Signature`).
+- **Dynamic Configuration Cache**: Agent system instructions, Gemini model choices (`gemini-2.5-pro`, `gemini-2.5-flash`), and temperature settings are stored in the PostgreSQL `agent_configs` table and cached for 60 seconds, enabling real-time prompt tuning without container restarts.
+- **Extended Gateway Timeout**: The Next.js `/agent-api/[...slug]` proxy implements a 300-second execution timeout, ensuring complex multi-step research queries complete without premature 504 timeouts.
+
+---
 ```mermaid
 sequenceDiagram
     participant Exchange as Binance WebSocket
@@ -254,12 +274,64 @@ docker compose build <service_name> && docker compose up -d <service_name>
 # Examples: agent_worker, backtester, executor, api
 ```
 
-### 4.4 Market Intelligence & Background Alerts Engine
-The platform includes an automated discovery layer decoupled from execution:
-* **Background Alerts**: The `cryptonite_api` runs a continuous background polling loop (`alerts.py`) that cross-references live PostgreSQL `bars` against user-defined thresholds (`user_alerts` table), pushing WebSocket notifications upon breaches.
-* **Onboarding via Command Palette**: Fast HTTP requests directly onboard new spot pairs from the Binance exchange info endpoints, creating immediate catalog entries and triggering historical 1-minute backfills.
+---
 
-### 4.5 Dynamic Configuration Engine
-Rather than relying solely on static `.env` configurations, Cryptonite introduces a hybrid state configuration:
-* **Immutable Security**: Sensitive credentials (`GEMINI_API_KEY`, `BINANCE_API_KEY`) and cluster URLs (`DATABASE_URL`) remain strictly housed in the un-tracked `.env` file, loaded via Docker Compose.
-* **Mutable Logic**: System instructions and hyperparameters for the Antigravity Agent fleet are persisted in PostgreSQL, updated via the `/api/v1/settings/*` REST endpoints, and injected at runtime by the `fleet.py` factory.
+## 7. Market Intelligence & Background Alerts Engine
+The platform includes an automated discovery layer decoupled from execution:
+* **Background Alerts**: The `cryptonite_api` runs a continuous background polling loop (`alerts.py`) that cross-references live PostgreSQL `bars` against user-defined thresholds (`user_alerts` table, created in Alembic migration `008`), pushing WebSocket notifications upon breaches.
+* **Onboarding via Command Palette**: Fast HTTP requests via `httpx.AsyncClient` directly onboard new spot pairs from Binance exchange info endpoints, creating immediate catalog entries and triggering historical 1-minute backfills.
+* **Alembic Migration 008**: Adds `coingecko_id` on `instruments` for precise third-party market data resolution, creates the `user_alerts` table, and grants full RBAC privileges to `cryptonite_api`.
+
+---
+
+## 8. Local Network (LAN) & Multi-Device Access Architecture
+Cryptonite is engineered to allow seamless operational monitoring from secondary devices (laptops, iPads, smartphones) on the local area network (LAN):
+* **0.0.0.0 Port Binding**: In `infra/docker-compose.yml`, the API Gateway binds port 8000 to `0.0.0.0:8000:8000`, making REST and WebSocket `/ws/stream` endpoints accessible across the subnet.
+* **Next.js `allowedDevOrigins`**: Configured in `apps/web/next.config.mjs` with `["127.0.0.1", "localhost", "192.168.1.203", "192.168.1.*"]` to allow Turbopack cross-origin dev server connections without warning blocks.
+* **Dynamic WebSocket Host Resolution**: The client WebSocket library (`apps/web/src/lib/ws.ts`) inspects `window.location.hostname` at runtime, connecting seamlessly to `ws://<host_ip>:8000/ws/stream`.
+* **CORS Allow-List**: In `services/api/cryptonite_api/stream_gateway.py`, `ALLOWED_ORIGINS` includes local subnet origins and wildcard compatibility for development environments.
+* **Access URL**: `http://192.168.1.203:3000` (Operator credentials: `admin` / `admin123` / TOTP: `000000`).
+
+
+### 2.5 AI Adversarial Debate Engine (`debate_worker`)
+Integrates the `TradingAgents` pattern into the Cryptonite core, converting single-agent queries into a rigorously orchestrated, multi-persona adversarial debate before any trade is proposed.
+
+**Core Workflow**:
+1. **Analyst Fleet**: Specialized Gemini Flash agents (Market, Sentiment, On-Chain) gather parallel intelligence dossiers, caching expensive on-chain RPC calls in Redis.
+2. **Adversarial Debate**: A `Bull Researcher` and `Bear Researcher` debate the dossier.
+3. **Risk & Synthesis**: A `Portfolio Manager` sets initial sizing, followed by a Risk Debate (Aggressive, Conservative, Neutral). The `Chief Risk Officer` outputs final allocation caps (max 25.0%).
+4. **Interactive Validation**: In `interactive` mode, decisions pause at `PENDING_APPROVAL` and await human authorization in the workstation UI. In `autonomous` mode, approved allocations flow straight into `paper_portfolio_decisions`.
+5. **Reflection Loop**: Completed trades are joined with Nautilus Parquet telemetry to calculate true Alpha. Lessons learned are autonomously fed back into the Portfolio Manager's prompt context for future iterations.
+
+**Security Constraints**:
+- Uses the `AntiCorruptionLayer` pattern for strict SQL bounds.
+- Connects exclusively as `cryptonite_agent_ro` (Read-Only postgres user for agent views).
+- Cannot bypass the `GuardedOrderDispatcher` global risk invariants.
+
+---
+
+## 9. Modern UI/UX Workstation & AI Copilot Integrations
+
+Cryptonite features an institutional, Bloomberg-inspired desktop terminal interface engineered in Next.js 16 with Tailwind CSS 4 and Lucide icons:
+
+### 9.1 Bloomberg-Style 3-Column Resizable Workspace (`TerminalWorkspace.tsx`)
+* **3-Column Resizable Grid**: Includes a main TradingView chart view, real-time Orderbook depth panel, and AI Consensus Debate sidebar.
+* **Dynamic Sidebar Toggles**: Interactive header controls (`Show Orderbook`, `Show AI Debate Sidebar`) and panel close buttons allow traders to collapse sidebars.
+* **Canvas Expansion**: Collapsing sidebars dynamically expands the chart canvas to 100% viewport width without layout distortion.
+* **State Persistence**: Workspace layout preferences are persisted across browser sessions via `localStorage`.
+
+### 9.2 Freely Draggable & Resizable AI Copilot (`AgentChatPanel.tsx`)
+* **Floating Window**: The AI Copilot panel can be freely dragged across the viewport via pointer capture on its header bar and resized via bottom/side handles.
+* **5 Specialized AI Personas**:
+  1. **Research Agent** (`Senior Quantitative Analyst`): Market structure, technical indicators, RSI trends.
+  2. **Strategist Agent** (`Execution & Strategy Architect`): Writes production-ready Nautilus Python strategies.
+  3. **Explainer Agent** (`Risk & Performance Manager`): Parses backtest tearsheets and performance metrics.
+  4. **CRO Agent** (`Chief Risk Officer`): Evaluates risk exposure, position bounds, and margin limits.
+  5. **On-Chain Agent** (`On-Chain Intelligence`): Queries exchange flow and liquidity metrics.
+* **Isolated Threads & Draft Storage**: Each persona maintains an independent conversation history and draft input state. Switching tabs preserves active draft text.
+* **Selection & 1-Click Code Actions**: Full `select-text` capability for copying response text, with 1-click **Copy Code** and **Save Strategy** buttons.
+
+### 9.3 On-Demand Consensus Debate Triggers (`/debates/trigger`)
+* **Chart Header Trigger**: Click `[Trigger AI Consensus Debate]` on the active chart header to push an on-demand debate payload to `stream:debate_queue`.
+* **Command Palette Integration**: Press `⌘D` inside the `CommandPalette` (`Ctrl/Cmd + K`) to queue debates instantly for any symbol.
+* **Unauthenticated Analytical Access**: Copilot and debate trigger routes (`/api/v1/agents/*`) permit analytical queries without forcing administrative operator logins, enabling seamless trader exploration directly from the terminal.

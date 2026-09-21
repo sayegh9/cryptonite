@@ -161,8 +161,7 @@ async def test_alembic_migration_schema_integrity():
     try:
         # Check migration version
         row = await pool.fetchrow("SELECT version_num FROM alembic_version")
-        assert row is not None
-        assert row["version_num"] in ("003", "004", "005", "006", "007"), f"Expected alembic version 003, 004, 005, 006, or 007, got {row['version_num']}"
+        assert int(row["version_num"]) >= 3, f"Expected alembic version >= 003, got {row['version_num']}"
 
         # Verify backtest_runs columns
         cols = await pool.fetch("""

@@ -255,7 +255,7 @@ class OutboxRelay:
         except Exception as e:
             details["failed_count_error"] = str(e)
 
-        # Readiness fails if any dead-letter FAILED outbox events exist
+        # Readiness fails if PG or Redis is down, or if dead-letter FAILED outbox events exist
         is_ready = (
             details["postgres"]
             and details["redis"]

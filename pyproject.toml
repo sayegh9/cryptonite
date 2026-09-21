@@ -96,10 +96,13 @@ ignore = ["E501"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+addopts = "-m 'not destructive and not binance_demo and not performance'"
 markers = [
     "performance: long-running multi-chunk memory and throughput benchmarks",
     "binance_demo: credentialed live Binance Demo venue integration tests",
     "binance_demo_strict: strict release gate tests for Binance Demo that fail if credentials are missing",
+    "destructive: tests that alter or drop database schemas/tables",
+    "integration: integration tests requiring external systems or databases",
 ]
 filterwarnings = [
     "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",

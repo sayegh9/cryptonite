@@ -366,6 +366,7 @@ export function PortfolioConsole() {
                   <tr className="text-zinc-500 border-b border-zinc-800 pb-1">
                     <th className="py-1">Instrument</th>
                     <th>Side</th>
+                    <th>Conviction</th>
                     <th>Qty</th>
                     <th>Entry</th>
                     <th>Mark</th>
@@ -380,6 +381,13 @@ export function PortfolioConsole() {
                       <td>
                         <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800">
                           {pos.side}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] border ${
+                          pos.quantity > 0 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-slate-500/20 text-slate-400 border-slate-500/30'
+                        }`}>
+                          {pos.quantity > 0 ? 'OVERWEIGHT' : 'HOLD'}
                         </span>
                       </td>
                       <td>{Number(pos.quantity).toFixed(4)}</td>
@@ -452,24 +460,27 @@ export function PortfolioConsole() {
                         {st.status === "RUNNING" ? (
                           <button
                             onClick={() => handlePauseStrategy(st.instance_id)}
-                            className="p-1 bg-yellow-950 hover:bg-yellow-900 border border-yellow-800 text-yellow-300 rounded"
+                            className="p-1 bg-yellow-950 hover:bg-yellow-900 border border-yellow-800 text-yellow-300 rounded focus-visible:ring-2 focus-visible:ring-yellow-500/50 outline-none transition-all"
                             title="Pause"
+                            aria-label={`Pause strategy ${st.strategy_name}`}
                           >
                             <Pause className="w-3 h-3" />
                           </button>
                         ) : (
                           <button
                             onClick={() => handleResumeStrategy(st.instance_id)}
-                            className="p-1 bg-emerald-950 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 rounded"
+                            className="p-1 bg-emerald-950 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 rounded focus-visible:ring-2 focus-visible:ring-emerald-500/50 outline-none transition-all"
                             title="Resume"
+                            aria-label={`Resume strategy ${st.strategy_name}`}
                           >
                             <Play className="w-3 h-3" />
                           </button>
                         )}
                         <button
                           onClick={() => handleStopStrategy(st.instance_id)}
-                          className="p-1 bg-red-950 hover:bg-red-900 border border-red-800 text-red-300 rounded"
+                          className="p-1 bg-red-950 hover:bg-red-900 border border-red-800 text-red-300 rounded focus-visible:ring-2 focus-visible:ring-red-500/50 outline-none transition-all"
                           title="Stop"
+                          aria-label={`Stop strategy ${st.strategy_name}`}
                         >
                           <Square className="w-3 h-3" />
                         </button>

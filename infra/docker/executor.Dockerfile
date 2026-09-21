@@ -20,7 +20,8 @@ RUN uv pip install --system \
     -e ./packages/storage \
     -e ./packages/strategies \
     -e ./packages/execution \
-    -e ./services/executor
+    -e ./services/executor \
+    httpx
 
 USER 1000:1000
 

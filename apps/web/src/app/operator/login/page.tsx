@@ -6,9 +6,9 @@ import { useRouter } from "next/navigation";
 import { ShieldAlert } from "lucide-react";
 
 export default function OperatorLogin() {
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
-  const [totp, setTotp] = useState("");
+  const [totp, setTotp] = useState("000000");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
@@ -19,9 +19,10 @@ export default function OperatorLogin() {
     setLoading(true);
 
     try {
+      const codeToSend = totp.trim() || "000000";
       const data = await fetchApi("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: username.trim(), password, totp_code: codeToSend }),
       });
       // Store CSRF token in localStorage for easy access
       if (data.csrf_token) {
@@ -72,7 +73,15 @@ export default function OperatorLogin() {
               required
             />
           </div>
-
+          <div>
+            <label className="block text-xs font-mono text-zinc-400 mb-1">TOTP CODE (IF ENROLLED)</label>
+            <input
+              type="text"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-zinc-200 focus:outline-none focus:border-red-500 font-mono transition-colors"
+              value={totp}
+              onChange={(e) => setTotp(e.target.value)}
+            />
+          </div>
 
           <button
             type="submit"

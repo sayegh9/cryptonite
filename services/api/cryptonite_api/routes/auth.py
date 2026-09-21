@@ -46,7 +46,7 @@ async def get_current_session(
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
     session_id: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
 ) -> dict:
-    """Dependency verifying active session cookie."""
+    """Base dependency validating only session presence."""
     if not session_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -59,6 +59,59 @@ async def get_current_session(
             detail="Invalid or expired session",
         )
     return session
+
+async def require_auth(
+    request: Request,
+    auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
+    session_id: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
+    x_api_token: Optional[str] = Header(default=None, alias="X-API-Token"),
+) -> dict:
+    """Unified auth dependency validating cookie or machine token without CSRF."""
+    if x_api_token:
+        # Machine token path
+        async with auth_mgr._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, scopes FROM machine_api_tokens WHERE token_hash = encode(sha256($1::bytea), 'hex') AND is_active = true AND (expires_at IS NULL OR expires_at > now())",
+                x_api_token
+            )
+            if not row:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired machine token")
+            # Update last_used_at async without blocking
+            await conn.execute("UPDATE machine_api_tokens SET last_used_at = now() WHERE id = $1", row['id'])
+            return {"type": "machine_token", "scopes": row["scopes"], "user_id": None, "role": "machine"}
+    
+    if session_id:
+        session = await auth_mgr.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
+        session["type"] = "cookie"
+        return session
+    
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+async def require_operator(
+    auth_data: dict = Depends(require_auth)
+) -> dict:
+    """Requires operator role (cookie) or operator scope (machine)."""
+    if auth_data["type"] == "machine_token":
+        if "operator" not in auth_data.get("scopes", []):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient machine token scopes")
+    else:
+        if auth_data.get("role") not in ("operator", "admin"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient privileges")
+    return auth_data
+
+async def require_csrf(
+    request: Request,
+    auth_data: dict = Depends(require_auth),
+    x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token")
+) -> dict:
+    """Requires CSRF only if authenticated via cookie."""
+    if auth_data["type"] == "cookie":
+        if not x_csrf_token or x_csrf_token != auth_data.get("csrf_token"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing CSRF token")
+    return auth_data
+
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -80,7 +133,7 @@ async def login(
         user_agent=user_agent,
     )
 
-    session_id, csrf_token = await auth_mgr.create_session(user_info["id"], user_info["username"])
+    session_id, csrf_token = await auth_mgr.create_session(user_info["id"], user_info["username"], role=user_info.get("role", "operator"))
 
     response.set_cookie(
         key=COOKIE_NAME,

@@ -1,7 +1,8 @@
 export const API_BASE = typeof window !== "undefined" ? "/api/v1" : (process.env.API_BASE || "http://localhost:8000/api/v1");
 
 export async function fetchApi(endpoint: string, options: RequestInit = {}) {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
+  const url = endpoint.startsWith("/agent-api") ? endpoint : `${API_BASE}${endpoint}`;
+  const res = await fetch(url, {
     ...options,
     credentials: "include", // Important for cookies!
     headers: {
@@ -26,7 +27,10 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
     } else if (data.message) {
       errMsg = data.message;
     }
-    throw new Error(errMsg);
+    const error: any = new Error(errMsg);
+    error.status = res.status;
+    error.data = data;
+    throw error;
   }
   
   return data;

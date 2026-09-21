@@ -1,0 +1,217 @@
+"use client";
+
+import React, { useRef, useState, useEffect } from "react";
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle, PanelImperativeHandle } from "react-resizable-panels";
+import { ChevronDown, ChevronUp, BookOpen, BrainCircuit, X } from "lucide-react";
+
+interface TerminalWorkspaceProps {
+  chartComponent: React.ReactNode;
+  orderbookComponent?: React.ReactNode;
+  debateSidebarComponent?: React.ReactNode;
+  blotterComponent: React.ReactNode;
+}
+
+const CustomResizeHandle = ({ horizontal = false }: { horizontal?: boolean }) => (
+  <PanelResizeHandle className={`bg-zinc-900 hover:bg-cyan-500/50 transition-colors flex items-center justify-center select-none ${horizontal ? "h-1 w-full" : "w-1 h-full"}`}>
+    <div className={`bg-white/20 rounded-full ${horizontal ? "w-8 h-0.5" : "w-0.5 h-8"}`} />
+  </PanelResizeHandle>
+);
+
+export function TerminalWorkspace({
+  chartComponent,
+  orderbookComponent,
+  debateSidebarComponent,
+  blotterComponent,
+}: TerminalWorkspaceProps) {
+  const blotterPanelRef = useRef<PanelImperativeHandle>(null);
+  const [isBlotterCollapsed, setIsBlotterCollapsed] = useState(false);
+
+  // Panel visibility state with localStorage persistence
+  const [showOrderbook, setShowOrderbook] = useState<boolean>(false);
+  const [showDebateSidebar, setShowDebateSidebar] = useState<boolean>(false);
+
+  useEffect(() => {
+    try {
+      const savedOb = localStorage.getItem("cryptonite:panel-orderbook");
+      if (savedOb !== null) setShowOrderbook(savedOb === "true");
+      
+      const savedDebate = localStorage.getItem("cryptonite:panel-debate");
+      if (savedDebate !== null) setShowDebateSidebar(savedDebate === "true");
+    } catch (_e) {
+      // Ignore storage errors in restricted contexts
+    }
+  }, []);
+
+  const toggleOrderbook = (val: boolean) => {
+    setShowOrderbook(val);
+    try {
+      localStorage.setItem("cryptonite:panel-orderbook", String(val));
+    } catch (_e) {}
+  };
+
+  const toggleDebate = (val: boolean) => {
+    setShowDebateSidebar(val);
+    try {
+      localStorage.setItem("cryptonite:panel-debate", String(val));
+    } catch (_e) {}
+  };
+
+  const toggleBlotter = () => {
+    const panel = blotterPanelRef.current;
+    if (panel) {
+      if (panel.isCollapsed()) {
+        panel.expand();
+      } else {
+        panel.collapse();
+      }
+    }
+  };
+
+  // Calculate panel sizes based on active panels
+  const chartDefaultSize = (!showOrderbook && !showDebateSidebar) ? 100 : (showOrderbook && showDebateSidebar) ? 60 : 75;
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0 min-w-0 bg-zinc-950">
+      {/* Workspace Quick-Toggles Bar */}
+      <div className="h-7 bg-zinc-950 border-b border-white/5 px-3 flex items-center justify-between text-[11px] font-mono select-none flex-none">
+        <div className="flex items-center space-x-2">
+          <span className="text-zinc-500 uppercase tracking-wider text-[10px]">Side Panels:</span>
+          
+          <button
+            onClick={() => toggleOrderbook(!showOrderbook)}
+            className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-cyan-500/50 outline-none ${
+              showOrderbook 
+                ? "bg-cyan-950/50 border-cyan-800/60 text-cyan-400 font-bold" 
+                : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+            }`}
+            title={showOrderbook ? "Hide Orderbook" : "Show Orderbook"}
+            aria-label={showOrderbook ? "Hide Orderbook" : "Show Orderbook"}
+          >
+            <BookOpen className="w-3 h-3" />
+            <span>Orderbook</span>
+          </button>
+
+          <button
+            onClick={() => toggleDebate(!showDebateSidebar)}
+            className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-purple-500/50 outline-none ${
+              showDebateSidebar 
+                ? "bg-purple-950/50 border-purple-800/60 text-purple-400 font-bold" 
+                : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+            }`}
+            title={showDebateSidebar ? "Hide AI Debate Sidebar" : "Show AI Debate Sidebar"}
+            aria-label={showDebateSidebar ? "Hide AI Debate Sidebar" : "Show AI Debate Sidebar"}
+          >
+            <BrainCircuit className="w-3 h-3" />
+            <span>AI Debate</span>
+          </button>
+        </div>
+
+        <div className="flex items-center space-x-2 text-zinc-500 text-[10px]">
+          <span>Layout: {showOrderbook && showDebateSidebar ? "3-Column" : (showOrderbook || showDebateSidebar) ? "2-Column" : "Full Canvas"}</span>
+        </div>
+      </div>
+
+      <PanelGroup id="cryptonite-workspace-v1" orientation="vertical">
+        {/* Upper Section */}
+        <Panel defaultSize={70} minSize={30}>
+          <PanelGroup id="cryptonite-workspace-v1-upper" orientation="horizontal">
+            {/* Left: Chart Area */}
+            <Panel defaultSize={chartDefaultSize} minSize={30} className="flex flex-col min-h-0 min-w-0">
+              {chartComponent}
+            </Panel>
+
+            {/* Middle: Orderbook (Collapsible / Toggleable) */}
+            {showOrderbook && (
+              <>
+                <CustomResizeHandle />
+                <Panel defaultSize={20} minSize={10} className="flex flex-col min-h-0 min-w-0 border-l border-white/5 bg-zinc-950">
+                  <div className="h-7 bg-zinc-900/80 border-b border-white/5 px-3 flex items-center justify-between flex-none select-none">
+                    <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-[10px] font-bold uppercase tracking-wider">
+                      <BookOpen className="w-3 h-3 text-cyan-400" />
+                      <span>Orderbook</span>
+                    </div>
+                    <button
+                      onClick={() => toggleOrderbook(false)}
+                      className="text-zinc-500 hover:text-zinc-200 p-0.5 rounded hover:bg-zinc-800 transition-colors focus-visible:ring-1 focus-visible:ring-cyan-500 outline-none"
+                      title="Close Orderbook panel"
+                      aria-label="Close Orderbook panel"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-auto">
+                    {orderbookComponent || (
+                      <div className="flex-1 h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-xs p-4 text-center">
+                        <BookOpen className="w-8 h-8 opacity-20 mb-2" />
+                        <p className="font-semibold text-zinc-400">Orderbook</p>
+                        <span className="text-[10px] text-zinc-600 mt-1">Live L2 Depth Stream</span>
+                      </div>
+                    )}
+                  </div>
+                </Panel>
+              </>
+            )}
+
+            {/* Right: AI Debate Sidebar (Collapsible / Toggleable) */}
+            {showDebateSidebar && (
+              <>
+                <CustomResizeHandle />
+                <Panel defaultSize={25} minSize={15} className="flex flex-col min-h-0 min-w-0 border-l border-white/5 bg-zinc-950/50">
+                  <div className="h-7 bg-zinc-900/80 border-b border-white/5 px-3 flex items-center justify-between flex-none select-none">
+                    <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-[10px] font-bold uppercase tracking-wider">
+                      <BrainCircuit className="w-3 h-3 text-purple-400" />
+                      <span>AI Debate</span>
+                    </div>
+                    <button
+                      onClick={() => toggleDebate(false)}
+                      className="text-zinc-500 hover:text-zinc-200 p-0.5 rounded hover:bg-zinc-800 transition-colors focus-visible:ring-1 focus-visible:ring-purple-500 outline-none"
+                      title="Close Debate sidebar"
+                      aria-label="Close Debate sidebar"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-hidden">
+                    {debateSidebarComponent || (
+                      <div className="flex-1 h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-xs p-4 text-center">
+                        <BrainCircuit className="w-8 h-8 opacity-20 mb-2" />
+                        <p className="font-semibold text-zinc-400">No Active Debate</p>
+                        <span className="text-[10px] text-zinc-600 mt-1">Scanner signals trigger consensus debates automatically</span>
+                      </div>
+                    )}
+                  </div>
+                </Panel>
+              </>
+            )}
+          </PanelGroup>
+        </Panel>
+
+        <CustomResizeHandle horizontal />
+
+        {/* Lower Section: Blotter/Console */}
+        <Panel 
+          panelRef={blotterPanelRef}
+          defaultSize={30} 
+          minSize={10} 
+          collapsible={true}
+          onResize={(size) => setIsBlotterCollapsed(size.asPercentage < 5)}
+          className="flex flex-col min-h-0 min-w-0 border-t border-white/5 relative"
+        >
+          {/* Toggle Button */}
+          <button
+            onClick={toggleBlotter}
+            className="absolute top-0 right-4 -translate-y-full bg-zinc-900 border-x border-t border-white/5 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1 rounded-t-md transition-colors z-10 flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none select-none"
+            aria-label={isBlotterCollapsed ? "Expand blotter" : "Collapse blotter"}
+          >
+            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Blotter</span>
+            {isBlotterCollapsed ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+          
+          <div className="flex-1 min-h-0 overflow-hidden">
+            {blotterComponent}
+          </div>
+        </Panel>
+      </PanelGroup>
+    </div>
+  );
+}

@@ -61,6 +61,32 @@ async def lifespan(app: FastAPI):
         redis_client=app.state.stream_hub.redis,
     )
 
+    # Ensure default admin operator exists in dev/demo environments
+    env = os.getenv("ENVIRONMENT", "DEV").upper()
+    if env not in ("PROD", "PRODUCTION"):
+        try:
+            async with app.state.pool.acquire() as conn:
+                row = await conn.fetchrow("SELECT id FROM operator_users WHERE username = 'admin'")
+                if not row:
+                    logger.info("Auto-seeding default admin operator user...")
+                    import pyotp
+                    password_hash = app.state.auth_manager.hash_password("admin123")
+                    totp_secret = pyotp.random_base32()
+                    ciphertext, nonce, auth_tag = app.state.auth_manager.encrypt_totp_secret(totp_secret)
+                    await conn.execute(
+                        """
+                        INSERT INTO operator_users (
+                            username, password_hash, totp_secret_ciphertext, totp_secret_nonce,
+                            totp_secret_auth_tag, totp_key_version, role, is_active
+                        ) VALUES ($1, $2, $3, $4, $5, 'v1', 'admin', true)
+                        ON CONFLICT (username) DO NOTHING;
+                        """,
+                        "admin", password_hash, ciphertext, nonce, auth_tag,
+                    )
+                    logger.info("Default admin operator user auto-seeded successfully.")
+        except Exception as e:
+            logger.warning(f"Could not auto-seed admin operator user: {e}")
+
     yield
 
     logger.info("Shutting down API Gateway resources...")

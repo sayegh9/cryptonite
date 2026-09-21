@@ -23,8 +23,9 @@ cryptonite/
 │   └── agents/          # Antigravity SDK & Gemini Agent Multi-Agent Fleet
 └── services/
     ├── api/             # FastAPI Gateway, REST, WebSocket & Background Alerts
-    ├── ingest/          # Binance WebSocket stream and REST recovery recorder
+    ├── ingest/          # Binance WebSocket stream, REST recovery recorder, and On-Chain RPC
     ├── scanner/         # Polars Vectorized Screening Engine
+    ├── debate_worker/   # AI Adversarial Debate Engine (TradingAgents integration)
     └── outbox/          # Transactional Outbox Poller & Binance Execution Bridge
 ```
 
@@ -39,3 +40,11 @@ uv run alembic -c infra/migrations/alembic.ini upgrade head
 # 3. Run test suite
 uv run pytest
 ```
+
+## Multi-Agent Debate Engine
+Cryptonite integrates an advanced adversarial AI pipeline powered by the Google Antigravity SDK and Gemini Flash/Pro:
+- **Analyst Fleet:** Market, Sentiment, and On-Chain agents autonomously gather real-time data and generate intelligence dossiers.
+- **Adversarial Debate:** A Bull Researcher and a Bear Researcher aggressively debate the dossier to expose weaknesses in the trade thesis.
+- **Portfolio & Risk Managers:** A Portfolio Manager proxy sets an initial allocation, followed by a 3-persona Risk Debate (Aggressive, Conservative, Neutral). The Chief Risk Officer synthesizes the final conviction level (e.g. `OVERWEIGHT` / `HOLD`).
+- **Reflection Engine:** Completed trades are joined with DuckDB time-series data to calculate *Alpha*. The AI distills 'Lessons Learned' which are dynamically injected into future debates, allowing the system to self-correct over time without code changes.
+- **Safety First:** AI agents operate through an Anti-Corruption Layer with strictly read-only, anonymized database access, hard limits on concentration (25.0%), and hardware-level kill-switches.

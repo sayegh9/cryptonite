@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, Request, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 import asyncpg

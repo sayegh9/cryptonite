@@ -12,6 +12,7 @@ from cryptonite_scanner.models import (
     compute_spec_hash,
 )
 from cryptonite_scanner.presets import BUILTIN_PRESETS
+from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 router = APIRouter(prefix="/api/v1/scanners", tags=["scanners"])
@@ -313,6 +314,7 @@ async def enqueue_scan_run(
     return {
         "status": "ACCEPTED",
         "id": str(job_id),
+        "job_id": str(job_id),
         "request_id": req_id,
         "spec_version_id": str(row["active_version_id"]),
     }

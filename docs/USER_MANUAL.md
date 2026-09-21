@@ -20,29 +20,34 @@
 **Cryptonite** provides quantitative traders, risk officers, and portfolio managers with an integrated workstation for systematic trading.
 
 ### 1.1 Service Access Points
-* **Web Trading Workstation**: [http://localhost:3000](http://localhost:3000)
-* **Operator Governance Portal**: [http://localhost:3000/operator](http://localhost:3000/operator)
+* **Web Trading Workstation (Local)**: [http://localhost:3000](http://localhost:3000)
+* **Web Trading Workstation (LAN Network)**: [http://192.168.1.203:3000](http://192.168.1.203:3000)
+* **Operator Governance Portal**: [http://localhost:3000/operator](http://localhost:3000/operator) or via the **Operator** tab
+* **WebSocket Market Stream**: `ws://localhost:8000/ws/stream` (or `ws://192.168.1.203:8000/ws/stream` from LAN)
 * **FastAPI Backend Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
 * **AI Operations Gateway**: [http://localhost:8085/health](http://localhost:8085/health)
 
 ### 1.2 Default Operator Credentials
 * **Operator ID**: `admin`
-* **Master Password**: `adminpass123`
+* **Master Password**: `admin123`
+* **Two-Factor TOTP**: `000000` *(development bypass)*
 * **Execution Environment**: Binance Demo / Testnet (Isolated paper risk)
 
 ---
 
 ## 2. Trading Terminal & Live Market Data
 
-The **Trading Terminal** is your primary workspace for active market observation and multi-asset price action.
+The **Trading Terminal** is your primary workspace for active market observation, multi-asset price action, and automated intelligence.
 
 ![Trading Terminal](./screenshots/01_trading_terminal.png)
 
 ### Key Features & Workflow:
-1. **Interactive TradingView Chart**: Fast, hardware-accelerated candlestick charting rendering live tick and k-line bars directly from Binance WebSocket feeds.
-2. **Timeframe Selector**: Toggle effortlessly between `1m`, `5m`, `15m`, `1h`, `4h`, and `1d` intervals.
-3. **Multi-Asset Watchlist**: View live 24h ticker updates, spread dynamics, and quick-switch between major trading pairs (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`).
-4. **Sub-millisecond Latency Bar**: Bottom telemetry displays DuckDB p95 query latency (~12ms) and Polars vectorized execution speeds (~8ms).
+1. **Bloomberg-Style 3-Column Resizable Workspace**: Features an interactive TradingView chart, live orderbook depth panel, and AI Consensus Debate sidebar.
+2. **Dynamic Sidebar & Canvas Controls**: Click `Show Orderbook` or `Show AI Debate Sidebar` in the toolbar to toggle sidebars. Closing sidebars automatically expands the chart canvas to 100% full width. Layout preferences are persisted in `localStorage`.
+3. **On-Demand Consensus Debate**: Click `[Trigger AI Consensus Debate]` on the chart header or press `⌘D` in the Command Palette to launch a multi-agent Bull vs. Bear debate for the active ticker.
+4. **Timeframe Selector**: Toggle effortlessly between `1m`, `5m`, `15m`, `1h`, `4h`, and `1d` intervals.
+5. **Multi-Asset Watchlist**: View live 24h ticker updates, spread dynamics, and quick-switch between major trading pairs (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`).
+6. **Sub-millisecond Latency Bar**: Bottom telemetry displays DuckDB p95 query latency (~12ms) and Polars vectorized execution speeds (~8ms).
 
 ---
 
@@ -105,28 +110,33 @@ The **Portfolio Console** gives risk managers real-time visibility into overall 
 
 ## 6. AI Copilot & Multi-Agent Operations
 
-The **AI Copilot** gives you an autonomous quantitative operations analyst directly inside your trading workspace, powered by the **Google Antigravity SDK and Google Gemini**.
+The **AI Copilot** provides an autonomous quantitative operations analyst directly inside your trading workspace, powered by the **Google Antigravity SDK and Google Gemini**.
 
-![AI Copilot Active Chat](./screenshots/05_ai_copilot_active_chat.png)
+![AI Copilot Active Chat](./manual_images/06b_ai_chat_detail.png)
 
-### Available AI Agents:
-1. **Research Agent**: Specializes in backtest analysis, strategy sensitivity audits, and querying historical market data catalogs via embedded DuckDB.
-2. **Explainer Agent**: Interprets complex risk events, breaks down reconciliation anomalies, and answers architectural questions about the trading platform.
-3. **Strategist Agent**: Focuses on institutional-grade execution strategies, risk protection, and identifying high-probability setups.
-4. **Generator Agent**: Generates executable Nautilus Trader Python code (strategy and config classes) from natural language descriptions.
-5. **Opportunity Hunter Agent**: Scans live market data to proactively alert operators to technical indicator crossovers and price action opportunities.
+### Floating Window & Persona Controls:
+- **Freely Draggable & Resizable**: Drag the floating panel via its header bar and resize from the bottom or right handles. Toggle docking to lock it to the right sidebar.
+- **5 Specialized AI Personas**:
+  1. **Research Agent (`Senior Quantitative Analyst`)**: Technical market structure, volume profile, RSI trends, and level discovery.
+  2. **Strategist Agent (`Execution & Strategy Architect`)**: Writes production-ready Nautilus Python code (`StrategyConfig` & `Strategy`). Includes a 1-click green **"Save Strategy"** button.
+  3. **Explainer Agent (`Risk & Performance Manager`)**: Ingests backtest run tearsheets (`trades.parquet`, `equity_curve.parquet`) to analyze Sharpe ratio, drawdowns, and regime bias.
+  4. **CRO Agent (`Chief Risk Officer`)**: Evaluates portfolio risk, leverage limits, and position concentration bounds.
+  5. **On-Chain Agent (`On-Chain Intelligence`)**: Analyzes exchange inflows, netflow anomalies, and whale liquidity movements.
+- **Isolated Threads & Draft Storage**: Each persona maintains a separate conversation history and draft input box. Switching persona tabs preserves your un-sent text.
+- **1-Click Text & Code Copying**: Select text directly or click **Copy Code** to copy Python snippets into your clipboard.
 
 ### 6.1 Market Intelligence & Discovery
-The platform now includes a full-featured Market Intelligence suite:
-- **Command Palette**: Press `Ctrl/Cmd + K` anywhere in the app to quickly search for assets and jump to their profiles.
+The platform includes a full-featured Market Intelligence suite:
+- **Command Palette**: Press `Ctrl/Cmd + K` anywhere in the app to quickly search for assets, run commands, or trigger debates (`⌘D`).
 - **Watchlists**: Pin your favorite instruments to the sidebar for real-time tracking.
-- **Coin Profiles**: View detailed market statistics, 24h volume, and real-time execution depth.
-- **Alerts Engine**: Set custom price alerts (e.g., "BTC > 60000") that evaluate continuously in the background and trigger notifications when breached.
+- **Alerts Engine**: Set custom price alerts evaluating in the background with real-time WebSocket breach notifications.
+- **Extended Timeout**: `/agent-api` Next.js proxy route implements a 300s timeout to support deep multi-step quantitative agent queries without gateway timeouts.
 
 ### Example Prompts to Try:
-* *"Summarize the performance of the latest EMA Cross backtest and suggest optimizations."*
-* *"What is our current margin exposure and are any positions close to liquidation?"*
-* *"Explain the system architecture and how the outbox pattern guarantees order safety."*
+* *"Analyze the hourly volume distribution of BTCUSDT over the past 30 days."*
+* *"Evaluate backtest run `latest` and explain why max drawdown reached 14%."*
+* *"Generate a complete Nautilus Trader strategy in Python that trades 15m Bollinger Band breakouts with an ATR trailing stop."*
+* *"Check risk bounds for a 10x leveraged long position on ETHUSDT given current volatility."*
 
 ---
 
@@ -137,9 +147,10 @@ The **Operator Control Plane** provides authorized personnel with full operation
 ### 7.1 Operator Authentication
 Navigate to `/operator` or click the **Operator** tab in the main header. Enter your operator credentials:
 * **Operator ID**: `admin`
-* **Password**: `adminpass123`
+* **Password**: `admin123`
+* **TOTP Code**: `000000` *(development bypass)*
 
-![Operator Authentication](./screenshots/06_operator_login.png)
+![Operator Authentication](./manual_images/00_operator_login.png)
 
 ### 7.2 Operator Dashboard Overview
 Once authenticated, the console displays live execution status, the global kill switch, active strategy instances, and the multi-asset audit ledger.
@@ -177,9 +188,29 @@ Click **Manual Trade** to dispatch direct orders to the exchange:
 ### 7.6 Multi-Asset Reconciliation Ledger
 The bottom panel runs continuous zero-tolerance audits comparing Binance exchange balances and open orders against internal PostgreSQL records. Any discrepancy is flagged immediately with an audit run ID for post-mortem analysis.
 
+### 7.7 System Configuration & Settings Dashboard
+Cryptonite features a dynamic System Configuration panel accessed via the **Settings** (Gear icon) tab in the main sidebar.
+* **Agent Prompt Customization**: Dynamically overwrite the system instructions, LLM model choice (e.g., `gemini-2.5-pro` vs `gemini-2.5-flash`), and temperature for all AI Agents. Changes take effect instantly without restarting containers.
+* **Environment & Security Health**: Provides a read-only audit view of critical `.env` configurations, including the presence of Gemini and Binance API keys, the active Environment Mode (DEMO vs PROD), and the Kill-Switch status.
+
 ---
 
-## 8. Troubleshooting & Frequently Asked Questions
+## 8. Remote LAN & Multi-Device Access Guide
+
+Cryptonite can be accessed and operated from secondary devices (laptops, iPads, smartphones) on your local network:
+
+1. **Verify Host Network Binding**: The API service in `docker-compose.yml` binds to `0.0.0.0:8000:8000`, making REST and WebSocket `/ws/stream` reachable.
+2. **Connect from Secondary Device**: Open any web browser on your tablet or laptop (connected to the same Wi-Fi) and navigate to:
+   ```
+   http://192.168.1.203:3000
+   ```
+3. **Log In**: Enter operator credentials (`admin` / `admin123` / TOTP: `000000`).
+4. **Live Streaming**: The Next.js frontend automatically resolves the host and opens a WebSocket stream to `ws://192.168.1.203:8000/ws/stream`.
+5. **PDF User Manual**: You can download or view the compiled 17-page illustrated manual at `docs/Cryptonite_User_Manual.pdf`.
+
+---
+
+## 9. Troubleshooting & Frequently Asked Questions
 
 ### Q1: Why does the AI Copilot show "API Key Required"?
 Ensure your Google Gemini API key is configured in the root `.env` file under `GEMINI_API_KEY`. The `docker-compose.yml` automatically passes this to the `cryptonite_agent_worker` container.
@@ -190,7 +221,6 @@ Nautilus Trader requires strict chronological monotonicity. If this occurs, the 
 ### Q3: How do I verify Docker service health?
 Run `docker compose ps` from the `infra/` folder. All services (`postgres`, `redis`, `api`, `ingest`, `scanner`, `backtester`, `executor`, `agent_worker`) should show `Up` or `Healthy`.
 
-### 7.7 System Configuration & Settings Dashboard
-Cryptonite features a dynamic System Configuration panel accessed via the **Settings** (Gear icon) tab in the main sidebar.
-* **Agent Prompt Customization**: Dynamically overwrite the system instructions, LLM model choice (e.g., `gemini-1.5-pro` vs `gemini-1.5-flash`), and temperature for all 5 AI Agents. Changes take effect instantly without restarting containers.
-* **Environment & Security Health**: Provides a read-only audit view of critical `.env` configurations, including the presence of Gemini and Binance API keys, the active Environment Mode (DEMO vs PROD), and the Kill-Switch status.
+### Q4: Cannot connect from another device on the Wi-Fi?
+Verify that the host firewall permits ingress on ports `3000` (Next.js) and `8000` (API Gateway / WebSocket). Ensure both devices are on the `192.168.1.0/24` subnet.
+

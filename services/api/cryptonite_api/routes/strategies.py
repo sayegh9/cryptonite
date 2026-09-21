@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from cryptonite_strategies.registry import STRATEGY_REGISTRY, list_strategies
+from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])

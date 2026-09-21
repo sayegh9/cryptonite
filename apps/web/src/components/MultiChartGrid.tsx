@@ -32,12 +32,6 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
     { id: "chart-3", symbol: "ETHUSDT", timeframe: "1h" },
   ]);
 
-  const [crosshairSync, setCrosshairSync] = useState<{
-    sourceId: string;
-    time: number | null;
-    price: number | null;
-  } | null>(null);
-
   // When activeTarget changes from Scanner Studio "View on Chart", update focused chart
   React.useEffect(() => {
     if (!activeTarget) return;
@@ -49,10 +43,6 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
       )
     );
   }, [activeTarget, focusedId]);
-
-  const handleCrosshairSync = (sourceId: string, time: number | null, price: number | null) => {
-    setCrosshairSync({ sourceId, time, price });
-  };
 
   const handleTimeframeChange = (chartId: string, newTf: string) => {
     setCharts((prev) =>
@@ -151,8 +141,6 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
               }}
               onSymbolChange={(sym) => handleSymbolChange(c.id, sym)}
               onTimeframeChange={(tf) => handleTimeframeChange(c.id, tf)}
-              onCrosshairSync={handleCrosshairSync}
-              syncCrosshair={crosshairSync}
               targetCandleTime={c.id === focusedId ? activeTarget?.candleTime : null}
             />
           </div>

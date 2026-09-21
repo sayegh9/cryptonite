@@ -144,34 +144,28 @@ class BinanceStreamClient:
                     "encoding": "JSON",
                 }
                 try:
-                    await self.redis.xadd("nautilus:stream:bus", bus_record, maxlen=5000, approximate=True)
+                    health_record = {
+                        "instrument_id": inst_str,
+                        "ingest_session_id": str(self.ingest_session_id),
+                        "publish_sequence": seq,
+                        "event_ts_ns": arrival_ns,
+                        "arrival_ts_ns": arrival_ns,
+                    }
+                    ui_record = {
+                        "instrument_id": inst_str,
+                        "bid_price": bid_p,
+                        "ask_price": ask_p,
+                        "bid_size": bid_q,
+                        "ask_size": ask_q,
+                        "arrival_ns": arrival_ns,
+                    }
+                    async with self.redis.pipeline(transaction=False) as pipe:
+                        pipe.xadd("nautilus:stream:bus", bus_record, maxlen=5000, approximate=True)
+                        pipe.xadd("cryptonite:stream:ingress_health", {"data": json.dumps(health_record)}, maxlen=5000, approximate=True)
+                        pipe.xadd("cryptonite:stream:ui_quote_tick", {"data": json.dumps(ui_record)}, maxlen=1000, approximate=True)
+                        await pipe.execute()
                 except Exception as ex:
-                    logger.debug("Failed to publish QuoteTick to bus: %s", ex)
-
-                health_record = {
-                    "instrument_id": inst_str,
-                    "ingest_session_id": str(self.ingest_session_id),
-                    "publish_sequence": seq,
-                    "event_ts_ns": arrival_ns,
-                    "arrival_ts_ns": arrival_ns,
-                }
-                try:
-                    await self.redis.xadd("cryptonite:stream:ingress_health", {"data": json.dumps(health_record)}, maxlen=5000, approximate=True)
-                except Exception as ex:
-                    logger.debug("Failed to publish ingress health: %s", ex)
-
-                ui_record = {
-                    "instrument_id": inst_str,
-                    "bid_price": bid_p,
-                    "ask_price": ask_p,
-                    "bid_size": bid_q,
-                    "ask_size": ask_q,
-                    "arrival_ns": arrival_ns,
-                }
-                try:
-                    await self.redis.xadd("cryptonite:stream:ui_quote_tick", {"data": json.dumps(ui_record)}, maxlen=1000, approximate=True)
-                except Exception as ex:
-                    logger.debug("Failed to publish ui quote: %s", ex)
+                    logger.debug("Failed to publish QuoteTick pipeline: %s", ex)
         except Exception as e:
             logger.error("Error processing bookTicker message: %s", e)
 

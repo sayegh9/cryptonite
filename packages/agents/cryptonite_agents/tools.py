@@ -58,7 +58,7 @@ def query_parquet_duckdb(query: str) -> str:
         for literal in string_literals:
             if "/" in literal or "\\" in literal:
                 resolved_literal = str(Path(literal).resolve())
-                if not resolved_literal.startswith(str(Path(CATALOG_PATH).resolve())):
+                if not Path(resolved_literal).resolve().is_relative_to(Path(CATALOG_PATH).resolve()):
                     return f"Security Error: Unauthorized file access attempted outside catalog path. Blocked: {literal}"
         
         result = duckdb.query(full_query).df()
@@ -67,12 +67,73 @@ def query_parquet_duckdb(query: str) -> str:
         return f"DuckDB Error: {e}"
 
 def read_nautilus_tearsheet(backtest_id: str) -> str:
-    """Reads the JSON tearsheet for a specific backtest_id."""
-    tearsheet_path = Path(f"/app/data/backtest_artifacts/{backtest_id}/tearsheet.json")
-    if not tearsheet_path.exists():
-        return f"Error: Tearsheet for {backtest_id} not found."
+    """Reads the JSON tearsheet or manifest for a specific backtest_id."""
+    artifact_root = Path("/app/data/backtest_artifacts").resolve()
+    
+    # If no backtest_id is provided or requested latest, find the most recent artifact
+    target_id = (backtest_id or "").strip()
+    if not target_id or target_id.lower() in ("latest", "last", "none", "default"):
+        if artifact_root.exists():
+            dirs = [d for d in artifact_root.iterdir() if d.is_dir()]
+            if dirs:
+                dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+                target_id = dirs[0].name
+            else:
+                return "No backtest runs found in backtest_artifacts directory."
+        else:
+            return "Backtest artifacts directory does not exist."
+
+    intended_path = (artifact_root / target_id / "tearsheet.json").resolve()
+    
+    # Strict containment check
+    if not intended_path.is_relative_to(artifact_root):
+        return f"Security Error: Path traversal detected for {target_id}."
+        
+    if not intended_path.exists():
+        run_dir = artifact_root / target_id
+        manifest_path = run_dir / "manifest.json"
+        equity_path = run_dir / "equity_curve.parquet"
+        trades_path = run_dir / "trades.parquet"
+
+        summary = {"backtest_id": target_id}
+        if manifest_path.exists():
+            try:
+                m = json.loads(manifest_path.read_text())
+                summary["strategy"] = m.get("strategy_slug")
+                summary["instrument_id"] = m.get("instrument_id")
+                summary["timeframe"] = m.get("timeframe")
+                summary["evaluation_start_ns"] = m.get("evaluation_start_ns")
+                summary["evaluation_end_ns"] = m.get("evaluation_end_ns")
+            except Exception:
+                pass
+
+        try:
+            conn = duckdb.connect()
+            if equity_path.exists():
+                eq = conn.execute(f"SELECT equity, drawdown FROM '{equity_path}' ORDER BY ts_event_ns ASC").fetchall()
+                if eq:
+                    summary["initial_equity"] = eq[0][0]
+                    summary["final_equity"] = eq[-1][0]
+                    summary["total_return_pct"] = round(((eq[-1][0] - eq[0][0]) / eq[0][0]) * 100, 4)
+                    summary["max_drawdown_pct"] = round(max(r[1] for r in eq) * 100, 4)
+
+            if trades_path.exists():
+                tr = conn.execute(f"SELECT realized_pnl, realized_return, entry_price, exit_price FROM '{trades_path}'").fetchall()
+                summary["total_trades"] = len(tr)
+                if tr:
+                    wins = [r for r in tr if r[0] > 0]
+                    summary["winning_trades"] = len(wins)
+                    summary["win_rate_pct"] = round((len(wins) / len(tr)) * 100, 2)
+                    summary["total_realized_pnl"] = round(sum(r[0] for r in tr), 4)
+
+            return json.dumps(summary, indent=2)
+        except Exception as e:
+            if manifest_path.exists():
+                return manifest_path.read_text()
+            return f"Error: Tearsheet for backtest '{target_id}' not found ({e})."
+        
     try:
-        return tearsheet_path.read_text()
+        return intended_path.read_text()
     except Exception as e:
         return f"File Error: {e}"
 

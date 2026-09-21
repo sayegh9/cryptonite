@@ -22,6 +22,9 @@ services:
       - isolated_backtester_net
 
   redis:
+    # Consolidated Redis instance:
+    # - DB 0: Market data telemetry, event bus, order signals, outbox, scanner, backtester
+    # - DB 1: AI Agent worker session cache and conversational memory (consolidated from cryptonite_redis_agents)
     image: redis:7-alpine
     container_name: cryptonite_redis
     command: ["redis-server", "--appendonly", "yes"]
@@ -35,24 +38,11 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - default
-      - isolated_backtester_net
-
-  redis-agents:
-    image: redis:7-alpine
-    container_name: cryptonite_redis_agents
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_agents_data:/data
-    ports:
-      - "127.0.0.1:6380:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - agents_net
+      default: {}
+      isolated_backtester_net: {}
+      agents_net:
+        aliases:
+          - redis-agents
 
   ingest:
     build:
@@ -138,6 +128,9 @@ services:
       context: ..
       dockerfile: infra/docker/api.Dockerfile
     container_name: cryptonite_api
+    networks:
+      - default
+      - agents_net
     depends_on:
       postgres:
         condition: service_healthy
@@ -228,6 +221,7 @@ services:
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       PORT: 8084
       ENVIRONMENT: DEMO
+      USE_MOCK_VENUE: "true"
       ACCOUNT_ID: DEMO-ACCOUNT-001
       BINANCE_DEMO_BASE_URL: https://demo-api.binance.com
       BINANCE_DEMO_WS_URL: wss://demo-ws-api.binance.com/ws-api/v3
@@ -251,12 +245,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis-agents:
+      redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_pass@postgres:5432/cryptonite
-      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_agent_ro:agent_ro_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis-agents:6379/0
+      DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/1
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       PORT: 8085
     env_file:
@@ -268,13 +262,29 @@ services:
     ports:
       - "127.0.0.1:8085:8085"
     restart: unless-stopped
-    networks:
-      - agents_net
+  debate_worker:
+    build:
+      context: ..
+      dockerfile: infra/docker/debate_worker.Dockerfile
+    container_name: cryptonite_debate_worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+      NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data:rw
 
 volumes:
   postgres_data:
   redis_data:
-  redis_agents_data:
 
 secrets:
   binance_demo_private_key.pem:
@@ -287,3 +297,4 @@ networks:
     driver: bridge
     internal: true
   default:
+

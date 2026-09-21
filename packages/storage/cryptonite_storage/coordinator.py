@@ -41,8 +41,11 @@ class TwoStoreCoordinator:
         self.analytics = analytics_writer
         self.pool = pg_pool
         self._lock = asyncio.Lock()
+        self._batch_lock = asyncio.Lock()
         self._advisory_lock_held = False
         self._advisory_conn: asyncpg.Connection | None = None
+        self._pending_bars: dict[tuple, list[EnrichedBar]] = {}
+        self._last_flush_time: dict[tuple, float] = {}
 
     async def acquire_process_lock(self) -> bool:
         """Acquire PostgreSQL advisory lock for process-exclusive single writer."""
@@ -89,11 +92,63 @@ class TwoStoreCoordinator:
         market_type: str = "SPOT",
         symbol: str = "BTCUSDT",
         timeframe: str = "1m",
+        force: bool = True,
     ) -> str:
-        """Execute the crash-recoverable two-store commit protocol."""
         if not bars:
             return ""
 
+        key = (bar_type, venue, market_type, symbol, timeframe)
+
+        if force:
+            async with self._batch_lock:
+                pending = self._pending_bars.pop(key, [])
+            all_bars = pending + bars
+            return await self._execute_commit(all_bars, bar_type, venue, market_type, symbol, timeframe)
+
+        flush_bars = None
+        async with self._batch_lock:
+            if key not in self._pending_bars:
+                self._pending_bars[key] = []
+                self._last_flush_time[key] = time.time()
+            
+            self._pending_bars[key].extend(bars)
+            
+            now = time.time()
+            # Flush every 1000 bars or 300 seconds (5 mins)
+            if len(self._pending_bars[key]) >= 1000 or (now - self._last_flush_time[key]) >= 300:
+                flush_bars = self._pending_bars[key]
+                self._pending_bars[key] = []
+                self._last_flush_time[key] = now
+
+        if flush_bars:
+            return await self._execute_commit(flush_bars, bar_type, venue, market_type, symbol, timeframe)
+        return ""
+
+    async def flush_pending(self) -> list[str]:
+        """Flush all buffered bars across all streams."""
+        batch_ids = []
+        async with self._batch_lock:
+            keys = list(self._pending_bars.keys())
+        for key in keys:
+            async with self._batch_lock:
+                bars = self._pending_bars.pop(key, [])
+            if bars:
+                bar_type, venue, market_type, symbol, timeframe = key
+                b_id = await self._execute_commit(bars, bar_type, venue, market_type, symbol, timeframe)
+                if b_id:
+                    batch_ids.append(b_id)
+        return batch_ids
+
+    async def _execute_commit(
+        self,
+        bars: list[EnrichedBar],
+        bar_type: BarType,
+        venue: str,
+        market_type: str,
+        symbol: str,
+        timeframe: str,
+    ) -> str:
+        """Execute the crash-recoverable two-store commit protocol."""
         async with self._lock:
             # Sort bars strictly by timestamp
             sorted_bars = sorted(bars, key=lambda b: b.ts_event_ns)
@@ -112,7 +167,22 @@ class TwoStoreCoordinator:
             bar_count = len(sorted_bars)
             bar_type_str = str(bar_type)
 
-            # 2. Insert ingest_batches row with status='pending'
+            # 2. Content-level cadence check BEFORE insert
+            self._verify_cadence(sorted_bars, timeframe)
+
+            # 2.5 Load and validate checkpoint boundary
+            if self.pool:
+                checkpoint_row = await self.pool.fetchrow(
+                    "SELECT last_timestamp_ns FROM ingest_checkpoints WHERE venue = $1 AND market_type = $2 AND symbol = $3 AND timeframe = $4",
+                    venue, market_type, symbol, timeframe
+                )
+                if checkpoint_row:
+                    last_ts = checkpoint_row["last_timestamp_ns"]
+                    if start_ns <= last_ts:
+                        logger.warning("Batch starts at %d which is older than checkpoint %d. Skipping.", start_ns, last_ts)
+                        return ""
+
+            # 3. Insert ingest_batches row with status='pending'
             if self.pool:
                 actual_batch_id = await self._insert_pending_batch(
                     batch_id=batch_id,
@@ -142,9 +212,6 @@ class TwoStoreCoordinator:
                 symbol=symbol,
                 batch_id=batch_id,
             )
-
-            # 5. Content-level cadence check
-            self._verify_cadence(sorted_bars, timeframe)
 
             # 6. Single Postgres transaction: commit batch & advance checkpoint
             if self.pool:
@@ -377,6 +444,17 @@ class TwoStoreCoordinator:
         """Scan and reconcile uncommitted batches on startup."""
         if not self.pool:
             return 0
+
+        # Remove incomplete artifacts
+        try:
+            for tmp_file in self.analytics.base_dir.rglob(".tmp.*.parquet"):
+                try:
+                    tmp_file.unlink()
+                except OSError:
+                    pass
+        except Exception as e:
+            logger.warning("Failed to clean up temporary artifacts: %s", e)
+
         rows = await self.pool.fetch(
             "SELECT batch_id, venue, market_type, symbol, bar_type, canonical_payload_json "
             "FROM ingest_batches WHERE status = 'pending';"
@@ -389,12 +467,13 @@ class TwoStoreCoordinator:
             bars = [EnrichedBar.model_validate(item) for item in raw_payload]
             logger.info("Reconciling uncommitted batch %s (%d bars)", row["batch_id"], len(bars))
             # Replay commit sequence
-            await self.commit_batch(
+            await self._execute_commit(
                 bars=bars,
                 bar_type=bar_type,
                 venue=row["venue"],
                 market_type=row["market_type"],
                 symbol=row["symbol"],
+                timeframe=row.get("timeframe", "1m"),  # fallback if timeframe missing
             )
             reconciled += 1
         return reconciled

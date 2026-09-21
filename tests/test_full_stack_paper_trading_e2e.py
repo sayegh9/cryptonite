@@ -369,18 +369,19 @@ async def test_full_stack_paper_trading_e2e():
 
         # Check outbox_events emitted
         outbox_row = await conn.fetchrow(
-            "SELECT * FROM outbox_events WHERE stream_name = 'cryptonite:stream:paper_trades' AND status = 'PENDING' ORDER BY created_at DESC LIMIT 1;"
+            "SELECT * FROM outbox_events WHERE stream_name = 'cryptonite:stream:paper_trades' ORDER BY created_at DESC LIMIT 1;"
         )
         assert outbox_row is not None
         payload_data = json.loads(outbox_row["payload"])
         assert payload_data["client_order_id"] == client_order_id
 
-    # 8. Outbox Relay draining to Redis
-    relay = OutboxRelay(database_url=DB_URL, redis_url=REDIS_URL, batch_size=10)
-    relay.pool = pool
-    relay.redis = r_client
-    relayed_cnt = await relay.process_batch_once()
-    assert relayed_cnt >= 1
+    # 8. Outbox Relay draining to Redis (drain if not already drained by background daemon)
+    if outbox_row["status"] == "PENDING":
+        relay = OutboxRelay(database_url=DB_URL, redis_url=REDIS_URL, batch_size=10)
+        relay.pool = pool
+        relay.redis = r_client
+        relayed_cnt = await relay.process_batch_once()
+        assert relayed_cnt >= 1
 
     # Verify outbox event in PostgreSQL is now PUBLISHED
     async with pool.acquire() as conn:

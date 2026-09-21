@@ -1,0 +1,1968 @@
+{
+  "artifacts": {
+    "equity_curve.parquet": {
+      "sha256": "b9c9bda8b3b7a4f6f3d7f15d30e652767b83a96fc20ce6f5247834990b53750a",
+      "size_bytes": 1160
+    },
+    "orders.parquet": {
+      "sha256": "a82496665429e7ff4605283a34513ab4764ba7652a9fd6aae4ae96f24d1484f5",
+      "size_bytes": 4792
+    },
+    "trades.parquet": {
+      "sha256": "55f89aadca6c5d1cb5ec2be6c6671b3e0aadbb3a3460591168d4332d234fb40d",
+      "size_bytes": 3501
+    }
+  },
+  "attempt_id": "091cabb1-9e1c-4912-a789-4ffc71f208c4",
+  "bar_type": "BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL",
+  "catalog_manifest": [
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-06-00-000000000Z_2026-09-20T06-06-00-000000000Z.parquet",
+      "sha256": "80a7f2e8ad5b805fa6b6a9bcbe77328983b1b0136053812103041336529dd73d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-07-00-000000000Z_2026-09-20T06-07-00-000000000Z.parquet",
+      "sha256": "dfc67f759eb54ff53b1e350751997f3148d3238c8e17b2f259a4749003bdc342",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-08-00-000000000Z_2026-09-20T06-08-00-000000000Z.parquet",
+      "sha256": "407904f222c4bdb9bb2d3bc24114d8120bb19067d611ba5dc0925a825e7e6353",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-09-00-000000000Z_2026-09-20T06-09-00-000000000Z.parquet",
+      "sha256": "a1b3be78af9419d5f3224dd37b980c1c8f7cd3e184f57272b6258b21ac293776",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-10-00-000000000Z_2026-09-20T06-10-00-000000000Z.parquet",
+      "sha256": "c76dcdd135d7a8a6aed60d90ccd31091da9208d5ce678fb883071e8014c956c5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-11-00-000000000Z_2026-09-20T06-11-00-000000000Z.parquet",
+      "sha256": "545d4d832e8e1435fe855f15e193b04b5d6c86ffbbc65d3b156e681f2ab8a881",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-12-00-000000000Z_2026-09-20T06-12-00-000000000Z.parquet",
+      "sha256": "fd708ad25c2d2d7b445a6cdc82f411ca17f1b0d799def3bcc22b473e610d9818",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-13-00-000000000Z_2026-09-20T06-13-00-000000000Z.parquet",
+      "sha256": "defcf0cd2c2c44e1e39b00c677e91482b014be40b8b5c77d181ef0b9cd8e4625",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-14-00-000000000Z_2026-09-20T06-14-00-000000000Z.parquet",
+      "sha256": "558b92a073b9e826c2e3be8ba144c55fd2ce5e9a4a3f394dcd85e6ff81727662",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-15-00-000000000Z_2026-09-20T06-15-00-000000000Z.parquet",
+      "sha256": "c294d3a49a271ee2048f6775328b83fe54fb9c017796d14f407b59bea3a4fd65",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-16-00-000000000Z_2026-09-20T06-16-00-000000000Z.parquet",
+      "sha256": "e9159234dd5c9dcb6232f5debd5b1e77abc07e6a4b9768dec8d222b937ae25a1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-17-00-000000000Z_2026-09-20T06-17-00-000000000Z.parquet",
+      "sha256": "404b23d9f0bfeaf348407bb3e49bcc1ec275cb160ab1b09c36940648af70fecc",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-18-00-000000000Z_2026-09-20T06-18-00-000000000Z.parquet",
+      "sha256": "f22def5e7c40d2c04c8ab648692de34ec9296fef854a078a45d4b0228e212126",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-19-00-000000000Z_2026-09-20T06-19-00-000000000Z.parquet",
+      "sha256": "5c0e0c4071ad48fb1adefbb4a1f891cb1834bf6f32e1b8681b14e2d196fffaa0",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-20-00-000000000Z_2026-09-20T06-20-00-000000000Z.parquet",
+      "sha256": "3885d4b38acdcf6c6a280f01a36f6531aa3da952287f6d1b9c781f89e4bd1805",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-21-00-000000000Z_2026-09-20T06-21-00-000000000Z.parquet",
+      "sha256": "7215ad8df618a969f424f5c85fc3da4b91657c86141e1fb74a5b0b7622f9f867",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-22-00-000000000Z_2026-09-20T06-22-00-000000000Z.parquet",
+      "sha256": "06dac9763d1c0c18f26aa1380774c207d7084b2257a692c92273592f71d8b0b2",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-23-00-000000000Z_2026-09-20T06-23-00-000000000Z.parquet",
+      "sha256": "e92acd3b2d31d495ad4f239721e9d37944703881be7039732f0efd65282ecbb5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-24-00-000000000Z_2026-09-20T06-24-00-000000000Z.parquet",
+      "sha256": "c5fe8eeaca0e88dfc1d4c8ea8eff234f1db59059e23ed9ef52de762793dd7e18",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-25-00-000000000Z_2026-09-20T06-25-00-000000000Z.parquet",
+      "sha256": "3973795c388a19bcc1ba1c7aef448ec63cdc26abe45b507269dae63d018e260c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-26-00-000000000Z_2026-09-20T06-26-00-000000000Z.parquet",
+      "sha256": "55b6346d5d5f2db8de46bf3cde1c6df0a7bfd93d86b0ef180db14913a157d6e9",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-27-00-000000000Z_2026-09-20T06-27-00-000000000Z.parquet",
+      "sha256": "6a5b1f26e897da06cbc6b6942632b51f6d68b7a2c5d58b25f9b1022eb65fab7e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-28-00-000000000Z_2026-09-20T06-28-00-000000000Z.parquet",
+      "sha256": "0c9cd368afd46d1289d96c966877a14343d92710349e1a4db5d28f1bee3c321e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-29-00-000000000Z_2026-09-20T06-29-00-000000000Z.parquet",
+      "sha256": "979e45a7438e64bb59b532a2376fb1f8b7feaae200a1c67a4f4c118f76f5600a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-30-00-000000000Z_2026-09-20T06-30-00-000000000Z.parquet",
+      "sha256": "fa30bd67b7b924c96e3560b69af177a7de4ebaec0aef300cff93bb27adcbeafb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-31-00-000000000Z_2026-09-20T06-31-00-000000000Z.parquet",
+      "sha256": "c81868d78be86c7432a3e3a2fabacf6bc72cf29175477c408de17b0beb8351b3",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-32-00-000000000Z_2026-09-20T06-32-00-000000000Z.parquet",
+      "sha256": "7c988770d95c7921744fcb9b20df548ebd7e2122341bfec22187ce626a394cd1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-33-00-000000000Z_2026-09-20T06-33-00-000000000Z.parquet",
+      "sha256": "f989d8b81fa427095d1e4b7da83802ed215c5a9fa73b30bc4a3414711549af68",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-34-00-000000000Z_2026-09-20T06-34-00-000000000Z.parquet",
+      "sha256": "382fc613fece32380081d88ade639ac2b991ca00095d24f5eb68f0d63d947e9f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-35-00-000000000Z_2026-09-20T06-35-00-000000000Z.parquet",
+      "sha256": "67010460cd256b0e6a41ddfcadfa72d9f6aafd0ade7c5e51090f6b112c307b6e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-36-00-000000000Z_2026-09-20T06-36-00-000000000Z.parquet",
+      "sha256": "82e5c2edb9126c83cc39ce014968a6bbff1eddf13c8555d5d6695e034f258bff",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-37-00-000000000Z_2026-09-20T06-37-00-000000000Z.parquet",
+      "sha256": "27ace99dfe184a4e4183e3b957ac340686f1834580d760a6a43604a20418d00c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-38-00-000000000Z_2026-09-20T06-38-00-000000000Z.parquet",
+      "sha256": "1768ef090931848458f95bf26da961ceeff09a2b7df7c6f98624876d6e53935b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-39-00-000000000Z_2026-09-20T06-39-00-000000000Z.parquet",
+      "sha256": "c1d232d66bd64d130f1584bd8aca2c7d9fd2e3981a40f09408842b100dc28e8f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-40-00-000000000Z_2026-09-20T06-40-00-000000000Z.parquet",
+      "sha256": "cde48115b75c6d966c773dbaf30f863bcc9276f52de35d1dc0bcc6fb8208d90f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-41-00-000000000Z_2026-09-20T06-41-00-000000000Z.parquet",
+      "sha256": "a1f467cf683e47d8e1c5a2512160b0fff75446da41ae833d4f755998f321b72e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-42-00-000000000Z_2026-09-20T06-42-00-000000000Z.parquet",
+      "sha256": "3ffcd58923ebc5d1a2e13e8a3857cea79d172ecb1144a622190d3f1cb362f817",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-43-00-000000000Z_2026-09-20T06-43-00-000000000Z.parquet",
+      "sha256": "1a0eab5e661d63c5f31fa1ac83ae5cdef1d59c878b82fbcf5c9366f35adbc9ca",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-44-00-000000000Z_2026-09-20T06-44-00-000000000Z.parquet",
+      "sha256": "82279d4419e303119fc34227198f9ad8405f37f73f0fda6c075ba3e7a8a790f6",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-45-00-000000000Z_2026-09-20T06-45-00-000000000Z.parquet",
+      "sha256": "e521cabd0bffcf5b84dde744fcfe9f5378bedcf2013cd89a3b56155646918267",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-46-00-000000000Z_2026-09-20T06-46-00-000000000Z.parquet",
+      "sha256": "7c34294934a798091486d7658f7c36bf7e4a2abc716fa07152c0a59d13ea136f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-47-00-000000000Z_2026-09-20T06-47-00-000000000Z.parquet",
+      "sha256": "b8d37265ff3ded97f91f8bfa3eb471a011821ccb8e9088daeb19823c589a3537",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-48-00-000000000Z_2026-09-20T06-48-00-000000000Z.parquet",
+      "sha256": "7becace6243e922cc8943e3e3aab590faf22c1380275717b0bdaf82003cff885",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-49-00-000000000Z_2026-09-20T06-49-00-000000000Z.parquet",
+      "sha256": "4102960ae0b4ff69869d908d961c5a266fb6bffe04594c5732f43ea36c96d1b9",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-50-00-000000000Z_2026-09-20T06-50-00-000000000Z.parquet",
+      "sha256": "69dca085d8272c87f51ef71ff3a0ff697c9e959838a24197a3f46b09d28330ba",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-51-00-000000000Z_2026-09-20T06-51-00-000000000Z.parquet",
+      "sha256": "b5579a2506f55007dd01ce2c3999a9385046601d54e7b80cf59837c7b9c63fcc",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-52-00-000000000Z_2026-09-20T06-52-00-000000000Z.parquet",
+      "sha256": "ad3e4d1fd3c4fc14b3beb6663301d00497a9f026b789fc0824b15b678ede9558",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-53-00-000000000Z_2026-09-20T06-53-00-000000000Z.parquet",
+      "sha256": "534ab19bb4a397dfe5fb549ad89a8380a376c842056126e2b10e0788670b5432",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-54-00-000000000Z_2026-09-20T06-54-00-000000000Z.parquet",
+      "sha256": "1d8f969453888376dedf8c45e0f3eab4e24f8038dbd0ba9bcace9d1ebf6c1c0e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-55-00-000000000Z_2026-09-20T06-55-00-000000000Z.parquet",
+      "sha256": "212f4c6dc65da1908a68faacd8358b66523c4257a29751723e93712b5ab6fff6",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-56-00-000000000Z_2026-09-20T06-56-00-000000000Z.parquet",
+      "sha256": "8751daa97859487c5705aa48cbde0abffd08ca66ab3029ba778b8630a7f0aa90",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-57-00-000000000Z_2026-09-20T06-57-00-000000000Z.parquet",
+      "sha256": "62602a711bb93b1f9a551eba4fe27fc65636b1d8b27fc6b223287b6551ca25a6",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-58-00-000000000Z_2026-09-20T06-58-00-000000000Z.parquet",
+      "sha256": "d48b1e9f4ac5869ea7bf5e12ff6738511ff6a223393530eaa32bfe28ec1cb8d7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T06-59-00-000000000Z_2026-09-20T06-59-00-000000000Z.parquet",
+      "sha256": "7475d973e2177612a4f61b9d361364c02fa8a5ebbb429d2bedc029746bb0056b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-00-00-000000000Z_2026-09-20T07-00-00-000000000Z.parquet",
+      "sha256": "7ebb8f2aa0dea0152101112a389441ccc1a01228ee05cf3acb5e5b4591398ed9",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-01-00-000000000Z_2026-09-20T07-01-00-000000000Z.parquet",
+      "sha256": "01367413248556990da30a33a8739109cd7d42ee32d6eac5ff9b9cf958781fb1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-02-00-000000000Z_2026-09-20T07-02-00-000000000Z.parquet",
+      "sha256": "a461f293980a74fd7ca915e95126eec97ef21faaafb33d45f15fe9765a3c24bb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-03-00-000000000Z_2026-09-20T07-03-00-000000000Z.parquet",
+      "sha256": "f92409336147a0fd5dafdfc6d44b4760350e0c52e6c1e82dd9ca9b4ed46086e5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-04-00-000000000Z_2026-09-20T07-04-00-000000000Z.parquet",
+      "sha256": "0ffaca489408af099927cdc7c96b14c1e366042f7ab52f41b6bb823531e96f1a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-05-00-000000000Z_2026-09-20T07-05-00-000000000Z.parquet",
+      "sha256": "d08fd8f2aa5f368651aa7cacaa9aa5a891ee41560f606034a92a5de08322d1b5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-06-00-000000000Z_2026-09-20T07-06-00-000000000Z.parquet",
+      "sha256": "fd4b13da1cff58e52a226ae89c695a3489175f0e131d75ef2ff39f355cae20aa",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-07-00-000000000Z_2026-09-20T07-07-00-000000000Z.parquet",
+      "sha256": "637badcc8faf1856fd19c04ae6f69b70354c71459bd11e095bbe3c2ccfdce96b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-08-00-000000000Z_2026-09-20T07-08-00-000000000Z.parquet",
+      "sha256": "d1e0b1cb703ce0b4a9aa1b0df6f2f7c036be1a99a89f00cc1c08c00522f7f777",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-09-00-000000000Z_2026-09-20T07-09-00-000000000Z.parquet",
+      "sha256": "06e6406b9dcf7e79d437c4cdf48f94f99bb09530b2a049e498e0094daeeac782",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-10-00-000000000Z_2026-09-20T07-10-00-000000000Z.parquet",
+      "sha256": "25a407083ed4aa39afa5c1aa8eb4607fc9573b1c94a1dae0260388d429673575",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-11-00-000000000Z_2026-09-20T07-11-00-000000000Z.parquet",
+      "sha256": "dd11772f7b5d23c7429542ec1ff1ba42581f63989d3a5fbcc3f874262c0f8840",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-12-00-000000000Z_2026-09-20T07-12-00-000000000Z.parquet",
+      "sha256": "ba12c7e082de496d6ae8b365e9a69b0c414236fe6e5349f026a37e54290521c3",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-13-00-000000000Z_2026-09-20T07-13-00-000000000Z.parquet",
+      "sha256": "782742aa6bc2857fa4efb64cc5be8b79d8f42a7c0bbdde9f8c4098d18c58683f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-14-00-000000000Z_2026-09-20T07-14-00-000000000Z.parquet",
+      "sha256": "fffc40dae66b136ad16596c07039b0bbd7620a824667d63eba4df8c967509e8e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-15-00-000000000Z_2026-09-20T07-15-00-000000000Z.parquet",
+      "sha256": "46a0a246afd9dbf6e116ef116e55896da9286792f91e27a7608afd4b741dfc42",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-16-00-000000000Z_2026-09-20T07-16-00-000000000Z.parquet",
+      "sha256": "25752db2312feb7eb00732d4f02edc42282596a55e276491b79118081141b043",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-17-00-000000000Z_2026-09-20T07-17-00-000000000Z.parquet",
+      "sha256": "21579a970cc293dcfb679f89cd419c7d50a3ec358c2031ba8abd15de267839d0",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-18-00-000000000Z_2026-09-20T07-18-00-000000000Z.parquet",
+      "sha256": "84ecae88b3eb2d0c9a153e26f601f77d12c3b02d1d18598883e96fb2cc104357",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-19-00-000000000Z_2026-09-20T07-19-00-000000000Z.parquet",
+      "sha256": "fcfb14bf25c524a2b63b5eb456fb7739ddb403182a52828ff09ba1864bc39048",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-20-00-000000000Z_2026-09-20T07-20-00-000000000Z.parquet",
+      "sha256": "63b5d1d7e7e93d518098b1d28693c2b4a482472e1dd5e6ea6e0dbdf007ceaf04",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-21-00-000000000Z_2026-09-20T07-21-00-000000000Z.parquet",
+      "sha256": "18149ae40e9d12d887995be3d2f20efd40ff7028334ac8dd7857de812736a006",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-22-00-000000000Z_2026-09-20T07-22-00-000000000Z.parquet",
+      "sha256": "aefad830c4f6b6ab89ad87a3b81d51097ea283d629b208ad7f9d1b0985604236",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-23-00-000000000Z_2026-09-20T07-23-00-000000000Z.parquet",
+      "sha256": "4d4a6e0bf28eb876533eb657627fb00ffaae80078cab16a8bffa1b2623951e4b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-24-00-000000000Z_2026-09-20T07-24-00-000000000Z.parquet",
+      "sha256": "6a6455debabcf830d177bde3c0a70a98285e15e07669e99f52ca7fe9b6cea059",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-25-00-000000000Z_2026-09-20T07-25-00-000000000Z.parquet",
+      "sha256": "a1b82541ec83916092eb84aeda2890747bd54a4281a05acd935b39d5c42ef0bd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-26-00-000000000Z_2026-09-20T07-26-00-000000000Z.parquet",
+      "sha256": "bf1e02ab18e684dd54d9538002c8127b3008c7cfea1a3710b097dc745bc16031",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-27-00-000000000Z_2026-09-20T07-27-00-000000000Z.parquet",
+      "sha256": "3a76b755b4fe2b41f3e5bb0e6a70888dc3f50c7c2f671d8061dbba253108325b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-28-00-000000000Z_2026-09-20T07-28-00-000000000Z.parquet",
+      "sha256": "45052baa49f0e303f0e3c2e0da39d78fb317c543a365f020ae537baa4b0bbe94",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-29-00-000000000Z_2026-09-20T07-29-00-000000000Z.parquet",
+      "sha256": "2f7af178749db08a9436f4f1d3733d0aee3ada6da585aac299d926370f121dc0",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-30-00-000000000Z_2026-09-20T07-30-00-000000000Z.parquet",
+      "sha256": "82d0cf27fc0008319b3a57d4ba8a869ad75a39077a62068376712ba546c709b5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-31-00-000000000Z_2026-09-20T07-31-00-000000000Z.parquet",
+      "sha256": "efa1c960400fffb514a3c43f6f8bd04249d59b05b0be620791240e340a00feec",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-32-00-000000000Z_2026-09-20T07-32-00-000000000Z.parquet",
+      "sha256": "938c97050873d1de1c7cdd753a6c98c9ee5e8a41f1d87318edbd20fe31b4e585",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-33-00-000000000Z_2026-09-20T07-33-00-000000000Z.parquet",
+      "sha256": "baa9a41a1770bf6669a86f1a04fe50f2ed37cf0fb06307b177d3b54c12e2d7cf",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-34-00-000000000Z_2026-09-20T07-34-00-000000000Z.parquet",
+      "sha256": "934685359345e1fdee33f6c2a8ae45ea3fb5e3534c45cdceda6f25ac7c18d4e1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-35-00-000000000Z_2026-09-20T07-35-00-000000000Z.parquet",
+      "sha256": "8fef8227863f82682600dc61fb10d29db596a7a9008a349acf3a122c1396411d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-36-00-000000000Z_2026-09-20T07-36-00-000000000Z.parquet",
+      "sha256": "aa1f55bb629a49a4ed11493116d4cc847e8771ef0bd9de8434c1db4393f4aa58",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-37-00-000000000Z_2026-09-20T07-37-00-000000000Z.parquet",
+      "sha256": "a7b55e0e7981b529ca9c8bf686be1f50fe3078d544c4113b06de6610a5cedef5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-38-00-000000000Z_2026-09-20T07-38-00-000000000Z.parquet",
+      "sha256": "3657e29a28ea713c7ebf0a90d9f6545f47f7c9be0d4e427390d2598d95d44fd5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-39-00-000000000Z_2026-09-20T07-39-00-000000000Z.parquet",
+      "sha256": "4c6a661fb69f15787708c6cd794c51f0c9fc958448a5f41af0115f62df92e30a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-40-00-000000000Z_2026-09-20T07-40-00-000000000Z.parquet",
+      "sha256": "b9678cc8a4db51fae6a985e7144ba62cedb00282f374110560c754e3027ca45f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-41-00-000000000Z_2026-09-20T07-41-00-000000000Z.parquet",
+      "sha256": "5c144be64873130a94df7de8bf18d2abde165cd9a9041e73cbed7c9b79aad22c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-42-00-000000000Z_2026-09-20T07-42-00-000000000Z.parquet",
+      "sha256": "fe212813f5bb5710f36e3372d440d9ba9b6f8ccc1a9d7f9bee39d37da668c978",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-43-00-000000000Z_2026-09-20T07-43-00-000000000Z.parquet",
+      "sha256": "bca49fb63668efeed073c82d18bae71ef4d16a310cd716df5d2a74de8e17e647",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-44-00-000000000Z_2026-09-20T07-44-00-000000000Z.parquet",
+      "sha256": "d380e0abf1838011f6ebbc01a47952e28ce49845f911c3cc51bcc430b0767c55",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-45-00-000000000Z_2026-09-20T07-45-00-000000000Z.parquet",
+      "sha256": "5e37f29afd3a8c51e4a3c9786982737859c3232ced8d62679d93890d2ba71a00",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-46-00-000000000Z_2026-09-20T07-46-00-000000000Z.parquet",
+      "sha256": "0697ed6b8117d66d4e5e7f3b85d8016dbc7a2f10c16f7c966985ab198fdc36cd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-47-00-000000000Z_2026-09-20T07-47-00-000000000Z.parquet",
+      "sha256": "753836acfc3505c7733a0a7c78ded2656f8293bcea3ed86e7aebbc5542aea514",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-48-00-000000000Z_2026-09-20T07-48-00-000000000Z.parquet",
+      "sha256": "8517ebaa1f0a1d979633846f0f163c183519e1444e7539107acc8fd4751bdb02",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-49-00-000000000Z_2026-09-20T07-49-00-000000000Z.parquet",
+      "sha256": "f2fc9e2632c5b9952abd8b07a83c9d488fc22387be426ef6a80ae5259e3645ab",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-50-00-000000000Z_2026-09-20T07-50-00-000000000Z.parquet",
+      "sha256": "9845a993d733eb1572c32770c0e4425ca33aaa38677a845cd936d2d031d24e28",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-51-00-000000000Z_2026-09-20T07-51-00-000000000Z.parquet",
+      "sha256": "a972b41e35ea6db20b69838111149dab7e827b4e5a621a8ba1864f214c81d76c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-52-00-000000000Z_2026-09-20T07-52-00-000000000Z.parquet",
+      "sha256": "d9c5eda4d131fbb64b8980b06f161445ea2159a5861e0d3423a2648654f4cdfd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-53-00-000000000Z_2026-09-20T07-53-00-000000000Z.parquet",
+      "sha256": "239d6891be683274dac2f2b534dfbf5961a80c945d47f38999a02f635ba5f2ef",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-54-00-000000000Z_2026-09-20T07-54-00-000000000Z.parquet",
+      "sha256": "ab7999aa1e97d3f5b2b14a5890aae3644788a54a789bab8c85d75b2f34692c56",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-55-00-000000000Z_2026-09-20T07-55-00-000000000Z.parquet",
+      "sha256": "b41ce6b8542e130370e6d2c8bc777047b8f8375cb9c945347248953a5d798c53",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-56-00-000000000Z_2026-09-20T07-56-00-000000000Z.parquet",
+      "sha256": "826ff467fdac3d6a60d1473317e4e0482c4bab576c393a2e99bbd0852bc0bd8c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-57-00-000000000Z_2026-09-20T07-57-00-000000000Z.parquet",
+      "sha256": "1330a2a9b74ceb64bb1fb35648169fe9bcd2825ec17f378dba8df98e58908a01",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-58-00-000000000Z_2026-09-20T07-58-00-000000000Z.parquet",
+      "sha256": "5b6ca8a1866ab095d972a4669fc1d964cb2bd906835f1083e0b783b6ec51f0ab",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T07-59-00-000000000Z_2026-09-20T07-59-00-000000000Z.parquet",
+      "sha256": "cbfd7a5fb73ea3cec2f96a05cd9fc8afb4f75c370ccb25b3ce623054fa3f3afb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-00-00-000000000Z_2026-09-20T08-00-00-000000000Z.parquet",
+      "sha256": "8e5b2fe89e30e33832258f9864bcb759fb871d6668b62349a34040e30c9d60fb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-01-00-000000000Z_2026-09-20T08-01-00-000000000Z.parquet",
+      "sha256": "0b8561661ed27b0fdb8be79ad16ae583bf13fea96a93bfc10ca6659c18f3558e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-02-00-000000000Z_2026-09-20T08-02-00-000000000Z.parquet",
+      "sha256": "46def196f4a8de14d158e8b7c5bb5d646b509662c821daaf6266ade239ee3dff",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-03-00-000000000Z_2026-09-20T08-03-00-000000000Z.parquet",
+      "sha256": "699537e33822aaf21966aaa635b7dc94d17992fa704d1f67bf959a48a6e753da",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-04-00-000000000Z_2026-09-20T08-04-00-000000000Z.parquet",
+      "sha256": "eb9fdf84662007892e62287bee25768fccb9b189f08f9492ca3085277a6b4503",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-05-00-000000000Z_2026-09-20T08-05-00-000000000Z.parquet",
+      "sha256": "fa3fd0d333f654e3eb8756ec3c279b5cb6952c5d09e5a1d42d09d4ca5968953c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-06-00-000000000Z_2026-09-20T08-06-00-000000000Z.parquet",
+      "sha256": "7e852ce68020aa5bab2ce2cebb4cecc4f166fe36d686437f7801bf7b78c80a1c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-07-00-000000000Z_2026-09-20T08-07-00-000000000Z.parquet",
+      "sha256": "2ff9d888ab40da4f709402afc4ed27463e164c32603edfd4d96f2547aa6f9e5b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-08-00-000000000Z_2026-09-20T08-08-00-000000000Z.parquet",
+      "sha256": "ddce1e051defd853880e6c5f4c81a85f628bda183ea6e62018de51f377dfaa36",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-09-00-000000000Z_2026-09-20T08-09-00-000000000Z.parquet",
+      "sha256": "b605c69d419f6eecde32d767eac34f60d48790cf9103e6c10192463d3bdb0780",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-10-00-000000000Z_2026-09-20T08-10-00-000000000Z.parquet",
+      "sha256": "bbbbaec1dc5261be27fe31e679468ee4ac045e60e5571f87d5565391b3c5887e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-11-00-000000000Z_2026-09-20T08-11-00-000000000Z.parquet",
+      "sha256": "9c27f2c9d5db938bcffafba3468fe552b6435ae477a33821f0a1a94057ca72f7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-12-00-000000000Z_2026-09-20T08-12-00-000000000Z.parquet",
+      "sha256": "fe7933375ad71c5283a5ec5fbb3ae9756c1f04f279bb6c55a5907bc1f9c43f0f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-13-00-000000000Z_2026-09-20T08-13-00-000000000Z.parquet",
+      "sha256": "0dd231d0dbdc0633f98144965627ef87a4ad27faec54a17c3ea8bfefd8ff4e44",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-14-00-000000000Z_2026-09-20T08-14-00-000000000Z.parquet",
+      "sha256": "b329f7ca3591cd2a968f80364662fc69b2a14ea6ccb277d457fc675f211a85cb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-15-00-000000000Z_2026-09-20T08-15-00-000000000Z.parquet",
+      "sha256": "96ac3d93a7c02b35c2bed814192f75040b2e5ef1b74e1f82280069a46f8e41f7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-16-00-000000000Z_2026-09-20T08-16-00-000000000Z.parquet",
+      "sha256": "c84c9349c2a0050d8e4991e507786b491fd9167285503bcf9180b767b0182a5e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-17-00-000000000Z_2026-09-20T08-17-00-000000000Z.parquet",
+      "sha256": "fd37a8ff89d31672ff23bc96797a8e45238da92d6a3304dc89141255a92e3a92",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-18-00-000000000Z_2026-09-20T08-18-00-000000000Z.parquet",
+      "sha256": "05558592aa2bc89bc32ef5a46b663f5ca32f4812660a6c74ae6cfbd3ec732ef8",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-19-00-000000000Z_2026-09-20T08-19-00-000000000Z.parquet",
+      "sha256": "a40a917d70dc488cd8c580f3a1022497cb9603c0f905be0a21ba236147d0db58",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-20-00-000000000Z_2026-09-20T08-20-00-000000000Z.parquet",
+      "sha256": "183ec2c7f456f93c0b5bfe0a3d62faffaa1e6b06834f6641aea56394c3dc5d0a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-21-00-000000000Z_2026-09-20T08-21-00-000000000Z.parquet",
+      "sha256": "3c21a531390191b6c38787eaae1273e4ecbfed64415db44943a0d98b68d448a8",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-22-00-000000000Z_2026-09-20T08-22-00-000000000Z.parquet",
+      "sha256": "5fc7a6f623d19b21891836a65baed70d56048de50e2b5c6cea75a4fcb251d253",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-23-00-000000000Z_2026-09-20T08-23-00-000000000Z.parquet",
+      "sha256": "a00ae4fdc814cb741041eb90b5e21647f741cd754d57a0dc7b12fcdd613b6412",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-24-00-000000000Z_2026-09-20T08-24-00-000000000Z.parquet",
+      "sha256": "f070c8f445d9b1b63378b31e4967ec9e412efea2aa48aaf7893c9f4a1ed3a8eb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-25-00-000000000Z_2026-09-20T08-25-00-000000000Z.parquet",
+      "sha256": "f8b18702a94f4763103aee4ae6bec86a89b26f1026d43d5cb356a74ad0b20ba4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-26-00-000000000Z_2026-09-20T08-26-00-000000000Z.parquet",
+      "sha256": "af1562776880d578e3fa4758eef34652f39466380aad116fdd723baac92e7b33",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-27-00-000000000Z_2026-09-20T08-27-00-000000000Z.parquet",
+      "sha256": "d71149a6aff6b6d06051e2c7c60fd71d15fbc911eb40ea7e4c7d83062fe50450",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-28-00-000000000Z_2026-09-20T08-28-00-000000000Z.parquet",
+      "sha256": "efba8de8e22c8135d884fd580796efedc3f1e2893728957e2dadc1133bf33d94",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-29-00-000000000Z_2026-09-20T08-29-00-000000000Z.parquet",
+      "sha256": "2cebaa91946768b38dcea9fb3d9302e6ecfdf33699a976dc2e86ebfa513c9068",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-30-00-000000000Z_2026-09-20T08-30-00-000000000Z.parquet",
+      "sha256": "7e59106e8bcdcfd157a8a34e7e916738673c19a25e3060d31296adda236ea7da",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-31-00-000000000Z_2026-09-20T08-31-00-000000000Z.parquet",
+      "sha256": "cf9f5a77d595db7980afc8b18acb425a1e11c92b5c087e80f65d33c97da04d08",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-32-00-000000000Z_2026-09-20T08-32-00-000000000Z.parquet",
+      "sha256": "29f0dfd67607e29b2518db40eabfa3f07eb58f35bf0a8c7711b4fd55896d3e3e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-33-00-000000000Z_2026-09-20T08-33-00-000000000Z.parquet",
+      "sha256": "e701cfb6e545f776748a7350d43bf012f6ae09926b8bc13a699d54682078adee",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-34-00-000000000Z_2026-09-20T08-34-00-000000000Z.parquet",
+      "sha256": "4d0076ddeeb1a2914567527466a13abe701d0d3d68476af40b229ab7b7b33dee",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-35-00-000000000Z_2026-09-20T08-35-00-000000000Z.parquet",
+      "sha256": "f73021f2f45f0a8f177113945d50b13e60bfc736664a8f62e9223ca6e1094aff",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-36-00-000000000Z_2026-09-20T08-36-00-000000000Z.parquet",
+      "sha256": "b5b40b8a0cdc6c08c116ff19d73a4123bb0657f1ba6ad2a5b881b0e0b7d3fd3a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-37-00-000000000Z_2026-09-20T08-37-00-000000000Z.parquet",
+      "sha256": "a74dd61646c3802c44fe4d450d39b80f00b3d38ae8f526210809aa80816a4bf8",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-38-00-000000000Z_2026-09-20T08-38-00-000000000Z.parquet",
+      "sha256": "680f5ef55aa45548be03f375c57213ba46800903e63cccb4b0feb83c04575ac5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-39-00-000000000Z_2026-09-20T08-39-00-000000000Z.parquet",
+      "sha256": "e25551a1646e31b64aa595e4746646ecd8204d7baf8fe7935d0a5346a9de38f1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-40-00-000000000Z_2026-09-20T08-40-00-000000000Z.parquet",
+      "sha256": "d11bfb21df4b0ba7b3c1272ad0663794e7981297423804fc4e0a6b38f1f54a55",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-41-00-000000000Z_2026-09-20T08-41-00-000000000Z.parquet",
+      "sha256": "ed7b1270eee80537ca0f8a4c9fca289ebdc0d984e436d4c4e110237b91b95eaa",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-42-00-000000000Z_2026-09-20T08-42-00-000000000Z.parquet",
+      "sha256": "e2ae486d5c4d56f3ff64ed15a0b71864e55f443b9b1cb6c94dcad770f4d6aaf4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-43-00-000000000Z_2026-09-20T08-43-00-000000000Z.parquet",
+      "sha256": "b629fe0aa67174c4e3e53fd7cb319e3ebc585345d8224c4e4af95f6025cae78d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-44-00-000000000Z_2026-09-20T08-44-00-000000000Z.parquet",
+      "sha256": "bd73955ac064547095819160649afd72dd85ed69f656ab4c691f30bacf7211dd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-45-00-000000000Z_2026-09-20T08-45-00-000000000Z.parquet",
+      "sha256": "ce76f34b90cceff1d8a0734664f9cc81fb903dc1950b9ffb48246e1fe336944b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-46-00-000000000Z_2026-09-20T08-46-00-000000000Z.parquet",
+      "sha256": "e4686cec9d4eba119b9bf4aa8ab0acc65c7a13fe44f3bfcbab05280dc99ce5e4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-47-00-000000000Z_2026-09-20T08-47-00-000000000Z.parquet",
+      "sha256": "a1a5239e4122676448b9f7857376d05d8cec9770cfd0c8e6b9f0075ab494128b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-48-00-000000000Z_2026-09-20T08-48-00-000000000Z.parquet",
+      "sha256": "d47b7fec3c45358ebcd692a380adebabef9fdfdbbc977269319b93c3499c3f0a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-49-00-000000000Z_2026-09-20T08-49-00-000000000Z.parquet",
+      "sha256": "28730f11496244b5fb61ed965b3f43bd7a3420363a5aedbfccf7d32abfdde553",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-50-00-000000000Z_2026-09-20T08-50-00-000000000Z.parquet",
+      "sha256": "54ad0004318b1d606e27c5abeaa0665e09faf4e42462e98a10266172ed3f4c61",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-51-00-000000000Z_2026-09-20T08-51-00-000000000Z.parquet",
+      "sha256": "0bfad936d4f6637702bc93308d8e6911e8362085c8c377113ababb3213a5a51e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-52-00-000000000Z_2026-09-20T08-52-00-000000000Z.parquet",
+      "sha256": "4ca038a1caee6c05b00e92d6681f18d8677c622cb8a1cdf2d384bea562eb9399",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-53-00-000000000Z_2026-09-20T08-53-00-000000000Z.parquet",
+      "sha256": "b67b6688dd3e36155ee26c588f5dedd45c3be71f90d0c78e2f9d2c1b365de5a9",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-54-00-000000000Z_2026-09-20T08-54-00-000000000Z.parquet",
+      "sha256": "5b687051294fffc974cd8cc89c622fd540477cc3c2cd84c5935f76d14633e4ce",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-55-00-000000000Z_2026-09-20T08-55-00-000000000Z.parquet",
+      "sha256": "d916fec1ebc198cfd5099b8b6f5d3d42ebfe772277ce5910b0488e771eadf13d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-56-00-000000000Z_2026-09-20T08-56-00-000000000Z.parquet",
+      "sha256": "51163cd8827e2f89a78b977c1fa5f77c04bdbeacddaa3490bed7eb8d2a1a3823",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-57-00-000000000Z_2026-09-20T08-57-00-000000000Z.parquet",
+      "sha256": "c598acf633784f404ddc3e2708b61ffa46f040ac3f5a9dcb43308e3c1593182e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-58-00-000000000Z_2026-09-20T08-58-00-000000000Z.parquet",
+      "sha256": "dfae1ba148f0ed1c339085152271137b78a129324c1ba2b373679e6d9bcd8cfd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T08-59-00-000000000Z_2026-09-20T08-59-00-000000000Z.parquet",
+      "sha256": "dc1743fc22f6b179e134849e9a13c962deee079dc6b4a1b484eb276030078766",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-00-00-000000000Z_2026-09-20T09-00-00-000000000Z.parquet",
+      "sha256": "6dab76d52360300c63f274d6c2be8b1cc772c02a71779540f42818d69824bcb8",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-01-00-000000000Z_2026-09-20T09-01-00-000000000Z.parquet",
+      "sha256": "9ba8445bdf25af43961c1f75f932ded58f40e6122dadc6a9eaacd627b0ab6d7e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-02-00-000000000Z_2026-09-20T09-02-00-000000000Z.parquet",
+      "sha256": "a2f4ed933fb73f90a3434f628b5ae0eb7c8adf9da763baf60c79bf72f5d209d3",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-03-00-000000000Z_2026-09-20T09-03-00-000000000Z.parquet",
+      "sha256": "a03c4000a81f4ba54bbacfc284c0a3b0d5fd857e8ff9fe88401822dcf40ef933",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-04-00-000000000Z_2026-09-20T09-04-00-000000000Z.parquet",
+      "sha256": "18997ef4f62bab76d2a56e1656f6774d2004c9f90dfa0585a799b67da71cd8fc",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-05-00-000000000Z_2026-09-20T09-05-00-000000000Z.parquet",
+      "sha256": "d47148879034b7ae9649eadcc15646cf29241a2c107f9cbb2f83737d9f1c90c5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-06-00-000000000Z_2026-09-20T09-06-00-000000000Z.parquet",
+      "sha256": "146b7cdca2691b35695186066314359938965dfa171dd3f49321880c3745ae5e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-07-00-000000000Z_2026-09-20T09-07-00-000000000Z.parquet",
+      "sha256": "06cd1ac6a26c389ab06bf3d5cb8fdd98e6b40fc43aa7ee40be8aed221f704fab",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-08-00-000000000Z_2026-09-20T09-08-00-000000000Z.parquet",
+      "sha256": "6367c8368432d6081f68a6d6ec099604b728b1ffb876fbaf36144a4c6c19b3f4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-09-00-000000000Z_2026-09-20T09-09-00-000000000Z.parquet",
+      "sha256": "902a629646629a67bd55fc23b6e147f2cb81b2e156932c4789e98a600a4bbcb4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-10-00-000000000Z_2026-09-20T09-10-00-000000000Z.parquet",
+      "sha256": "02ddd87b8f99860df35b730d90e9f581039b32fa7f5e2d62e61c7fcd06dbf6be",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-11-00-000000000Z_2026-09-20T09-11-00-000000000Z.parquet",
+      "sha256": "b4bbee86d9cb9728c8cfe37372c46583d88268e93dd5b5e2fc0c5dbb813c4adb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-12-00-000000000Z_2026-09-20T09-12-00-000000000Z.parquet",
+      "sha256": "9912afa4327042036faac9f6684ccc54b15b4cedc031b9fb973056f18a06ba19",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-13-00-000000000Z_2026-09-20T09-13-00-000000000Z.parquet",
+      "sha256": "3e7756e279271b56506f42f5278112c4fd97f09304682f67bf0b2c204257b24b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-14-00-000000000Z_2026-09-20T09-14-00-000000000Z.parquet",
+      "sha256": "c57da6365a83ea24050ee9ad887de45f0cdc8cf57ac2246deb588092e9c9b69d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-15-00-000000000Z_2026-09-20T09-15-00-000000000Z.parquet",
+      "sha256": "1d0c4a8366e205cb7e04473a135e540bfb68acb88e8f9d56e268c6c4d39539ef",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-16-00-000000000Z_2026-09-20T09-16-00-000000000Z.parquet",
+      "sha256": "427cdfb47f32c7a1379089099257b3eac958cb276839a4b9f2db6fbb69b03515",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-17-00-000000000Z_2026-09-20T09-17-00-000000000Z.parquet",
+      "sha256": "5c9d9f9104c33d3f5fff9ea6769c5aaaf30801c1bf43c95476afe374de719fdc",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-18-00-000000000Z_2026-09-20T09-18-00-000000000Z.parquet",
+      "sha256": "46c08fd71675b3fa27d5b25b5f4a850718b90c3bdf9ea4ab90be8e553e805e31",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-19-00-000000000Z_2026-09-20T09-19-00-000000000Z.parquet",
+      "sha256": "8e46cc8450e2fc451d1fc3a9f91095a35eb90a206af672caec971ddf806798df",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-20-00-000000000Z_2026-09-20T09-20-00-000000000Z.parquet",
+      "sha256": "437707b96bc70c1933a52a9fb1dc830b852496bb401035ef65b820c1e57788e7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-21-00-000000000Z_2026-09-20T09-21-00-000000000Z.parquet",
+      "sha256": "3bed80fc37c90ea24a8100c634d5c8887315b366b738deb9390f5afe9ad54111",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-22-00-000000000Z_2026-09-20T09-22-00-000000000Z.parquet",
+      "sha256": "355c89ba933c2447d609804c6364f8e666e703476ec3539bf84a514bba30c5a9",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-23-00-000000000Z_2026-09-20T09-23-00-000000000Z.parquet",
+      "sha256": "8e9f8b255c352e575718bdcdb244041b984a78fe5eab86cd758d75d9827ee258",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-24-00-000000000Z_2026-09-20T09-24-00-000000000Z.parquet",
+      "sha256": "338cd0e6000e2791d96f9e6d07d8f445fa892e248bc31709f8b1918e6c08f58c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-25-00-000000000Z_2026-09-20T09-25-00-000000000Z.parquet",
+      "sha256": "a47533fdd53bfed352664ce4b15ef948efc58f12d24a0a5ef98b26ca1f22d051",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-26-00-000000000Z_2026-09-20T09-26-00-000000000Z.parquet",
+      "sha256": "54e3ed3f4b2168a2b07ffc5849d0e403cb5e9b0e715a0bec9bf5d2c6d6bb5ba3",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-27-00-000000000Z_2026-09-20T09-27-00-000000000Z.parquet",
+      "sha256": "af95716520edb51609d87d9793eefe368a022c124b944950b4d1a9af9da66b91",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-28-00-000000000Z_2026-09-20T09-28-00-000000000Z.parquet",
+      "sha256": "a57fa247ab350a8009c65de87214b21d0a77e0fe14a1beda827788b052fa3e38",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-29-00-000000000Z_2026-09-20T09-29-00-000000000Z.parquet",
+      "sha256": "3c08adeaa8a8f44522b0e3021cb807ca798b5cd49c8646fc936df47eaba9093a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-30-00-000000000Z_2026-09-20T09-30-00-000000000Z.parquet",
+      "sha256": "ace7393442d36fd92d0d2ef73496dd320157dab031c0bf3b8d358c4c167f6047",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-31-00-000000000Z_2026-09-20T09-31-00-000000000Z.parquet",
+      "sha256": "2be6e963d35ba98781f4ca741538223abbde97f92871969302e147133ca0e193",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-32-00-000000000Z_2026-09-20T09-32-00-000000000Z.parquet",
+      "sha256": "3b7c97f7f8c5d16109f3bfd6168d19795175aa6bd5fe26bae8819f3c70922fb4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-33-00-000000000Z_2026-09-20T09-33-00-000000000Z.parquet",
+      "sha256": "97d92e406d69f31bd633d4c04658012d433732dae61809aac84e51a8982a5aeb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-34-00-000000000Z_2026-09-20T09-34-00-000000000Z.parquet",
+      "sha256": "a1a2805f5482aa19cf5fe926b8874adadab0ab88ff92463a74ceaf437aa489c7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-35-00-000000000Z_2026-09-20T09-35-00-000000000Z.parquet",
+      "sha256": "9dbff567dd0c97e284e44eb671de57d000c16aaf051de7912371e1d75cc370d1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-36-00-000000000Z_2026-09-20T09-36-00-000000000Z.parquet",
+      "sha256": "9827e34eb800e16d4f034f7cad7e45ecbce3b02bc577fa55c855879e57e87ea8",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-37-00-000000000Z_2026-09-20T09-37-00-000000000Z.parquet",
+      "sha256": "d3beb00b9b397f092ee0093a3a50a9d244b84fdb79260f9b088471c3c2eec1d2",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-38-00-000000000Z_2026-09-20T09-38-00-000000000Z.parquet",
+      "sha256": "f3fa32908f1fb66e5e0f62af7bcfe1abd219c87df2c9a7f7ceebb9e0391353c4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-39-00-000000000Z_2026-09-20T09-39-00-000000000Z.parquet",
+      "sha256": "6d61192c71e374bdd72331ba7bb7776ff1a93b850a6d9235176f7312f282ee81",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-40-00-000000000Z_2026-09-20T09-40-00-000000000Z.parquet",
+      "sha256": "f59fefd0ee49f2e1d43667093dd6dff64a5bdd1d033f3b0a3d380c3e4c8fb72d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-41-00-000000000Z_2026-09-20T09-41-00-000000000Z.parquet",
+      "sha256": "87c49e0dd6507a1862107d21caec823e29fa777b3da24ae7dbddb18f080eb751",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-42-00-000000000Z_2026-09-20T09-42-00-000000000Z.parquet",
+      "sha256": "e5ccc97cfa284cb0b868b9e08d1aff49703fc04a35a31e51556e85685f2a6336",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-43-00-000000000Z_2026-09-20T09-43-00-000000000Z.parquet",
+      "sha256": "d9f6e823cf1ae6cf0963c049a98f4d162410db519029c1425ceceaa2a1ab566e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-44-00-000000000Z_2026-09-20T09-44-00-000000000Z.parquet",
+      "sha256": "5f973249d0d90ab352b38b0aaf73bcc7e58660ed6e0eb7c69f15e4ba92dba057",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-45-00-000000000Z_2026-09-20T09-45-00-000000000Z.parquet",
+      "sha256": "6cddeea65201fcfea956b62b189a3e49700aadbc270fb371476bdc67f7d23914",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-46-00-000000000Z_2026-09-20T09-46-00-000000000Z.parquet",
+      "sha256": "b3d08ec2d408cd3b9deb272057aded37b254f6f1d6dbd0266aea4987f2e25331",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-47-00-000000000Z_2026-09-20T09-47-00-000000000Z.parquet",
+      "sha256": "d598ea34aef4e9d9f1e96adc2dfea7a66142d37fb5179d78fced2ac7ee3138d1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-48-00-000000000Z_2026-09-20T09-48-00-000000000Z.parquet",
+      "sha256": "9d71677d00580f0fb24d235fe6e7ab673cbd6c4dbfcca43977888b0317eaa31c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-49-00-000000000Z_2026-09-20T09-49-00-000000000Z.parquet",
+      "sha256": "f5cf23b5a6816c91dc84a7e72bd9d0e0755ff6304f0e7c743a4ec02459f4f7a4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-50-00-000000000Z_2026-09-20T09-50-00-000000000Z.parquet",
+      "sha256": "bc78508f8d278b01d354041f31ac69ab403dce2e3751d5bd61fd2a6134b93a3a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-51-00-000000000Z_2026-09-20T09-51-00-000000000Z.parquet",
+      "sha256": "8ac39d10b0d1bf9d920cf06a80c21f26d634b4d606d8ae5fe195b978eea21311",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-52-00-000000000Z_2026-09-20T09-52-00-000000000Z.parquet",
+      "sha256": "d34fe21cd415237c3fefe9ad9638fe9d38623952d419f55e6817c68958158825",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-53-00-000000000Z_2026-09-20T09-53-00-000000000Z.parquet",
+      "sha256": "506eba178d5d58b7c36cbec1f869d2cbb2a9711882999f0b975063252d832ca7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-54-00-000000000Z_2026-09-20T09-54-00-000000000Z.parquet",
+      "sha256": "e337878c3404f053465a6cb0edcabe0922b5fba4e7901a5c341355264b6a5a33",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-55-00-000000000Z_2026-09-20T09-55-00-000000000Z.parquet",
+      "sha256": "a2053dad809b9d937815154345370a2d037717b49693b01aca1d9c99c7734a07",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-56-00-000000000Z_2026-09-20T09-56-00-000000000Z.parquet",
+      "sha256": "c60b8944a3d381554b5f56c9f13475115c17ddadfda4cd0f969c58f4388ae614",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-57-00-000000000Z_2026-09-20T09-57-00-000000000Z.parquet",
+      "sha256": "4ab102e98d91bf618faf6c6d696e10f59bd780d0209fb8248c5abfaa7ec1f9e7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-58-00-000000000Z_2026-09-20T09-58-00-000000000Z.parquet",
+      "sha256": "c855e2e7631e76ebd942936368c08ad2374e7407e130e65cc83561515f04e4ea",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T09-59-00-000000000Z_2026-09-20T09-59-00-000000000Z.parquet",
+      "sha256": "81acc3b0688767430b8046c800984675f46fe52627af568dd144dd283ea399c4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-00-00-000000000Z_2026-09-20T10-00-00-000000000Z.parquet",
+      "sha256": "dbd221a3dc07a21ed8504a368145ad40f6fba46bad4bb9805d73951261bd0e03",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-01-00-000000000Z_2026-09-20T10-01-00-000000000Z.parquet",
+      "sha256": "f69d64ece0da2c79f28d072445c88a0f924135f795ca7b63153f1c31ddf52848",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-02-00-000000000Z_2026-09-20T10-02-00-000000000Z.parquet",
+      "sha256": "12a0095e604dfb754c01af6e54cbc3e45690e6b67c0205b145fdec5b81f7ad55",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-03-00-000000000Z_2026-09-20T10-03-00-000000000Z.parquet",
+      "sha256": "97f4e303013ed4109c444b089a23d89a2dd658ee629aac58837c0cc60718c423",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-04-00-000000000Z_2026-09-20T10-04-00-000000000Z.parquet",
+      "sha256": "2af90c5ea5378c4bb7f2f419c7bd694637e37c4c4e0b37a5e9e96f6a26ec48f4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-05-00-000000000Z_2026-09-20T10-05-00-000000000Z.parquet",
+      "sha256": "d2db333fb792893bca04f6f16bd1e0314daaff62f8d23fda4675c30cc78a2504",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-06-00-000000000Z_2026-09-20T10-06-00-000000000Z.parquet",
+      "sha256": "95d1eba4bdc600614c1acfed3dfb6448971ec01329984752477351808ee8880b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-07-00-000000000Z_2026-09-20T10-07-00-000000000Z.parquet",
+      "sha256": "cf1244d69a146adf50e55bca67bc1601579a13a009a87f7194fae81ec2b0bf95",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-08-00-000000000Z_2026-09-20T10-08-00-000000000Z.parquet",
+      "sha256": "60a9ca889e80d0b62650f652e6b6aca0ffb3805e9e9d56f0449101b395cc1ace",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-09-00-000000000Z_2026-09-20T10-09-00-000000000Z.parquet",
+      "sha256": "bfcdf8b0becbc21b4e7e57a65d5698ad9b1a4b48edbce95078cf5eac0e2d65d3",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-10-00-000000000Z_2026-09-20T10-10-00-000000000Z.parquet",
+      "sha256": "f253abe3ea60c8144abd04b037b92f0dee37164a6ff1ed067883452bb450a327",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-11-00-000000000Z_2026-09-20T10-11-00-000000000Z.parquet",
+      "sha256": "2e65a4fef777ad348ef3ea48873b2a04efec63dc089476a4f66f564c440ccf5c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-12-00-000000000Z_2026-09-20T10-12-00-000000000Z.parquet",
+      "sha256": "075216b5b939ad9f7e0495876273cba3ad66275d06ee08f2911c9668de445a21",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-13-00-000000000Z_2026-09-20T10-13-00-000000000Z.parquet",
+      "sha256": "3099d39acddd377e39dc04e394f9687172b04294e4586c7e9be1a86ce863783e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-14-00-000000000Z_2026-09-20T10-14-00-000000000Z.parquet",
+      "sha256": "d5763e591f9e9a5a06207575b2cdf3eeba7ad637545a6f955c7654672b241058",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-15-00-000000000Z_2026-09-20T10-15-00-000000000Z.parquet",
+      "sha256": "ef88320378bacfc894836792f4206e489dd20945f8ea865eba1f011a737d9c38",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-16-00-000000000Z_2026-09-20T10-16-00-000000000Z.parquet",
+      "sha256": "6468a43f7f6c5e85cd59d56cb02b5244a91afdd9f3d37270dccb6f61f869cd12",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-17-00-000000000Z_2026-09-20T10-17-00-000000000Z.parquet",
+      "sha256": "7c0f7994c0fe42d1f6a9d4755172c41e330839dde4b95fdbfd62fa40b0fa192d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-18-00-000000000Z_2026-09-20T10-18-00-000000000Z.parquet",
+      "sha256": "21e46babf61c2c440bedd7114dcca998127bf32a0c1984fac492e5a37a0233bf",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-19-00-000000000Z_2026-09-20T10-19-00-000000000Z.parquet",
+      "sha256": "deac5a4e322be0062d330eb985d2f713c91571dc3ab1be4d61bfb4de0eb89338",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-20-00-000000000Z_2026-09-20T10-20-00-000000000Z.parquet",
+      "sha256": "39a3edb6d4a87842493b565eff5b0139037762376bcb4116ea2eb5f29425659f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-21-00-000000000Z_2026-09-20T10-21-00-000000000Z.parquet",
+      "sha256": "728d54289a370f58157b7535e10af6f9cfa51cf1e59baf0eaa202cd5a1ca08a7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-22-00-000000000Z_2026-09-20T10-22-00-000000000Z.parquet",
+      "sha256": "a51073a59f133e4f895d43ec53a7239912872c4c0148f2effe11658c70851988",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-23-00-000000000Z_2026-09-20T10-23-00-000000000Z.parquet",
+      "sha256": "7e6e17ca5707c93cc16d2ff3e6fb99e3e35f7a2d3457e79393ea8947fab899cb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-24-00-000000000Z_2026-09-20T10-24-00-000000000Z.parquet",
+      "sha256": "ec6d0caffe705f048962af631ceb3082650bccb00b1e1c0158b369c47453df35",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-25-00-000000000Z_2026-09-20T10-25-00-000000000Z.parquet",
+      "sha256": "fc412601540316ba87a2c948e5d327ad8451fed06ed90be44d674ac2b16a6502",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-26-00-000000000Z_2026-09-20T10-26-00-000000000Z.parquet",
+      "sha256": "ed32451767851ca37ea5973011b749c19aac61628fd701f1d19ebf37b04041c0",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-27-00-000000000Z_2026-09-20T10-27-00-000000000Z.parquet",
+      "sha256": "5bb8ddcafc6100367bf091c24f94e0c0668b739b1f84895324de2f9dea39685d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-28-00-000000000Z_2026-09-20T10-28-00-000000000Z.parquet",
+      "sha256": "0108ff55b1d558e39917e6230500b0b1fd35ae38332c270cb279111216ecd328",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-29-00-000000000Z_2026-09-20T10-29-00-000000000Z.parquet",
+      "sha256": "52516203d795319a20253dc1aeb4f72b0b4bc41d3fb73eaea8242500c93c975b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-30-00-000000000Z_2026-09-20T10-30-00-000000000Z.parquet",
+      "sha256": "f80269b7b9102a3948050f8798f7ca957e6e4df2e48caa53857449a1839ea9ae",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-31-00-000000000Z_2026-09-20T10-31-00-000000000Z.parquet",
+      "sha256": "999b0b6194733e7148108192f05fc045aa79d80098c1a5f1e24f765e35af5ecd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-32-00-000000000Z_2026-09-20T10-32-00-000000000Z.parquet",
+      "sha256": "1859be41fa43d9afffd0ce0ce3d441b286f404a2c6b957c77a4f05465daa4c8e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-33-00-000000000Z_2026-09-20T10-33-00-000000000Z.parquet",
+      "sha256": "b723828073670da931cd25f9f1e67f0fcc1975c8035a592ef7b127fd373afb34",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-34-00-000000000Z_2026-09-20T10-34-00-000000000Z.parquet",
+      "sha256": "fdd480b6e40ca19963d75c27b179422cbec65477a8f3414b207dd80553fd1432",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-35-00-000000000Z_2026-09-20T10-35-00-000000000Z.parquet",
+      "sha256": "70510972da7ffc61ac766c8f813026e470c68e7069e6d1d261edfd195a3e499f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-36-00-000000000Z_2026-09-20T10-36-00-000000000Z.parquet",
+      "sha256": "506bc0984f59fb80824565e896a8d2dc7fbe26b862e9e8e090b9102ef1726d75",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-37-00-000000000Z_2026-09-20T10-37-00-000000000Z.parquet",
+      "sha256": "e56cfede7a4a8967b2779be483b4ce33fd353ffc92612a3b91f3f9e3e9f46933",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-38-00-000000000Z_2026-09-20T10-38-00-000000000Z.parquet",
+      "sha256": "e124d9c53b7f4c7921c8b5a31884fad29f395d527680288d61003aef5e933517",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-39-00-000000000Z_2026-09-20T10-39-00-000000000Z.parquet",
+      "sha256": "6b48a483fb422797d9b2bd56c60cef23cca16a8a7b28943f0adedc333229b28b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-40-00-000000000Z_2026-09-20T10-40-00-000000000Z.parquet",
+      "sha256": "4cb72cba869aa6e9672a27fecf94f6a09fab56d00ca49d35cfde188f66164ed3",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-41-00-000000000Z_2026-09-20T10-41-00-000000000Z.parquet",
+      "sha256": "8a6b8fa845b90f52a3aea83d32b04a5e7cf936be9e240e88702701e7b1bec161",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-42-00-000000000Z_2026-09-20T10-42-00-000000000Z.parquet",
+      "sha256": "6568c42b43d9a6504abaafeab2374cb39b0fdd3c91c928df1cd85ec67e16f1c7",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-43-00-000000000Z_2026-09-20T10-43-00-000000000Z.parquet",
+      "sha256": "02754f7760e5cfd033d7e74254f7c3befe5d9259e8ae79120409ee7d0f849c27",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-44-00-000000000Z_2026-09-20T10-44-00-000000000Z.parquet",
+      "sha256": "6c60e2b315392bf6c513913288ed0dace8cc7a54a58bbd437bed1015d2560bdf",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-45-00-000000000Z_2026-09-20T10-45-00-000000000Z.parquet",
+      "sha256": "52ba9deb79c7695460d7c3f395274e587799f18e5384d91896ac9311447125d4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-46-00-000000000Z_2026-09-20T10-46-00-000000000Z.parquet",
+      "sha256": "bc291333abe2836ec7a6f49bb3a5454b925f332383404a96523b952e77acc5d2",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-47-00-000000000Z_2026-09-20T10-47-00-000000000Z.parquet",
+      "sha256": "3ba2e65da6184e1cb3a22f78d401c71ea5cf116120de3cab1e9af46b4bbb5797",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-48-00-000000000Z_2026-09-20T10-48-00-000000000Z.parquet",
+      "sha256": "d69560912e03caf93b0c8a7c9752ba4dfbba9b3d5056ddeec1e08ca6b5364a1f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-49-00-000000000Z_2026-09-20T10-49-00-000000000Z.parquet",
+      "sha256": "1753a8eb7c3fd21e44fe955ffa814eeaf1b6adb498bc0b153448fd14e808b564",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-50-00-000000000Z_2026-09-20T10-50-00-000000000Z.parquet",
+      "sha256": "97f8c53710027eeac66084c8e930dbe778cc95b0fb22ac835c06c4acfa85497d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-51-00-000000000Z_2026-09-20T10-51-00-000000000Z.parquet",
+      "sha256": "67076519a5bd027899be528ee41145d89fdaddf7c044c50cd9252341fcc5b6c4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-52-00-000000000Z_2026-09-20T10-52-00-000000000Z.parquet",
+      "sha256": "5f3b82ea8816a32dee73f6b762b87b66f9531abfeedfcb8d0800c4c75a9ea3fb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-53-00-000000000Z_2026-09-20T10-53-00-000000000Z.parquet",
+      "sha256": "db0e5cf6087f2c687930435f7ace90c3a1006c3359cceb2609689a6fb4d0e195",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-54-00-000000000Z_2026-09-20T10-54-00-000000000Z.parquet",
+      "sha256": "66c414942a2b89ad627a3757994f13fdade1c6694bd3ca73601c372c423ba0a4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-55-00-000000000Z_2026-09-20T10-55-00-000000000Z.parquet",
+      "sha256": "e15eb5510ec45b7f9ae43346bfa3717270f7fb876ab700f9d983fd233b445023",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-56-00-000000000Z_2026-09-20T10-56-00-000000000Z.parquet",
+      "sha256": "75280d98bd34bf8448d4aef33b46eb9a1fe392549e4cd0d9a9af1ee02371194d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-57-00-000000000Z_2026-09-20T10-57-00-000000000Z.parquet",
+      "sha256": "371a07387384f824f13756c652f2806cedd198575f5075a400abb45ab72b1239",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-58-00-000000000Z_2026-09-20T10-58-00-000000000Z.parquet",
+      "sha256": "489241a35d1d744592bd38106fda5a83b75c65e8ba3919aaf5f3aa396fcc160d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T10-59-00-000000000Z_2026-09-20T10-59-00-000000000Z.parquet",
+      "sha256": "9ead0dd87e88902d6735a3b7fb5bcecf63fa6452660abfaac8ed8332f342e104",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-00-00-000000000Z_2026-09-20T11-00-00-000000000Z.parquet",
+      "sha256": "26da25b9dc11e0dacd34ee9bbb538754e5100ba72b4457e26757a84e4bc901ea",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-01-00-000000000Z_2026-09-20T11-01-00-000000000Z.parquet",
+      "sha256": "f82f8eaae3bed58aed69ac716f1cd4d0bec9af848a2d9c0048291e48f1ad3600",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-02-00-000000000Z_2026-09-20T11-02-00-000000000Z.parquet",
+      "sha256": "3d4da9bfc90d051b66ef414fa1d9833efa2a4f7bf373935db68a74d725b83df4",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-03-00-000000000Z_2026-09-20T11-03-00-000000000Z.parquet",
+      "sha256": "1e0ceae005200360a84e3f34a1eb60e9166f9e91c60cd10d665fae5d40e5e0fe",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-04-00-000000000Z_2026-09-20T11-04-00-000000000Z.parquet",
+      "sha256": "de243ed7544a6ff51be68f21c9e95d26853325c44ce17749f4c77401a075d379",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-05-00-000000000Z_2026-09-20T11-05-00-000000000Z.parquet",
+      "sha256": "afe67243aaaac7629afa54b3ae3082e4c6f35a7123c4ff132dcc489f8638b921",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-06-00-000000000Z_2026-09-20T11-06-00-000000000Z.parquet",
+      "sha256": "8a9709414575ad70713889d71a35cc4664d40e7faae1bf954547570f50044772",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-07-00-000000000Z_2026-09-20T11-07-00-000000000Z.parquet",
+      "sha256": "c848a88b93ecd5416cf1be1a66fed47f7d5f6cf8bc9cac34dd2b2d079a352fef",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-08-00-000000000Z_2026-09-20T11-08-00-000000000Z.parquet",
+      "sha256": "742995e7bb32538727dd31520c57204a36a4e543ffb752c33bb3eaf40ddb8392",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-09-00-000000000Z_2026-09-20T11-09-00-000000000Z.parquet",
+      "sha256": "6735d90f8a2b473471e37061752facf0419c65f0e56a7535d84c4812112dc3d2",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-10-00-000000000Z_2026-09-20T11-10-00-000000000Z.parquet",
+      "sha256": "b91c595ad2d9fc38af67db2556b25d891c527a49340f3671aab898ddd2889d1b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-11-00-000000000Z_2026-09-20T11-11-00-000000000Z.parquet",
+      "sha256": "e3879e51a2eb83931a36c76bc6b97ef4adb0583df8285961f500710a88dd66ec",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-12-00-000000000Z_2026-09-20T11-12-00-000000000Z.parquet",
+      "sha256": "193216f5c8a5286920a27c9b731cffaf0347b384465f7653b80633d41b284cb5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-13-00-000000000Z_2026-09-20T11-13-00-000000000Z.parquet",
+      "sha256": "635f763995a15254e5f8ad6ffd8d2981f5124098a2f17d57adf31e0d93b2e41a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-14-00-000000000Z_2026-09-20T11-14-00-000000000Z.parquet",
+      "sha256": "29d40b637c90905b535714f6397b6eedce748963343d16c1d0c1922f0de8f71b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-15-00-000000000Z_2026-09-20T11-15-00-000000000Z.parquet",
+      "sha256": "95b120cafb0649d32f1464c967bb3189428251b9cc3e20fe8804d53aaed398ed",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-16-00-000000000Z_2026-09-20T11-16-00-000000000Z.parquet",
+      "sha256": "6bf6e203156c73ec3cf2e5db9c0548fb0c311d629c3bc3ad20fb7da9769a6e86",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-17-00-000000000Z_2026-09-20T11-17-00-000000000Z.parquet",
+      "sha256": "20442dc0963373f50306b4c920e6959ce86d6ef5c65c627766caf3d3148e3c5d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-18-00-000000000Z_2026-09-20T11-18-00-000000000Z.parquet",
+      "sha256": "3785383ae185f369ac7c848ad6fd88bc0e09bdca50a875f6caa1464e9c5004a9",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-19-00-000000000Z_2026-09-20T11-19-00-000000000Z.parquet",
+      "sha256": "191c12392010ffdaddfef486da7c1062a69e2692c54afb6790af4da502eebfa0",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-20-00-000000000Z_2026-09-20T11-20-00-000000000Z.parquet",
+      "sha256": "68990cf4d8345e9702cb0e5de0893719529b3cf4d6caf7652a83c151810f7a46",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-21-00-000000000Z_2026-09-20T11-21-00-000000000Z.parquet",
+      "sha256": "ae51ccb1762a2fb62b0ab5ed7fd4c3992336a3445682a2b23832b233265d0659",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-22-00-000000000Z_2026-09-20T11-22-00-000000000Z.parquet",
+      "sha256": "9b233a37b795cc373049ea653fed8d3e93c4048082014f19c68822f3c398265d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-23-00-000000000Z_2026-09-20T11-23-00-000000000Z.parquet",
+      "sha256": "5109c0ab7fa605c544cf589b7b4ab7b05833400ad0ccab0f331030424c1f302d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-24-00-000000000Z_2026-09-20T11-24-00-000000000Z.parquet",
+      "sha256": "53a92baf047c584d9b7da1b1891d036ba39a98b2f5e50a3b4033ccf8c29304c0",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-25-00-000000000Z_2026-09-20T11-25-00-000000000Z.parquet",
+      "sha256": "d48b1722047ecc11fd0a30b5fe93a22d0a428e4cdae2f1bad49dca9fde7f3b05",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-26-00-000000000Z_2026-09-20T11-26-00-000000000Z.parquet",
+      "sha256": "9635274950abe34c18d3149d4c2625006cf3ff7c407992eeac1ba25c3c288e41",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-27-00-000000000Z_2026-09-20T11-27-00-000000000Z.parquet",
+      "sha256": "3379fc97779233a948e9359062bb29d30d0214bfc86df133e6899c22ffdfcd12",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-28-00-000000000Z_2026-09-20T11-28-00-000000000Z.parquet",
+      "sha256": "e62bcc48618f637c5518864def96721fa91d2b6a9f21e3d9338346c22d28a602",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-29-00-000000000Z_2026-09-20T11-29-00-000000000Z.parquet",
+      "sha256": "2a6c7a776ba6d6760f09a0e38fa5b32ee8da384d466e1a720ca032d8909de586",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-30-00-000000000Z_2026-09-20T11-30-00-000000000Z.parquet",
+      "sha256": "dfdc3b96d51d8157f3928c219edd060471639daa2002bb88b0fd852a213e4f57",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-31-00-000000000Z_2026-09-20T11-31-00-000000000Z.parquet",
+      "sha256": "34de5a9fe601422a08f4ad90d6811f18e12c682c954d090c7e8efb8b0de1abbd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-32-00-000000000Z_2026-09-20T11-32-00-000000000Z.parquet",
+      "sha256": "11d2b2981a3ad57d473d765b00339e8fcccee55a1a31937784c3a4e2ed3f1afb",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-33-00-000000000Z_2026-09-20T11-33-00-000000000Z.parquet",
+      "sha256": "a248f7510c4876edda62b3e19d577390fd15f4a51c286c06f0c11262ed3b7815",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-34-00-000000000Z_2026-09-20T11-34-00-000000000Z.parquet",
+      "sha256": "a7d390abb8b99c22299659a288bcae5c3c9e272af7578175183dd0ca00426846",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-35-00-000000000Z_2026-09-20T11-35-00-000000000Z.parquet",
+      "sha256": "80fbb583f27dad0a2ed39b02fd41c088f9a96b6e402050638c15981027e1f08f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-36-00-000000000Z_2026-09-20T11-36-00-000000000Z.parquet",
+      "sha256": "773a9c0b319fc91faf2340ccde150e3262fbc293d7d056345a31d72f55b91447",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-37-00-000000000Z_2026-09-20T11-37-00-000000000Z.parquet",
+      "sha256": "c668515430d5ed282aa508f3be1f6926803013bf22e2989a681ec6ae8f72e44a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-38-00-000000000Z_2026-09-20T11-38-00-000000000Z.parquet",
+      "sha256": "b0ee54bccca38707857bed0751fd8db5c9bed1e671d5861bbaae1cd42253dde3",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-39-00-000000000Z_2026-09-20T11-39-00-000000000Z.parquet",
+      "sha256": "8f31abf4351460a2d0b1cfda6bc05ac835a76e7b860a17e0333c3144b054a89b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-40-00-000000000Z_2026-09-20T11-40-00-000000000Z.parquet",
+      "sha256": "5e16171c9e3d4050a934dc4acd99bc4d4110c3b700776197e440db5a34aaba3b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-41-00-000000000Z_2026-09-20T11-41-00-000000000Z.parquet",
+      "sha256": "520c2607410c9519bb9cf46ec509014485a06ad17e8e189b78d97734efdc80d6",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-42-00-000000000Z_2026-09-20T11-42-00-000000000Z.parquet",
+      "sha256": "44becffc96302e9958a4e10b02528f185f9026acfda2ea6011d754464d6de934",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-43-00-000000000Z_2026-09-20T11-43-00-000000000Z.parquet",
+      "sha256": "ff5284e57168c26025ef7b66ee062568e4ce8ebe677936f5c9c627960a2fcd1a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-44-00-000000000Z_2026-09-20T11-44-00-000000000Z.parquet",
+      "sha256": "98c8b7fc0c175d5a67f17d88cf44c84a669d2165292835804eb2e82c1b80757d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-45-00-000000000Z_2026-09-20T11-45-00-000000000Z.parquet",
+      "sha256": "a39b2bee4b33020ddf3be5c8251892e8f1a49eebc6cfa34e13ae747fdc87d425",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-46-00-000000000Z_2026-09-20T11-46-00-000000000Z.parquet",
+      "sha256": "0bd16cfbfbde36b2bbf0948c91749ccb813dc97d1b0c96e51bfe18fdf9c5bc6e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-47-00-000000000Z_2026-09-20T11-47-00-000000000Z.parquet",
+      "sha256": "807fe19e4f9745d860d1fea6f114daab734f2826c3d3037e41324cd6e69aaf5f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-48-00-000000000Z_2026-09-20T11-48-00-000000000Z.parquet",
+      "sha256": "0d3f99ef9c29602d5f4e83d0343ca666692bd23c4a83de1351cb8422c010a697",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-49-00-000000000Z_2026-09-20T11-49-00-000000000Z.parquet",
+      "sha256": "72f2f8e08b68232aa2e6dfaef971df0f3521625ac8345df52cbea8eed17155a8",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-50-00-000000000Z_2026-09-20T11-50-00-000000000Z.parquet",
+      "sha256": "04df66a8120cbf1bd841333d3702e3af3c8fbc16f35827d3202d83f60418b1d1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-51-00-000000000Z_2026-09-20T11-51-00-000000000Z.parquet",
+      "sha256": "57acea46e5845f15fcbc56b3b8e6e332ce255ce2f560736a60e828bdf2a654bd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-52-00-000000000Z_2026-09-20T11-52-00-000000000Z.parquet",
+      "sha256": "0508b5f05dc154cf22e7281f67080a3030d4b0bdf998170d31dbbe5dc45d9eba",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-53-00-000000000Z_2026-09-20T11-53-00-000000000Z.parquet",
+      "sha256": "aa0c8e8239503fa11ff637a38b05380f32e7adff10a4787bc4ff1a8061072b11",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-54-00-000000000Z_2026-09-20T11-54-00-000000000Z.parquet",
+      "sha256": "c5ca077508062c47677f76ef1f6f7400388a008893eda9f69c9f3e36df188b76",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-55-00-000000000Z_2026-09-20T11-55-00-000000000Z.parquet",
+      "sha256": "aa4130e3df20cbdb408a1a5a9610e2f4dfc15696ef0ecf343c0bc3583ceec282",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-56-00-000000000Z_2026-09-20T11-56-00-000000000Z.parquet",
+      "sha256": "a8158c15b09241c0830ac428c32418b9ba782fadf6487713d7e82c4303842e1d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-57-00-000000000Z_2026-09-20T11-57-00-000000000Z.parquet",
+      "sha256": "e9189c261d6aaab374ca07a6bf47c99bd7cbc8d006655fae380208f57c635c23",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-58-00-000000000Z_2026-09-20T11-58-00-000000000Z.parquet",
+      "sha256": "88696a5ba6022c9d41bf5e308047849cc9849af0da9f5be555b403f5a450bc02",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T11-59-00-000000000Z_2026-09-20T11-59-00-000000000Z.parquet",
+      "sha256": "44c7cb8232e323659f60005df6ed38434cd005ecb9a781dc8b1f7255f0d09506",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-00-00-000000000Z_2026-09-20T12-00-00-000000000Z.parquet",
+      "sha256": "2e85ea1a3fffdcc41d0ace780786d6ed25748f5c38d3aff9c715126f9b184e72",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-01-00-000000000Z_2026-09-20T12-01-00-000000000Z.parquet",
+      "sha256": "5f05fe7031dd446ad20a7d87dc7a4671f8e9fa4052703a6b6b4a5c08bd1196e0",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-02-00-000000000Z_2026-09-20T12-02-00-000000000Z.parquet",
+      "sha256": "6271ee433765fbab9f9d71f7f5d4900be3353ee8965599b4998005746c70301c",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-03-00-000000000Z_2026-09-20T12-03-00-000000000Z.parquet",
+      "sha256": "ed81c5f438c802bb4a315c0b6976ea94937ca5efe37e7c8fad611b818c59efba",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-04-00-000000000Z_2026-09-20T12-04-00-000000000Z.parquet",
+      "sha256": "12b9cd7a7314f679ce5467943b8e695f087c41a381fd244f5e5944d4990847f5",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-05-00-000000000Z_2026-09-20T12-05-00-000000000Z.parquet",
+      "sha256": "a6b0b221f2cec06631a9d31a61de01f7e9c221fd61dfbdc7efa3956449c5dd8d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-06-00-000000000Z_2026-09-20T12-06-00-000000000Z.parquet",
+      "sha256": "edf0028182f8b97d4ee85dc98154700f0620c86242e68fc4f39fc56e3bf6a58a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-07-00-000000000Z_2026-09-20T12-07-00-000000000Z.parquet",
+      "sha256": "75576c6456380291e6916075b62a752515c731996dac33dc6a545696113a12ca",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-08-00-000000000Z_2026-09-20T12-08-00-000000000Z.parquet",
+      "sha256": "658e8f1662d2a7b1c95948ed6ad814b7561dcaad0c8ec5ebb9ae804534a24222",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-09-00-000000000Z_2026-09-20T12-09-00-000000000Z.parquet",
+      "sha256": "27cb64c375ac68d4cefcddefc3c5d38f3a9d126e0f48bcf25f9aa5f1f7131edd",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-10-00-000000000Z_2026-09-20T12-10-00-000000000Z.parquet",
+      "sha256": "2c58ea9981e6f23bca3ada3a26300c2f175dabbaf0411199e51bc98aaa7ee76b",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-11-00-000000000Z_2026-09-20T12-11-00-000000000Z.parquet",
+      "sha256": "32df00445fdfebdcb3fbedb1871a1795e12feb6e8b55d206ee41915ad5f729aa",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-12-00-000000000Z_2026-09-20T12-12-00-000000000Z.parquet",
+      "sha256": "ea91266fce3c3be4aabc2e63ad792b56f97898629a09b187fbee4bb7f3beb2ba",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-13-00-000000000Z_2026-09-20T12-13-00-000000000Z.parquet",
+      "sha256": "fb4721649d3107032332d1c92af957a5e5cf4c4c34847c48e3b865dcdd36ac67",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-14-00-000000000Z_2026-09-20T12-14-00-000000000Z.parquet",
+      "sha256": "08c9b7226864f7740bd7925ee1e367508a799973b7a8db7e0922639cd85ffee1",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-15-00-000000000Z_2026-09-20T12-15-00-000000000Z.parquet",
+      "sha256": "824553f2816d0cb2d81a9ce71967c0733d4ae81b59df9a59eec2cc79718454cc",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-16-00-000000000Z_2026-09-20T12-16-00-000000000Z.parquet",
+      "sha256": "6ee69bc98e3652401d4385e50a0bec2d131944a8350af3e35ac4fa6980b08728",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-17-00-000000000Z_2026-09-20T12-17-00-000000000Z.parquet",
+      "sha256": "b70cd605b2961eaf1917f3b61813212b401e12cf1bdc66226899c4bee3c71363",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-18-00-000000000Z_2026-09-20T12-18-00-000000000Z.parquet",
+      "sha256": "540b793e08332e3e99a9fe303224984a6daa8fcd351fca469c974d80dd370e9f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-19-00-000000000Z_2026-09-20T12-19-00-000000000Z.parquet",
+      "sha256": "72c5e5959d2c3dad53a1cd06b2a1a2d35ce5648b51b22e80fa1b8f1069e2d50d",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-20-00-000000000Z_2026-09-20T12-20-00-000000000Z.parquet",
+      "sha256": "70c8517c4f07328dad0ca200289bb4c478a2d07127cfcf4532a989a77b6cf954",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-21-00-000000000Z_2026-09-20T12-21-00-000000000Z.parquet",
+      "sha256": "6eaf1d8d3b5f549f3460241a3703c6064d5275d5b4cd159b030e19716b92886a",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-22-00-000000000Z_2026-09-20T12-22-00-000000000Z.parquet",
+      "sha256": "6569971427b143ac295e2dfa9ac055af8cd940c37c9a99c83c314c540f146e03",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-23-00-000000000Z_2026-09-20T12-23-00-000000000Z.parquet",
+      "sha256": "0f25caac55a944eb32a2957ad419ceb74d7accd1863fdff2985804e1f735f282",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-24-00-000000000Z_2026-09-20T12-24-00-000000000Z.parquet",
+      "sha256": "9e0537cb5960cbe6bad8c62cf73190fe3e9f1c3b41e6d747205ea8f3326d5d4e",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-25-00-000000000Z_2026-09-20T12-25-00-000000000Z.parquet",
+      "sha256": "b2e40bfb4fe773c71319f05b7864f211587ae2a3ba0b2b5367bff999432c647f",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-26-00-000000000Z_2026-09-20T12-26-00-000000000Z.parquet",
+      "sha256": "a25c1469dd55848fd657ea2e15988a6085f34fcb54b9770136e10ca5a183f408",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-27-00-000000000Z_2026-09-20T12-27-00-000000000Z.parquet",
+      "sha256": "8390ec8d3ebffc6e852b5aef437794e868c5d64b49320c40c24aa129645c9d23",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-28-00-000000000Z_2026-09-20T12-28-00-000000000Z.parquet",
+      "sha256": "3f49170e91762c3addf1752e9446ee15b1214392706cda9c190d3ade288ed4cc",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-29-00-000000000Z_2026-09-20T12-29-00-000000000Z.parquet",
+      "sha256": "8b031bfe4cbe31d2061908a30cd96501135f31b8dd2198fcfdbbd81ad43d7fc2",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-30-00-000000000Z_2026-09-20T12-30-00-000000000Z.parquet",
+      "sha256": "2b9d2796e1830051c51465968e5209eb470de7c9c5c9c22b255ac87e44856fde",
+      "size_bytes": 2377
+    },
+    {
+      "path": "data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL/2026-09-20T12-31-00-000000000Z_2026-09-20T12-31-00-000000000Z.parquet",
+      "sha256": "b37ee80a69808ee4a47630306d203245764b2715937495247b20da0025e960c2",
+      "size_bytes": 2377
+    }
+  ],
+  "evaluation_end_ns": 1789907501039000000,
+  "evaluation_start_ns": 1789885901039000000,
+  "execution_profile": "optimistic",
+  "instrument_id": "BTCUSDT.BINANCE",
+  "nautilus_version": "2.0.0rc4",
+  "parameters": {
+    "atr_period": 10,
+    "multiplier": 3,
+    "trade_size": 0.01
+  },
+  "realism_disclosure": "OHLCV bar backtesting uses simulated L1 matching and cannot reconstruct order-book depth, spread variation, queue position, or exchange latency. Backtest results are hypothetical and do not represent actual live execution.",
+  "run_config_hash": "2e2b4b98f3d004e23b9e74fc927dc5c2cdbd3bcae71354a88f9be9e0cc07602b",
+  "run_id": "1a6e1d19-af10-4aa2-8e5a-a68c380bacb6",
+  "source_tree_hash": "890ca3c1c745f8f8867c29b623479ba6da2e3f21722a72808a87efbe0b2d3e4f",
+  "strategy_slug": "supertrend",
+  "strategy_version_id": "264f6765-d0a2-4d68-b81a-a8dcb9e0d099",
+  "timeframe": "1m",
+  "warmup_start_ns": 1789864301039000000
+}

@@ -79,6 +79,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # --- STEP 2: Database and Secrets ---
     logger.info("Connecting to PostgreSQL and Redis with least-privilege executor credentials...")
     pg_pool = await asyncpg.create_pool(dsn=clean_db_url, min_size=2, max_size=10)
+    kill_switch.configure(pg_pool, environment, account_id)
     import redis.asyncio as aioredis
     redis_client = aioredis.from_url(redis_url, decode_responses=False)
 
@@ -193,7 +194,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("Using mock venue, skipping live reconciliation.")
     except Exception as e:
         logger.error("Startup reconciliation error: %s", e)
-        if not kill_switch.is_tripped():
+        if not kill_switch.is_latched:
             kill_switch.trip(latched_by="STARTUP_RECONCILIATION_CRASH", reason=str(e))
 
     # --- STEP 9: READY ---
@@ -291,8 +292,39 @@ async def run_poller_loop(pipe: DemoExecutionPipeline, poll_interval_s: float = 
             if cmd:
                 cmd_type = cmd.get("command_type")
                 logger.info("Claimed command %s (%s)", cmd.get("command_id"), cmd_type)
-                if cmd_type == "SUBMIT_ORDER":
+                if cmd_type in ("SUBMIT_ORDER", "MANUAL_ORDER", "CLOSE_POSITION"):
+                    is_latched = await pipe.kill_switch.is_latched_async()
+                    payload = cmd.get("payload", {})
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except Exception:
+                            payload = {}
+                            
+                    if is_latched:
+                        if not payload.get("reduce_only", False):
+                            logger.warning(f"Rejected non-reduce-only order {cmd.get('command_id')} because kill switch is latched.")
+                            await pipe._finalize_command(cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "REJECTED", "REJECTED", "Kill switch is latched")
+                            continue
                     await pipe.process_submit_order(cmd)
+
+                elif cmd_type == "CANCEL_ORDER":
+                    payload = cmd.get("payload", {})
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except:
+                            payload = {}
+                    symbol = payload.get("symbol", "BTCUSDT")
+                    client_order_id = payload.get("client_order_id")
+                    if client_order_id:
+                        try:
+                            await pipe.venue_client.cancel_order(symbol, client_order_id)
+                            await pipe._finalize_command(cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "COMPLETED", "SUCCESS", None)
+                        except Exception as e:
+                            await pipe._finalize_command(cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "FAILED", "FAILED", str(e))
+                    else:
+                        await pipe._finalize_command(cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "REJECTED", "REJECTED", "Missing client_order_id")
                 elif cmd_type == "TRIP_KILL_SWITCH":
                     payload = cmd.get("payload", {})
                     if isinstance(payload, str):
@@ -300,10 +332,47 @@ async def run_poller_loop(pipe: DemoExecutionPipeline, poll_interval_s: float = 
                             payload = json.loads(payload)
                         except Exception:
                             payload = {}
+                    latched_by_val = cmd.get("requester_id") or payload.get("operator", "operator")
+                    reason_val = payload.get("reason", "Operator manual trip")
                     pipe.kill_switch.trip(
-                        latched_by=cmd.get("requester_id") or payload.get("operator", "operator"),
-                        reason=payload.get("reason", "Operator manual trip"),
+                        latched_by=latched_by_val,
+                        reason=reason_val,
                     )
+                    # 1. Close admission gate
+                    pipe.is_gate_open = False
+                    # 2. Stop strategy producers and persist kill-switch to database
+                    async with pipe.pool.acquire() as conn:
+                        await conn.execute("UPDATE paper_strategy_instances SET status = 'STOPPED' WHERE status IN ('RUNNING', 'PAUSED')")
+                        await conn.execute(
+                            """
+                            UPDATE execution_kill_switch
+                            SET is_latched = true,
+                                latch_generation = latch_generation + 1,
+                                latched_by = $1,
+                                reason = $2,
+                                updated_at = now()
+                            WHERE environment = $3 AND account_id = $4;
+                            """,
+                            latched_by_val,
+                            reason_val,
+                            getattr(pipe, "environment", "DEMO"),
+                            getattr(pipe, "account_id", "BINANCE-SPOT-DEMO"),
+                        )
+                    # 3. Cancel venue orders
+                    try:
+                        open_orders = await pipe.venue_client.get_open_orders()
+                        for order in open_orders:
+                            await pipe.venue_client.cancel_order(order['symbol'], order['clientOrderId'])
+                    except Exception as cancel_err:
+                        logger.error("Failed to cancel venue orders during kill switch trip: %s", cancel_err)
+                    # 4. Reconcile exposure
+                    if hasattr(pipe, "reconciler") and pipe.reconciler:
+                        try:
+                            await pipe.reconciler.reconcile_orders(pipe.venue_client)
+                            await pipe.reconciler.reconcile_balances(pipe.venue_client)
+                        except Exception as rec_err:
+                            logger.error("Failed to reconcile exposure during kill switch trip: %s", rec_err)
+                            
                     await pipe._finalize_command(
                         cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "COMPLETED", "SUCCESS", None
                     )
@@ -312,13 +381,97 @@ async def run_poller_loop(pipe: DemoExecutionPipeline, poll_interval_s: float = 
                         await pipe.process_kill_switch_reset_request(cmd)
                     except Exception as r_err:
                         logger.warning("Kill switch reset request rejected or failed: %s", r_err)
+                elif cmd_type in ("DEPLOY", "PAUSE", "RESUME", "STOP"):
+                    payload = cmd.get("payload", {})
+                    if isinstance(payload, str):
+                        try:
+                            payload = json.loads(payload)
+                        except Exception:
+                            payload = {}
+
+                    instance_id = cmd.get("target_instance_id") or payload.get("instance_id")
+                    if not instance_id and cmd_type == "DEPLOY":
+                        instance_id = f"INST-{uuid.uuid4().hex[:8].upper()}"
+
+                    status_map = {
+                        "DEPLOY": "RUNNING",
+                        "RESUME": "RUNNING",
+                        "PAUSE": "PAUSED",
+                        "STOP": "STOPPED",
+                    }
+                    target_status = status_map[cmd_type]
+
+                    try:
+                        # Check kill switch for activating commands
+                        if target_status == "RUNNING":
+                            is_latched = await pipe.kill_switch.is_latched_async()
+                            if is_latched:
+                                raise RuntimeError("Cannot activate strategy while kill switch is latched")
+
+                        async with pipe.pool.acquire() as conn:
+                            if cmd_type == "DEPLOY":
+                                account_id = payload.get("account_id", getattr(pipe, "account_id", "PAPER-ACCOUNT-001"))
+                                strategy_name = payload.get("strategy_name", "QuantitativeStrategy")
+                                strategy_version_id = payload.get("strategy_version_id", "v1")
+                                instrument_id = payload.get("instrument_id", "BTCUSDT.BINANCE")
+                                timeframe = payload.get("timeframe", "1m")[:16]
+                                allocation_usd = float(payload.get("allocation_usd", 10000.0))
+                                params = payload.get("parameters", {})
+
+                                await conn.execute(
+                                    """
+                                    INSERT INTO paper_strategy_instances (
+                                        instance_id, account_id, strategy_name, strategy_version_id,
+                                        strategy_source_hash, risk_policy_hash, instrument_id, timeframe, allocation_usd, resolved_parameters,
+                                        status, created_at, updated_at
+                                    ) VALUES ($1, $2, $3, $4, 'N/A', 'N/A', $5, $6, $7, $8::jsonb, $9, now(), now())
+                                    ON CONFLICT (instance_id) DO UPDATE SET
+                                        status = EXCLUDED.status,
+                                        allocation_usd = EXCLUDED.allocation_usd,
+                                        resolved_parameters = EXCLUDED.resolved_parameters,
+                                        updated_at = now();
+                                    """,
+                                    instance_id,
+                                    account_id,
+                                    strategy_name,
+                                    strategy_version_id,
+                                    instrument_id,
+                                    timeframe,
+                                    allocation_usd,
+                                    json.dumps(params),
+                                    target_status,
+                                )
+                            else:
+                                if not instance_id:
+                                    raise ValueError(f"Missing target_instance_id for {cmd_type}")
+                                result = await conn.execute(
+                                    """
+                                    UPDATE paper_strategy_instances
+                                    SET status = $2, updated_at = now()
+                                    WHERE instance_id = $1;
+                                    """,
+                                    instance_id,
+                                    target_status,
+                                )
+                                if result == "UPDATE 0":
+                                    logger.warning("No strategy instance found with id %s to update to %s", instance_id, target_status)
+
+                        await pipe._finalize_command(
+                            cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "COMPLETED", "SUCCESS", f"Strategy {instance_id} transitioned to {target_status}"
+                        )
+                    except Exception as trans_err:
+                        logger.error("Failed to execute strategy command %s (%s): %s", cmd["command_id"], cmd_type, trans_err)
+                        await pipe._finalize_command(
+                            cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "FAILED", "FAILED", str(trans_err)
+                        )
                 else:
                     logger.warning("Unrecognized command type: %s", cmd_type)
                     await pipe._finalize_command(
                         cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "REJECTED", "REJECTED", "Unknown type"
                     )
-
-            await asyncio.sleep(poll_interval_s)
+            else:
+                # No command was claimed; sleep the poll interval
+                await asyncio.sleep(poll_interval_s)
         except asyncio.CancelledError:
             break
         except Exception as e:

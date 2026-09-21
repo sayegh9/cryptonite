@@ -1,0 +1,24 @@
+name: Security & Linting
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: TruffleHog Secret Scanner
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: ${{ github.event.repository.default_branch }}
+        head: HEAD
+
+    - name: Clean Working Tree Check
+      run: |
+        git diff --exit-code || (echo "Working tree is dirty after build! Uncommitted changes found." && exit 1)

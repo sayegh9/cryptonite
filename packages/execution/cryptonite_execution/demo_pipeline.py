@@ -325,8 +325,8 @@ class DemoExecutionPipeline:
         WITH claimed AS (
             SELECT command_id
             FROM execution_commands
-            WHERE status = 'PENDING'
-              AND (lease_expires_at IS NULL OR lease_expires_at < now())
+            WHERE ((status = 'PENDING' AND (lease_expires_at IS NULL OR lease_expires_at < now()))
+                OR (status IN ('CLAIMED', 'RUNNING', 'SENDING') AND lease_expires_at < now()))
               AND ($2::text IS NULL OR target_instance_id = $2)
             ORDER BY created_at ASC
             LIMIT 1

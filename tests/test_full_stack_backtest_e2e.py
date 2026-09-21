@@ -163,12 +163,17 @@ async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path):
 
 
             # 5. Assert outbox event was emitted and relay it to Redis
-            relay = OutboxRelay(database_url=DB_URL, redis_url=REDIS_URL, max_attempts=3)
-            relay.pool = pool
-            relay.redis = r
-
-            published_count = await relay.process_batch_once()
-            assert published_count >= 1
+            outbox_row = await pool.fetchrow(
+                "SELECT * FROM outbox_events WHERE stream_name = 'cryptonite:stream:backtest_completed' AND payload->>'backtest_run_id' = $1",
+                run_id,
+            )
+            assert outbox_row is not None
+            if outbox_row["status"] == "PENDING":
+                relay = OutboxRelay(database_url=DB_URL, redis_url=REDIS_URL, max_attempts=3)
+                relay.pool = pool
+                relay.redis = r
+                published_count = await relay.process_batch_once()
+                assert published_count >= 1
 
             # 6. Verify stream entry in Redis
             entries = await r.xrevrange("cryptonite:stream:backtest_completed", max="+", min="-", count=25)

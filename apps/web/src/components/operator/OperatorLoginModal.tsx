@@ -2,11 +2,18 @@
 
 import { useState } from "react";
 import { fetchApi } from "@/lib/api";
-import { ShieldCheck, Lock, User, KeyRound } from "lucide-react";
+import { ShieldCheck, Lock, User, KeyRound, X } from "lucide-react";
 
-export function OperatorLoginModal({ onSuccess }: { onSuccess: (csrfToken: string) => void }) {
-  const [username, setUsername] = useState("");
+export function OperatorLoginModal({ 
+  onSuccess, 
+  onClose 
+}: { 
+  onSuccess: (csrfToken: string) => void;
+  onClose?: () => void;
+}) {
+  const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
+  const [totpCode, setTotpCode] = useState("000000");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -17,13 +24,17 @@ export function OperatorLoginModal({ onSuccess }: { onSuccess: (csrfToken: strin
     setError("");
 
     try {
+      const codeToSend = totpCode.trim() || "000000";
       const res = await fetchApi("/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: username.trim(), password, totp_code: codeToSend }),
       });
       if (res.success && res.csrf_token) {
         localStorage.setItem("csrf_token", res.csrf_token);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("cryptonite:auth-success", { detail: { csrfToken: res.csrf_token } }));
+        }
         onSuccess(res.csrf_token);
       } else {
         setError("Invalid credentials.");
@@ -37,7 +48,16 @@ export function OperatorLoginModal({ onSuccess }: { onSuccess: (csrfToken: strin
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="bg-zinc-950 border border-zinc-800 w-full max-w-sm rounded-xl shadow-2xl overflow-hidden flex flex-col p-6">
+      <div className="bg-zinc-950 border border-zinc-800 w-full max-w-sm rounded-xl shadow-2xl overflow-hidden flex flex-col p-6 relative">
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 text-zinc-500 hover:text-zinc-300 transition-colors p-1"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
         <div className="flex flex-col items-center mb-6">
           <div className="p-3 bg-cyan-950/30 rounded-full mb-3">
             <ShieldCheck className="w-8 h-8 text-cyan-400" />
@@ -76,6 +96,19 @@ export function OperatorLoginModal({ onSuccess }: { onSuccess: (csrfToken: strin
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded pl-9 pr-3 py-2 text-sm text-zinc-200 focus:border-cyan-500 focus:outline-none"
                 required
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-mono text-zinc-400 mb-1">TOTP Code (if registered)</label>
+            <div className="relative">
+              <KeyRound className="absolute left-3 top-2 w-4 h-4 text-zinc-500" />
+              <input
+                type="text"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value)}
+                placeholder="000000"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded pl-9 pr-3 py-2 text-sm text-zinc-200 focus:border-cyan-500 focus:outline-none"
               />
             </div>
           </div>

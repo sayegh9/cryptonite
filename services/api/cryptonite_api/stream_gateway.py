@@ -1,4 +1,4 @@
-ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000", "*"}
+ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.1.203:3000"}
 """WebSocket stream gateway and Redis Streams fanout broadcaster.
 
 Handles client subscriptions, Origin header validation, subscription allow-lists,
@@ -159,14 +159,22 @@ class StreamHub:
         action = data.get("action")
         
         if action == "subscribe":
-            channels = data.get("channels") or [data.get("channel")]
+            timeframe = data.get("timeframe")
+            if timeframe and timeframe not in ALLOWED_TIMEFRAMES:
+                return {"error": f"Invalid timeframe: {timeframe}. Allowed: {sorted(ALLOWED_TIMEFRAMES)}"}
+
+            channels = data.get("channels") or ([data.get("channel")] if data.get("channel") else [])
             instruments = data.get("instruments") or []
             
             if not instruments and data.get("instrument_id"):
                 instruments = [data.get("instrument_id")]
             elif not instruments and data.get("symbol"):
                 instruments = [f"{data.get('symbol').upper()}.BINANCE"]
-                
+
+            for inst in instruments:
+                if self.allowed_instruments and inst not in self.allowed_instruments:
+                    return {"error": f"Unsupported or unknown instrument: {inst}. Allowed: {sorted(self.allowed_instruments)}"}
+
             if "signals" in channels or "signal_candidate" in channels:
                 client.subscribe_signals = True
 
@@ -177,7 +185,10 @@ class StreamHub:
                 if len(client.subscriptions) < MAX_SUBSCRIPTIONS_PER_CLIENT:
                     client.subscriptions.add(inst)
                     
-            return {"status": "subscribed", "channels": channels, "instruments": instruments}
+            res = {"status": "subscribed", "channels": channels, "instruments": instruments}
+            if len(instruments) == 1:
+                res["instrument_id"] = instruments[0]
+            return res
 
         elif action == "unsubscribe":
             channels = data.get("channels") or [data.get("channel")]

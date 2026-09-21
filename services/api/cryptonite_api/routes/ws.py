@@ -4,6 +4,7 @@ import json
 import logging
 
 from cryptonite_api.stream_gateway import ALLOWED_ORIGINS, StreamHub
+from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger("cryptonite.api.ws")

@@ -145,3 +145,40 @@ cd apps/web && pnpm start
 # 2. Stop backend containers
 docker compose -f infra/docker-compose.yml stop
 ```
+
+---
+
+## 7. Update Log: September 18–19, 2026 (AI Operations, Network Access & Production Fixes)
+
+### 7.1. Database Migration 008 (`008_market_data_and_alerts.py`)
+- Added nullable `coingecko_id VARCHAR(64)` column to `instruments` for third-party market capitalization and pricing resolution.
+- Created `user_alerts` table for price threshold tracking (`instrument_id`, `condition`, `threshold`, `is_active`).
+- Added explicit `GRANT SELECT, INSERT, UPDATE, DELETE` to `cryptonite_api`.
+
+### 7.2. Cryptonite AI Multi-Agent Operations Fleet
+- **Microservice Container**: Built and deployed `cryptonite_agent_worker` (`infra/docker/agent_worker.Dockerfile`) listening on port `8085`.
+- **Inter-Service Security**: Implemented HMAC-SHA256 request signing between `cryptonite_api` (FastAPI) and `cryptonite_agent_worker` using rotating timestamps and nonces (`X-Internal-Timestamp`, `X-Internal-Nonce`, `X-Internal-Signature`).
+- **Database Least Privilege**: Injected `cryptonite_agent_ro` read-only role with `default_transaction_read_only = 'on'`.
+- **DuckDB Analytical Sandboxing**: Added keyword blacklists (`DROP`, `DELETE`, `COPY`, `httpfs`) and strict filesystem containment checks relative to `CATALOG_PATH`.
+- **Extended Timeout Proxy**: Added `/agent-api/[...slug]/route.ts` in Next.js with a 300-second timeout to prevent gateway 504 drops on complex multi-step reasoning tasks.
+- **Tearsheet Synthesis**: Added DuckDB fallback in `read_nautilus_tearsheet` to dynamically calculate Sharpe ratio, Max Drawdown %, win rate, and total return directly from `equity_curve.parquet` and `trades.parquet` when `tearsheet.json` is missing.
+- **Nautilus Strategy Generator**: Built zero-shot strategy synthesizer and added a one-click "Save Strategy" button directly in `AgentChatPanel.tsx`.
+
+### 7.3. Runtime Bug Fixes & Stability Hardening
+1. **TradingView Chart `NaN` Assertion Fix**:
+   - Resolved `AssertionError: Candlestick series item data value of open must be between -90071992547409.91 and 90071992547409.91, got=number, value=NaN` in `TradingViewChart.tsx`.
+   - Cause: `closed_bar_committed` events publish bar metadata without OHLCV fields. The subscriber now safely skips OHLCV updates on committed events lacking price data.
+2. **ScannerStudio TypeError Fix**:
+   - Resolved `TypeError: Cannot read properties of undefined (reading 'split')` in `ScannerStudio.tsx`.
+   - Cause: `signal_candidate` events nest payload inside `msg.data`. Unnested `cand = cand.data || cand` and added defensive string splitting.
+3. **Async Instrument Onboarding Migration**:
+   - Migrated `services/api/cryptonite_api/routes/instruments.py` from synchronous `urllib.request` + `run_in_executor` to native `httpx.AsyncClient`.
+4. **Duplicate Variable Cleanup**:
+   - Removed duplicate `ALLOWED_ORIGINS` definition in `stream_gateway.py` and corrected `ClientConnection.subscriptions` type annotation to `set[str]`.
+
+### 7.4. Local Area Network (LAN) & Multi-Device Access
+- **API Port Binding**: Changed `ports:` under `api:` in `infra/docker-compose.yml` from `"127.0.0.1:8000:8000"` to `"0.0.0.0:8000:8000"`.
+- **Next.js `allowedDevOrigins`**: Added `"192.168.1.203"` and `"192.168.1.*"` to `apps/web/next.config.mjs` to permit cross-device Turbopack dev connections.
+- **WebSocket Host Resolution**: Refactored `apps/web/src/lib/ws.ts` to derive host from `window.location.hostname`, enabling remote devices to stream market feeds from `ws://192.168.1.203:8000/ws/stream`.
+- **Compiled PDF Manual**: Produced a 17-page illustrated manual saved at `docs/Cryptonite_User_Manual.pdf`.
+

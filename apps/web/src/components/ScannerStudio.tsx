@@ -50,7 +50,8 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
   const fetchSignals = async () => {
     try {
       const data = await fetchApi("/signals?limit=50");
-      setCandidates(data.signals || []);
+      const list = Array.isArray(data) ? data : (data.signals || []);
+      setCandidates(list);
     } catch (err) {
       console.error("[ScannerStudio] Error loading signals:", err);
     }
@@ -66,7 +67,8 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
     const client = getStreamClient();
     const unsubscribe = client.subscribe((msg: any) => {
       if (msg.type === "signal_candidate") {
-        setCandidates((prev) => [msg as SignalCandidate, ...prev.slice(0, 99)]);
+        const candidateData = msg.data || msg;
+        setCandidates((prev) => [candidateData as SignalCandidate, ...prev.slice(0, 99)]);
       }
     });
     return () => {
@@ -133,10 +135,11 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
 
           {/* Preset Selector */}
           <select
+            aria-label="Select scanner preset"
             value={selectedSpecId}
             onChange={(e) => setSelectedSpecId(e.target.value)}
             disabled={loadingSpecs || running}
-            className="bg-zinc-900 border border-white/5 rounded px-2.5 py-1 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 font-medium"
+            className="bg-zinc-900 border border-white/5 rounded px-2.5 py-1 text-xs text-zinc-200 focus-visible:ring-2 focus-visible:ring-cyan-500/50 focus:outline-none font-medium transition-all"
           >
             {specs.map((s) => (
               <option key={s.id} value={s.id}>
@@ -167,7 +170,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
 
           <button
             onClick={onCreateClick}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/20"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/20 focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none"
           >
             <span>Create Scanner</span>
           </button>
@@ -175,7 +178,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
           <button
             onClick={handleTriggerScan}
             disabled={running || !selectedSpec}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm ${
+            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none ${
               running
                 ? "bg-zinc-800 text-zinc-500 cursor-not-allowed"
                 : "bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/20"
@@ -266,9 +269,11 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
                 <span className="text-xs font-mono">No signals generated yet. Click "Run Scanner" to evaluate.</span>
               </div>
             ) : (
-              candidates.map((cand) => {
-                const rawSym = cand.instrument_id.split(".")[0];
-                const candleTimeSec = Math.floor(cand.bar_open_ns / 1_000_000_000);
+              candidates.map((cand, idx) => {
+                const instId = cand.instrument_id || (cand as any).symbol || "UNKNOWN";
+                const rawSym = instId.includes(".") ? instId.split(".")[0] : instId;
+                const openNs = cand.bar_open_ns || ((cand as any).time ? (cand as any).time * 1_000_000_000 : Date.now() * 1_000_000);
+                const candleTimeSec = Math.floor(openNs / 1_000_000_000);
                 const dateStr = new Date(candleTimeSec * 1000).toLocaleTimeString([], {
                   hour: "2-digit",
                   minute: "2-digit",
@@ -277,7 +282,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
 
                 return (
                   <div
-                    key={cand.id}
+                    key={cand.id || `candidate-${idx}-${openNs}`}
                     className="p-3 hover:bg-zinc-900/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   >
                     <div className="flex flex-col space-y-1">

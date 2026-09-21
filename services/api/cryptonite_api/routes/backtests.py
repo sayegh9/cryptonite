@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from cryptonite_backtester.execution_profiles import VALID_PROFILES, resolve_execution_profile
 from cryptonite_backtester.runner import BacktestRunRequest, compute_run_config_hash
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
+from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from pydantic import BaseModel, Field

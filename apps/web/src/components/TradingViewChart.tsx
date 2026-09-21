@@ -17,11 +17,13 @@ import {
 import { Bar, SignalCandidate } from "@/lib/types";
 import { getStreamClient } from "@/lib/ws";
 import { SMA, EMA, WMA, WEMA, RSI, ATR, ROC, WilliamsR, TRIX, CCI, ForceIndex, MFI, SD, AverageGain, AverageLoss } from "technicalindicators";
-import { Settings2, Plus, X } from "lucide-react";
+import { Settings2, Plus, X, BrainCircuit } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 
-
+import { crosshairEmitter } from "@/lib/crosshairEmitter";
+import { TickerPriceCell } from "@/components/terminal/TickerPriceCell";
 
 export interface ChartIndicator {
   id: string;
@@ -40,14 +42,12 @@ interface Props {
   onFocus?: () => void;
   onSymbolChange?: (symbol: string) => void;
   onTimeframeChange?: (tf: string) => void;
-  onCrosshairSync?: (sourceId: string, time: number | null, price: number | null) => void;
-  syncCrosshair?: { sourceId: string; time: number | null; price: number | null } | null;
   targetCandleTime?: number | null;
 }
 
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
-export const TradingViewChart: React.FC<Props> = ({
+export function TradingViewChart({
   chartId,
   symbol,
   timeframe,
@@ -55,15 +55,15 @@ export const TradingViewChart: React.FC<Props> = ({
   onFocus,
   onSymbolChange,
   onTimeframeChange,
-  onCrosshairSync,
-  syncCrosshair,
   targetCandleTime,
-}) => {
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const isInteractingRef = useRef<boolean>(false);
+  const lastPriceUpdateRef = useRef<number>(0);
 
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +84,35 @@ export const TradingViewChart: React.FC<Props> = ({
   const provisionalCandleRef = useRef<Bar | null>(null);
   const barsCacheRef = useRef<Map<number, Bar>>(new Map());
 
+  const [triggeringDebate, setTriggeringDebate] = useState(false);
+
+  const handleTriggerDebate = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setTriggeringDebate(true);
+    try {
+      const res = await fetch("/agent-api/debates/trigger", {
+        method: "POST",
+        credentials: "include",
+        headers: { 
+          "Content-Type": "application/json",
+          "X-CSRF-Token": typeof window !== "undefined" ? localStorage.getItem("csrf_token") || "" : "",
+        },
+        body: JSON.stringify({ symbol, timeframe }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || `Server responded with ${res.status}`);
+      }
+      toast.success(`AI Debate Initiated: ${symbol}`, {
+        description: "Bull & Bear research agents are analyzing market structure.",
+      });
+      window.dispatchEvent(new CustomEvent("cryptonite:switch-workspace", { detail: { mode: "debates" } }));
+    } catch (err: any) {
+      toast.error(`Debate trigger error: ${err.message}`);
+    } finally {
+      setTriggeringDebate(false);
+    }
+  };
 
   const updateIndicators = (bars: any[]) => {
     if (!chartRef.current) return;
@@ -233,13 +262,12 @@ export const TradingViewChart: React.FC<Props> = ({
 
     // Crosshair move handler
     chart.subscribeCrosshairMove((param) => {
-      if (!onCrosshairSync) return;
       if (!param || !param.point || param.time === undefined) {
-        onCrosshairSync(chartId, null, null);
+        crosshairEmitter.emit({ sourceId: chartId, time: null, price: null });
       } else {
         const p = param.seriesData.get(candleSeries) as any;
         const price = p ? p.close ?? p.value : null;
-        onCrosshairSync(chartId, Number(param.time), price);
+        crosshairEmitter.emit({ sourceId: chartId, time: Number(param.time), price });
       }
     });
 
@@ -263,21 +291,23 @@ export const TradingViewChart: React.FC<Props> = ({
 
   // Sync external crosshair from peer charts
   useEffect(() => {
-    if (!chartRef.current || !candleSeriesRef.current || !syncCrosshair) return;
-    if (syncCrosshair.sourceId === chartId) return;
+    return crosshairEmitter.subscribe((syncCrosshair) => {
+      if (!chartRef.current || !candleSeriesRef.current) return;
+      if (syncCrosshair.sourceId === chartId) return;
 
-    if (syncCrosshair.time === null) {
-      chartRef.current.clearCrosshairPosition();
-    } else {
-      const targetTime = syncCrosshair.time as unknown as Time;
-      const price = syncCrosshair.price || 0;
-      try {
-        chartRef.current.setCrosshairPosition(price, targetTime, candleSeriesRef.current);
-      } catch {
-        // Time might be outside this chart's scale, ignore
+      if (syncCrosshair.time === null) {
+        chartRef.current.clearCrosshairPosition();
+      } else {
+        const targetTime = syncCrosshair.time as unknown as Time;
+        const price = syncCrosshair.price || 0;
+        try {
+          chartRef.current.setCrosshairPosition(price, targetTime, candleSeriesRef.current);
+        } catch {
+          // Time might be outside this chart's scale, ignore
+        }
       }
-    }
-  }, [syncCrosshair, chartId]);
+    });
+  }, [chartId]);
 
   // Navigate to target candidate candle
   useEffect(() => {
@@ -398,23 +428,41 @@ export const TradingViewChart: React.FC<Props> = ({
         }
         lastSequenceRef.current = msg.update_sequence;
 
-        setCurrentPrice(Number(msg.close));
+        // Throttle React state updates to ~150ms to prevent heavy re-renders
+        const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+        if (now - lastPriceUpdateRef.current > 150) {
+          lastPriceUpdateRef.current = now;
+          setCurrentPrice(Number(msg.close));
+        }
 
         const openTimeSec = Math.floor(msg.bar_open_ns / 1_000_000_000);
 
         if (timeframe === "1m") {
           // Direct 1m tick update
-          candleSeriesRef.current.update({
-            time: openTimeSec as unknown as Time,
+          const prov = {
+            time: openTimeSec,
             open: Number(msg.open),
             high: Number(msg.high),
             low: Number(msg.low),
             close: Number(msg.close),
+            volume: Number(msg.volume),
+            bar_open_ns: openTimeSec * 1_000_000_000,
+            bar_close_inclusive_ns: (openTimeSec + 60) * 1_000_000_000 - 1_000_000,
+            interval_end_exclusive_ns: (openTimeSec + 60) * 1_000_000_000,
+          };
+          provisionalCandleRef.current = prov;
+
+          candleSeriesRef.current.update({
+            time: prov.time as unknown as Time,
+            open: prov.open,
+            high: prov.high,
+            low: prov.low,
+            close: prov.close,
           });
           volumeSeriesRef.current.update({
-            time: openTimeSec as unknown as Time,
-            value: Number(msg.volume),
-            color: Number(msg.close) >= Number(msg.open) ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
+            time: prov.time as unknown as Time,
+            value: prov.volume,
+            color: prov.close >= prov.open ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
           });
         } else {
           // In-memory provisional aggregation for higher timeframes
@@ -463,38 +511,43 @@ export const TradingViewChart: React.FC<Props> = ({
         if (msg.instrument_id !== instId || msg.timeframe !== timeframe) return;
 
         const openTimeSec = Math.floor(msg.bar_open_ns / 1_000_000_000);
-        candleSeriesRef.current.update({
-          time: openTimeSec as unknown as Time,
-          open: Number(msg.open),
-          high: Number(msg.high),
-          low: Number(msg.low),
-          close: Number(msg.close),
-        });
-        volumeSeriesRef.current.update({
-          time: openTimeSec as unknown as Time,
-          value: Number(msg.volume),
-          color: Number(msg.close) >= Number(msg.open) ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)",
-        });
+        const prov = provisionalCandleRef.current;
         
+        if (!prov || prov.time !== openTimeSec) return;
+
         // Push to raw bars and recalculate indicators if any exist
-        rawBarsRef.current.push({
-            time: openTimeSec,
-            open: Number(msg.open),
-            high: Number(msg.high),
-            low: Number(msg.low),
-            close: Number(msg.close),
-            volume: Number(msg.volume),
-        });
-        if (rawBarsRef.current.length > 2000) rawBarsRef.current.shift(); // prevent unbounded memory
+        const lastBar = rawBarsRef.current[rawBarsRef.current.length - 1];
+        if (lastBar && lastBar.time === openTimeSec) {
+            rawBarsRef.current[rawBarsRef.current.length - 1] = {
+                time: openTimeSec,
+                open: prov.open,
+                high: prov.high,
+                low: prov.low,
+                close: prov.close,
+                volume: prov.volume,
+            };
+        } else {
+            rawBarsRef.current.push({
+                time: openTimeSec,
+                open: prov.open,
+                high: prov.high,
+                low: prov.low,
+                close: prov.close,
+                volume: prov.volume,
+            });
+            if (rawBarsRef.current.length > 2000) rawBarsRef.current.shift(); // prevent unbounded memory
+        }
         updateIndicators(rawBarsRef.current);
       }
 
       // Handle live signal candidates
       if (msg.type === "signal_candidate") {
-        if (msg.instrument_id === instId && msg.timeframe === timeframe) {
+        const sig = msg.data || msg;
+        if (sig.instrument_id === instId && sig.timeframe === timeframe) {
           const currentMarkers = markersPluginRef.current?.markers() || [];
+          const openNs = sig.bar_open_ns || (sig.time ? sig.time * 1_000_000_000 : Date.now() * 1_000_000);
           const newMarker: SeriesMarker<Time> = {
-            time: Math.floor(msg.bar_open_ns / 1_000_000_000) as unknown as Time,
+            time: Math.floor(openNs / 1_000_000_000) as unknown as Time,
             position: "belowBar",
             color: "#10b981",
             shape: "arrowUp",
@@ -522,11 +575,7 @@ export const TradingViewChart: React.FC<Props> = ({
           <span className="font-mono font-bold text-xs text-zinc-200 tracking-wider">
             {symbol.toUpperCase()}
           </span>
-          {currentPrice !== null && (
-            <span className="font-mono text-xs font-semibold text-zinc-100">
-              ${currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </span>
-          )}
+          <TickerPriceCell price={currentPrice} />
           {priceChangePct !== null && (
             <span
               className={`font-mono text-[10px] px-1.5 py-0.5 rounded font-medium ${
@@ -541,6 +590,18 @@ export const TradingViewChart: React.FC<Props> = ({
 
         
         <div className="flex items-center space-x-2">
+          {/* On-Demand AI Debate Trigger */}
+          <button
+            onClick={handleTriggerDebate}
+            disabled={triggeringDebate}
+            className="flex items-center space-x-1.5 px-2 py-0.5 text-[11px] font-medium rounded text-purple-400 hover:text-purple-200 bg-purple-950/20 hover:bg-purple-950/50 transition-colors border border-purple-800/40 hover:border-purple-600/60 focus-visible:ring-1 focus-visible:ring-purple-500 outline-none"
+            title={`Trigger AI Consensus Debate on ${symbol}`}
+            aria-label={`Trigger AI Consensus Debate on ${symbol}`}
+          >
+            <BrainCircuit className="w-3 h-3" />
+            <span>{triggeringDebate ? "Queuing..." : "Run Debate"}</span>
+          </button>
+
           {/* Indicators Dialog */}
           <Dialog open={showIndDialog} onOpenChange={setShowIndDialog}>
             <DialogTrigger className="flex items-center space-x-1 px-2 py-0.5 text-[11px] font-medium rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 transition-colors border border-transparent hover:border-zinc-700">
@@ -554,7 +615,8 @@ export const TradingViewChart: React.FC<Props> = ({
               <div className="space-y-4 pt-2">
                 <div className="flex items-center space-x-2">
                   <select 
-                    className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-sm focus:outline-none"
+                    aria-label="Select indicator type"
+                    className="bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-sm text-zinc-100 focus-visible:ring-2 focus-visible:ring-cyan-500/50 focus:outline-none transition-all"
                     value={newIndType} onChange={e => setNewIndType(e.target.value as any)}
                   >
                     <option value="SMA">SMA</option>
@@ -574,8 +636,9 @@ export const TradingViewChart: React.FC<Props> = ({
                     <option value="AverageLoss">Avg Loss</option>
                   </select>
                   <input 
+                    aria-label="Indicator period"
                     type="number" min="2" max="200"
-                    className="bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-sm w-20 focus:outline-none"
+                    className="bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-sm text-zinc-100 w-20 focus-visible:ring-2 focus-visible:ring-cyan-500/50 focus:outline-none font-mono tabular-nums transition-all"
                     value={newIndPeriod} onChange={e => setNewIndPeriod(Number(e.target.value))}
                   />
                   <Button 

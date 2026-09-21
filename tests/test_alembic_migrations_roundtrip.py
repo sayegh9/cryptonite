@@ -7,6 +7,7 @@ import pytest
 DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
 
 
+@pytest.mark.destructive
 @pytest.mark.asyncio
 async def test_alembic_roundtrip_downgrade_and_upgrade():
     """Verify that migrations can cleanly roll back to base and roll forward to head."""
@@ -54,7 +55,7 @@ async def test_alembic_roundtrip_downgrade_and_upgrade():
     pool = await asyncpg.create_pool(DB_URL)
     try:
         ver = await pool.fetchval("SELECT version_num FROM alembic_version;")
-        assert ver == "007", f"Expected head version 007, got {ver}"
+        assert ver == "013", f"Expected head version 013, got {ver}"
 
         expected_tables = {
             "strategies",
@@ -110,6 +111,7 @@ async def test_alembic_roundtrip_downgrade_and_upgrade():
         await pool.close()
 
 
+@pytest.mark.destructive
 @pytest.mark.asyncio
 async def test_migration_007_downgrade_refuses_when_multiple_accounts_exist():
     """Verify that migration 007 refuses downgrade when multiple account rows exist to protect history."""

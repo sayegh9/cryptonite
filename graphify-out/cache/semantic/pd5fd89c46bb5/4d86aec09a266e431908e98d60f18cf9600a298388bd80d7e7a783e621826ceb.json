@@ -1,0 +1,1 @@
+{"nodes": [{"id": "_github_workflows_security_trufflehog", "label": "TruffleHog Secret Scanner", "file_type": "concept", "source_file": ".github/workflows/security.yml", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

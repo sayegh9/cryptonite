@@ -16,6 +16,9 @@ DB_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_api:api_dev_pass@127
 ADMIN_DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@127.0.0.1:5432/cryptonite"
 
 
+from cryptonite_api.routes.auth import require_csrf, require_operator
+
+
 @pytest.fixture
 def test_client():
     app = create_app()
@@ -23,6 +26,8 @@ def test_client():
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_pool.fetchrow = AsyncMock(return_value={"id": 1, "is_latched": False, "status": "PENDING", "command_id": uuid.uuid4(), "created_at": "2026-09-08T20:00:00Z"})
     app.state.pool = mock_pool
+    app.dependency_overrides[require_operator] = lambda: {"type": "session", "role": "operator"}
+    app.dependency_overrides[require_csrf] = lambda: {"type": "session", "role": "operator"}
     return TestClient(app), mock_pool
 
 

@@ -5,7 +5,8 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from cryptonite_api.routes.auth import require_operator, require_csrf
+from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("cryptonite.api.paper")
@@ -58,6 +59,11 @@ async def _enqueue_command(
     cmd_id = uuid.uuid4()
     idem_key = idempotency_key or f"{command_type}:{cmd_id}"
 
+    # Anti-Corruption: Strip kill-switch bypass flags from AI-originated orders
+    if requester_id.startswith("agent:") or requester_id.startswith("ai:"):
+        payload.pop("reduce_only", None)
+        payload.pop("is_kill_switch_exit", None)
+
     query = """
     INSERT INTO execution_commands (
         command_id, idempotency_key, command_type, target_instance_id,
@@ -81,14 +87,14 @@ async def _enqueue_command(
 
 
 @router.get("/accounts")
-async def get_accounts(request: Request) -> list[dict[str, Any]]:
+async def get_accounts(request: Request, auth: dict = Depends(require_operator)) -> list[dict[str, Any]]:
     pool = request.app.state.pool
     rows = await pool.fetch("SELECT * FROM paper_accounts ORDER BY account_id;")
     return [dict(r) for r in rows]
 
 
 @router.get("/positions")
-async def get_positions(request: Request, account_id: str | None = None) -> list[dict[str, Any]]:
+async def get_positions(request: Request, account_id: str | None = None, auth: dict = Depends(require_operator)) -> list[dict[str, Any]]:
     pool = request.app.state.pool
     if account_id:
         rows = await pool.fetch(
@@ -101,7 +107,7 @@ async def get_positions(request: Request, account_id: str | None = None) -> list
 
 
 @router.get("/orders")
-async def get_orders(request: Request, account_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+async def get_orders(request: Request, account_id: str | None = None, limit: int = 100, auth: dict = Depends(require_operator)) -> list[dict[str, Any]]:
     pool = request.app.state.pool
     if account_id:
         rows = await pool.fetch(
@@ -115,7 +121,7 @@ async def get_orders(request: Request, account_id: str | None = None, limit: int
 
 
 @router.get("/trades")
-async def get_trades(request: Request, account_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+async def get_trades(request: Request, account_id: str | None = None, limit: int = 100, auth: dict = Depends(require_operator)) -> list[dict[str, Any]]:
     pool = request.app.state.pool
     if account_id:
         rows = await pool.fetch(
@@ -129,7 +135,7 @@ async def get_trades(request: Request, account_id: str | None = None, limit: int
 
 
 @router.get("/strategies")
-async def get_strategies(request: Request, account_id: str | None = None) -> list[dict[str, Any]]:
+async def get_strategies(request: Request, account_id: str | None = None, auth: dict = Depends(require_operator)) -> list[dict[str, Any]]:
     pool = request.app.state.pool
     if account_id:
         rows = await pool.fetch(
@@ -142,14 +148,14 @@ async def get_strategies(request: Request, account_id: str | None = None) -> lis
 
 
 @router.get("/risk-events")
-async def get_risk_events(request: Request, limit: int = 50) -> list[dict[str, Any]]:
+async def get_risk_events(request: Request, limit: int = 50, auth: dict = Depends(require_operator)) -> list[dict[str, Any]]:
     pool = request.app.state.pool
     rows = await pool.fetch("SELECT * FROM paper_risk_events ORDER BY occurred_at DESC LIMIT $1;", limit)
     return [dict(r) for r in rows]
 
 
 @router.get("/kill-switch")
-async def get_kill_switch(request: Request) -> dict[str, Any]:
+async def get_kill_switch(request: Request, auth: dict = Depends(require_operator)) -> dict[str, Any]:
     pool = request.app.state.pool
     row = await pool.fetchrow("SELECT * FROM execution_kill_switch WHERE id = 1;")
     if not row:
@@ -158,7 +164,7 @@ async def get_kill_switch(request: Request) -> dict[str, Any]:
 
 
 @router.get("/commands")
-async def get_commands(request: Request, limit: int = 50) -> list[dict[str, Any]]:
+async def get_commands(request: Request, limit: int = 50, auth: dict = Depends(require_operator)) -> list[dict[str, Any]]:
     pool = request.app.state.pool
     rows = await pool.fetch("SELECT * FROM execution_commands ORDER BY created_at DESC LIMIT $1;", limit)
     return [dict(r) for r in rows]
@@ -168,7 +174,7 @@ async def get_commands(request: Request, limit: int = 50) -> list[dict[str, Any]
 
 
 @router.post("/strategies/deploy")
-async def deploy_strategy(req: DeployStrategyRequest, request: Request) -> dict[str, Any]:
+async def deploy_strategy(req: DeployStrategyRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
     instance_id = f"INST-{uuid.uuid4().hex[:8].upper()}"
     payload = {
@@ -190,7 +196,7 @@ async def deploy_strategy(req: DeployStrategyRequest, request: Request) -> dict[
 
 
 @router.post("/strategies/{instance_id}/pause")
-async def pause_strategy(instance_id: str, request: Request) -> dict[str, Any]:
+async def pause_strategy(instance_id: str, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -201,7 +207,7 @@ async def pause_strategy(instance_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/strategies/{instance_id}/resume")
-async def resume_strategy(instance_id: str, request: Request) -> dict[str, Any]:
+async def resume_strategy(instance_id: str, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -212,7 +218,7 @@ async def resume_strategy(instance_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/strategies/{instance_id}/stop")
-async def stop_strategy(instance_id: str, request: Request) -> dict[str, Any]:
+async def stop_strategy(instance_id: str, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -223,7 +229,7 @@ async def stop_strategy(instance_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/strategies/{instance_id}/close-position")
-async def close_position(instance_id: str, req: ClosePositionRequest, request: Request) -> dict[str, Any]:
+async def close_position(instance_id: str, req: ClosePositionRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -234,7 +240,7 @@ async def close_position(instance_id: str, req: ClosePositionRequest, request: R
 
 
 @router.post("/orders/{client_order_id}/cancel")
-async def cancel_order(client_order_id: str, request: Request) -> dict[str, Any]:
+async def cancel_order(client_order_id: str, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -245,7 +251,7 @@ async def cancel_order(client_order_id: str, request: Request) -> dict[str, Any]
 
 
 @router.post("/kill-switch")
-async def trip_kill_switch(req: TripKillSwitchRequest, request: Request) -> dict[str, Any]:
+async def trip_kill_switch(req: TripKillSwitchRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -257,7 +263,7 @@ async def trip_kill_switch(req: TripKillSwitchRequest, request: Request) -> dict
 
 
 @router.post("/kill-switch/reset")
-async def reset_kill_switch(req: ResetKillSwitchRequest, request: Request) -> dict[str, Any]:
+async def reset_kill_switch(req: ResetKillSwitchRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -269,7 +275,7 @@ async def reset_kill_switch(req: ResetKillSwitchRequest, request: Request) -> di
 
 
 @router.post("/orders")
-async def submit_manual_order(req: ManualOrderRequest, request: Request) -> dict[str, Any]:
+async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     client_order_id = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
     payload = {
         "instrument_id": req.instrument_id,

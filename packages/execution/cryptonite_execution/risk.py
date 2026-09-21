@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from cryptonite_execution.ingress import IngressHealthMonitor
-from cryptonite_execution.kill_switch import LatchedKillSwitch
+from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
 from nautilus_trader.model import (
     ClientOrderId,
     InstrumentId,
@@ -28,6 +28,7 @@ class OrderIntent(BaseModel):
     quantity: Decimal
     price: Decimal | None = None
     is_kill_switch_exit: bool = False
+    conviction_level: str | None = None
 
 
 class GuardedOrderDispatcher:
@@ -53,6 +54,7 @@ class GuardedOrderDispatcher:
         collar_pct: Decimal = Decimal("0.02"),
         slippage_buffer_pct: Decimal = Decimal("0.005"),
         max_daily_loss_pct: Decimal = Decimal("0.05"),
+        max_position_concentration_pct: Decimal = Decimal("0.25"),
     ) -> None:
         self.leverage_brackets: dict[str, list[dict]] = {}
         self.account_id = account_id
@@ -70,6 +72,7 @@ class GuardedOrderDispatcher:
         self.collar_pct = collar_pct
         self.slippage_buffer_pct = slippage_buffer_pct
         self.max_daily_loss_pct = max_daily_loss_pct
+        self.max_position_concentration_pct = max_position_concentration_pct
         self.daily_realized_pnl: Decimal = Decimal("0")
         self.daily_loss_latched: bool = False
 
@@ -93,6 +96,20 @@ class GuardedOrderDispatcher:
         
         Returns (is_approved, reject_reason, estimated_notional).
         """
+        # AI Agent Conviction Sizing
+        if intent.conviction_level:
+            conviction = intent.conviction_level.upper()
+            multiplier = Decimal("1.0")
+            if conviction == "OVERWEIGHT":
+                multiplier = Decimal("1.5")
+            elif conviction == "UNDERWEIGHT":
+                multiplier = Decimal("0.5")
+            elif conviction == "HOLD":
+                return False, "AGENT_CONVICTION_HOLD_REJECT", Decimal("0")
+            
+            # Apply dynamic sizing
+            intent.quantity = intent.quantity * multiplier
+
         # 1. Kill switch latch check
         if self.kill_switch.is_latched and not intent.is_kill_switch_exit:
             return False, "KILL_SWITCH_ENGAGED", Decimal("0")
@@ -163,6 +180,33 @@ class GuardedOrderDispatcher:
                     f"INSUFFICIENT_CASH: required {required_cash:.4f} > available {self.available_cash:.4f}",
                     required_cash,
                 )
+
+            # Calculate total portfolio equity to check concentration
+            total_equity = self.cash_balance
+            for p_inst_id, qty in self.positions.items():
+                if qty > 0:
+                    try:
+                        p_quote = self.node_cache.quote(InstrumentId.from_str(p_inst_id)) if self.node_cache else None
+                        if p_quote:
+                            total_equity += qty * Decimal(str(p_quote.bid_price))
+                    except Exception:
+                        pass
+            
+            # Current value of existing position in this instrument
+            cur_pos_qty = self.get_position_qty(intent.instrument_id)
+            cur_pos_value = cur_pos_qty * bid_price
+            
+            # Post-trade value of this instrument
+            new_pos_value = cur_pos_value + (intent.quantity * effective_price)
+            
+            if total_equity > 0:
+                concentration_pct = new_pos_value / total_equity
+                if concentration_pct > self.max_position_concentration_pct:
+                    return (
+                        False,
+                        f"CONCENTRATION_LIMIT_BREACHED: new position {concentration_pct:.1%} > limit {self.max_position_concentration_pct:.1%}",
+                        required_cash,
+                    )
 
             return True, "APPROVED", required_cash
 
@@ -248,13 +292,23 @@ class GuardedOrderDispatcher:
             cur_pos = self.positions.get(inst_id, Decimal("0"))
             self.positions[inst_id] = max(Decimal("0"), cur_pos - fill_qty)
 
-    def check_daily_drawdown(self, starting_equity: Decimal, current_equity: Decimal) -> bool:
+    def check_daily_drawdown(self, current_equity: Decimal, macro_atr_pct: Decimal | None = None) -> bool:
         """Trip the daily loss latch if current equity has breached allowable daily drawdown."""
-        if starting_equity <= Decimal("0"):
+        if getattr(self, "high_water_mark", None) is None:
+            self.high_water_mark = current_equity
+        else:
+            self.high_water_mark = max(self.high_water_mark, current_equity)
+
+        if self.high_water_mark <= Decimal("0"):
             return False
-        drawdown_pct = (starting_equity - current_equity) / starting_equity
-        if drawdown_pct >= self.max_daily_loss_pct:
+            
+        drawdown_limit = macro_atr_pct if macro_atr_pct is not None else self.max_daily_loss_pct
+        
+        drawdown_pct = (self.high_water_mark - current_equity) / self.high_water_mark
+        if drawdown_pct >= drawdown_limit:
+            if not self.daily_loss_latched:
+                send_alert(f"📉 *DAILY DRAWDOWN LIMIT BREACHED* 📉\nDrawdown: {float(drawdown_pct * 100):.2f}%")
             self.daily_loss_latched = True
-            logger.critical("Daily loss limit breached: %.2f%% drawdown. Latching entries!", float(drawdown_pct * 100))
+            logger.critical("Daily loss limit breached: %.2f%% drawdown from HWM. Latching entries!", float(drawdown_pct * 100))
             return True
         return False

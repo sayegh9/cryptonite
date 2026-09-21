@@ -173,13 +173,15 @@ def test_utc_daily_loss_latch():
     dispatcher, _ = make_fresh_dispatcher(starting_cash=Decimal("10000.0"))
     dispatcher.max_daily_loss_pct = Decimal("0.05")  # 5% max drawdown
 
-    # 10,000 -> 9,600 (4% drawdown) -> latch remains open
-    tripped = dispatcher.check_daily_drawdown(Decimal("10000.0"), Decimal("9600.0"))
+    # 10,000 max -> 9,600 (4% drawdown) -> latch remains open
+    # We call it with 10000 first to establish the HWM
+    dispatcher.check_daily_drawdown(Decimal("10000.0"))
+    tripped = dispatcher.check_daily_drawdown(Decimal("9600.0"))
     assert tripped is False
     assert not dispatcher.daily_loss_latched
 
     # 10,000 -> 9,450 (5.5% drawdown) -> trips latch!
-    tripped = dispatcher.check_daily_drawdown(Decimal("10000.0"), Decimal("9450.0"))
+    tripped = dispatcher.check_daily_drawdown(Decimal("9450.0"))
     assert tripped is True
     assert dispatcher.daily_loss_latched is True
 

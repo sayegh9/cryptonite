@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  allowedDevOrigins: ["127.0.0.1", "localhost"],
+  allowedDevOrigins: ["127.0.0.1", "localhost", "192.168.1.203", "192.168.1.*"],
   async rewrites() {
     return [
       {
@@ -11,10 +11,6 @@ const nextConfig = {
       {
         source: "/api/signals",
         destination: "http://127.0.0.1:8000/api/v1/signals",
-      },
-      {
-        source: "/api/v1/agents/:path*",
-        destination: "http://127.0.0.1:8085/api/v1/agents/:path*",
       },
       {
         source: "/api/:path*",

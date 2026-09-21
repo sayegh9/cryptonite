@@ -29,6 +29,7 @@ async def get_all_agent_configs(request: Request, auth: dict = Depends(require_o
     return configs
 
 @router.patch("/agents/{agent_name}")
+@router.put("/agents/{agent_name}")
 async def update_agent_config(agent_name: str, body: AgentConfigUpdate, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)):
     valid_agents = ["research", "explainer", "generator", "hunter", "strategist"]
     if agent_name not in valid_agents:
@@ -68,19 +69,23 @@ async def update_agent_config(agent_name: str, body: AgentConfigUpdate, request:
             # Transactionally insert audit record
             # In auth_audit_events table: id, user_id, event_type, ip_address, user_agent, event_metadata
             try:
-                # Need a valid user UUID for the audit record
-                system_uuid = uuid.UUID("00000000-0000-0000-0000-000000000000")
+                operator_username = auth.get("username", "system") if auth else "system"
+                client_ip = request.client.host if request.client else "127.0.0.1"
+                user_agent = request.headers.get("user-agent", "unknown")
+                
+                diff = {k: {"old": current.get(k), "new": update_data[k]} for k in update_data if current.get(k) != update_data[k]}
+                
                 await conn.execute(
                     """
                     INSERT INTO auth_audit_events (event_id, username, action, ip_address, user_agent, details, occurred_at)
                     VALUES ($1, $2, $3, $4, $5, $6, now())
                     """,
                     uuid.uuid4(),
-                    "system",
+                    operator_username,
                     "agent_config_update",
-                    "127.0.0.1",
-                    "system",
-                    str(update_data)
+                    client_ip,
+                    user_agent,
+                    str(diff)
                 )
             except Exception as e:
                 logger.warning(f"Failed to write audit log: {e}")

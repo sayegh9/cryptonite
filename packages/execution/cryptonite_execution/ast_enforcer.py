@@ -39,9 +39,16 @@ class StrategySecurityVisitor(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         # Check forbidden internal engine attribute accesses
-        if node.attr in FORBIDDEN_PROPERTY_ATTRS:
+        if node.attr in FORBIDDEN_PROPERTY_ATTRS or node.attr in {"getattr", "eval", "exec", "__import__", "__getattribute__"}:
             self.violations.append(
                 f"Line {node.lineno}: Access to internal attribute '{node.attr}' is forbidden."
+            )
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id in {"getattr", "eval", "exec", "__import__", "__getattribute__"}:
+            self.violations.append(
+                f"Line {node.lineno}: Use of '{node.id}' is forbidden."
             )
         self.generic_visit(node)
 

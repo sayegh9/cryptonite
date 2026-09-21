@@ -532,6 +532,18 @@ class ScannerWorker:
                             "matched_rules": c.matched_rules,
                             "metrics": c.metrics,
                         }
+                        
+                        # AI Debate Engine Integration: Publish to Redis Stream
+                        if self.redis:
+                            try:
+                                await self.redis.xadd("stream:debate_queue", {
+                                    "instrument_id": c.instrument_id,
+                                    "trigger_source": "scanner",
+                                    "candidate_payload": json.dumps(candidate_payload)
+                                })
+                            except Exception as e:
+                                logger.error(f"Failed to push candidate to debate_queue: {e}")
+
                         await conn.execute(
                             """
                             INSERT INTO outbox_events (

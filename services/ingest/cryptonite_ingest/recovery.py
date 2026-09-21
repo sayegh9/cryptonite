@@ -142,6 +142,7 @@ class GapRecoveryManager:
                             existing_data=existing.model_dump(mode="json"),
                             reason="Conflicting duplicate between REST backfill and WebSocket stream",
                         )
+                        continue
                 all_bars_map[b.ts_event_ns] = b
 
             deduped_bars = sorted(all_bars_map.values(), key=lambda b: b.ts_event_ns)

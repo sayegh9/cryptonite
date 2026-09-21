@@ -4,6 +4,7 @@ import json
 from uuid import UUID
 
 from cryptonite_scanner.models import SignalCandidateRead
+from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Query, Request
 
 router = APIRouter(prefix="/api/v1/signals", tags=["signals"])

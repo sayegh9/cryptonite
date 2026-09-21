@@ -22,7 +22,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={cn("dark", "font-sans", geist.variable)}>
-      <body className="bg-zinc-950 text-zinc-100 min-h-screen antialiased overflow-hidden select-none">
+      <body className="bg-zinc-950 text-zinc-100 min-h-screen antialiased overflow-hidden">
         {children}
         <Toaster theme="dark" position="bottom-right" />
         <CommandPalette />
