@@ -4,10 +4,69 @@ Cryptonite is an institutional-grade, low-latency cryptocurrency algorithmic tra
 
 It is a self-hosted cryptocurrency intelligence and algorithmic trading platform designed for auditable research, deterministic risk controls, and automated execution with NautilusTrader.
 
+## Platform Screenshots
+
+| Trading Terminal | AI Copilot |
+| :---: | :---: |
+| ![Trading Terminal](docs/screenshots/01_trading_terminal.png) | ![AI Copilot](docs/screenshots/05_ai_copilot.png) |
+
+| Research Lab | Portfolio Console |
+| :---: | :---: |
+| ![Research Lab](docs/screenshots/03_research_lab.png) | ![Portfolio Console](docs/screenshots/04_portfolio_console.png) |
+
 ## Architecture Core Principles
 - **AI and UI can propose.**
 - **Deterministic rules and risk controls decide.**
 - **NautilusTrader executes.**
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    subgraph MarketData ["Market Data & Ingestion Layer"]
+        BinanceWS["Binance WebSocket / REST API"] --> Ingest["cryptonite_ingest (Port 8080)"]
+        Ingest --> ParquetCat["Nautilus Parquet Catalog (/data/nautilus_catalog)"]
+        Ingest --> RedisPubSub["Redis Event Stream (redis:6379)"]
+    end
+
+    subgraph AnalyticalCores ["Vectorized Analytical & Research Cores"]
+        RedisPubSub --> Scanner["cryptonite_scanner (Port 8082)<br/>Polars Vectorized Core"]
+        ParquetCat --> Backtester["cryptonite_backtester (Port 8083)<br/>Nautilus Event-Driven Engine"]
+    end
+
+    subgraph ExecutionPlane ["Execution & Settlement Layer"]
+        Executor["cryptonite_executor (Port 8084)<br/>Order State Machine & Risk Engine"]
+        Outbox["cryptonite_outbox (Port 8081)<br/>Transactional Outbox Poller"]
+        Executor --> Outbox
+        Outbox --> BinanceLive["Binance Testnet / Live REST & WS"]
+    end
+
+    subgraph Persistence ["Persistence & Caching"]
+        Postgres[(PostgreSQL 16 Engine<br/>Relational & Audit State)]
+        RedisExec[(Redis 7 - Execution Stream)]
+        RedisAgents[(Redis 7 - Agent Memory)]
+    end
+
+    subgraph AIOperations ["AI Operations Layer (Google Antigravity & Gemini)"]
+        AgentWorker["cryptonite_agent_worker (Port 8085)<br/>Google Antigravity SDK + Gemini API"]
+        AgentWorker --> PostgresRO[(Postgres Read-Only Replica<br/>cryptonite_agent_ro)]
+        AgentWorker --> ParquetDuckDB[(Embedded DuckDB Engine<br/>Security Sandboxed)]
+        AgentWorker --> RedisAgents
+    end
+
+    subgraph Interface ["Institutional Interface Layer"]
+        FastAPI["cryptonite_api (Port 8000, 0.0.0.0)<br/>Gateway REST & WS (/ws/stream)"]
+        WebUI["Next.js 16 Web Terminal (Port 3000)<br/>TradingView, Terminal, Operator Console, AI Copilot"]
+    end
+
+    FastAPI <--> Postgres
+    FastAPI <--> RedisExec
+    WebUI <-->|REST & /agent-api| FastAPI
+    FastAPI -->|HMAC-SHA256 Signed Requests| AgentWorker
+    Executor <--> Postgres
+    Executor <--> RedisExec
+    Scanner --> RedisPubSub
+```
 
 ## Project Structure
 ```
@@ -50,3 +109,24 @@ Cryptonite integrates an advanced adversarial AI pipeline powered by the Google 
 - **Portfolio & Risk Managers:** A Portfolio Manager proxy sets an initial allocation, followed by a 3-persona Risk Debate (Aggressive, Conservative, Neutral). The Chief Risk Officer synthesizes the final conviction level (e.g. `OVERWEIGHT` / `HOLD`).
 - **Reflection Engine:** Completed trades are joined with DuckDB time-series data to calculate *Alpha*. The AI distills 'Lessons Learned' which are dynamically injected into future debates, allowing the system to self-correct over time without code changes.
 - **Safety First:** AI agents operate through an Anti-Corruption Layer with strictly read-only, anonymized database access, hard limits on concentration (25.0%), and hardware-level kill-switches.
+
+## Transactional Outbox Execution Pipeline
+To ensure high availability and prevent dual-write hazards during network partitions, execution logic uses the transactional outbox pattern.
+
+```mermaid
+sequenceDiagram
+    participant Strategy as Strategy / Operator
+    participant Executor as cryptonite_executor
+    participant DB as PostgreSQL (Outbox)
+    participant OutboxService as cryptonite_outbox
+    participant Exchange as Binance Testnet API
+
+    Strategy->>Executor: Submit Order Request
+    Executor->>Executor: Evaluate Risk Limits & Margin Bounds
+    Executor->>DB: ATOMIC TX: Insert Order + Insert Outbox Event
+    DB-->>Executor: Commit OK
+    OutboxService->>DB: Poll PENDING Outbox Events (FOR UPDATE SKIP LOCKED)
+    OutboxService->>Exchange: Signed REST Order Submission
+    Exchange-->>OutboxService: Execution Report (ACK / REJECT / FILLED)
+    OutboxService->>DB: Update Order Status & Mark Outbox PROCESSED
+```
