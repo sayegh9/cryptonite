@@ -1,0 +1,71 @@
+# Dependencies & Lockfiles
+node_modules/
+.pnpm-store/
+pnpm-lock.yaml
+uv.lock
+package-lock.json
+*.lock
+
+# Python Virtual Environments & Bytecode
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Build Outputs & Generated Assets
+.next/
+out/
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Testing, Coverage & Reports
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage/
+test-results/
+playwright-report/
+
+# Graphify Caches & Heavy Data
+graphify-out/*.json
+graphify-out/cache/
+graphify-out/2026-*/
+
+# Environment & Secrets
+.env
+.env.*
+*.pem
+*.key
+*.secret
+
+# Data Storage & Databases
+data/nautilus_catalog/*
+!data/nautilus_catalog/.gitkeep
+data/analytics_lake/*
+!data/analytics_lake/.gitkeep
+infra/postgres_data/
+
+# IDE & OS Artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Agent Caches & Scratch Scripts
+patch*.py
+patch.js
+rewrite_auth.py
+/test_*.py
+/test_*.js
+
+# Antigravity internal caches (keep .agents/ rules readable)
+.gemini/
+.antigravity/
+.ua/
