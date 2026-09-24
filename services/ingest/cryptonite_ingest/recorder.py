@@ -25,7 +25,11 @@ from nautilus_trader.model import (
 
 from cryptonite_ingest.client import BinanceRestClient
 from cryptonite_ingest.recovery import GapRecoveryManager
-from cryptonite_ingest.stream import BinanceStreamClient
+from cryptonite_ingest.stream import (
+    BINANCE_FUTURES_WS_QUOTE_STREAM_URL,
+    BINANCE_FUTURES_WS_STREAM_URL,
+    BinanceStreamClient,
+)
 
 logger = logging.getLogger("cryptonite.recorder")
 
@@ -41,8 +45,12 @@ class IngestRecorder:
         analytics_lake_path: str,
         database_url: str | None = None,
         redis_url: str | None = None,
+        perp_quote_symbols: list[str] | None = None,
     ) -> None:
         self.symbols = [s.upper() for s in symbols]
+        # USD-M perpetual bookTicker quotes (no bars), published as <SYM>-PERP.BINANCE
+        self.perp_quote_symbols = [s.upper() for s in perp_quote_symbols or []]
+        self.perp_quote_client: BinanceStreamClient | None = None
         self.timeframes = [t.lower() for t in timeframes]
         self.nautilus_catalog_path = nautilus_catalog_path
         self.analytics_lake_path = analytics_lake_path
@@ -220,6 +228,17 @@ class IngestRecorder:
         # Launch WebSocket client in background
         ws_task = asyncio.create_task(self.stream_client.start())
 
+        if self.perp_quote_symbols:
+            self.perp_quote_client = BinanceStreamClient(
+                symbols=self.perp_quote_symbols,
+                timeframes=[],
+                redis=self.redis,
+                base_ws_url=BINANCE_FUTURES_WS_STREAM_URL,
+                quote_ws_url=BINANCE_FUTURES_WS_QUOTE_STREAM_URL,
+                instrument_suffix="-PERP",
+            )
+            asyncio.create_task(self.perp_quote_client.start())
+
         # Give socket 1s to open connection, then run subscribe-before-backfill gap recovery
         await asyncio.sleep(1.0)
         
@@ -260,6 +279,8 @@ class IngestRecorder:
         self._running = False
         if self.stream_client:
             await self.stream_client.stop()
+        if self.perp_quote_client:
+            await self.perp_quote_client.stop()
         if self.coordinator:
             await self.coordinator.release_process_lock()
         if self.rest_client:

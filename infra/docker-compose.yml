@@ -63,6 +63,7 @@ services:
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       INGEST_SYMBOLS: BTCUSDT,ETHUSDT
+      INGEST_PERP_SYMBOLS: BTCUSDT,ETHUSDT  # futures bookTicker quotes -> <SYM>-PERP.BINANCE (perp order checks/fills)
       INGEST_TIMEFRAMES: 1m,1h
       PORT: 8080
     volumes:

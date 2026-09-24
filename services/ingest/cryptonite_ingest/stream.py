@@ -35,6 +35,7 @@ class BinanceStreamClient:
         redis: aioredis.Redis | None = None,
         enable_quotes: bool = True,
         quote_ws_url: str | None = None,
+        instrument_suffix: str = "",
     ) -> None:
         self.symbols = [s.upper() for s in symbols]
         self.timeframes = [t.lower() for t in timeframes]
@@ -44,6 +45,8 @@ class BinanceStreamClient:
         self.enable_quotes = enable_quotes
         # When set, bookTicker streams get their own connection (futures categories).
         self.quote_ws_url = quote_ws_url
+        # "-PERP" for USD-M futures so quotes are keyed BTCUSDT-PERP.BINANCE, never colliding with spot
+        self.instrument_suffix = instrument_suffix
 
         self._running = False
         self._sockets: set[Any] = set()
@@ -90,7 +93,7 @@ class BinanceStreamClient:
             return [self.stream_url]
         kline_names = [n for n in self.stream_names if not n.endswith("@bookTicker")]
         quote_names = [n for n in self.stream_names if n.endswith("@bookTicker")]
-        urls = [f"{self.base_ws_url}?streams={'/'.join(kline_names)}"]
+        urls = [f"{self.base_ws_url}?streams={'/'.join(kline_names)}"] if kline_names else []
         if quote_names:
             urls.append(f"{self.quote_ws_url}?streams={'/'.join(quote_names)}")
         return urls
@@ -141,7 +144,7 @@ class BinanceStreamClient:
             bid_q = str(payload["B"])
             ask_p = str(payload["a"])
             ask_q = str(payload["A"])
-            inst_str = f"{symbol}.BINANCE"
+            inst_str = f"{symbol}{self.instrument_suffix}.BINANCE"
             seq = self.quote_sequences.get(symbol, 0) + 1
             self.quote_sequences[symbol] = seq
 
@@ -163,7 +166,7 @@ class BinanceStreamClient:
                     ts_init=arrival_ns,
                 )
                 bus_record = {
-                    "topic": f"data.quotes.BINANCE.{symbol}",
+                    "topic": f"data.quotes.BINANCE.{symbol}{self.instrument_suffix}",
                     "type": "QuoteTick",
                     "payload": quote.to_json_bytes().decode("utf-8"),
                     "encoding": "JSON",

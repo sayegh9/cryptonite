@@ -180,6 +180,7 @@ async def run_server_standalone():
     port = int(os.getenv("PORT", "8080"))
 
     redis_url = os.getenv("REDIS_URL")
+    perp_symbols = [s.strip() for s in os.getenv("INGEST_PERP_SYMBOLS", "").split(",") if s.strip()]
     recorder = IngestRecorder(
         symbols=symbols,
         timeframes=timeframes,
@@ -187,6 +188,7 @@ async def run_server_standalone():
         analytics_lake_path=analytics_path,
         database_url=db_url,
         redis_url=redis_url,
+        perp_quote_symbols=perp_symbols,
     )
     srv = HealthServer(recorder=recorder, port=port)
     await srv.start()
