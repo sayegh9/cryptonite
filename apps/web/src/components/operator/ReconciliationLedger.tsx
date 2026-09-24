@@ -11,8 +11,7 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   Clock,
-  AlertTriangle,
-} from "lucide-react";
+  } from "lucide-react";
 
 interface Balance {
   environment: string;

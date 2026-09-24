@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { X, CheckCircle, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 
 interface Props {
@@ -100,7 +100,7 @@ export const ManifestModal: React.FC<Props> = ({
                 <tbody>
                   {(() => {
                     const filesMap = artifactManifest?.files || (artifactManifest && typeof artifactManifest === "object" ? artifactManifest : {});
-                    const entries = Object.entries(filesMap).filter(([k, v]) => typeof v === "object" && v !== null && ("sha256" in v || "size_bytes" in v));
+                    const entries = Object.entries(filesMap).filter(([, v]) => typeof v === "object" && v !== null && ("sha256" in v || "size_bytes" in v));
                     return entries.length > 0 ? (
                       entries.map(([filename, meta]: [string, any]) => (
                         <tr key={filename} className="border-b border-zinc-900/60 hover:bg-zinc-900/20">

@@ -14,7 +14,7 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   let data;
   try {
     data = await res.json();
-  } catch (err) {
+  } catch {
     data = {};
   }
   

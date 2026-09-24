@@ -1,9 +1,9 @@
 # HANDOFF
 
 ## Current State
-- Branch: `main` @ `037e947`; index clean (nothing staged). Working tree NOT clean: 60 modified, 213 deleted, 32 untracked (web workspaces, e2e specs, docs, graphify refresh, untracked `exit_monitor.py`)
-- Graph: built at `037e947`; run `graphify update .` after committing
-- Gates (2026-09-24, Claude Code): typecheck ✅ · lint ⚠️ warnings only · dependency/security ✅ · architecture ✅ · pytest ✅ full suite 160 passed / 0 failed / 0 errors, 12 deselected, in 2 consecutive runs (2026-09-24; was 152 / 6 / 2 on 2026-09-23) · e2e ☐ not run
+- Branch: `main` @ `9d8612a` + this lint commit; index clean (nothing staged). Working tree NOT clean: 60 modified, 213 deleted, 32 untracked (web workspaces, e2e specs, docs, graphify refresh, untracked `exit_monitor.py`)
+- Graph: built at `9d8612a`; run `graphify update .` after committing
+- Gates (2026-09-24, Claude Code): typecheck ✅ · lint ✅ clean (0 errors, 0 warnings) on the working tree · dependency/security ✅ · architecture ✅ · pytest ✅ full suite 160 passed / 0 failed / 0 errors, 12 deselected, in 2 consecutive runs (2026-09-24; was 152 / 6 / 2 on 2026-09-23) · e2e ☐ not run
 - Pytest runs via `docker compose -f infra/docker-compose.yml run --rm test uv run pytest tests -q`; DSNs come from `tests/connections.py` (`DATABASE_URL` / `REDIS_URL`)
 
 ## Known pre-existing issues
@@ -12,7 +12,8 @@
 
 ## Active Work / Blockers
 - Done: `test` service keeps its uv cache and venv in the `test_uv_cache` / `test_venv` named volumes; warm run 3.8 s (cold 747 s)
-- Uncommitted web refactor (`InteractiveModeToggle.tsx` deleted) pending commit — owner: Antigravity
+- Uncommitted web refactor (`InteractiveModeToggle.tsx` deleted) pending commit — owner: Antigravity. It now also carries 85 of the 100 unused-symbol lint fixes (20 files) plus `ignoreRestSiblings` in `apps/web/eslint.config.mjs`; lint is only 0/0 at HEAD once the refactor is committed
+- Committed: lint fixes in the 7 web files outside the refactor (15 warnings)
 - Committed `037e947`: compose deployment changes (pgvector, orchestrator `PAPER`, debate_worker ×3, `exit_monitor`, source bind mounts). `exit_monitor` is gated behind the `monitoring` compose profile (not started by `up -d`). `exit_monitor.py` stays uncommitted until it lands with the P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), migrations 017–019, and the `debate_worker` exit-queue consumer — owner: unassigned
 - Patched: undefined `logger` in `tests/test_credentialed_binance_demo.py` cleanup (F821)
 - Patched (spot-safe): removed the unused `is_perpetual` flag from `risk.py`; the SELL spot check applies to every instrument, so perpetual shorts stay rejected

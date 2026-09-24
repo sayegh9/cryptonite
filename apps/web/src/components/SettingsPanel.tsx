@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { fetchApi } from "@/lib/api";
-import { Save, RefreshCw, Cpu, ShieldAlert, Key } from "lucide-react";
+import { Save, Cpu, ShieldAlert, Key } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";

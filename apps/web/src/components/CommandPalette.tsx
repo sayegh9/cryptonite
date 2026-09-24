@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
 import {
   CommandDialog,
@@ -17,7 +16,6 @@ import {
   Terminal,
   Activity,
   Briefcase,
-  AlertOctagon,
   Search,
   FlaskConical,
   TrendingUp,
@@ -25,7 +23,6 @@ import {
   Sparkles,
   ShieldAlert,
   Bell,
-  Sliders,
   Settings,
 } from "lucide-react";
 
@@ -39,8 +36,6 @@ export function CommandPalette() {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [searchResults, setSearchResults] = React.useState<MarketSearchResult[]>([]);
-  const router = useRouter();
-  const pathname = usePathname();
 
   // Keyboard shortcut listener: ⌘K / Ctrl+K for palette, ⌘D / Ctrl+D for debates
   React.useEffect(() => {
@@ -77,7 +72,7 @@ export function CommandPalette() {
         if (!res.ok) return;
         const data: MarketSearchResult[] = await res.json();
         setSearchResults(data);
-      } catch (_e) {
+      } catch {
         // Silently ignore network errors
       }
     }, 300);
@@ -85,11 +80,6 @@ export function CommandPalette() {
   }, [query]);
 
   const onClose = React.useCallback(() => setOpen(false), []);
-
-  const runCommand = React.useCallback((command: () => void) => {
-    setOpen(false);
-    command();
-  }, []);
 
   const selectSymbol = React.useCallback((symbol: string) => {
     onClose();

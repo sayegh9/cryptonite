@@ -66,7 +66,7 @@ export class CryptoniteStreamClient {
         console.warn("[StreamClient] WebSocket encountered error:", err);
       };
 
-      this.ws.onclose = (event) => {
+      this.ws.onclose = () => {
         if (!this.isExplicitClose) {
           const delay = Math.min(1000 * Math.pow(2, this.retryCount), 10000);
           this.retryCount++;
