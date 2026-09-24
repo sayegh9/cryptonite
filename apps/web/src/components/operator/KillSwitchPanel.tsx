@@ -4,7 +4,11 @@ import { useState, useEffect } from "react";
 import { fetchApi } from "@/lib/api";
 import { AlertTriangle, Power, ShieldAlert, CheckCircle, RefreshCcw } from "lucide-react";
 
-export function KillSwitchPanel() {
+/** Kill switch for one (environment, account). DEMO targets the demo executor; PAPER the paper engine. */
+export function KillSwitchPanel({
+  environment = "DEMO",
+  accountId = "DEMO-ACCOUNT-001",
+}: { environment?: "DEMO" | "PAPER"; accountId?: string } = {}) {
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -17,7 +21,8 @@ export function KillSwitchPanel() {
 
   const loadStatus = async () => {
     try {
-      const data = await fetchApi("/control/kill-switch/status");
+      const qs = new URLSearchParams({ environment, account_id: accountId });
+      const data = await fetchApi(`/control/kill-switch/status?${qs}`);
       setStatus(data);
       setError("");
     } catch (err: any) {
@@ -40,7 +45,7 @@ export function KillSwitchPanel() {
       await fetchApi("/control/kill-switch/trip", {
         method: "POST",
         headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
-        body: JSON.stringify({ reason: "Manual operator emergency trip via UI", environment: "DEMO", account_id: "DEMO-ACCOUNT-001" })
+        body: JSON.stringify({ reason: "Manual operator emergency trip via UI", environment, account_id: accountId })
       });
       await loadStatus();
     } catch (err: any) {
@@ -60,11 +65,15 @@ export function KillSwitchPanel() {
         body: JSON.stringify({
           step_up_password: stepUpPassword,
           reason: resetReason,
-          environment: "DEMO",
-          account_id: "DEMO-ACCOUNT-001"
+          environment,
+          account_id: accountId
         })
       });
-      alert("Reset requested successfully! The executor daemon will evaluate the 7-point checklist.");
+      alert(
+        environment === "PAPER"
+          ? "Reset requested. The paper engine resets only when no orders or positions are open."
+          : "Reset requested successfully! The executor daemon will evaluate the 7-point checklist."
+      );
       setShowReset(false);
       setStepUpPassword("");
       setResetReason("");
@@ -85,7 +94,7 @@ export function KillSwitchPanel() {
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-sm font-bold flex items-center space-x-2 uppercase tracking-wider text-zinc-200">
           <Power className="w-4 h-4 text-cyan-400" />
-          <span>Execution Kill-Switch</span>
+          <span>Execution Kill-Switch · {environment}</span>
         </h2>
         <div className="flex items-center space-x-2">
           <span className="text-[10px] font-mono text-zinc-500">

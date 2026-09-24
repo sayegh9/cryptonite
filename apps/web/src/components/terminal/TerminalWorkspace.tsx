@@ -306,7 +306,8 @@ export function TerminalWorkspace({
                     </button>
                   </div>
                   <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-                    <KillSwitchPanel />
+                    {/* The Trade sidebar trades on the paper engine, so its kill switch must stop that engine */}
+                    <KillSwitchPanel environment="PAPER" accountId="PAPER-ACCOUNT-001" />
                     <TradingControls symbol={selectedSymbol} />
                   </div>
                 </Panel>

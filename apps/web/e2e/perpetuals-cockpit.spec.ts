@@ -152,4 +152,27 @@ test.describe("Perpetuals cockpit: order ticket and margin HUD", () => {
     await expect(hud.getByRole("alert")).toHaveCount(0);
     expect(reactErrors).toEqual([]);
   });
+
+  test("trade sidebar kill switch targets the PAPER engine", async ({ page }) => {
+    const statusQueries: string[] = [];
+    let tripBody: Record<string, unknown> | null = null;
+    await page.route("**/api/v1/control/kill-switch/status*", (route) => {
+      statusQueries.push(new URL(route.request().url()).search);
+      route.fulfill({ status: 200, json: { environment: "PAPER", account_id: "PAPER-ACCOUNT-001", is_latched: tripBody !== null } });
+    });
+    await page.route("**/api/v1/control/kill-switch/trip", async (route) => {
+      tripBody = route.request().postDataJSON();
+      await route.fulfill({ status: 200, json: { success: true, kill_switch_latched: true } });
+    });
+    page.on("dialog", (dialog) => dialog.accept());
+
+    await openTradeSidebar(page);
+    await expect(page.getByText("Execution Kill-Switch · PAPER")).toBeVisible();
+    expect(statusQueries[0]).toContain("environment=PAPER");
+    expect(statusQueries[0]).toContain("account_id=PAPER-ACCOUNT-001");
+
+    await page.getByRole("button", { name: "TRIP KILL-SWITCH" }).click();
+    await expect.poll(() => tripBody).not.toBeNull();
+    expect(tripBody).toMatchObject({ environment: "PAPER", account_id: "PAPER-ACCOUNT-001" });
+  });
 });
