@@ -307,16 +307,56 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     // Verify position is rendered
     await expect(page.locator("td:has-text('BTCUSDT.BINANCE')")).toBeVisible();
     await expect(page.locator("td:has-text('LONG')")).toBeVisible();
-    await expect(page.locator("td:has-text('$50000.00')")).toBeVisible();
+    await expect(page.locator("td:has-text('$50,000.00')")).toBeVisible();
 
-    // Click Flatten button
-    const flattenBtn = page.getByRole("button", { name: "Flatten", exact: true });
+    // Click the inline Close action
+    const flattenBtn = page.getByRole("button", { name: "Close", exact: true });
     await expect(flattenBtn).toBeVisible();
     await flattenBtn.click();
 
     // Verify close-position was dispatched
-    expect(closePayload).toBeDefined();
+    await expect.poll(() => closePayload).not.toBeNull();
     expect(closePayload.instrument_id).toBe("BTCUSDT.BINANCE");
+  });
+
+  test("keeps positions on screen when a poll fails (no flicker)", async ({ page }) => {
+    let calls = 0;
+    await page.route("**/api/v1/paper/positions", async (route) => {
+      calls += 1;
+      // Every poll after the first fails, as with a keep-alive ECONNRESET through the proxy
+      if (calls > 1) return route.abort("connectionreset");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            position_id: "pos-eth-01",
+            account_id: "PAPER-ACCOUNT-001",
+            instance_id: "INST-EMA-01",
+            instrument_id: "ETHUSDT.BINANCE",
+            side: "LONG",
+            entry_price: 3000.0,
+            quantity: 1,
+            current_price: 3100.0,
+            unrealized_pnl: 100.0,
+            status: "OPEN",
+          },
+        ]),
+      });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Portfolio", exact: true }).click();
+    const row = page.locator("td:has-text('ETHUSDT.BINANCE')");
+    await expect(row).toBeVisible();
+
+    // Sample across two failed polls: the row must never disappear
+    await expect.poll(() => calls, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+    for (let i = 0; i < 10; i++) {
+      await expect(row).toBeVisible({ timeout: 50 });
+      await page.waitForTimeout(100);
+    }
+    await expect(page.locator("text=No open positions.")).toHaveCount(0);
   });
 
   test("manages strategy instances with pause, resume, and stop controls", async ({ page }) => {
