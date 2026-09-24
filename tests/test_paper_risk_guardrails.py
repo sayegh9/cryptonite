@@ -116,12 +116,13 @@ def test_conservative_cash_reservation_and_fill_reconciliation():
     """Verify conservative market buy cash reservation, subsequent rejection on insufficient cash,
     and fill reconciliation.
     """
-    # Start with 6,000 USDT
-    dispatcher, _ = make_fresh_dispatcher(starting_cash=Decimal("6000.0"))
+    # Start with 30,000 USDT
+    dispatcher, _ = make_fresh_dispatcher(starting_cash=Decimal("30000.0"))
 
     # Market buy 0.1 BTC:
     # effective_price = ask(50010) * (1 + 0.02 + 0.005) = 50010 * 1.025 = 51260.25
     # required_cash = 0.1 * 51260.25 * 1.001 = 5131.151025 USDT
+    # concentration = 0.1 * 51260.25 / 30000 = 17.1% (within the 25% limit)
     buy_intent = OrderIntent(
         client_order_id="BUY-001",
         instance_id="INST-001",
@@ -136,16 +137,16 @@ def test_conservative_cash_reservation_and_fill_reconciliation():
     assert success is True
     assert status == "SUBMITTED"
     assert dispatcher.reserved_cash > Decimal("5100.0")
-    assert dispatcher.available_cash < Decimal("900.0")
+    assert dispatcher.available_cash < Decimal("24900.0")
 
-    # Second buy order requiring 5,131 USDT must be rejected due to insufficient available cash
+    # Second buy order requiring 25,656 USDT must be rejected due to insufficient available cash
     buy_intent_2 = OrderIntent(
         client_order_id="BUY-002",
         instance_id="INST-001",
         instrument_id="BTCUSDT.BINANCE",
         side="BUY",
         order_type="MARKET",
-        quantity=Decimal("0.1"),
+        quantity=Decimal("0.5"),
     )
     approved, reason, _ = dispatcher.evaluate_intent(buy_intent_2)
     assert approved is False
@@ -164,7 +165,7 @@ def test_conservative_cash_reservation_and_fill_reconciliation():
 
     # Cash reservation released, cash deducted, position credited
     assert dispatcher.reserved_cash == Decimal("0")
-    assert dispatcher.cash_balance == Decimal("6000.0") - (fill_qty * fill_price + commission)
+    assert dispatcher.cash_balance == Decimal("30000.0") - (fill_qty * fill_price + commission)
     assert dispatcher.positions["BTCUSDT.BINANCE"] == fill_qty
 
 

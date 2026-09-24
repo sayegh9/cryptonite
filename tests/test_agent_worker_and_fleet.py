@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,9 +21,11 @@ import server as worker_server
 from server import ConfigCache, INTERNAL_HMAC_SECRET, app
 
 
-def _generate_hmac_headers(method: str, path: str, body: bytes, secret: str = INTERNAL_HMAC_SECRET, ts: int | None = None, nonce: str = "test-nonce-123"):
+def _generate_hmac_headers(method: str, path: str, body: bytes, secret: str = INTERNAL_HMAC_SECRET, ts: int | None = None, nonce: str | None = None):
     if ts is None:
         ts = int(time.time())
+    if nonce is None:
+        nonce = uuid.uuid4().hex  # server rejects reused nonces as replays
     body_digest = hashlib.sha256(body).hexdigest()
     msg = f"{method}:{path}:{body_digest}:{ts}:{nonce}".encode("utf-8")
     sig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
