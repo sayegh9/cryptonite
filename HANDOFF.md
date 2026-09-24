@@ -1,28 +1,28 @@
 # HANDOFF
 
 ## Current State
-- Branch: `main` @ `9d8612a` + this lint commit; index clean (nothing staged). Working tree NOT clean: 60 modified, 213 deleted, 32 untracked (web workspaces, e2e specs, docs, graphify refresh, untracked `exit_monitor.py`)
-- Graph: built at `9d8612a`; run `graphify update .` after committing
-- Gates (2026-09-24, Claude Code): typecheck ✅ · lint ✅ clean (0 errors, 0 warnings) on the working tree · dependency/security ✅ · architecture ✅ · pytest ✅ full suite 160 passed / 0 failed / 0 errors, 12 deselected, in 2 consecutive runs (2026-09-24; was 152 / 6 / 2 on 2026-09-23) · e2e ☐ not run
-- Pytest runs via `docker compose -f infra/docker-compose.yml run --rm test uv run pytest tests -q`; DSNs come from `tests/connections.py` (`DATABASE_URL` / `REDIS_URL`)
+- Branch: `main` @ `1100fa2` + this docs commit; 12 commits ahead of `origin/main`, NOT pushed (see blocker below). Index clean. Working tree NOT clean: 37 modified, 212 deleted, 24 untracked (backend packages/services, migrations 014–019, docs, graphify cache, `exit_monitor.py`)
+- Graph: built at `1100fa2`; run `graphify update .` after committing
+- Gates (2026-09-24, Claude Code):
+  - Web (committed; `apps/web` has no uncommitted changes): typecheck ✅ · lint ✅ 0 errors / 0 warnings · `pnpm build` ✅ · Playwright ☐ not run
+  - Backend on the **working tree**: pytest ✅ 160 passed / 0 failed / 0 errors, 12 deselected (4 full runs today; 1 run had a timing-only DuckDB p95 miss, see below)
+  - Backend on **HEAD** (clean checkout): pytest ⛔ hangs at `test_orchestrator_pipeline.py::test_command_poller_processes_deploy_command` (57%)
+  - dependency/security ✅ · architecture ✅
+- `test_full_stack_backtest_e2e` stress test: 5/5 isolated passes and 3/3 full-suite passes after the fix in `1100fa2`
+- Pytest runs via `docker compose -f infra/docker-compose.yml run --rm test uv run pytest tests -q`; the `test` service mounts the working tree, so it tests uncommitted code too
 
 ## Known pre-existing issues
-- `test_full_stack_backtest_e2e::test_full_stack_backtest_lifecycle_e2e`: flaky — failed 1 of 5 full-suite runs on 2026-09-24, passes alone; not yet diagnosed
+- `test_benchmarks.py::test_duckdb_query_p95_latency`: wall-clock threshold; failed 1 of 4 full runs today (66.8 ms vs 50 ms) while the Docker VM was busy
 - `test_100k_bars_peak_rss_benchmark` headroom is thin in the full suite (573–648 MB vs 700 MB) because earlier tests leave ~480–550 MB resident
 
 ## Active Work / Blockers
-- Done: `test` service keeps its uv cache and venv in the `test_uv_cache` / `test_venv` named volumes; warm run 3.8 s (cold 747 s)
-- Uncommitted web refactor (`InteractiveModeToggle.tsx` deleted) pending commit — owner: Antigravity. It now also carries 85 of the 100 unused-symbol lint fixes (20 files) plus `ignoreRestSiblings` in `apps/web/eslint.config.mjs`; lint is only 0/0 at HEAD once the refactor is committed
-- Committed: lint fixes in the 7 web files outside the refactor (15 warnings)
-- Committed `037e947`: compose deployment changes (pgvector, orchestrator `PAPER`, debate_worker ×3, `exit_monitor`, source bind mounts). `exit_monitor` is gated behind the `monitoring` compose profile (not started by `up -d`). `exit_monitor.py` stays uncommitted until it lands with the P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), migrations 017–019, and the `debate_worker` exit-queue consumer — owner: unassigned
-- Patched: undefined `logger` in `tests/test_credentialed_binance_demo.py` cleanup (F821)
-- Patched (spot-safe): removed the unused `is_perpetual` flag from `risk.py`; the SELL spot check applies to every instrument, so perpetual shorts stay rejected
-- Resolved: `test_paper_risk_guardrails` bought 85% of equity and hit the 25% concentration limit; resized to 17.1% (4/4 pass)
-- Resolved: `test_agent_worker_and_fleet` 401s came from a fixed HMAC nonce the server rejects as a replay (not `.env`); helper now generates a unique nonce (9/9 pass)
-- Resolved: `test_full_stack_paper_trading_e2e` bought 25.6% of equity and hit the 25% concentration limit (no execution bug); starting equity raised to 20,000 so the 0.05 BTC buy is 12.8%
-- Resolved: `test_nautilus_sandbox_spike.py` 2 setup errors; Redis host/port now come from `REDIS_URL` via `tests/connections.py` (5/5 pass)
-- Resolved: `test_100k_bars_peak_rss_benchmark` was not a pipeline regression. `VmHWM` is a process-lifetime peak, so earlier tests set the 1,058 MB. The test now resets the peak at its start; this test alone peaks at 502 MB (the backtest adds ~100 MB)
+- BLOCKER (push): HEAD's backend suite hangs in `test_command_poller_processes_deploy_command`. It passes only with the uncommitted `services/orchestrator/cryptonite_orchestrator/server.py` change (+489/−76), which needs its owner to review and commit — owner: unassigned
+- Uncommitted backend work (packages/agents, execution `bridge.py`/`demo_pipeline.py`, scanner, storage, api auth/routes, migrations 014–019, debate_worker) has no recorded owner and is what the working-tree test gate is actually exercising
+- `exit_monitor` is gated behind the `monitoring` compose profile. `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), migrations 017–019, and the `debate_worker` exit-queue consumer — owner: unassigned
+- graphify housekeeping: 212 deleted old-version cache files, an untracked new cache (`cache/ast/v0.9.66-s4`), dated backup folders, and an uncommitted `.gitignore` rule (`graphify-out/*.json`) are left for a decision on whether graph artifacts stay tracked
 
 ## Next Steps
-1. Diagnose flaky `test_full_stack_backtest_e2e` — acceptance: 5 consecutive full-suite runs pass it
-2. Run `npx playwright test` — acceptance: all specs pass
+1. Commit the orchestrator `server.py` change (or fix the hang at HEAD) — acceptance: full suite passes on a clean checkout of HEAD; then push
+2. Triage the remaining uncommitted backend changes into owned commits — acceptance: working tree matches what the test gate covers
+3. Run `npx playwright test` — acceptance: all specs pass
+4. Decide graphify artifact tracking (`.gitignore` rule, cache, backups)
