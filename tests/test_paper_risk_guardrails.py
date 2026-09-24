@@ -198,3 +198,194 @@ def test_utc_daily_loss_latch():
     approved, reason, _ = dispatcher.evaluate_intent(buy_intent)
     assert approved is False
     assert reason == "DAILY_LOSS_LIMIT_BREACHED"
+
+
+# --- Perpetual futures guards ---------------------------------------------------
+
+PERP = "BTCUSDT-PERP.BINANCE"
+
+
+def make_perp_dispatcher(mark: str = "50000") -> GuardedOrderDispatcher:
+    """10,000 USDT account with perps enabled; quote bid 50,000 / ask 50,010 as above."""
+    dispatcher, _ = make_fresh_dispatcher(starting_cash=Decimal("10000.0"))
+    dispatcher.perp_trading_enabled = True
+    dispatcher.update_mark_price(PERP, Decimal(mark))
+    return dispatcher
+
+
+def perp_intent(side: str, qty: str, cid: str = "PERP-001", **flags) -> OrderIntent:
+    return OrderIntent(
+        client_order_id=cid,
+        instance_id="INST-001",
+        instrument_id=PERP,
+        side=side,
+        order_type=flags.pop("order_type", "MARKET"),
+        quantity=Decimal(qty),
+        **flags,
+    )
+
+
+def test_perp_orders_rejected_until_perp_trading_enabled():
+    dispatcher, _ = make_fresh_dispatcher()
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("SELL", "0.01"))
+    assert (approved, reason) == (False, "PERP_TRADING_DISABLED")
+
+
+@pytest.mark.parametrize("leverage", [0, -1, 21, 125])
+def test_perp_rejects_leverage_outside_1_to_20(leverage):
+    dispatcher = make_perp_dispatcher()
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("BUY", "0.01", leverage=leverage))
+    assert approved is False and reason.startswith("LEVERAGE_OUT_OF_RANGE")
+
+
+@pytest.mark.parametrize("leverage", [1, 20])
+def test_perp_accepts_leverage_bounds(leverage):
+    dispatcher = make_perp_dispatcher()
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("BUY", "0.01", leverage=leverage))
+    assert (approved, reason) == (True, "APPROVED")
+
+
+def test_perp_defaults_leverage_1_and_cross_and_validates_margin_mode():
+    dispatcher = make_perp_dispatcher()
+    intent = perp_intent("BUY", "0.01")
+    assert dispatcher.evaluate_intent(intent)[0] is True
+    assert (intent.leverage, intent.margin_mode) == (1, "CROSS")
+
+    isolated = perp_intent("BUY", "0.01", margin_mode="isolated")
+    assert dispatcher.evaluate_intent(isolated)[0] is True
+    assert isolated.margin_mode == "ISOLATED"
+
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("BUY", "0.01", margin_mode="PORTFOLIO"))
+    assert approved is False and reason.startswith("INVALID_MARGIN_MODE")
+
+
+@pytest.mark.parametrize(
+    ("flags", "code"),
+    [
+        ({"leverage": 5}, "SPOT_LEVERAGE_NOT_ALLOWED"),
+        ({"margin_mode": "CROSS"}, "SPOT_DERIVATIVE_FLAG_NOT_ALLOWED"),
+        ({"reduce_only": True}, "SPOT_DERIVATIVE_FLAG_NOT_ALLOWED"),
+    ],
+)
+def test_spot_rejects_derivative_flags(flags, code):
+    dispatcher, _ = make_fresh_dispatcher()
+    intent = OrderIntent(
+        client_order_id="SPOT-FLAGS", instance_id="INST-001", instrument_id="BTCUSDT.BINANCE",
+        side="BUY", order_type="MARKET", quantity=Decimal("0.01"), **flags,
+    )
+    approved, reason, _ = dispatcher.evaluate_intent(intent)
+    assert approved is False and reason.startswith(code)
+
+
+def test_spot_leverage_1_is_accepted():
+    dispatcher, _ = make_fresh_dispatcher()
+    intent = OrderIntent(
+        client_order_id="SPOT-L1", instance_id="INST-001", instrument_id="BTCUSDT.BINANCE",
+        side="BUY", order_type="MARKET", quantity=Decimal("0.01"), leverage=1,
+    )
+    assert dispatcher.evaluate_intent(intent)[:2] == (True, "APPROVED")
+
+
+def test_perp_concentration_uses_mark_price_notional():
+    # Equity 10,000 -> cap 2,500 notional at mark
+    dispatcher = make_perp_dispatcher(mark="50000")
+    assert dispatcher.evaluate_intent(perp_intent("BUY", "0.05"))[0] is True  # exactly 25%
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("SELL", "0.0501"))
+    assert approved is False and reason.startswith("CONCENTRATION_LIMIT_BREACHED")
+
+    # Mark (not the 50,010 ask) drives the check: 0.0625 * 40,000 = 2,500
+    dispatcher.update_mark_price(PERP, Decimal("40000"))
+    assert dispatcher.evaluate_intent(perp_intent("BUY", "0.0625"))[0] is True
+
+
+def test_perp_concentration_counts_existing_position():
+    dispatcher = make_perp_dispatcher()
+    dispatcher.set_perp_position(PERP, Decimal("0.04"), Decimal("50000"))
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("BUY", "0.02"))  # |0.06| * 50k = 30%
+    assert approved is False and reason.startswith("CONCENTRATION_LIMIT_BREACHED")
+    # Non-reduce-only flip from long 0.04 to short 0.02: projected |−0.02| * 50k = 10%
+    assert dispatcher.evaluate_intent(perp_intent("SELL", "0.06"))[0] is True
+
+
+def test_perp_min_order_floor_and_reduce_only_bypass():
+    dispatcher = make_perp_dispatcher()  # 1% of 10,000 = 100 notional
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("BUY", "0.0019"))  # 95
+    assert approved is False and reason.startswith("ORDER_BELOW_MIN_NOTIONAL")
+    assert dispatcher.evaluate_intent(perp_intent("BUY", "0.002"))[0] is True  # exactly 100
+
+    dispatcher.set_perp_position(PERP, Decimal("0.01"), Decimal("50000"))
+    assert dispatcher.evaluate_intent(perp_intent("SELL", "0.0001", reduce_only=True))[:2] == (True, "APPROVED")
+
+
+def test_reduce_only_rejections():
+    dispatcher = make_perp_dispatcher()
+    assert dispatcher.evaluate_intent(perp_intent("SELL", "0.01", reduce_only=True))[1] == "REDUCE_ONLY_NO_POSITION"
+
+    dispatcher.set_perp_position(PERP, Decimal("0.04"), Decimal("50000"))  # long
+    assert dispatcher.evaluate_intent(perp_intent("BUY", "0.01", reduce_only=True))[1] == "REDUCE_ONLY_INVALID_DIRECTION"
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("SELL", "0.05", reduce_only=True))
+    assert approved is False and reason.startswith("REDUCE_ONLY_OVERSIZE")
+    assert dispatcher.evaluate_intent(perp_intent("SELL", "0.04", reduce_only=True))[:2] == (True, "APPROVED")
+
+    dispatcher.set_perp_position(PERP, Decimal("-0.04"), Decimal("50000"))  # short
+    assert dispatcher.evaluate_intent(perp_intent("SELL", "0.01", reduce_only=True))[1] == "REDUCE_ONLY_INVALID_DIRECTION"
+    assert dispatcher.evaluate_intent(perp_intent("BUY", "0.04", reduce_only=True))[0] is True
+
+
+def test_reduce_only_oversize_counts_resting_reduce_only_orders():
+    dispatcher = make_perp_dispatcher()
+    dispatcher.set_perp_position(PERP, Decimal("0.04"), Decimal("50000"))
+    ok, _ = dispatcher.dispatch(perp_intent("SELL", "0.03", "RO-1", reduce_only=True), MagicMock(), MagicMock())
+    assert ok is True
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("SELL", "0.02", "RO-2", reduce_only=True))
+    assert approved is False and reason.startswith("REDUCE_ONLY_OVERSIZE")  # only 0.01 still closable
+    dispatcher.release_reservation("RO-1")
+    assert dispatcher.evaluate_intent(perp_intent("SELL", "0.02", "RO-2", reduce_only=True))[0] is True
+
+
+def test_reduce_only_skips_margin_reservation_concentration_and_conviction():
+    dispatcher = make_perp_dispatcher()
+    dispatcher.set_perp_position(PERP, Decimal("0.2"), Decimal("50000"))  # 100% of equity: over the cap
+    dispatcher.reserved_cash = dispatcher.cash_balance  # no free margin at all
+    intent = perp_intent("SELL", "0.2", reduce_only=True, conviction_level="OVERWEIGHT")
+    ok, status = dispatcher.dispatch(intent, MagicMock(), MagicMock())
+    assert (ok, status) == (True, "SUBMITTED")
+    assert intent.quantity == Decimal("0.2")  # conviction multiplier not applied to a close
+    assert dispatcher.reserved_cash == dispatcher.cash_balance  # nothing extra reserved
+
+
+def test_perp_entry_reserves_initial_margin_and_releases_it():
+    dispatcher = make_perp_dispatcher()
+    # 0.04 BTC at mark 50,000, 10x: IM 200 + taker fee 2,000 * 0.001 = 202
+    ok, _ = dispatcher.dispatch(perp_intent("SELL", "0.04", "SHORT-1", leverage=10), MagicMock(), MagicMock())
+    assert ok is True
+    assert dispatcher.reserved_cash == Decimal("202")
+    dispatcher.release_reservation("SHORT-1")
+    assert dispatcher.reserved_cash == Decimal("0")
+
+
+def test_perp_flip_reserves_margin_only_for_opened_exposure():
+    dispatcher = make_perp_dispatcher()
+    dispatcher.set_perp_position(PERP, Decimal("0.02"), Decimal("50000"))
+    # Sell 0.05: closes 0.02, opens 0.03 short -> IM 0.03 * 50k / 10 = 150, fee 0.05 * 50k * 0.001 = 2.5
+    approved, _, margin = dispatcher.evaluate_intent(perp_intent("SELL", "0.05", leverage=10))
+    assert approved is True and margin == Decimal("152.5")
+
+
+def test_perp_rejects_insufficient_margin_and_missing_mark():
+    dispatcher = make_perp_dispatcher()
+    dispatcher.reserved_cash = Decimal("9900")  # 100 available
+    approved, reason, _ = dispatcher.evaluate_intent(perp_intent("BUY", "0.04", leverage=1))  # needs 2,002
+    assert approved is False and reason.startswith("INSUFFICIENT_MARGIN")
+
+    dispatcher.mark_prices.clear()
+    assert dispatcher.evaluate_intent(perp_intent("BUY", "0.01"))[1] == "NO_MARK_PRICE"
+
+
+def test_perp_fill_is_refused_until_perp_accounting_exists():
+    dispatcher = make_perp_dispatcher()
+    dispatcher.dispatch(perp_intent("SELL", "0.04", "SHORT-1", leverage=10), MagicMock(), MagicMock())
+    with pytest.raises(NotImplementedError):
+        dispatcher.handle_fill("SHORT-1", Decimal("0.04"), Decimal("50000"), Decimal("2"))
+    assert dispatcher.cash_balance == Decimal("10000.0")  # no phantom short proceeds
+    assert "SHORT-1" in dispatcher.open_orders  # reservation kept for a later cancel/fill

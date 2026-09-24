@@ -1,11 +1,11 @@
 """Synchronous, node-thread-owned GuardedOrderDispatcher with zero async locks and zero DB I/O."""
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Callable
 
-from cryptonite_execution.ingress import IngressHealthMonitor
-from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
+from cryptonite_schemas.identifiers import parse_instrument_id
 from nautilus_trader.model import (
     ClientOrderId,
     InstrumentId,
@@ -14,6 +14,10 @@ from nautilus_trader.model import (
     QuoteTick,
 )
 from pydantic import BaseModel, Field
+
+from cryptonite_execution.derivatives import MarginMode
+from cryptonite_execution.ingress import IngressHealthMonitor
+from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
 
 logger = logging.getLogger("cryptonite.execution.risk")
 
@@ -29,6 +33,16 @@ class OrderIntent(BaseModel):
     price: Decimal | None = None
     is_kill_switch_exit: bool = False
     conviction_level: str | None = None
+    # Perpetual-only flags; spot intents must leave them at their defaults
+    reduce_only: bool = False
+    leverage: int | None = None  # perps: 1..max_perp_leverage, defaults to 1
+    margin_mode: str | None = None  # perps: ISOLATED or CROSS, defaults to CROSS
+
+
+@dataclass
+class PerpPositionState:
+    signed_qty: Decimal  # >0 long, <0 short
+    entry_price: Decimal
 
 
 class GuardedOrderDispatcher:
@@ -41,6 +55,8 @@ class GuardedOrderDispatcher:
     - Spot cash-only invariant (no short selling)
     - Dual freshness enforcement
     - Asymmetric price collars and conservative market buy fill estimation
+    - Perpetuals (behind ``perp_trading_enabled``): leverage/margin-mode validation, reduce-only
+      guard, 1% minimum order notional, 25% mark-notional concentration, initial-margin reservation
     """
 
     def __init__(
@@ -55,6 +71,9 @@ class GuardedOrderDispatcher:
         slippage_buffer_pct: Decimal = Decimal("0.005"),
         max_daily_loss_pct: Decimal = Decimal("0.05"),
         max_position_concentration_pct: Decimal = Decimal("0.25"),
+        min_order_equity_pct: Decimal = Decimal("0.01"),
+        max_perp_leverage: int = 20,
+        perp_trading_enabled: bool = False,
     ) -> None:
         self.leverage_brackets: dict[str, list[dict]] = {}
         self.account_id = account_id
@@ -76,6 +95,13 @@ class GuardedOrderDispatcher:
         self.daily_realized_pnl: Decimal = Decimal("0")
         self.daily_loss_latched: bool = False
 
+        # Perpetuals. Off until perp fill accounting lands: handle_fill still books fills as spot.
+        self.min_order_equity_pct = min_order_equity_pct
+        self.max_perp_leverage = max_perp_leverage
+        self.perp_trading_enabled = perp_trading_enabled
+        self.perp_positions: dict[str, PerpPositionState] = {}
+        self.mark_prices: dict[str, Decimal] = {}
+
     def set_node_cache(self, cache: Any) -> None:
         self.node_cache = cache
 
@@ -91,13 +117,151 @@ class GuardedOrderDispatcher:
         res = self.reserved_positions.get(instrument_id, Decimal("0"))
         return max(Decimal("0"), pos - res)
 
+    def update_mark_price(self, instrument_id: str, mark_price: Decimal) -> None:
+        self.mark_prices[instrument_id] = mark_price
+
+    def set_perp_position(self, instrument_id: str, signed_qty: Decimal, entry_price: Decimal) -> None:
+        if signed_qty == 0:
+            self.perp_positions.pop(instrument_id, None)
+        else:
+            self.perp_positions[instrument_id] = PerpPositionState(signed_qty, entry_price)
+
+    def get_perp_position_qty(self, instrument_id: str) -> Decimal:
+        pos = self.perp_positions.get(instrument_id)
+        return pos.signed_qty if pos else Decimal("0")
+
+    def _resting_reduce_only_qty(self, instrument_id: str) -> Decimal:
+        return sum(
+            (o["quantity"] for o in self.open_orders.values()
+             if o["instrument_id"] == instrument_id and o.get("reduce_only")),
+            Decimal("0"),
+        )
+
+    def _portfolio_equity(self) -> Decimal:
+        """Cash + spot longs at bid + perpetual unrealized PnL at mark."""
+        total_equity = self.cash_balance
+        for p_inst_id, qty in self.positions.items():
+            if qty > 0:
+                try:
+                    p_quote = self.node_cache.quote(InstrumentId.from_str(p_inst_id)) if self.node_cache else None
+                    if p_quote:
+                        total_equity += qty * Decimal(str(p_quote.bid_price))
+                except Exception:
+                    pass
+        for p_inst_id, pos in self.perp_positions.items():
+            mark = self.mark_prices.get(p_inst_id)
+            if mark is not None:
+                total_equity += pos.signed_qty * (mark - pos.entry_price)
+        return total_equity
+
+    def _derivative_flag_reject(self, intent: OrderIntent, is_perp: bool) -> str | None:
+        """Validate (and default) leverage / margin mode / reduce-only against the instrument type."""
+        if not is_perp:
+            if intent.leverage not in (None, 1):
+                return f"SPOT_LEVERAGE_NOT_ALLOWED: leverage {intent.leverage} on spot instrument"
+            if intent.margin_mode is not None or intent.reduce_only:
+                return "SPOT_DERIVATIVE_FLAG_NOT_ALLOWED: margin_mode/reduce_only are perpetual-only"
+            return None
+
+        leverage = 1 if intent.leverage is None else intent.leverage
+        if not 1 <= leverage <= self.max_perp_leverage:
+            return f"LEVERAGE_OUT_OF_RANGE: {leverage} not in 1..{self.max_perp_leverage}"
+        mode = (intent.margin_mode or MarginMode.CROSS).upper()
+        if mode not in MarginMode.__members__:
+            return f"INVALID_MARGIN_MODE: {intent.margin_mode}"
+        intent.leverage, intent.margin_mode = leverage, mode
+        return None
+
+    def _evaluate_perp(self, intent: OrderIntent, bid_price: Decimal, ask_price: Decimal) -> tuple[bool, str, Decimal]:
+        """Perpetual rules. Returns (approved, reason, margin_to_reserve)."""
+        side = intent.side.upper()
+        if side not in ("BUY", "SELL"):
+            return False, f"INVALID_SIDE: {intent.side}", Decimal("0")
+
+        mark = self.mark_prices.get(intent.instrument_id)
+        if mark is None or mark <= 0:
+            return False, "NO_MARK_PRICE", Decimal("0")
+
+        price_estimate = mark
+        if intent.order_type.upper() == "LIMIT" and intent.price is not None:
+            if side == "BUY" and intent.price > ask_price * (Decimal("1") + self.collar_pct):
+                return False, f"PRICE_COLLAR_REJECT: buy limit {intent.price} exceeds allowable ask collar", Decimal("0")
+            if side == "SELL" and intent.price < bid_price * (Decimal("1") - self.collar_pct):
+                return False, f"PRICE_COLLAR_REJECT: sell limit {intent.price} is below allowable bid collar", Decimal("0")
+            price_estimate = intent.price
+
+        pos_qty = self.get_perp_position_qty(intent.instrument_id)
+        order_is_long = side == "BUY"
+
+        # Reduce-only: may only shrink an existing position; no floor, concentration, or margin checks
+        if intent.reduce_only:
+            if pos_qty == 0:
+                return False, "REDUCE_ONLY_NO_POSITION", Decimal("0")
+            if (pos_qty > 0) == order_is_long:
+                return False, "REDUCE_ONLY_INVALID_DIRECTION", Decimal("0")
+            closable = abs(pos_qty) - self._resting_reduce_only_qty(intent.instrument_id)
+            if intent.quantity > closable:
+                return (
+                    False,
+                    f"REDUCE_ONLY_OVERSIZE: quantity {intent.quantity} > closable {closable} "
+                    f"(position {abs(pos_qty)} minus resting reduce-only orders)",
+                    Decimal("0"),
+                )
+            return True, "APPROVED", Decimal("0")
+
+        equity = self._portfolio_equity()
+        if equity <= 0:
+            return False, "NON_POSITIVE_EQUITY", Decimal("0")
+
+        order_notional = intent.quantity * price_estimate
+        min_notional = self.min_order_equity_pct * equity
+        if order_notional < min_notional:
+            return (
+                False,
+                f"ORDER_BELOW_MIN_NOTIONAL: {order_notional:.4f} < {self.min_order_equity_pct:.0%} of equity ({min_notional:.4f})",
+                Decimal("0"),
+            )
+
+        signed_order = intent.quantity if order_is_long else -intent.quantity
+        new_notional = abs(pos_qty + signed_order) * mark
+        if new_notional > self.max_position_concentration_pct * equity:
+            return (
+                False,
+                f"CONCENTRATION_LIMIT_BREACHED: position notional {new_notional / equity:.1%} of equity "
+                f"> limit {self.max_position_concentration_pct:.1%}",
+                Decimal("0"),
+            )
+
+        # Initial margin only on the exposure this order opens; closing part of an opposite position frees margin
+        if pos_qty == 0 or (pos_qty > 0) == order_is_long:
+            opening_qty = intent.quantity
+        else:
+            opening_qty = max(Decimal("0"), intent.quantity - abs(pos_qty))
+        required_margin = (
+            opening_qty * price_estimate / Decimal(intent.leverage) + order_notional * self.taker_fee
+        )
+        if required_margin > self.available_cash:
+            return (
+                False,
+                f"INSUFFICIENT_MARGIN: required {required_margin:.4f} > available {self.available_cash:.4f}",
+                required_margin,
+            )
+        return True, "APPROVED", required_margin
+
     def evaluate_intent(self, intent: OrderIntent) -> tuple[bool, str, Decimal]:
         """Synchronously evaluate risk rules for an order intent.
         
         Returns (is_approved, reject_reason, estimated_notional).
+        For perpetuals the third element is the initial margin to reserve (0 for reduce-only).
         """
-        # AI Agent Conviction Sizing
-        if intent.conviction_level:
+        is_perp = parse_instrument_id(intent.instrument_id)[2]
+        if (flag_reject := self._derivative_flag_reject(intent, is_perp)) is not None:
+            return False, flag_reject, Decimal("0")
+        if is_perp and not self.perp_trading_enabled:
+            return False, "PERP_TRADING_DISABLED", Decimal("0")
+
+        # AI Agent Conviction Sizing (never resizes a reduce-only close)
+        if intent.conviction_level and not intent.reduce_only:
             conviction = intent.conviction_level.upper()
             multiplier = Decimal("1.0")
             if conviction == "OVERWEIGHT":
@@ -131,6 +295,9 @@ class GuardedOrderDispatcher:
         ask_price = Decimal(str(quote.ask_price))
         bid_price = Decimal(str(quote.bid_price))
 
+        if is_perp:
+            return self._evaluate_perp(intent, bid_price, ask_price)
+
         # 4. Risk Margin & Spot Cash Invariants
         if intent.side.upper() == "SELL":
             avail_pos = self.get_available_position_qty(intent.instrument_id)
@@ -140,7 +307,6 @@ class GuardedOrderDispatcher:
                     f"SPOT_INVARIANT_VIOLATION: intent quantity {intent.quantity} exceeds available long position {avail_pos}",
                     Decimal("0"),
                 )
-            # If it's a perpetual and quantity > avail_pos, it's a short sale (requires Margin calculation below)
 
             # Price collar check on sell
             if intent.order_type.upper() == "LIMIT" and intent.price is not None:
@@ -180,15 +346,7 @@ class GuardedOrderDispatcher:
                 )
 
             # Calculate total portfolio equity to check concentration
-            total_equity = self.cash_balance
-            for p_inst_id, qty in self.positions.items():
-                if qty > 0:
-                    try:
-                        p_quote = self.node_cache.quote(InstrumentId.from_str(p_inst_id)) if self.node_cache else None
-                        if p_quote:
-                            total_equity += qty * Decimal(str(p_quote.bid_price))
-                    except Exception:
-                        pass
+            total_equity = self._portfolio_equity()
             
             # Current value of existing position in this instrument
             cur_pos_qty = self.get_position_qty(intent.instrument_id)
@@ -223,7 +381,10 @@ class GuardedOrderDispatcher:
             return False, reason
 
         # Atomically reserve before submission
-        if intent.side.upper() == "BUY":
+        is_perp = parse_instrument_id(intent.instrument_id)[2]
+        if is_perp:
+            self.reserved_cash += est_notional  # initial margin + fee; 0 for reduce-only
+        elif intent.side.upper() == "BUY":
             self.reserved_cash += est_notional
         elif intent.side.upper() == "SELL":
             cur_res = self.reserved_positions.get(intent.instrument_id, Decimal("0"))
@@ -235,6 +396,8 @@ class GuardedOrderDispatcher:
             "side": intent.side.upper(),
             "quantity": intent.quantity,
             "instrument_id": intent.instrument_id,
+            "is_perp": is_perp,
+            "reduce_only": intent.reduce_only,
         }
 
         # Submit to Nautilus
@@ -253,7 +416,7 @@ class GuardedOrderDispatcher:
         if not order_info:
             return
 
-        if order_info["side"] == "BUY":
+        if order_info.get("is_perp") or order_info["side"] == "BUY":
             self.reserved_cash = max(Decimal("0"), self.reserved_cash - order_info["reserved_notional"])
         elif order_info["side"] == "SELL":
             inst_id = order_info["instrument_id"]
@@ -270,6 +433,10 @@ class GuardedOrderDispatcher:
         instrument_id: str | None = None,
     ) -> None:
         """Process an execution fill in memory, reconciling cash and position balances."""
+        known = self.open_orders.get(client_order_id)
+        if parse_instrument_id(instrument_id or (known["instrument_id"] if known else ""))[2]:
+            # Spot accounting would book a short's proceeds as cash with no position
+            raise NotImplementedError("perpetual fill accounting is not implemented yet (roadmap C9)")
         order_info = self.open_orders.pop(client_order_id, None)
         actual_side = (side or (order_info["side"] if order_info else "BUY")).upper()
         inst_id = instrument_id or (order_info["instrument_id"] if order_info else "UNKNOWN")
