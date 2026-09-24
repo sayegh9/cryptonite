@@ -1,12 +1,12 @@
 # HANDOFF
 
 ## Current State
-- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring, C9 = `derivatives_feed` compose service). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: funding settlement in the engine, StreamHub forwarding of perp channels (C11), and bringing the dev DB to head
+- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring, C9 = `derivatives_feed` compose service, C10 = funding settlement). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: StreamHub forwarding of perp channels (C11), bringing the dev DB to head, then the web HUD/ticket
 - `main` @ `c63576e`, 14 commits ahead of `origin/main`, NOT pushed. Working tree NOT clean: 28 modified, 212 deleted, 20 untracked (backend packages/services, docs, graphify cache, `exit_monitor.py`, 015's LLM budget change 10→18 USD)
 - Graph: built at `1100fa2`; run `graphify update .` after committing
 - Gates (2026-09-24, Claude Code):
   - Web (committed; `apps/web` has no uncommitted changes): typecheck ✅ · lint ✅ 0 errors / 0 warnings · `pnpm build` ✅ · Playwright ☐ not run
-  - Backend on the **working tree** at C8: pytest ✅ 287 passed / 0 failed, 12 deselected (279 at C7 + 8 orchestrator perp wiring tests; wiring file 5/5 repeat runs green)
+  - Backend on the **working tree** at C10: pytest ✅ 302 passed / 0 failed, 12 deselected (287 at C9 + 15 funding settlement tests; Redis-timing files 3/3 repeat runs green)
   - C3 live smoke test (2026-09-24): BTCUSDT/ETHUSDT mark ticks and open interest cached from the public Binance endpoints
   - Backend on **HEAD** (clean checkout): ☐ not re-run since `c63576e` committed the orchestrator `server.py` change the old hang depended on
   - Migrations: `alembic upgrade head` ✅ 001→020 on a fresh database; 020 downgrade/upgrade round trip ✅; 020 constraints exercised (spot SHORT, spot margin mode, spot leverage, CROSS with isolated margin, non-perp funding rows all rejected)
@@ -46,7 +46,7 @@
     - `dispatch()` now records `instance_id`, so targeted PAUSE/STOP actually match orders; before this they cancelled nothing.
 - **Perp gaps before production use (in priority order):**
   1. ~~Bridge persistence spot-only~~ — resolved in C6 (below). Still open: tighten `chk_paper_position_margin_mode` to NOT NULL for perps (the bridge now writes it; left for a later migration because C6 had to stay within 020's constraints). `paper_trades` has no realized-PnL column; realized PnL is on the position row only.
-  2. ~~No liquidation~~ — resolved in C7 and driven by the orchestrator since C8. Funding settlement in the engine is still missing.
+  2. ~~No liquidation / funding~~ — liquidation since C7/C8, funding settlement since C10.
   3. ~~Orchestrator mark/param wiring~~ — resolved in C8; `derivatives_feed` runs as a compose service since C9.
   4. The dev DB is still at 013, so `funding_rates` (020) doesn't exist there. Each funding settlement the feed detects will fail its insert, drop that row, and make the mark stream reconnect once. Bring the dev DB to head (see Known pre-existing issues) before relying on funding history.
 - Perpetuals C6: `EventBridgeWorker._persist_perp_fill` (`packages/execution/cryptonite_execution/bridge.py`; there is no orchestrator `bridge.py`).
@@ -74,6 +74,16 @@
   - **No `env_file`**: public market data only, so the `.env` exchange/LLM/TOTP secrets are not injected.
   - `orchestrator` depends on it (`service_started`).
   - Verified 2026-09-24: image built, the container (uid 1000) cached live BTC/ETH `perp:mark:*` and `perp:oi:*` from Binance, then it was removed again. The stack was left as found (postgres + redis only).
+- Perpetuals C10: funding settlement.
+  - `margin.calculate_funding_payment(size, mark, rate) = -size * mark * rate`.
+  - `GuardedOrderDispatcher.apply_funding_settlement(instrument, mark, rate, funding_time_ns)`:
+    - Moves cash (and daily realized PnL) and tracks `cumulative_funding` per position.
+    - For ISOLATED positions it also moves the isolated margin (Binance semantics), so a funding debit pulls the liquidation price closer.
+    - Idempotent and monotonic per instrument (`last_funding_time_ns`). Timestamps are ns like every other funding/mark time.
+  - `PaperTradingEngine.process_funding_settlement` enqueues `FUNDING_SETTLED`, publishes `perp.funding` on `channel:perp_funding_events` (not forwarded by `StreamHub` yet), then runs a liquidation sweep on fresh marks.
+  - `EventBridgeWorker` books it into account cash/realized PnL and the open position's realized PnL, isolated margin, and liquidation levels. The journal row's run-independent idempotency key `FUNDING:{account}:{instrument}:{T}` makes this exactly-once across restarts without a new migration.
+  - The orchestrator's `consume_perp_marks` settles at the previous `T` with the last pre-rollover rate and mark when a tick's `next_funding_time_ns` rolls forward. Settlements missed while disconnected are not reconstructed.
+  - Cumulative funding is not a separate DB column (020 has none); it is folded into `paper_positions.realized_pnl`.
 - Uncommitted backend work (packages/agents, `demo_pipeline.py`, scanner, storage, api auth/routes, debate_worker, 015 budget change) has no recorded owner
 - `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), and the `debate_worker` exit-queue consumer — owner: unassigned
 - graphify housekeeping: 212 deleted old-version cache files, untracked new cache, dated backup folders, and an uncommitted `.gitignore` rule are left for a decision

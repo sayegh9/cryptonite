@@ -208,9 +208,10 @@ class EventBridgeWorker:
                     native_id = evt.get("native_event_id", str(uuid.uuid4()))
                     client_order_id = evt.get("client_order_id", "UNKNOWN")
                     event_version = evt.get("event_version", 1)
-                    idempotency_key = f"{self.engine_run_id}:{native_id}"
+                    # Events may carry a run-independent key (e.g. funding settlements) for cross-restart dedup
+                    idempotency_key = evt.get("idempotency_key") or f"{self.engine_run_id}:{native_id}"
 
-                    await conn.execute(
+                    journal_status = await conn.execute(
                         """
                         INSERT INTO paper_execution_events (
                             engine_run_id, native_event_id, idempotency_key, event_id,
@@ -387,29 +388,7 @@ class EventBridgeWorker:
                             account_id, cash_delta, realized_delta
                         )
 
-                        # Recalculate total_equity = cash_balance + spot value + perp unrealized PnL
-                        equity_row = await conn.fetchrow(
-                            """
-                            SELECT COALESCE(SUM(CASE
-                                WHEN instrument_id LIKE '%-PERP.%'
-                                THEN (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * (current_price - entry_price)
-                                ELSE quantity * current_price
-                            END), 0) as pos_val
-                            FROM paper_positions
-                            WHERE account_id = $1 AND status = 'OPEN';
-                            """,
-                            account_id
-                        )
-                        open_val = Decimal(str(equity_row["pos_val"])) if equity_row else Decimal("0")
-                        await conn.execute(
-                            """
-                            UPDATE paper_accounts
-                            SET total_equity = cash_balance + $2,
-                                updated_at = now()
-                            WHERE account_id = $1;
-                            """,
-                            account_id, open_val
-                        )
+                        await self._recompute_total_equity(conn, account_id)
 
                         # Emit outbox event for trade execution
                         await conn.execute(
@@ -434,8 +413,70 @@ class EventBridgeWorker:
                             }),
                         )
 
+                    # 4. Funding settlement: apply once (journal insert above is the idempotency gate)
+                    if evt.get("event_type") == "FUNDING_SETTLED" and journal_status.endswith(" 1"):
+                        await self._persist_funding(conn, evt)
+
         self.committed_events_count += len(batch)
         return len(batch)
+
+    async def _recompute_total_equity(self, conn: asyncpg.Connection, account_id: str) -> None:
+        """total_equity = cash_balance + spot value + perp unrealized PnL."""
+        equity_row = await conn.fetchrow(
+            """
+            SELECT COALESCE(SUM(CASE
+                WHEN instrument_id LIKE '%-PERP.%'
+                THEN (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * (current_price - entry_price)
+                ELSE quantity * current_price
+            END), 0) as pos_val
+            FROM paper_positions
+            WHERE account_id = $1 AND status = 'OPEN';
+            """,
+            account_id
+        )
+        open_val = Decimal(str(equity_row["pos_val"])) if equity_row else Decimal("0")
+        await conn.execute(
+            """
+            UPDATE paper_accounts
+            SET total_equity = cash_balance + $2,
+                updated_at = now()
+            WHERE account_id = $1;
+            """,
+            account_id, open_val
+        )
+
+    async def _persist_funding(self, conn: asyncpg.Connection, evt: dict[str, Any]) -> None:
+        """Book a funding payment: account cash/realized PnL, and the open position's realized PnL
+        and (ISOLATED) margin + liquidation levels from the post-settlement snapshot."""
+        account_id, cash_flow = str(evt["account_id"]), Decimal(str(evt["cash_flow"]))
+        await conn.execute(
+            """
+            UPDATE paper_accounts
+            SET cash_balance = cash_balance + $2,
+                realized_pnl = realized_pnl + $2,
+                daily_realized_pnl = daily_realized_pnl + $2,
+                updated_at = now()
+            WHERE account_id = $1;
+            """,
+            account_id, cash_flow,
+        )
+        snap = evt.get("position") or {}
+        liq, mm = snap.get("liquidation_price"), snap.get("maintenance_margin")
+        await conn.execute(
+            """
+            UPDATE paper_positions
+            SET realized_pnl = realized_pnl + $4,
+                isolated_margin = GREATEST(COALESCE($5, isolated_margin), 0),
+                liquidation_price = COALESCE($6, liquidation_price),
+                maintenance_margin = COALESCE($7, maintenance_margin)
+            WHERE account_id = $1 AND instance_id = $2 AND instrument_id = $3 AND status = 'OPEN';
+            """,
+            account_id, str(evt["instance_id"]), str(evt["instrument_id"]), cash_flow,
+            Decimal(str(snap["isolated_margin"])) if snap.get("isolated_margin") is not None else None,
+            Decimal(str(liq)) if liq is not None else None,
+            Decimal(str(mm)) if mm is not None else None,
+        )
+        await self._recompute_total_equity(conn, account_id)
 
     async def _persist_perp_fill(
         self,

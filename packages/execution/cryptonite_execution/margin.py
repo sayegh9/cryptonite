@@ -164,6 +164,14 @@ def calculate_liquidation_price(
     return None
 
 
+def calculate_funding_payment(position_size: Decimal, mark_price: Decimal, funding_rate: Decimal) -> Decimal:
+    """Funding cash flow for a signed position: ``-size * mark * rate``.
+
+    Positive rate: longs pay, shorts receive. Negative rate: shorts pay, longs receive.
+    """
+    return -position_size * mark_price * funding_rate
+
+
 def calculate_margin_ratio(maintenance_margin: Decimal, margin_balance: Decimal) -> Decimal:
     """MM / margin balance; >= 1 means liquidation. A non-positive balance is infinitely unsafe."""
     if margin_balance <= 0:

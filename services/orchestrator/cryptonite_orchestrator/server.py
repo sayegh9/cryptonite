@@ -232,14 +232,46 @@ PERP_MARK_CHANNEL = "channel:perp_mark_ticks"  # published by cryptonite_scanner
 PERP_MARK_KEY_PATTERN = "perp:mark:*"
 
 
-def apply_perp_mark_tick(engine, raw) -> tuple[str, Decimal] | None:
-    """Feed one perp.mark tick (JSON from the derivatives feed) into the dispatcher."""
+def apply_perp_mark_tick(engine, raw) -> dict[str, Any] | None:
+    """Feed one perp.mark tick (JSON from the derivatives feed) into the dispatcher; return it parsed."""
     data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
     if data.get("type") != "perp.mark":
         return None
-    instrument_id, mark = data["instrument_id"], Decimal(str(data["mark_price"]))
-    engine.dispatcher.update_mark_price(instrument_id, mark, int(data["ts_event_ns"]))
-    return instrument_id, mark
+    tick = {
+        "instrument_id": data["instrument_id"],
+        "mark_price": Decimal(str(data["mark_price"])),
+        "funding_rate": Decimal(str(data["funding_rate"])),
+        "next_funding_time_ns": int(data["next_funding_time_ns"]),
+    }
+    engine.dispatcher.update_mark_price(tick["instrument_id"], tick["mark_price"], int(data["ts_event_ns"]))
+    return tick
+
+
+async def settle_funding_on_rollover(engine, funding_state: dict[str, dict[str, Any]], tick: dict[str, Any] | None):
+    """Settle funding when a symbol's next funding time rolls forward.
+
+    The settlement is booked at the previous funding time with the rate and mark from the last
+    tick before the rollover. Only one settlement is booked per rollover, so settlements missed
+    while disconnected are not reconstructed.
+    """
+    if tick is None:
+        return
+    prev = funding_state.get(tick["instrument_id"])
+    if prev is not None and tick["next_funding_time_ns"] < prev["next_funding_time_ns"]:
+        return  # out-of-order tick; keep the newer state
+    funding_state[tick["instrument_id"]] = tick
+    if prev is None or tick["next_funding_time_ns"] == prev["next_funding_time_ns"]:
+        return
+    payments, liquidations = await engine.process_funding_settlement(
+        prev["instrument_id"], prev["mark_price"], prev["funding_rate"], prev["next_funding_time_ns"]
+    )
+    for p in payments:
+        logger.info(
+            "Funding settled %s @ %s: rate %s, cash flow %s (cumulative %s)",
+            p.instrument_id, p.funding_time_ns, p.funding_rate, p.cash_flow, p.cumulative_funding,
+        )
+    for liq in liquidations:
+        logger.critical("Funding-triggered liquidation %s: %s %s", liq.client_order_id, liq.instrument_id, liq.side)
 
 
 async def consume_perp_marks(
@@ -251,10 +283,12 @@ async def consume_perp_marks(
 ):
     """Keep dispatcher mark prices current and run liquidation checks on fresh marks.
 
-    Seeds from the cached ``perp:mark:*`` keys, then follows the pub/sub channel. Every
+    Seeds from the cached ``perp:mark:*`` keys, then follows the pub/sub channel. A tick whose
+    next funding time rolled forward settles funding (``settle_funding_on_rollover``). Every
     ``liquidation_interval_s`` it calls ``engine.process_liquidations`` with the marks that are
     still fresh, so a stalled feed never liquidates on stale prices.
     """
+    funding_state: dict[str, dict[str, Any]] = {}
     while True:
         pubsub = redis.pubsub()
         try:
@@ -262,12 +296,12 @@ async def consume_perp_marks(
             async for key in redis.scan_iter(match=key_pattern):
                 cached = await redis.get(key)
                 if cached:
-                    apply_perp_mark_tick(engine, cached)
+                    await settle_funding_on_rollover(engine, funding_state, apply_perp_mark_tick(engine, cached))
             last_check = 0.0
             while True:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=liquidation_interval_s)
                 if msg and msg.get("type") == "message":
-                    apply_perp_mark_tick(engine, msg["data"])
+                    await settle_funding_on_rollover(engine, funding_state, apply_perp_mark_tick(engine, msg["data"]))
                 now = time.monotonic()
                 if now - last_check >= liquidation_interval_s:
                     last_check = now

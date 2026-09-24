@@ -32,13 +32,14 @@ from test_bridge_perpetuals_persistence import (  # noqa: F401 - ctx/db_url are 
 from test_paper_risk_guardrails import PERP, make_perp_dispatcher, perp_intent
 
 D = Decimal
+NEXT_FUNDING_NS = time.time_ns() + 3_600 * 10**9  # fixed within a funding period, as the real feed sends it
 
 
 def mark_tick(price: str, age_s: float = 0.0, instrument_id: str = PERP) -> str:
     return json.dumps({
         "type": "perp.mark", "v": 1, "instrument_id": instrument_id, "symbol": "BTCUSDT",
         "ts_event_ns": time.time_ns() - int(age_s * 1e9), "mark_price": price,
-        "index_price": price, "funding_rate": "0.0001", "next_funding_time_ns": time.time_ns() + 3_600 * 10**9,
+        "index_price": price, "funding_rate": "0.0001", "next_funding_time_ns": NEXT_FUNDING_NS,
     })
 
 

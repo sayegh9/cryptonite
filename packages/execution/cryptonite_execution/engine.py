@@ -10,7 +10,7 @@ from typing import Any
 
 import asyncpg
 from cryptonite_execution.bridge import EventBridge, IntegritySupervisor
-from cryptonite_execution.derivatives import LiquidationEvent
+from cryptonite_execution.derivatives import FundingPaymentEvent, LiquidationEvent
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch
 from cryptonite_execution.mailbox import NodeCommandMailbox
@@ -36,6 +36,7 @@ from nautilus_trader.model import (
 logger = logging.getLogger("cryptonite.execution.engine")
 
 LIQUIDATION_CHANNEL = "channel:perp_liquidations"
+FUNDING_CHANNEL = "channel:perp_funding_events"
 
 
 class PaperTradingEngine:
@@ -218,6 +219,41 @@ class PaperTradingEngine:
                 except Exception as e:  # noqa: BLE001 - notification must not block the close
                     logger.error("Failed to publish liquidation %s: %s", liq.client_order_id, e)
         return liquidations
+
+    async def process_funding_settlement(
+        self, instrument_id: str, mark_price: Decimal, funding_rate: Decimal, funding_time_ns: int
+    ) -> tuple[list[FundingPaymentEvent], list[LiquidationEvent]]:
+        """Apply a funding settlement, persist and publish it, then run a liquidation sweep.
+
+        Each payment becomes a FUNDING_SETTLED event. Its journal idempotency key
+        (account, instrument, funding time) makes the DB application exactly-once across restarts.
+        """
+        payments = self.dispatcher.apply_funding_settlement(instrument_id, mark_price, funding_rate, funding_time_ns)
+        for p in payments:
+            event_key = f"FUND-{p.instrument_id}-{p.funding_time_ns}"
+            self.bridge.enqueue_event({
+                "event_type": "FUNDING_SETTLED",
+                "event_version": 1,
+                "client_order_id": event_key,
+                "native_event_id": event_key,
+                "idempotency_key": f"FUNDING:{p.account_id}:{p.instrument_id}:{p.funding_time_ns}",
+                "account_id": p.account_id,
+                "instance_id": p.instance_id,
+                "instrument_id": p.instrument_id,
+                "cash_flow": str(p.cash_flow),
+                "occurred_at_ns": p.funding_time_ns,
+                "payload": p.model_dump(mode="json"),
+                "position": self.dispatcher.perp_position_snapshot(p.instrument_id, p.mark_price),
+            })
+            if self.redis is not None:
+                try:
+                    await self.redis.publish(
+                        FUNDING_CHANNEL, json.dumps({"type": "perp.funding", "v": 1, **p.model_dump(mode="json")})
+                    )
+                except Exception as e:  # noqa: BLE001 - notification must not block settlement
+                    logger.error("Failed to publish funding payment for %s: %s", p.instrument_id, e)
+        liquidations = await self.process_liquidations(self.dispatcher.fresh_mark_prices()) if payments else []
+        return payments, liquidations
 
     def process_mailbox_commands(self) -> None:
         """Drained synchronously inside node worker thread."""

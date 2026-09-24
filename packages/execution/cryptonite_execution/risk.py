@@ -17,10 +17,20 @@ from nautilus_trader.model import (
 )
 from pydantic import BaseModel, Field
 
-from cryptonite_execution.derivatives import LiquidationEvent, MarginMode, OrderSide, PositionSide
+from cryptonite_execution.derivatives import (
+    FundingPaymentEvent,
+    LiquidationEvent,
+    MarginMode,
+    OrderSide,
+    PositionSide,
+)
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
-from cryptonite_execution.margin import calculate_liquidation_price, calculate_maintenance_margin
+from cryptonite_execution.margin import (
+    calculate_funding_payment,
+    calculate_liquidation_price,
+    calculate_maintenance_margin,
+)
 
 logger = logging.getLogger("cryptonite.execution.risk")
 
@@ -50,6 +60,7 @@ class PerpPositionState:
     margin_mode: str = MarginMode.CROSS
     initial_margin: Decimal = Decimal("0")  # locked from available cash while the position is open
     instance_id: str = "MANUAL_TRADE"  # strategy instance that opened it (paper_positions key)
+    cumulative_funding: Decimal = Decimal("0")  # Σ funding cash flows while open
 
 
 class GuardedOrderDispatcher:
@@ -114,6 +125,7 @@ class GuardedOrderDispatcher:
         self.locked_margin: Decimal = Decimal("0")  # Σ initial margin of open perp positions
         self.liquidation_clearance_pct = liquidation_clearance_pct
         self.insurance_fund_deficit: Decimal = Decimal("0")  # cumulative cost of liquidation shortfalls
+        self.last_funding_time_ns: dict[str, int] = {}  # per instrument; settlements are applied once, in order
         self.perp_positions: dict[str, PerpPositionState] = {}
         self.mark_prices: dict[str, Decimal] = {}
         self.mark_ts_ns: dict[str, int] = {}  # exchange event time of each mark
@@ -271,6 +283,43 @@ class GuardedOrderDispatcher:
         except ValueError:
             return None, None
         return maintenance, liquidation
+
+    def apply_funding_settlement(
+        self, instrument_id: str, mark_price: Decimal, funding_rate: Decimal, funding_time_ns: int
+    ) -> list[FundingPaymentEvent]:
+        """Apply one funding settlement to the open position on ``instrument_id``.
+
+        Cash moves by ``-size * mark * rate``. For ISOLATED positions the payment also moves the
+        isolated margin (Binance semantics), so a funding debit pulls the liquidation price closer;
+        callers should run a liquidation sweep afterwards. Idempotent and monotonic per
+        instrument: a settlement at or before the last applied funding time is ignored.
+        """
+        if funding_time_ns <= self.last_funding_time_ns.get(instrument_id, -1):
+            return []
+        self.last_funding_time_ns[instrument_id] = funding_time_ns
+        pos = self.perp_positions.get(instrument_id)
+        if pos is None or pos.signed_qty == 0:
+            return []
+
+        cash_flow = calculate_funding_payment(pos.signed_qty, mark_price, funding_rate)
+        self.cash_balance += cash_flow
+        self.daily_realized_pnl += cash_flow
+        if pos.margin_mode == MarginMode.ISOLATED:
+            pos.initial_margin += cash_flow
+            self.locked_margin += cash_flow
+        pos.cumulative_funding += cash_flow
+        return [FundingPaymentEvent(
+            account_id=self.account_id,
+            instance_id=pos.instance_id,
+            instrument_id=instrument_id,
+            margin_mode=pos.margin_mode,
+            signed_qty=pos.signed_qty,
+            mark_price=mark_price,
+            funding_rate=funding_rate,
+            cash_flow=cash_flow,
+            cumulative_funding=pos.cumulative_funding,
+            funding_time_ns=funding_time_ns,
+        )]
 
     def check_liquidations(self, mark_prices: dict[str, Decimal]) -> list[LiquidationEvent]:
         """Force-close perp positions whose mark breached the liquidation price.

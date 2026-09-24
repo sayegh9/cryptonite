@@ -94,6 +94,21 @@ class PerpetualPosition(BaseModel):
         return abs(self.signed_qty)
 
 
+class FundingPaymentEvent(BaseModel):
+    """One funding settlement applied to an open perpetual position."""
+
+    account_id: str
+    instance_id: str
+    instrument_id: str
+    margin_mode: MarginMode
+    signed_qty: Decimal
+    mark_price: Decimal
+    funding_rate: Decimal
+    cash_flow: Decimal  # -signed_qty * mark_price * funding_rate
+    cumulative_funding: Decimal  # position total after this payment
+    funding_time_ns: int
+
+
 class LiquidationEvent(BaseModel):
     """A forced close of a perpetual position whose mark price breached its liquidation price."""
 
