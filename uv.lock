@@ -869,9 +869,11 @@ dependencies = [
     { name = "cryptonite-schemas" },
     { name = "cryptonite-storage" },
     { name = "duckdb" },
+    { name = "httpx" },
     { name = "polars" },
     { name = "pydantic" },
     { name = "redis" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -881,9 +883,11 @@ requires-dist = [
     { name = "cryptonite-schemas", editable = "packages/schemas" },
     { name = "cryptonite-storage", editable = "packages/storage" },
     { name = "duckdb", specifier = ">=1.1.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "polars", specifier = ">=1.12.0" },
     { name = "pydantic", specifier = ">=2.9.0" },
     { name = "redis", specifier = ">=5.0.0" },
+    { name = "websockets", specifier = ">=13.0" },
 ]
 
 [[package]]
