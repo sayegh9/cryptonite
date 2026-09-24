@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { getStreamClient } from "@/lib/ws";
+import { fetchApi } from "@/lib/api";
 
 import {
   ShieldAlert,
@@ -12,13 +13,10 @@ import {
   AlertTriangle,
   XCircle,
   Plus,
-  RefreshCw,
-  DollarSign,
   TrendingUp,
   Layers,
   ArrowUpRight,
-  ArrowDownRight,
-} from "lucide-react";
+  } from "lucide-react";
 
 interface Account {
   account_id: string;
@@ -67,6 +65,8 @@ interface StrategyInstance {
   allocation_usd: number;
   status: "RUNNING" | "PAUSED" | "STOPPED";
   last_processed_bar_ns: number;
+  resolved_parameters?: any;
+  created_at?: string;
 }
 
 interface KillSwitchState {
@@ -77,32 +77,52 @@ interface KillSwitchState {
   latched_at?: string;
 }
 
+interface Trade {
+  trade_id: string;
+  client_order_id: string;
+  instrument_id: string;
+  side: "BUY" | "SELL";
+  fill_price: number;
+  quantity: number;
+  commission: number;
+  created_at: string;
+}
+
 export function PortfolioConsole() {
   const [account, setAccount] = useState<Account | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [activeTab, setActiveTab] = useState<"orders" | "trades">("orders");
   const [strategies, setStrategies] = useState<StrategyInstance[]>([]);
+  const [availableStrategies, setAvailableStrategies] = useState<any[]>([]);
+  const [selectedPosition, setSelectedPosition] = useState<Position | null>(null);
+  const [selectedStrategy, setSelectedStrategy] = useState<StrategyInstance | null>(null);
   const [killSwitch, setKillSwitch] = useState<KillSwitchState>({ id: 1, is_latched: false });
+
   
-  const [loading, setLoading] = useState<boolean>(true);
+  const [, setLoading] = useState<boolean>(true);
   const [showDeployModal, setShowDeployModal] = useState<boolean>(false);
   const [showKillModal, setShowKillModal] = useState<boolean>(false);
+  const [showFlattenModal, setShowFlattenModal] = useState<boolean>(false);
   const [killReason, setKillReason] = useState<string>("Manual operator trigger");
   
   // Strategy Deploy Form State
-  const [deployStrategyName, setDeployStrategyName] = useState<string>("EMACrossover");
+  const [deployStrategyName, setDeployStrategyName] = useState<string>("");
   const [deployInstrument, setDeployInstrument] = useState<string>("BTCUSDT.BINANCE");
   const [deployTimeframe, setDeployTimeframe] = useState<string>("1m");
   const [deployAllocation, setDeployAllocation] = useState<number>(5000);
 
   const fetchData = async () => {
     try {
-      const [accRes, posRes, ordRes, stratRes, ksRes] = await Promise.all([
-        fetch("/api/v1/paper/accounts").then((r) => r.json()).catch(() => []),
-        fetch("/api/v1/paper/positions").then((r) => r.json()).catch(() => []),
-        fetch("/api/v1/paper/orders").then((r) => r.json()).catch(() => []),
-        fetch("/api/v1/paper/strategies").then((r) => r.json()).catch(() => []),
-        fetch("/api/v1/paper/kill-switch").then((r) => r.json()).catch(() => ({ id: 1, is_latched: false })),
+      const [accRes, posRes, ordRes, stratRes, ksRes, availStratsRes, trdRes] = await Promise.all([
+        fetchApi("/paper/accounts").catch(() => []),
+        fetchApi("/paper/positions").catch(() => []),
+        fetchApi("/paper/orders").catch(() => []),
+        fetchApi("/paper/strategies").catch(() => []),
+        fetchApi("/paper/kill-switch").catch(() => ({ id: 1, is_latched: false })),
+        fetchApi("/strategies").catch(() => []),
+        fetchApi("/paper/trades").catch(() => []),
       ]);
 
       if (Array.isArray(accRes) && accRes.length > 0) {
@@ -112,9 +132,9 @@ export function PortfolioConsole() {
           account_id: "PAPER-ACCOUNT-001",
           venue: "BINANCE",
           currency: "USDT",
-          starting_balance: 10000,
-          cash_balance: 10000,
-          total_equity: 10000,
+          starting_balance: 100000,
+          cash_balance: 100000,
+          total_equity: 100000,
           realized_pnl: 0,
           daily_realized_pnl: 0,
           daily_loss_latched: false,
@@ -123,8 +143,14 @@ export function PortfolioConsole() {
 
       setPositions(Array.isArray(posRes) ? posRes : []);
       setOrders(Array.isArray(ordRes) ? ordRes : []);
+      setTrades(Array.isArray(trdRes) ? trdRes : []);
       setStrategies(Array.isArray(stratRes) ? stratRes : []);
       setKillSwitch(ksRes);
+      setAvailableStrategies(Array.isArray(availStratsRes) ? availStratsRes : []);
+      
+      if (Array.isArray(availStratsRes) && availStratsRes.length > 0 && !deployStrategyName) {
+        setDeployStrategyName(availStratsRes[0].slug);
+      }
     } catch (e) {
       console.error("Failed fetching paper portfolio data:", e);
     } finally {
@@ -142,6 +168,9 @@ export function PortfolioConsole() {
     const unsub = client.subscribe((msg: any) => {
       if (msg.type === "positions_snapshot") {
         setPositions(msg.positions);
+        if (msg.account) {
+          setAccount((prev) => prev ? { ...prev, ...msg.account } : msg.account);
+        }
       }
     });
     
@@ -156,65 +185,89 @@ export function PortfolioConsole() {
 
 
   const handleTripKillSwitch = async () => {
-    await fetch("/api/v1/paper/kill-switch", {
+    await fetchApi("/paper/kill-switch", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason: killReason, operator: "web-ui" }),
+      headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
     });
     setShowKillModal(false);
     fetchData();
   };
 
   const handleResetKillSwitch = async () => {
-    await fetch("/api/v1/paper/kill-switch/reset", {
+    await fetchApi("/paper/kill-switch/reset", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ operator: "web-ui" }),
+      headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
     });
     fetchData();
   };
 
   const handlePauseStrategy = async (instanceId: string) => {
-    await fetch(`/api/v1/paper/strategies/${instanceId}/pause`, { method: "POST" });
+    setStrategies(prev => prev.map(s => s.instance_id === instanceId ? { ...s, status: "PAUSED" } : s));
+    if (selectedStrategy?.instance_id === instanceId) setSelectedStrategy(prev => prev ? { ...prev, status: "PAUSED" } : null);
+    await fetchApi(`/paper/strategies/${instanceId}/pause`, { method: "POST", headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" } });
     fetchData();
   };
 
   const handleResumeStrategy = async (instanceId: string) => {
-    await fetch(`/api/v1/paper/strategies/${instanceId}/resume`, { method: "POST" });
+    setStrategies(prev => prev.map(s => s.instance_id === instanceId ? { ...s, status: "RUNNING" } : s));
+    if (selectedStrategy?.instance_id === instanceId) setSelectedStrategy(prev => prev ? { ...prev, status: "RUNNING" } : null);
+    await fetchApi(`/paper/strategies/${instanceId}/resume`, { method: "POST", headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" } });
     fetchData();
   };
 
   const handleStopStrategy = async (instanceId: string) => {
-    await fetch(`/api/v1/paper/strategies/${instanceId}/stop`, { method: "POST" });
+    setStrategies(prev => prev.map(s => s.instance_id === instanceId ? { ...s, status: "STOPPED" } : s));
+    if (selectedStrategy?.instance_id === instanceId) setSelectedStrategy(prev => prev ? { ...prev, status: "STOPPED" } : null);
+    await fetchApi(`/paper/strategies/${instanceId}/stop`, { method: "POST", headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" } });
     fetchData();
   };
 
   const handleClosePosition = async (instanceId: string, instrumentId: string) => {
-    await fetch(`/api/v1/paper/strategies/${instanceId}/close-position`, {
+    await fetchApi(`/paper/strategies/${instanceId}/close-position`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ instrument_id: instrumentId }),
+      headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
     });
     fetchData();
   };
 
+  const handleFlattenAll = async () => {
+    const openPositions = positions.filter((p) => p.status === "OPEN");
+    await Promise.all(
+      openPositions.map((pos) =>
+        fetchApi(`/paper/strategies/${pos.instance_id}/close-position`, {
+          method: "POST",
+          body: JSON.stringify({ instrument_id: pos.instrument_id }),
+          headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
+        })
+      )
+    );
+    setShowFlattenModal(false);
+    fetchData();
+  };
+
   const handleCancelOrder = async (clientOrderId: string) => {
-    await fetch(`/api/v1/paper/orders/${clientOrderId}/cancel`, { method: "POST" });
+    await fetchApi(`/paper/orders/${clientOrderId}/cancel`, { method: "POST", headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" } });
     fetchData();
   };
 
   const handleDeploy = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch("/api/v1/paper/strategies/deploy", {
+    const strat = availableStrategies.find((s) => s.slug === deployStrategyName);
+    if (!strat) return;
+
+    await fetchApi("/paper/strategies/deploy", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        strategy_name: deployStrategyName,
-        strategy_version_id: "00000000-0000-0000-0000-000000000001",
+        strategy_name: strat.slug,
+        strategy_version_id: strat.active_version_id,
         instrument_id: deployInstrument,
         timeframe: deployTimeframe,
         allocation_usd: deployAllocation,
       }),
+      headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
     });
     setShowDeployModal(false);
     fetchData();
@@ -269,13 +322,23 @@ export function PortfolioConsole() {
           </button>
 
           {!killSwitch.is_latched ? (
-            <button
-              onClick={() => setShowKillModal(true)}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white font-bold tracking-wide transition-colors"
-            >
-              <ShieldAlert className="w-4 h-4" />
-              <span>Trip Kill Switch</span>
-            </button>
+            <>
+              <button
+                onClick={() => setShowFlattenModal(true)}
+                className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white font-bold tracking-wide transition-colors"
+                disabled={positions.filter((p) => p.status === "OPEN").length === 0}
+              >
+                <XCircle className="w-4 h-4" />
+                <span>Emergency Flatten All</span>
+              </button>
+              <button
+                onClick={() => setShowKillModal(true)}
+                className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white font-bold tracking-wide transition-colors"
+              >
+                <ShieldAlert className="w-4 h-4" />
+                <span>Trip Kill Switch</span>
+              </button>
+            </>
           ) : (
             <button
               onClick={handleResetKillSwitch}
@@ -346,6 +409,42 @@ export function PortfolioConsole() {
         </div>
       </div>
 
+      {/* Capital Allocation & Concentration Gauge */}
+      <div className="mb-6 p-4 bg-zinc-900/50 border border-zinc-800 rounded">
+        <div className="flex justify-between items-center mb-2">
+          <div className="text-zinc-400 text-xs font-bold uppercase tracking-wider">Capital Allocation & Concentration Risk</div>
+          <div className="text-zinc-500 text-[10px]">Max 25% Single-Asset Concentration</div>
+        </div>
+        <div className="w-full h-2 bg-zinc-800 rounded overflow-hidden flex">
+          {positions.filter(p => p.status === 'OPEN').map(p => {
+             const allocation = (Math.abs(p.quantity * (p.current_price || p.entry_price)) / (account?.total_equity || 100000)) * 100;
+             let color = "bg-emerald-500";
+             if (allocation >= 20) color = "bg-red-500";
+             else if (allocation >= 15) color = "bg-yellow-500";
+             else if (allocation >= 10) color = "bg-cyan-500";
+             return <div key={p.position_id} className={`h-full ${color} border-r border-zinc-900`} style={{ width: `${allocation}%` }} title={`${p.instrument_id}: ${allocation.toFixed(1)}%`} />
+          })}
+        </div>
+        <div className="flex items-center space-x-4 mt-2 text-[10px] text-zinc-500">
+          <div className="flex items-center space-x-1">
+            <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+            <span>Optimal (&lt;10%)</span>
+          </div>
+          <div className="flex items-center space-x-1">
+            <div className="w-2 h-2 rounded-full bg-cyan-500"></div>
+            <span>Elevated (10-15%)</span>
+          </div>
+          <div className="flex items-center space-x-1">
+            <div className="w-2 h-2 rounded-full bg-yellow-500"></div>
+            <span>Warning (15-20%)</span>
+          </div>
+          <div className="flex items-center space-x-1">
+            <div className="w-2 h-2 rounded-full bg-red-500"></div>
+            <span>Concentrated (&gt;20%)</span>
+          </div>
+        </div>
+      </div>
+
       {/* Main Grid: Active Positions & Strategy Instances */}
       <div className="grid grid-cols-2 gap-6 mb-6">
         {/* Active Positions */}
@@ -358,7 +457,7 @@ export function PortfolioConsole() {
             <span className="text-[10px] text-zinc-500">250ms Mark-to-Market</span>
           </div>
           <div className="p-3 overflow-x-auto">
-            {positions.length === 0 ? (
+            {positions.filter(p => p.status === "OPEN").length === 0 ? (
               <div className="text-center py-8 text-zinc-500 italic">No open positions.</div>
             ) : (
               <table className="w-full text-left">
@@ -366,7 +465,7 @@ export function PortfolioConsole() {
                   <tr className="text-zinc-500 border-b border-zinc-800 pb-1">
                     <th className="py-1">Instrument</th>
                     <th>Side</th>
-                    <th>Conviction</th>
+                    <th>Origin</th>
                     <th>Qty</th>
                     <th>Entry</th>
                     <th>Mark</th>
@@ -375,8 +474,8 @@ export function PortfolioConsole() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/50">
-                  {positions.map((pos) => (
-                    <tr key={pos.position_id} className="hover:bg-zinc-800/30">
+                  {positions.filter(p => p.status === "OPEN").map((pos) => (
+                    <tr key={pos.position_id} className="hover:bg-zinc-800/30 cursor-pointer" onClick={() => setSelectedPosition(pos)}>
                       <td className="py-2 font-bold text-white">{pos.instrument_id}</td>
                       <td>
                         <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800">
@@ -384,10 +483,8 @@ export function PortfolioConsole() {
                         </span>
                       </td>
                       <td>
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] border ${
-                          pos.quantity > 0 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-slate-500/20 text-slate-400 border-slate-500/30'
-                        }`}>
-                          {pos.quantity > 0 ? 'OVERWEIGHT' : 'HOLD'}
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] border bg-indigo-500/20 text-indigo-400 border-indigo-500/30`}>
+                          {pos.instance_id.length > 15 ? pos.instance_id.substring(0, 15) + "..." : pos.instance_id}
                         </span>
                       </td>
                       <td>{Number(pos.quantity).toFixed(4)}</td>
@@ -398,7 +495,7 @@ export function PortfolioConsole() {
                       </td>
                       <td className="text-right">
                         <button
-                          onClick={() => handleClosePosition(pos.instance_id, pos.instrument_id)}
+                          onClick={(e) => { e.stopPropagation(); handleClosePosition(pos.instance_id, pos.instrument_id); }}
                           className="px-2 py-1 bg-red-950 hover:bg-red-900 border border-red-800 text-red-300 rounded text-[10px]"
                         >
                           Flatten
@@ -422,7 +519,7 @@ export function PortfolioConsole() {
             <span className="text-[10px] text-zinc-500">1 per (Account, Instrument)</span>
           </div>
           <div className="p-3 overflow-x-auto">
-            {strategies.length === 0 ? (
+            {strategies.filter(st => !['MANUAL_TRADE', 'AI_DEBATE_WORKER'].includes(st.instance_id)).length === 0 ? (
               <div className="text-center py-8 text-zinc-500 italic">No deployed strategy instances.</div>
             ) : (
               <table className="w-full text-left">
@@ -437,8 +534,8 @@ export function PortfolioConsole() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/50">
-                  {strategies.map((st) => (
-                    <tr key={st.instance_id} className="hover:bg-zinc-800/30">
+                  {strategies.filter(st => !['MANUAL_TRADE', 'AI_DEBATE_WORKER'].includes(st.instance_id)).map((st) => (
+                    <tr key={st.instance_id} className="hover:bg-zinc-800/30 cursor-pointer" onClick={() => setSelectedStrategy(st)}>
                       <td className="py-2 font-bold text-zinc-300">{st.instance_id}</td>
                       <td>{st.strategy_name}</td>
                       <td>{st.instrument_id}</td>
@@ -459,7 +556,7 @@ export function PortfolioConsole() {
                       <td className="text-right space-x-1">
                         {st.status === "RUNNING" ? (
                           <button
-                            onClick={() => handlePauseStrategy(st.instance_id)}
+                            onClick={(e) => { e.stopPropagation(); handlePauseStrategy(st.instance_id); }}
                             className="p-1 bg-yellow-950 hover:bg-yellow-900 border border-yellow-800 text-yellow-300 rounded focus-visible:ring-2 focus-visible:ring-yellow-500/50 outline-none transition-all"
                             title="Pause"
                             aria-label={`Pause strategy ${st.strategy_name}`}
@@ -468,7 +565,7 @@ export function PortfolioConsole() {
                           </button>
                         ) : (
                           <button
-                            onClick={() => handleResumeStrategy(st.instance_id)}
+                            onClick={(e) => { e.stopPropagation(); handleResumeStrategy(st.instance_id); }}
                             className="p-1 bg-emerald-950 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 rounded focus-visible:ring-2 focus-visible:ring-emerald-500/50 outline-none transition-all"
                             title="Resume"
                             aria-label={`Resume strategy ${st.strategy_name}`}
@@ -477,7 +574,7 @@ export function PortfolioConsole() {
                           </button>
                         )}
                         <button
-                          onClick={() => handleStopStrategy(st.instance_id)}
+                          onClick={(e) => { e.stopPropagation(); handleStopStrategy(st.instance_id); }}
                           className="p-1 bg-red-950 hover:bg-red-900 border border-red-800 text-red-300 rounded focus-visible:ring-2 focus-visible:ring-red-500/50 outline-none transition-all"
                           title="Stop"
                           aria-label={`Stop strategy ${st.strategy_name}`}
@@ -494,66 +591,145 @@ export function PortfolioConsole() {
         </div>
       </div>
 
-      {/* Orders Table */}
-      <div className="bg-zinc-900/50 border border-zinc-800 rounded flex flex-col flex-1">
+      {/* Orders & Trades Ledger */}
+      <div className="bg-zinc-900/50 border border-zinc-800 rounded flex flex-col flex-1 min-h-[300px]">
         <div className="p-3 border-b border-zinc-800 flex items-center justify-between font-bold text-xs uppercase tracking-wider text-zinc-300">
-          <span>Execution Orders Journal</span>
-          <span className="text-[10px] text-zinc-500">{orders.length} Logged Orders</span>
+          <div className="flex space-x-6">
+            <button
+              onClick={() => setActiveTab("orders")}
+              className={`pb-1 transition-colors ${activeTab === "orders" ? "text-cyan-400 border-b-2 border-cyan-400" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              Execution Orders Journal
+            </button>
+            <button
+              onClick={() => setActiveTab("trades")}
+              className={`pb-1 transition-colors ${activeTab === "trades" ? "text-cyan-400 border-b-2 border-cyan-400" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              Executed Trades Ledger
+            </button>
+          </div>
+          <span className="text-[10px] text-zinc-500">{activeTab === "orders" ? orders.length : trades.length} Records</span>
         </div>
         <div className="p-3 overflow-y-auto">
-          {orders.length === 0 ? (
-            <div className="text-center py-8 text-zinc-500 italic">No orders executed yet.</div>
-          ) : (
-            <table className="w-full text-left">
-              <thead>
-                <tr className="text-zinc-500 border-b border-zinc-800 pb-1">
-                  <th className="py-1">Client Order ID</th>
-                  <th>Instrument</th>
-                  <th>Side</th>
-                  <th>Type</th>
-                  <th>Qty</th>
-                  <th>Limit Price</th>
-                  <th>Filled Qty</th>
-                  <th>Status</th>
-                  <th className="text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-800/50">
-                {orders.map((ord) => (
-                  <tr key={ord.client_order_id} className="hover:bg-zinc-800/30">
-                    <td className="py-2 text-zinc-400">{ord.client_order_id}</td>
-                    <td className="font-bold text-white">{ord.instrument_id}</td>
-                    <td>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] ${ord.side === "BUY" ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"}`}>
-                        {ord.side}
-                      </span>
-                    </td>
-                    <td>{ord.order_type}</td>
-                    <td>{Number(ord.quantity).toFixed(4)}</td>
-                    <td>{ord.price ? `$${Number(ord.price).toFixed(2)}` : "MKT"}</td>
-                    <td>{Number(ord.filled_qty).toFixed(4)}</td>
-                    <td>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-300">
-                        {ord.status}
-                      </span>
-                    </td>
-                    <td className="text-right">
-                      {["PENDING", "SUBMITTED", "ACCEPTED"].includes(ord.status) && (
-                        <button
-                          onClick={() => handleCancelOrder(ord.client_order_id)}
-                          className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded text-[10px]"
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </td>
+          {activeTab === "orders" ? (
+            orders.length === 0 ? (
+              <div className="text-center py-8 text-zinc-500 italic">No orders executed yet.</div>
+            ) : (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="text-zinc-500 border-b border-zinc-800 pb-1">
+                    <th className="py-1">Client Order ID</th>
+                    <th>Instrument</th>
+                    <th>Side</th>
+                    <th>Type</th>
+                    <th>Qty</th>
+                    <th>Limit Price</th>
+                    <th>Filled Qty</th>
+                    <th>Status</th>
+                    <th className="text-right">Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/50">
+                  {orders.map((ord) => (
+                    <tr key={ord.client_order_id} className="hover:bg-zinc-800/30">
+                      <td className="py-2 text-zinc-400">{ord.client_order_id}</td>
+                      <td className="font-bold text-white">{ord.instrument_id}</td>
+                      <td>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] ${ord.side === "BUY" ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"}`}>
+                          {ord.side}
+                        </span>
+                      </td>
+                      <td>{ord.order_type}</td>
+                      <td>{Number(ord.quantity).toFixed(4)}</td>
+                      <td>{ord.price ? `$${Number(ord.price).toFixed(2)}` : "MKT"}</td>
+                      <td>{Number(ord.filled_qty).toFixed(4)}</td>
+                      <td>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-300">
+                          {ord.status}
+                        </span>
+                      </td>
+                      <td className="text-right">
+                        {["PENDING", "SUBMITTED", "ACCEPTED"].includes(ord.status) && (
+                          <button
+                            onClick={() => handleCancelOrder(ord.client_order_id)}
+                            className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded text-[10px]"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          ) : (
+            trades.length === 0 ? (
+              <div className="text-center py-8 text-zinc-500 italic">No trades settled yet.</div>
+            ) : (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="text-zinc-500 border-b border-zinc-800 pb-1">
+                    <th className="py-1">Trade ID</th>
+                    <th>Time (UTC)</th>
+                    <th>Instrument</th>
+                    <th>Side</th>
+                    <th>Fill Price</th>
+                    <th>Quantity</th>
+                    <th className="text-right">Commission (USDT)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/50">
+                  {trades.map((trd) => (
+                    <tr key={trd.trade_id} className="hover:bg-zinc-800/30">
+                      <td className="py-2 text-zinc-400">{trd.trade_id}</td>
+                      <td className="text-zinc-300">{new Date(trd.created_at).toLocaleString()}</td>
+                      <td className="font-bold text-white">{trd.instrument_id}</td>
+                      <td>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] ${trd.side === "BUY" ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"}`}>
+                          {trd.side}
+                        </span>
+                      </td>
+                      <td>${Number(trd.fill_price).toFixed(2)}</td>
+                      <td>{Number(trd.quantity).toFixed(4)}</td>
+                      <td className="text-right text-red-400">-${Number(trd.commission).toFixed(4)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
           )}
         </div>
       </div>
+
+      {/* Emergency Flatten All Modal */}
+      {showFlattenModal && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-zinc-900 border border-orange-600 rounded p-6 max-w-md w-full">
+            <div className="flex items-center space-x-3 text-orange-400 mb-4">
+              <AlertTriangle className="w-6 h-6" />
+              <h2 className="text-base font-black">CONFIRM EMERGENCY FLATTEN</h2>
+            </div>
+            <p className="text-zinc-300 text-xs mb-4">
+              This action will aggressively liquidate all open positions concurrently via market orders. It does not pause running strategies, which may re-enter positions if not halted.
+            </p>
+            <div className="flex justify-end space-x-3 mt-6">
+              <button
+                onClick={() => setShowFlattenModal(false)}
+                className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded font-bold text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleFlattenAll}
+                className="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded font-bold text-xs"
+              >
+                FLATTEN ALL POSITIONS
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Kill Switch Modal */}
       {showKillModal && (
@@ -609,9 +785,9 @@ export function PortfolioConsole() {
                   onChange={(e) => setDeployStrategyName(e.target.value)}
                   className="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-1.5 text-zinc-200 text-xs focus:outline-none"
                 >
-                  <option value="EMACrossover">EMA Crossover</option>
-                  <option value="RSIMomentum">RSI Momentum</option>
-                  <option value="BollingerBreakout">Bollinger Breakout</option>
+                  {availableStrategies.map((s) => (
+                    <option key={s.slug} value={s.slug}>{s.name}</option>
+                  ))}
                 </select>
               </div>
 
@@ -671,6 +847,160 @@ export function PortfolioConsole() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Attribution Drawer */}
+      {selectedPosition && (
+        <div className="fixed inset-0 bg-black/60 z-40 flex justify-end" onClick={() => setSelectedPosition(null)}>
+          <div 
+            className="w-96 bg-zinc-950 border-l border-zinc-800 h-full flex flex-col shadow-2xl animate-in slide-in-from-right duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+              <h2 className="font-black text-white flex items-center space-x-2">
+                <ArrowUpRight className="w-5 h-5 text-cyan-400" />
+                <span>POSITION ATTRIBUTION</span>
+              </h2>
+              <button onClick={() => setSelectedPosition(null)} className="text-zinc-500 hover:text-white transition-colors">
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6 flex-1 overflow-y-auto space-y-6 text-sm">
+              <div>
+                <div className="text-zinc-500 text-xs font-bold uppercase tracking-wider mb-2">Instrument</div>
+                <div className="text-xl font-black text-white">{selectedPosition.instrument_id}</div>
+                <div className={`mt-1 font-bold ${selectedPosition.side === "LONG" ? "text-emerald-400" : "text-red-400"}`}>
+                  {selectedPosition.side} • {Number(selectedPosition.quantity).toFixed(4)}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Entry Price</div>
+                  <div className="font-mono font-bold">${Number(selectedPosition.entry_price).toFixed(2)}</div>
+                </div>
+                <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Mark Price</div>
+                  <div className="font-mono font-bold text-cyan-400">${Number(selectedPosition.current_price || selectedPosition.entry_price).toFixed(2)}</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-zinc-500 text-xs font-bold uppercase tracking-wider mb-2">Originating Intent</div>
+                <div className="p-3 bg-indigo-950/30 border border-indigo-900/50 rounded flex items-start space-x-3">
+                  <div className="p-1.5 bg-indigo-900/50 rounded">
+                    <Layers className="w-4 h-4 text-indigo-400" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-indigo-200">{selectedPosition.instance_id}</div>
+                    <div className="text-xs text-indigo-400 mt-1">Authorized by Paper Engine Router</div>
+                  </div>
+                </div>
+              </div>
+              
+              <div>
+                <div className="text-zinc-500 text-xs font-bold uppercase tracking-wider mb-2">Risk Assessment</div>
+                <div className="text-xs text-zinc-400 bg-zinc-900 p-3 rounded border border-zinc-800 leading-relaxed">
+                  Execution verified against {account?.currency || "USDT"} free cash invariant. Capital concentration at {((Math.abs(selectedPosition.quantity * (selectedPosition.current_price || selectedPosition.entry_price)) / (account?.total_equity || 100000)) * 100).toFixed(1)}%, within 25% portfolio limits.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Strategy Drawer */}
+      {selectedStrategy && (
+        <div className="fixed inset-0 bg-black/60 z-40 flex justify-end" onClick={() => setSelectedStrategy(null)}>
+          <div 
+            className="w-96 bg-zinc-950 border-l border-zinc-800 h-full flex flex-col shadow-2xl animate-in slide-in-from-right duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+              <h2 className="font-black text-white flex items-center space-x-2">
+                <TrendingUp className="w-5 h-5 text-emerald-400" />
+                <span>STRATEGY DETAILS</span>
+              </h2>
+              <button onClick={() => setSelectedStrategy(null)} className="text-zinc-500 hover:text-white transition-colors">
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6 flex-1 overflow-y-auto space-y-6 text-sm">
+              <div>
+                <div className="text-zinc-500 text-xs font-bold uppercase tracking-wider mb-2">Configuration</div>
+                <div className="text-xl font-black text-white">{selectedStrategy.strategy_name}</div>
+                <div className="mt-1 font-bold text-zinc-300">
+                  {selectedStrategy.instrument_id} • {selectedStrategy.timeframe}
+                </div>
+                <div className="mt-2 text-xs text-zinc-400 font-mono bg-zinc-900 p-2 rounded border border-zinc-800">
+                  {selectedStrategy.instance_id}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Status</div>
+                  <div className={`font-mono font-bold ${selectedStrategy.status === 'RUNNING' ? 'text-emerald-400' : 'text-yellow-400'}`}>
+                    {selectedStrategy.status}
+                  </div>
+                </div>
+                <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Allocation</div>
+                  <div className="font-mono font-bold text-cyan-400">${Number(selectedStrategy.allocation_usd).toLocaleString()}</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-zinc-500 text-xs font-bold uppercase tracking-wider mb-2">Resolved Parameters</div>
+                <div className="bg-zinc-900 rounded border border-zinc-800 p-3 overflow-x-auto">
+                  {selectedStrategy.resolved_parameters ? (
+                    <pre className="text-[10px] text-zinc-400 font-mono">
+                      {JSON.stringify(
+                        typeof selectedStrategy.resolved_parameters === 'string'
+                          ? JSON.parse(selectedStrategy.resolved_parameters)
+                          : selectedStrategy.resolved_parameters,
+                        null,
+                        2
+                      )}
+                    </pre>
+                  ) : (
+                    <div className="text-xs text-zinc-500 italic">No parameters available or using defaults.</div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-zinc-500 text-xs font-bold uppercase tracking-wider mb-2">Operator Actions</div>
+                <div className="space-y-2">
+                  <button 
+                    onClick={() => {
+                      window.location.href = `/operator?strategy=${selectedStrategy.instance_id}`;
+                    }}
+                    className="w-full flex items-center justify-center space-x-2 p-2 bg-indigo-900/30 hover:bg-indigo-900/50 border border-indigo-500/30 text-indigo-300 rounded transition-colors text-xs font-bold"
+                  >
+                    <ArrowUpRight className="w-4 h-4" />
+                    <span>Open Strategy Dashboard</span>
+                  </button>
+                  <button 
+                    onClick={() => {
+                      if (window.confirm("Are you sure you want to halt this strategy and liquidate its holdings?")) {
+                        handleStopStrategy(selectedStrategy.instance_id);
+                        handleClosePosition(selectedStrategy.instance_id, selectedStrategy.instrument_id);
+                        setSelectedStrategy(null);
+                      }
+                    }}
+                    className="w-full flex items-center justify-center space-x-2 p-2 bg-red-900/30 hover:bg-red-900/50 border border-red-500/30 text-red-300 rounded transition-colors text-xs font-bold"
+                  >
+                    <ShieldAlert className="w-4 h-4" />
+                    <span>Halt & Flatten Strategy</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

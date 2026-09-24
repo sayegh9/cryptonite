@@ -2,12 +2,25 @@
 
 import { useEffect, useState } from "react";
 import { fetchApi } from "@/lib/api";
-import { Play, Square, Pause, Plus, RefreshCw, Trash2, Cpu, FileSignature } from "lucide-react";
+import {
+  Play,
+  Square,
+  Pause,
+  Plus,
+  RefreshCw,
+  Cpu,
+  FileSignature,
+  BrainCircuit,
+  XCircle,
+  TrendingUp,
+  Layers,
+  } from "lucide-react";
 import { DeployStrategyModal } from "./DeployStrategyModal";
 import { ManualTradeModal } from "./ManualTradeModal";
 
 export function StrategyInstancesPanel() {
   const [instances, setInstances] = useState<any[]>([]);
+  const [selectedInstance, setSelectedInstance] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showDeployModal, setShowDeployModal] = useState(false);
@@ -17,6 +30,10 @@ export function StrategyInstancesPanel() {
     try {
       const data = await fetchApi("/paper/strategies");
       setInstances(data);
+      if (selectedInstance) {
+        const updated = data.find((i: any) => i.instance_id === selectedInstance.instance_id);
+        if (updated) setSelectedInstance(updated);
+      }
       setError("");
     } catch (err: any) {
       setError(err.message || "Failed to load strategy instances");
@@ -105,19 +122,33 @@ export function StrategyInstancesPanel() {
               </tr>
             ) : (
               instances.map((inst) => {
+                const isSystem = ["AI_DEBATE_WORKER", "MANUAL_TRADE"].includes(inst.instance_id);
                 const isRunning = inst.status === "RUNNING";
                 const isPaused = inst.status === "PAUSED";
-                const isStopped = inst.status === "STOPPED";
-                
+                const isStopped = inst.status === "STOPPED" || inst.status === "STOP";
+
                 let statusColor = "text-zinc-400 bg-zinc-800";
                 if (isRunning) statusColor = "text-emerald-400 bg-emerald-950/70 border border-emerald-800/50";
                 if (isPaused) statusColor = "text-amber-400 bg-amber-950/70 border border-amber-800/50";
-                if (isStopped) statusColor = "text-red-400 bg-red-950/70 border border-red-800/50";
+                if (isStopped) statusColor = "text-zinc-400 bg-zinc-900 border border-zinc-700";
 
                 return (
-                  <tr key={inst.instance_id} className="hover:bg-zinc-800/40 transition-colors">
-                    <td className="py-3 px-3 font-semibold text-zinc-200" title={inst.instance_id}>
-                      {inst.instance_id.slice(0, 18)}...
+                  <tr
+                    key={inst.instance_id}
+                    onClick={() => setSelectedInstance(inst)}
+                    className="hover:bg-zinc-800/40 transition-colors cursor-pointer group"
+                  >
+                    <td className="py-3 px-3 font-semibold text-zinc-200">
+                      <div className="flex items-center space-x-1.5">
+                        <span className="group-hover:text-cyan-400 transition-colors">
+                          {inst.instance_id.length > 18 ? inst.instance_id.slice(0, 18) + "..." : inst.instance_id}
+                        </span>
+                        {isSystem && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 font-bold uppercase tracking-wider">
+                            System
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-3">
                       <span className="bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-800 text-zinc-400">
@@ -130,7 +161,7 @@ export function StrategyInstancesPanel() {
                         {inst.status}
                       </span>
                     </td>
-                    <td className="py-3 px-3 text-right space-x-1.5">
+                    <td className="py-3 px-3 text-right space-x-1.5" onClick={(e) => e.stopPropagation()}>
                       {isRunning && (
                         <>
                           <button
@@ -159,17 +190,36 @@ export function StrategyInstancesPanel() {
                         </button>
                       )}
                       {!isStopped && (
-                        <button
-                          onClick={() => {
-                            if(confirm(`Are you sure you want to STOP instance ${inst.instance_id}?`)) {
-                              handleCommand(inst.instance_id, "stop");
-                            }
-                          }}
-                          className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors inline-flex"
-                          title="Stop"
-                        >
-                          <Square className="w-3.5 h-3.5" />
-                        </button>
+                        <>
+                          <button
+                            onClick={() => {
+                              window.dispatchEvent(
+                                new CustomEvent("cryptonite:open-copilot", {
+                                  detail: {
+                                    mode: "explain",
+                                    prompt: `Synthesize performance delta for ${inst.strategy_name} (${inst.instance_id}). Compare the live paper trading metrics against its historical backtest benchmark.`,
+                                    autoSend: true,
+                                  },
+                                })
+                              );
+                            }}
+                            className="p-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors inline-flex mr-1"
+                            title="Analyze Paper vs Backtest Delta"
+                          >
+                            <BrainCircuit className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm(`Are you sure you want to STOP instance ${inst.instance_id}?`)) {
+                                handleCommand(inst.instance_id, "stop");
+                              }
+                            }}
+                            className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors inline-flex"
+                            title="Stop"
+                          >
+                            <Square className="w-3.5 h-3.5" />
+                          </button>
+                        </>
                       )}
                     </td>
                   </tr>
@@ -179,6 +229,195 @@ export function StrategyInstancesPanel() {
           </tbody>
         </table>
       </div>
+
+      {/* Instance Details Slide-Over Drawer */}
+      {selectedInstance && (
+        <div
+          className="fixed inset-0 bg-black/60 z-50 flex justify-end"
+          onClick={() => setSelectedInstance(null)}
+        >
+          <div
+            className="w-full max-w-md bg-zinc-950 border-l border-zinc-800 h-full flex flex-col shadow-2xl animate-in slide-in-from-right duration-200 text-zinc-200 font-mono text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Drawer Header */}
+            <div className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/60">
+              <h2 className="font-bold text-white flex items-center space-x-2">
+                <Cpu className="w-4 h-4 text-cyan-400" />
+                <span>INSTANCE DETAILS</span>
+              </h2>
+              <button
+                onClick={() => setSelectedInstance(null)}
+                className="text-zinc-500 hover:text-white transition-colors p-1 rounded hover:bg-zinc-800"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Drawer Body */}
+            <div className="p-6 flex-1 overflow-y-auto space-y-5">
+              {/* Type Banner */}
+              {["AI_DEBATE_WORKER", "MANUAL_TRADE"].includes(selectedInstance.instance_id) ? (
+                <div className="p-3 bg-indigo-950/40 border border-indigo-700/50 rounded-lg space-y-1">
+                  <div className="text-indigo-300 font-bold flex items-center space-x-1.5">
+                    <Layers className="w-4 h-4 text-indigo-400" />
+                    <span>System Execution Router</span>
+                  </div>
+                  <p className="text-[10.5px] text-zinc-400 font-sans leading-relaxed">
+                    Internal platform engine that automatically receives and routes orders generated by AI Debates or Manual Trade actions into the matching engine.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3 bg-cyan-950/40 border border-cyan-700/50 rounded-lg space-y-1">
+                  <div className="text-cyan-300 font-bold flex items-center space-x-1.5">
+                    <TrendingUp className="w-4 h-4 text-cyan-400" />
+                    <span>Quantitative Strategy Instance</span>
+                  </div>
+                  <p className="text-[10.5px] text-zinc-400 font-sans leading-relaxed">
+                    Autonomous algorithmic strategy executing discrete tick/bar signals in the paper simulation environment.
+                  </p>
+                </div>
+              )}
+
+              {/* Identity & Configuration */}
+              <div className="space-y-3">
+                <div className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider">
+                  Identification
+                </div>
+                <div className="p-3 bg-zinc-900/80 rounded-lg border border-zinc-800 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500">Instance ID:</span>
+                    <span className="font-bold text-zinc-100">{selectedInstance.instance_id}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500">Strategy Name:</span>
+                    <span className="text-cyan-400 font-semibold">{selectedInstance.strategy_name}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500">Account ID:</span>
+                    <span className="text-zinc-300">{selectedInstance.account_id || "PAPER-ACCOUNT-001"}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Market Parameters */}
+              <div className="space-y-3">
+                <div className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider">
+                  Market & Allocation
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3 bg-zinc-900/80 rounded-lg border border-zinc-800">
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Instrument</div>
+                    <div className="font-bold text-cyan-400">{selectedInstance.instrument_id}</div>
+                  </div>
+                  <div className="p-3 bg-zinc-900/80 rounded-lg border border-zinc-800">
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Timeframe</div>
+                    <div className="font-bold text-white">{selectedInstance.timeframe || "1m"}</div>
+                  </div>
+                  <div className="p-3 bg-zinc-900/80 rounded-lg border border-zinc-800 col-span-2">
+                    <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Allocated Capital</div>
+                    <div className="font-bold text-emerald-400 text-sm">
+                      ${Number(selectedInstance.allocation_usd || 0).toLocaleString()} USD
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Status & Telemetry */}
+              <div className="space-y-3">
+                <div className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider">
+                  Runtime State
+                </div>
+                <div className="p-3 bg-zinc-900/80 rounded-lg border border-zinc-800 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500">Execution Status:</span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        selectedInstance.status === "RUNNING"
+                          ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                          : selectedInstance.status === "PAUSED"
+                          ? "bg-amber-950 text-amber-400 border border-amber-800"
+                          : "bg-zinc-800 text-zinc-400 border border-zinc-700"
+                      }`}
+                    >
+                      {selectedInstance.status}
+                    </span>
+                  </div>
+                  {selectedInstance.created_at && (
+                    <div className="flex justify-between items-center text-[10px]">
+                      <span className="text-zinc-500">Deployed At:</span>
+                      <span className="text-zinc-400">
+                        {new Date(selectedInstance.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                  {selectedInstance.updated_at && (
+                    <div className="flex justify-between items-center text-[10px]">
+                      <span className="text-zinc-500">Last Activity:</span>
+                      <span className="text-zinc-400">
+                        {new Date(selectedInstance.updated_at).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Parameters Payload */}
+              {selectedInstance.resolved_parameters && (
+                <div className="space-y-2">
+                  <div className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider">
+                    Resolved Parameters
+                  </div>
+                  <pre className="p-3 bg-zinc-900 rounded-lg border border-zinc-800 text-[10px] text-zinc-300 overflow-x-auto">
+                    {JSON.stringify(
+                      typeof selectedInstance.resolved_parameters === "string"
+                        ? JSON.parse(selectedInstance.resolved_parameters)
+                        : selectedInstance.resolved_parameters,
+                      null,
+                      2
+                    )}
+                  </pre>
+                </div>
+              )}
+            </div>
+
+            {/* Drawer Footer / Quick Actions */}
+            <div className="p-4 border-t border-zinc-800 bg-zinc-900/40 flex items-center justify-between gap-2">
+              {selectedInstance.status === "RUNNING" ? (
+                <button
+                  onClick={() => handleCommand(selectedInstance.instance_id, "pause")}
+                  className="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded font-bold transition-colors flex items-center justify-center space-x-1"
+                >
+                  <Pause className="w-3.5 h-3.5" />
+                  <span>Pause Strategy</span>
+                </button>
+              ) : selectedInstance.status === "PAUSED" ? (
+                <button
+                  onClick={() => handleCommand(selectedInstance.instance_id, "resume")}
+                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold transition-colors flex items-center justify-center space-x-1"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Resume Strategy</span>
+                </button>
+              ) : null}
+
+              {selectedInstance.status !== "STOPPED" && selectedInstance.status !== "STOP" && (
+                <button
+                  onClick={() => {
+                    if (confirm(`Are you sure you want to STOP instance ${selectedInstance.instance_id}?`)) {
+                      handleCommand(selectedInstance.instance_id, "stop");
+                    }
+                  }}
+                  className="px-4 py-2 bg-red-950 hover:bg-red-900 border border-red-800 text-red-300 rounded font-bold transition-colors flex items-center justify-center space-x-1"
+                >
+                  <Square className="w-3.5 h-3.5" />
+                  <span>Stop</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {showDeployModal && (
         <DeployStrategyModal
@@ -194,7 +433,6 @@ export function StrategyInstancesPanel() {
           onClose={() => setShowManualTradeModal(false)}
           onOrderSubmitted={() => {
             setShowManualTradeModal(false);
-            // Optionally could do something here
           }}
         />
       )}

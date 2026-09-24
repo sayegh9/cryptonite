@@ -91,9 +91,7 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
     });
 
     // 3. Mock scan trigger and job polling
-    let jobCompleted = false;
     await page.route("**/api/v1/scanners/**run", async (route) => {
-      jobCompleted = false;
       await route.fulfill({
         status: 202,
         contentType: "application/json",
@@ -108,7 +106,6 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
     });
 
     await page.route("**/api/v1/scanners/jobs/job-test-999", async (route) => {
-      jobCompleted = true;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -195,7 +192,7 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
     // Verify Scanner Studio is visible
     await expect(page.locator("text=Polars Scanner Studio")).toBeVisible();
     await expect(page.locator("text=Active Spec Rules")).toBeVisible();
-    await expect(page.locator("select")).toHaveValue("spec-rsi-01");
+    await expect(page.getByLabel("Select scanner preset")).toHaveValue("spec-rsi-01");
 
     // Click "Run Scanner"
     const runBtn = page.locator("button:has-text('Run Scanner')");

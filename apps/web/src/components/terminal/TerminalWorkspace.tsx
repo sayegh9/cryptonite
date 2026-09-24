@@ -2,13 +2,20 @@
 
 import React, { useRef, useState, useEffect } from "react";
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle, PanelImperativeHandle } from "react-resizable-panels";
-import { ChevronDown, ChevronUp, BookOpen, BrainCircuit, X } from "lucide-react";
+import { KillSwitchPanel } from "@/components/operator/KillSwitchPanel";
+
+import { ShieldAlert, ChevronDown, ChevronUp, BookOpen, BrainCircuit, X, Play, SlidersHorizontal, ListFilter } from "lucide-react";
+import { OrderbookPanel } from "./OrderbookPanel";
 
 interface TerminalWorkspaceProps {
   chartComponent: React.ReactNode;
   orderbookComponent?: React.ReactNode;
   debateSidebarComponent?: React.ReactNode;
   blotterComponent: React.ReactNode;
+  selectedSymbol?: string;
+  showWatchlist?: boolean;
+  onToggleWatchlist?: (val: boolean) => void;
+  onTriggerDebate?: () => void;
 }
 
 const CustomResizeHandle = ({ horizontal = false }: { horizontal?: boolean }) => (
@@ -22,13 +29,18 @@ export function TerminalWorkspace({
   orderbookComponent,
   debateSidebarComponent,
   blotterComponent,
+  selectedSymbol = "BTCUSDT",
+  showWatchlist = true,
+  onToggleWatchlist,
+  onTriggerDebate,
 }: TerminalWorkspaceProps) {
   const blotterPanelRef = useRef<PanelImperativeHandle>(null);
   const [isBlotterCollapsed, setIsBlotterCollapsed] = useState(false);
 
   // Panel visibility state with localStorage persistence
-  const [showOrderbook, setShowOrderbook] = useState<boolean>(false);
+  const [showOrderbook, setShowOrderbook] = useState<boolean>(true);
   const [showDebateSidebar, setShowDebateSidebar] = useState<boolean>(false);
+  const [showOperatorSidebar, setShowOperatorSidebar] = useState<boolean>(false);
 
   useEffect(() => {
     try {
@@ -37,23 +49,37 @@ export function TerminalWorkspace({
       
       const savedDebate = localStorage.getItem("cryptonite:panel-debate");
       if (savedDebate !== null) setShowDebateSidebar(savedDebate === "true");
-    } catch (_e) {
+      const savedOperator = localStorage.getItem("cryptonite:panel-operator");
+      if (savedOperator !== null) setShowOperatorSidebar(savedOperator === "true");
+    } catch {
       // Ignore storage errors in restricted contexts
     }
   }, []);
 
   const toggleOrderbook = (val: boolean) => {
+    if (val) setShowOperatorSidebar(false);
     setShowOrderbook(val);
     try {
       localStorage.setItem("cryptonite:panel-orderbook", String(val));
-    } catch (_e) {}
+    } catch {}
+  };
+
+  
+  const toggleOperator = (val: boolean) => {
+    setShowOperatorSidebar(val);
+    if (val) {
+      setShowOrderbook(false);
+      setShowDebateSidebar(false);
+    }
+    localStorage.setItem("cryptonite:panel-operator", String(val));
   };
 
   const toggleDebate = (val: boolean) => {
+    if (val) setShowOperatorSidebar(false);
     setShowDebateSidebar(val);
     try {
       localStorage.setItem("cryptonite:panel-debate", String(val));
-    } catch (_e) {}
+    } catch {}
   };
 
   const toggleBlotter = () => {
@@ -67,16 +93,51 @@ export function TerminalWorkspace({
     }
   };
 
+  const handleLaunchDebate = () => {
+    if (onTriggerDebate) {
+      onTriggerDebate();
+    } else {
+      window.dispatchEvent(
+        new CustomEvent("cryptonite:trigger-debate", {
+          detail: { symbol: selectedSymbol },
+        })
+      );
+    }
+    // Also ensure sidebar is opened
+    toggleDebate(true);
+  };
+
   // Calculate panel sizes based on active panels
-  const chartDefaultSize = (!showOrderbook && !showDebateSidebar) ? 100 : (showOrderbook && showDebateSidebar) ? 60 : 75;
+  const chartDefaultSize = (!showOrderbook && !showDebateSidebar && !showOperatorSidebar) ? 100 : ((showOrderbook && showDebateSidebar) || showOperatorSidebar) ? 55 : 75;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0 bg-zinc-950">
       {/* Workspace Quick-Toggles Bar */}
-      <div className="h-7 bg-zinc-950 border-b border-white/5 px-3 flex items-center justify-between text-[11px] font-mono select-none flex-none">
+      <div className="h-8 bg-zinc-950 border-b border-white/5 px-3 flex items-center justify-between text-[11px] font-mono select-none flex-none">
         <div className="flex items-center space-x-2">
-          <span className="text-zinc-500 uppercase tracking-wider text-[10px]">Side Panels:</span>
+          <span className="text-zinc-500 uppercase tracking-wider text-[10px] flex items-center space-x-1">
+            <SlidersHorizontal className="w-3 h-3 text-zinc-400" />
+            <span>Panels:</span>
+          </span>
           
+          {/* Watchlist Toggle if parent handler provided */}
+          {onToggleWatchlist && (
+            <button
+              onClick={() => onToggleWatchlist(!showWatchlist)}
+              className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-cyan-500/50 outline-none ${
+                showWatchlist 
+                  ? "bg-cyan-950/40 border-cyan-800/60 text-cyan-400 font-bold" 
+                  : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+              }`}
+              title={showWatchlist ? "Hide Left Watchlist" : "Show Left Watchlist"}
+              aria-label={showWatchlist ? "Hide Left Watchlist" : "Show Left Watchlist"}
+            >
+              <ListFilter className="w-3 h-3" />
+              <span>Watchlist</span>
+            </button>
+          )}
+
+          {/* Orderbook Toggle */}
           <button
             onClick={() => toggleOrderbook(!showOrderbook)}
             className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-cyan-500/50 outline-none ${
@@ -84,13 +145,14 @@ export function TerminalWorkspace({
                 ? "bg-cyan-950/50 border-cyan-800/60 text-cyan-400 font-bold" 
                 : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
             }`}
-            title={showOrderbook ? "Hide Orderbook" : "Show Orderbook"}
-            aria-label={showOrderbook ? "Hide Orderbook" : "Show Orderbook"}
+            title={showOrderbook ? "Hide Orderbook Sidebar" : "Show Orderbook Sidebar"}
+            aria-label={showOrderbook ? "Hide Orderbook Sidebar" : "Show Orderbook Sidebar"}
           >
             <BookOpen className="w-3 h-3" />
             <span>Orderbook</span>
           </button>
 
+          {/* AI Debate Toggle */}
           <button
             onClick={() => toggleDebate(!showDebateSidebar)}
             className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-purple-500/50 outline-none ${
@@ -106,15 +168,20 @@ export function TerminalWorkspace({
           </button>
         </div>
 
-        <div className="flex items-center space-x-2 text-zinc-500 text-[10px]">
-          <span>Layout: {showOrderbook && showDebateSidebar ? "3-Column" : (showOrderbook || showDebateSidebar) ? "2-Column" : "Full Canvas"}</span>
+        <div className="flex items-center space-x-3 text-zinc-500 text-[10px]">
+          <span>
+            Layout:{" "}
+            <span className="text-zinc-300 font-bold">
+              {showOrderbook && showDebateSidebar ? "3-Column" : (showOrderbook || showDebateSidebar) ? "2-Column" : "Full Canvas"}
+            </span>
+          </span>
         </div>
       </div>
 
-      <PanelGroup id="cryptonite-workspace-v1" orientation="vertical">
+      <PanelGroup id="cryptonite-workspace-v2" orientation="vertical">
         {/* Upper Section */}
         <Panel defaultSize={70} minSize={30}>
-          <PanelGroup id="cryptonite-workspace-v1-upper" orientation="horizontal">
+          <PanelGroup id="cryptonite-workspace-v2-upper" orientation="horizontal">
             {/* Left: Chart Area */}
             <Panel defaultSize={chartDefaultSize} minSize={30} className="flex flex-col min-h-0 min-w-0">
               {chartComponent}
@@ -124,29 +191,23 @@ export function TerminalWorkspace({
             {showOrderbook && (
               <>
                 <CustomResizeHandle />
-                <Panel defaultSize={20} minSize={10} className="flex flex-col min-h-0 min-w-0 border-l border-white/5 bg-zinc-950">
+                <Panel defaultSize={22} minSize={12} className="flex flex-col min-h-0 min-w-0 border-l border-white/5 bg-zinc-950">
                   <div className="h-7 bg-zinc-900/80 border-b border-white/5 px-3 flex items-center justify-between flex-none select-none">
                     <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-[10px] font-bold uppercase tracking-wider">
                       <BookOpen className="w-3 h-3 text-cyan-400" />
-                      <span>Orderbook</span>
+                      <span>Orderbook L2</span>
                     </div>
                     <button
                       onClick={() => toggleOrderbook(false)}
                       className="text-zinc-500 hover:text-zinc-200 p-0.5 rounded hover:bg-zinc-800 transition-colors focus-visible:ring-1 focus-visible:ring-cyan-500 outline-none"
-                      title="Close Orderbook panel"
-                      aria-label="Close Orderbook panel"
+                      title="Hide Orderbook panel"
+                      aria-label="Hide Orderbook panel"
                     >
                       <X className="w-3 h-3" />
                     </button>
                   </div>
                   <div className="flex-1 min-h-0 overflow-auto">
-                    {orderbookComponent || (
-                      <div className="flex-1 h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-xs p-4 text-center">
-                        <BookOpen className="w-8 h-8 opacity-20 mb-2" />
-                        <p className="font-semibold text-zinc-400">Orderbook</p>
-                        <span className="text-[10px] text-zinc-600 mt-1">Live L2 Depth Stream</span>
-                      </div>
-                    )}
+                    {orderbookComponent || <OrderbookPanel symbol={selectedSymbol} />}
                   </div>
                 </Panel>
               </>
@@ -160,30 +221,67 @@ export function TerminalWorkspace({
                   <div className="h-7 bg-zinc-900/80 border-b border-white/5 px-3 flex items-center justify-between flex-none select-none">
                     <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-[10px] font-bold uppercase tracking-wider">
                       <BrainCircuit className="w-3 h-3 text-purple-400" />
-                      <span>AI Debate</span>
+                      <span>AI Consensus Debate</span>
                     </div>
                     <button
                       onClick={() => toggleDebate(false)}
                       className="text-zinc-500 hover:text-zinc-200 p-0.5 rounded hover:bg-zinc-800 transition-colors focus-visible:ring-1 focus-visible:ring-purple-500 outline-none"
-                      title="Close Debate sidebar"
-                      aria-label="Close Debate sidebar"
+                      title="Hide Debate sidebar"
+                      aria-label="Hide Debate sidebar"
                     >
                       <X className="w-3 h-3" />
                     </button>
                   </div>
-                  <div className="flex-1 min-h-0 overflow-hidden">
+                  <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
                     {debateSidebarComponent || (
-                      <div className="flex-1 h-full flex flex-col items-center justify-center text-zinc-600 font-mono text-xs p-4 text-center">
-                        <BrainCircuit className="w-8 h-8 opacity-20 mb-2" />
-                        <p className="font-semibold text-zinc-400">No Active Debate</p>
-                        <span className="text-[10px] text-zinc-600 mt-1">Scanner signals trigger consensus debates automatically</span>
+                      <div className="flex-1 h-full flex flex-col items-center justify-center text-zinc-500 font-mono text-xs p-5 text-center">
+                        <div className="w-12 h-12 rounded-xl bg-purple-950/40 border border-purple-800/40 flex items-center justify-center mb-3">
+                          <BrainCircuit className="w-6 h-6 text-purple-400" />
+                        </div>
+                        <p className="font-semibold text-zinc-200 mb-1">No Active Debate for {selectedSymbol}</p>
+                        <p className="text-[11px] text-zinc-400 max-w-xs mb-4 leading-relaxed">
+                          TradingAgents will convene Market, Sentiment, and Risk officers to debate long vs. short conviction.
+                        </p>
+                        <button
+                          onClick={handleLaunchDebate}
+                          className="px-3 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center space-x-1.5 shadow-lg shadow-purple-900/20 transition-colors"
+                        >
+                          <Play className="w-3 h-3 fill-current" />
+                          <span>Run Debate Now</span>
+                        </button>
                       </div>
                     )}
                   </div>
                 </Panel>
               </>
             )}
+
+            {/* Operator Sidebar */}
+            {showOperatorSidebar && (
+              <>
+                <CustomResizeHandle />
+                <Panel defaultSize={30} minSize={20} className="flex flex-col min-h-0 min-w-0 border-l border-white/5 bg-zinc-950">
+                  <div className="h-7 bg-zinc-900/80 border-b border-rose-900/30 px-3 flex items-center justify-between flex-none select-none">
+                    <div className="flex items-center space-x-1.5 text-rose-400 font-mono text-[10px] font-bold uppercase tracking-wider">
+                      <ShieldAlert className="w-3 h-3" />
+                      <span>Operator Control</span>
+                    </div>
+                    <button
+                      onClick={() => toggleOperator(false)}
+                      className="text-zinc-500 hover:text-zinc-200 p-0.5 rounded hover:bg-zinc-800 transition-colors focus-visible:ring-1 focus-visible:ring-rose-500 outline-none"
+                      title="Hide Operator Control"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+                    <KillSwitchPanel />
+                  </div>
+                </Panel>
+              </>
+            )}
           </PanelGroup>
+
         </Panel>
 
         <CustomResizeHandle horizontal />

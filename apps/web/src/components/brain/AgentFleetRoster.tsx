@@ -1,0 +1,258 @@
+"use client";
+
+import React, { useState, useEffect } from "react";
+import {
+  BrainCircuit,
+  Search,
+  ShieldCheck,
+  Zap,
+  Sliders,
+  TrendingUp,
+  Cpu,
+  Sparkles,
+} from "lucide-react";
+
+export type TriggerMode = "high-edge" | "on-demand" | "continuous";
+
+interface AgentFleetRosterProps {
+  selectedAgentId?: string;
+  onSelectAgent?: (agentId: string) => void;
+  triggerMode: TriggerMode;
+  onTriggerModeChange: (mode: TriggerMode) => void;
+  activeDebateCount?: number;
+}
+
+export function AgentFleetRoster({
+  selectedAgentId = "orchestrator",
+  onSelectAgent,
+  triggerMode,
+  onTriggerModeChange,
+}: AgentFleetRosterProps) {
+
+  const [telemetry, setTelemetry] = useState<Record<string, { status: string, msg: string }>>({});
+
+  useEffect(() => {
+    let unsub: () => void;
+    import("@/lib/ws").then(({ getStreamClient }) => {
+      const client = getStreamClient();
+      unsub = client.subscribe((data) => {
+        if (data.type === "HEARTBEAT") {
+          setTelemetry(prev => ({ ...prev, [data.agentId]: { status: data.status, msg: data.msg } }));
+        }
+      });
+    });
+    return () => unsub?.();
+  }, []);
+
+  const getAgentStatus = (id: string, defaultStatus: string, defaultColor: string) => {
+    const live = telemetry[id];
+    if (!live) return { status: defaultStatus, statusColor: defaultColor };
+    
+    let color = defaultColor;
+    if (live.status === "PROCESSING") color = "text-amber-400 bg-amber-950/50 border-amber-800/60";
+    else if (live.status === "ERROR") color = "text-rose-400 bg-rose-950/50 border-rose-800/60";
+    else if (live.status === "ONLINE") color = "text-emerald-400 bg-emerald-950/50 border-emerald-800/60";
+    
+    return { status: live.status, statusColor: color, msg: live.msg };
+  };
+
+  const agents = [
+    {
+      id: "orchestrator",
+      name: "Lead Orchestrator",
+      title: "Chief AI Copilot",
+      icon: BrainCircuit,
+      color: "text-cyan-400",
+      bgBorder: "border-cyan-500/30 bg-cyan-950/20",
+      ...getAgentStatus("orchestrator", "ONLINE", "text-emerald-400 bg-emerald-950/50 border-emerald-800/60"),
+      tagline: telemetry["orchestrator"]?.msg || "Single point of contact",
+      desc: "Understands natural language commands, dispatches specialist agents, and synthesizes action briefs.",
+      autonomy: "Advisory & Dispatcher",
+      autonomyColor: "text-cyan-400 border-cyan-800/40 bg-cyan-950/30",
+    },
+    {
+      id: "scout",
+      name: "Market Data Scout",
+      title: "Microstructure & Flow",
+      icon: Search,
+      color: "text-blue-400",
+      bgBorder: "border-blue-500/30 bg-blue-950/20",
+      ...getAgentStatus("scout", "STANDBY", "text-zinc-400 bg-zinc-900 border-zinc-800"),
+      tagline: telemetry["scout"]?.msg || "Real-time parsing of L1/L2 and funding.",
+      desc: "Connects to WebSocket feeds to monitor order book imbalances, liquidations, and funding rate divergence.",
+      autonomy: "Read-Only",
+      autonomyColor: "text-zinc-400 border-zinc-800/40 bg-zinc-900/50",
+    },
+    {
+      id: "debater",
+      name: "Bull / Bear Debaters",
+      title: "Adversarial Alpha Arena",
+      icon: Sparkles,
+      color: "text-purple-400",
+      bgBorder: "border-purple-500/30 bg-purple-950/20",
+      ...getAgentStatus("debater", "STANDBY", "text-zinc-400 bg-zinc-900 border-zinc-800"),
+      tagline: telemetry["debater"]?.msg || "Multi-agent consensus mechanism.",
+      desc: "Two specialized models argue opposite sides of every trade proposal. A manager model judges the winner.",
+      autonomy: "Read-Only",
+      autonomyColor: "text-zinc-400 border-zinc-800/40 bg-zinc-900/50",
+    },
+    {
+      id: "cro",
+      name: "Risk Guardian (CRO)",
+      title: "Portfolio Risk & Margin",
+      icon: ShieldCheck,
+      color: "text-amber-400",
+      bgBorder: "border-amber-500/30 bg-amber-950/20",
+      ...getAgentStatus("cro", "STANDBY", "text-zinc-400 bg-zinc-900 border-zinc-800"),
+      tagline: telemetry["cro"]?.msg || "Enforces capital constraints.",
+      desc: "Hard-vetos any trade that breaches VaR limits, concentration bounds, or drawdown circuits.",
+      autonomy: "Veto Power",
+      autonomyColor: "text-amber-400 border-amber-800/40 bg-amber-950/30",
+    },
+    {
+      id: "outbox",
+      name: "Execution Outbox Relay",
+      title: "Nautilus Execution Bridge",
+      icon: Zap,
+      color: "text-emerald-400",
+      bgBorder: "border-emerald-500/30 bg-emerald-950/20",
+      ...getAgentStatus("outbox", "STANDBY", "text-zinc-400 bg-zinc-900 border-zinc-800"),
+      tagline: telemetry["outbox"]?.msg || "Rust/Cython integration layer.",
+      desc: "Translates AI JSON decisions into FIX/REST orders. Manages partial fills, TWAP, and latency.",
+      autonomy: "Execution",
+      autonomyColor: "text-emerald-400 border-emerald-800/40 bg-emerald-950/30",
+    },
+  ];
+
+  return (
+    <div className="flex flex-col h-full w-full min-h-0 bg-zinc-950 overflow-hidden">
+      {/* Topology Header */}
+      <div className="h-10 flex-none px-3 bg-zinc-900/60 border-b border-zinc-800 flex items-center justify-between">
+        <div className="flex items-center space-x-2 text-xs font-mono font-bold text-zinc-200">
+          <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+          <span className="uppercase tracking-wider">Agent Fleet Topology</span>
+        </div>
+        <div className="flex items-center space-x-1 px-1.5 py-0.5 bg-emerald-950/50 border border-emerald-800/50 rounded text-[10px] font-mono text-emerald-400">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span>5 ONLINE</span>
+        </div>
+      </div>
+
+      {/* Trigger Governor Control */}
+      <div className="p-2.5 border-b border-zinc-800 bg-zinc-900/20 flex-none">
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1">
+            <Sliders className="w-3 h-3 text-zinc-500" />
+            <span>Debate Trigger Governor:</span>
+          </span>
+        </div>
+
+        <div className="grid grid-cols-3 gap-1 text-[9.5px] font-mono">
+          <button
+            onClick={() => onTriggerModeChange("high-edge")}
+            className={`px-1 py-1 rounded border transition-colors text-center whitespace-nowrap overflow-hidden text-ellipsis ${
+              triggerMode === "high-edge"
+                ? "bg-cyan-950/80 border-cyan-600 text-cyan-300 font-bold"
+                : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
+            }`}
+            title="Only trigger debates on signals with Triage Score >= 80 (Filters 85% of noise)"
+          >
+            ⚡ High-Edge
+          </button>
+          <button
+            onClick={() => onTriggerModeChange("on-demand")}
+            className={`px-1 py-1 rounded border transition-colors text-center whitespace-nowrap overflow-hidden text-ellipsis ${
+              triggerMode === "on-demand"
+                ? "bg-purple-950/80 border-purple-600 text-purple-300 font-bold"
+                : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
+            }`}
+            title="Debates only fire when user manually clicks 'Trigger Debate'"
+          >
+            🛡️ On-Demand
+          </button>
+          <button
+            onClick={() => onTriggerModeChange("continuous")}
+            className={`px-1 py-1 rounded border transition-colors text-center whitespace-nowrap overflow-hidden text-ellipsis ${
+              triggerMode === "continuous"
+                ? "bg-amber-950/80 border-amber-600 text-amber-300 font-bold"
+                : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
+            }`}
+            title="Continuous Sentinel mode (All scanner signals trigger debates)"
+          >
+            🌐 Continuous
+          </button>
+        </div>
+      </div>
+
+      {/* Agents Roster List */}
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 space-y-2 overscroll-contain">
+        {agents.map((agent) => {
+          const Icon = agent.icon;
+          const isSelected = selectedAgentId === agent.id;
+          return (
+            <div
+              key={agent.id}
+              onClick={() => {
+                if (onSelectAgent) onSelectAgent(agent.id);
+              }}
+              className={`p-2.5 rounded-lg border transition-all cursor-pointer ${
+                isSelected
+                  ? `${agent.bgBorder} border-opacity-100 ring-1 ring-cyan-500/50 shadow-md`
+                  : "bg-zinc-900/40 border-zinc-800/80 hover:bg-zinc-900/80 hover:border-zinc-700"
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center space-x-2">
+                  <div className={`p-1 rounded bg-zinc-900 border border-zinc-800 ${agent.color}`}>
+                    <Icon className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-xs text-zinc-200 leading-none flex items-center space-x-1.5">
+                      <span>{agent.name}</span>
+                      {isSelected && (
+                        <span className="px-1 py-0.2 bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-[8.5px] rounded font-mono font-bold">
+                          SELECTED
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-zinc-400 font-mono mt-0.5">{agent.tagline}</div>
+                  </div>
+                </div>
+
+                <span className={`px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold ${agent.statusColor}`}>
+                  {agent.status}
+                </span>
+              </div>
+
+              <p className="text-[11px] text-zinc-400 leading-relaxed mb-2">
+                {agent.desc}
+              </p>
+
+              <div className="flex items-center justify-between pt-1.5 border-t border-zinc-800/60 text-[10px] font-mono">
+                <span className="text-zinc-500">Permission:</span>
+                <span className={`px-1.5 py-0.2 rounded border font-semibold ${agent.autonomyColor}`}>
+                  {agent.autonomy}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Bottom Fleet Performance Stats */}
+      <div className="flex-none p-2.5 bg-zinc-900/40 border-t border-zinc-800 font-mono text-[10px]">
+        <div className="flex items-center justify-between text-zinc-400 mb-1">
+          <span className="flex items-center space-x-1">
+            <TrendingUp className="w-3 h-3 text-emerald-400" />
+            <span>Reflection Win-Rate:</span>
+          </span>
+          <span className="text-emerald-400 font-bold">74.2% Alpha</span>
+        </div>
+        <div className="flex items-center justify-between text-zinc-500">
+          <span>Engine: Gemini 2.5 Flash</span>
+          <span>Latency p95: 380ms</span>
+        </div>
+      </div>
+    </div>
+  );
+}

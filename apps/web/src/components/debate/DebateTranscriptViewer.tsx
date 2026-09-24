@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { useDebateStore } from '@/lib/stores/useDebateStore';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -6,9 +6,10 @@ import { TrendingUp, TrendingDown, ShieldAlert, Scale, Search, ArrowDown } from 
 
 interface Props {
   runId: string;
+  symbol?: string;
 }
 
-export const DebateTranscriptViewer: React.FC<Props> = ({ runId }) => {
+export const DebateTranscriptViewer: React.FC<Props> = ({ runId, symbol }) => {
   const run = useDebateStore((state) => state.activeDebates[runId]);
   
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -56,16 +57,20 @@ export const DebateTranscriptViewer: React.FC<Props> = ({ runId }) => {
   }, []);
 
   if (!run) {
-    return <div className="text-slate-500 p-4">No active debate found.</div>;
+    return <div className="text-slate-500 p-4 font-mono text-xs">No active debate found.</div>;
   }
+
+  const displaySymbol = (!run.instrumentId || run.instrumentId === 'UNKNOWN') 
+    ? (symbol ? symbol.replace('.BINANCE', '') : 'LIVE SESSION')
+    : run.instrumentId.replace('.BINANCE', '');
 
   const getRoleInfo = (role: string) => {
     const r = role.toLowerCase();
-    if (r.includes('bull researcher')) return { color: 'text-emerald-500 border-emerald-500/20 bg-emerald-500/10', Icon: TrendingUp };
-    if (r.includes('bear researcher')) return { color: 'text-rose-500 border-rose-500/20 bg-rose-500/10', Icon: TrendingDown };
-    if (r.includes('portfolio manager')) return { color: 'text-violet-500 border-violet-500/20 bg-violet-500/10', Icon: Scale };
-    if (r.includes('chief risk officer')) return { color: 'text-amber-500 border-amber-500/20 bg-amber-500/10', Icon: ShieldAlert };
-    return { color: 'text-cyan-500 border-cyan-500/20 bg-cyan-500/10', Icon: Search }; // Analysts
+    if (r.includes('bull researcher')) return { color: 'text-emerald-400 border-emerald-500/25 bg-emerald-950/20', Icon: TrendingUp };
+    if (r.includes('bear researcher')) return { color: 'text-rose-400 border-rose-500/25 bg-rose-950/20', Icon: TrendingDown };
+    if (r.includes('portfolio manager')) return { color: 'text-violet-400 border-violet-500/25 bg-violet-950/20', Icon: Scale };
+    if (r.includes('chief risk officer')) return { color: 'text-amber-400 border-amber-500/25 bg-amber-950/20', Icon: ShieldAlert };
+    return { color: 'text-cyan-400 border-cyan-500/25 bg-cyan-950/20', Icon: Search }; // Analysts
   };
 
   const scrollToBottom = () => {
@@ -76,21 +81,23 @@ export const DebateTranscriptViewer: React.FC<Props> = ({ runId }) => {
   const isLive = run.status === 'RUNNING';
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950 border border-slate-800 rounded-lg overflow-hidden relative">
-      <div className="p-3 border-b border-slate-800 bg-zinc-900 flex justify-between items-center z-10">
-        <div className="flex items-center gap-3">
-          <h3 className="font-semibold text-slate-200">AI Debate: {run.instrumentId}</h3>
+    <div className="flex flex-col h-full bg-zinc-950 border border-slate-800 rounded-lg overflow-hidden relative min-w-0 max-w-full">
+      <div className="p-3 border-b border-slate-800 bg-zinc-900 flex justify-between items-center z-10 flex-none select-none">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <h3 className="font-semibold text-slate-200 text-xs truncate">
+            AI Debate: <span className="text-cyan-400 font-mono">{displaySymbol}</span>
+          </h3>
           {isLive && (
-            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20">
-              <div className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-              <span className="text-[10px] font-bold tracking-wider text-rose-500">LIVE STREAM</span>
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 flex-none">
+              <div className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+              <span className="text-[9px] font-bold tracking-wider text-rose-400">LIVE</span>
             </div>
           )}
         </div>
-        <span className={`px-2 py-1 text-xs font-mono rounded ${
-            run.status === 'COMPLETED' ? 'bg-emerald-500/20 text-emerald-400' :
-            run.status === 'PENDING_APPROVAL' ? 'bg-amber-500/20 text-amber-400 animate-pulse' :
-            'bg-cyan-500/20 text-cyan-400'
+        <span className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded flex-none ${
+            run.status === 'COMPLETED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+            run.status === 'PENDING_APPROVAL' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse' :
+            'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
         }`}>
             {run.status}
         </span>
@@ -99,25 +106,58 @@ export const DebateTranscriptViewer: React.FC<Props> = ({ runId }) => {
       <div 
         ref={scrollContainerRef}
         role="region"
-        aria-label={`AI debate transcript for ${run.instrumentId}`}
+        aria-label={`AI debate transcript for ${displaySymbol}`}
         aria-live="polite"
         tabIndex={0}
-        className="flex-1 overflow-y-auto p-4 space-y-4 font-mono text-sm relative scroll-smooth focus-visible:ring-1 focus-visible:ring-cyan-500/30 focus:outline-none"
+        className="flex-1 overflow-y-auto p-3 space-y-3 font-mono text-xs relative scroll-smooth focus-visible:ring-1 focus-visible:ring-cyan-500/30 focus:outline-none min-w-0 max-w-full"
       >
         {run.turns.map((turn, idx) => {
           const { color, Icon } = getRoleInfo(turn.role);
           return (
-            <div key={idx} className={`p-4 rounded-md border ${color}`}>
-              <div className="flex items-center gap-2 font-bold mb-3 uppercase opacity-90">
-                <Icon size={16} aria-hidden="true" />
-                {turn.role}
+            <div key={idx} className={`p-3 rounded border ${color} min-w-0 max-w-full overflow-hidden shadow-sm`}>
+              <div className="flex items-center gap-2 font-bold mb-2 uppercase tracking-wide opacity-90 text-[11px]">
+                <Icon size={14} aria-hidden="true" className="flex-none" />
+                <span className="truncate">{turn.role}</span>
               </div>
-              <div className="prose prose-invert prose-sm max-w-none prose-pre:bg-black/50 prose-pre:border prose-pre:border-slate-800">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <div className="prose prose-invert prose-xs max-w-full min-w-0 overflow-hidden text-zinc-300">
+                <ReactMarkdown 
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    table: ({ node, ...props }) => (
+                      <div className="overflow-x-auto my-2 max-w-full rounded border border-white/10 bg-zinc-950/80 scrollbar-thin">
+                        <table className="min-w-full border-collapse text-[11px] font-mono" {...props} />
+                      </div>
+                    ),
+                    thead: ({ node, ...props }) => (
+                      <thead className="bg-zinc-900 border-b border-white/10 text-zinc-200" {...props} />
+                    ),
+                    th: ({ node, ...props }) => (
+                      <th className="px-2.5 py-1.5 text-left font-bold text-[10px] tracking-wider uppercase border-r border-white/5 whitespace-nowrap" {...props} />
+                    ),
+                    td: ({ node, ...props }) => (
+                      <td className="px-2.5 py-1 text-[11px] text-zinc-300 border-b border-white/5 border-r border-white/5 align-top whitespace-normal break-words max-w-[200px]" {...props} />
+                    ),
+                    pre: ({ node, ...props }) => (
+                      <div className="overflow-x-auto max-w-full my-2">
+                        <pre className="p-2 rounded bg-black/60 font-mono text-[10px] text-zinc-200 border border-white/10" {...props} />
+                      </div>
+                    ),
+                    code: ({ node, className, children, ...props }: any) => {
+                      return (
+                        <code className={`font-mono text-[10px] px-1 py-0.5 rounded bg-zinc-900/80 text-cyan-300 border border-white/10 ${className || ''}`} {...props}>
+                          {children}
+                        </code>
+                      );
+                    },
+                    p: ({ node, ...props }) => (
+                      <p className="mb-1.5 leading-relaxed break-words text-[11px]" {...props} />
+                    ),
+                  }}
+                >
                   {turn.content}
                 </ReactMarkdown>
                 {turn.isStreaming && (
-                  <span className="inline-block w-2 h-4 bg-cyan-400 animate-pulse ml-1 align-middle" />
+                  <span className="inline-block w-1.5 h-3.5 bg-cyan-400 animate-pulse ml-1 align-middle" />
                 )}
               </div>
             </div>

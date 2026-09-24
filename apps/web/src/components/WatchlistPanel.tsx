@@ -67,7 +67,7 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
     if (saved) {
       try {
         setTickers(JSON.parse(saved));
-      } catch (e) {}
+      } catch {}
     }
     setIsLoaded(true);
   }, []);
@@ -93,7 +93,7 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
       })
       .catch((err) => console.error("Failed to load instruments", err));
 
-    // Hydrate real 24h stats from Binance (once on mount)
+    // Hydrate real 24h stats from Binance
     const hydrateStats = async () => {
       const watchlistSymbols = tickers.map((t) => t.symbol).join(",");
       if (!watchlistSymbols) return;
@@ -123,11 +123,12 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
             };
           })
         );
-      } catch (_e) {
+      } catch {
         // Silently ignore — live WS stream will hydrate price as bars arrive
       }
     };
     hydrateStats();
+    const interval = setInterval(hydrateStats, 15000);
 
     // Listen to live WebSocket stream to update prices in realtime
     const client = getStreamClient();
@@ -137,13 +138,10 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
         setTickers((prev) =>
           prev.map((t) => {
             if (t.symbol === rawSym) {
-              const prevPrice = t.price;
               const newPrice = Number(msg.close);
-              const change = prevPrice > 0 ? ((newPrice - prevPrice) / prevPrice) * 100 : t.change24h;
               return {
                 ...t,
                 price: newPrice,
-                change24h: change,
                 high24h: Math.max(t.high24h, Number(msg.high)),
                 low24h: Math.min(t.low24h, Number(msg.low)),
               };
@@ -155,9 +153,10 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
     });
 
     return () => {
+      clearInterval(interval);
       unsubscribe();
     };
-  }, []);
+  }, [isLoaded]);
 
   const filtered = tickers.filter(
     (t) =>
@@ -208,7 +207,7 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
                     if (barsData && barsData.length > 0) {
                       initialPrice = Number(barsData[0].close) || 0;
                     }
-                  } catch(e) {}
+                  } catch {}
                   
                   const newTicker: TickerItem = {
                     symbol: inst.symbol,
@@ -331,7 +330,7 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
                     if (barsData && barsData.length > 0) {
                       initialPrice = Number(barsData[0].close) || 0;
                     }
-                  } catch(e) {}
+                  } catch {}
                   
                   const newTicker: TickerItem = {
                     symbol: newSym,

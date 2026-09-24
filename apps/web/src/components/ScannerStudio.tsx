@@ -9,7 +9,6 @@ import {
   RotateCcw,
   Sliders,
   CheckCircle2,
-  AlertCircle,
   ExternalLink,
   Flame,
   Clock,
@@ -25,7 +24,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
   const [specs, setSpecs] = useState<ScanSpec[]>([]);
   const [selectedSpecId, setSelectedSpecId] = useState<string>("");
   const [loadingSpecs, setLoadingSpecs] = useState<boolean>(true);
-  const [activeJob, setActiveJob] = useState<ScanJob | null>(null);
+  const [, setActiveJob] = useState<ScanJob | null>(null);
   const [running, setRunning] = useState<boolean>(false);
   const [candidates, setCandidates] = useState<SignalCandidate[]>([]);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -130,7 +129,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
         <div className="flex items-center space-x-3">
           <div className="flex items-center space-x-1.5 text-cyan-400 font-semibold text-xs uppercase tracking-wider">
             <Sliders className="w-4 h-4" />
-            <span>Scanner Studio</span>
+            <span>Polars Scanner Studio</span>
           </div>
 
           {/* Preset Selector */}

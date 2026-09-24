@@ -2,6 +2,7 @@ import js from "@eslint/js";
 import tsParser from "@typescript-eslint/parser";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import reactPlugin from "eslint-plugin-react";
+import globals from "globals";
 
 export default [
   js.configs.recommended,
@@ -17,12 +18,11 @@ export default [
         }
       },
       globals: {
-        document: "readonly",
-        window: "readonly",
+        ...globals.browser,
+        ...globals.node,
+        ...globals.es2021,
         React: "readonly",
-        console: "readonly",
-        setTimeout: "readonly",
-        clearTimeout: "readonly"
+        NodeJS: "readonly"
       }
     },
     plugins: {
@@ -32,8 +32,12 @@ export default [
     rules: {
       ...tsPlugin.configs.recommended.rules,
       ...reactPlugin.configs.recommended.rules,
+      "no-undef": "off", // TypeScript already handles this check via tsc
+      "no-empty": ["error", { "allowEmptyCatch": true }],
       "react/react-in-jsx-scope": "off",
-      "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+      "react/prop-types": "off",
+      "react/no-unescaped-entities": "off",
+      "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "ignoreRestSiblings": true }],
       "@typescript-eslint/no-explicit-any": "off"
     },
     settings: {
@@ -44,10 +48,15 @@ export default [
   },
   {
     ignores: [
-      ".next/*",
-      "node_modules/*",
-      "dist/*",
-      "build/*"
+      ".next/**",
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      "out/**",
+      "test-results/**",
+      "playwright-report/**",
+      "*.js",
+      "*.py"
     ]
   }
 ];

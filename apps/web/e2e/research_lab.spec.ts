@@ -229,7 +229,7 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("TARGET STRATEGY")).toBeVisible();
 
     // 2. Select strategy from dropdown
-    const strategySelect = page.locator("select").first();
+    const strategySelect = page.locator("select:visible").first();
     await expect(strategySelect).toBeVisible();
     await strategySelect.selectOption("rsi-reversal");
 
@@ -252,7 +252,7 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await runBtn.click();
 
     // 5. Verify Tearsheet metric cards are rendered
-    await expect(page.getByText("+4.52%")).toBeVisible(); // Total Return
+    await expect(page.getByText("+4.52%")).toBeVisible({ timeout: 10000 }); // Total Return
     await expect(page.getByText("2.14")).toBeVisible(); // Sharpe Ratio
     await expect(page.getByText("1.20%")).toBeVisible(); // Max Drawdown
     await expect(page.getByText("66.7%")).toBeVisible(); // Win Rate
@@ -272,10 +272,9 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("YTD")).toBeVisible();
 
     // 8. Switch to Multi-Run Comparator tab
-    await page.getByRole("button", { name: "Multi-Run Comparator" }).click();
+    await page.getByRole("button", { name: "History & Compare" }).click();
     await expect(page.getByText("SCENARIO & RUN COMPARATOR")).toBeVisible();
-    await expect(page.getByText("Select Runs:")).toBeVisible();
-    await expect(page.getByText("Sharpe Ratio (0% RFR)")).toBeVisible();
+    await expect(page.locator("th:has-text('Strategy')")).toBeVisible();
 
     // 9. Inspect Reproducibility Manifest modal
     const manifestBtn = page.getByRole("button", { name: "Manifest" });

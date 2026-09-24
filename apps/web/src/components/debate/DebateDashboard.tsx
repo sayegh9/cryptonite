@@ -1,7 +1,7 @@
 import React from 'react';
 import { useDebateStore } from '@/lib/stores/useDebateStore';
 import { DebateTranscriptViewer } from './DebateTranscriptViewer';
-import { InteractiveModeToggle } from './InteractiveModeToggle';
+import { ExecutionStagingCanvas } from './ExecutionStagingCanvas';
 
 export const DebateDashboard: React.FC = () => {
   const activeDebates = useDebateStore((state) => state.activeDebates);
@@ -25,7 +25,7 @@ export const DebateDashboard: React.FC = () => {
           {debatesList.map((run) => (
             <div key={run.runId} className="h-[600px] flex flex-col">
               <DebateTranscriptViewer runId={run.runId} />
-              <InteractiveModeToggle runId={run.runId} />
+              <ExecutionStagingCanvas runId={run.runId} />
             </div>
           ))}
         </div>

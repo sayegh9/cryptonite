@@ -5,6 +5,9 @@ import {
   createChart,
   ColorType,
   CandlestickSeries,
+  BarSeries,
+  AreaSeries,
+  BaselineSeries,
   HistogramSeries,
   LineSeries,
   createSeriesMarkers,
@@ -16,6 +19,7 @@ import {
 } from "lightweight-charts";
 import { Bar, SignalCandidate } from "@/lib/types";
 import { getStreamClient } from "@/lib/ws";
+import { useDebateStore } from "@/lib/stores/useDebateStore";
 import { SMA, EMA, WMA, WEMA, RSI, ATR, ROC, WilliamsR, TRIX, CCI, ForceIndex, MFI, SD, AverageGain, AverageLoss } from "technicalindicators";
 import { Settings2, Plus, X, BrainCircuit } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -45,6 +49,16 @@ interface Props {
   targetCandleTime?: number | null;
 }
 
+export type ChartStyle = "candlestick" | "bar" | "line" | "area" | "baseline";
+
+const CHART_STYLES: { id: ChartStyle; label: string }[] = [
+  { id: "candlestick", label: "Candles" },
+  { id: "bar", label: "Bars" },
+  { id: "line", label: "Line" },
+  { id: "area", label: "Area" },
+  { id: "baseline", label: "Baseline" },
+];
+
 const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
 export function TradingViewChart({
@@ -53,17 +67,20 @@ export function TradingViewChart({
   timeframe,
   isFocused = false,
   onFocus,
-  onSymbolChange,
   onTimeframeChange,
   targetCandleTime,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<any> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
-  const isInteractingRef = useRef<boolean>(false);
+  const currentMarkersRef = useRef<SeriesMarker<Time>[]>([]);
   const lastPriceUpdateRef = useRef<number>(0);
+
+  const [chartStyle, setChartStyle] = useState<ChartStyle>("candlestick");
+  const chartStyleRef = useRef<ChartStyle>(chartStyle);
+  chartStyleRef.current = chartStyle;
 
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +103,88 @@ export function TradingViewChart({
 
   const [triggeringDebate, setTriggeringDebate] = useState(false);
 
+  const createMainSeries = (chart: IChartApi, style: ChartStyle): ISeriesApi<any> => {
+    switch (style) {
+      case "bar":
+        return chart.addSeries(BarSeries, {
+          upColor: "#10b981",
+          downColor: "#ef4444",
+        });
+      case "line":
+        return chart.addSeries(LineSeries, {
+          color: "#38bdf8",
+          lineWidth: 2,
+        });
+      case "area":
+        return chart.addSeries(AreaSeries, {
+          topColor: "rgba(56, 189, 248, 0.4)",
+          bottomColor: "rgba(56, 189, 248, 0.0)",
+          lineColor: "#38bdf8",
+          lineWidth: 2,
+        });
+      case "baseline":
+        return chart.addSeries(BaselineSeries, {
+          topLineColor: "#10b981",
+          topFillColor1: "rgba(16, 185, 129, 0.28)",
+          topFillColor2: "rgba(16, 185, 129, 0.05)",
+          bottomLineColor: "#ef4444",
+          bottomFillColor1: "rgba(239, 68, 68, 0.05)",
+          bottomFillColor2: "rgba(239, 68, 68, 0.28)",
+          lineWidth: 2,
+        });
+      case "candlestick":
+      default:
+        return chart.addSeries(CandlestickSeries, {
+          upColor: "#10b981",
+          downColor: "#ef4444",
+          borderVisible: false,
+          wickUpColor: "#10b981",
+          wickDownColor: "#ef4444",
+        });
+    }
+  };
+
+  const formatSeriesData = (rawBars: any[], style: ChartStyle) => {
+    if (style === "candlestick" || style === "bar") {
+      return rawBars.map((b: any) => ({
+        time: b.time as Time,
+        open: Number(b.open),
+        high: Number(b.high),
+        low: Number(b.low),
+        close: Number(b.close),
+      }));
+    }
+    return rawBars.map((b: any) => ({
+      time: b.time as Time,
+      value: Number(b.close),
+    }));
+  };
+
+  const handleStyleChange = (newStyle: ChartStyle) => {
+    if (newStyle === chartStyle || !chartRef.current) return;
+    setChartStyle(newStyle);
+    chartStyleRef.current = newStyle;
+
+    const chart = chartRef.current;
+    if (candleSeriesRef.current) {
+      chart.removeSeries(candleSeriesRef.current);
+    }
+
+    const newSeries = createMainSeries(chart, newStyle);
+    candleSeriesRef.current = newSeries;
+
+    if (rawBarsRef.current.length > 0) {
+      const data = formatSeriesData(rawBarsRef.current, newStyle);
+      newSeries.setData(data as any);
+    }
+
+    if (currentMarkersRef.current.length > 0) {
+      markersPluginRef.current = createSeriesMarkers(newSeries, currentMarkersRef.current);
+    }
+  };
+
   const handleTriggerDebate = async (e: React.MouseEvent) => {
+    const addTurn = useDebateStore.getState().addTurn;
     e.stopPropagation();
     setTriggeringDebate(true);
     try {
@@ -103,6 +201,13 @@ export function TradingViewChart({
       if (!res.ok) {
         throw new Error(data.detail || data.message || `Server responded with ${res.status}`);
       }
+      // Optimistically add the debate run so it shows in the UI immediately
+      addTurn({
+        runId: data.id || "pending-" + Date.now(),
+        role: "System",
+        content: "Gathering intelligence and preparing agent context...",
+        timestamp: Date.now(),
+      });
       toast.success(`AI Debate Initiated: ${symbol}`, {
         description: "Bull & Bear research agents are analyzing market structure.",
       });
@@ -122,7 +227,6 @@ export function TradingViewChart({
       let values: number[] = [];
       const closes = bars.map((b) => Number(b.close));
       
-      const opens = bars.map(b => Number(b.open));
       const highs = bars.map(b => Number(b.high));
       const lows = bars.map(b => Number(b.low));
       const vols = bars.map(b => Number(b.volume));
@@ -230,13 +334,7 @@ export function TradingViewChart({
       },
     });
 
-    const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#10b981",
-      downColor: "#ef4444",
-      borderVisible: false,
-      wickUpColor: "#10b981",
-      wickDownColor: "#ef4444",
-    });
+    const candleSeries = createMainSeries(chart, chartStyleRef.current);
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
       color: "#27272a",
@@ -337,6 +435,11 @@ export function TradingViewChart({
 
     const fetchHistorical = async () => {
       try {
+        if (candleSeriesRef.current && volumeSeriesRef.current) {
+          candleSeriesRef.current.setData([]);
+          volumeSeriesRef.current.setData([]);
+        }
+
         const res = await fetch(`/api/v1/bars?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=1000`);
         if (!res.ok) throw new Error(`Failed to load bars: ${res.statusText}`);
         const data = await res.json();
@@ -345,13 +448,7 @@ export function TradingViewChart({
         const rawBars = Array.isArray(data) ? data : (data.bars || []);
 
         rawBarsRef.current = rawBars;
-        const candles = rawBars.map((b: any) => ({
-          time: b.time as Time,
-          open: Number(b.open),
-          high: Number(b.high),
-          low: Number(b.low),
-          close: Number(b.close),
-        }));
+        const seriesData = formatSeriesData(rawBars, chartStyleRef.current);
 
         const volumes = rawBars.map((b: any) => ({
           time: b.time as Time,
@@ -366,17 +463,33 @@ export function TradingViewChart({
         });
 
         if (candleSeriesRef.current && volumeSeriesRef.current) {
-          candleSeriesRef.current.setData(candles);
+          candleSeriesRef.current.setData(seriesData as any);
           volumeSeriesRef.current.setData(volumes);
           chartRef.current?.timeScale().fitContent();
 
-          if (candles.length > 0) {
-            const last = candles[candles.length - 1];
-            const first = candles[0];
-            setCurrentPrice(last.close);
-            const change = ((last.close - first.open) / first.open) * 100;
+          if (rawBars.length > 0) {
+            const last = rawBars[rawBars.length - 1];
+            const first = rawBars[0];
+            setCurrentPrice(Number(last.close));
+            const change = ((Number(last.close) - Number(first.open)) / Number(first.open)) * 100;
             setPriceChangePct(change);
           }
+
+          // Hydrate real-time 24h price & change from market stats
+          const cleanSym = symbol.split(".")[0].toUpperCase();
+          fetch(`/api/v1/market/prices?symbols=${encodeURIComponent(cleanSym)}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((stats) => {
+              if (cancelled || !stats) return;
+              const s = Array.isArray(stats) ? stats.find((item: any) => item.symbol === cleanSym) : stats[cleanSym];
+              if (s && s.last_price) {
+                setCurrentPrice(Number(s.last_price));
+                if (s.price_change_pct !== undefined) {
+                  setPriceChangePct(Number(s.price_change_pct));
+                }
+              }
+            })
+            .catch(() => {});
         }
 
         // Fetch signals for markers
@@ -391,6 +504,7 @@ export function TradingViewChart({
             color: "#10b981",
             shape: "arrowUp",
           }));
+          currentMarkersRef.current = markers;
           markersPluginRef.current?.setMarkers(markers);
         }
 
@@ -452,13 +566,20 @@ export function TradingViewChart({
           };
           provisionalCandleRef.current = prov;
 
-          candleSeriesRef.current.update({
-            time: prov.time as unknown as Time,
-            open: prov.open,
-            high: prov.high,
-            low: prov.low,
-            close: prov.close,
-          });
+          if (chartStyleRef.current === "candlestick" || chartStyleRef.current === "bar") {
+            candleSeriesRef.current.update({
+              time: prov.time as unknown as Time,
+              open: prov.open,
+              high: prov.high,
+              low: prov.low,
+              close: prov.close,
+            });
+          } else {
+            candleSeriesRef.current.update({
+              time: prov.time as unknown as Time,
+              value: prov.close,
+            });
+          }
           volumeSeriesRef.current.update({
             time: prov.time as unknown as Time,
             value: prov.volume,
@@ -496,13 +617,20 @@ export function TradingViewChart({
           }
           provisionalCandleRef.current = prov;
 
-          candleSeriesRef.current.update({
-            time: bucketTimeSec as unknown as Time,
-            open: prov.open,
-            high: prov.high,
-            low: prov.low,
-            close: prov.close,
-          });
+          if (chartStyleRef.current === "candlestick" || chartStyleRef.current === "bar") {
+            candleSeriesRef.current.update({
+              time: bucketTimeSec as unknown as Time,
+              open: prov.open,
+              high: prov.high,
+              low: prov.low,
+              close: prov.close,
+            });
+          } else {
+            candleSeriesRef.current.update({
+              time: bucketTimeSec as unknown as Time,
+              value: prov.close,
+            });
+          }
         }
       }
 
@@ -601,6 +729,24 @@ export function TradingViewChart({
             <BrainCircuit className="w-3 h-3" />
             <span>{triggeringDebate ? "Queuing..." : "Run Debate"}</span>
           </button>
+
+          {/* Chart Style Selector */}
+          <select
+            value={chartStyle}
+            onChange={(e) => {
+              e.stopPropagation();
+              handleStyleChange(e.target.value as ChartStyle);
+            }}
+            className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 rounded px-2 py-0.5 text-[11px] font-medium focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer transition-colors"
+            title="Select Chart Style"
+            aria-label="Select Chart Style"
+          >
+            {CHART_STYLES.map((style) => (
+              <option key={style.id} value={style.id} className="bg-zinc-900 text-zinc-200">
+                {style.label}
+              </option>
+            ))}
+          </select>
 
           {/* Indicators Dialog */}
           <Dialog open={showIndDialog} onOpenChange={setShowIndDialog}>

@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import dynamic from "next/dynamic";
 import { MultiChartGrid } from "@/components/MultiChartGrid";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 import { ScannerStudio } from "@/components/ScannerStudio";
@@ -16,49 +15,22 @@ import { CoinProfileModal } from "@/components/CoinProfileModal";
 import { AlertsPanel } from "@/components/AlertsPanel";
 import { MarketOverview } from "@/components/MarketOverview";
 import { SettingsPanel } from "@/components/SettingsPanel";
-import { DebateDashboard } from "@/components/debate/DebateDashboard";
+import { AIBrainWorkspace } from "@/components/brain/AIBrainWorkspace";
 import { useDebateStream, useDebateStore } from "@/lib/stores/useDebateStore";
 import { TerminalWorkspace } from "@/components/terminal/TerminalWorkspace";
 import { DebateTranscriptViewer } from "@/components/debate/DebateTranscriptViewer";
 
-const ResearchLab = dynamic(
-  () => import("@/components/ResearchLab/ResearchLab").then((m) => m.ResearchLab),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex-1 flex items-center justify-center font-mono text-xs text-zinc-500">
-        Loading Research Lab...
-      </div>
-    ),
-  }
-);
-
-const PortfolioConsole = dynamic(
-  () => import("@/components/PortfolioConsole").then((m) => m.PortfolioConsole),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex-1 flex items-center justify-center font-mono text-xs text-zinc-500">
-        Loading Portfolio...
-      </div>
-    ),
-  }
-);
+import { ResearchLab } from "@/components/ResearchLab/ResearchLab";
+import { useBacktestStore } from "@/lib/stores/useBacktestStore";
+import { PortfolioConsole } from "@/components/PortfolioConsole";
 import { getStreamClient } from "@/lib/ws";
 import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import {
   Activity,
-  Settings,
   Zap,
   ShieldCheck,
   Radio,
-  ExternalLink,
-  FlaskConical,
-  LayoutDashboard,
-  Briefcase,
-  Wrench,
   BrainCircuit,
 } from "lucide-react";
 
@@ -81,6 +53,8 @@ export default function TerminalPage() {
   const activeDebates = useDebateStore((state) => state.activeDebates);
   const debatesList = Object.values(activeDebates);
   const activeDebateId = debatesList.length > 0 ? debatesList[0].runId : null;
+
+  const activeBacktestRun = useBacktestStore((state) => state.activeRun);
 
   // Check active operator session on mount and sync across components
   useEffect(() => {
@@ -135,6 +109,16 @@ export default function TerminalPage() {
     };
   }, []);
 
+  const [showWatchlist, setShowWatchlist] = useState<boolean>(true);
+
+  // Restore watchlist panel preference
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("cryptonite:panel-watchlist");
+      if (saved !== null) setShowWatchlist(saved === "true");
+    } catch {}
+  }, []);
+
   // Listen for custom events (e.g., from CommandPalette, shortcuts or Modals)
   useEffect(() => {
     const handler = (e: CustomEvent) => {
@@ -156,19 +140,51 @@ export default function TerminalPage() {
     const copilotHandler = () => {
       setIsAgentChatOpen(true);
     };
+    const debateTriggerHandler = async (e: CustomEvent) => {
+      const sym = e.detail?.symbol || selectedSymbol;
+      const customThesis = e.detail?.customThesis;
+      const addTurn = useDebateStore.getState().addTurn;
+      try {
+        addTurn({
+          runId: "pending-" + Date.now(),
+          role: "System",
+          content: customThesis ? `Initiating debate for ${sym} with thesis: ${customThesis}` : `Initiating multi-agent consensus debate for ${sym}...`,
+          timestamp: Date.now(),
+        });
+        toast.success(`AI Debate Initiated: ${sym}`, {
+          description: "TradingAgents intelligence gathering started in background.",
+        });
+        const res = await fetch("/agent-api/debates/trigger", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": localStorage.getItem("csrf_token") || "",
+          },
+          body: JSON.stringify({ symbol: sym, timeframe: "1m", custom_thesis: customThesis }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || err.message || "Failed to queue debate");
+        }
+      } catch (err: any) {
+        toast.error(`Debate trigger error: ${err.message}`);
+      }
+    };
 
     window.addEventListener("cryptonite:select-symbol" as any, handler);
     window.addEventListener("cryptonite:open-profile" as any, profileHandler);
     window.addEventListener("cryptonite:switch-workspace" as any, switchWsHandler);
     window.addEventListener("cryptonite:open-copilot" as any, copilotHandler);
+    window.addEventListener("cryptonite:trigger-debate" as any, debateTriggerHandler);
 
     return () => {
       window.removeEventListener("cryptonite:select-symbol" as any, handler);
       window.removeEventListener("cryptonite:open-profile" as any, profileHandler);
       window.removeEventListener("cryptonite:switch-workspace" as any, switchWsHandler);
       window.removeEventListener("cryptonite:open-copilot" as any, copilotHandler);
+      window.removeEventListener("cryptonite:trigger-debate" as any, debateTriggerHandler);
     };
-  }, []);
+  }, [selectedSymbol]);
 
   // Update subscriptions when selectedSymbol changes
   useEffect(() => {
@@ -218,7 +234,7 @@ export default function TerminalPage() {
               { id: "research", label: "Research Lab" },
               { id: "alerts", label: "Alerts" },
               { id: "portfolio", label: "Portfolio" },
-              { id: "debates", label: "AI Debates" },
+              { id: "debates", label: "AI Brain" },
               { id: "operator", label: "Operator" },
               { id: "settings", label: "Settings" },
             ].map((tab) => (
@@ -240,7 +256,7 @@ export default function TerminalPage() {
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-1.5 bg-emerald-950/30 border border-emerald-900/50 px-2 py-1 rounded text-[10px] text-emerald-400 font-mono">
             <ShieldCheck className="w-3 h-3" />
-            <span className="font-bold tracking-wide">READ ONLY</span>
+            <span className="font-bold tracking-wide">ZERO TRADING AUTHORITY (READ ONLY)</span>
           </div>
           
           <button
@@ -255,15 +271,25 @@ export default function TerminalPage() {
 
       {/* Persistent Terminal Workspace */}
       <div className={workspaceMode === "terminal" ? "flex-1 flex min-h-0 min-w-0" : "hidden"}>
-        {/* Left Watchlist Sidebar */}
-        <aside className="w-60 flex-none h-full min-h-0 hidden md:flex border-r border-white/5 z-10">
-          <WatchlistPanel
-            selectedSymbol={selectedSymbol}
-            onSelectSymbol={handleSelectSymbol}
-          />
-        </aside>
+        {/* Left Watchlist Sidebar (Collapsible) */}
+        {showWatchlist && (
+          <aside className="w-60 flex-none h-full min-h-0 hidden md:flex border-r border-white/5 z-10">
+            <WatchlistPanel
+              selectedSymbol={selectedSymbol}
+              onSelectSymbol={handleSelectSymbol}
+            />
+          </aside>
+        )}
 
         <TerminalWorkspace
+          selectedSymbol={selectedSymbol}
+          showWatchlist={showWatchlist}
+          onToggleWatchlist={(val) => {
+            setShowWatchlist(val);
+            try {
+              localStorage.setItem("cryptonite:panel-watchlist", String(val));
+            } catch {}
+          }}
           chartComponent={
             <MultiChartGrid
               activeTarget={activeChartTarget}
@@ -272,7 +298,7 @@ export default function TerminalPage() {
           }
           debateSidebarComponent={
             activeDebateId ? (
-              <DebateTranscriptViewer runId={activeDebateId} />
+              <DebateTranscriptViewer runId={activeDebateId} symbol={selectedSymbol} />
             ) : undefined
           }
           blotterComponent={
@@ -298,9 +324,9 @@ export default function TerminalPage() {
         />
       </div>
 
-      {/* Persistent AI Debates Workspace */}
-      <div className={workspaceMode === "debates" ? "flex-1 overflow-hidden relative p-1 pb-[33px]" : "hidden"}>
-        <DebateDashboard />
+      {/* Persistent AI Brain Workspace */}
+      <div className={workspaceMode === "debates" ? "flex-1 overflow-hidden relative flex flex-col min-h-0 min-w-0" : "hidden"}>
+        <AIBrainWorkspace selectedSymbol={selectedSymbol} isActive={workspaceMode === "debates"} />
       </div>
 
       {/* On-Demand Secondary Workspaces */}
@@ -322,11 +348,9 @@ export default function TerminalPage() {
           <SettingsPanel />
         </div>
       )}
-      {workspaceMode === "research" && (
-        <main className="flex-1 overflow-hidden relative p-1 pb-[33px]">
-          <ResearchLab />
-        </main>
-      )}
+      <main className={workspaceMode === "research" ? "flex-1 overflow-hidden relative p-1 pb-[33px]" : "hidden"}>
+        <ResearchLab />
+      </main>
       {workspaceMode === "portfolio" && (
         <div className="flex-1 min-h-0 min-w-0">
           <PortfolioConsole />
@@ -390,7 +414,7 @@ export default function TerminalPage() {
       <AgentChatPanel
         isOpen={isAgentChatOpen}
         onClose={() => setIsAgentChatOpen(false)}
-        activeBacktestId={null} // TODO: Could pass active backtest ID from ResearchLab if lifted
+        activeBacktestId={activeBacktestRun?.id || null}
       />
 
       <CoinProfileModal 

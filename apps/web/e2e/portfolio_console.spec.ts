@@ -41,6 +41,90 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
         body: JSON.stringify([]),
       });
     });
+
+    // 4. Default paper mocks
+    await page.route("**/api/v1/paper/accounts*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            account_id: "PAPER-ACCOUNT-001",
+            venue: "BINANCE",
+            currency: "USDT",
+            starting_balance: 10000,
+            cash_balance: 8500,
+            total_equity: 10150,
+            realized_pnl: 150,
+            daily_realized_pnl: 150,
+            daily_loss_latched: false,
+          },
+        ]),
+      });
+    });
+
+    await page.route("**/api/v1/paper/positions*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            position_id: "pos-001",
+            account_id: "PAPER-ACCOUNT-001",
+            instance_id: "INST-EMA-01",
+            instrument_id: "BTCUSDT.BINANCE",
+            side: "LONG",
+            entry_price: 50000.0,
+            quantity: 0.03,
+            current_price: 55000.0,
+            unrealized_pnl: 150.0,
+            status: "OPEN",
+          },
+        ]),
+      });
+    });
+
+    await page.route("**/api/v1/paper/orders*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    });
+
+    await page.route("**/api/v1/paper/strategies*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            instance_id: "INST-EMA-01",
+            strategy_name: "EMACrossover",
+            instrument_id: "BTCUSDT.BINANCE",
+            timeframe: "1m",
+            allocation_usd: 5000,
+            status: "RUNNING",
+            last_processed_bar_ns: 1725700000000000000,
+          },
+        ]),
+      });
+    });
+
+    await page.route("**/api/v1/paper/kill-switch*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ id: 1, is_latched: false }),
+      });
+    });
+
+    await page.route("**/api/v1/paper/trades*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    });
   });
 
   test("navigates to portfolio console and displays core metrics cards", async ({ page }) => {
@@ -226,7 +310,7 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     await expect(page.locator("td:has-text('$50000.00')")).toBeVisible();
 
     // Click Flatten button
-    const flattenBtn = page.locator("button:has-text('Flatten')");
+    const flattenBtn = page.getByRole("button", { name: "Flatten", exact: true });
     await expect(flattenBtn).toBeVisible();
     await flattenBtn.click();
 
@@ -400,11 +484,14 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     await page.route("**/api/v1/paper/orders", async (route) => {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
     });
-    await page.route("**/api/v1/paper/strategies", async (route) => {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
-    });
-    await page.route("**/api/v1/paper/kill-switch", async (route) => {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: 1, is_latched: false }) });
+    await page.route("**/api/v1/strategies*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { id: "strat-1", slug: "ema-cross", name: "EMACrossover", active_version_id: "ver-1" }
+        ]),
+      });
     });
 
     let deployPayload: any = null;
@@ -418,7 +505,7 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     });
 
     await page.goto("/");
-    await page.locator("button:has-text('Portfolio')").click();
+    await page.getByRole("button", { name: "Portfolio", exact: true }).click();
 
     // Click Deploy Strategy button in header
     const deployBtn = page.locator("button:has-text('Deploy Strategy')");
@@ -435,7 +522,7 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
 
     // Check payload submitted
     expect(deployPayload).toBeDefined();
-    expect(deployPayload.strategy_name).toBe("EMACrossover");
+    expect(deployPayload.strategy_name).toBe("ema-cross");
     expect(deployPayload.instrument_id).toBe("BTCUSDT.BINANCE");
     expect(deployPayload.allocation_usd).toBe(5000);
   });
@@ -490,7 +577,7 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     });
 
     await page.goto("/");
-    await page.locator("button:has-text('Portfolio')").click();
+    await page.getByRole("button", { name: "Portfolio", exact: true }).click();
 
     // Verify initial active state
     await expect(page.locator("text=Trip Kill Switch")).toBeVisible();

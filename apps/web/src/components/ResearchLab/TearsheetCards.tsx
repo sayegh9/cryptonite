@@ -2,7 +2,7 @@
 
 import React from "react";
 import { BacktestMetrics } from "@/lib/types";
-import { AlertCircle, TrendingUp, TrendingDown, Percent, Award, ShieldAlert } from "lucide-react";
+import { AlertCircle, TrendingUp, TrendingDown } from "lucide-react";
 
 interface Props {
   metrics: BacktestMetrics;
@@ -14,18 +14,33 @@ export const TearsheetCards: React.FC<Props> = ({ metrics, executionProfile }) =
 
   return (
     <div className="flex flex-col space-y-3 w-full font-mono">
-      {/* Institutional Timing Contract Disclosure Banner */}
-      <div className="flex items-start space-x-2.5 bg-cyan-950/40 border border-cyan-800/60 rounded px-3 py-2 text-[11px] text-cyan-300">
-        <AlertCircle className="w-4 h-4 text-cyan-400 flex-none mt-0.5" />
-        <div>
-          <span className="font-semibold text-cyan-200">Execution Timing Contract: </span>
-          <span>
-            Under zero latency, market orders submitted in <code className="bg-cyan-900/60 px-1 py-0.5 rounded text-cyan-100">on_bar</code> execute against the simulated L1 book state at bar close, settling against closing prices rather than next bar open.
-          </span>
-          <span className="ml-2 text-zinc-400">
-            Profile: <strong className="text-zinc-200 uppercase">{executionProfile}</strong>
-          </span>
+      <div className="flex items-center justify-between">
+        {/* Institutional Timing Contract Disclosure Banner */}
+        <div className="flex-1 flex items-start space-x-2.5 bg-cyan-950/40 border border-cyan-800/60 rounded px-3 py-2 text-[11px] text-cyan-300 mr-4">
+          <AlertCircle className="w-4 h-4 text-cyan-400 flex-none mt-0.5" />
+          <div>
+            <span className="font-semibold text-cyan-200">Execution Timing Contract: </span>
+            <span>
+              Under zero latency, market orders submitted in <code className="bg-cyan-900/60 px-1 py-0.5 rounded text-cyan-100">on_bar</code> execute against the simulated L1 book state at bar close, settling against closing prices rather than next bar open.
+            </span>
+            <span className="ml-2 text-zinc-400">
+              Profile: <strong className="text-zinc-200 uppercase">{executionProfile}</strong>
+            </span>
+          </div>
         </div>
+        
+        <button
+          onClick={() => {
+            const prompt = `Analyze this backtest performance:\nSharpe: ${metrics.sharpe_ratio?.toFixed(2)}\nMax Drawdown: -${(metrics.max_drawdown * 100).toFixed(2)}%\nWin Rate: ${(metrics.win_rate * 100).toFixed(1)}%\n\nWhat's causing the drawdown and how can I improve the strategy?`;
+            window.dispatchEvent(new CustomEvent("cryptonite:open-copilot", { 
+              detail: { mode: "explain", prompt, autoSend: true } 
+            }));
+          }}
+          className="flex-none flex items-center space-x-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-cyan-400 border border-white/5 rounded transition-colors text-xs font-bold"
+        >
+          <span>🤖</span>
+          <span>Diagnose with Copilot</span>
+        </button>
       </div>
 
       {/* Grid of Key Performance Indicators */}
