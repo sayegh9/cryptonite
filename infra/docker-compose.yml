@@ -1,7 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
-    container_name: cryptonite_postgres
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: cryptonite
       POSTGRES_PASSWORD: cryptonite_dev_pass
@@ -195,10 +194,15 @@ services:
     env_file:
       - ../.env
     environment:
-      - ENVIRONMENT=DEMO
+      - ENVIRONMENT=PAPER
+      - ACCOUNT_ID=PAPER-ACCOUNT-001
       - DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       - ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ../services/orchestrator:/app/services/orchestrator
+      - ../packages/execution:/app/packages/execution
+      - ../packages/strategies:/app/packages/strategies
     restart: unless-stopped
 
   executor:
@@ -231,6 +235,8 @@ services:
       EMERGENCY_MARKER_PATH: /data/executor_state/demo/emergency_kill_switch.marker
     volumes:
       - ../data:/data
+      - ../services/executor:/app/services/executor
+      - ../packages/execution:/app/packages/execution
     secrets:
       - binance_demo_private_key.pem
     ports:
@@ -266,7 +272,8 @@ services:
     build:
       context: ..
       dockerfile: infra/docker/debate_worker.Dockerfile
-    container_name: cryptonite_debate_worker
+    deploy:
+      replicas: 3
     depends_on:
       postgres:
         condition: service_healthy
@@ -281,6 +288,26 @@ services:
       - ../.env
     volumes:
       - ../data:/app/data:rw
+
+  exit_monitor:
+    build:
+      context: ..
+      dockerfile: infra/docker/scanner.Dockerfile
+    command: ["python", "-m", "cryptonite_scanner_service.exit_monitor"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data:rw
+      - ../services/scanner:/app/services/scanner
 
   # Fresh named volumes mount root-owned; hand them to the image's uid 1000 once per run.
   test_volumes_init:
