@@ -34,9 +34,8 @@ from cryptonite_execution.reservations import (
 )
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
+from connections import DB_URL, REDIS_URL
 
-DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
-REDIS_URL = "redis://127.0.0.1:6379/0"
 
 
 @pytest.mark.asyncio

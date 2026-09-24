@@ -3,8 +3,8 @@
 import subprocess
 import asyncpg
 import pytest
+from connections import DB_URL
 
-DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
 
 
 @pytest.mark.destructive

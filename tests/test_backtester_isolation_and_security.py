@@ -18,10 +18,11 @@ from pathlib import Path
 
 import asyncpg
 import pytest
+from connections import DB_URL as SHARED_DB_URL, role_db_url
 
 STRATEGIES_DIR = Path(__file__).parent.parent / "packages" / "strategies" / "cryptonite_strategies"
-DB_URL_ADMIN = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
-DB_URL_BACKTESTER = "postgresql://cryptonite_backtester:backtester_dev_pass@localhost:5432/cryptonite"
+DB_URL_ADMIN = SHARED_DB_URL
+DB_URL_BACKTESTER = role_db_url("cryptonite_backtester", "backtester_dev_pass")
 
 DISALLOWED_MODULES = {
     "ccxt",

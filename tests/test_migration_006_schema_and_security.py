@@ -12,10 +12,11 @@ Verifies:
 import uuid
 import asyncpg
 import pytest
+from connections import DB_URL as SHARED_DB_URL, role_db_url
 
-DB_URL_ADMIN = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
-DB_URL_EXECUTOR = "postgresql://cryptonite_executor:executor_dev_pass@localhost:5432/cryptonite"
-DB_URL_API = "postgresql://cryptonite_api:api_dev_pass@localhost:5432/cryptonite"
+DB_URL_ADMIN = SHARED_DB_URL
+DB_URL_EXECUTOR = role_db_url("cryptonite_executor", "executor_dev_pass")
+DB_URL_API = role_db_url("cryptonite_api", "api_dev_pass")
 
 
 @pytest.mark.asyncio

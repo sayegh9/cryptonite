@@ -1,6 +1,5 @@
 """Test Paper Trading API Gateway endpoints, command submissions, lease fencing, and role permissions."""
 
-import os
 import uuid
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -11,10 +10,9 @@ from cryptonite_api.main import create_app
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_executor.server import command_poller_loop
 from fastapi.testclient import TestClient
+from connections import DB_URL as ADMIN_DB_URL, role_db_url
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_api:api_dev_pass@127.0.0.1:5432/cryptonite")
-ADMIN_DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@127.0.0.1:5432/cryptonite"
-
+DB_URL = role_db_url("cryptonite_api", "api_dev_pass")
 
 from cryptonite_api.routes.auth import require_csrf, require_operator
 

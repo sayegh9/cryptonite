@@ -9,9 +9,8 @@ import pytest
 from cryptonite_scanner.models import compute_spec_hash
 from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD
 from cryptonite_scanner_service.worker import ScannerWorker
+from connections import DB_URL, REDIS_URL
 
-DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
-REDIS_URL = "redis://127.0.0.1:6379/0"
 
 
 @pytest.mark.asyncio

@@ -40,9 +40,8 @@ from cryptonite_execution.filters import DynamicExchangeFilterValidator
 from cryptonite_execution.kill_switch import LatchedKillSwitch
 from cryptonite_execution.version_lock import assert_version_locked
 from cryptonite_outbox.relay import OutboxRelay
+from connections import DB_URL, REDIS_URL
 
-DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
-REDIS_URL = "redis://127.0.0.1:6379/0"
 
 
 @pytest.fixture(scope="module")

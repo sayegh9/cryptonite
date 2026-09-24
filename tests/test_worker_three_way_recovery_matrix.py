@@ -14,8 +14,8 @@ import pyarrow as pa
 import pytest
 from cryptonite_backtester.storage import BacktestArtifactStore
 from cryptonite_backtester_service.worker import BacktestWorker, IntegrityIncidentError
+from connections import DB_URL
 
-DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
 
 
 def _write_dummy_artifacts(store: BacktestArtifactStore, run_id_str: str, total_return: float = 0.05):

@@ -13,9 +13,8 @@ from cryptonite_outbox.relay import OutboxRelay
 from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_nautilus_instrument_id, to_spot_instrument_id
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from nautilus_trader.model import Bar, Currency, CurrencyPair, Price, Quantity
+from connections import DB_URL, REDIS_URL
 
-DB_URL = "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
-REDIS_URL = "redis://127.0.0.1:6379/0"
 
 
 @pytest.mark.asyncio

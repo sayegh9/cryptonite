@@ -282,9 +282,57 @@ services:
     volumes:
       - ../data:/app/data:rw
 
+  # Fresh named volumes mount root-owned; hand them to the image's uid 1000 once per run.
+  test_volumes_init:
+    build:
+      context: ..
+      dockerfile: infra/docker/api.Dockerfile
+    profiles: ["test"]
+    user: "0:0"
+    entrypoint: ["chown", "1000:1000", "/tmp/.uv-cache", "/tmp/.venv"]
+    volumes:
+      - test_uv_cache:/tmp/.uv-cache
+      - test_venv:/tmp/.venv
+
+  # Test runner: `docker compose -f infra/docker-compose.yml run --rm test uv run pytest tests -q`
+  # Opt-in via profile so `up -d` never starts it. Whole repo is mounted; uv cache
+  # and venv persist in named volumes so repeat runs skip the dependency download.
+  test:
+    build:
+      context: ..
+      dockerfile: infra/docker/api.Dockerfile
+    profiles: ["test"]
+    working_dir: /workspace
+    entrypoint: ["sh", "-c", "uv sync --frozen --extra dev --all-packages --quiet && exec \"$$@\"", "--"]
+    command: ["uv", "run", "pytest", "tests", "-q"]
+    depends_on:
+      test_volumes_init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    environment:
+      UV_CACHE_DIR: /tmp/.uv-cache
+      UV_PROJECT_ENVIRONMENT: /tmp/.venv
+      UV_FROZEN: "1"
+      UV_PYTHON_DOWNLOADS: never
+      PYTHONDONTWRITEBYTECODE: "1"
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ..:/workspace
+      - test_uv_cache:/tmp/.uv-cache
+      - test_venv:/tmp/.venv
+
 volumes:
   postgres_data:
   redis_data:
+  test_uv_cache:
+  test_venv:
 
 secrets:
   binance_demo_private_key.pem:
