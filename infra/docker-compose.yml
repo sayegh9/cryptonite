@@ -122,6 +122,27 @@ services:
       - "127.0.0.1:8082:8082"
     restart: unless-stopped
 
+  derivatives_feed:
+    # Binance USD-M mark price / funding / open interest -> Redis perp:mark:*, perp:oi:*,
+    # channel:perp_mark_ticks; funding settlements -> Postgres funding_rates (migration 020).
+    # Needs outbound internet (default network).
+    build:
+      context: ..
+      dockerfile: infra/docker/scanner.Dockerfile
+    container_name: cryptonite_derivatives_feed
+    command: ["python", "-m", "cryptonite_scanner_service.derivatives_feed"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No env_file: public market data only, so the .env secrets (exchange/LLM keys) stay out
+    environment:
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+      PERP_SYMBOLS: BTCUSDT,ETHUSDT
+    restart: unless-stopped
+
   api:
     build:
       context: ..
@@ -191,6 +212,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      derivatives_feed:
+        condition: service_started  # perp mark prices; without them perp orders reject NO_MARK_PRICE
     env_file:
       - ../.env
     environment:

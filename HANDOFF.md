@@ -1,7 +1,7 @@
 # HANDOFF
 
 ## Current State
-- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: funding settlement in the engine, a compose service for the derivatives feed, and StreamHub forwarding of perp channels (C11)
+- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring, C9 = `derivatives_feed` compose service). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: funding settlement in the engine, StreamHub forwarding of perp channels (C11), and bringing the dev DB to head
 - `main` @ `c63576e`, 14 commits ahead of `origin/main`, NOT pushed. Working tree NOT clean: 28 modified, 212 deleted, 20 untracked (backend packages/services, docs, graphify cache, `exit_monitor.py`, 015's LLM budget change 10→18 USD)
 - Graph: built at `1100fa2`; run `graphify update .` after committing
 - Gates (2026-09-24, Claude Code):
@@ -47,7 +47,8 @@
 - **Perp gaps before production use (in priority order):**
   1. ~~Bridge persistence spot-only~~ — resolved in C6 (below). Still open: tighten `chk_paper_position_margin_mode` to NOT NULL for perps (the bridge now writes it; left for a later migration because C6 had to stay within 020's constraints). `paper_trades` has no realized-PnL column; realized PnL is on the position row only.
   2. ~~No liquidation~~ — resolved in C7 and driven by the orchestrator since C8. Funding settlement in the engine is still missing.
-  3. ~~Orchestrator mark/param wiring~~ — resolved in C8 (below). Marks only flow when `derivatives_feed` is running, and it has no compose service yet.
+  3. ~~Orchestrator mark/param wiring~~ — resolved in C8; `derivatives_feed` runs as a compose service since C9.
+  4. The dev DB is still at 013, so `funding_rates` (020) doesn't exist there. Each funding settlement the feed detects will fail its insert, drop that row, and make the mark stream reconnect once. Bring the dev DB to head (see Known pre-existing issues) before relying on funding history.
 - Perpetuals C6: `EventBridgeWorker._persist_perp_fill` (`packages/execution/cryptonite_execution/bridge.py`; there is no orchestrator `bridge.py`).
   - Perp `ORDER_FILLED` events carry the dispatcher's post-fill snapshot (`dispatcher.fill_event_fields` → `realized_pnl`, `position`: signed qty, entry, leverage, margin mode, isolated margin, exact liquidation price, maintenance margin), and the bridge writes that snapshot rather than re-deriving positions in SQL.
   - Rows are LONG/SHORT with absolute quantity. A close or flip marks the open row FLAT/CLOSED with realized PnL (net of the fill's fee); a flip then opens a new row.
@@ -68,6 +69,11 @@
   - `MANUAL_ORDER`/`SUBMIT_ORDER` forward `leverage`, `margin_mode`, and `reduce_only` into `OrderIntent`. Malformed values reject the command (`INVALID_ORDER_PARAMETERS`) instead of raising and leaving it RUNNING for lease retry.
   - Startup rehydration (`rehydrate_dispatcher_state`) no longer loads perp rows into the spot `positions` map (a short would have come back as a spot long). It reloads them with `set_perp_position` (signed qty, leverage, margin mode, instance, locked IM).
   - `risk.py`: marks carry timestamps, and perp entry orders are rejected with `STALE_MARK_PRICE` when the mark is older than 10s (`max_mark_age_s`). Reduce-only orders are exempt. A mark without a timestamp counts as stale.
+- Perpetuals C9: `derivatives_feed` service in `infra/docker-compose.yml`.
+  - Scanner image, `python -m cryptonite_scanner_service.derivatives_feed`, `PERP_SYMBOLS=BTCUSDT,ETHUSDT`, depends on healthy postgres/redis, `unless-stopped`, default network (needs outbound internet).
+  - **No `env_file`**: public market data only, so the `.env` exchange/LLM/TOTP secrets are not injected.
+  - `orchestrator` depends on it (`service_started`).
+  - Verified 2026-09-24: image built, the container (uid 1000) cached live BTC/ETH `perp:mark:*` and `perp:oi:*` from Binance, then it was removed again. The stack was left as found (postgres + redis only).
 - Uncommitted backend work (packages/agents, `demo_pipeline.py`, scanner, storage, api auth/routes, debate_worker, 015 budget change) has no recorded owner
 - `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), and the `debate_worker` exit-queue consumer — owner: unassigned
 - graphify housekeeping: 212 deleted old-version cache files, untracked new cache, dated backup folders, and an uncommitted `.gitignore` rule are left for a decision
