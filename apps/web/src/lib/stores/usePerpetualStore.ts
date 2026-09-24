@@ -278,8 +278,12 @@ export function usePerpetualStream(enabled: boolean) {
   }, [enabled]);
 }
 
-/** Poll perp positions and account equity (margin fields are not on the WebSocket snapshot). */
-export function usePerpetualPositionsPoll(intervalMs = 5000) {
+/**
+ * Poll perp positions and account equity (margin fields are not on the WebSocket snapshot).
+ * Keep the interval below the API's 5 s keep-alive timeout: polling at exactly 5 s makes the Next
+ * proxy reuse sockets the server is closing ("socket hang up" / ECONNRESET).
+ */
+export function usePerpetualPositionsPoll(intervalMs = 3000) {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
