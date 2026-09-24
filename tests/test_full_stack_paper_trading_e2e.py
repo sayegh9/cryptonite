@@ -61,9 +61,9 @@ async def test_full_stack_paper_trading_e2e():
                 INSERT INTO paper_accounts (
                     account_id, venue, currency, starting_balance, cash_balance,
                     total_equity, realized_pnl, daily_realized_pnl, daily_loss_latched, updated_at
-                ) VALUES ($1, 'BINANCE', 'USDT', 10000.00, 10000.00, 10000.00, 0, 0, FALSE, now())
+                ) VALUES ($1, 'BINANCE', 'USDT', 20000.00, 20000.00, 20000.00, 0, 0, FALSE, now())
                 ON CONFLICT (account_id) DO UPDATE
-                SET cash_balance = 10000.00, total_equity = 10000.00;
+                SET cash_balance = 20000.00, total_equity = 20000.00;
                 """,
                 account_id,
             )
@@ -136,7 +136,7 @@ async def test_full_stack_paper_trading_e2e():
         engine_run_id=engine_run_id,
         pg_pool=pool,
         redis_client=r_client,
-        starting_cash=Decimal("10000.00"),
+        starting_cash=Decimal("20000.00"),  # 0.05 BTC buy = 12.8% of equity, under the 25% concentration limit
     )
 
     class MockCache:
@@ -334,7 +334,7 @@ async def test_full_stack_paper_trading_e2e():
     # Verify reservation released and position updated
     assert client_order_id not in engine.dispatcher.open_orders
     assert engine.dispatcher.get_position_qty(instrument_id_str) == Decimal("0.05")
-    expected_cash = Decimal("10000.00") - (Decimal("0.05") * Decimal("50010.00")) - Decimal("2.5005")
+    expected_cash = Decimal("20000.00") - (Decimal("0.05") * Decimal("50010.00")) - Decimal("2.5005")
     assert engine.dispatcher.cash_balance == expected_cash
 
     # 7. Asynchronous EventBridgeWorker drains and commits to PostgreSQL
