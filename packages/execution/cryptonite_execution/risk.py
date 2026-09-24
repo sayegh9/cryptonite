@@ -131,12 +131,10 @@ class GuardedOrderDispatcher:
         ask_price = Decimal(str(quote.ask_price))
         bid_price = Decimal(str(quote.bid_price))
 
-        is_perpetual = "PERP" in intent.instrument_id or ("USDT" in intent.instrument_id and "_" in intent.instrument_id)
-
         # 4. Risk Margin & Spot Cash Invariants
         if intent.side.upper() == "SELL":
             avail_pos = self.get_available_position_qty(intent.instrument_id)
-            if not is_perpetual and intent.quantity > avail_pos:
+            if intent.quantity > avail_pos:
                 return (
                     False,
                     f"SPOT_INVARIANT_VIOLATION: intent quantity {intent.quantity} exceeds available long position {avail_pos}",

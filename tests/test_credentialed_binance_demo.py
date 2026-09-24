@@ -21,6 +21,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import time
@@ -41,6 +42,8 @@ from nautilus_trader.adapters.binance import (
 )
 from nautilus_trader.cryptography import ed25519_signature
 from nautilus_trader.model import AccountId
+
+logger = logging.getLogger(__name__)
 
 # 1. Resolve API Credentials & Secrets
 def _load_credentials() -> Tuple[Optional[str], Optional[ed25519.Ed25519PrivateKey]]:
