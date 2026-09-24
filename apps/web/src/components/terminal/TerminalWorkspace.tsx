@@ -4,8 +4,12 @@ import React, { useRef, useState, useEffect } from "react";
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle, PanelImperativeHandle } from "react-resizable-panels";
 import { KillSwitchPanel } from "@/components/operator/KillSwitchPanel";
 
-import { ShieldAlert, ChevronDown, ChevronUp, BookOpen, BrainCircuit, X, Play, SlidersHorizontal, ListFilter } from "lucide-react";
+import { ShieldAlert, ChevronDown, ChevronUp, BookOpen, BrainCircuit, X, Play, SlidersHorizontal, ListFilter, ArrowLeftRight } from "lucide-react";
 import { OrderbookPanel } from "./OrderbookPanel";
+import { MarginRiskHUD } from "./MarginRiskHUD";
+import { OrderEntryPanel } from "./OrderEntryPanel";
+import { usePerpetualPositionsPoll } from "@/lib/stores/usePerpetualStore";
+import { hasBrackets, toPerpInstrumentId } from "@/lib/perp/margin";
 
 interface TerminalWorkspaceProps {
   chartComponent: React.ReactNode;
@@ -16,6 +20,18 @@ interface TerminalWorkspaceProps {
   showWatchlist?: boolean;
   onToggleWatchlist?: (val: boolean) => void;
   onTriggerDebate?: () => void;
+}
+
+/** Order ticket + perp margin HUD; polls positions only while mounted (operator sidebar open). */
+function TradingControls({ symbol }: { symbol: string }) {
+  usePerpetualPositionsPoll();
+  const perpInstrument = toPerpInstrumentId(symbol);
+  return (
+    <>
+      {hasBrackets(perpInstrument) && <MarginRiskHUD instrumentId={perpInstrument} />}
+      <OrderEntryPanel symbol={symbol} />
+    </>
+  );
 }
 
 const CustomResizeHandle = ({ horizontal = false }: { horizontal?: boolean }) => (
@@ -166,6 +182,21 @@ export function TerminalWorkspace({
             <BrainCircuit className="w-3 h-3" />
             <span>AI Debate</span>
           </button>
+
+          {/* Trade Toggle: order ticket, perp margin HUD, and kill switch (operator sidebar) */}
+          <button
+            onClick={() => toggleOperator(!showOperatorSidebar)}
+            className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-rose-500/50 outline-none ${
+              showOperatorSidebar
+                ? "bg-rose-950/50 border-rose-800/60 text-rose-400 font-bold"
+                : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+            }`}
+            title={showOperatorSidebar ? "Hide Trade Sidebar" : "Show Trade Sidebar"}
+            aria-label={showOperatorSidebar ? "Hide Trade Sidebar" : "Show Trade Sidebar"}
+          >
+            <ArrowLeftRight className="w-3 h-3" />
+            <span>Trade</span>
+          </button>
         </div>
 
         <div className="flex items-center space-x-3 text-zinc-500 text-[10px]">
@@ -276,6 +307,7 @@ export function TerminalWorkspace({
                   </div>
                   <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
                     <KillSwitchPanel />
+                    <TradingControls symbol={selectedSymbol} />
                   </div>
                 </Panel>
               </>

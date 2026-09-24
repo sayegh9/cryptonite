@@ -13,6 +13,8 @@ export class CryptoniteStreamClient {
   private isExplicitClose: boolean = false;
   private retryCount: number = 0;
   private activeSubscriptions: { channels: string[]; instruments?: string[] } | null = null;
+  // Additional subscriptions (e.g. "perpetuals") that updateSubscriptions must not replace; replayed on reconnect
+  private extraSubscriptions: Map<string, { channels: string[]; instruments?: string[] }> = new Map();
 
   constructor(url?: string) {
     if (url) {
@@ -45,6 +47,7 @@ export class CryptoniteStreamClient {
             instruments: this.activeSubscriptions.instruments,
           });
         }
+        this.extraSubscriptions.forEach((sub) => this.send({ action: "subscribe", ...sub }));
       };
 
       this.ws.onmessage = (event) => {
@@ -100,6 +103,19 @@ export class CryptoniteStreamClient {
       channels,
       instruments,
     });
+  }
+
+  /** Add a subscription that persists across updateSubscriptions calls and reconnects. */
+  public addSubscription(key: string, channels: string[], instruments?: string[]): void {
+    this.extraSubscriptions.set(key, { channels, instruments });
+    this.send({ action: "subscribe", channels, instruments });
+  }
+
+  public removeSubscription(key: string): void {
+    const sub = this.extraSubscriptions.get(key);
+    if (!sub) return;
+    this.extraSubscriptions.delete(key);
+    this.send({ action: "unsubscribe", ...sub });
   }
 
   public disconnect(): void {

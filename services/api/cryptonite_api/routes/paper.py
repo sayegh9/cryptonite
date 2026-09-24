@@ -3,7 +3,7 @@
 import json
 import logging
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Request, Depends
@@ -45,6 +45,10 @@ class ManualOrderRequest(BaseModel):
     order_type: str = "MARKET"
     quantity: float = Field(..., gt=0)
     price: float | None = None  # Required if LIMIT
+    # Perpetual-only; the dispatcher rejects them on spot and defaults leverage 1 / CROSS
+    leverage: int | None = Field(None, ge=1, le=20)
+    margin_mode: Literal["ISOLATED", "CROSS"] | None = None
+    reduce_only: bool = False
 
 
 # Helper to insert into execution_commands
@@ -285,6 +289,9 @@ async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: d
         "quantity": str(req.quantity),
         "price": str(req.price) if req.price else None,
         "client_order_id": client_order_id,
+        "leverage": req.leverage,
+        "margin_mode": req.margin_mode,
+        "reduce_only": req.reduce_only,
     }
     return await _enqueue_command(
         pool=request.app.state.pool,

@@ -17,6 +17,7 @@ import { MarketOverview } from "@/components/MarketOverview";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { AIBrainWorkspace } from "@/components/brain/AIBrainWorkspace";
 import { useDebateStream, useDebateStore } from "@/lib/stores/useDebateStore";
+import { usePerpetualStream } from "@/lib/stores/usePerpetualStore";
 import { TerminalWorkspace } from "@/components/terminal/TerminalWorkspace";
 import { DebateTranscriptViewer } from "@/components/debate/DebateTranscriptViewer";
 
@@ -49,6 +50,7 @@ export default function TerminalPage() {
   const [profileSymbol, setProfileSymbol] = useState<string | null>(null);
 
   useDebateStream(wsConnected ? getStreamClient() : null);
+  usePerpetualStream(wsConnected);
 
   const activeDebates = useDebateStore((state) => state.activeDebates);
   const debatesList = Object.values(activeDebates);

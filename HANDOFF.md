@@ -1,12 +1,12 @@
 # HANDOFF
 
 ## Current State
-- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring, C9 = `derivatives_feed` compose service, C10 = funding settlement, C11 = WebSocket perp relay). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: the web HUD/ticket (Zustand stores consuming `perp_*` messages), and bringing the dev DB to head
+- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring, C9 = `derivatives_feed` compose service, C10 = funding settlement, C11 = WebSocket perp relay, C12 = web store/HUD/ticket). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: commit the `/paper/orders` environment fix (blocker below), a Playwright spec for the ticket/HUD, and bringing the dev DB to head
 - `main` @ `c63576e`, 14 commits ahead of `origin/main`, NOT pushed. Working tree NOT clean: 28 modified, 212 deleted, 20 untracked (backend packages/services, docs, graphify cache, `exit_monitor.py`, 015's LLM budget change 10→18 USD)
 - Graph: built at `1100fa2`; run `graphify update .` after committing
 - Gates (2026-09-24, Claude Code):
-  - Web (committed; `apps/web` has no uncommitted changes): typecheck ✅ · lint ✅ 0 errors / 0 warnings · `pnpm build` ✅ · Playwright ☐ not run
-  - Backend on the **working tree** at C11: pytest ✅ 307 passed / 0 failed, 12 deselected (302 at C10 + 5 WebSocket gateway tests; gateway file 3/3 repeat runs green)
+  - Web at C12: typecheck ✅ · lint ✅ 0 errors / 0 warnings · `pnpm build` ✅ · Playwright ☐ not run. Dev-server smoke test (API offline): Trade sidebar renders the HUD and ticket; the PERP toggle, 10x chip/slider, and reduce-only validation work; no React/hydration errors; only leverage + margin mode persist
+  - Backend on the **working tree** at C12: pytest ✅ 312 passed / 0 failed, 12 deselected (307 at C11 + 5 `/paper/orders` perp-field tests)
   - C3 live smoke test (2026-09-24): BTCUSDT/ETHUSDT mark ticks and open interest cached from the public Binance endpoints
   - Backend on **HEAD** (clean checkout): ☐ not re-run since `c63576e` committed the orchestrator `server.py` change the old hang depended on
   - Migrations: `alembic upgrade head` ✅ 001→020 on a fresh database; 020 downgrade/upgrade round trip ✅; 020 constraints exercised (spot SHORT, spot margin mode, spot leverage, CROSS with isolated margin, non-perp funding rows all rejected)
@@ -20,6 +20,7 @@
 - `test_100k_bars_peak_rss_benchmark` headroom is thin in the full suite (573–648 MB vs 700 MB)
 
 ## Active Work / Blockers
+- BLOCKER (web orders): at HEAD, `POST /paper/orders` inserts `execution_commands` without `environment`, so the column default `'DEMO'` applies and the paper orchestrator (claims `environment = 'PAPER'` only) never picks web orders up. The fix is the other author's uncommitted `services/api/cryptonite_api/routes/paper.py` change (`_enqueue_command(environment=..., account_id=...)`). Until it lands, the C12 ticket submits commands the orchestrator ignores — owner: unassigned
 - Perpetuals C1: migration `020` (SHORT side for perp rows, leverage/margin columns, `funding_rates`) and `cryptonite_execution.derivatives` models. `chk_paper_position_margin_mode` still allows NULL on perp rows because `EventBridgeWorker` doesn't write `margin_mode`; tighten in C9
 - Perpetuals C2: `cryptonite_execution.margin`, pure functions for IM, tiered MM, uPnL, exact liquidation price (isolated + cross, tier chosen self-consistently at the trigger notional), margin ratio, and liquidation distance (a fraction, 0.05 == 5%). BTCUSDT/ETHUSDT brackets are a **reference snapshot** of Binance's published tables, not live data. `cum` is derived from tier floors and MMRs. Replace with `GET /fapi/v1/leverageBracket` in C11 before any live use
 - Perpetuals C3: `services/scanner/cryptonite_scanner_service/derivatives_feed.py` (`python -m cryptonite_scanner_service.derivatives_feed`; env `PERP_SYMBOLS`, default BTCUSDT,ETHUSDT).
@@ -92,6 +93,23 @@
   - Mark ticks are droppable under backpressure (`enqueue_droppable`, which never evicts queued reliable events); liquidation/funding use the reliable path.
   - It runs on its own pub/sub connection and resubscribes after errors.
   - The other author's uncommitted `_pubsub_loop` change in the same file (agent heartbeat + debates) was left unstaged. C11 was committed as HEAD + perp hunks only.
+- Perpetuals C12: web.
+  - `apps/web/src/lib/stores/usePerpetualStore.ts` (project convention, not `src/stores/`). It holds marks, positions, the liquidation alert, and funding history, and persists only `leverage` + `marginMode` (`reduceOnly` deliberately not persisted).
+    - `usePerpetualStream(wsConnected)` is mounted in `app/page.tsx`, so liquidation toasts arrive with the sidebar closed.
+    - `usePerpetualPositionsPoll` polls `/paper/positions` + `/paper/accounts` every 5s, because margin fields are not on the WS snapshot.
+  - `apps/web/src/lib/perp/margin.ts`: a TS port of `margin.py` (same reference brackets). Parity was checked against the Python golden vectors to 1e-8 (ad hoc Node script); there is no web unit runner in the repo.
+  - `components/terminal/MarginRiskHUD.tsx`:
+    - Liquidation distance meter (>20% SAFE green, 5–20% CAUTION amber, <5% DANGER pulsing red, text labels + `role=meter`).
+    - Margin ratio (MM / isolated balance or account equity).
+    - Funding rate (who pays) with an HH:MM:SS countdown and the liquidation banner.
+  - `components/terminal/OrderEntryPanel.tsx`: a SPOT/PERP ticket.
+    - Perp: 1–20x slider + 1/5/10/20 chips, margin mode (locked while a position is open), reduce-only with the dispatcher's rules mirrored client-side.
+    - Pre-flight notional / IM / projected liquidation price, computed for the post-fill position including adds and flips.
+    - Spot payload is unchanged.
+  - Both are mounted in the terminal's operator sidebar, which now has a **Trade** toggle in the Panels bar (previously no control opened it).
+  - `lib/ws.ts`: `addSubscription`/`removeSubscription` keep the `perpetuals` subscription across `updateSubscriptions` and reconnects.
+  - API: `ManualOrderRequest` accepts `leverage` (1–20), `margin_mode`, and `reduce_only` and forwards them into the MANUAL_ORDER payload. Only these hunks were committed; the other author's `paper.py` changes stay unstaged.
+  - Pre-existing web issues noticed: `app/page.tsx` subscribes SOL/BNB, which the gateway allow-list rejects (the whole subscribe message errors). `operator/ManualTradeModal.tsx` is unused.
 - Uncommitted backend work (packages/agents, `demo_pipeline.py`, scanner, storage, api auth/routes, debate_worker, 015 budget change) has no recorded owner
 - `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), and the `debate_worker` exit-queue consumer — owner: unassigned
 - graphify housekeeping: 212 deleted old-version cache files, untracked new cache, dated backup folders, and an uncommitted `.gitignore` rule are left for a decision
