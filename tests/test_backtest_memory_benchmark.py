@@ -130,6 +130,15 @@ def test_100k_bars_peak_rss_benchmark(tmp_path: Path):
     art_dir = tmp_path / "backtest_artifacts"
     num_bars = 100_000
 
+    # VmHWM is a process-lifetime peak; reset it so earlier tests in the same pytest
+    # process don't count against this benchmark (Linux: "5" resets the peak RSS).
+    gc.collect()
+    try:
+        with open("/proc/self/clear_refs", "w") as f:
+            f.write("5")
+    except OSError:
+        pass
+
     # 1. Setup catalog with 100,000 1-minute bars (~69.44 days)
     inst_id, bar_type, warmup_start, eval_start, eval_end = _setup_benchmark_catalog(cat_dir, num_bars)
 
