@@ -293,6 +293,9 @@ services:
     build:
       context: ..
       dockerfile: infra/docker/scanner.Dockerfile
+    # Incomplete: needs a P&L column on agent_safe_positions, debate_runs.type, and the
+    # debate_worker exit queue consumer. Start explicitly with --profile monitoring.
+    profiles: ["monitoring"]
     command: ["python", "-m", "cryptonite_scanner_service.exit_monitor"]
     depends_on:
       postgres:
