@@ -105,3 +105,45 @@ async def test_restart_restores_a_latched_paper_kill_switch(ctx):  # noqa: F811 
     assert engine.kill_switch.is_latched
     approved, reason, _ = engine.dispatcher.evaluate_intent(perp_intent("SELL", "0.01"))
     assert (approved, reason) == (False, "KILL_SWITCH_ENGAGED")
+
+
+async def test_control_reset_request_checks_expiry_and_generation():
+    import time
+
+    engine = paper_engine()
+    engine.kill_switch.trip(latched_by="op", reason="drill")
+    expired = {"actor_id": "OPERATOR:op", "expires_at_ns": time.time_ns() - 1, "expected_generation": 3}
+    fresh = {"actor_id": "OPERATOR:op", "expires_at_ns": time.time_ns() + 60 * 10**9, "expected_generation": 3}
+
+    conn = await run(engine, [("KILL_SWITCH_RESET_REQUEST", expired)])
+    assert outcomes(conn) == [("REJECTED", "RESET_REJECTED: request expired")] and engine.kill_switch.is_latched
+
+    conn = await run_with_generation(engine, [("KILL_SWITCH_RESET_REQUEST", fresh)], generation=4)
+    assert outcomes(conn) == [("REJECTED", "RESET_REJECTED: latch generation changed (3 -> 4)")]
+
+    conn = await run_with_generation(engine, [("KILL_SWITCH_RESET_REQUEST", fresh)], generation=3)
+    assert outcomes(conn) == [("COMPLETED", None)] and not engine.kill_switch.is_latched
+
+
+async def run_with_generation(engine, commands, generation):
+    """Like run(), but the PAPER row reports ``generation`` for the reset request's check."""
+    rows = [
+        {"command_id": uuid.uuid4(), "command_type": t, "target_instance_id": None, "requester_id": "op",
+         "payload": json.dumps(p)}
+        for t, p in commands
+    ]
+    conn = AsyncMock()
+    conn.fetchval.return_value = generation
+    remaining = list(rows)
+
+    async def fake_fetchrow(query, *args):
+        if remaining:
+            return remaining.pop(0)
+        raise asyncio.CancelledError()
+
+    conn.fetchrow = fake_fetchrow
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__.return_value = conn
+    with pytest.raises(asyncio.CancelledError):
+        await command_poller(pool, engine, SimpleQuoteCache())
+    return conn

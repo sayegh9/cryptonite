@@ -45,3 +45,22 @@ async def test_kill_switch_status_reads_the_paper_row():
     pool.fetchrow = AsyncMock(return_value={"environment": "PAPER", "is_latched": True})
     assert (await paper.get_kill_switch(request=request, auth={}))["is_latched"] is True
     assert "environment = 'PAPER'" in pool.fetchrow.await_args.args[0]
+
+
+async def test_control_reset_request_is_enqueued_for_the_requested_environment(monkeypatch):
+    from cryptonite_api.routes import control
+
+    conn = AsyncMock()
+    conn.fetchrow.return_value = {"is_latched": True, "latch_generation": 2}
+    request = MagicMock()
+    request.app.state.pool.acquire.return_value.__aenter__.return_value = conn
+    request.client.host = "127.0.0.1"
+    auth_mgr = MagicMock(verify_operator_step_up=AsyncMock(return_value=True), log_audit_event=AsyncMock(return_value="audit-1"))
+    monkeypatch.setattr(control, "verify_csrf", lambda *_: None)
+    req = control.ResetKillSwitchRequest(step_up_password="pw", reason="drill", environment="PAPER", account_id="PAPER-ACCOUNT-001")
+
+    await control.reset_kill_switch(req, request, auth={"username": "op"}, auth_mgr=auth_mgr, x_csrf_token="t")
+
+    sql, *args = conn.execute.await_args.args
+    assert "KILL_SWITCH_RESET_REQUEST" in sql and "environment, account_id" in sql
+    assert args[-2:] == ["PAPER", "PAPER-ACCOUNT-001"]

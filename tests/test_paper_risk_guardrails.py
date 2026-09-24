@@ -383,3 +383,28 @@ def test_perp_rejects_insufficient_margin_and_missing_mark():
     dispatcher.mark_prices.clear()
     assert dispatcher.evaluate_intent(perp_intent("BUY", "0.01"))[1] == "NO_MARK_PRICE"
 
+
+
+def test_perp_position_has_a_single_owning_instance():
+    dispatcher = make_perp_dispatcher()
+    dispatcher.set_perp_position(PERP, Decimal("0.02"), Decimal("50000"), leverage=10, instance_id="AI_DEBATE_WORKER")
+    manual = OrderIntent(client_order_id="M-1", instance_id="MANUAL_TRADE", instrument_id=PERP,
+                         side="BUY", order_type="MARKET", quantity=Decimal("0.01"))
+    approved, reason, _ = dispatcher.evaluate_intent(manual)
+    assert approved is False and reason.startswith("PERP_POSITION_OWNED_BY_OTHER_INSTANCE")
+    manual_close = manual.model_copy(update={"side": "SELL", "reduce_only": True})
+    assert dispatcher.evaluate_intent(manual_close)[1].startswith("PERP_POSITION_OWNED_BY_OTHER_INSTANCE")
+    owner = manual.model_copy(update={"instance_id": "AI_DEBATE_WORKER"})
+    assert dispatcher.evaluate_intent(owner)[:2] == (True, "APPROVED")
+
+
+def test_reduce_only_perp_exit_passes_kill_switch_and_daily_loss_latches():
+    dispatcher = make_perp_dispatcher()
+    dispatcher.set_perp_position(PERP, Decimal("-0.02"), Decimal("50000"), leverage=10)
+    dispatcher.kill_switch.trip(latched_by="test", reason="drill")
+    dispatcher.daily_loss_latched = True
+    assert dispatcher.evaluate_intent(perp_intent("SELL", "0.01"))[1] == "KILL_SWITCH_ENGAGED"
+    assert dispatcher.evaluate_intent(perp_intent("BUY", "0.02", reduce_only=True))[:2] == (True, "APPROVED")
+    # The reduce-only guard still applies under the latch: no oversize, no wrong direction
+    assert dispatcher.evaluate_intent(perp_intent("BUY", "0.03", reduce_only=True))[1].startswith("REDUCE_ONLY_OVERSIZE")
+    assert dispatcher.evaluate_intent(perp_intent("SELL", "0.01", reduce_only=True))[1] == "REDUCE_ONLY_INVALID_DIRECTION"

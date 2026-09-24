@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import datetime
 import json
 import logging
 import os
@@ -323,6 +324,69 @@ async def consume_perp_marks(
                 await pubsub.aclose()
 
 
+SYSTEM_ALERTS_CHANNEL = "channel:system_alerts"
+DAILY_DRAWDOWN_REASON = "DAILY_DRAWDOWN_LIMIT_BREACHED"
+
+
+async def risk_monitor_once(engine, pool, redis, now: datetime.datetime | None = None) -> None:
+    """One risk-monitor pass: UTC day rollover, DB kill-switch sync, daily drawdown breaker."""
+    d = engine.dispatcher
+    now = now or datetime.datetime.now(datetime.UTC)
+    equity = d.portfolio_equity()
+
+    # 1. UTC midnight: re-base the drawdown high-water mark and clear daily PnL / daily-loss latch
+    if d.roll_trading_day(now.date(), equity):
+        logger.info("UTC trading day rolled to %s; drawdown base equity %s", now.date(), equity)
+        await pool.execute(
+            "UPDATE paper_accounts SET daily_realized_pnl = 0, daily_loss_latched = false, utc_trading_day = $2, updated_at = now() WHERE account_id = $1",
+            engine.account_id, now.date(),
+        )
+
+    # 2. A PAPER latch written straight to the DB (e.g. /control/kill-switch/trip) must stop the engine too
+    row = await pool.fetchrow(
+        "SELECT is_latched, latched_by, reason FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = $1",
+        engine.account_id,
+    )
+    if row and row["is_latched"] and not engine.kill_switch.is_latched:
+        engine.kill_switch.trip(latched_by=row["latched_by"] or "database", reason=row["reason"] or "Latched in database")
+        logger.critical("Paper kill switch latched from database (%s)", row["reason"])
+
+    # 3. Daily drawdown circuit breaker: latch entries, trip + persist the kill switch, alert
+    was_latched = d.daily_loss_latched
+    if d.check_daily_drawdown(equity) and not was_latched:
+        hwm = d.high_water_mark
+        drawdown = (hwm - equity) / hwm if hwm else Decimal("0")
+        if not engine.kill_switch.is_latched:
+            engine.kill_switch.trip(latched_by="risk-monitor", reason=DAILY_DRAWDOWN_REASON)
+        await pool.fetchval(
+            "SELECT trip_execution_kill_switch($1, $2, $3, $4)", "PAPER", engine.account_id, DAILY_DRAWDOWN_REASON, "risk-monitor"
+        )
+        await pool.execute("UPDATE paper_accounts SET daily_loss_latched = true, updated_at = now() WHERE account_id = $1", engine.account_id)
+        detail = {"equity": str(equity), "high_water_mark": str(hwm), "drawdown_pct": str(drawdown), "limit_pct": str(d.max_daily_loss_pct)}
+        await pool.execute(
+            """INSERT INTO paper_risk_events (event_id, account_id, rule_name, severity, message, blocked_action, occurred_at)
+               VALUES (gen_random_uuid(), $1, $2, 'CRITICAL', $3, $4::jsonb, now())""",
+            engine.account_id, DAILY_DRAWDOWN_REASON,
+            f"Daily drawdown {drawdown:.2%} >= {d.max_daily_loss_pct:.0%}: kill switch tripped", json.dumps(detail),
+        )
+        if redis is not None:
+            await redis.publish(SYSTEM_ALERTS_CHANNEL, json.dumps({
+                "type": "system_alert", "v": 1, "kind": DAILY_DRAWDOWN_REASON, "account_id": engine.account_id, **detail,
+            }))
+        logger.critical("DAILY DRAWDOWN BREACH %.2f%%: kill switch tripped", float(drawdown * 100))
+
+
+async def risk_monitor(engine, pool, redis, interval_s: float = 1.0):
+    while True:
+        try:
+            await risk_monitor_once(engine, pool, redis)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Risk monitor error: %s", e)
+        await asyncio.sleep(interval_s)
+
+
 async def command_poller(pool, engine, quote_cache=None):
     """Poll execution_commands for PAPER environment commands."""
     if quote_cache is None:
@@ -340,7 +404,7 @@ async def command_poller(pool, engine, quote_cache=None):
                             SELECT command_id FROM execution_commands
                             WHERE status = 'PENDING'
                               AND environment = 'PAPER'
-                              AND command_type IN ('DEPLOY', 'STOP', 'PAUSE', 'RESUME', 'CLOSE_POSITION', 'MANUAL_ORDER', 'SUBMIT_ORDER', 'CANCEL_ORDER', 'TRIP_KILL_SWITCH', 'RESET_SWITCH')
+                              AND command_type IN ('DEPLOY', 'STOP', 'PAUSE', 'RESUME', 'CLOSE_POSITION', 'MANUAL_ORDER', 'SUBMIT_ORDER', 'CANCEL_ORDER', 'TRIP_KILL_SWITCH', 'RESET_SWITCH', 'KILL_SWITCH_RESET_REQUEST')
                               AND (lease_expires_at IS NULL OR lease_expires_at < now())
                             ORDER BY created_at ASC LIMIT 1
                             FOR UPDATE SKIP LOCKED
@@ -467,13 +531,27 @@ async def command_poller(pool, engine, quote_cache=None):
                             engine.process_mailbox_commands()
                             await conn.fetchval("SELECT trip_execution_kill_switch($1, $2, $3, $4)", "PAPER", acc_id, reason, actor)
                             await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
-                        elif cmd_type == "RESET_SWITCH":
-                            # The engine refuses a reset while any order or position (spot or perp) is open
-                            actor = payload.get("operator") or row.get("requester_id") or "web-ui"
-                            engine.mailbox.push({"command_type": "RESET_SWITCH", "requester_id": actor})
-                            engine.process_mailbox_commands()
-                            if engine.kill_switch.is_latched:
-                                reason = (
+                        elif cmd_type in ("RESET_SWITCH", "KILL_SWITCH_RESET_REQUEST"):
+                            # RESET_SWITCH: /paper/kill-switch/reset. KILL_SWITCH_RESET_REQUEST: /control reset
+                            # (step-up authenticated), which carries an expiry and the latch generation it saw.
+                            # Either way the engine refuses while any order or position is open.
+                            actor = payload.get("operator") or payload.get("actor_id") or row.get("requester_id") or "web-ui"
+                            stale = ""
+                            if cmd_type == "KILL_SWITCH_RESET_REQUEST":
+                                if payload.get("expires_at_ns") and time.time_ns() > int(payload["expires_at_ns"]):
+                                    stale = "RESET_REJECTED: request expired"
+                                elif payload.get("expected_generation") is not None:
+                                    gen = await conn.fetchval(
+                                        "SELECT latch_generation FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = $1",
+                                        acc_id,
+                                    )
+                                    if gen is not None and int(gen) != int(payload["expected_generation"]):
+                                        stale = f"RESET_REJECTED: latch generation changed ({payload['expected_generation']} -> {gen})"
+                            if not stale:
+                                engine.mailbox.push({"command_type": "RESET_SWITCH", "requester_id": actor})
+                                engine.process_mailbox_commands()
+                            if stale or engine.kill_switch.is_latched:
+                                reason = stale or (
                                     f"RESET_REJECTED: open orders={len(engine.dispatcher.open_orders)}, "
                                     f"open positions={engine.dispatcher.open_position_count()}"
                                 )
@@ -853,6 +931,7 @@ async def main():
     asyncio.create_task(command_poller(pool, engine, quote_cache))
     asyncio.create_task(consume_market_data(redis, engine, quote_cache))
     asyncio.create_task(consume_perp_marks(redis, engine))
+    asyncio.create_task(risk_monitor(engine, pool, redis))
     asyncio.create_task(publish_positions())
 
     # Stream consumer for nautilus:stream:bus

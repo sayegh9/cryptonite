@@ -202,16 +202,19 @@ async def reset_kill_switch(
             """
             INSERT INTO execution_commands (
                 command_id, idempotency_key, command_type, requester_id,
-                target_instance_id, status, payload, created_at, attempt_id, attempt_count
+                target_instance_id, status, payload, created_at, attempt_id, attempt_count,
+                environment, account_id
             ) VALUES (
                 $1, $2, 'KILL_SWITCH_RESET_REQUEST', $3, 'cryptonite-executor',
-                'PENDING', $4::jsonb, now(), gen_random_uuid(), 0
+                'PENDING', $4::jsonb, now(), gen_random_uuid(), 0, $5, $6
             );
             """,
             cmd_id,
             idempotency_key,
             f"OPERATOR:{username}",
             json.dumps(payload),
+            req.environment,  # DEMO -> executor (as before); PAPER -> paper orchestrator
+            req.account_id,
         )
 
     return {

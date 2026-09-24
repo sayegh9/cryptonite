@@ -59,7 +59,7 @@ class PerpPositionState:
     leverage: int = 1
     margin_mode: str = MarginMode.CROSS
     initial_margin: Decimal = Decimal("0")  # locked from available cash while the position is open
-    instance_id: str = "MANUAL_TRADE"  # strategy instance that opened it (paper_positions key)
+    instance_id: str = ""  # strategy instance that owns it (paper_positions key); "" = unowned (seeded)
     cumulative_funding: Decimal = Decimal("0")  # Σ funding cash flows while open
 
 
@@ -179,7 +179,7 @@ class GuardedOrderDispatcher:
         entry_price: Decimal,
         leverage: int = 1,
         margin_mode: str = MarginMode.CROSS,
-        instance_id: str = "MANUAL_TRADE",
+        instance_id: str = "",
     ) -> None:
         """Seed or overwrite a perp position (reconciliation/tests); locks its initial margin."""
         old = self.perp_positions.pop(instrument_id, None)
@@ -310,7 +310,7 @@ class GuardedOrderDispatcher:
         pos.cumulative_funding += cash_flow
         return [FundingPaymentEvent(
             account_id=self.account_id,
-            instance_id=pos.instance_id,
+            instance_id=pos.instance_id or "MANUAL_TRADE",
             instrument_id=instrument_id,
             margin_mode=pos.margin_mode,
             signed_qty=pos.signed_qty,
@@ -393,7 +393,7 @@ class GuardedOrderDispatcher:
         event = LiquidationEvent(
             client_order_id=client_order_id,
             account_id=self.account_id,
-            instance_id=snapshot.instance_id,
+            instance_id=snapshot.instance_id or "MANUAL_TRADE",
             instrument_id=instrument_id,
             margin_mode=snapshot.margin_mode,
             side=PositionSide.LONG if is_long else PositionSide.SHORT,
@@ -483,6 +483,12 @@ class GuardedOrderDispatcher:
                 return False, f"PRICE_COLLAR_REJECT: sell limit {intent.price} is below allowable bid collar", Decimal("0")
             price_estimate = intent.price
 
+        # One owner per perp position: the DB keeps one row per (instance, instrument), so a second
+        # instance trading the same symbol would write the netted position onto the wrong row
+        owner = self.perp_positions[intent.instrument_id].instance_id if intent.instrument_id in self.perp_positions else ""
+        if owner and owner != intent.instance_id:
+            return False, f"PERP_POSITION_OWNED_BY_OTHER_INSTANCE: {intent.instrument_id} is held by {owner}", Decimal("0")
+
         pos_qty = self.get_perp_position_qty(intent.instrument_id)
         order_is_long = side == "BUY"
 
@@ -567,12 +573,16 @@ class GuardedOrderDispatcher:
             # Apply dynamic sizing
             intent.quantity = intent.quantity * multiplier
 
+        # Exits may pass the latches: kill-switch exits, and perp reduce-only orders (the reduce-only
+        # guard below guarantees they can only shrink an existing position, never add or flip)
+        exit_only = intent.is_kill_switch_exit or (is_perp and intent.reduce_only)
+
         # 1. Kill switch latch check
-        if self.kill_switch.is_latched and not intent.is_kill_switch_exit:
+        if self.kill_switch.is_latched and not exit_only:
             return False, "KILL_SWITCH_ENGAGED", Decimal("0")
 
         # 2. Daily loss latch check
-        if self.daily_loss_latched and not intent.is_kill_switch_exit:
+        if self.daily_loss_latched and not exit_only:
             return False, "DAILY_LOSS_LIMIT_BREACHED", Decimal("0")
 
         # 3. Freshness check
@@ -824,6 +834,26 @@ class GuardedOrderDispatcher:
         self.daily_realized_pnl += realized - commission
         return realized if closed_any else None
 
+    def portfolio_equity(self) -> Decimal:
+        """Cash + spot longs at bid + perpetual unrealized PnL at mark."""
+        return self._portfolio_equity()
+
+    def roll_trading_day(self, utc_day: Any, current_equity: Decimal) -> bool:
+        """Start a new UTC trading day: re-base the drawdown high-water mark on current equity and
+        clear the daily PnL and daily-loss latch. The kill switch is untouched (operator reset only).
+
+        Returns True when a day boundary was crossed (False on the first call, which only sets the base).
+        """
+        if getattr(self, "trading_day", None) == utc_day:
+            return False
+        rolled = getattr(self, "trading_day", None) is not None
+        self.trading_day = utc_day
+        self.high_water_mark = current_equity
+        if rolled:
+            self.daily_realized_pnl = Decimal("0")
+            self.daily_loss_latched = False
+        return rolled
+
     def check_daily_drawdown(self, current_equity: Decimal, macro_atr_pct: Decimal | None = None) -> bool:
         """Trip the daily loss latch if current equity has breached allowable daily drawdown."""
         if getattr(self, "high_water_mark", None) is None:
@@ -840,7 +870,7 @@ class GuardedOrderDispatcher:
         if drawdown_pct >= drawdown_limit:
             if not self.daily_loss_latched:
                 send_alert(f"📉 *DAILY DRAWDOWN LIMIT BREACHED* 📉\nDrawdown: {float(drawdown_pct * 100):.2f}%")
+                logger.critical("Daily loss limit breached: %.2f%% drawdown from HWM. Latching entries!", float(drawdown_pct * 100))
             self.daily_loss_latched = True
-            logger.critical("Daily loss limit breached: %.2f%% drawdown from HWM. Latching entries!", float(drawdown_pct * 100))
             return True
         return False
