@@ -187,10 +187,11 @@ class PaperTradingEngine:
             logger.info("Processing mailbox command: %s for %s", cmd_type, target_id)
 
             if cmd_type == "PAUSE":
-                # Cancels resting entry orders, preserves open positions
+                # Cancels resting entry orders (spot BUYs; perp orders of either side unless
+                # reduce-only), preserves open positions and their exit orders
                 to_cancel = [
                     cid for cid, o in self.dispatcher.open_orders.items()
-                    if o["side"] == "BUY" and (not target_id or o.get("instance_id") == target_id)
+                    if self.dispatcher.is_entry_order(o) and (not target_id or o.get("instance_id") == target_id)
                 ]
                 for cid in to_cancel:
                     self.dispatcher.release_reservation(cid)
@@ -207,7 +208,7 @@ class PaperTradingEngine:
                 logger.info("Stopped strategy %s: cancelled %d orders", target_id, len(to_cancel))
 
             elif cmd_type == "CLOSE_POSITION":
-                # Cancels open orders and executes reduce-only sell to flatten
+                # Cancels open orders and flattens: spot long via sell, perp via opposing reduce-only order
                 to_cancel = list(self.dispatcher.open_orders.keys())
                 for cid in to_cancel:
                     self.dispatcher.release_reservation(cid)
@@ -230,6 +231,12 @@ class PaperTradingEngine:
                         side="SELL",
                         instrument_id=inst_id,
                     )
+                elif self.dispatcher.get_perp_position_qty(inst_id) != 0:
+                    price = payload.get("price") or cmd.get("price", Decimal("50000"))
+                    closed = self.dispatcher.flatten_perp_position(
+                        inst_id, Decimal(str(price)), Decimal("0"), "FLATTEN-EMERGENCY"
+                    )
+                    logger.info("Flattening perp position %s: reduce-only %s at %s", inst_id, closed, price)
 
             elif cmd_type == "TRIP_KILL_SWITCH":
                 payload = cmd.get("payload", {})
@@ -252,7 +259,7 @@ class PaperTradingEngine:
                         payload = {}
                 reset_by = cmd.get("requester_id") or payload.get("operator", "operator")
                 open_orders_cnt = len(self.dispatcher.open_orders)
-                open_pos_cnt = sum(1 for q in self.dispatcher.positions.values() if q > Decimal("0"))
+                open_pos_cnt = self.dispatcher.open_position_count()
                 success = self.kill_switch.reset(reset_by, open_orders_cnt, open_pos_cnt)
                 if success:
                     logger.info("Latched kill switch reset by %s", reset_by)

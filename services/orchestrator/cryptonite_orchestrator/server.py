@@ -295,30 +295,40 @@ async def command_poller(pool, engine, quote_cache=None):
                             inst_raw = payload.get("instrument_id", "")
                             canonical_inst = to_canonical_instrument(inst_raw) if inst_raw else ""
                             pos_qty = engine.dispatcher.get_position_qty(canonical_inst)
-                            if pos_qty > Decimal("0"):
+                            perp_qty = engine.dispatcher.get_perp_position_qty(canonical_inst)
+                            if pos_qty > Decimal("0") or perp_qty != 0:
+                                # Spot long closes with a SELL; a perp closes with an opposing reduce-only order
+                                close_side = "BUY" if perp_qty < 0 else "SELL"
+                                close_qty = abs(perp_qty) if perp_qty != 0 else pos_qty
                                 quote = quote_cache.quote(canonical_inst)
-                                fill_px = Decimal(str(quote.bid_price)) if quote else Decimal(str(payload.get("price") or "60000.00"))
-                                comm = pos_qty * fill_px * Decimal("0.001")
+                                if quote:
+                                    fill_px = Decimal(str(quote.ask_price if close_side == "BUY" else quote.bid_price))
+                                else:
+                                    fill_px = Decimal(str(payload.get("price") or "60000.00"))
+                                comm = close_qty * fill_px * Decimal("0.001")
                                 client_oid = f"CLOSE-{uuid.uuid4().hex[:8].upper()}"
                                 instance_id = target or "MANUAL_TRADE"
 
-                                engine.dispatcher.handle_fill(
-                                    client_order_id=client_oid,
-                                    fill_qty=pos_qty,
-                                    fill_price=fill_px,
-                                    commission=comm,
-                                    side="SELL",
-                                    instrument_id=canonical_inst,
-                                )
+                                if perp_qty != 0:
+                                    engine.dispatcher.flatten_perp_position(canonical_inst, fill_px, comm, client_oid)
+                                else:
+                                    engine.dispatcher.handle_fill(
+                                        client_order_id=client_oid,
+                                        fill_qty=pos_qty,
+                                        fill_price=fill_px,
+                                        commission=comm,
+                                        side="SELL",
+                                        instrument_id=canonical_inst,
+                                    )
                                 await conn.execute(
                                     """
                                     INSERT INTO paper_orders (
                                         client_order_id, instance_id, account_id, instrument_id, side,
                                         order_type, quantity, price, filled_qty, avg_fill_price, status,
                                         last_event_version, created_at, updated_at
-                                    ) VALUES ($1, $2, $3, $4, 'SELL', 'MARKET', $5, $6, $5, $6, 'FILLED', 1, now(), now());
+                                    ) VALUES ($1, $2, $3, $4, $7, 'MARKET', $5, $6, $5, $6, 'FILLED', 1, now(), now());
                                     """,
-                                    client_oid, instance_id, acc_id, canonical_inst, pos_qty, fill_px
+                                    client_oid, instance_id, acc_id, canonical_inst, close_qty, fill_px, close_side
                                 )
                                 engine.bridge.enqueue_event({
                                     "event_type": "ORDER_FILLED",
@@ -327,11 +337,11 @@ async def command_poller(pool, engine, quote_cache=None):
                                     "account_id": acc_id,
                                     "instance_id": instance_id,
                                     "instrument_id": canonical_inst,
-                                    "side": "SELL",
+                                    "side": close_side,
                                     "price": str(fill_px),
-                                    "quantity": str(pos_qty),
+                                    "quantity": str(close_qty),
                                     "commission": str(comm),
-                                    "filled_qty": str(pos_qty),
+                                    "filled_qty": str(close_qty),
                                     "avg_fill_price": str(fill_px),
                                     "status": "FILLED",
                                     "occurred_at_ns": time.time_ns(),

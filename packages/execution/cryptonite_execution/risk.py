@@ -43,6 +43,9 @@ class OrderIntent(BaseModel):
 class PerpPositionState:
     signed_qty: Decimal  # >0 long, <0 short
     entry_price: Decimal
+    leverage: int = 1
+    margin_mode: str = MarginMode.CROSS
+    initial_margin: Decimal = Decimal("0")  # locked from available cash while the position is open
 
 
 class GuardedOrderDispatcher:
@@ -55,8 +58,9 @@ class GuardedOrderDispatcher:
     - Spot cash-only invariant (no short selling)
     - Dual freshness enforcement
     - Asymmetric price collars and conservative market buy fill estimation
-    - Perpetuals (behind ``perp_trading_enabled``): leverage/margin-mode validation, reduce-only
-      guard, 1% minimum order notional, 25% mark-notional concentration, initial-margin reservation
+    - Perpetuals (``perp_trading_enabled`` kill flag, on by default): leverage/margin-mode validation,
+      reduce-only guard, 1% minimum order notional, 25% mark-notional concentration, initial-margin
+      reservation, and signed-quantity fill accounting with flips
     """
 
     def __init__(
@@ -73,7 +77,7 @@ class GuardedOrderDispatcher:
         max_position_concentration_pct: Decimal = Decimal("0.25"),
         min_order_equity_pct: Decimal = Decimal("0.01"),
         max_perp_leverage: int = 20,
-        perp_trading_enabled: bool = False,
+        perp_trading_enabled: bool = True,
     ) -> None:
         self.leverage_brackets: dict[str, list[dict]] = {}
         self.account_id = account_id
@@ -95,10 +99,12 @@ class GuardedOrderDispatcher:
         self.daily_realized_pnl: Decimal = Decimal("0")
         self.daily_loss_latched: bool = False
 
-        # Perpetuals. Off until perp fill accounting lands: handle_fill still books fills as spot.
+        # Perpetuals: cash_balance is the USDT wallet. Perp fills never move notional through cash;
+        # they lock initial margin and settle realized PnL and fees into cash.
         self.min_order_equity_pct = min_order_equity_pct
         self.max_perp_leverage = max_perp_leverage
         self.perp_trading_enabled = perp_trading_enabled
+        self.locked_margin: Decimal = Decimal("0")  # Σ initial margin of open perp positions
         self.perp_positions: dict[str, PerpPositionState] = {}
         self.mark_prices: dict[str, Decimal] = {}
 
@@ -107,7 +113,19 @@ class GuardedOrderDispatcher:
 
     @property
     def available_cash(self) -> Decimal:
-        return max(Decimal("0"), self.cash_balance - self.reserved_cash)
+        return max(Decimal("0"), self.cash_balance - self.reserved_cash - self.locked_margin)
+
+    def open_position_count(self) -> int:
+        """Spot longs plus perpetual positions in either direction (kill-switch reset gate)."""
+        spot = sum(1 for q in self.positions.values() if q > 0)
+        return spot + sum(1 for p in self.perp_positions.values() if p.signed_qty != 0)
+
+    @staticmethod
+    def is_entry_order(order_info: dict[str, Any]) -> bool:
+        """Entry = adds exposure: spot BUYs, and perp orders of either side unless reduce-only."""
+        if order_info.get("is_perp"):
+            return not order_info.get("reduce_only")
+        return order_info["side"] == "BUY"
 
     def get_position_qty(self, instrument_id: str) -> Decimal:
         return self.positions.get(instrument_id, Decimal("0"))
@@ -120,11 +138,46 @@ class GuardedOrderDispatcher:
     def update_mark_price(self, instrument_id: str, mark_price: Decimal) -> None:
         self.mark_prices[instrument_id] = mark_price
 
-    def set_perp_position(self, instrument_id: str, signed_qty: Decimal, entry_price: Decimal) -> None:
+    def set_perp_position(
+        self,
+        instrument_id: str,
+        signed_qty: Decimal,
+        entry_price: Decimal,
+        leverage: int = 1,
+        margin_mode: str = MarginMode.CROSS,
+    ) -> None:
+        """Seed or overwrite a perp position (reconciliation/tests); locks its initial margin."""
+        old = self.perp_positions.pop(instrument_id, None)
+        if old is not None:
+            self.locked_margin -= old.initial_margin
+        if signed_qty != 0:
+            im = abs(signed_qty) * entry_price / Decimal(leverage)
+            self.perp_positions[instrument_id] = PerpPositionState(signed_qty, entry_price, leverage, margin_mode, im)
+            self.locked_margin += im
+
+    def flatten_perp_position(
+        self, instrument_id: str, fill_price: Decimal, commission: Decimal, client_order_id: str
+    ) -> tuple[str, Decimal] | None:
+        """Close a perp position with an opposing reduce-only order filled at ``fill_price``.
+
+        Returns (side, quantity) of the closing order, or None when flat.
+        """
+        signed_qty = self.get_perp_position_qty(instrument_id)
         if signed_qty == 0:
-            self.perp_positions.pop(instrument_id, None)
-        else:
-            self.perp_positions[instrument_id] = PerpPositionState(signed_qty, entry_price)
+            return None
+        side = "BUY" if signed_qty < 0 else "SELL"
+        qty = abs(signed_qty)
+        self.open_orders[client_order_id] = {
+            "intent": None,
+            "reserved_notional": Decimal("0"),
+            "side": side,
+            "quantity": qty,
+            "instrument_id": instrument_id,
+            "is_perp": True,
+            "reduce_only": True,
+        }
+        self.handle_fill(client_order_id, qty, fill_price, commission, side=side, instrument_id=instrument_id)
+        return side, qty
 
     def get_perp_position_qty(self, instrument_id: str) -> Decimal:
         pos = self.perp_positions.get(instrument_id)
@@ -396,6 +449,7 @@ class GuardedOrderDispatcher:
             "side": intent.side.upper(),
             "quantity": intent.quantity,
             "instrument_id": intent.instrument_id,
+            "instance_id": intent.instance_id,
             "is_perp": is_perp,
             "reduce_only": intent.reduce_only,
         }
@@ -433,13 +487,13 @@ class GuardedOrderDispatcher:
         instrument_id: str | None = None,
     ) -> None:
         """Process an execution fill in memory, reconciling cash and position balances."""
-        known = self.open_orders.get(client_order_id)
-        if parse_instrument_id(instrument_id or (known["instrument_id"] if known else ""))[2]:
-            # Spot accounting would book a short's proceeds as cash with no position
-            raise NotImplementedError("perpetual fill accounting is not implemented yet (roadmap C9)")
         order_info = self.open_orders.pop(client_order_id, None)
         actual_side = (side or (order_info["side"] if order_info else "BUY")).upper()
         inst_id = instrument_id or (order_info["instrument_id"] if order_info else "UNKNOWN")
+
+        if parse_instrument_id(inst_id)[2]:
+            self._handle_perp_fill(order_info, inst_id, actual_side, fill_qty, fill_price, commission)
+            return
 
         if actual_side == "BUY":
             cost = fill_qty * fill_price + commission
@@ -456,6 +510,71 @@ class GuardedOrderDispatcher:
                 self.reserved_positions[inst_id] = max(Decimal("0"), cur_res - order_info["quantity"])
             cur_pos = self.positions.get(inst_id, Decimal("0"))
             self.positions[inst_id] = max(Decimal("0"), cur_pos - fill_qty)
+
+    def _handle_perp_fill(
+        self,
+        order_info: dict[str, Any] | None,
+        instrument_id: str,
+        side: str,
+        fill_qty: Decimal,
+        fill_price: Decimal,
+        commission: Decimal,
+    ) -> None:
+        """Signed-quantity perp accounting: open/add, reduce, close, or flip (close leg then open leg).
+
+        Cash moves only by realized PnL and fees; initial margin moves from the order reservation
+        into ``locked_margin`` and is released pro rata as the position shrinks.
+        """
+        if order_info:
+            self.reserved_cash = max(Decimal("0"), self.reserved_cash - order_info["reserved_notional"])
+        intent = order_info.get("intent") if order_info else None
+        reduce_only = bool(order_info and order_info.get("reduce_only"))
+
+        pos = self.perp_positions.get(instrument_id)
+        leverage = (intent.leverage if intent and intent.leverage else None) or (pos.leverage if pos else 1)
+        margin_mode = (intent.margin_mode if intent and intent.margin_mode else None) or (
+            pos.margin_mode if pos else MarginMode.CROSS
+        )
+        fill_sign = Decimal("1") if side == "BUY" else Decimal("-1")
+        realized = Decimal("0")
+        open_qty = fill_qty
+
+        if pos is not None and (pos.signed_qty > 0) != (fill_sign > 0):
+            # Close leg: realize PnL on the overlapping quantity and release its margin pro rata
+            held = abs(pos.signed_qty)
+            closed = min(fill_qty, held)
+            direction = Decimal("1") if pos.signed_qty > 0 else Decimal("-1")
+            realized = direction * closed * (fill_price - pos.entry_price)
+            released = pos.initial_margin * closed / held
+            self.locked_margin -= released
+            if closed == held:
+                del self.perp_positions[instrument_id]
+                pos = None
+            else:
+                pos.signed_qty += fill_sign * closed
+                pos.initial_margin -= released
+            open_qty = fill_qty - closed
+            if reduce_only and open_qty > 0:
+                logger.error("Reduce-only fill %s exceeded position by %s; excess ignored", instrument_id, open_qty)
+                open_qty = Decimal("0")
+
+        if open_qty > 0:
+            # Open/add leg: weighted average entry, lock initial margin at this fill
+            im = open_qty * fill_price / Decimal(leverage)
+            if pos is None:
+                self.perp_positions[instrument_id] = PerpPositionState(
+                    fill_sign * open_qty, fill_price, leverage, margin_mode, im
+                )
+            else:
+                held = abs(pos.signed_qty)
+                pos.entry_price = (held * pos.entry_price + open_qty * fill_price) / (held + open_qty)
+                pos.signed_qty += fill_sign * open_qty
+                pos.initial_margin += im
+                pos.leverage, pos.margin_mode = leverage, margin_mode
+            self.locked_margin += im
+
+        self.cash_balance += realized - commission
+        self.daily_realized_pnl += realized - commission
 
     def check_daily_drawdown(self, current_equity: Decimal, macro_atr_pct: Decimal | None = None) -> bool:
         """Trip the daily loss latch if current equity has breached allowable daily drawdown."""

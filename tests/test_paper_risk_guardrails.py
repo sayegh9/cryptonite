@@ -225,8 +225,10 @@ def perp_intent(side: str, qty: str, cid: str = "PERP-001", **flags) -> OrderInt
     )
 
 
-def test_perp_orders_rejected_until_perp_trading_enabled():
+def test_perp_kill_flag_rejects_perp_orders():
     dispatcher, _ = make_fresh_dispatcher()
+    assert dispatcher.perp_trading_enabled is True  # on by default since perp fill accounting
+    dispatcher.perp_trading_enabled = False
     approved, reason, _ = dispatcher.evaluate_intent(perp_intent("SELL", "0.01"))
     assert (approved, reason) == (False, "PERP_TRADING_DISABLED")
 
@@ -381,11 +383,3 @@ def test_perp_rejects_insufficient_margin_and_missing_mark():
     dispatcher.mark_prices.clear()
     assert dispatcher.evaluate_intent(perp_intent("BUY", "0.01"))[1] == "NO_MARK_PRICE"
 
-
-def test_perp_fill_is_refused_until_perp_accounting_exists():
-    dispatcher = make_perp_dispatcher()
-    dispatcher.dispatch(perp_intent("SELL", "0.04", "SHORT-1", leverage=10), MagicMock(), MagicMock())
-    with pytest.raises(NotImplementedError):
-        dispatcher.handle_fill("SHORT-1", Decimal("0.04"), Decimal("50000"), Decimal("2"))
-    assert dispatcher.cash_balance == Decimal("10000.0")  # no phantom short proceeds
-    assert "SHORT-1" in dispatcher.open_orders  # reservation kept for a later cancel/fill

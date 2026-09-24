@@ -1,12 +1,12 @@
 # HANDOFF
 
 ## Current State
-- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C4 done (user numbering; C4 = dispatcher perp guards, blueprint C8). Next: funding backfill (blueprint C4) or perp fill accounting (blueprint C9)
+- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C5 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9). Next: perp-aware bridge persistence, then liquidation/funding in the engine (blueprint C10)
 - `main` @ `c63576e`, 14 commits ahead of `origin/main`, NOT pushed. Working tree NOT clean: 28 modified, 212 deleted, 20 untracked (backend packages/services, docs, graphify cache, `exit_monitor.py`, 015's LLM budget change 10→18 USD)
 - Graph: built at `1100fa2`; run `graphify update .` after committing
 - Gates (2026-09-24, Claude Code):
   - Web (committed; `apps/web` has no uncommitted changes): typecheck ✅ · lint ✅ 0 errors / 0 warnings · `pnpm build` ✅ · Playwright ☐ not run
-  - Backend on the **working tree** at C4: pytest ✅ 245 passed / 0 failed, 12 deselected (160 baseline + 9 perp model + 44 margin math + 10 derivatives feed + 22 perp dispatcher tests)
+  - Backend on the **working tree** at C5: pytest ✅ 256 passed / 0 failed, 12 deselected (160 baseline + 9 perp model + 44 margin math + 10 derivatives feed + 21 perp dispatcher + 12 perp fill accounting tests)
   - C3 live smoke test (2026-09-24): BTCUSDT/ETHUSDT mark ticks and open interest cached from the public Binance endpoints
   - Backend on **HEAD** (clean checkout): ☐ not re-run since `c63576e` committed the orchestrator `server.py` change the old hang depended on
   - Migrations: `alembic upgrade head` ✅ 001→020 on a fresh database; 020 downgrade/upgrade round trip ✅; 020 constraints exercised (spot SHORT, spot margin mode, spot leverage, CROSS with isolated margin, non-perp funding rows all rejected)
@@ -34,8 +34,20 @@
   - Reduce-only: `REDUCE_ONLY_NO_POSITION`, `REDUCE_ONLY_INVALID_DIRECTION`, `REDUCE_ONLY_OVERSIZE`. The size cap also subtracts resting reduce-only orders. Reduce-only orders skip the conviction multiplier, the 1% floor, the concentration check, and margin reservation.
   - Entry orders: 1% of equity minimum notional (`ORDER_BELOW_MIN_NOTIONAL`), 25% cap on |position + order| × mark, and initial margin + taker fee reserved on the exposure the order opens.
   - Equity = cash + spot longs at bid + perp uPnL at mark.
-  - **Safety interlock:** perp orders return `PERP_TRADING_DISABLED` unless `perp_trading_enabled=True`, and `handle_fill` raises `NotImplementedError` on perp fills. Spot accounting would book short proceeds as cash with no position. Keep both until perp fill accounting (blueprint C9) and the direction-aware kill-switch/flatten/pause fixes (blueprint C7) land.
-  - `perp_positions` and `mark_prices` are populated by `set_perp_position` / `update_mark_price`; nothing calls them in production yet.
+  - C5 replaced the C4 interlock. `perp_trading_enabled` now defaults to True and acts as a kill flag (`PERP_TRADING_DISABLED` when False).
+- Perpetuals C5: signed-quantity perp fill accounting in `GuardedOrderDispatcher._handle_perp_fill`.
+  - Open/add uses a weighted average entry; reduce/close realizes PnL.
+  - A flip is a close leg followed by an open leg at the fill price. A reduce-only overfill never opens the opposite side.
+  - Cash moves only by realized PnL and fees. Initial margin moves from the order reservation into `locked_margin` and is released pro rata. `available_cash` = cash − reserved − locked margin.
+  - Direction-aware controls:
+    - `RESET_SWITCH` counts perp positions of either sign (`open_position_count`).
+    - `CLOSE_POSITION` (engine + orchestrator) closes perps with an opposing reduce-only order (`flatten_perp_position`).
+    - `PAUSE` cancels perp entries on both sides and keeps reduce-only exits (`is_entry_order`).
+    - `dispatch()` now records `instance_id`, so targeted PAUSE/STOP actually match orders; before this they cancelled nothing.
+- **Perp gaps before production use (in priority order):**
+  1. `EventBridgeWorker` persistence is spot-only. A perp SELL with no position writes no `paper_positions` row, and a BUY that covers a short creates a LONG row. Make it perp-aware (and write `margin_mode`, then tighten the 020 constraint) before the orchestrator can approve perp orders.
+  2. No liquidation or funding settlement in the engine yet (blueprint C10). A losing perp position is never force-closed.
+  3. The orchestrator never calls `update_mark_price`, so orchestrator perp orders are rejected `NO_MARK_PRICE`. It also doesn't pass `leverage`/`margin_mode`/`reduce_only` from the command payload into `OrderIntent`. Wiring marks makes gap 1 live.
 - Uncommitted backend work (packages/agents, `demo_pipeline.py`, scanner, storage, api auth/routes, debate_worker, 015 budget change) has no recorded owner
 - `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), and the `debate_worker` exit-queue consumer — owner: unassigned
 - graphify housekeeping: 212 deleted old-version cache files, untracked new cache, dated backup folders, and an uncommitted `.gitignore` rule are left for a decision
