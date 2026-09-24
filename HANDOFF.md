@@ -1,5 +1,35 @@
 # HANDOFF
 
+## Paper Trading Readiness — SIGNED OFF (2026-09-24, with the limits below)
+
+**Status of the pre-flight streams**
+1. Daily drawdown breaker + UTC rollover — done (`0b536a3`). The orchestrator risk monitor (1 s) trips + persists the PAPER kill switch on a ≥5% drawdown from the day's high-water mark, writes `paper_risk_events`, and alerts on `channel:system_alerts`. The base is re-set at 00:00 UTC.
+2. Trade-sidebar kill switch → PAPER — done (`350b249`, `0b536a3`). `/control` trip for PAPER latches the engine via DB sync (≤1 s); `/control` reset (step-up auth) is claimed by the paper orchestrator (expiry + generation checks, refused while exposure is open). Reduce-only perp orders pass the latches; entries do not.
+3. Quote coalescing — done (`3738305`, spot follow-up committed right after). Perp and spot quotes are capped at 50 Hz/symbol. Measured live: ~8–10 quotes/s per instrument, newest < 100 ms old, 0 WS reconnects. Unthrottled spot (~160/s) had starved ingest (perp ~2/s, reconnects every ~20 s).
+4. Single-owner perps — done (`0b536a3`). Another strategy instance cannot trade a perp position it does not own (`PERP_POSITION_OWNED_BY_OTHER_INSTANCE`).
+5. Certification round trip — PASSED on the live stack (postgres, redis, ingest, derivatives_feed, orchestrator, api), BTCUSDT-PERP, 10x ISOLATED:
+   - 0.01 BTC rejected by the approved 1% floor (844 < 1,000 USDT); 0.02 BTC short filled → row SHORT / 0.02 / 10 / ISOLATED, liq 92,479.10 > entry 84,408.20.
+   - Trade-sidebar trip (the exact SQL `/control` runs) → engine latched → entries `KILL_SWITCH_ENGAGED`; reset refused with the position open (`RESET_REJECTED: open orders=0, open positions=1`).
+   - A reduce-only BUY under the latch closed it (row FLAT / 0 / closed_at / realized −1.69); `/control` reset then succeeded and the PAPER row unlatched.
+   - Reopened the short, restarted the orchestrator → `Rehydrated 1 open perp positions`. An oversize reduce-only was rejected; a reduce-only BUY 0.02 filled at the live ask (0.0000% drift) → FLAT.
+   - Ledger reconciled to the cent: cash 100,000 + gross 0.264 − fees 6.752392 = 99,993.511608 = DB cash = realized; equity = cash.
+   - Live gateway check: `/ws/stream` subscribe `perpetuals` → snapshot + live `perp_mark_tick`.
+   - Afterwards `PAPER-ACCOUNT-001` was reset to 100,000 via `packages/database/seeds/seed_paper_trading.sql`; certification rows are kept as history.
+
+**Operating limits for the paper test (known, accepted)**
+- Perps: BTCUSDT / ETHUSDT only (reference margin tiers, not live Binance brackets). Leverage 1–20; notional ≥ 1% and ≤ 25% of equity per position.
+- Perps are manual-only per symbol: one owning instance per position (don't let the AI debate worker trade the same perp).
+- Fees: taker 0.1% for perps too (Binance USD-M ≈ 0.05%, so perp PnL is understated). Liquidation clearance 0.5% (> BTC tier-1 MMR 0.4%), so isolated liquidations lose the full margin.
+- Fills: MARKET and LIMIT fill immediately at the current bid/ask (limit price not honoured). Hardcoded 60,000 fallbacks apply if a quote is missing (quotes are live now).
+- Funding settles only while the feed/orchestrator are up; missed settlements aren't backfilled. Cumulative funding isn't a separate DB column.
+- The daily high-water mark resets on orchestrator restart (the kill-switch latch persists).
+- The orchestrator bind-mounts the working tree, so it also runs other authors' uncommitted `packages/execution` edits (`demo_pipeline.py`).
+- Don't run pytest while the stack runs: outbox relay tests share the DB/Redis and fail (5 failures live; 331/331 with services stopped).
+- Ingest after a long outage replays gap recovery in 1-minute REST steps, and closed-bar commits run inline in the WS reader. Expect ~1–2 min of degraded quotes after a restart with a data gap.
+
+**How to run it**: `docker compose -f infra/docker-compose.yml up -d postgres redis ingest derivatives_feed orchestrator api`, then `cd apps/web && pnpm dev` (or `pnpm build && pnpm start`), log in as an operator (users restored from the pre-rebuild backup), open **Trade** in the terminal Panels bar.
+- Dev DB rebuilt from migrations at `020` (reference data restored: operator_users, instruments, strategies, strategy_versions). The pre-rebuild backup `cryptonite_pre_rebuild_20260924_182038.dump` (898 MB) is in the session scratchpad under `/private/tmp` — move it somewhere permanent if you want to keep it.
+
 ## Current State
 - Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring, C9 = `derivatives_feed` compose service, C10 = funding settlement, C11 = WebSocket perp relay, C12 = web store/HUD/ticket). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. C12.5 fixed web-order routing to the paper orchestrator; C13 added the Playwright spec. Next: decide the `/paper/*` default-environment question (Active Work), bring the dev DB to head, and fix the stale Research Lab e2e spec
 - `main` @ `c63576e`, 14 commits ahead of `origin/main`, NOT pushed. Working tree NOT clean: 28 modified, 212 deleted, 20 untracked (backend packages/services, docs, graphify cache, `exit_monitor.py`, 015's LLM budget change 10→18 USD)
