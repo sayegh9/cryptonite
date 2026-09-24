@@ -13,6 +13,7 @@ import redis.asyncio as aioredis
 
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.risk import OrderIntent
+from pydantic import ValidationError
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
 from nautilus_trader.model import Bar, BarType
@@ -227,6 +228,67 @@ async def consume_market_data(redis, engine, quote_cache):
     await asyncio.gather(_consume_quotes(), _consume_health())
 
 
+PERP_MARK_CHANNEL = "channel:perp_mark_ticks"  # published by cryptonite_scanner_service.derivatives_feed
+PERP_MARK_KEY_PATTERN = "perp:mark:*"
+
+
+def apply_perp_mark_tick(engine, raw) -> tuple[str, Decimal] | None:
+    """Feed one perp.mark tick (JSON from the derivatives feed) into the dispatcher."""
+    data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    if data.get("type") != "perp.mark":
+        return None
+    instrument_id, mark = data["instrument_id"], Decimal(str(data["mark_price"]))
+    engine.dispatcher.update_mark_price(instrument_id, mark, int(data["ts_event_ns"]))
+    return instrument_id, mark
+
+
+async def consume_perp_marks(
+    redis,
+    engine,
+    channel: str = PERP_MARK_CHANNEL,
+    key_pattern: str = PERP_MARK_KEY_PATTERN,
+    liquidation_interval_s: float = 1.0,
+):
+    """Keep dispatcher mark prices current and run liquidation checks on fresh marks.
+
+    Seeds from the cached ``perp:mark:*`` keys, then follows the pub/sub channel. Every
+    ``liquidation_interval_s`` it calls ``engine.process_liquidations`` with the marks that are
+    still fresh, so a stalled feed never liquidates on stale prices.
+    """
+    while True:
+        pubsub = redis.pubsub()
+        try:
+            await pubsub.subscribe(channel)
+            async for key in redis.scan_iter(match=key_pattern):
+                cached = await redis.get(key)
+                if cached:
+                    apply_perp_mark_tick(engine, cached)
+            last_check = 0.0
+            while True:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=liquidation_interval_s)
+                if msg and msg.get("type") == "message":
+                    apply_perp_mark_tick(engine, msg["data"])
+                now = time.monotonic()
+                if now - last_check >= liquidation_interval_s:
+                    last_check = now
+                    fresh = engine.dispatcher.fresh_mark_prices()
+                    if fresh and engine.dispatcher.perp_positions:
+                        for liq in await engine.process_liquidations(fresh):
+                            logger.critical(
+                                "Synthetic liquidation %s: %s %s %s @ %s (mark %s)",
+                                liq.client_order_id, liq.instrument_id, liq.side, liq.quantity,
+                                liq.fill_price, liq.mark_price,
+                            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Perp mark consumer error, resubscribing: %s", e)
+            await asyncio.sleep(1.0)
+        finally:
+            with contextlib.suppress(Exception):
+                await pubsub.aclose()
+
+
 async def command_poller(pool, engine, quote_cache=None):
     """Poll execution_commands for PAPER environment commands."""
     if quote_cache is None:
@@ -389,15 +451,27 @@ async def command_poller(pool, engine, quote_cache=None):
                             client_oid = payload.get("client_order_id", f"{'MANUAL' if cmd_type == 'MANUAL_ORDER' else 'AI'}-{uuid.uuid4().hex[:8].upper()}")
                             instance_id = target or ("MANUAL_TRADE" if cmd_type == "MANUAL_ORDER" else "AI_DEBATE_WORKER")
                             
-                            intent = OrderIntent(
-                                client_order_id=client_oid,
-                                instance_id=instance_id,
-                                instrument_id=canonical_inst,
-                                side=side,
-                                order_type=order_type,
-                                quantity=qty_dec,
-                                price=price_dec,
-                            )
+                            try:
+                                intent = OrderIntent(
+                                    client_order_id=client_oid,
+                                    instance_id=instance_id,
+                                    instrument_id=canonical_inst,
+                                    side=side,
+                                    order_type=order_type,
+                                    quantity=qty_dec,
+                                    price=price_dec,
+                                    # Perp attributes; the dispatcher defaults leverage to 1 and CROSS,
+                                    # and rejects them on spot instruments
+                                    leverage=payload.get("leverage"),
+                                    margin_mode=payload.get("margin_mode"),
+                                    reduce_only=payload.get("reduce_only") or False,
+                                )
+                            except ValidationError as e:
+                                await conn.execute(
+                                    "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                    row["command_id"], f"INVALID_ORDER_PARAMETERS: {e.errors()[0]['loc']} {e.errors()[0]['msg']}",
+                                )
+                                continue
                             
                             # Dispatch intent to dispatcher (evaluates risk + atomically reserves)
                             approved = False
@@ -497,6 +571,43 @@ async def command_poller(pool, engine, quote_cache=None):
         await asyncio.sleep(0.1)
 
 
+async def rehydrate_dispatcher_state(pool, engine):
+    """Load cash, spot positions, and perp positions from Postgres into the dispatcher."""
+    try:
+        acc_row = await pool.fetchrow("SELECT cash_balance FROM paper_accounts WHERE account_id = $1", engine.account_id)
+        if acc_row:
+            engine.dispatcher.cash_balance = Decimal(str(acc_row["cash_balance"]))
+            logger.info("Rehydrated cash balance: %s", engine.dispatcher.cash_balance)
+    
+        pos_rows = await pool.fetch(
+            "SELECT instrument_id, quantity FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' "
+            "AND instrument_id NOT LIKE '%-PERP.%'",
+            engine.account_id,
+        )
+        for pr in pos_rows:
+            engine.dispatcher.positions[pr["instrument_id"]] = Decimal(str(pr["quantity"]))
+        logger.info("Rehydrated %d open positions from database", len(pos_rows))
+    except Exception as e:
+        logger.warning("Error rehydrating state: %s", e)
+
+    # Perp positions (needs migration 020 columns): signed quantity, locked margin, owning instance
+    try:
+        perp_rows = await pool.fetch(
+            "SELECT instrument_id, instance_id, side, quantity, entry_price, leverage, margin_mode "
+            "FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND instrument_id LIKE '%-PERP.%'",
+            engine.account_id,
+        )
+        for pr in perp_rows:
+            qty = Decimal(str(pr["quantity"]))
+            engine.dispatcher.set_perp_position(
+                pr["instrument_id"], -qty if pr["side"] == "SHORT" else qty, Decimal(str(pr["entry_price"])),
+                leverage=pr["leverage"], margin_mode=pr["margin_mode"] or "CROSS", instance_id=pr["instance_id"],
+            )
+        logger.info("Rehydrated %d open perp positions from database", len(perp_rows))
+    except Exception as e:
+        logger.warning("Error rehydrating perp positions: %s", e)
+
+
 async def main():
     pool = await asyncpg.create_pool(DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"))
     redis = await aioredis.from_url(REDIS_URL)
@@ -533,19 +644,7 @@ async def main():
     except Exception as e:
         logger.warning("Error running startup sweep: %s", e)
 
-    # State rehydration: load cash and positions from Postgres
-    try:
-        acc_row = await pool.fetchrow("SELECT cash_balance FROM paper_accounts WHERE account_id = $1", engine.account_id)
-        if acc_row:
-            engine.dispatcher.cash_balance = Decimal(str(acc_row["cash_balance"]))
-            logger.info("Rehydrated cash balance: %s", engine.dispatcher.cash_balance)
-        
-        pos_rows = await pool.fetch("SELECT instrument_id, quantity FROM paper_positions WHERE account_id = $1 AND status = 'OPEN'", engine.account_id)
-        for pr in pos_rows:
-            engine.dispatcher.positions[pr["instrument_id"]] = Decimal(str(pr["quantity"]))
-        logger.info("Rehydrated %d open positions from database", len(pos_rows))
-    except Exception as e:
-        logger.warning("Error rehydrating state: %s", e)
+    await rehydrate_dispatcher_state(pool, engine)
 
     # Track active strategies
     active_instances = {}
@@ -682,6 +781,7 @@ async def main():
     asyncio.create_task(sync_strategies())
     asyncio.create_task(command_poller(pool, engine, quote_cache))
     asyncio.create_task(consume_market_data(redis, engine, quote_cache))
+    asyncio.create_task(consume_perp_marks(redis, engine))
     asyncio.create_task(publish_positions())
 
     # Stream consumer for nautilus:stream:bus

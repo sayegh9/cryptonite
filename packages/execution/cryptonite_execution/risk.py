@@ -1,6 +1,7 @@
 """Synchronous, node-thread-owned GuardedOrderDispatcher with zero async locks and zero DB I/O."""
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
@@ -82,6 +83,8 @@ class GuardedOrderDispatcher:
         max_perp_leverage: int = 20,
         perp_trading_enabled: bool = True,
         liquidation_clearance_pct: Decimal = Decimal("0.005"),
+        max_mark_age_s: float = 10.0,
+        clock_ns: Callable[[], int] = time.time_ns,
     ) -> None:
         self.leverage_brackets: dict[str, list[dict]] = {}
         self.account_id = account_id
@@ -113,6 +116,9 @@ class GuardedOrderDispatcher:
         self.insurance_fund_deficit: Decimal = Decimal("0")  # cumulative cost of liquidation shortfalls
         self.perp_positions: dict[str, PerpPositionState] = {}
         self.mark_prices: dict[str, Decimal] = {}
+        self.mark_ts_ns: dict[str, int] = {}  # exchange event time of each mark
+        self.max_mark_age_ns = int(max_mark_age_s * 1_000_000_000)
+        self._clock_ns = clock_ns
 
     def set_node_cache(self, cache: Any) -> None:
         self.node_cache = cache
@@ -141,8 +147,18 @@ class GuardedOrderDispatcher:
         res = self.reserved_positions.get(instrument_id, Decimal("0"))
         return max(Decimal("0"), pos - res)
 
-    def update_mark_price(self, instrument_id: str, mark_price: Decimal) -> None:
+    def update_mark_price(self, instrument_id: str, mark_price: Decimal, ts_event_ns: int | None = None) -> None:
+        """Record a mark price and its exchange event time (defaults to now)."""
         self.mark_prices[instrument_id] = mark_price
+        self.mark_ts_ns[instrument_id] = ts_event_ns if ts_event_ns is not None else self._clock_ns()
+
+    def is_mark_stale(self, instrument_id: str) -> bool:
+        """True when the mark is missing, has no timestamp, or is older than ``max_mark_age_s``."""
+        ts = self.mark_ts_ns.get(instrument_id)
+        return ts is None or self._clock_ns() - ts > self.max_mark_age_ns
+
+    def fresh_mark_prices(self) -> dict[str, Decimal]:
+        return {inst: px for inst, px in self.mark_prices.items() if not self.is_mark_stale(inst)}
 
     def set_perp_position(
         self,
@@ -406,6 +422,9 @@ class GuardedOrderDispatcher:
         mark = self.mark_prices.get(intent.instrument_id)
         if mark is None or mark <= 0:
             return False, "NO_MARK_PRICE", Decimal("0")
+        if not intent.reduce_only and self.is_mark_stale(intent.instrument_id):
+            age_s = (self._clock_ns() - self.mark_ts_ns.get(intent.instrument_id, 0)) / 1e9
+            return False, f"STALE_MARK_PRICE: mark is {age_s:.1f}s old (max {self.max_mark_age_ns / 1e9:.0f}s)", Decimal("0")
 
         price_estimate = mark
         if intent.order_type.upper() == "LIMIT" and intent.price is not None:
