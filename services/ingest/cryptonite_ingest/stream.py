@@ -16,7 +16,11 @@ from websockets.exceptions import ConnectionClosed
 logger = logging.getLogger("cryptonite.stream")
 
 BINANCE_WS_STREAM_URL = "wss://stream.binance.com:9443/stream"
-BINANCE_FUTURES_WS_STREAM_URL = "wss://fstream.binance.com/stream"
+# USD-M futures WebSockets are split by category: klines are only delivered on
+# /market and bookTicker only on /public; a mixed subscription on either path
+# silently drops the other stream type (verified 2026-09-24).
+BINANCE_FUTURES_WS_STREAM_URL = "wss://fstream.binance.com/market/stream"
+BINANCE_FUTURES_WS_QUOTE_STREAM_URL = "wss://fstream.binance.com/public/stream"
 
 
 class BinanceStreamClient:
@@ -30,6 +34,7 @@ class BinanceStreamClient:
         base_ws_url: str = BINANCE_WS_STREAM_URL,
         redis: aioredis.Redis | None = None,
         enable_quotes: bool = True,
+        quote_ws_url: str | None = None,
     ) -> None:
         self.symbols = [s.upper() for s in symbols]
         self.timeframes = [t.lower() for t in timeframes]
@@ -37,9 +42,11 @@ class BinanceStreamClient:
         self.base_ws_url = base_ws_url
         self.redis = redis
         self.enable_quotes = enable_quotes
+        # When set, bookTicker streams get their own connection (futures categories).
+        self.quote_ws_url = quote_ws_url
 
         self._running = False
-        self._ws: Any = None
+        self._sockets: set[Any] = set()
         self.ingest_session_id = uuid.uuid4()
         # In-memory buffer for open-candle updates: symbol -> RawBinanceKline
         self.open_kline_buffer: dict[str, RawBinanceKline] = {}
@@ -58,8 +65,8 @@ class BinanceStreamClient:
         if sym not in self.symbols:
             self.symbols.append(sym)
             logger.info("Dynamically added %s to live stream. Triggering reconnect...", sym)
-            if self._ws:
-                asyncio.create_task(self._ws.close())
+            for ws in list(self._sockets):
+                asyncio.create_task(ws.close())
 
     @property
     def stream_names(self) -> list[str]:
@@ -76,23 +83,41 @@ class BinanceStreamClient:
         streams_query = "/".join(self.stream_names)
         return f"{self.base_ws_url}?streams={streams_query}"
 
+    @property
+    def stream_urls(self) -> list[str]:
+        """One URL per connection: combined for spot, kline/quote split when quote_ws_url is set."""
+        if self.quote_ws_url is None:
+            return [self.stream_url]
+        kline_names = [n for n in self.stream_names if not n.endswith("@bookTicker")]
+        quote_names = [n for n in self.stream_names if n.endswith("@bookTicker")]
+        urls = [f"{self.base_ws_url}?streams={'/'.join(kline_names)}"]
+        if quote_names:
+            urls.append(f"{self.quote_ws_url}?streams={'/'.join(quote_names)}")
+        return urls
+
     async def start(self) -> None:
-        """Start the WebSocket listener loop with automatic reconnection."""
+        """Start one WebSocket listener per stream URL, each with automatic reconnection."""
         self._running = True
+        await asyncio.gather(*(self._listen(i) for i in range(len(self.stream_urls))))
+
+    async def _listen(self, url_index: int) -> None:
         backoff = 1.0
         while self._running:
             try:
-                url = self.stream_url
+                url = self.stream_urls[url_index]
                 logger.info("Connecting to Binance WebSocket streams: %s", url)
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
-                    self._ws = ws
-                    backoff = 1.0  # Reset backoff on successful connect
-                    logger.info("Connected to Binance WebSocket stream")
-                    while self._running:
-                        msg = await ws.recv()
-                        arrival_ns = time.time_ns()
-                        self.last_received_ts = arrival_ns
-                        await self._handle_message(msg, arrival_ns)
+                    self._sockets.add(ws)
+                    try:
+                        backoff = 1.0  # Reset backoff on successful connect
+                        logger.info("Connected to Binance WebSocket stream")
+                        while self._running:
+                            msg = await ws.recv()
+                            arrival_ns = time.time_ns()
+                            self.last_received_ts = arrival_ns
+                            await self._handle_message(msg, arrival_ns)
+                    finally:
+                        self._sockets.discard(ws)
             except (TimeoutError, ConnectionClosed, OSError) as e:
                 if not self._running:
                     break
@@ -262,7 +287,7 @@ class BinanceStreamClient:
     async def stop(self) -> None:
         """Stop the WebSocket client."""
         self._running = False
-        if self._ws:
-            await self._ws.close()
-            self._ws = None
+        for ws in list(self._sockets):
+            await ws.close()
+        self._sockets.clear()
         logger.info("Stopped Binance WebSocket client")

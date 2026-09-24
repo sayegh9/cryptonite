@@ -3,7 +3,12 @@
 import json
 
 import pytest
-from cryptonite_ingest.stream import BinanceStreamClient
+from cryptonite_ingest.stream import (
+    BINANCE_FUTURES_WS_QUOTE_STREAM_URL,
+    BINANCE_FUTURES_WS_STREAM_URL,
+    BINANCE_WS_STREAM_URL,
+    BinanceStreamClient,
+)
 
 
 @pytest.mark.asyncio
@@ -98,3 +103,37 @@ async def test_stream_parser_open_vs_closed():
     assert tf == "1m"
     assert k_rec.close == "54050.00"
     assert k_rec.is_closed
+
+
+def test_spot_stream_urls_use_single_combined_connection():
+    client = BinanceStreamClient(symbols=["BTCUSDT"], timeframes=["1m"])
+    assert client.stream_urls == [
+        f"{BINANCE_WS_STREAM_URL}?streams=btcusdt@kline_1m/btcusdt@bookTicker"
+    ]
+
+
+def test_futures_stream_urls_split_klines_and_quotes_by_category():
+    client = BinanceStreamClient(
+        symbols=["BTCUSDT", "ethusdt"],
+        timeframes=["1m", "5M"],
+        base_ws_url=BINANCE_FUTURES_WS_STREAM_URL,
+        quote_ws_url=BINANCE_FUTURES_WS_QUOTE_STREAM_URL,
+    )
+    assert client.stream_urls == [
+        "wss://fstream.binance.com/market/stream"
+        "?streams=btcusdt@kline_1m/btcusdt@kline_5m/ethusdt@kline_1m/ethusdt@kline_5m",
+        "wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker",
+    ]
+
+
+def test_futures_stream_urls_without_quotes_open_only_market_connection():
+    client = BinanceStreamClient(
+        symbols=["BTCUSDT"],
+        timeframes=["1m"],
+        base_ws_url=BINANCE_FUTURES_WS_STREAM_URL,
+        quote_ws_url=BINANCE_FUTURES_WS_QUOTE_STREAM_URL,
+        enable_quotes=False,
+    )
+    assert client.stream_urls == [
+        "wss://fstream.binance.com/market/stream?streams=btcusdt@kline_1m"
+    ]
