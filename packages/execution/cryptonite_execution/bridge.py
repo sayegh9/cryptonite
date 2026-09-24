@@ -264,7 +264,20 @@ class EventBridgeWorker:
                         instance_id = str(evt["instance_id"])
                         instrument_id = str(evt["instrument_id"])
 
-                        # 3a. Record trade
+                        # 3a. Record trade (liquidations have no prior paper_orders row; create it for the FK)
+                        if evt.get("liquidation"):
+                            await conn.execute(
+                                """
+                                INSERT INTO paper_orders (
+                                    client_order_id, instance_id, account_id, instrument_id, side, order_type,
+                                    quantity, price, filled_qty, avg_fill_price, status, last_event_version,
+                                    created_at, updated_at
+                                ) VALUES ($1, $2, $3, $4, $5, 'MARKET', $6, NULL, $6, $7, 'FILLED', $8, now(), now())
+                                ON CONFLICT (client_order_id) DO NOTHING;
+                                """,
+                                client_order_id, instance_id, account_id, instrument_id, side,
+                                trade_qty, trade_px, event_version,
+                            )
                         await conn.execute(
                             """
                             INSERT INTO paper_trades (
@@ -441,8 +454,10 @@ class EventBridgeWorker:
         perp cash moves only by realized PnL and fees, never notional.
         """
         gross = evt.get("realized_pnl")
-        closed_realized = Decimal(str(gross)) - commission if gross is not None else Decimal("0")
-        cash_delta = (Decimal(str(gross)) if gross is not None else Decimal("0")) - commission
+        # Liquidation shortfall credit: the loss stops at the margin/zero equity (insurance fund pays the rest)
+        shortfall = Decimal(str(evt.get("shortfall_covered", "0")))
+        closed_realized = (Decimal(str(gross)) - commission + shortfall) if gross is not None else Decimal("0")
+        cash_delta = (Decimal(str(gross)) if gross is not None else Decimal("0")) - commission + shortfall
 
         snap = evt.get("position")
         if snap is None:

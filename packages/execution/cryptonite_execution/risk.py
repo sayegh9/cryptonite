@@ -1,6 +1,7 @@
 """Synchronous, node-thread-owned GuardedOrderDispatcher with zero async locks and zero DB I/O."""
 
 import logging
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Callable
@@ -15,7 +16,7 @@ from nautilus_trader.model import (
 )
 from pydantic import BaseModel, Field
 
-from cryptonite_execution.derivatives import MarginMode, OrderSide
+from cryptonite_execution.derivatives import LiquidationEvent, MarginMode, OrderSide, PositionSide
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
 from cryptonite_execution.margin import calculate_liquidation_price, calculate_maintenance_margin
@@ -47,6 +48,7 @@ class PerpPositionState:
     leverage: int = 1
     margin_mode: str = MarginMode.CROSS
     initial_margin: Decimal = Decimal("0")  # locked from available cash while the position is open
+    instance_id: str = "MANUAL_TRADE"  # strategy instance that opened it (paper_positions key)
 
 
 class GuardedOrderDispatcher:
@@ -79,6 +81,7 @@ class GuardedOrderDispatcher:
         min_order_equity_pct: Decimal = Decimal("0.01"),
         max_perp_leverage: int = 20,
         perp_trading_enabled: bool = True,
+        liquidation_clearance_pct: Decimal = Decimal("0.005"),
     ) -> None:
         self.leverage_brackets: dict[str, list[dict]] = {}
         self.account_id = account_id
@@ -106,6 +109,8 @@ class GuardedOrderDispatcher:
         self.max_perp_leverage = max_perp_leverage
         self.perp_trading_enabled = perp_trading_enabled
         self.locked_margin: Decimal = Decimal("0")  # Σ initial margin of open perp positions
+        self.liquidation_clearance_pct = liquidation_clearance_pct
+        self.insurance_fund_deficit: Decimal = Decimal("0")  # cumulative cost of liquidation shortfalls
         self.perp_positions: dict[str, PerpPositionState] = {}
         self.mark_prices: dict[str, Decimal] = {}
 
@@ -146,6 +151,7 @@ class GuardedOrderDispatcher:
         entry_price: Decimal,
         leverage: int = 1,
         margin_mode: str = MarginMode.CROSS,
+        instance_id: str = "MANUAL_TRADE",
     ) -> None:
         """Seed or overwrite a perp position (reconciliation/tests); locks its initial margin."""
         old = self.perp_positions.pop(instrument_id, None)
@@ -153,7 +159,9 @@ class GuardedOrderDispatcher:
             self.locked_margin -= old.initial_margin
         if signed_qty != 0:
             im = abs(signed_qty) * entry_price / Decimal(leverage)
-            self.perp_positions[instrument_id] = PerpPositionState(signed_qty, entry_price, leverage, margin_mode, im)
+            self.perp_positions[instrument_id] = PerpPositionState(
+                signed_qty, entry_price, leverage, margin_mode, im, instance_id
+            )
             self.locked_margin += im
 
     def flatten_perp_position(
@@ -199,6 +207,23 @@ class GuardedOrderDispatcher:
         pos = self.perp_positions.get(instrument_id)
         if pos is None:
             return {"signed_qty": "0"}
+        maintenance, liquidation = self._perp_risk_levels(instrument_id, reference_price)
+        isolated = pos.margin_mode == MarginMode.ISOLATED
+        return {
+            "signed_qty": str(pos.signed_qty),
+            "entry_price": str(pos.entry_price),
+            "leverage": pos.leverage,
+            "margin_mode": str(pos.margin_mode),
+            "isolated_margin": str(pos.initial_margin if isolated else Decimal("0")),
+            "liquidation_price": str(liquidation) if liquidation is not None else None,
+            "maintenance_margin": str(maintenance) if maintenance is not None else None,
+        }
+
+    def _perp_risk_levels(
+        self, instrument_id: str, reference_price: Decimal | None = None
+    ) -> tuple[Decimal | None, Decimal | None]:
+        """(maintenance margin, liquidation price) for an open perp position; (None, None) without brackets."""
+        pos = self.perp_positions[instrument_id]
 
         def price_for(inst: str, p: PerpPositionState) -> Decimal:
             return self.mark_prices.get(inst) or (reference_price if inst == instrument_id else None) or p.entry_price
@@ -228,17 +253,103 @@ class GuardedOrderDispatcher:
                     instrument_id, side, qty, pos.entry_price, wallet, MarginMode.CROSS, others_mm, others_upnl
                 )
         except ValueError:
-            maintenance, liquidation = None, None
+            return None, None
+        return maintenance, liquidation
 
-        return {
-            "signed_qty": str(pos.signed_qty),
-            "entry_price": str(pos.entry_price),
-            "leverage": pos.leverage,
-            "margin_mode": str(pos.margin_mode),
-            "isolated_margin": str(pos.initial_margin if isolated else Decimal("0")),
-            "liquidation_price": str(liquidation) if liquidation is not None else None,
-            "maintenance_margin": str(maintenance) if maintenance is not None else None,
-        }
+    def check_liquidations(self, mark_prices: dict[str, Decimal]) -> list[LiquidationEvent]:
+        """Force-close perp positions whose mark breached the liquidation price.
+
+        Long: mark <= P_liq. Short: mark >= P_liq. Positions are checked largest maintenance
+        margin first, and each check sees the account after earlier liquidations (cross positions
+        share the wallet). A breached position has its resting orders on the symbol cancelled
+        and is closed by an opposing reduce-only order for its full size. Fees: taker fee plus
+        the clearance fee on the fill notional. Losses stop at the isolated margin (ISOLATED) or
+        at zero cash (CROSS); the shortfall is credited back and booked to
+        ``insurance_fund_deficit``. Runs regardless of the kill switch: it only reduces exposure.
+        """
+        self.mark_prices.update(mark_prices)
+        events: list[LiquidationEvent] = []
+
+        def mm_at_mark(inst: str) -> Decimal:
+            return self._perp_risk_levels(inst)[0] or Decimal("0")
+
+        for inst in sorted(self.perp_positions, key=mm_at_mark, reverse=True):
+            pos = self.perp_positions.get(inst)
+            mark = self.mark_prices.get(inst)
+            if pos is None or mark is None:
+                continue
+            _, liq_price = self._perp_risk_levels(inst)
+            if liq_price is None:
+                logger.warning("Cannot evaluate liquidation for %s: no bracket table", inst)
+                continue
+            is_long = pos.signed_qty > 0
+            if not (mark <= liq_price if is_long else mark >= liq_price):
+                continue
+            events.append(self._liquidate(inst, pos, mark, liq_price))
+        return events
+
+    def _liquidate(
+        self, instrument_id: str, pos: PerpPositionState, mark: Decimal, liq_price: Decimal
+    ) -> LiquidationEvent:
+        qty = abs(pos.signed_qty)
+        is_long = pos.signed_qty > 0
+        isolated = pos.margin_mode == MarginMode.ISOLATED
+        snapshot = PerpPositionState(**vars(pos))
+
+        bankruptcy = None
+        fill_price = mark
+        if isolated:
+            bankruptcy = pos.entry_price - pos.initial_margin / qty if is_long else pos.entry_price + pos.initial_margin / qty
+            if (is_long and mark < bankruptcy) or (not is_long and mark > bankruptcy):
+                fill_price = bankruptcy  # gapped through: trader is closed at bankruptcy, the fund eats the gap
+        gap_cost = abs(mark - fill_price) * qty
+
+        for cid in [c for c, o in self.open_orders.items() if o["instrument_id"] == instrument_id]:
+            self.release_reservation(cid)
+
+        notional = qty * fill_price
+        trading_fee = notional * self.taker_fee
+        clearance_fee = notional * self.liquidation_clearance_pct
+        client_order_id = f"LIQ-{uuid.uuid4().hex[:12].upper()}"
+        cash_before = self.cash_balance
+        realized = self.flatten_perp_position(
+            instrument_id, fill_price, trading_fee + clearance_fee, client_order_id
+        )[2]
+
+        shortfall = Decimal("0")
+        if isolated and self.cash_balance - cash_before < -snapshot.initial_margin:
+            shortfall = -snapshot.initial_margin - (self.cash_balance - cash_before)
+        elif not isolated and self.cash_balance < 0:
+            shortfall = -self.cash_balance
+        self.cash_balance += shortfall
+        self.daily_realized_pnl += shortfall
+        self.insurance_fund_deficit += shortfall + gap_cost
+
+        event = LiquidationEvent(
+            client_order_id=client_order_id,
+            account_id=self.account_id,
+            instance_id=snapshot.instance_id,
+            instrument_id=instrument_id,
+            margin_mode=snapshot.margin_mode,
+            side=PositionSide.LONG if is_long else PositionSide.SHORT,
+            quantity=qty,
+            entry_price=snapshot.entry_price,
+            mark_price=mark,
+            liquidation_price=liq_price,
+            bankruptcy_price=bankruptcy,
+            fill_price=fill_price,
+            realized_pnl=realized,
+            trading_fee=trading_fee,
+            clearance_fee=clearance_fee,
+            shortfall_covered=shortfall,
+            insurance_fund_deficit=shortfall + gap_cost,
+        )
+        logger.critical(
+            "LIQUIDATED %s %s %s @ %s (mark %s, liq %s): realized %s, fees %s, fund deficit %s",
+            instrument_id, event.side, qty, fill_price, mark, liq_price, realized,
+            trading_fee + clearance_fee, event.insurance_fund_deficit,
+        )
+        return event
 
     def get_perp_position_qty(self, instrument_id: str) -> Decimal:
         pos = self.perp_positions.get(instrument_id)
@@ -630,7 +741,8 @@ class GuardedOrderDispatcher:
             im = open_qty * fill_price / Decimal(leverage)
             if pos is None:
                 self.perp_positions[instrument_id] = PerpPositionState(
-                    fill_sign * open_qty, fill_price, leverage, margin_mode, im
+                    fill_sign * open_qty, fill_price, leverage, margin_mode, im,
+                    (order_info or {}).get("instance_id") or "MANUAL_TRADE",
                 )
             else:
                 held = abs(pos.signed_qty)

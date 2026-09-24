@@ -92,3 +92,25 @@ class PerpetualPosition(BaseModel):
     def quantity(self) -> Decimal:
         """Absolute quantity, as stored in paper_positions.quantity."""
         return abs(self.signed_qty)
+
+
+class LiquidationEvent(BaseModel):
+    """A forced close of a perpetual position whose mark price breached its liquidation price."""
+
+    client_order_id: str
+    account_id: str
+    instance_id: str
+    instrument_id: str
+    margin_mode: MarginMode
+    side: PositionSide  # side of the liquidated position
+    quantity: Decimal
+    entry_price: Decimal
+    mark_price: Decimal
+    liquidation_price: Decimal
+    bankruptcy_price: Decimal | None  # ISOLATED only
+    fill_price: Decimal  # mark, or the bankruptcy price when mark gapped through it
+    realized_pnl: Decimal  # gross, at fill_price
+    trading_fee: Decimal
+    clearance_fee: Decimal
+    shortfall_covered: Decimal  # cash credited so the loss stops at the margin (isolated) or zero equity (cross)
+    insurance_fund_deficit: Decimal  # shortfall_covered + (mark gap beyond bankruptcy price) * quantity

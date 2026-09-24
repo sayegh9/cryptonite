@@ -10,6 +10,7 @@ from typing import Any
 
 import asyncpg
 from cryptonite_execution.bridge import EventBridge, IntegritySupervisor
+from cryptonite_execution.derivatives import LiquidationEvent
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch
 from cryptonite_execution.mailbox import NodeCommandMailbox
@@ -33,6 +34,8 @@ from nautilus_trader.model import (
 )
 
 logger = logging.getLogger("cryptonite.execution.engine")
+
+LIQUIDATION_CHANNEL = "channel:perp_liquidations"
 
 
 class PaperTradingEngine:
@@ -177,6 +180,44 @@ class PaperTradingEngine:
         self._live_gate_open = True
         logger.info("Live gate OPEN for %s. Trading enabled.", inst_str)
         return True
+
+    async def process_liquidations(self, mark_prices: dict[str, Decimal]) -> list[LiquidationEvent]:
+        """Run the dispatcher's liquidation check, persist each forced close, and notify the UI.
+
+        Each liquidation becomes an ORDER_FILLED event (``liquidation: True``) on the EventBridge,
+        which closes the paper_positions row, and is published on ``channel:perp_liquidations``.
+        """
+        liquidations = self.dispatcher.check_liquidations(mark_prices)
+        for liq in liquidations:
+            close_side = "SELL" if liq.side == "LONG" else "BUY"
+            self.bridge.enqueue_event({
+                "event_type": "ORDER_FILLED",
+                "event_version": 1,
+                "client_order_id": liq.client_order_id,
+                "account_id": liq.account_id,
+                "instance_id": liq.instance_id,
+                "instrument_id": liq.instrument_id,
+                "side": close_side,
+                "price": str(liq.fill_price),
+                "quantity": str(liq.quantity),
+                "commission": str(liq.trading_fee + liq.clearance_fee),
+                "filled_qty": str(liq.quantity),
+                "avg_fill_price": str(liq.fill_price),
+                "status": "FILLED",
+                "occurred_at_ns": time.time_ns(),
+                "liquidation": True,
+                "shortfall_covered": str(liq.shortfall_covered),
+                **self.dispatcher.fill_event_fields(liq.instrument_id, liq.realized_pnl, liq.fill_price),
+            })
+            if self.redis is not None:
+                try:
+                    await self.redis.publish(
+                        LIQUIDATION_CHANNEL,
+                        json.dumps({"type": "perp.liquidation", "v": 1, **liq.model_dump(mode="json")}),
+                    )
+                except Exception as e:  # noqa: BLE001 - notification must not block the close
+                    logger.error("Failed to publish liquidation %s: %s", liq.client_order_id, e)
+        return liquidations
 
     def process_mailbox_commands(self) -> None:
         """Drained synchronously inside node worker thread."""
