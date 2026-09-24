@@ -37,8 +37,8 @@ def upgrade() -> None:
         status,
         quantity,
         price,
-        filled_quantity,
-        average_fill_price,
+        filled_qty AS filled_quantity,
+        avg_fill_price AS average_fill_price,
         created_at,
         updated_at
     FROM trading_orders;
@@ -50,9 +50,9 @@ def upgrade() -> None:
     SELECT 
         instrument_id,
         quantity,
-        average_entry_price,
-        created_at,
-        updated_at
+        entry_price AS average_entry_price,
+        opened_at AS created_at,
+        COALESCE(closed_at, opened_at) AS updated_at
     FROM paper_positions;
     """)
     # Note: paper_positions used as proxy. If trading_positions exists, use that.
@@ -62,7 +62,7 @@ def upgrade() -> None:
     BEGIN
         IF EXISTS (SELECT FROM pg_tables WHERE tablename = 'trading_positions') THEN
             EXECUTE 'CREATE OR REPLACE VIEW agent_safe_live_positions AS 
-            SELECT instrument_id, quantity, average_entry_price, updated_at FROM trading_positions';
+            SELECT instrument_id, quantity, entry_price AS average_entry_price, updated_at FROM trading_positions';
             GRANT SELECT ON agent_safe_live_positions TO cryptonite_agent_ro;
         END IF;
     END $$;
@@ -72,8 +72,8 @@ def upgrade() -> None:
     op.execute("""
     CREATE OR REPLACE VIEW agent_safe_strategies AS
     SELECT
-        id,
-        strategy_slug,
+        instance_id AS id,
+        strategy_name AS strategy_slug,
         instrument_id,
         status,
         created_at
@@ -88,7 +88,6 @@ def upgrade() -> None:
     
     -- Safe metadata tables
     GRANT SELECT ON instruments TO cryptonite_agent_ro;
-    GRANT SELECT ON scan_candidates TO cryptonite_agent_ro; -- assuming exists, wait, let's use signal_candidates
     GRANT SELECT ON signal_candidates TO cryptonite_agent_ro;
     GRANT SELECT ON scan_runs TO cryptonite_agent_ro;
     GRANT SELECT ON strategies TO cryptonite_agent_ro;

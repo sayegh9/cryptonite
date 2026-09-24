@@ -36,8 +36,8 @@ def upgrade() -> None:
 
     # Add daily budget ceiling circuit breaker setting
     op.execute("""
-    INSERT INTO system_settings (key, value, description) 
-    VALUES ('LLM_DAILY_BUDGET_USD', '10.00', 'Maximum daily spend across all agents before circuit breaker trips')
+    INSERT INTO system_settings (key, value)
+    VALUES ('LLM_DAILY_BUDGET_USD', '10.00')  -- max daily spend across all agents before the circuit breaker trips
     ON CONFLICT (key) DO NOTHING;
     """)
 
