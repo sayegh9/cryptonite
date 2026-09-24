@@ -167,7 +167,10 @@ async def get_risk_events(request: Request, limit: int = 50, auth: dict = Depend
 @router.get("/kill-switch")
 async def get_kill_switch(request: Request, auth: dict = Depends(require_operator)) -> dict[str, Any]:
     pool = request.app.state.pool
-    row = await pool.fetchrow("SELECT * FROM execution_kill_switch WHERE id = 1;")
+    # The paper engine's durable latch (written by the orchestrator); id = 1 is the DEMO executor's row
+    row = await pool.fetchrow(
+        "SELECT * FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = 'PAPER-ACCOUNT-001';"
+    )
     if not row:
         return {"id": 1, "is_latched": False}
     return dict(row)
@@ -269,6 +272,8 @@ async def trip_kill_switch(req: TripKillSwitchRequest, request: Request, auth: d
         target_instance_id=None,
         payload={"reason": req.reason, "operator": req.operator},
         requester_id=req.operator,
+        environment="PAPER",  # claimed by the paper orchestrator, which latches the engine
+        account_id="PAPER-ACCOUNT-001",
     )
 
 
@@ -281,6 +286,8 @@ async def reset_kill_switch(req: ResetKillSwitchRequest, request: Request, auth:
         target_instance_id=None,
         payload={"operator": req.operator},
         requester_id=req.operator,
+        environment="PAPER",
+        account_id="PAPER-ACCOUNT-001",
     )
 
 

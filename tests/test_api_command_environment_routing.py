@@ -1,8 +1,7 @@
 """execution_commands environment routing from the /paper API.
 
 The paper orchestrator claims only environment='PAPER'; the DEMO executor claims 'DEMO'. Manual web
-orders must reach the orchestrator, while every other route keeps the column defaults it had
-before (DEMO / DEMO-ACCOUNT-001), which is where the executor handles kill-switch commands.
+orders and the /paper kill switch must reach the orchestrator (PAPER / PAPER-ACCOUNT-001).
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -31,11 +30,18 @@ async def test_manual_order_is_enqueued_for_the_paper_orchestrator():
     assert inserted_env_and_account(pool) == ("PAPER", "PAPER-ACCOUNT-001")
 
 
-async def test_kill_switch_commands_keep_demo_routing():
+async def test_paper_kill_switch_commands_route_to_the_paper_orchestrator():
     request, pool = fake_request()
     await paper.trip_kill_switch(paper.TripKillSwitchRequest(reason="test", operator="op"), request=request, auth={}, csrf={})
-    assert inserted_env_and_account(pool) == ("DEMO", "DEMO-ACCOUNT-001")
+    assert inserted_env_and_account(pool) == ("PAPER", "PAPER-ACCOUNT-001")
 
     request, pool = fake_request()
     await paper.reset_kill_switch(paper.ResetKillSwitchRequest(operator="op"), request=request, auth={}, csrf={})
-    assert inserted_env_and_account(pool) == ("DEMO", "DEMO-ACCOUNT-001")
+    assert inserted_env_and_account(pool) == ("PAPER", "PAPER-ACCOUNT-001")
+
+
+async def test_kill_switch_status_reads_the_paper_row():
+    request, pool = fake_request()
+    pool.fetchrow = AsyncMock(return_value={"environment": "PAPER", "is_latched": True})
+    assert (await paper.get_kill_switch(request=request, auth={}))["is_latched"] is True
+    assert "environment = 'PAPER'" in pool.fetchrow.await_args.args[0]

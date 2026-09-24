@@ -340,7 +340,7 @@ async def command_poller(pool, engine, quote_cache=None):
                             SELECT command_id FROM execution_commands
                             WHERE status = 'PENDING'
                               AND environment = 'PAPER'
-                              AND command_type IN ('DEPLOY', 'STOP', 'PAUSE', 'RESUME', 'CLOSE_POSITION', 'MANUAL_ORDER', 'SUBMIT_ORDER', 'CANCEL_ORDER')
+                              AND command_type IN ('DEPLOY', 'STOP', 'PAUSE', 'RESUME', 'CLOSE_POSITION', 'MANUAL_ORDER', 'SUBMIT_ORDER', 'CANCEL_ORDER', 'TRIP_KILL_SWITCH', 'RESET_SWITCH')
                               AND (lease_expires_at IS NULL OR lease_expires_at < now())
                             ORDER BY created_at ASC LIMIT 1
                             FOR UPDATE SKIP LOCKED
@@ -459,6 +459,31 @@ async def command_poller(pool, engine, quote_cache=None):
                                 await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
                             else:
                                 await conn.execute("UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'Missing client_order_id', processed_at = now() WHERE command_id = $1", row["command_id"])
+                        elif cmd_type == "TRIP_KILL_SWITCH":
+                            # Latch the in-memory switch the dispatcher checks, then persist it (row + audit)
+                            reason = payload.get("reason") or "Manual UI Kill Switch"
+                            actor = payload.get("operator") or row.get("requester_id") or "web-ui"
+                            engine.mailbox.push({"command_type": "TRIP_KILL_SWITCH", "requester_id": actor, "payload": {"reason": reason}})
+                            engine.process_mailbox_commands()
+                            await conn.fetchval("SELECT trip_execution_kill_switch($1, $2, $3, $4)", "PAPER", acc_id, reason, actor)
+                            await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
+                        elif cmd_type == "RESET_SWITCH":
+                            # The engine refuses a reset while any order or position (spot or perp) is open
+                            actor = payload.get("operator") or row.get("requester_id") or "web-ui"
+                            engine.mailbox.push({"command_type": "RESET_SWITCH", "requester_id": actor})
+                            engine.process_mailbox_commands()
+                            if engine.kill_switch.is_latched:
+                                reason = (
+                                    f"RESET_REJECTED: open orders={len(engine.dispatcher.open_orders)}, "
+                                    f"open positions={engine.dispatcher.open_position_count()}"
+                                )
+                                await conn.execute("UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1", row["command_id"], reason)
+                            else:
+                                await conn.execute(
+                                    "UPDATE execution_kill_switch SET is_latched = false, reset_at = now(), reset_by = $3, updated_at = now() WHERE environment = $1 AND account_id = $2",
+                                    "PAPER", acc_id, actor,
+                                )
+                                await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
                         elif cmd_type in ("MANUAL_ORDER", "SUBMIT_ORDER"):
                             inst_raw = payload.get("instrument_id") or payload.get("symbol", "BTCUSDT")
                             canonical_inst = to_canonical_instrument(inst_raw)
@@ -640,6 +665,18 @@ async def rehydrate_dispatcher_state(pool, engine):
         logger.info("Rehydrated %d open perp positions from database", len(perp_rows))
     except Exception as e:
         logger.warning("Error rehydrating perp positions: %s", e)
+
+    # Fail closed across restarts: a latched PAPER kill switch stays latched
+    try:
+        ks = await pool.fetchrow(
+            "SELECT is_latched, latched_by, reason FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = $1",
+            engine.account_id,
+        )
+        if ks and ks["is_latched"]:
+            engine.kill_switch.trip(latched_by=ks["latched_by"] or "database", reason=ks["reason"] or "Latched before restart")
+            logger.critical("Paper kill switch restored LATCHED from database (%s)", ks["reason"])
+    except Exception as e:
+        logger.warning("Error rehydrating kill switch state: %s", e)
 
 
 async def main():
