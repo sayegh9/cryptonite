@@ -127,6 +127,13 @@ async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path):
             run_id = created_data["id"]
             assert created_data["status"] == "PENDING"
 
+            # The claim query is global (oldest PENDING or lease-expired row). The shared test
+            # DB keeps unfinished runs from other tests, so retire them or they get claimed first.
+            await pool.execute(
+                "UPDATE backtest_runs SET status = 'FAILED' "
+                "WHERE id <> $1 AND status IN ('PENDING', 'CLAIMED', 'RUNNING')",
+                run_id,
+            )
 
             # 2. Worker claims and executes the real backtest
             worker = BacktestWorker(
