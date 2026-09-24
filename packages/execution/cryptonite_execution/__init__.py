@@ -22,6 +22,13 @@ from cryptonite_execution.demo_pipeline import (
     MockVenueAdapter,
     VenueAmbiguousError,
 )
+from cryptonite_execution.derivatives import (
+    FundingRateRecord,
+    MarginMode,
+    OrderSide,
+    PerpetualPosition,
+    PositionSide,
+)
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.filters import (
     DynamicExchangeFilterValidator,
@@ -82,4 +89,9 @@ __all__ = [
     "MockVenueAdapter",
     "FencingTokenError",
     "VenueAmbiguousError",
+    "MarginMode",
+    "OrderSide",
+    "PositionSide",
+    "PerpetualPosition",
+    "FundingRateRecord",
 ]

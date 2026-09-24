@@ -1,28 +1,31 @@
 # HANDOFF
 
 ## Current State
-- Branch: `main` @ `1100fa2` + this docs commit; 12 commits ahead of `origin/main`, NOT pushed (see blocker below). Index clean. Working tree NOT clean: 37 modified, 212 deleted, 24 untracked (backend packages/services, migrations 014–019, docs, graphify cache, `exit_monitor.py`)
+- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md` (untracked). Roadmap C0–C1 done, next C2
+- `main` @ `c63576e`, 14 commits ahead of `origin/main`, NOT pushed. Working tree NOT clean: 28 modified, 212 deleted, 21 untracked (backend packages/services, docs, graphify cache, `exit_monitor.py`, 015's LLM budget change 10→18 USD)
 - Graph: built at `1100fa2`; run `graphify update .` after committing
 - Gates (2026-09-24, Claude Code):
   - Web (committed; `apps/web` has no uncommitted changes): typecheck ✅ · lint ✅ 0 errors / 0 warnings · `pnpm build` ✅ · Playwright ☐ not run
-  - Backend on the **working tree**: pytest ✅ 160 passed / 0 failed / 0 errors, 12 deselected (4 full runs today; 1 run had a timing-only DuckDB p95 miss, see below)
-  - Backend on **HEAD** (clean checkout): pytest ⛔ hangs at `test_orchestrator_pipeline.py::test_command_poller_processes_deploy_command` (57%)
-  - dependency/security ✅ · architecture ✅
-- `test_full_stack_backtest_e2e` stress test: 5/5 isolated passes and 3/3 full-suite passes after the fix in `1100fa2`
+  - Backend on the **working tree** at C1: pytest ✅ 169 passed / 0 failed, 12 deselected (160 baseline + 9 perp model tests)
+  - Backend on **HEAD** (clean checkout): ☐ not re-run since `c63576e` committed the orchestrator `server.py` change the old hang depended on
+  - Migrations: `alembic upgrade head` ✅ 001→020 on a fresh database; 020 downgrade/upgrade round trip ✅; 020 constraints exercised (spot SHORT, spot margin mode, spot leverage, CROSS with isolated margin, non-perp funding rows all rejected)
 - Pytest runs via `docker compose -f infra/docker-compose.yml run --rm test uv run pytest tests -q`; the `test` service mounts the working tree, so it tests uncommitted code too
+- Alembic config lives at `infra/migrations/alembic.ini` (not `infra/alembic.ini`)
 
 ## Known pre-existing issues
-- `test_benchmarks.py::test_duckdb_query_p95_latency`: wall-clock threshold; failed 1 of 4 full runs today (66.8 ms vs 50 ms) while the Docker VM was busy
-- `test_100k_bars_peak_rss_benchmark` headroom is thin in the full suite (573–648 MB vs 700 MB) because earlier tests leave ~480–550 MB resident
+- Dev DB `cryptonite` is stamped at `013`, but its 014–016 tables were created by hand (`run_migration.sql`). Its `agent_safe_positions` view (`size`, `weight_pct`) differs from migration 014's, so `alembic upgrade head` against it will fail at 014 (`CREATE OR REPLACE VIEW` cannot drop columns). Recreate it from migrations or reconcile the view before upgrading. The test suite does not need 017–020 applied yet
+- `agent_safe_positions` has three incompatible contracts: the dev DB view, migration 014, and the consumers `exit_monitor.py` (`unrealized_pnl_pct`) and `debate_worker` (`size`)
+- `test_benchmarks.py::test_duckdb_query_p95_latency`: wall-clock threshold; flaky under Docker VM load
+- `test_100k_bars_peak_rss_benchmark` headroom is thin in the full suite (573–648 MB vs 700 MB)
 
 ## Active Work / Blockers
-- BLOCKER (push): HEAD's backend suite hangs in `test_command_poller_processes_deploy_command`. It passes only with the uncommitted `services/orchestrator/cryptonite_orchestrator/server.py` change (+489/−76), which needs its owner to review and commit — owner: unassigned
-- Uncommitted backend work (packages/agents, execution `bridge.py`/`demo_pipeline.py`, scanner, storage, api auth/routes, migrations 014–019, debate_worker) has no recorded owner and is what the working-tree test gate is actually exercising
-- `exit_monitor` is gated behind the `monitoring` compose profile. `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), migrations 017–019, and the `debate_worker` exit-queue consumer — owner: unassigned
-- graphify housekeeping: 212 deleted old-version cache files, an untracked new cache (`cache/ast/v0.9.66-s4`), dated backup folders, and an uncommitted `.gitignore` rule (`graphify-out/*.json`) are left for a decision on whether graph artifacts stay tracked
+- Perpetuals C1: migration `020` (SHORT side for perp rows, leverage/margin columns, `funding_rates`) and `cryptonite_execution.derivatives` models. `chk_paper_position_margin_mode` still allows NULL on perp rows because `EventBridgeWorker` doesn't write `margin_mode`; tighten in C9
+- Uncommitted backend work (packages/agents, `demo_pipeline.py`, scanner, storage, api auth/routes, debate_worker, 015 budget change) has no recorded owner
+- `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), and the `debate_worker` exit-queue consumer — owner: unassigned
+- graphify housekeeping: 212 deleted old-version cache files, untracked new cache, dated backup folders, and an uncommitted `.gitignore` rule are left for a decision
 
 ## Next Steps
-1. Commit the orchestrator `server.py` change (or fix the hang at HEAD) — acceptance: full suite passes on a clean checkout of HEAD; then push
-2. Triage the remaining uncommitted backend changes into owned commits — acceptance: working tree matches what the test gate covers
-3. Run `npx playwright test` — acceptance: all specs pass
-4. Decide graphify artifact tracking (`.gitignore` rule, cache, backups)
+1. Perpetuals C2: pure margin math module with golden vectors — acceptance: blueprint §2.1–2.4 formulas covered by vector tests
+2. Re-run pytest on a clean checkout of `main` — acceptance: no hang; then push
+3. Triage the remaining uncommitted backend changes into owned commits
+4. Run `npx playwright test` — acceptance: all specs pass
