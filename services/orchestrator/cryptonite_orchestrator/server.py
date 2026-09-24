@@ -309,8 +309,11 @@ async def command_poller(pool, engine, quote_cache=None):
                                 client_oid = f"CLOSE-{uuid.uuid4().hex[:8].upper()}"
                                 instance_id = target or "MANUAL_TRADE"
 
+                                realized = None
                                 if perp_qty != 0:
-                                    engine.dispatcher.flatten_perp_position(canonical_inst, fill_px, comm, client_oid)
+                                    _, _, realized = engine.dispatcher.flatten_perp_position(
+                                        canonical_inst, fill_px, comm, client_oid
+                                    )
                                 else:
                                     engine.dispatcher.handle_fill(
                                         client_order_id=client_oid,
@@ -345,6 +348,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                     "avg_fill_price": str(fill_px),
                                     "status": "FILLED",
                                     "occurred_at_ns": time.time_ns(),
+                                    **engine.dispatcher.fill_event_fields(canonical_inst, realized, fill_px),
                                 })
                             await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
                         elif cmd_type == "CANCEL_ORDER":
@@ -430,7 +434,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                 comm = qty_dec * fill_px * Decimal("0.001")
                                 
                                 # Process in dispatcher in-memory ledger
-                                engine.dispatcher.handle_fill(
+                                realized = engine.dispatcher.handle_fill(
                                     client_order_id=client_oid,
                                     fill_qty=qty_dec,
                                     fill_price=fill_px,
@@ -473,6 +477,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                     "avg_fill_price": str(fill_px),
                                     "status": "FILLED",
                                     "occurred_at_ns": time.time_ns(),
+                                    **engine.dispatcher.fill_event_fields(canonical_inst, realized, fill_px),
                                 })
                                 
                                 await conn.execute(
@@ -645,7 +650,7 @@ async def main():
                         curr_px = float(quote.bid_price) if quote else float(r["current_price"])
                         entry_px = float(r["entry_price"])
                         qty = float(r["quantity"])
-                        unrealized = (curr_px - entry_px) * qty
+                        unrealized = (-1 if r["side"] == "SHORT" else 1) * (curr_px - entry_px) * qty
 
                         pos_dict = {
                             "position_id": str(r["position_id"]),

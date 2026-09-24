@@ -1,12 +1,12 @@
 # HANDOFF
 
 ## Current State
-- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C5 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9). Next: perp-aware bridge persistence, then liquidation/funding in the engine (blueprint C10)
+- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C6 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: liquidation/funding in the engine (blueprint C10)
 - `main` @ `c63576e`, 14 commits ahead of `origin/main`, NOT pushed. Working tree NOT clean: 28 modified, 212 deleted, 20 untracked (backend packages/services, docs, graphify cache, `exit_monitor.py`, 015's LLM budget change 10→18 USD)
 - Graph: built at `1100fa2`; run `graphify update .` after committing
 - Gates (2026-09-24, Claude Code):
   - Web (committed; `apps/web` has no uncommitted changes): typecheck ✅ · lint ✅ 0 errors / 0 warnings · `pnpm build` ✅ · Playwright ☐ not run
-  - Backend on the **working tree** at C5: pytest ✅ 256 passed / 0 failed, 12 deselected (160 baseline + 9 perp model + 44 margin math + 10 derivatives feed + 21 perp dispatcher + 12 perp fill accounting tests)
+  - Backend on the **working tree** at C6: pytest ✅ 268 passed / 0 failed, 12 deselected (256 at C5 + 3 from `aae1b96` + 9 bridge persistence tests)
   - C3 live smoke test (2026-09-24): BTCUSDT/ETHUSDT mark ticks and open interest cached from the public Binance endpoints
   - Backend on **HEAD** (clean checkout): ☐ not re-run since `c63576e` committed the orchestrator `server.py` change the old hang depended on
   - Migrations: `alembic upgrade head` ✅ 001→020 on a fresh database; 020 downgrade/upgrade round trip ✅; 020 constraints exercised (spot SHORT, spot margin mode, spot leverage, CROSS with isolated margin, non-perp funding rows all rejected)
@@ -45,9 +45,17 @@
     - `PAUSE` cancels perp entries on both sides and keeps reduce-only exits (`is_entry_order`).
     - `dispatch()` now records `instance_id`, so targeted PAUSE/STOP actually match orders; before this they cancelled nothing.
 - **Perp gaps before production use (in priority order):**
-  1. `EventBridgeWorker` persistence is spot-only. A perp SELL with no position writes no `paper_positions` row, and a BUY that covers a short creates a LONG row. Make it perp-aware (and write `margin_mode`, then tighten the 020 constraint) before the orchestrator can approve perp orders.
+  1. ~~Bridge persistence spot-only~~ — resolved in C6 (below). Still open: tighten `chk_paper_position_margin_mode` to NOT NULL for perps (the bridge now writes it; left for a later migration because C6 had to stay within 020's constraints). `paper_trades` has no realized-PnL column; realized PnL is on the position row only.
   2. No liquidation or funding settlement in the engine yet (blueprint C10). A losing perp position is never force-closed.
   3. The orchestrator never calls `update_mark_price`, so orchestrator perp orders are rejected `NO_MARK_PRICE`. It also doesn't pass `leverage`/`margin_mode`/`reduce_only` from the command payload into `OrderIntent`. Wiring marks makes gap 1 live.
+- Perpetuals C6: `EventBridgeWorker._persist_perp_fill` (`packages/execution/cryptonite_execution/bridge.py`; there is no orchestrator `bridge.py`).
+  - Perp `ORDER_FILLED` events carry the dispatcher's post-fill snapshot (`dispatcher.fill_event_fields` → `realized_pnl`, `position`: signed qty, entry, leverage, margin mode, isolated margin, exact liquidation price, maintenance margin), and the bridge writes that snapshot rather than re-deriving positions in SQL.
+  - Rows are LONG/SHORT with absolute quantity. A close or flip marks the open row FLAT/CLOSED with realized PnL (net of the fill's fee); a flip then opens a new row.
+  - Perp cash moves only by realized PnL and fees. Account equity = cash + spot value + perp uPnL.
+  - The mark-to-market projector and orchestrator position publisher now value shorts with the correct sign.
+  - A perp fill without a snapshot logs an error and leaves `paper_positions` alone (fee still settles).
+  - Spot path is unchanged.
+  - `tests/migrated_db.py` is the shared throwaway-DB-at-head helper (used by the feed and bridge tests).
 - Uncommitted backend work (packages/agents, `demo_pipeline.py`, scanner, storage, api auth/routes, debate_worker, 015 budget change) has no recorded owner
 - `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), and the `debate_worker` exit-queue consumer — owner: unassigned
 - graphify housekeeping: 212 deleted old-version cache files, untracked new cache, dated backup folders, and an uncommitted `.gitignore` rule are left for a decision

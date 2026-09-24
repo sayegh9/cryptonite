@@ -11,6 +11,8 @@ from decimal import Decimal
 from typing import Any
 
 import asyncpg
+from cryptonite_schemas.identifiers import parse_instrument_id
+
 from cryptonite_execution.kill_switch import LatchedKillSwitch
 
 logger = logging.getLogger("cryptonite.execution.bridge")
@@ -281,79 +283,84 @@ class EventBridgeWorker:
                             trade_comm,
                         )
 
-                        # 3b. Position state machine: fetch current open position
-                        pos_row = await conn.fetchrow(
-                            """
-                            SELECT position_id, entry_price, quantity, realized_pnl
-                            FROM paper_positions
-                            WHERE account_id = $1 AND instance_id = $2 AND instrument_id = $3 AND status = 'OPEN'
-                            FOR UPDATE;
-                            """,
-                            account_id, instance_id, instrument_id
-                        )
+                        if parse_instrument_id(instrument_id)[2]:
+                            cash_delta, realized_delta = await self._persist_perp_fill(
+                                conn, evt, account_id, instance_id, instrument_id, trade_px, trade_comm
+                            )
+                        else:
+                            # 3b. Position state machine: fetch current open position
+                            pos_row = await conn.fetchrow(
+                                """
+                                SELECT position_id, entry_price, quantity, realized_pnl
+                                FROM paper_positions
+                                WHERE account_id = $1 AND instance_id = $2 AND instrument_id = $3 AND status = 'OPEN'
+                                FOR UPDATE;
+                                """,
+                                account_id, instance_id, instrument_id
+                            )
 
-                        slice_pnl = Decimal("0")
-                        if side == "BUY":
-                            if not pos_row:
-                                # Open new position
-                                await conn.execute(
-                                    """
-                                    INSERT INTO paper_positions (
-                                        position_id, account_id, instance_id, instrument_id, side,
-                                        entry_price, quantity, current_price, unrealized_pnl, realized_pnl,
-                                        status, opened_at
-                                    ) VALUES ($1, $2, $3, $4, 'LONG', $5, $6, $5, 0, 0, 'OPEN', now());
-                                    """,
-                                    str(uuid.uuid4()), account_id, instance_id, instrument_id, trade_px, trade_qty
-                                )
-                            else:
-                                old_qty = Decimal(str(pos_row["quantity"]))
-                                old_entry_px = Decimal(str(pos_row["entry_price"]))
-                                new_qty = old_qty + trade_qty
-                                new_entry_px = ((old_qty * old_entry_px) + (trade_qty * trade_px)) / new_qty
-                                await conn.execute(
-                                    """
-                                    UPDATE paper_positions
-                                    SET quantity = $2, entry_price = $3, current_price = $4
-                                    WHERE position_id = $1;
-                                    """,
-                                    pos_row["position_id"], new_qty, new_entry_px, trade_px
-                                )
-                        elif side == "SELL":
-                            if pos_row:
-                                old_qty = Decimal(str(pos_row["quantity"]))
-                                old_entry_px = Decimal(str(pos_row["entry_price"]))
-                                fill_qty = min(trade_qty, old_qty)
-                                slice_pnl = (trade_px - old_entry_px) * fill_qty - trade_comm
-                                new_qty = old_qty - fill_qty
-                                if new_qty == Decimal("0"):
-                                    # Closed position
+                            slice_pnl = Decimal("0")
+                            if side == "BUY":
+                                if not pos_row:
+                                    # Open new position
                                     await conn.execute(
                                         """
-                                        UPDATE paper_positions
-                                        SET quantity = 0, side = 'FLAT', status = 'CLOSED', closed_at = now(),
-                                            realized_pnl = realized_pnl + $2, current_price = $3
-                                        WHERE position_id = $1;
+                                        INSERT INTO paper_positions (
+                                            position_id, account_id, instance_id, instrument_id, side,
+                                            entry_price, quantity, current_price, unrealized_pnl, realized_pnl,
+                                            status, opened_at
+                                        ) VALUES ($1, $2, $3, $4, 'LONG', $5, $6, $5, 0, 0, 'OPEN', now());
                                         """,
-                                        pos_row["position_id"], slice_pnl, trade_px
+                                        str(uuid.uuid4()), account_id, instance_id, instrument_id, trade_px, trade_qty
                                     )
                                 else:
+                                    old_qty = Decimal(str(pos_row["quantity"]))
+                                    old_entry_px = Decimal(str(pos_row["entry_price"]))
+                                    new_qty = old_qty + trade_qty
+                                    new_entry_px = ((old_qty * old_entry_px) + (trade_qty * trade_px)) / new_qty
                                     await conn.execute(
                                         """
                                         UPDATE paper_positions
-                                        SET quantity = $2, realized_pnl = realized_pnl + $3, current_price = $4
+                                        SET quantity = $2, entry_price = $3, current_price = $4
                                         WHERE position_id = $1;
                                         """,
-                                        pos_row["position_id"], new_qty, slice_pnl, trade_px
+                                        pos_row["position_id"], new_qty, new_entry_px, trade_px
                                     )
+                            elif side == "SELL":
+                                if pos_row:
+                                    old_qty = Decimal(str(pos_row["quantity"]))
+                                    old_entry_px = Decimal(str(pos_row["entry_price"]))
+                                    fill_qty = min(trade_qty, old_qty)
+                                    slice_pnl = (trade_px - old_entry_px) * fill_qty - trade_comm
+                                    new_qty = old_qty - fill_qty
+                                    if new_qty == Decimal("0"):
+                                        # Closed position
+                                        await conn.execute(
+                                            """
+                                            UPDATE paper_positions
+                                            SET quantity = 0, side = 'FLAT', status = 'CLOSED', closed_at = now(),
+                                                realized_pnl = realized_pnl + $2, current_price = $3
+                                            WHERE position_id = $1;
+                                            """,
+                                            pos_row["position_id"], slice_pnl, trade_px
+                                        )
+                                    else:
+                                        await conn.execute(
+                                            """
+                                            UPDATE paper_positions
+                                            SET quantity = $2, realized_pnl = realized_pnl + $3, current_price = $4
+                                            WHERE position_id = $1;
+                                            """,
+                                            pos_row["position_id"], new_qty, slice_pnl, trade_px
+                                        )
 
-                        # 3c. Double-entry settlement on paper_accounts
-                        if side == "BUY":
-                            cash_delta = -(trade_qty * trade_px + trade_comm)
-                            realized_delta = Decimal("0")
-                        else:
-                            cash_delta = +(trade_qty * trade_px - trade_comm)
-                            realized_delta = slice_pnl
+                            # 3c. Double-entry settlement on paper_accounts
+                            if side == "BUY":
+                                cash_delta = -(trade_qty * trade_px + trade_comm)
+                                realized_delta = Decimal("0")
+                            else:
+                                cash_delta = +(trade_qty * trade_px - trade_comm)
+                                realized_delta = slice_pnl
 
                         await conn.execute(
                             """
@@ -367,10 +374,14 @@ class EventBridgeWorker:
                             account_id, cash_delta, realized_delta
                         )
 
-                        # Recalculate total_equity = cash_balance + sum(open_positions * current_price)
+                        # Recalculate total_equity = cash_balance + spot value + perp unrealized PnL
                         equity_row = await conn.fetchrow(
                             """
-                            SELECT COALESCE(SUM(quantity * current_price), 0) as pos_val
+                            SELECT COALESCE(SUM(CASE
+                                WHEN instrument_id LIKE '%-PERP.%'
+                                THEN (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * (current_price - entry_price)
+                                ELSE quantity * current_price
+                            END), 0) as pos_val
                             FROM paper_positions
                             WHERE account_id = $1 AND status = 'OPEN';
                             """,
@@ -412,6 +423,93 @@ class EventBridgeWorker:
 
         self.committed_events_count += len(batch)
         return len(batch)
+
+    async def _persist_perp_fill(
+        self,
+        conn: asyncpg.Connection,
+        evt: dict[str, Any],
+        account_id: str,
+        instance_id: str,
+        instrument_id: str,
+        fill_px: Decimal,
+        commission: Decimal,
+    ) -> tuple[Decimal, Decimal]:
+        """Write the dispatcher's post-fill perp position snapshot to paper_positions.
+
+        A close (size 0) or a flip closes the open row (FLAT/CLOSED, realized PnL attached);
+        a flip then opens a new row on the other side. Returns (cash_delta, realized_delta):
+        perp cash moves only by realized PnL and fees, never notional.
+        """
+        gross = evt.get("realized_pnl")
+        closed_realized = Decimal(str(gross)) - commission if gross is not None else Decimal("0")
+        cash_delta = (Decimal(str(gross)) if gross is not None else Decimal("0")) - commission
+
+        snap = evt.get("position")
+        if snap is None:
+            logger.error("Perp fill %s has no position snapshot; paper_positions not updated", evt.get("client_order_id"))
+            return cash_delta, cash_delta
+
+        signed_qty = Decimal(str(snap["signed_qty"]))
+        new_side = "LONG" if signed_qty > 0 else "SHORT" if signed_qty < 0 else "FLAT"
+        pos_row = await conn.fetchrow(
+            """
+            SELECT position_id, side FROM paper_positions
+            WHERE account_id = $1 AND instance_id = $2 AND instrument_id = $3 AND status = 'OPEN'
+            FOR UPDATE;
+            """,
+            account_id, instance_id, instrument_id,
+        )
+        pending_realized = closed_realized  # net of this fill's fee; attached to the row it closes
+
+        if pos_row and (signed_qty == 0 or pos_row["side"] != new_side):
+            await conn.execute(
+                """
+                UPDATE paper_positions
+                SET quantity = 0, side = 'FLAT', status = 'CLOSED', closed_at = now(), current_price = $2,
+                    unrealized_pnl = 0, realized_pnl = realized_pnl + $3, isolated_margin = 0,
+                    liquidation_price = NULL, maintenance_margin = NULL
+                WHERE position_id = $1;
+                """,
+                pos_row["position_id"], fill_px, pending_realized,
+            )
+            pending_realized, pos_row = Decimal("0"), None
+
+        if signed_qty != 0:
+            qty = abs(signed_qty)
+            entry = Decimal(str(snap["entry_price"]))
+            unrealized = (Decimal("1") if signed_qty > 0 else Decimal("-1")) * qty * (fill_px - entry)
+            liq = Decimal(str(snap["liquidation_price"])) if snap.get("liquidation_price") is not None else None
+            mm = Decimal(str(snap["maintenance_margin"])) if snap.get("maintenance_margin") is not None else None
+            fields = (
+                new_side, entry, qty, fill_px, unrealized, pending_realized, int(snap["leverage"]),
+                str(snap["margin_mode"]), Decimal(str(snap["isolated_margin"])), liq, mm,
+            )
+            if pos_row:
+                await conn.execute(
+                    """
+                    UPDATE paper_positions
+                    SET side = $2, entry_price = $3, quantity = $4, current_price = $5, unrealized_pnl = $6,
+                        realized_pnl = realized_pnl + $7, leverage = $8, margin_mode = $9,
+                        isolated_margin = $10, liquidation_price = $11, maintenance_margin = $12
+                    WHERE position_id = $1;
+                    """,
+                    pos_row["position_id"], *fields,
+                )
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO paper_positions (
+                        position_id, account_id, instance_id, instrument_id, side, entry_price, quantity,
+                        current_price, unrealized_pnl, realized_pnl, leverage, margin_mode, isolated_margin,
+                        liquidation_price, maintenance_margin, status, opened_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'OPEN', now());
+                    """,
+                    str(uuid.uuid4()), account_id, instance_id, instrument_id, *fields,
+                )
+        elif pending_realized:
+            logger.warning("Perp close %s had no open paper_positions row to carry realized PnL", instrument_id)
+
+        return cash_delta, cash_delta
 
     async def _run_loop(self) -> None:
         while self._running:
@@ -457,11 +555,14 @@ class CoalescedMarkToMarketProjector:
     async def project_once(self) -> None:
         """Update open positions mark-to-market."""
         async with self.pool.acquire() as conn:
-            positions = await conn.fetch("SELECT position_id, instrument_id, entry_price, quantity FROM paper_positions WHERE status = 'OPEN';")
+            positions = await conn.fetch(
+                "SELECT position_id, instrument_id, side, entry_price, quantity FROM paper_positions WHERE status = 'OPEN';"
+            )
             for pos in positions:
                 cur_price = self.get_latest_price_fn(pos["instrument_id"])
                 if cur_price is not None and cur_price > 0:
-                    unrealized_pnl = (cur_price - pos["entry_price"]) * pos["quantity"]
+                    direction = -1 if pos.get("side") == "SHORT" else 1
+                    unrealized_pnl = direction * (cur_price - pos["entry_price"]) * pos["quantity"]
                     await conn.execute(
                         """
                         UPDATE paper_positions

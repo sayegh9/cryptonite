@@ -236,7 +236,7 @@ class PaperTradingEngine:
                     closed = self.dispatcher.flatten_perp_position(
                         inst_id, Decimal(str(price)), Decimal("0"), "FLATTEN-EMERGENCY"
                     )
-                    logger.info("Flattening perp position %s: reduce-only %s at %s", inst_id, closed, price)
+                    logger.info("Flattened perp position %s: reduce-only (side, qty, pnl)=%s at %s", inst_id, closed, price)
 
             elif cmd_type == "TRIP_KILL_SWITCH":
                 payload = cmd.get("payload", {})

@@ -15,9 +15,10 @@ from nautilus_trader.model import (
 )
 from pydantic import BaseModel, Field
 
-from cryptonite_execution.derivatives import MarginMode
+from cryptonite_execution.derivatives import MarginMode, OrderSide
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
+from cryptonite_execution.margin import calculate_liquidation_price, calculate_maintenance_margin
 
 logger = logging.getLogger("cryptonite.execution.risk")
 
@@ -157,10 +158,10 @@ class GuardedOrderDispatcher:
 
     def flatten_perp_position(
         self, instrument_id: str, fill_price: Decimal, commission: Decimal, client_order_id: str
-    ) -> tuple[str, Decimal] | None:
+    ) -> tuple[str, Decimal, Decimal] | None:
         """Close a perp position with an opposing reduce-only order filled at ``fill_price``.
 
-        Returns (side, quantity) of the closing order, or None when flat.
+        Returns (side, quantity, gross realized PnL) of the closing order, or None when flat.
         """
         signed_qty = self.get_perp_position_qty(instrument_id)
         if signed_qty == 0:
@@ -176,8 +177,68 @@ class GuardedOrderDispatcher:
             "is_perp": True,
             "reduce_only": True,
         }
-        self.handle_fill(client_order_id, qty, fill_price, commission, side=side, instrument_id=instrument_id)
-        return side, qty
+        realized = self.handle_fill(client_order_id, qty, fill_price, commission, side=side, instrument_id=instrument_id)
+        return side, qty, realized or Decimal("0")
+
+    def fill_event_fields(self, instrument_id: str, realized_pnl: Decimal | None, fill_price: Decimal) -> dict[str, Any]:
+        """Extra ORDER_FILLED fields for EventBridgeWorker: perp realized PnL and post-fill position."""
+        if not parse_instrument_id(instrument_id)[2]:
+            return {}
+        return {
+            "realized_pnl": str(realized_pnl) if realized_pnl is not None else None,
+            "position": self.perp_position_snapshot(instrument_id, fill_price),
+        }
+
+    def perp_position_snapshot(self, instrument_id: str, reference_price: Decimal | None = None) -> dict[str, Any]:
+        """Post-fill position state for persistence (strings for Decimal fields).
+
+        Liquidation price and maintenance margin are valued at mark, else ``reference_price``, else
+        entry. CROSS uses the cross wallet (cash minus isolated margins) and the other CROSS
+        positions' MM and uPnL. Both are None when the symbol has no bracket table.
+        """
+        pos = self.perp_positions.get(instrument_id)
+        if pos is None:
+            return {"signed_qty": "0"}
+
+        def price_for(inst: str, p: PerpPositionState) -> Decimal:
+            return self.mark_prices.get(inst) or (reference_price if inst == instrument_id else None) or p.entry_price
+
+        qty = abs(pos.signed_qty)
+        side = OrderSide.BUY if pos.signed_qty > 0 else OrderSide.SELL
+        isolated = pos.margin_mode == MarginMode.ISOLATED
+        try:
+            maintenance = calculate_maintenance_margin(instrument_id, qty * price_for(instrument_id, pos))
+            if isolated:
+                liquidation = calculate_liquidation_price(
+                    instrument_id, side, qty, pos.entry_price, pos.initial_margin, MarginMode.ISOLATED
+                )
+            else:
+                wallet = self.cash_balance - sum(
+                    (p.initial_margin for p in self.perp_positions.values() if p.margin_mode == MarginMode.ISOLATED),
+                    Decimal("0"),
+                )
+                others_mm, others_upnl = Decimal("0"), Decimal("0")
+                for inst, other in self.perp_positions.items():
+                    if inst == instrument_id or other.margin_mode == MarginMode.ISOLATED:
+                        continue
+                    px = price_for(inst, other)
+                    others_mm += calculate_maintenance_margin(inst, abs(other.signed_qty) * px)
+                    others_upnl += other.signed_qty * (px - other.entry_price)
+                liquidation = calculate_liquidation_price(
+                    instrument_id, side, qty, pos.entry_price, wallet, MarginMode.CROSS, others_mm, others_upnl
+                )
+        except ValueError:
+            maintenance, liquidation = None, None
+
+        return {
+            "signed_qty": str(pos.signed_qty),
+            "entry_price": str(pos.entry_price),
+            "leverage": pos.leverage,
+            "margin_mode": str(pos.margin_mode),
+            "isolated_margin": str(pos.initial_margin if isolated else Decimal("0")),
+            "liquidation_price": str(liquidation) if liquidation is not None else None,
+            "maintenance_margin": str(maintenance) if maintenance is not None else None,
+        }
 
     def get_perp_position_qty(self, instrument_id: str) -> Decimal:
         pos = self.perp_positions.get(instrument_id)
@@ -485,15 +546,18 @@ class GuardedOrderDispatcher:
         commission: Decimal,
         side: str | None = None,
         instrument_id: str | None = None,
-    ) -> None:
-        """Process an execution fill in memory, reconciling cash and position balances."""
+    ) -> Decimal | None:
+        """Process an execution fill in memory, reconciling cash and position balances.
+
+        Returns the gross realized PnL of a perp fill's closing leg (None when it closed nothing);
+        spot fills return None.
+        """
         order_info = self.open_orders.pop(client_order_id, None)
         actual_side = (side or (order_info["side"] if order_info else "BUY")).upper()
         inst_id = instrument_id or (order_info["instrument_id"] if order_info else "UNKNOWN")
 
         if parse_instrument_id(inst_id)[2]:
-            self._handle_perp_fill(order_info, inst_id, actual_side, fill_qty, fill_price, commission)
-            return
+            return self._handle_perp_fill(order_info, inst_id, actual_side, fill_qty, fill_price, commission)
 
         if actual_side == "BUY":
             cost = fill_qty * fill_price + commission
@@ -510,6 +574,7 @@ class GuardedOrderDispatcher:
                 self.reserved_positions[inst_id] = max(Decimal("0"), cur_res - order_info["quantity"])
             cur_pos = self.positions.get(inst_id, Decimal("0"))
             self.positions[inst_id] = max(Decimal("0"), cur_pos - fill_qty)
+        return None
 
     def _handle_perp_fill(
         self,
@@ -519,7 +584,7 @@ class GuardedOrderDispatcher:
         fill_qty: Decimal,
         fill_price: Decimal,
         commission: Decimal,
-    ) -> None:
+    ) -> Decimal | None:
         """Signed-quantity perp accounting: open/add, reduce, close, or flip (close leg then open leg).
 
         Cash moves only by realized PnL and fees; initial margin moves from the order reservation
@@ -537,6 +602,7 @@ class GuardedOrderDispatcher:
         )
         fill_sign = Decimal("1") if side == "BUY" else Decimal("-1")
         realized = Decimal("0")
+        closed_any = False
         open_qty = fill_qty
 
         if pos is not None and (pos.signed_qty > 0) != (fill_sign > 0):
@@ -545,6 +611,7 @@ class GuardedOrderDispatcher:
             closed = min(fill_qty, held)
             direction = Decimal("1") if pos.signed_qty > 0 else Decimal("-1")
             realized = direction * closed * (fill_price - pos.entry_price)
+            closed_any = True
             released = pos.initial_margin * closed / held
             self.locked_margin -= released
             if closed == held:
@@ -575,6 +642,7 @@ class GuardedOrderDispatcher:
 
         self.cash_balance += realized - commission
         self.daily_realized_pnl += realized - commission
+        return realized if closed_any else None
 
     def check_daily_drawdown(self, current_equity: Decimal, macro_atr_pct: Decimal | None = None) -> bool:
         """Trip the daily loss latch if current equity has breached allowable daily drawdown."""

@@ -7,19 +7,13 @@ funding dedup runs against a throwaway database migrated to head, so the dev DB 
 import asyncio
 import contextlib
 import json
-import os
-import subprocess
-import sys
-import uuid
 from decimal import Decimal
-from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 import httpx
 import pytest
 import redis.asyncio as aioredis
-from connections import DB_URL, REDIS_URL
+from connections import REDIS_URL
 from cryptonite_scanner_service.derivatives_feed import (
     MARK_CHANNEL,
     MARK_KEY,
@@ -31,8 +25,8 @@ from cryptonite_scanner_service.derivatives_feed import (
     parse_mark_frame,
     store_funding_settlements,
 )
+from migrated_db import migrated_database
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 SYM_A = "ZZFEEDAUSDT"  # test-only symbols so real perp:mark:* keys are never touched
 SYM_B = "ZZFEEDBUSDT"
 T0_MS = 1_758_700_800_000  # a funding timestamp (ms)
@@ -57,25 +51,8 @@ async def redis_client():
 
 @pytest.fixture(scope="module")
 def funding_db_url():
-    name = f"cryptonite_feedtest_{uuid.uuid4().hex[:8]}"
-
-    async def admin(sql):
-        conn = await asyncpg.connect(DB_URL)
-        try:
-            await conn.execute(sql)
-        finally:
-            await conn.close()
-
-    asyncio.run(admin(f'CREATE DATABASE "{name}"'))
-    url = urlunsplit(urlsplit(DB_URL)._replace(path=f"/{name}"))
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "alembic", "-c", "infra/migrations/alembic.ini", "upgrade", "head"],
-            cwd=REPO_ROOT, env={**os.environ, "DATABASE_URL": url}, check=True, capture_output=True,
-        )
+    with migrated_database("cryptonite_feedtest") as url:
         yield url
-    finally:
-        asyncio.run(admin(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
 
 
 # --- Parsing -----------------------------------------------------------------
