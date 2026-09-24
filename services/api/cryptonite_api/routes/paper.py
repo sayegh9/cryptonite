@@ -59,6 +59,10 @@ async def _enqueue_command(
     payload: dict[str, Any],
     requester_id: str = "web-ui",
     idempotency_key: str | None = None,
+    # Defaults mirror the execution_commands column defaults (DEMO executor). Paper-engine commands
+    # must pass environment="PAPER": the orchestrator only claims PAPER rows.
+    environment: str = "DEMO",
+    account_id: str = "DEMO-ACCOUNT-001",
 ) -> dict[str, Any]:
     cmd_id = uuid.uuid4()
     idem_key = idempotency_key or f"{command_type}:{cmd_id}"
@@ -71,8 +75,8 @@ async def _enqueue_command(
     query = """
     INSERT INTO execution_commands (
         command_id, idempotency_key, command_type, target_instance_id,
-        requester_id, payload, status, attempt_count, created_at
-    ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'PENDING', 0, now())
+        requester_id, payload, status, attempt_count, environment, account_id, created_at
+    ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'PENDING', 0, $7, $8, now())
     RETURNING command_id, command_type, status, created_at;
     """
     row = await pool.fetchrow(
@@ -83,6 +87,8 @@ async def _enqueue_command(
         target_instance_id,
         requester_id,
         json.dumps(payload),
+        environment,
+        account_id,
     )
     return dict(row)
 
@@ -282,6 +288,7 @@ async def reset_kill_switch(req: ResetKillSwitchRequest, request: Request, auth:
 async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     client_order_id = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
     payload = {
+        "account_id": "PAPER-ACCOUNT-001",
         "instrument_id": req.instrument_id,
         "symbol": req.instrument_id.replace(".BINANCE", ""),
         "side": req.side,
@@ -298,4 +305,6 @@ async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: d
         command_type="MANUAL_ORDER",
         target_instance_id="MANUAL_TRADE",
         payload=payload,
+        environment="PAPER",  # executed by the paper orchestrator
+        account_id="PAPER-ACCOUNT-001",
     )
