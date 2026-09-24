@@ -1,12 +1,12 @@
 # HANDOFF
 
 ## Current State
-- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring, C9 = `derivatives_feed` compose service, C10 = funding settlement). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: StreamHub forwarding of perp channels (C11), bringing the dev DB to head, then the web HUD/ticket
+- Active branch: `feat/perpetuals-phase1` (perpetual futures Phase 1, paper). Plan: `docs/perpetuals-phase1-blueprint.md`. Roadmap C0–C8 done (user numbering; C4 = dispatcher perp guards / blueprint C8, C5 = perp fill accounting + direction-aware controls / blueprint C7+C9, C6 = perp-aware bridge persistence, C7 = liquidation engine / blueprint C10 minus funding, C8 = orchestrator mark/param/liquidation wiring, C9 = `derivatives_feed` compose service, C10 = funding settlement, C11 = WebSocket perp relay). `aae1b96` (ingest futures stream split) cherry-picked onto the branch. Next: the web HUD/ticket (Zustand stores consuming `perp_*` messages), and bringing the dev DB to head
 - `main` @ `c63576e`, 14 commits ahead of `origin/main`, NOT pushed. Working tree NOT clean: 28 modified, 212 deleted, 20 untracked (backend packages/services, docs, graphify cache, `exit_monitor.py`, 015's LLM budget change 10→18 USD)
 - Graph: built at `1100fa2`; run `graphify update .` after committing
 - Gates (2026-09-24, Claude Code):
   - Web (committed; `apps/web` has no uncommitted changes): typecheck ✅ · lint ✅ 0 errors / 0 warnings · `pnpm build` ✅ · Playwright ☐ not run
-  - Backend on the **working tree** at C10: pytest ✅ 302 passed / 0 failed, 12 deselected (287 at C9 + 15 funding settlement tests; Redis-timing files 3/3 repeat runs green)
+  - Backend on the **working tree** at C11: pytest ✅ 307 passed / 0 failed, 12 deselected (302 at C10 + 5 WebSocket gateway tests; gateway file 3/3 repeat runs green)
   - C3 live smoke test (2026-09-24): BTCUSDT/ETHUSDT mark ticks and open interest cached from the public Binance endpoints
   - Backend on **HEAD** (clean checkout): ☐ not re-run since `c63576e` committed the orchestrator `server.py` change the old hang depended on
   - Migrations: `alembic upgrade head` ✅ 001→020 on a fresh database; 020 downgrade/upgrade round trip ✅; 020 constraints exercised (spot SHORT, spot margin mode, spot leverage, CROSS with isolated margin, non-perp funding rows all rejected)
@@ -84,6 +84,14 @@
   - `EventBridgeWorker` books it into account cash/realized PnL and the open position's realized PnL, isolated margin, and liquidation levels. The journal row's run-independent idempotency key `FUNDING:{account}:{instrument}:{T}` makes this exactly-once across restarts without a new migration.
   - The orchestrator's `consume_perp_marks` settles at the previous `T` with the last pre-rollover rate and mark when a tick's `next_funding_time_ns` rolls forward. Settlements missed while disconnected are not reconstructed.
   - Cumulative funding is not a separate DB column (020 has none); it is folded into `paper_positions.realized_pnl`.
+- Perpetuals C11: `StreamHub._perp_pubsub_loop` (`services/api/cryptonite_api/stream_gateway.py`).
+  - Relays `channel:perp_mark_ticks` / `channel:perp_liquidations` / `channel:perp_funding_events` to `/ws/stream` clients as `{"type": "perp_mark_tick" | "perp_liquidation" | "perp_funding", "data": {...}}`.
+  - Client protocol: `{"action": "subscribe", "channels": ["perpetuals"], "instruments": ["BTCUSDT-PERP.BINANCE"]}`. Instruments are optional (empty = all), perp instruments are allow-listed (`DEFAULT_PERP_INSTRUMENTS`), and unsubscribe with instruments narrows the filter while unsubscribe without them stops perps.
+  - The instrument filter applies to mark ticks only; liquidation and funding notices reach every perpetuals subscriber.
+  - On subscribe, cached `perp:mark:*` snapshots are sent (`"snapshot": true`).
+  - Mark ticks are droppable under backpressure (`enqueue_droppable`, which never evicts queued reliable events); liquidation/funding use the reliable path.
+  - It runs on its own pub/sub connection and resubscribes after errors.
+  - The other author's uncommitted `_pubsub_loop` change in the same file (agent heartbeat + debates) was left unstaged. C11 was committed as HEAD + perp hunks only.
 - Uncommitted backend work (packages/agents, `demo_pipeline.py`, scanner, storage, api auth/routes, debate_worker, 015 budget change) has no recorded owner
 - `exit_monitor.py` stays uncommitted until it lands with a P&L column on `agent_safe_positions`, `debate_runs.type` (or a switch to `trigger_source`), and the `debate_worker` exit-queue consumer — owner: unassigned
 - graphify housekeeping: 212 deleted old-version cache files, untracked new cache, dated backup folders, and an uncommitted `.gitignore` rule are left for a decision

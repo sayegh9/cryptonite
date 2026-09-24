@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 import redis.asyncio as aioredis
+from cryptonite_schemas.identifiers import parse_instrument_id
 from fastapi import WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger("cryptonite.api.stream")
@@ -19,6 +20,16 @@ logger = logging.getLogger("cryptonite.api.stream")
 ALLOWED_TIMEFRAMES = {"1m", "5m", "15m", "1h", "4h", "1d"}
 MAX_SUBSCRIPTIONS_PER_CLIENT = 20
 CLIENT_QUEUE_MAXSIZE = 100
+
+# Perpetual Redis pub/sub channels -> client message type (producers: derivatives_feed, PaperTradingEngine)
+PERP_CHANNELS = {
+    "channel:perp_mark_ticks": "perp_mark_tick",
+    "channel:perp_liquidations": "perp_liquidation",
+    "channel:perp_funding_events": "perp_funding",
+}
+PERP_MARK_KEY_PATTERN = "perp:mark:*"
+PERP_SUBSCRIPTION_CHANNEL = "perpetuals"
+DEFAULT_PERP_INSTRUMENTS = {"BTCUSDT-PERP.BINANCE", "ETHUSDT-PERP.BINANCE"}
 
 
 class ClientConnection:
@@ -33,6 +44,9 @@ class ClientConnection:
         self.subscriptions: set[str] = set()
         self.subscribe_signals: bool = False
         self.subscribe_tickers: bool = False
+        # Perpetuals: mark ticks filtered by perp_instruments (empty = all); account events unfiltered
+        self.subscribe_perpetuals: bool = False
+        self.perp_instruments: set[str] = set()
         self._sender_task: asyncio.Task[None] | None = None
 
     def start_sender(self) -> None:
@@ -72,6 +86,13 @@ class ClientConnection:
             except Exception:
                 pass  # Lossy drop for open ticks is safe and compliant
 
+    def enqueue_droppable(self, msg: dict[str, Any]) -> None:
+        """Enqueue a superseded-by-next-tick message (perp marks); drop it when the queue is full."""
+        try:
+            self.queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            pass
+
     async def enqueue_reliable_event(self, msg: dict[str, Any]) -> bool:
         """Reliably enqueue committed bars and signals. Returns False if client queue is overwhelmed."""
         try:
@@ -90,9 +111,20 @@ class ClientConnection:
 class StreamHub:
     """Central Redis stream listener and client broadcaster."""
 
-    def __init__(self, redis_url: str, allowed_instruments: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        redis_url: str,
+        allowed_instruments: set[str] | None = None,
+        allowed_perp_instruments: set[str] | None = None,
+        perp_channels: dict[str, str] | None = None,
+        perp_mark_key_pattern: str = PERP_MARK_KEY_PATTERN,
+    ) -> None:
         self.redis_url = redis_url
         self.allowed_instruments = allowed_instruments or {"BTCUSDT.BINANCE", "ETHUSDT.BINANCE"}
+        self.allowed_perp_instruments = allowed_perp_instruments or DEFAULT_PERP_INSTRUMENTS
+        self.perp_channels = perp_channels or PERP_CHANNELS
+        self.perp_mark_key_pattern = perp_mark_key_pattern
+        self._perp_task: asyncio.Task[None] | None = None
         self.redis: aioredis.Redis | None = None
         self.clients: dict[str, ClientConnection] = {}
         self._running = False
@@ -115,6 +147,7 @@ class StreamHub:
 
         self._reader_task = asyncio.create_task(self._redis_reader_loop())
         self._pubsub_task = asyncio.create_task(self._pubsub_loop())
+        self._perp_task = asyncio.create_task(self._perp_pubsub_loop())
 
         logger.info("StreamHub started with consumer=%s", self.consumer_name)
 
@@ -131,6 +164,10 @@ class StreamHub:
         if self._pubsub_task:
             self._pubsub_task.cancel()
             self._pubsub_task = None
+
+        if self._perp_task:
+            self._perp_task.cancel()
+            self._perp_task = None
 
 
         for c in list(self.clients.values()):
@@ -171,9 +208,22 @@ class StreamHub:
             elif not instruments and data.get("symbol"):
                 instruments = [f"{data.get('symbol').upper()}.BINANCE"]
 
+            perp_instruments = [i for i in instruments if parse_instrument_id(i)[2]]
+            instruments = [i for i in instruments if not parse_instrument_id(i)[2]]
+            for inst in perp_instruments:
+                if inst not in self.allowed_perp_instruments:
+                    return {"error": f"Unsupported perpetual: {inst}. Allowed: {sorted(self.allowed_perp_instruments)}"}
+            if perp_instruments and PERP_SUBSCRIPTION_CHANNEL not in channels:
+                return {"error": f"Perpetual instruments require the '{PERP_SUBSCRIPTION_CHANNEL}' channel"}
+
             for inst in instruments:
                 if self.allowed_instruments and inst not in self.allowed_instruments:
                     return {"error": f"Unsupported or unknown instrument: {inst}. Allowed: {sorted(self.allowed_instruments)}"}
+
+            if PERP_SUBSCRIPTION_CHANNEL in channels:
+                client.subscribe_perpetuals = True
+                client.perp_instruments.update(perp_instruments)
+                await self._send_perp_mark_snapshots(client)
 
             if "signals" in channels or "signal_candidate" in channels:
                 client.subscribe_signals = True
@@ -185,7 +235,7 @@ class StreamHub:
                 if len(client.subscriptions) < MAX_SUBSCRIPTIONS_PER_CLIENT:
                     client.subscriptions.add(inst)
                     
-            res = {"status": "subscribed", "channels": channels, "instruments": instruments}
+            res = {"status": "subscribed", "channels": channels, "instruments": instruments + perp_instruments}
             if len(instruments) == 1:
                 res["instrument_id"] = instruments[0]
             return res
@@ -203,6 +253,14 @@ class StreamHub:
 
             if "ticker_update" in channels:
                 client.subscribe_tickers = False
+
+            if PERP_SUBSCRIPTION_CHANNEL in channels:
+                listed = [i for i in instruments if parse_instrument_id(i)[2]]
+                if listed:
+                    client.perp_instruments.difference_update(listed)
+                else:
+                    client.subscribe_perpetuals = False
+                    client.perp_instruments.clear()
                 
             for inst in instruments:
                 client.subscriptions.discard(inst)
@@ -312,6 +370,71 @@ class StreamHub:
 
 
 
+
+    def _wants_perp(self, client: ClientConnection, msg_type: str, instrument_id: str | None) -> bool:
+        if not client.subscribe_perpetuals:
+            return False
+        if msg_type != "perp_mark_tick" or not client.perp_instruments:
+            return True  # liquidation/funding notices are account events: every perpetuals subscriber gets them
+        return instrument_id in client.perp_instruments
+
+    async def _send_perp_mark_snapshots(self, client: ClientConnection) -> None:
+        """Hydrate a new perpetuals subscriber from the cached perp:mark:* keys."""
+        if not self.redis:
+            return
+        try:
+            async for key in self.redis.scan_iter(match=self.perp_mark_key_pattern):
+                raw = await self.redis.get(key)
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                if self._wants_perp(client, "perp_mark_tick", data.get("instrument_id")):
+                    client.enqueue_droppable({"type": "perp_mark_tick", "snapshot": True, "data": data})
+        except Exception as e:
+            logger.warning("Perp mark snapshot failed for %s: %s", client.client_id, e)
+
+    async def _perp_pubsub_loop(self) -> None:
+        """Relay perpetual pub/sub channels to subscribed clients; resubscribes after Redis errors.
+
+        Mark ticks are droppable under backpressure (the next tick supersedes them);
+        liquidation and funding notices use the reliable path.
+        """
+        while self._running:
+            pubsub = None
+            try:
+                if not self.redis:
+                    await asyncio.sleep(0.5)
+                    continue
+                pubsub = self.redis.pubsub()
+                await pubsub.subscribe(*self.perp_channels)
+                async for message in pubsub.listen():
+                    if not self._running:
+                        break
+                    if message["type"] != "message":
+                        continue
+                    msg_type = self.perp_channels.get(message["channel"])
+                    if msg_type is None:
+                        continue
+                    data = json.loads(message["data"])
+                    client_msg = {"type": msg_type, "data": data}
+                    for client in list(self.clients.values()):
+                        if not self._wants_perp(client, msg_type, data.get("instrument_id")):
+                            continue
+                        if msg_type == "perp_mark_tick":
+                            client.enqueue_droppable(client_msg)
+                        elif not await client.enqueue_reliable_event(client_msg):
+                            self.clients.pop(client.client_id, None)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Perp pub/sub relay error, resubscribing: %s", e)
+                await asyncio.sleep(1.0)
+            finally:
+                if pubsub is not None:
+                    try:
+                        await pubsub.aclose()
+                    except Exception:
+                        pass
 
     async def _pubsub_loop(self) -> None:
         while self._running:
