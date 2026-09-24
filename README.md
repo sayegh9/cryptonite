@@ -110,6 +110,13 @@ Cryptonite integrates an advanced adversarial AI pipeline powered by the Google 
 - **Reflection Engine:** Completed trades are joined with DuckDB time-series data to calculate *Alpha*. The AI distills 'Lessons Learned' which are dynamically injected into future debates, allowing the system to self-correct over time without code changes.
 - **Safety First:** AI agents operate through an Anti-Corruption Layer with strictly read-only, anonymized database access, hard limits on concentration (25.0%), and hardware-level kill-switches.
 
+## Perpetual Futures (Paper Trading)
+
+BTCUSDT / ETHUSDT USD-M perpetuals run on the paper engine alongside spot: 1–20× leverage, isolated or cross margin, shorts, reduce-only, exact Binance-tiered liquidation prices, synthetic liquidations, and funding settlement. Risk invariants: entry notional ≥ 1% and position notional ≤ 25% of equity, mark price ≤ 10 s old, 5% daily drawdown circuit breaker (resets at 00:00 UTC), and a PAPER kill switch that still lets reduce-only exits through. Market data comes from Binance `fstream` (`/market` for marks, `/public` for book tickers, coalesced to 50 Hz). The terminal's **Trade** sidebar has the order ticket, margin risk HUD, and PAPER kill switch.
+
+- Architecture: [docs/perpetuals-architecture.md](docs/perpetuals-architecture.md) · design decisions: [docs/perpetuals-phase1-blueprint.md](docs/perpetuals-phase1-blueprint.md) · operating limits: [HANDOFF.md](HANDOFF.md)
+- Run: `docker compose -f infra/docker-compose.yml up -d postgres redis ingest derivatives_feed orchestrator api`, then `cd apps/web && pnpm dev` and open `http://localhost:3000`
+
 ## Transactional Outbox Execution Pipeline
 To ensure high availability and prevent dual-write hazards during network partitions, execution logic uses the transactional outbox pattern.
 

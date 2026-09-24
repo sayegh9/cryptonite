@@ -2,6 +2,8 @@
 
 ## Paper Trading Readiness — SIGNED OFF (2026-09-24, with the limits below)
 
+Architecture reference: [docs/perpetuals-architecture.md](docs/perpetuals-architecture.md). Branch `feat/perpetuals-phase1` pushed to `origin` for review (PR pending); `main` itself is still unpushed.
+
 **Status of the pre-flight streams**
 1. Daily drawdown breaker + UTC rollover — done (`0b536a3`). The orchestrator risk monitor (1 s) trips + persists the PAPER kill switch on a ≥5% drawdown from the day's high-water mark, writes `paper_risk_events`, and alerts on `channel:system_alerts`. The base is re-set at 00:00 UTC.
 2. Trade-sidebar kill switch → PAPER — done (`350b249`, `0b536a3`). `/control` trip for PAPER latches the engine via DB sync (≤1 s); `/control` reset (step-up auth) is claimed by the paper orchestrator (expiry + generation checks, refused while exposure is open). Reduce-only perp orders pass the latches; entries do not.
