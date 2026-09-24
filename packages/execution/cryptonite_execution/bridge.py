@@ -251,9 +251,18 @@ class EventBridgeWorker:
                             event_version,
                         )
 
-                    # 3. If fill, record trade and position
+                    # 3. If fill, record trade, position, and account settlement
                     if evt.get("event_type") == "ORDER_FILLED":
                         trade_id = f"TRADE-{uuid.uuid4().hex[:12].upper()}"
+                        trade_qty = Decimal(str(evt["quantity"]))
+                        trade_px = Decimal(str(evt["price"]))
+                        trade_comm = Decimal(str(evt.get("commission", 0)))
+                        side = str(evt["side"]).upper()
+                        account_id = str(evt["account_id"])
+                        instance_id = str(evt["instance_id"])
+                        instrument_id = str(evt["instrument_id"])
+
+                        # 3a. Record trade
                         await conn.execute(
                             """
                             INSERT INTO paper_trades (
@@ -262,14 +271,120 @@ class EventBridgeWorker:
                             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now());
                             """,
                             trade_id,
-                            evt["account_id"],
+                            account_id,
                             client_order_id,
-                            evt["instance_id"],
-                            evt["instrument_id"],
-                            evt["side"],
-                            Decimal(str(evt["price"])),
-                            Decimal(str(evt["quantity"])),
-                            Decimal(str(evt.get("commission", 0))),
+                            instance_id,
+                            instrument_id,
+                            side,
+                            trade_px,
+                            trade_qty,
+                            trade_comm,
+                        )
+
+                        # 3b. Position state machine: fetch current open position
+                        pos_row = await conn.fetchrow(
+                            """
+                            SELECT position_id, entry_price, quantity, realized_pnl
+                            FROM paper_positions
+                            WHERE account_id = $1 AND instance_id = $2 AND instrument_id = $3 AND status = 'OPEN'
+                            FOR UPDATE;
+                            """,
+                            account_id, instance_id, instrument_id
+                        )
+
+                        slice_pnl = Decimal("0")
+                        if side == "BUY":
+                            if not pos_row:
+                                # Open new position
+                                await conn.execute(
+                                    """
+                                    INSERT INTO paper_positions (
+                                        position_id, account_id, instance_id, instrument_id, side,
+                                        entry_price, quantity, current_price, unrealized_pnl, realized_pnl,
+                                        status, opened_at
+                                    ) VALUES ($1, $2, $3, $4, 'LONG', $5, $6, $5, 0, 0, 'OPEN', now());
+                                    """,
+                                    str(uuid.uuid4()), account_id, instance_id, instrument_id, trade_px, trade_qty
+                                )
+                            else:
+                                old_qty = Decimal(str(pos_row["quantity"]))
+                                old_entry_px = Decimal(str(pos_row["entry_price"]))
+                                new_qty = old_qty + trade_qty
+                                new_entry_px = ((old_qty * old_entry_px) + (trade_qty * trade_px)) / new_qty
+                                await conn.execute(
+                                    """
+                                    UPDATE paper_positions
+                                    SET quantity = $2, entry_price = $3, current_price = $4
+                                    WHERE position_id = $1;
+                                    """,
+                                    pos_row["position_id"], new_qty, new_entry_px, trade_px
+                                )
+                        elif side == "SELL":
+                            if pos_row:
+                                old_qty = Decimal(str(pos_row["quantity"]))
+                                old_entry_px = Decimal(str(pos_row["entry_price"]))
+                                fill_qty = min(trade_qty, old_qty)
+                                slice_pnl = (trade_px - old_entry_px) * fill_qty - trade_comm
+                                new_qty = old_qty - fill_qty
+                                if new_qty == Decimal("0"):
+                                    # Closed position
+                                    await conn.execute(
+                                        """
+                                        UPDATE paper_positions
+                                        SET quantity = 0, side = 'FLAT', status = 'CLOSED', closed_at = now(),
+                                            realized_pnl = realized_pnl + $2, current_price = $3
+                                        WHERE position_id = $1;
+                                        """,
+                                        pos_row["position_id"], slice_pnl, trade_px
+                                    )
+                                else:
+                                    await conn.execute(
+                                        """
+                                        UPDATE paper_positions
+                                        SET quantity = $2, realized_pnl = realized_pnl + $3, current_price = $4
+                                        WHERE position_id = $1;
+                                        """,
+                                        pos_row["position_id"], new_qty, slice_pnl, trade_px
+                                    )
+
+                        # 3c. Double-entry settlement on paper_accounts
+                        if side == "BUY":
+                            cash_delta = -(trade_qty * trade_px + trade_comm)
+                            realized_delta = Decimal("0")
+                        else:
+                            cash_delta = +(trade_qty * trade_px - trade_comm)
+                            realized_delta = slice_pnl
+
+                        await conn.execute(
+                            """
+                            UPDATE paper_accounts
+                            SET cash_balance = cash_balance + $2,
+                                realized_pnl = realized_pnl + $3,
+                                daily_realized_pnl = daily_realized_pnl + $3,
+                                updated_at = now()
+                            WHERE account_id = $1;
+                            """,
+                            account_id, cash_delta, realized_delta
+                        )
+
+                        # Recalculate total_equity = cash_balance + sum(open_positions * current_price)
+                        equity_row = await conn.fetchrow(
+                            """
+                            SELECT COALESCE(SUM(quantity * current_price), 0) as pos_val
+                            FROM paper_positions
+                            WHERE account_id = $1 AND status = 'OPEN';
+                            """,
+                            account_id
+                        )
+                        open_val = Decimal(str(equity_row["pos_val"])) if equity_row else Decimal("0")
+                        await conn.execute(
+                            """
+                            UPDATE paper_accounts
+                            SET total_equity = cash_balance + $2,
+                                updated_at = now()
+                            WHERE account_id = $1;
+                            """,
+                            account_id, open_val
                         )
 
                         # Emit outbox event for trade execution
