@@ -36,6 +36,7 @@ class BinanceStreamClient:
         enable_quotes: bool = True,
         quote_ws_url: str | None = None,
         instrument_suffix: str = "",
+        min_quote_interval_ms: float = 0,
     ) -> None:
         self.symbols = [s.upper() for s in symbols]
         self.timeframes = [t.lower() for t in timeframes]
@@ -47,6 +48,11 @@ class BinanceStreamClient:
         self.quote_ws_url = quote_ws_url
         # "-PERP" for USD-M futures so quotes are keyed BTCUSDT-PERP.BINANCE, never colliding with spot
         self.instrument_suffix = instrument_suffix
+        # Quote coalescing (0 = publish every update, the spot behaviour). When set, a symbol publishes
+        # only when its top of book changed and at most once per interval, so a ~1 kHz futures bookTicker
+        # feed does not flood the Redis streams the orchestrator consumes.
+        self.min_quote_interval_ns = int(min_quote_interval_ms * 1_000_000)
+        self._last_published_quote: dict[str, tuple[tuple[str, str, str, str], int]] = {}
 
         self._running = False
         self._sockets: set[Any] = set()
@@ -145,6 +151,13 @@ class BinanceStreamClient:
             ask_p = str(payload["a"])
             ask_q = str(payload["A"])
             inst_str = f"{symbol}{self.instrument_suffix}.BINANCE"
+            if self.min_quote_interval_ns:
+                book = (bid_p, bid_q, ask_p, ask_q)
+                last = self._last_published_quote.get(symbol)
+                if last and (last[0] == book or arrival_ns - last[1] < self.min_quote_interval_ns):
+                    return
+                self._last_published_quote[symbol] = (book, arrival_ns)
+            # Sequence advances only for published quotes, so coalescing never looks like a feed gap
             seq = self.quote_sequences.get(symbol, 0) + 1
             self.quote_sequences[symbol] = seq
 
