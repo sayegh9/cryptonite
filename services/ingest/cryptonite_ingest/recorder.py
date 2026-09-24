@@ -47,12 +47,14 @@ class IngestRecorder:
         redis_url: str | None = None,
         perp_quote_symbols: list[str] | None = None,
         perp_quote_hz: float = 50.0,
+        spot_quote_hz: float = 0.0,
     ) -> None:
         self.symbols = [s.upper() for s in symbols]
         # USD-M perpetual bookTicker quotes (no bars), published as <SYM>-PERP.BINANCE
         self.perp_quote_symbols = [s.upper() for s in perp_quote_symbols or []]
         self.perp_quote_client: BinanceStreamClient | None = None
         self.perp_quote_hz = perp_quote_hz
+        self.spot_quote_hz = spot_quote_hz  # 0 = publish every spot bookTicker update
         self.timeframes = [t.lower() for t in timeframes]
         self.nautilus_catalog_path = nautilus_catalog_path
         self.analytics_lake_path = analytics_lake_path
@@ -225,6 +227,7 @@ class IngestRecorder:
             timeframes=self.timeframes,
             on_closed_bar=self._on_closed_bar_event,
             redis=self.redis,
+            min_quote_interval_ms=1000.0 / self.spot_quote_hz if self.spot_quote_hz > 0 else 0,
         )
 
         # Launch WebSocket client in background

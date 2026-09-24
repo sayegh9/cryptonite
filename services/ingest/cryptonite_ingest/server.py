@@ -190,6 +190,7 @@ async def run_server_standalone():
         redis_url=redis_url,
         perp_quote_symbols=perp_symbols,
         perp_quote_hz=float(os.getenv("INGEST_PERP_QUOTE_HZ", "50")),
+        spot_quote_hz=float(os.getenv("INGEST_SPOT_QUOTE_HZ", "0")),
     )
     srv = HealthServer(recorder=recorder, port=port)
     await srv.start()
