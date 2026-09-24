@@ -30,6 +30,7 @@ import queue
 import threading
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 import redis
@@ -66,6 +67,12 @@ from nautilus_trader.model import (
 )
 from nautilus_trader.trading import Strategy, StrategyConfig
 
+from connections import REDIS_URL
+
+_REDIS = urlsplit(REDIS_URL)
+REDIS_HOST = _REDIS.hostname or "127.0.0.1"
+REDIS_PORT = _REDIS.port or 6379
+
 
 # ---------------------------------------------------------------------------
 # Helpers & Fixtures
@@ -73,7 +80,7 @@ from nautilus_trader.trading import Strategy, StrategyConfig
 
 @pytest.fixture
 def redis_client():
-    r = redis.Redis(host="127.0.0.1", port=6379, decode_responses=False)
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False)
     r.ping()
     return r
 
@@ -132,7 +139,7 @@ def test_rc4_native_serialization_roundtrip(redis_client, btc_currency_pair):
         trader_id=trader_id,
         instance_id=instance_id,
         config_json=json.dumps({}).encode(),
-        database_config_json=json.dumps({"host": "127.0.0.1", "port": 6379}).encode(),
+        database_config_json=json.dumps({"host": REDIS_HOST, "port": REDIS_PORT}).encode(),
     )
     loaded_state = cache_db.load_all()
     assert inst.id in loaded_state["instruments"]
@@ -265,11 +272,11 @@ def test_canonical_topics_strategy_reception(redis_client, btc_currency_pair):
         trader_id=trader_id,
         environment=Environment.SANDBOX,
     )
-    builder.with_cache_database_factory(RedisCacheConfig(host="127.0.0.1", port=6379))
+    builder.with_cache_database_factory(RedisCacheConfig(host=REDIS_HOST, port=REDIS_PORT))
     builder.with_load_state(True)
     builder.with_msgbus_config(MessageBusConfig(external_streams=[stream_name]))
     builder.with_external_msgbus_factory(
-        RedisMessageBusFactory(RedisMessageBusConfig(host="127.0.0.1", port=6379))
+        RedisMessageBusFactory(RedisMessageBusConfig(host=REDIS_HOST, port=REDIS_PORT))
     )
     builder.with_data_engine_config(
         LiveDataEngineConfig(external_clients=[ClientId("REDIS-INGRESS")])
