@@ -327,6 +327,7 @@ class DemoExecutionPipeline:
             FROM execution_commands
             WHERE ((status = 'PENDING' AND (lease_expires_at IS NULL OR lease_expires_at < now()))
                 OR (status IN ('CLAIMED', 'RUNNING', 'SENDING') AND lease_expires_at < now()))
+              AND environment = $3
               AND ($2::text IS NULL OR target_instance_id = $2)
             ORDER BY created_at ASC
             LIMIT 1
@@ -346,7 +347,7 @@ class DemoExecutionPipeline:
                   execution_commands.lease_owner;
         """
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(query, self.worker_id, target_instance_id)
+            row = await conn.fetchrow(query, self.worker_id, target_instance_id, self.environment)
             return dict(row) if row else None
 
     async def process_submit_order(self, cmd: dict) -> dict:

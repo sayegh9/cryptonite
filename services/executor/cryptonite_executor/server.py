@@ -322,7 +322,7 @@ async def run_poller_loop(pipe: DemoExecutionPipeline, poll_interval_s: float = 
                             await pipe.venue_client.cancel_order(symbol, client_order_id)
                             await pipe._finalize_command(cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "COMPLETED", "SUCCESS", None)
                         except Exception as e:
-                            await pipe._finalize_command(cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "FAILED", "FAILED", str(e))
+                            await pipe._finalize_command(cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "FAILED", "REJECTED", str(e))
                     else:
                         await pipe._finalize_command(cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "REJECTED", "REJECTED", "Missing client_order_id")
                 elif cmd_type == "TRIP_KILL_SWITCH":
@@ -462,7 +462,7 @@ async def run_poller_loop(pipe: DemoExecutionPipeline, poll_interval_s: float = 
                     except Exception as trans_err:
                         logger.error("Failed to execute strategy command %s (%s): %s", cmd["command_id"], cmd_type, trans_err)
                         await pipe._finalize_command(
-                            cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "FAILED", "FAILED", str(trans_err)
+                            cmd["command_id"], cmd["attempt_id"], cmd["lease_owner"], "FAILED", "REJECTED", str(trans_err)
                         )
                 else:
                     logger.warning("Unrecognized command type: %s", cmd_type)
