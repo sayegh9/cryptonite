@@ -50,6 +50,7 @@ patch*.py
 recovered_compose.txt
 .ua/
 
+graphify-out/*.json
 
 # Local scratch files (never committed)
 scratch/
