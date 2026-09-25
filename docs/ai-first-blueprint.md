@@ -180,8 +180,8 @@ Ollama (`OLLAMA_KEEP_ALIVE=-1`, `NUM_PARALLEL=2`, `num_ctx` 8192) on Tailscale; 
 | Migration | Tables / changes |
 |---|---|
 | `022_ai_gateway` | `ai_model_routes`; `llm_cost_ledger` + `role, provider, cached_input_tokens, thinking_tokens, latency_ms, trace_id, status`; `ai_decision_traces (id, parent_id, role, session_id, mandate_id, inputs_ref, tool_calls jsonb, output jsonb, model, cost_usd, created_at)` |
-| `023_ai_sessions` | `ai_sessions`, `ai_messages (session_id, role, content, widgets jsonb, trace_id)`, `ai_session_summaries` |
-| `024_ai_evals` | `ai_eval_sets`, `ai_eval_cases`, `ai_eval_runs (role, model, set_version, metrics jsonb, passed)`, `ai_eval_results` |
+| `023_ai_evals` | `ai_eval_runs (set_version, model, metrics jsonb, passed)`, `ai_eval_results`; case sets are versioned files in `cryptonite_agents/evals/sets/` |
+| `024_ai_sessions` | `ai_sessions`, `ai_messages (session_id, role, content, widgets jsonb, trace_id)`, `ai_session_summaries` |
 | `025_ai_mandates` | `ai_mandates`, `ai_mandate_equity (mandate_id, ts, equity, hwm)`, `ai_autonomy_events`; `execution_commands.mandate_id` |
 | `026_ai_approvals` | `ai_approvals (id, mandate_id, action_class, payload, expires_at, timeout_policy, status, decided_via, decided_at)`, `notifications_outbox` |
 | `027_ai_outcomes` | `ai_decision_outcomes (decision_id, horizon, return_pct, mfe, mae, labelled_at)` |
@@ -281,7 +281,7 @@ Assumes one operator plus AI pair-programming, about 15 weeks. Each item is an a
 | A1.3 | Budget guard: ledger writes on every call, $25 cap, 70% alert, degrade order | Test: cap reached → debates refused, exits still run |
 | A1.4 | Port `fleet.py`, `debate_fleet.py`, `agent_worker` and `debate_worker` to the gateway; verdicts as Pydantic models (fixes F8) | Old endpoints behave the same; parse-fallback path deleted; pytest runs without API keys |
 | A1.5 | Tool registry with READ / REDUCE_RISK / ADD_RISK tags; permission gate (mandate stub = deny ADD_RISK) | Test: an ADD_RISK tool call without approval is refused and traced |
-| A1.6 | Evals v1: CLI, `024` tables, spike set as `v1` | `evals run` produces a stored, comparable report |
+| A1.6 | Evals v1: CLI, `023` tables, spike set as `v1` | `evals run` produces a stored, comparable report |
 | A1.7 | Remove `google.antigravity` dependency | `uv lock` without it; macOS x86 pytest works |
 
 **Gate 1:** every model call goes through the gateway and is costed and traced; the spend panel shows real numbers.
@@ -303,7 +303,7 @@ Assumes one operator plus AI pair-programming, about 15 weeks. Each item is an a
 
 | ID | Item | Acceptance |
 |---|---|---|
-| A3.1 | Migration `023`; session + memory service; summary compaction | Brain recalls earlier turns across a reload |
+| A3.1 | Migration `024`; session + memory service; summary compaction | Brain recalls earlier turns across a reload |
 | A3.2 | Brain agent with the planner + tool set (market, research, debate, explain, propose_order) | "Analyze BTC → propose → paper order (approved)" in one conversation |
 | A3.3 | SSE stream endpoint + typed widget events | Tokens and widgets stream; cancel works |
 | A3.4 | **Brain Home** UI (replaces the persona picker), inline widgets, context rail | Playwright spec with mocked SSE; no hydration errors |
@@ -466,7 +466,7 @@ Also used: `agency-database-optimizer` (migrations 021–027), `agency-applicati
 | Phase | Lead | Supporting | QA / review | Operator (human-only) |
 |---|---|---|---|---|
 | **0 Foundation** | `agency-minimal-change-engineer` | `agency-database-optimizer` (A0.2, A0.3), `agency-backend-architect` (A0.4), `agency-frontend-developer` (A0.5), `agent-skills:git-workflow-and-versioning` (A0.1) | test-engineer, code-reviewer, `ripwire-change-check`; A0.4–A0.6 RED | Decide O4; **own the triage of the other author's uncommitted work (A0.1)**; Gate 0 sign-off |
-| **1 Gateway + evals** | `agency-ai-engineer` | `agency-software-architect` (A1.2 design + ADR), `source-driven-development` (A1.1), `agency-database-optimizer` (022, 024), `deprecation-and-migration` (A1.7), `observability-and-instrumentation` (A1.2 traces) | test-engineer, code-reviewer, `ripwire-layers` rule; A1.3, A1.5 RED | **A1.1 spike pass/fail call**; Gate 1 sign-off |
+| **1 Gateway + evals** | `agency-ai-engineer` | `agency-software-architect` (A1.2 design + ADR), `source-driven-development` (A1.1), `agency-database-optimizer` (022, 023), `deprecation-and-migration` (A1.7), `observability-and-instrumentation` (A1.2 traces) | test-engineer, code-reviewer, `ripwire-layers` rule; A1.3, A1.5 RED | **A1.1 spike pass/fail call**; Gate 1 sign-off |
 | **2 Cost controls** | `agency-ai-engineer` | `agency-prompt-engineer` (A2.4, A2.5), `agency-backend-architect` (A2.1, A2.2), `performance-optimization` (brief size / latency) | test-engineer, eval runs (§8); A2.1 RED | Accept the 7-day spend reading; Gate 2 |
 | **3 One Brain** | `agency-ai-engineer` (A3.1–A3.3, A3.6) + `agency-frontend-developer` (A3.4, A3.5) | `agency-ux-architect` + `agency-ui-designer` (Brain Home, widgets, Trace drawer), `agency-prompt-engineer` (planner prompt), `api-and-interface-design` (SSE event schema) | `agency-test-automation-engineer` (Playwright + mocked SSE), `agency-ui-finish-gate-reviewer`, `design:accessibility-review` | Use Brain Home daily for a week (Gate 3) |
 | **4 Research loop** | `agency-ai-engineer` | `agency-backend-architect` (async backtest jobs, Optuna), `agency-investment-researcher` (walk-forward / OOS design, A4.5), `agency-prompt-engineer` | test-engineer, code-reviewer | Judge the first 3 AI-built strategies |
