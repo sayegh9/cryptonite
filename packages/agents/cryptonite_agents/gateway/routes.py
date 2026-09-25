@@ -66,17 +66,19 @@ DEFAULT_ROUTES: dict[str, RoleRoute] = {
         RoleRoute("strategy.review", PRO, priority=_O),
         # Entry debate
         RoleRoute("triage", FLASH_LITE, FLASH, _DEGRADE, _D, max_output_tokens=512, thinking_budget=0),
-        RoleRoute("debate.analyst", FLASH, priority=_D),
-        RoleRoute("debate.side", FLASH, priority=_D),
-        RoleRoute("debate.risk", FLASH, priority=_D),
-        RoleRoute("debate.verdict", PRO, priority=_D),
-        RoleRoute("debate.cro", PRO, priority=_D),
+        # Thinking is billed as output: side roles get small budgets, verdicts keep room to reason (A2.5)
+        RoleRoute("debate.lite", FLASH, priority=_D, max_output_tokens=3000, thinking_budget=1024),
+        RoleRoute("debate.analyst", FLASH, priority=_D, max_output_tokens=1500, thinking_budget=512),
+        RoleRoute("debate.side", FLASH, priority=_D, max_output_tokens=1500, thinking_budget=512),
+        RoleRoute("debate.risk", FLASH, priority=_D, max_output_tokens=1200, thinking_budget=512),
+        RoleRoute("debate.verdict", PRO, priority=_D, max_output_tokens=4000, thinking_budget=2048),
+        RoleRoute("debate.cro", PRO, priority=_D, max_output_tokens=4000, thinking_budget=2048),
         # Exit debate: risk reduction, never stopped by budget
-        RoleRoute("exit.side", FLASH, priority=_C),
-        RoleRoute("exit.verdict", PRO, priority=_C),
+        RoleRoute("exit.side", FLASH, priority=_C, max_output_tokens=1500, thinking_budget=512),
+        RoleRoute("exit.verdict", PRO, priority=_C, max_output_tokens=4000, thinking_budget=2048),
         # Learning and housekeeping
         RoleRoute("reflection", FLASH, priority=_O),
-        RoleRoute("summarize", FLASH_LITE, FLASH, _DEGRADE, _O),
+        RoleRoute("summarize", FLASH_LITE, FLASH, _DEGRADE, _O, thinking_budget=0),
         RoleRoute("embed", EMBED, fallback_policy=_DEGRADE, priority=_D),
     ]
 }

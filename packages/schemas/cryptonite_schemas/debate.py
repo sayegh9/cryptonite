@@ -43,3 +43,14 @@ class TriageDecision(BaseModel):
     worth_debate: bool
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str = Field(max_length=400)
+
+
+class LiteDebateDecision(BaseModel):
+    """One-call debate for low-stakes candidates: both sides argued, then a portfolio decision."""
+
+    bull_case: str = Field(max_length=1200)
+    bear_case: str = Field(max_length=1200)
+    recommendation: Literal["BUY", "HOLD", "SELL"]
+    conviction_score: float = Field(ge=0.0, le=1.0)
+    allocation_pct: float = Field(ge=0.0, le=MAX_ALLOCATION_PCT, description="Percent of equity, 0-25")
+    reasoning: str

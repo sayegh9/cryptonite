@@ -12,16 +12,19 @@ from cryptonite_agents.debate_fleet import (
     BULL,
     CHIEF_RISK_OFFICER,
     CONSERVATIVE_RISK,
+    DEBATE_LITE,
     EXIT_BEAR,
     EXIT_BULL,
     EXIT_MANAGER,
     MARKET_ANALYST,
     NEUTRAL_RISK,
     ONCHAIN_ANALYST,
+    RISK_PANEL,
     SENTIMENT_ANALYST,
     research_manager,
 )
 from cryptonite_agents.gateway import BudgetGuard, Gateway
+from gate import AUTOMATIC_SOURCES, pre_debate_gate
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger("debate_worker")
@@ -31,6 +34,25 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_api:api_dev_pa
 DEBATE_QUEUE = "stream:debate_queue"
 DEBATE_WORKER_GROUP = "debate_workers"
 DEBATE_WORKER_NAME = f"worker-{uuid.uuid4().hex[:8]}"
+
+LITE_MAX_ALLOCATION_PCT = 5.0  # below this a lite verdict stands on its own
+LITE_MIN_CONVICTION = 0.35  # a small lite verdict weaker than this is recorded as NO_TRADE
+# "merged": one Pro risk-panel call; "full": 3 risk managers + CRO (4 calls). See docs/adr/0002.
+RISK_PANEL_MODE = os.getenv("DEBATE_RISK_PANEL_MODE", "merged")
+
+
+async def load_brief(redis_client, payload: dict) -> str | None:
+    """The scanner's cached market brief for this candidate, if any."""
+    key = payload.get("brief_key")
+    if not key or not str(key).startswith("brief:"):
+        return None
+    try:
+        brief = await redis_client.get(key)
+        return brief.decode() if isinstance(brief, bytes) else brief
+    except Exception as e:
+        logger.warning(f"Could not load market brief {key}: {e}")
+        return None
+
 
 def turn_text(output) -> str:
     """Debate turn content: free text as-is, structured verdicts as JSON."""
@@ -123,6 +145,10 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     trigger_source = payload.get("trigger_source", "scanner")
     
     logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source}")
+    brief = await load_brief(redis_client, payload)
+    gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief)
+    if not gate.allowed:
+        return
     acl = AntiCorruptionLayer(pg_pool)
     context = await acl.get_instrument_context(instrument_id)
     
@@ -158,7 +184,9 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     
     try:
         logger.info(f"Phase 1: Gathering Intelligence for {instrument_id}...")
-        prompt = f"Analyze {instrument_id} based on your specialization. Current context: {json.dumps(context)}"
+        context_text = f"{brief}\n\n" if brief else ""
+        context_text += f"Position and price context: {json.dumps(context, default=str)}"
+        prompt = f"Analyze {instrument_id} based on your specialization.\n\n{context_text}"
 
         async def run_agent(persona, prompt_text):
             """Run one debate persona; record and broadcast its turn. Returns the gateway result."""
@@ -182,57 +210,81 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         def section(persona, result) -> str:
             return f"--- {persona.name.upper()} ---\n{turn_text(result.output)}"
 
-        analysts = (MARKET_ANALYST, SENTIMENT_ANALYST, ONCHAIN_ANALYST)
-        results = await asyncio.gather(*(run_agent(a, prompt) for a in analysts))
-        intel_dossier = "\n\n".join(section(a, r) for a, r in zip(analysts, results))
+        # Stakes-sized debate (A2.4): scanner candidates get one lite call first; any verdict
+        # sized at >= 5% escalates to the full fleet, whatever its conviction.
+        # Operator-triggered debates always get the full fleet.
+        lite = None
+        if trigger_source in AUTOMATIC_SOURCES:
+            lite_prompt = f"{context_text}\n\nDebate and decide for {instrument_id}."
+            lite = (await run_agent(DEBATE_LITE, lite_prompt)).output
+            if lite.recommendation != "HOLD" and lite.allocation_pct >= LITE_MAX_ALLOCATION_PCT:
+                # Any sizeable position gets the full review, whatever the lite conviction
+                logger.info(f"Lite verdict for {instrument_id} is high-stakes ({lite.allocation_pct}%): escalating to the full debate")
+                lite = None
+            else:
+                decision = lite.recommendation
+                if decision != "HOLD" and lite.conviction_score < LITE_MIN_CONVICTION:
+                    decision = "HOLD"  # a weak, small verdict is not worth staging
+                conviction = lite.conviction_score
+                allocation = lite.allocation_pct if decision != "HOLD" else 0.0
+                conviction_level = decision
+                reasoning = f"{lite.reasoning}\n\nBull: {lite.bull_case}\n\nBear: {lite.bear_case}"
 
-        logger.info(f"Phase 2: Bull vs Bear Debate for {instrument_id}...")
-        custom_thesis = payload.get("custom_thesis")
-        custom_thesis_inject = f"\n\n--- SPECIFIC STRATEGY EVALUATION REQUIRED ---\n{custom_thesis}" if custom_thesis else ""
+        if lite is None:
+            analysts = (MARKET_ANALYST, SENTIMENT_ANALYST, ONCHAIN_ANALYST)
+            results = await asyncio.gather(*(run_agent(a, prompt) for a in analysts))
+            intel_dossier = "\n\n".join(section(a, r) for a, r in zip(analysts, results))
 
-        bull_prompt = f"Here is the intel dossier for {instrument_id}:\n{intel_dossier}{custom_thesis_inject}\nMake your opening Bull case. If a specific strategy evaluation is required above, ground your case in its backtest metrics."
-        bull_thesis = section(BULL, await run_agent(BULL, bull_prompt))
+            logger.info(f"Phase 2: Bull vs Bear Debate for {instrument_id}...")
+            custom_thesis = payload.get("custom_thesis")
+            custom_thesis_inject = f"\n\n--- SPECIFIC STRATEGY EVALUATION REQUIRED ---\n{custom_thesis}" if custom_thesis else ""
 
-        bear_prompt = f"The Bull Researcher has presented this opening thesis:\n{bull_thesis}\n\nRebut their points and present the Bear case."
-        bear_rebuttal = section(BEAR, await run_agent(BEAR, bear_prompt))
+            bull_prompt = f"Here is the intel dossier for {instrument_id}:\n{intel_dossier}{custom_thesis_inject}\nMake your opening Bull case. If a specific strategy evaluation is required above, ground your case in its backtest metrics."
+            bull_thesis = section(BULL, await run_agent(BULL, bull_prompt))
 
-        bull_def_prompt = f"The Bear Researcher has rebutted with:\n{bear_rebuttal}\n\nDefend your thesis and provide the final word."
-        bull_defense = section(BULL, await run_agent(BULL, bull_def_prompt))
+            bear_prompt = f"The Bull Researcher has presented this opening thesis:\n{bull_thesis}\n\nRebut their points and present the Bear case."
+            bear_rebuttal = section(BEAR, await run_agent(BEAR, bear_prompt))
 
-        full_transcript = intel_dossier + "\n\n" + "\n\n".join([bull_thesis, bear_rebuttal, bull_defense])
+            bull_def_prompt = f"The Bear Researcher has rebutted with:\n{bear_rebuttal}\n\nDefend your thesis and provide the final word."
+            bull_defense = section(BULL, await run_agent(BULL, bull_def_prompt))
 
-        logger.info(f"Phase 3: Portfolio Manager Synthesis for {instrument_id}...")
-        past_lessons = await recall_lessons(pg_pool, gateway, f"Market context for {instrument_id}:\n{intel_dossier}")
+            full_transcript = intel_dossier + "\n\n" + "\n\n".join([bull_thesis, bear_rebuttal, bull_defense])
 
-        pm = research_manager(lessons=past_lessons)
-        pm_prompt = f"Based on the following debate transcript for {instrument_id}, make the final portfolio decision.\n\n{full_transcript}"
-        # Validated PortfolioDecision; an invalid or missing verdict fails the run (no HOLD default)
-        pm_decision = (await run_agent(pm, pm_prompt)).output
-        decision = pm_decision.recommendation
-        conviction = pm_decision.conviction_score
-        allocation = pm_decision.allocation_pct
-        reasoning = pm_decision.reasoning
+            logger.info(f"Phase 3: Portfolio Manager Synthesis for {instrument_id}...")
+            past_lessons = await recall_lessons(pg_pool, gateway, f"Market context for {instrument_id}:\n{intel_dossier}")
 
-        # Phase 4: Risk Debate & Sizing
-        logger.info(f"Phase 4: Risk Debate & Sizing for {instrument_id}...")
-        portfolio_state = await acl.get_portfolio_state()
+            pm = research_manager(lessons=past_lessons)
+            pm_prompt = f"Based on the following debate transcript for {instrument_id}, make the final portfolio decision.\n\n{full_transcript}"
+            # Validated PortfolioDecision; an invalid or missing verdict fails the run (no HOLD default)
+            pm_decision = (await run_agent(pm, pm_prompt)).output
+            decision = pm_decision.recommendation
+            conviction = pm_decision.conviction_score
+            allocation = pm_decision.allocation_pct
+            reasoning = pm_decision.reasoning
 
-        risk_prompt = (
-            f"Portfolio Manager proposed {decision} for {instrument_id} with {allocation}% allocation.\n"
-            f"Current Portfolio State: {json.dumps(portfolio_state, default=str)}\n"
-            f"Make your risk argument."
-        )
-        risk_panel = (AGGRESSIVE_RISK, CONSERVATIVE_RISK, NEUTRAL_RISK)
-        results_risk = await asyncio.gather(*(run_agent(r, risk_prompt) for r in risk_panel))
-        risk_transcript = f"PM Proposal: {decision} ({allocation}%)\n\n" + "\n\n".join(
-            section(p, r) for p, r in zip(risk_panel, results_risk)
-        )
+            # Phase 4: Risk Debate & Sizing
+            logger.info(f"Phase 4: Risk Debate & Sizing for {instrument_id}...")
+            portfolio_state = await acl.get_portfolio_state()
 
-        cro_prompt = f"Based on the risk debate, make the final sizing decision:\n\n{risk_transcript}"
-        cro_decision = (await run_agent(CHIEF_RISK_OFFICER, cro_prompt)).output
-        allocation = cro_decision.final_allocation_pct
-        conviction_level = cro_decision.conviction_level
-        reasoning += "\n\nRisk Adjustment: " + cro_decision.risk_reasoning
+            risk_prompt = (
+                f"Portfolio Manager proposed {decision} for {instrument_id} with {allocation}% allocation.\n"
+                f"Current Portfolio State: {json.dumps(portfolio_state, default=str)}\n"
+                f"Make your risk argument."
+            )
+            if RISK_PANEL_MODE == "merged":
+                # One Pro call weighs the aggressive/conservative/neutral views and decides (A2.4)
+                cro_decision = (await run_agent(RISK_PANEL, risk_prompt + "\nThen make the final sizing decision.")).output
+            else:
+                risk_panel = (AGGRESSIVE_RISK, CONSERVATIVE_RISK, NEUTRAL_RISK)
+                results_risk = await asyncio.gather(*(run_agent(r, risk_prompt) for r in risk_panel))
+                risk_transcript = f"PM Proposal: {decision} ({allocation}%)\n\n" + "\n\n".join(
+                    section(p, r) for p, r in zip(risk_panel, results_risk)
+                )
+                cro_prompt = f"Based on the risk debate, make the final sizing decision:\n\n{risk_transcript}"
+                cro_decision = (await run_agent(CHIEF_RISK_OFFICER, cro_prompt)).output
+            allocation = cro_decision.final_allocation_pct
+            conviction_level = cro_decision.conviction_level
+            reasoning += "\n\nRisk Adjustment: " + cro_decision.risk_reasoning
 
         async with pg_pool.acquire() as conn:
             # Check system setting for autonomous vs interactive
@@ -240,7 +292,9 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
             execution_mode = resolve_execution_mode(mode_row["value"] if mode_row else None)
             
             final_status = 'COMPLETED' if execution_mode == 'autonomous' else 'PENDING_APPROVAL'
-            
+            if str(conviction_level).upper() == "HOLD":
+                final_status = 'NO_TRADE'  # nothing to approve or execute
+
             # Save final decision
             await conn.execute(
                 """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning, decision_price)
@@ -291,6 +345,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
 
     except Exception as e:
         logger.error(f"Debate failed for {instrument_id}: {e}")
+        if gate.cooldown_key:  # a failed run must not block the setup for the cooldown window
+            await redis_client.delete(gate.cooldown_key)
         async with pg_pool.acquire() as conn:
             await conn.execute("UPDATE debate_runs SET status = 'FAILED', completed_at = now() WHERE id = $1", run_id)
 
@@ -306,6 +362,9 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
     
     if not context.get("current_position"):
         logger.info(f"No open position found for {instrument_id}. Skipping exit debate.")
+        if run_id_str:  # the run was created by the exit monitor; close it out
+            async with pg_pool.acquire() as conn:
+                await conn.execute("UPDATE debate_runs SET status = 'NO_TRADE', completed_at = now() WHERE id = $1", run_id)
         return
         
     try:

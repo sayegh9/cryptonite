@@ -1,11 +1,13 @@
 """Autonomous debate execution stays frozen until mandates exist (AI-first blueprint D11, A0.6)."""
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
 MAIN = Path(__file__).resolve().parents[1] / "services" / "debate_worker" / "main.py"
+sys.path.insert(0, str(MAIN.parent))  # main.py imports its sibling gate module
 
 
 @pytest.fixture(scope="module")

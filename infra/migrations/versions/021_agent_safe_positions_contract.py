@@ -42,6 +42,15 @@ def upgrade() -> None:
     WHERE p.status = 'OPEN';
     """)
     op.execute("GRANT SELECT ON agent_safe_positions TO cryptonite_agent_ro;")
+    # The debate worker (cryptonite_api) builds agent context from this view (added 2026-09-25;
+    # databases migrated to 021 before that need this grant applied once by hand).
+    op.execute("""
+    DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cryptonite_api') THEN
+            GRANT SELECT ON agent_safe_positions TO cryptonite_api;
+        END IF;
+    END $$;
+    """)
 
 
 def downgrade() -> None:

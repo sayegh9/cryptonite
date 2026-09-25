@@ -3,6 +3,7 @@ verdict fails the run closed instead of staging a HOLD decision. Throwaway DB at
 models are pydantic-ai FunctionModels."""
 
 import importlib.util
+import sys
 import json
 import uuid
 from pathlib import Path
@@ -18,6 +19,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 MAIN = Path(__file__).resolve().parents[1] / "services" / "debate_worker" / "main.py"
+sys.path.insert(0, str(MAIN.parent))  # main.py imports its sibling gate module
 INSTRUMENT = "BTCUSDT.BINANCE"
 
 VERDICTS = {
