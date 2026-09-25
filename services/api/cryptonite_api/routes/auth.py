@@ -69,10 +69,12 @@ async def require_auth(
     """Unified auth dependency validating cookie or machine token without CSRF."""
     if x_api_token:
         # Machine token path
+        import hashlib
+        token_hash_hex = hashlib.sha256(x_api_token.encode('utf-8')).hexdigest()
         async with auth_mgr._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, scopes FROM machine_api_tokens WHERE token_hash = encode(sha256($1::bytea), 'hex') AND is_active = true AND (expires_at IS NULL OR expires_at > now())",
-                x_api_token
+                "SELECT id, scopes FROM machine_api_tokens WHERE token_hash = $1 AND is_active = true AND (expires_at IS NULL OR expires_at > now())",
+                token_hash_hex
             )
             if not row:
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired machine token")
