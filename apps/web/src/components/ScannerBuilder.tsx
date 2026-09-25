@@ -39,7 +39,10 @@ export function ScannerBuilder({ onCreated }: { onCreated: () => void }) {
       const universe = instruments.split(",").map(i => i.trim()).filter(i => i);
       await fetchApi("/scanners", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "",
+        },
         body: JSON.stringify({
           name,
           description,

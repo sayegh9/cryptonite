@@ -158,6 +158,7 @@ export default function TerminalPage() {
         });
         const res = await fetch("/agent-api/debates/trigger", {
           method: "POST",
+          credentials: "include",
           headers: {
             "Content-Type": "application/json",
             "X-CSRF-Token": localStorage.getItem("csrf_token") || "",

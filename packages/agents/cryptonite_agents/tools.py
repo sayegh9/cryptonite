@@ -224,13 +224,21 @@ def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: st
         "http://localhost:8000/api/v1/agents/debates/trigger",
     ])
     
+    # The trigger route requires operator auth; agents authenticate with a
+    # machine token (machine_api_tokens row with the 'operator' scope).
+    headers = {'Content-Type': 'application/json'}
+    api_token = os.getenv("CRYPTONITE_AGENT_API_TOKEN")
+    if not api_token:
+        return "Error staging proposal: CRYPTONITE_AGENT_API_TOKEN is not set; the agent cannot authenticate to the API."
+    headers['X-API-Token'] = api_token
+
     last_err = None
     for url in candidate_urls:
         try:
             req = urllib.request.Request(
                 url,
                 data=data_bytes,
-                headers={'Content-Type': 'application/json'},
+                headers=headers,
                 method='POST'
             )
             with urllib.request.urlopen(req, timeout=5.0) as response:

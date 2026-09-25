@@ -188,7 +188,11 @@ export const ResearchLab: React.FC = () => {
     try {
       const res = await fetch("/api/v1/backtests", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "",
+        },
         body: JSON.stringify(payload),
       });
 

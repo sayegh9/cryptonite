@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from cryptonite_api.routes.auth import require_operator, require_csrf
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,7 @@ class CreateAlertRequest(BaseModel):
     threshold: float = Field(..., gt=0)
 
 
-@router.get("")
+@router.get("", dependencies=AUTHED_READ)
 async def list_alerts(request: Request) -> list[dict[str, Any]]:
     """List all price alerts."""
     pool = request.app.state.pool
@@ -50,7 +50,7 @@ async def list_alerts(request: Request) -> list[dict[str, Any]]:
     ]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=OPERATOR_WRITE)
 async def create_alert(body: CreateAlertRequest, request: Request) -> dict[str, Any]:
     """Create a new price alert."""
     pool = request.app.state.pool
@@ -89,7 +89,7 @@ async def create_alert(body: CreateAlertRequest, request: Request) -> dict[str, 
     }
 
 
-@router.delete("/{alert_id}", status_code=204)
+@router.delete("/{alert_id}", status_code=204, dependencies=OPERATOR_WRITE)
 async def delete_alert(alert_id: UUID, request: Request) -> None:
     """Delete a price alert by ID."""
     pool = request.app.state.pool

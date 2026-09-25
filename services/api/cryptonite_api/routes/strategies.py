@@ -5,7 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from cryptonite_strategies.registry import STRATEGY_REGISTRY, list_strategies
-from cryptonite_api.routes.auth import require_operator, require_csrf
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])
@@ -61,7 +61,7 @@ class CreateStrategyRequest(BaseModel):
     description: str
     python_code: str
 
-@router.post("")
+@router.post("", dependencies=OPERATOR_WRITE)
 async def create_strategy(req: CreateStrategyRequest, request: Request):
     pool = request.app.state.pool
     
@@ -104,7 +104,7 @@ async def create_strategy(req: CreateStrategyRequest, request: Request):
     return {"status": "success", "slug": slug, "id": str(strat_id), "version_id": str(version_id)}
 
 
-@router.get("")
+@router.get("", dependencies=AUTHED_READ)
 async def get_strategies(request: Request) -> list[dict[str, Any]]:
     """List all available strategies with active versions and parameter schemas."""
     pool = request.app.state.pool
@@ -141,7 +141,7 @@ async def get_strategies(request: Request) -> list[dict[str, Any]]:
     return results
 
 
-@router.get("/{slug}")
+@router.get("/{slug}", dependencies=AUTHED_READ)
 async def get_strategy_by_slug(slug: str, request: Request) -> dict[str, Any]:
     """Get single strategy details by slug."""
     pool = request.app.state.pool

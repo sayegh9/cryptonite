@@ -12,7 +12,7 @@ from cryptonite_scanner.models import (
     compute_spec_hash,
 )
 from cryptonite_scanner.presets import BUILTIN_PRESETS
-from cryptonite_api.routes.auth import require_operator, require_csrf
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 router = APIRouter(prefix="/api/v1/scanners", tags=["scanners"])
@@ -61,7 +61,7 @@ async def ensure_presets_seeded(pool: Any) -> None:
                 )
 
 
-@router.get("")
+@router.get("", dependencies=AUTHED_READ)
 async def list_scanners(request: Request) -> list[ScanSpecRead]:
     """List active scanner specs with their current active version."""
     pool = request.app.state.pool
@@ -110,7 +110,7 @@ async def list_scanners(request: Request) -> list[ScanSpecRead]:
     return result
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED, dependencies=OPERATOR_WRITE)
 async def create_scanner(spec_in: ScanSpecCreate, request: Request) -> ScanSpecRead:
     """Create a new scanner specification and its immutable version 1."""
     pool = request.app.state.pool
@@ -190,7 +190,7 @@ async def create_scanner(spec_in: ScanSpecCreate, request: Request) -> ScanSpecR
     )
 
 
-@router.put("/{spec_id}")
+@router.put("/{spec_id}", dependencies=OPERATOR_WRITE)
 async def update_scanner(spec_id: UUID, spec_in: ScanSpecCreate, request: Request) -> ScanSpecRead:
     """Append a new immutable version to the spec and point active_version_id to it."""
     pool = request.app.state.pool
@@ -272,7 +272,7 @@ async def update_scanner(spec_id: UUID, spec_in: ScanSpecCreate, request: Reques
     )
 
 
-@router.delete("/{spec_id}")
+@router.delete("/{spec_id}", dependencies=OPERATOR_WRITE)
 async def archive_scanner(spec_id: UUID, request: Request) -> dict[str, str]:
     """Archive a scanner specification without deleting research history."""
     pool = request.app.state.pool
@@ -285,7 +285,7 @@ async def archive_scanner(spec_id: UUID, request: Request) -> dict[str, str]:
     return {"status": "archived", "id": str(spec_id)}
 
 
-@router.post("/{spec_id}/run", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{spec_id}/run", status_code=status.HTTP_202_ACCEPTED, dependencies=OPERATOR_WRITE)
 async def enqueue_scan_run(
     spec_id: UUID, request: Request, response: Response
 ) -> dict[str, Any]:
@@ -320,7 +320,7 @@ async def enqueue_scan_run(
     }
 
 
-@router.get("/jobs/{job_id}")
+@router.get("/jobs/{job_id}", dependencies=AUTHED_READ)
 async def get_scan_job(job_id: UUID, request: Request) -> ScanJobRead:
     """Check the status of an enqueued scan job."""
     pool = request.app.state.pool

@@ -509,6 +509,7 @@ export function OrchestratorCanvas({
       const endpoint = currentAgent.endpoint || "/agent-api/chat";
       const res = await fetchApi(endpoint, {
         method: "POST",
+        headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
         body: JSON.stringify({
           message: finalPrompt,
           symbol: targetSym,

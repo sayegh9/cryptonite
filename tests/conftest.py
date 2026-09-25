@@ -97,3 +97,18 @@ def sample_enriched_bars(sample_raw_klines):
         )
         for k in sample_raw_klines
     ]
+
+
+@pytest.fixture
+def operator_auth():
+    """Authenticate every request to the shared API app as an operator (auth is tested in test_route_auth_guards)."""
+    from cryptonite_api.main import app
+    from cryptonite_api.routes.auth import require_auth, require_csrf, require_operator
+
+    session = {"type": "cookie", "role": "operator", "user_id": "test-operator"}
+    deps = (require_auth, require_operator, require_csrf)
+    for dep in deps:
+        app.dependency_overrides[dep] = lambda: session
+    yield session
+    for dep in deps:
+        app.dependency_overrides.pop(dep, None)

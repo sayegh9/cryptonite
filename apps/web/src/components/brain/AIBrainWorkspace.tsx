@@ -119,6 +119,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
     try {
       await fetch("/agent-api/debates/trigger", {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
           "X-CSRF-Token": typeof window !== "undefined" ? localStorage.getItem("csrf_token") || "" : "",

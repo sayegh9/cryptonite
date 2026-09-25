@@ -115,6 +115,11 @@ async def require_csrf(
     return auth_data
 
 
+# Route-level dependency sets: `@router.post(..., dependencies=OPERATOR_WRITE)`.
+OPERATOR_WRITE = [Depends(require_operator), Depends(require_csrf)]
+AUTHED_READ = [Depends(require_auth)]
+
+
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
