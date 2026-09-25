@@ -482,3 +482,19 @@ Also used: `agency-database-optimizer` (migrations 021–027), `agency-applicati
 - Subagents get the item's row from §9, the relevant §10 invariants, and the file pointers from §1. They never get "the whole blueprint, go".
 - A FAIL on the third attempt stops the pipeline and escalates to the operator with the QA findings. The pipeline doesn't skip ahead.
 - Nothing in this pipeline pushes, merges to `main`, or changes `system_settings` in the dev DB without operator approval.
+
+### 14.5 Parallel execution: Phase 2 (local) and Phase 3 (cloud)
+
+Phase 3 depends only on the Phase 1 gateway, so it runs in a cloud session in parallel with Phase 2. File ownership prevents merge conflicts:
+
+| Area | Phase 3 — cloud, branch `feat/ai-first-phase3-brain` | Phase 2 — local, branch `feat/ai-first-phase0` |
+|---|---|---|
+| Brain | **owns** new `packages/agents/cryptonite_agents/brain/**` (incl. its own `BRAIN_ROUTES`, merged into the gateway's routes by the caller) | — |
+| Gateway | **append-only**: a new `run_model_stream` at the end of `providers/pydantic_ai_backend.py`, a new `Gateway.stream` method at the end of the class | owns `routes.py`, `budget.py`, `pricing.py`, the body of `run_model` (caching, thinking budgets) |
+| Workers | **additive** `/api/v1/brain/*` endpoints in `services/agent_worker/server.py`; existing endpoints unchanged | owns `services/debate_worker/**`, `services/scanner/**`, `debate_fleet.py`, `tools.py` |
+| Database | owns migration `024_ai_sessions` | no migrations in Phase 2 |
+| Web | owns `apps/web/**` (Brain Home, Trace drawer, stores, SSE proxy, e2e) | no web changes in Phase 2 |
+| Evals | adds `evals/sets/brain_v1.jsonl` | adds `evals/sets/v2.jsonl` (triage, debate.lite); `v1.jsonl` frozen |
+| Out of scope for cloud | A3.6 (news/sentiment sources; touches the debate roles) → local after Phase 2 | — |
+
+Merge order: Phase 2 lands on `feat/ai-first-phase0`; the cloud branch merges `feat/ai-first-phase0` before its PR is reviewed; the Phase 3 PR targets `feat/ai-first-phase0`. Nothing merges to `main` without the operator.
