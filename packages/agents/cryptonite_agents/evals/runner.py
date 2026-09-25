@@ -20,7 +20,9 @@ from typing import Any
 
 from cryptonite_agents.debate_fleet import (
     CHIEF_RISK_OFFICER,
+    DEBATE_LITE,
     EXIT_MANAGER,
+    RISK_PANEL,
     TRIAGE,
     research_manager,
 )
@@ -39,6 +41,8 @@ PERSONAS: dict[str, Persona] = {
     "cro": CHIEF_RISK_OFFICER,
     "exit": EXIT_MANAGER,
     "triage": TRIAGE,
+    "lite": DEBATE_LITE,
+    "risk_panel": RISK_PANEL,
 }
 
 
@@ -129,8 +133,10 @@ def summarize(results: list[CaseResult]) -> dict[str, Any]:
 
 
 async def run_set(gateway: Gateway, set_name: str, model: str, repeat: int = 1,
-                  kinds: set[str] | None = None) -> tuple[list[CaseResult], dict[str, Any]]:
-    cases = [c for c in load_set(set_name) if not kinds or c["kind"] in kinds]
+                  kinds: set[str] | None = None,
+                  personas: set[str] | None = None) -> tuple[list[CaseResult], dict[str, Any]]:
+    cases = [c for c in load_set(set_name)
+             if (not kinds or c["kind"] in kinds) and (not personas or c["persona"] in personas)]
     results = []
     for _ in range(repeat):
         for case in cases:

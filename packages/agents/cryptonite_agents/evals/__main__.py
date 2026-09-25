@@ -26,6 +26,7 @@ async def main(argv: list[str]) -> int:
     run.add_argument("--model", required=True)
     run.add_argument("--repeat", type=int, default=1)
     run.add_argument("--kinds", default="")
+    run.add_argument("--personas", default="")
     run.add_argument("--min-tool-chain", type=float)
     run.add_argument("--min-structured", type=float)
     run.add_argument("--store", action="store_true")
@@ -35,7 +36,8 @@ async def main(argv: list[str]) -> int:
     # Eval spend is reported in the run itself and kept out of the production budget/ledger.
     gateway = Gateway(budget=BudgetGuard(default_cap_usd=10**6))
     kinds = {k for k in args.kinds.split(",") if k} or None
-    results, metrics = await run_set(gateway, args.set, args.model, args.repeat, kinds)
+    personas = {p for p in args.personas.split(",") if p} or None
+    results, metrics = await run_set(gateway, args.set, args.model, args.repeat, kinds, personas)
 
     passed = None
     failures = []
