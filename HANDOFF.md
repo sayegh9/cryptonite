@@ -1,5 +1,24 @@
 # HANDOFF
 
+## AI-First Program — Phase 1 complete (2026-09-25)
+
+| Item | Status | Commits |
+|---|---|---|
+| A1.1 Pydantic AI spike | PASS — Flash 40/40, Pro 15/15; 100% tool chains, 100% valid structured output; Flash p50 1.2 s vs 4.2 s antigravity baseline; $0.20 total. [ADR 0001](docs/adr/0001-ai-provider-layer.md) | `a5896ae` |
+| A1.2 gateway + migration 022 | `cryptonite_agents.gateway` (routes, pricing, registry, permission, budget, ledger, pydantic-ai backend) | `8dd3399` |
+| A1.3 budget guard | $25/day (D12), priority stop order, exits never blocked, unknown spend blocks optional/interactive | `8dd3399` |
+| A1.4 port | chat personas + debate fleet + reflection on the gateway; typed verdicts, invalid → FAILED | `6893c38` |
+| A1.5 tool registry + permission gate | tools tagged READ/REDUCE/ADD; SQL tool read-only, single statement, NullPool | `8dd3399` |
+| A1.6 evals v1 | `python -m cryptonite_agents.evals run --set v1 --model …`; migration 023 | `dcb968b` |
+| A1.7 remove antigravity | removed from pyproject, uv.lock and both worker images (rebuilt; import check passes) | `8dd3399` + next commit |
+
+- Independent review: FAIL → fixed → PASS. The critical finding: the model-callable SQL tool could write the cost ledger (disabling the budget cap) and, in the debate worker, reroute trade-decision models. Fixed with the `cryptonite_ai_telemetry` role, a read-only `cryptonite_agent_ro` (`default_transaction_read_only=on`), and protected routes.
+- Gates: pytest **409 passed / 1 failed** on an isolated DB (same `test_instruments_endpoint` reference-data case); AI suites 53/53; no test can call Gemini (conftest unsets the key).
+- Dev DB at `023`; LLM cap now 25.00; roles verified (agent_ro cannot write telemetry or read traces).
+- **Deploy notes:** set `AI_TELEMETRY_DB_PASSWORD` before running migration 022 outside dev; agent_worker/debate_worker need `AI_TELEMETRY_DATABASE_URL` + `AGENT_TOOLS_DATABASE_URL` (compose has dev values). Without the telemetry URL, spend counts as unknown and only debates/exits run.
+- Known, deliberate: spend can be ~10 s stale across processes (no reservation); debate worker handles entry and exit queues in one consumer (bounded by the 90 s model timeout); `exit.verdict` fails closed.
+- Next: Gate 1 sign-off, then Phase 2 (cost controls).
+
 ## AI-First Program — Phase 0 complete (2026-09-25)
 
 Plan: [docs/ai-first-blueprint.md](docs/ai-first-blueprint.md) (approved; goal §13, assignments §14). Branch: `feat/ai-first-phase0` (from `main`, **not pushed**; `main` fast-forwarded locally to `eebd747`, not pushed).

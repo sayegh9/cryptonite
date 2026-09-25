@@ -10,7 +10,7 @@ RUN pip install uv
 COPY packages/ ./packages/
 COPY services/agent_worker/ ./services/agent_worker/
 
-RUN uv pip install --system google-antigravity duckdb sqlalchemy psycopg2-binary asyncpg httpx fastapi uvicorn pydantic pyarrow redis numpy
+RUN uv pip install --system "pydantic-ai-slim[google,openai]>=2.50.0" "pydantic>=2.12" duckdb sqlalchemy psycopg2-binary asyncpg httpx fastapi uvicorn pyarrow redis numpy
 
 EXPOSE 8085
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8085"]
