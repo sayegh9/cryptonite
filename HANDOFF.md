@@ -1,5 +1,20 @@
 # HANDOFF
 
+## AI-First Program — Phase 0 in progress (2026-09-25)
+
+Plan: [docs/ai-first-blueprint.md](docs/ai-first-blueprint.md) (approved; goal §13, assignments §14). Branch: `feat/ai-first-phase0` (from `main`).
+
+- `main` fast-forwarded locally to `eebd747` (perps Phase 1), **not pushed**.
+- A0.1 triage of the unowned uncommitted work — done except the items below. Commits `f4748f0`..`f0cf84e`:
+  - Committed as-is: executor environment filter, PAPER default for `_enqueue_command`, machine-token hash, symbol normalization / `ts_init_ns` dedupe, strategy versioning, agent tools/prompts, debate worker, reflection, stream relay, docs, seeds.
+  - Fixed before commit: debate approval (side mapping, refuses HOLD, paper-account equity, 1–25% override bound, atomic COMPLETED + enqueue) and operator auth + CSRF on the new endpoints (exit trigger, debate list/decision, strategy DELETE, instrument backfill).
+  - Dropped: fake scanner presets (`funding-divergence`/`oi-squeeze` rewritten to RSI) and stub indicator functions.
+  - Scratch files moved to the ignored `scratch/`.
+- **Still uncommitted:** `packages/strategies/cryptonite_strategies/base.py` (`super().__init__()` drops kwargs — verify under Docker before deciding), `exit_monitor.py` (waits for A0.3), `.agents/`, the `graphify-out/*.json` ignore rule, and graphify cache housekeeping.
+- **Not verified:** no pytest run (Docker was off). Web typecheck + lint pass.
+- Known, left for later phases: the debate worker's autonomous path sends `recommendation` without `side`, and the orchestrator maps anything not BUY/OVERWEIGHT (incl. HOLD) to SELL — frozen by A0.6. Reflection only counts positions closed during the debate window, so it rarely yields a lesson — replaced in A7.1.
+- Next: A0.2 (dev DB to head), then A0.3–A0.7.
+
 ## Paper Trading Readiness — SIGNED OFF (2026-09-24, with the limits below)
 
 Architecture reference: [docs/perpetuals-architecture.md](docs/perpetuals-architecture.md). Branch `feat/perpetuals-phase1` pushed to `origin` for review (PR pending); `main` itself is still unpushed.
