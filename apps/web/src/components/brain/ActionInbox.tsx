@@ -23,7 +23,7 @@ interface ActionInboxProps {
   onRunDemoDebate?: () => void;
 }
 
-type FilterTab = "pending" | "completed" | "rejected" | "all";
+type FilterTab = "pending" | "completed" | "rejected" | "no_trade" | "all";
 
 export function ActionInbox({ onRunDemoDebate }: ActionInboxProps) {
   const activeDebates = useDebateStore((state) => state.activeDebates);
@@ -100,13 +100,16 @@ export function ActionInbox({ onRunDemoDebate }: ActionInboxProps) {
   }, []);
 
   // Compute counts for filter tabs
-  const { pendingCount, completedCount, rejectedCount, totalCount } = useMemo(() => {
+  const { pendingCount, completedCount, rejectedCount, noTradeCount, totalCount } = useMemo(() => {
     let pending = 0;
     let completed = 0;
     let rejected = 0;
+    let noTrade = 0;
 
     for (const run of debatesList) {
-      if (run.status === "COMPLETED") {
+      if (run.status === "NO_TRADE") {
+        noTrade++;
+      } else if (run.status === "COMPLETED") {
         if (run.decision === "REJECTED") rejected++;
         else completed++;
       } else if (run.status === "REJECTED" || run.status === "FAILED") {
@@ -120,6 +123,7 @@ export function ActionInbox({ onRunDemoDebate }: ActionInboxProps) {
       pendingCount: pending,
       completedCount: completed,
       rejectedCount: rejected,
+      noTradeCount: noTrade,
       totalCount: debatesList.length,
     };
   }, [debatesList]);
@@ -138,8 +142,10 @@ export function ActionInbox({ onRunDemoDebate }: ActionInboxProps) {
     // Filter by tab
     if (activeTab === "pending") {
       list = list.filter(
-        (r) => r.status !== "COMPLETED" && r.status !== "REJECTED" && r.status !== "FAILED"
+        (r) => r.status !== "COMPLETED" && r.status !== "REJECTED" && r.status !== "FAILED" && r.status !== "NO_TRADE"
       );
+    } else if (activeTab === "no_trade") {
+      list = list.filter((r) => r.status === "NO_TRADE");
     } else if (activeTab === "completed") {
       list = list.filter((r) => r.status === "COMPLETED" && r.decision !== "REJECTED");
     } else if (activeTab === "rejected") {
@@ -332,6 +338,23 @@ export function ActionInbox({ onRunDemoDebate }: ActionInboxProps) {
           </button>
 
           <button
+            onClick={() => setActiveTab("no_trade")}
+            className={`px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
+              activeTab === "no_trade"
+                ? "bg-sky-950/80 text-sky-300 border border-sky-800/80 font-bold"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
+            }`}
+            title="HOLD verdicts: nothing to approve"
+          >
+            <span>No trade</span>
+            {noTradeCount > 0 && (
+              <span className="px-1 py-0.2 rounded-full bg-sky-500/20 text-sky-300 text-[9px]">
+                {noTradeCount}
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => setActiveTab("all")}
             className={`px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
               activeTab === "all"
@@ -446,7 +469,8 @@ export function ActionInbox({ onRunDemoDebate }: ActionInboxProps) {
             const isRunning = run.status === "RUNNING";
             const isFailed = run.status === "FAILED";
             const isRejected = run.status === "REJECTED" || (run.status === "COMPLETED" && run.decision === "REJECTED");
-            const isActionable = !isCompleted && !isFailed && !isRejected && !isRunning;
+            const isNoTrade = run.status === "NO_TRADE";
+            const isActionable = !isCompleted && !isFailed && !isRejected && !isRunning && !isNoTrade;
             const symbolDisplay = resolveInstrument(run);
 
             return (
@@ -503,10 +527,12 @@ export function ActionInbox({ onRunDemoDebate }: ActionInboxProps) {
                           ? "bg-zinc-800 text-zinc-400 border-zinc-700"
                           : isRunning
                           ? "bg-purple-950 text-purple-300 border-purple-800"
+                          : isNoTrade
+                          ? "bg-sky-950 text-sky-300 border-sky-800"
                           : "bg-amber-950 text-amber-300 border-amber-800"
                       }`}
                     >
-                      {isRejected ? "REJECTED" : run.status}
+                      {isRejected ? "REJECTED" : isNoTrade ? "NO TRADE" : run.status}
                     </span>
 
                     {/* Individual Dismiss Button */}
