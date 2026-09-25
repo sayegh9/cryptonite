@@ -23,6 +23,13 @@ from nautilus_trader.model import (
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def no_paid_model_calls(monkeypatch):
+    """Tests use pydantic-ai test models; without a key any stray Gemini call fails instead of billing."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+
 @pytest.fixture
 def temp_nautilus_dir():
     with tempfile.TemporaryDirectory() as tmp:

@@ -7,38 +7,59 @@ from typing import Any, Dict, List
 
 import duckdb
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
 
-# Configured to use the explicit read-only role injected via docker-compose
-DB_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_agent_ro:agent_ro_pass@postgres:5432/cryptonite")
+# Model-callable SQL runs as the read-only agent role, never as the worker's own DATABASE_URL role
+# (debate_worker's is cryptonite_api, which can write execution_commands and system_settings).
+DB_URL = os.getenv(
+    "AGENT_TOOLS_DATABASE_URL",
+    "postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite",
+)
 CATALOG_PATH = os.getenv("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog")
+STATEMENT_TIMEOUT_MS = 10_000
 
 _engine = None
 
 def get_engine():
     global _engine
     if _engine is None:
-        _engine = create_engine(DB_URL)
+        # NullPool: a fresh connection per call, so nothing a query leaves behind (advisory locks,
+        # session settings) outlives the tool call
+        _engine = create_engine(DB_URL, poolclass=NullPool)
     return _engine
 
+def _single_statement(sql: str) -> str | None:
+    """The statement without a trailing ';', or None when it contains more than one."""
+    body = sql.strip().rstrip(";").strip()
+    return None if not body or ";" in body else body
+
 def query_postgres_readonly(sql: str) -> str:
-    """Executes a SELECT query against the PostgreSQL database.
-    
-    The connection enforces default_transaction_read_only = 'on' via RBAC.
+    """Executes one SELECT query against the PostgreSQL database and returns the rows as JSON.
+
+    Runs as the read-only agent role inside a READ ONLY transaction (which is always rolled back),
+    one statement per call, with a 10 s statement timeout.
     """
     logger.info("Agent executing DB query: %s", sql)
+    statement = _single_statement(sql)
+    if statement is None:
+        return "Database Error: exactly one SQL statement per call is allowed"
     try:
         with get_engine().connect() as conn:
-            result = conn.execute(text(sql))
+            conn.execute(text("SET TRANSACTION READ ONLY"))
+            conn.execute(text(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"))
+            result = conn.execute(text(statement))
             rows = [dict(row._mapping) for row in result]
+            conn.rollback()
             return json.dumps(rows, default=str)
     except Exception as e:
         return f"Database Error: {e}"
 
 def get_scanner_context(instrument_id: str) -> str:
     """Gets the most recent signal candidates from the scanner for the instrument."""
-    sql = f"SELECT * FROM signal_candidates WHERE instrument_id = '{instrument_id}' ORDER BY created_at DESC LIMIT 5"
+    inst = instrument_id.replace("'", "''")
+    sql = f"SELECT * FROM signal_candidates WHERE instrument_id = '{inst}' ORDER BY created_at DESC LIMIT 5"
     return query_postgres_readonly(sql)
 
 def get_live_market_data(symbols: str = "BTCUSDT") -> str:
@@ -256,7 +277,8 @@ def compare_live_vs_backtest(instrument_id: str, backtest_id: str) -> str:
     import json
     
     try:
-        pg_fills = query_postgres_readonly(f"SELECT fill_price, quantity, side, created_at FROM agent_safe_orders WHERE instrument_id = '{instrument_id}' AND status = 'FILLED' ORDER BY created_at DESC LIMIT 50")
+        inst = instrument_id.replace("'", "''")
+        pg_fills = query_postgres_readonly(f"SELECT fill_price, quantity, side, created_at FROM agent_safe_orders WHERE instrument_id = '{inst}' AND status = 'FILLED' ORDER BY created_at DESC LIMIT 50")
         bt_tearsheet = read_nautilus_tearsheet(backtest_id)
         
         try:
@@ -278,3 +300,18 @@ def compare_live_vs_backtest(instrument_id: str, backtest_id: str) -> str:
     except Exception as e:
         return f"Error comparing live vs backtest: {e}"
 
+
+
+# --- Gateway tool registry (AI-first blueprint A1.5) ---------------------------------------------
+# Every tool an agent may call, with the risk it can create. None of these changes exposure:
+# stage_debate_proposal only queues a debate whose decision still needs operator approval.
+from cryptonite_agents.gateway import RiskClass, tool as _register  # noqa: E402
+
+QUERY_POSTGRES = _register(RiskClass.READ)(query_postgres_readonly)
+QUERY_PARQUET = _register(RiskClass.READ)(query_parquet_duckdb)
+SCANNER_CONTEXT = _register(RiskClass.READ)(get_scanner_context)
+LIVE_MARKET_DATA = _register(RiskClass.READ)(get_live_market_data)
+READ_TEARSHEET = _register(RiskClass.READ)(read_nautilus_tearsheet)
+EXECUTION_ANALYSIS = _register(RiskClass.READ)(run_execution_analysis)
+STAGE_DEBATE_PROPOSAL = _register(RiskClass.READ, side_effects=True)(stage_debate_proposal)
+COMPARE_LIVE_VS_BACKTEST = _register(RiskClass.READ)(compare_live_vs_backtest)
