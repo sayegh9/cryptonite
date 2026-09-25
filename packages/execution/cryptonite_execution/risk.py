@@ -154,6 +154,25 @@ class GuardedOrderDispatcher:
     def get_position_qty(self, instrument_id: str) -> Decimal:
         return self.positions.get(instrument_id, Decimal("0"))
 
+    def fillable_quantity(self, order_info: dict[str, Any]) -> Decimal:
+        """How much of a working order may fill right now.
+
+        Exit orders are capped at the position they reduce, which can shrink while they rest
+        (CLOSE_POSITION, another exit, a liquidation): a reduce-only perp order at the opposite
+        position, a spot SELL at the held quantity. 0 means the order must be cancelled.
+        """
+        qty = order_info["quantity"]
+        inst = order_info["instrument_id"]
+        if order_info.get("is_perp"):
+            if not order_info.get("reduce_only"):
+                return qty
+            signed = self.get_perp_position_qty(inst)
+            closable = -signed if order_info["side"] == "BUY" else signed
+            return max(Decimal("0"), min(qty, closable))
+        if order_info["side"] == "SELL":
+            return max(Decimal("0"), min(qty, self.get_position_qty(inst)))
+        return qty
+
     def get_available_position_qty(self, instrument_id: str) -> Decimal:
         pos = self.positions.get(instrument_id, Decimal("0"))
         res = self.reserved_positions.get(instrument_id, Decimal("0"))
@@ -810,9 +829,11 @@ class GuardedOrderDispatcher:
                 pos.signed_qty += fill_sign * closed
                 pos.initial_margin -= released
             open_qty = fill_qty - closed
-            if reduce_only and open_qty > 0:
-                logger.error("Reduce-only fill %s exceeded position by %s; excess ignored", instrument_id, open_qty)
-                open_qty = Decimal("0")
+
+        if reduce_only and open_qty > 0:
+            # Never open exposure from a reduce-only fill, including when the position is already gone
+            logger.error("Reduce-only fill %s exceeded position by %s; excess ignored", instrument_id, open_qty)
+            open_qty = Decimal("0")
 
         if open_qty > 0:
             # Open/add leg: weighted average entry, lock initial margin at this fill

@@ -325,7 +325,11 @@ class PaperTradingEngine:
                 latched_by = cmd.get("requester_id") or payload.get("operator", "operator")
                 reason = payload.get("reason", "Operator manual trip")
                 self.kill_switch.trip(latched_by=latched_by, reason=reason)
-                logger.critical("Kill switch latched by %s: %s", latched_by, reason)
+                # Working entry orders die with the trip; reduce-only exits keep working.
+                to_cancel = [cid for cid, o in self.dispatcher.open_orders.items() if self.dispatcher.is_entry_order(o)]
+                for cid in to_cancel:
+                    self.dispatcher.release_reservation(cid)
+                logger.critical("Kill switch latched by %s: %s (cancelled %d working entry orders)", latched_by, reason, len(to_cancel))
 
             elif cmd_type == "RESET_SWITCH":
                 payload = cmd.get("payload", {})

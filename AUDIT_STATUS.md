@@ -40,3 +40,9 @@
 ### Architectural Debt
 - 6 God Nodes (>30 edges): `NautilusCatalogManager` 47, `OperatorAuthManager` 42, `to_nautilus_bar_type()` 37, `DemoExecutionPipeline` 32, `TwoStoreCoordinator` 31, `LatchedKillSwitch` 30
 - No import cycles; no packages→services or schemas→sibling imports; no dependency conflicts (`pnpm audit` clean, `pip check` clean)
+
+## Paper matching known limitations (A0.4, 2026-09-25)
+
+- Paper strategy position queries (`is_long`/`is_short`/`is_flat`) and `close_all` read the dispatcher's **account-level** ledger: strategies (and manual trades) sharing an instrument see and close the same position. Per-instance positions arrive with mandates (blueprint Phase 5).
+- Working orders live in memory only; an orchestrator restart cancels them (their `paper_orders` rows are reconciled to CANCELED on startup).
+- Fills are top-of-book, full size, no queue position; maker fills pay the taker fee (conservative). A capped exit (position shrank while resting) is recorded FILLED with `filled_qty < quantity`.

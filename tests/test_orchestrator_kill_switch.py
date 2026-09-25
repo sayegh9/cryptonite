@@ -76,7 +76,8 @@ async def test_trip_latches_engine_persists_and_blocks_entries():
     conn = await run(engine, [("TRIP_KILL_SWITCH", {"reason": "drill", "operator": "op"}), ENTRY])
 
     assert engine.kill_switch.is_latched
-    conn.fetchval.assert_awaited_once_with("SELECT trip_execution_kill_switch($1, $2, $3, $4)", "PAPER", "PAPER-ACCOUNT-001", "drill", "op")
+    trip_calls = [c for c in conn.fetchval.await_args_list if "trip_execution_kill_switch" in c.args[0]]
+    assert [c.args for c in trip_calls] == [("SELECT trip_execution_kill_switch($1, $2, $3, $4)", "PAPER", "PAPER-ACCOUNT-001", "drill", "op")]
     assert outcomes(conn) == [("COMPLETED", None), ("REJECTED", "KILL_SWITCH_ENGAGED")]
     assert engine.dispatcher.perp_positions == {}
 
