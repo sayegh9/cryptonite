@@ -1,19 +1,29 @@
 # HANDOFF
 
-## AI-First Program — Phase 0 in progress (2026-09-25)
+## AI-First Program — Phase 0 complete (2026-09-25)
 
-Plan: [docs/ai-first-blueprint.md](docs/ai-first-blueprint.md) (approved; goal §13, assignments §14). Branch: `feat/ai-first-phase0` (from `main`).
+Plan: [docs/ai-first-blueprint.md](docs/ai-first-blueprint.md) (approved; goal §13, assignments §14). Branch: `feat/ai-first-phase0` (from `main`, **not pushed**; `main` fast-forwarded locally to `eebd747`, not pushed).
 
-- `main` fast-forwarded locally to `eebd747` (perps Phase 1), **not pushed**.
-- A0.1 triage of the unowned uncommitted work — done except the items below. Commits `f4748f0`..`f0cf84e`:
-  - Committed as-is: executor environment filter, PAPER default for `_enqueue_command`, machine-token hash, symbol normalization / `ts_init_ns` dedupe, strategy versioning, agent tools/prompts, debate worker, reflection, stream relay, docs, seeds.
-  - Fixed before commit: debate approval (side mapping, refuses HOLD, paper-account equity, 1–25% override bound, atomic COMPLETED + enqueue) and operator auth + CSRF on the new endpoints (exit trigger, debate list/decision, strategy DELETE, instrument backfill).
-  - Dropped: fake scanner presets (`funding-divergence`/`oi-squeeze` rewritten to RSI) and stub indicator functions.
-  - Scratch files moved to the ignored `scratch/`.
-- **Still uncommitted:** `packages/strategies/cryptonite_strategies/base.py` (`super().__init__()` drops kwargs — verify under Docker before deciding), `exit_monitor.py` (waits for A0.3), `.agents/`, the `graphify-out/*.json` ignore rule, and graphify cache housekeeping.
-- **Not verified:** no pytest run (Docker was off). Web typecheck + lint pass.
-- Known, left for later phases: the debate worker's autonomous path sends `recommendation` without `side`, and the orchestrator maps anything not BUY/OVERWEIGHT (incl. HOLD) to SELL — frozen by A0.6. Reflection only counts positions closed during the debate window, so it rarely yields a lesson — replaced in A7.1.
-- Next: A0.2 (dev DB to head), then A0.3–A0.7.
+| Item | Status | Commits |
+|---|---|---|
+| A0.1 triage of unowned work | Done. Committed in topic groups; the debate approval was fixed (side mapping, refuses HOLD, paper equity, 1–25% bound, atomic) and the new endpoints got operator auth + CSRF; fake scanner presets dropped; scratch files → ignored `scratch/`; `base.py` kwargs change reverted (a no-op on Nautilus rc4, which takes config kwargs in `__new__`) | `f4748f0`..`f0cf84e` |
+| A0.2 dev DB at head | Already done on 2026-09-24 (was at 020) | — |
+| A0.3 `agent_safe_positions` contract | Migration `021`: open positions only, signed `size`, `unrealized_pnl_pct`/`weight_pct` in percent; applied to the dev DB | `4d87961` |
+| A0.4 paper fidelity | Working orders matched against live quotes (limits respected, rested limits fill at their limit, no quote = no fill, strategy orders now fill); latch/exit/retry safety; funding history REST backfill. Independent review: PASS after 4 rounds | `a4eea77`, `26ec837` |
+| A0.5 kill switch → PAPER | Operator consoles default to PAPER (+ explicit DEMO panel) | `4063e74` |
+| A0.6 freeze autonomous mode | Debate worker ignores `DEBATE_EXECUTION_MODE=autonomous` | `598b4ee` |
+| A0.7 gates | pytest **370 passed / 1 failed** on an isolated migrated DB (`test_instruments_endpoint` needs reference instruments a fresh DB lacks); no hang. Web typecheck + lint ✅, Playwright **16/16** ✅ (Research Lab spec fixed `3e53632`) | — |
+
+**Important for anyone running tests:** the compose `test` service points at the **dev DB**, and `test_alembic_roundtrip_downgrade_and_upgrade` downgrades that DB to `base`, wiping operator users and reference data. Run the full suite against a throwaway DB instead:
+```
+docker exec infra-postgres-1 psql -U cryptonite -d cryptonite -c "CREATE DATABASE cryptonite_ci"
+docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL=redis://redis:6379/15 test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
+```
+
+- **Running stack:** the orchestrator and derivatives_feed containers still run the code from before A0.4 until they are restarted (`docker compose -f infra/docker-compose.yml restart orchestrator derivatives_feed`). On restart, working orders from before are reconciled to CANCELED.
+- **Still uncommitted:** `exit_monitor.py` (threshold now in percent to match migration 021; still needs `debate_runs.type` or a switch to `trigger_source`), `.agents/`, the `graphify-out/*.json` ignore rule, graphify cache housekeeping.
+- Paper-matching limitations: see AUDIT_STATUS.md.
+- **Next: Gate 0 sign-off by the operator, then Phase 1** (A1.1 Pydantic AI spike).
 
 ## Paper Trading Readiness — SIGNED OFF (2026-09-24, with the limits below)
 
