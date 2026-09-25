@@ -31,6 +31,8 @@ from cryptonite_agents.brain import (
 )
 from cryptonite_agents.brain.toolset import propose_order, show_price_chart
 from cryptonite_agents.brain.widgets import widget_for_tool
+from cryptonite_agents.evals import runner as eval_runner
+from cryptonite_agents.evals.runner import load_set
 from cryptonite_agents.gateway import (
     BudgetExceeded,
     BudgetGuard,
@@ -43,10 +45,15 @@ from cryptonite_agents.gateway import (
 )
 from cryptonite_agents.gateway import gateway as gateway_module
 from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
+from cryptonite_agents.tools import LIVE_MARKET_DATA
 from migrated_db import migrated_database
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolReturnPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+
+AGENT_WORKER_DIR = str(Path(__file__).parent.parent / "services" / "agent_worker")
+if AGENT_WORKER_DIR not in sys.path:
+    sys.path.insert(0, AGENT_WORKER_DIR)
 
 PLANNER, SUMMARIZER, FALLBACK = "test:brain", "test:summarize", "test:fallback"
 
@@ -99,7 +106,10 @@ class Script:
                     await asyncio.sleep(self.delay)
                 yield chunk
 
-        def sync(messages, info):  # non-streamed runs (summaries)
+        def sync(messages, info):  # non-streamed runs (evals, summaries)
+            if not _tool_returns(messages) and self.tool_calls:
+                return ModelResponse(parts=[ToolCallPart(name, args, tool_call_id=f"call-{i}")
+                                            for i, (name, args) in enumerate(self.tool_calls)])
             return ModelResponse(parts=[TextPart("".join(self.answer))])
 
         return FunctionModel(sync, stream_function=stream)
@@ -437,3 +447,25 @@ async def test_streamed_turn_writes_the_trace_the_order_card_links_to(db_url):
         with contextlib.suppress(Exception):
             await api.close()
         await pool.close()
+
+
+# --- Eval set brain_v1 ---------------------------------------------------------------------------
+
+def test_brain_eval_set_is_well_formed():
+    cases = load_set("brain_v1")
+    names = {t.name for t in BRAIN_TOOLS}
+    assert len(cases) >= 10 and all(c["persona"] == "brain" and c["kind"] == "tool_chain" for c in cases)
+    for c in cases:
+        assert set(c.get("must_call", []) + c.get("must_request", []) + c.get("must_not_call", [])) <= names
+    assert eval_runner.PERSONAS["brain"] is BRAIN
+
+
+async def test_brain_eval_counts_a_held_proposal_as_requested(monkeypatch):
+    case = next(c for c in load_set("brain_v1") if c["id"] == "brain-3")
+    live = replace(LIVE_MARKET_DATA, func=lambda symbols="BTCUSDT": '[{"symbol": "ETHUSDT", "last_price": 2500}]')
+    monkeypatch.setitem(eval_runner.PERSONAS, "brain", replace(BRAIN, tools=(live, propose_order)))
+    script = Script([("get_live_market_data", {"symbols": "ETHUSDT"}), ("propose_order", GOOD_ORDER)], ["staged"])
+    with override_model(PLANNER, script.model()):
+        res = await eval_runner.run_case(Gateway(routes=routes(), budget=BudgetGuard()), case, PLANNER)
+    assert res.checks == {"called_required_tools": True, "answered": True, "requested_approval_tools": True}
+    assert res.passed
