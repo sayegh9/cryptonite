@@ -1,5 +1,24 @@
 # HANDOFF
 
+## AI-First Program — Phase 4 complete (2026-09-25)
+
+| Item | Status |
+|---|---|
+| A4.1 model-written strategies can be backtested | allow-list validator (API 422 on save, 409 vs core slugs) + `strategy_sandbox` container; previously `python_code` was silently ignored |
+| A4.2 drafter | Flash drafts code + parameter space; validator/import/sandbox errors fed back (≤ 3 attempts); live: 4/6 ideas load after the import guide |
+| A4.3 optimizer | Optuna TPE on the in-sample window only; the model never picks numbers |
+| A4.4 overfitting guard + review | OOS trades < 10, OOS return ≤ 0, or OOS Sharpe < 50 % of IS → reject before paying for a Pro review |
+| A4.5 queue + digest | `research:queue`, opt-in `research_worker` (`--profile research`), Brain tool `queue_strategy_research`, daily digest on `channel:system_alerts`; web IS-vs-OOS tearsheet deferred until Phase 3 merges |
+
+- Evidence and decisions: [ADR 0003](docs/adr/0003-strategy-research-loop.md). Security audits: the subprocess sandbox FAILED (critical: the child read the worker's secrets, had network, could hang the worker). Replaced by a container. The re-audit FAILED (high: a FIFO froze the worker; medium: the child could stop the server, the queue wait was unbounded, symlinks on the shared volume). All fixed, and the fixes were verified in a real container probe (ADR table).
+- **Deploy steps:**
+  1. `docker compose -f infra/docker-compose.yml build backtester strategy_sandbox api`, then `up -d strategy_sandbox backtester api`. The sandbox shares the backtester image. The `sandbox_jobs` volume is a 4 GB RAM tmpfs.
+  2. Research needs `CRYPTONITE_AGENT_API_TOKEN`, an operator-scoped machine token. Run it with `docker compose --profile research up -d research_worker`.
+- The `strategy_sandbox` image build stalled for 30+ min on this Mac (no output, killed). The probe ran on the existing `infra-backtester` image with this source mounted read-only. Build it on the workstation.
+- Gates: pytest **594 passed / 1 failed** on the throwaway `cryptonite_ci` DB (the known `test_instruments_endpoint` reference-data failure). Phase 4 suites: 72/72.
+- Not done: web IS-vs-OOS tearsheet (after the Phase 3 merge); a research-report table (reports are JSON files in `data/research_reports/`); Redis `requirepass` and a least-privilege DB role for the backtester, which still connects as `cryptonite`.
+- **Rotate** `GEMINI_API_KEY`, `BINANCE_DEMO_API_KEY` and `CRYPTONITE_TOTP_AES_KEY`: the first audit's probe printed partial values into a transcript.
+
 ## AI-First Program — Phase 2 complete (2026-09-25)
 
 Phase 3 runs in parallel in a cloud session on `feat/ai-first-phase3-brain` (ownership contract: blueprint §14.5); its PR targets `feat/ai-first-phase0`.
