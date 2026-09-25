@@ -22,6 +22,7 @@ from cryptonite_scanner_service.derivatives_feed import (
     FundingSettlement,
     FundingSettlementTracker,
     mark_stream_url,
+    parse_funding_history,
     parse_mark_frame,
     store_funding_settlements,
 )
@@ -225,3 +226,66 @@ async def test_open_interest_poll_caches_each_symbol_and_isolates_failures(redis
     assert cached["instrument_id"] == f"{SYM_A}-PERP.BINANCE"
     assert 0 < await redis_client.ttl(key) <= 90
     assert await redis_client.get(OI_KEY.format(symbol=SYM_B)) is None
+
+
+# --- Funding history backfill (REST) ----------------------------------------------
+
+def funding_row(symbol, t_ms, rate, mark="3000.0"):
+    return {"symbol": symbol, "fundingTime": t_ms, "fundingRate": rate, "markPrice": mark}
+
+
+def test_parse_funding_history_infers_interval_and_tolerates_missing_mark():
+    rows = [
+        funding_row(SYM_A, T0_MS + 8 * HOUR_MS, "0.0002", ""),
+        funding_row(SYM_A, T0_MS, "0.0001"),
+        funding_row(SYM_A, T0_MS + 16 * HOUR_MS, "-0.0001"),
+    ]
+    out = parse_funding_history(SYM_A, rows)
+    assert [s.funding_time_ns for s in out] == [T0_MS * 1_000_000, (T0_MS + 8 * HOUR_MS) * 1_000_000,
+                                                (T0_MS + 16 * HOUR_MS) * 1_000_000]
+    assert [s.funding_interval_hours for s in out] == [8, 8, 8]
+    assert out[1].mark_price is None and out[2].funding_rate == Decimal("-0.0001")
+    assert out[0].instrument_id == f"{SYM_A}-PERP.BINANCE"
+
+
+async def test_funding_backfill_fills_gaps_idempotently_across_pages(funding_db_url, monkeypatch):
+    import cryptonite_scanner_service.derivatives_feed as feed_mod
+
+    monkeypatch.setattr(feed_mod, "FUNDING_PAGE_LIMIT", 2)
+    history = [funding_row(SYM_A, T0_MS + i * 8 * HOUR_MS, f"0.000{i + 1}") for i in range(5)]
+    requests = []
+
+    def handler(request):
+        params = request.url.params
+        requests.append(dict(params))
+        if params["symbol"] == SYM_B:
+            return httpx.Response(500, json={"code": -1000})
+        start = int(params["startTime"])
+        page = [r for r in history if r["fundingTime"] >= start][: int(params["limit"])]
+        return httpx.Response(200, json=page)
+
+    pool = await asyncpg.create_pool(funding_db_url, min_size=1, max_size=2)
+    inst = f"{SYM_A}-PERP.BINANCE"
+    try:
+        # The stream already recorded settlement #2; the rest were missed while it was down.
+        stream_row = FundingSettlement(inst, history[2]["fundingTime"] * 1_000_000, Decimal("0.0003"), Decimal("3000.0"), 8)
+        assert await store_funding_settlements(pool, [stream_row]) == 1
+
+        now_ms = T0_MS + 5 * 8 * HOUR_MS
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            feed = DerivativesFeed(None, pool, [SYM_A, SYM_B], http_client=http)
+            assert await feed.backfill_funding_once(now_ms=now_ms, lookback_days=30) == 4
+            assert await feed.backfill_funding_once(now_ms=now_ms, lookback_days=30) == 0
+
+        rows = await pool.fetch("SELECT * FROM funding_rates WHERE instrument_id = $1 ORDER BY funding_time_ns", inst)
+        assert len(rows) == 5
+        assert [r["source"] for r in rows] == ["BINANCE_REST", "BINANCE_REST", "STREAM_SETTLEMENT",
+                                              "BINANCE_REST", "BINANCE_REST"]
+        assert all(r["funding_interval_hours"] == 8 for r in rows)
+        # Paged: a full page of 2 asks for the next page, starting after its last row.
+        sym_a = [r for r in requests if r["symbol"] == SYM_A]
+        assert int(sym_a[1]["startTime"]) == history[1]["fundingTime"] + 1
+        assert all(int(r["endTime"]) == now_ms for r in sym_a)
+    finally:
+        await pool.execute("DELETE FROM funding_rates WHERE instrument_id = $1", inst)
+        await pool.close()
