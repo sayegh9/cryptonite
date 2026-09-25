@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from cryptonite_strategies.registry import STRATEGY_REGISTRY, list_strategies
+from cryptonite_strategies.validation import resolve_imports, validate_strategy_source
 from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -64,6 +65,11 @@ class CreateStrategyRequest(BaseModel):
 @router.post("", dependencies=OPERATOR_WRITE)
 async def create_strategy(req: CreateStrategyRequest, request: Request):
     pool = request.app.state.pool
+    # Model-written code is untrusted: reject it here, before it is stored or ever backtested
+    validation = validate_strategy_source(req.python_code)
+    violations = validation.violations if not validation.ok else resolve_imports(req.python_code)
+    if violations:
+        raise HTTPException(status_code=422, detail={"error": "STRATEGY_CODE_REJECTED", "violations": violations})
     
     # Generate slug and hashes
     slug = f"ai-gen-{uuid4().hex[:8]}"
@@ -76,6 +82,8 @@ async def create_strategy(req: CreateStrategyRequest, request: Request):
             existing = await conn.fetchrow("SELECT id, slug FROM strategies WHERE name = $1", req.name)
             
             if existing:
+                if existing["slug"] in STRATEGY_REGISTRY:
+                    raise HTTPException(status_code=409, detail="Core strategies cannot receive generated code; choose another name.")
                 strat_id = existing["id"]
                 slug = existing["slug"]
                 version_row = await conn.fetchrow("SELECT COALESCE(MAX(version_num), 0) + 1 as next_v FROM strategy_versions WHERE strategy_id = $1", strat_id)
