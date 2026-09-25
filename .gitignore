@@ -50,3 +50,8 @@ patch*.py
 recovered_compose.txt
 .ua/
 
+
+# Local scratch files (never committed)
+scratch/
+.claude/settings.local.json
+.claude/worktrees/
