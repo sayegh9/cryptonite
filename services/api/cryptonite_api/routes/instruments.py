@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from cryptonite_api.routes.auth import require_operator, require_csrf
+from cryptonite_api.routes.auth import OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, Request, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 import asyncpg
@@ -317,7 +317,7 @@ def import_asyncio():
     import asyncio
     return asyncio
 
-@router.post("/onboard")
+@router.post("/onboard", dependencies=OPERATOR_WRITE)
 async def onboard_instrument(req: OnboardRequest, request: Request, background_tasks: BackgroundTasks):
     pool = request.app.state.pool
     redis = getattr(request.app.state.stream_hub, 'redis', None) if hasattr(request.app.state, 'stream_hub') else None

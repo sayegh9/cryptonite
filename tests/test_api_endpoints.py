@@ -6,7 +6,7 @@ from starlette.testclient import TestClient
 
 
 @pytest.fixture
-async def api_client():
+async def api_client(operator_auth):
     async with lifespan(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             yield client

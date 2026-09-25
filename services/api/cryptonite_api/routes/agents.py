@@ -7,7 +7,7 @@ import json
 import secrets
 import httpx
 import os
-from cryptonite_api.routes.auth import require_auth, require_operator, require_csrf
+from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_operator, require_csrf
 from cryptonite_api.routes.paper import _enqueue_command
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
@@ -78,27 +78,27 @@ async def forward_request(path: str, req_body: BaseModel):
         logger.error(f"Failed to forward agent request to {worker_url}: {e}")
         raise HTTPException(status_code=500, detail="Internal agent worker error")
 
-@router.post("/chat")
+@router.post("/chat", dependencies=OPERATOR_WRITE)
 async def agent_chat(req: ChatRequest, request: Request):
     return await forward_request("/api/v1/agents/chat", req)
 
-@router.post("/explain")
+@router.post("/explain", dependencies=OPERATOR_WRITE)
 async def agent_explain(req: ExplainRequest, request: Request):
     return await forward_request("/api/v1/agents/explain", req)
 
-@router.post("/strategist")
+@router.post("/strategist", dependencies=OPERATOR_WRITE)
 async def agent_strategist(req: StrategistRequest, request: Request):
     return await forward_request("/api/v1/agents/strategist", req)
 
-@router.post("/cro")
+@router.post("/cro", dependencies=OPERATOR_WRITE)
 async def agent_cro(req: CRORequest, request: Request):
     return await forward_request("/api/v1/agents/cro", req)
 
-@router.post("/onchain")
+@router.post("/onchain", dependencies=OPERATOR_WRITE)
 async def agent_onchain(req: OnChainRequest, request: Request):
     return await forward_request("/api/v1/agents/onchain", req)
 
-@router.post("/debates/trigger")
+@router.post("/debates/trigger", dependencies=OPERATOR_WRITE)
 async def trigger_debate(req: DebateTriggerRequest, request: Request):
     inst_id = req.symbol if "." in req.symbol else f"{req.symbol.upper()}.BINANCE"
     

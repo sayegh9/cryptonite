@@ -314,7 +314,11 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
                   
                   const res = await fetch("/api/v1/instruments/onboard", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    credentials: "include",
+                    headers: {
+                      "Content-Type": "application/json",
+                      "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "",
+                    },
                     body: JSON.stringify({ symbol: newSym }),
                   });
                   

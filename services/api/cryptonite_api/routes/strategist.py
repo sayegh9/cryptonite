@@ -3,7 +3,7 @@ from typing import Any
 
 from cryptonite_agents.strategist_engine import StrategistEngine
 from cryptonite_schemas.strategist import MultiTimeframeSnapshot, StrategistSignal
-from cryptonite_api.routes.auth import require_operator, require_csrf
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, Body, HTTPException, Request
 
 router = APIRouter(prefix="/api/v1/strategist", tags=["strategist"])
@@ -12,7 +12,7 @@ REDIS_INSTRUCTION_KEY = "cryptonite:agent:strategist:instructions"
 REDIS_STREAM_KEY = "cryptonite:stream:strategist_signal"
 
 
-@router.post("/analyze", response_model=StrategistSignal)
+@router.post("/analyze", response_model=StrategistSignal, dependencies=OPERATOR_WRITE)
 async def analyze_snapshot(request: Request, snapshot: MultiTimeframeSnapshot = Body(...)) -> Any:
     """Run the deterministic strategy engine on a provided MultiTimeframeSnapshot."""
     try:
@@ -34,7 +34,7 @@ async def analyze_snapshot(request: Request, snapshot: MultiTimeframeSnapshot = 
     return signal
 
 
-@router.get("/instructions")
+@router.get("/instructions", dependencies=AUTHED_READ)
 async def get_instructions(request: Request) -> dict[str, str]:
     """Retrieve the custom agent instructions from Redis."""
     redis = getattr(request.app.state, "stream_hub", None)
@@ -48,7 +48,7 @@ async def get_instructions(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=500, detail=f"Redis error: {str(e)}")
 
 
-@router.put("/instructions")
+@router.put("/instructions", dependencies=OPERATOR_WRITE)
 async def update_instructions(request: Request, payload: dict[str, str] = Body(...)) -> dict[str, str]:
     """Update the custom agent instructions in Redis."""
     instructions = payload.get("instructions", "").strip()

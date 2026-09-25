@@ -36,6 +36,15 @@ INSERT INTO machine_api_tokens (token_hash, name, scopes, created_by, expires_at
 VALUES (encode(sha256('plaintext_token'::bytea), 'hex'), 'Cron Automation', '{"operator:read"}', '<admin_id>', '2027-01-01');
 ```
 
+**Agent fleet token:**
+The `stage_debate_proposal` agent tool calls `POST /api/v1/agents/debates/trigger`, which requires operator auth.
+Issue a token with the `operator` scope and set its plaintext as `CRYPTONITE_AGENT_API_TOKEN` in `.env`
+(read by `agent_worker` and `debate_worker`); the tool sends it as `X-API-Token`.
+```sql
+INSERT INTO machine_api_tokens (token_hash, name, scopes, created_by)
+VALUES (encode(sha256('<plaintext_token>'::bytea), 'hex'), 'Agent Fleet', '{"operator"}', '<admin_id>');
+```
+
 **Revoking a token:**
 Disable the token immediately:
 ```sql

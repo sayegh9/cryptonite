@@ -142,6 +142,7 @@ function StrategyProposalCard({
       // 1. Save Strategy
       const saveRes = await fetchApi("/strategies", {
         method: "POST",
+        headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
         body: JSON.stringify({
           name: strategyName,
           description: "AI Generated Strategy via Agent Manifest",
@@ -185,6 +186,7 @@ function StrategyProposalCard({
       // 1. Save Strategy first so the Research Lab can load it by slug
       const saveRes = await fetchApi("/strategies", {
         method: "POST",
+        headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
         body: JSON.stringify({
           name: strategyName,
           description: "AI Generated Strategy via Agent Manifest",
@@ -553,7 +555,11 @@ export function AgentChatPanel({
       };
 
       const res = await fetch("/api/v1/strategies", {
-        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "",
+        },
         method: "POST",
         body: JSON.stringify(payload),
       });

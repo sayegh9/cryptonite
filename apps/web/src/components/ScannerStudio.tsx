@@ -87,6 +87,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
       const reqId = "req-" + Math.random().toString(36).substring(2, 10);
       const job: ScanJob = await fetchApi(`/scanners/${selectedSpec.id}/run`, {
         method: "POST",
+        headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "" },
         body: JSON.stringify({
           request_id: reqId,
           spec_version_id: selectedSpec.active_version_id,
