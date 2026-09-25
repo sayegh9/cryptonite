@@ -7,32 +7,25 @@ import asyncpg
 from decimal import Decimal
 from typing import Optional
 
-from google.antigravity import Agent, LocalAgentConfig
-from google.antigravity.types import CapabilitiesConfig
-import google.antigravity.hooks.policy as pol
+from cryptonite_agents.gateway import Gateway
+from cryptonite_agents.persona import Persona
 
 logger = logging.getLogger(__name__)
-api_key = os.getenv("GEMINI_API_KEY")
 NAUTILUS_CATALOG_PATH = os.getenv("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog")
 
-def get_reflection_agent() -> Agent:
-    return Agent(config=LocalAgentConfig(
-        api_key=api_key,
-        capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
-        policies=[pol.allow_all()],
-        system_instructions=(
-            "You are the Quantitative Reviewer at Cryptonite. "
-            "Your job is to analyze completed trades, their actual PnL, and their Alpha versus "
-            "the Bitcoin/Ethereum benchmarks. Identify *why* a trade succeeded or failed. "
-            "Output exactly one concise paragraph of 'lessons learned' that will be injected into "
-            "the Portfolio Manager's prompt in the future."
-        ),
-        model_name="gemini-2.5-flash",
-    ))
+REVIEWER = Persona(
+    "Quantitative Reviewer", "reflection",
+    "You are the Quantitative Reviewer at Cryptonite. "
+    "Your job is to analyze completed trades, their actual PnL, and their Alpha versus "
+    "the Bitcoin/Ethereum benchmarks. Identify *why* a trade succeeded or failed. "
+    "Output exactly one concise paragraph of 'lessons learned' that will be injected into "
+    "the Portfolio Manager's prompt in the future.",
+)
 
 class ReflectionEngine:
-    def __init__(self, pg_pool: asyncpg.Pool):
+    def __init__(self, pg_pool: asyncpg.Pool, gateway: Gateway | None = None):
         self.pg_pool = pg_pool
+        self.gateway = gateway or Gateway()
         # Connect to DuckDB for benchmark data (read-only)
         self.duck = duckdb.connect(database=':memory:')
 
@@ -134,20 +127,11 @@ class ReflectionEngine:
                     "What is the key lesson learned here?"
                 )
                 
-                agent = get_reflection_agent()
-                async with agent:
-                    resp = await agent.chat(reflection_prompt)
-                    lesson = await resp.text()
-                
+                lesson = (await REVIEWER.run(self.gateway, reflection_prompt)).output
+
                 # Generate Embedding for the lesson
                 try:
-                    from google import genai
-                    client = genai.Client(api_key=api_key)
-                    embed_result = await client.aio.models.embed_content(
-                        model="text-embedding-004",
-                        contents=lesson
-                    )
-                    embedding_vector = embed_result.embeddings[0].values
+                    (embedding_vector,) = await self.gateway.embed([lesson])
                     embedding_str = f"[{','.join(map(str, embedding_vector))}]"
                 except Exception as e:
                     logger.error(f"Failed to generate embedding: {e}")

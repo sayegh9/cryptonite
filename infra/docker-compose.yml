@@ -283,6 +283,8 @@ services:
       DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       REDIS_URL: redis://redis:6379/1
+      AGENT_TOOLS_DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
+      AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       PORT: 8085
     env_file:
@@ -309,6 +311,8 @@ services:
       DATABASE_URL: postgresql://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
       REDIS_URL: redis://redis:6379/0
+      AGENT_TOOLS_DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
+      AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
     env_file:
       - ../.env

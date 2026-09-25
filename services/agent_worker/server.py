@@ -13,8 +13,10 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
-from cryptonite_agents.fleet import get_research_agent, get_explainer_agent, get_strategy_generator_agent, get_opportunity_hunter_agent
-from cryptonite_agents.debate_fleet import get_chief_risk_officer, get_onchain_analyst
+from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
+from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
+from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
+from cryptonite_agents.persona import Persona
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -98,11 +100,21 @@ config_cache = ConfigCache()
 async def startup_event():
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     app.state.redis = redis.from_url(REDIS_URL, decode_responses=True)
+    # The gateway writes telemetry as its own role; the model's SQL tools use the read-only agent role
+    telemetry_url = os.getenv("AI_TELEMETRY_DATABASE_URL")
+    app.state.telemetry_pool = await asyncpg.create_pool(telemetry_url, min_size=1, max_size=3) if telemetry_url else None
+    if app.state.telemetry_pool is None:
+        logger.error("AI_TELEMETRY_DATABASE_URL not set: LLM spend is counted in this process only")
+    app.state.gateway = Gateway(pool=app.state.telemetry_pool, redis=app.state.redis,
+                                budget=BudgetGuard(pool=app.state.telemetry_pool, redis=app.state.redis,
+                                                   spend_unknown=app.state.telemetry_pool is None))
 
 @app.on_event("shutdown")
 async def shutdown_event():
     if app.state.pool:
         await app.state.pool.close()
+    if getattr(app.state, "telemetry_pool", None):
+        await app.state.telemetry_pool.close()
     if getattr(app.state, "redis", None):
         await app.state.redis.aclose()
 
@@ -146,6 +158,18 @@ async def verify_hmac(request: Request):
 
 app.router.dependencies.append(Depends(verify_hmac))
 
+async def ask(persona: Persona, prompt: str, config: dict | None = None) -> dict:
+    """Run a persona through the AI Gateway and map gateway failures to HTTP errors."""
+    try:
+        result = await persona.run(app.state.gateway, prompt, config=config)
+    except BudgetExceeded as e:
+        raise HTTPException(status_code=429, detail=f"LLM budget: {e.reason}")
+    except GatewayError as e:
+        logger.error(f"{persona.name} agent unavailable: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"response": result.output, "trace_id": str(result.trace_id), "model": result.model}
+
+
 class ChatRequest(BaseModel):
     message: str
     
@@ -161,65 +185,35 @@ class StrategistRequest(BaseModel):
 async def chat_with_researcher(request: Request, req: ChatRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:research"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        config_override = await config_cache.get_config(app.state.pool, "research")
-        agent = get_research_agent(config_override)
-        async with agent:
-            response = await agent.chat(req.message)
-            text = await response.text()
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"Research agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    config_override = await config_cache.get_config(app.state.pool, "research")
+    return await ask(RESEARCH, req.message, config_override)
 
 @app.post("/api/v1/agents/strategist")
 async def chat_with_strategist(request: Request, req: StrategistRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:strategist"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        msg_lower = req.message.lower()
-        is_generation = (
-            ("code" in msg_lower and any(w in msg_lower for w in ["generate", "create", "write", "build", "new"]))
-            or any(phrase in msg_lower for phrase in ["generate strategy", "create strategy", "write a strategy", "write strategy", "build strategy", "code a strategy", "generate code"])
-            or ("generate" in msg_lower and "strategy" in msg_lower)
-            or ("create" in msg_lower and "strategy" in msg_lower)
-            or ("write" in msg_lower and "strategy" in msg_lower)
-        )
-        if is_generation:
-            config_override = await config_cache.get_config(app.state.pool, "generator")
-            agent = get_strategy_generator_agent(config_override)
-        else:
-            config_override = await config_cache.get_config(app.state.pool, "hunter")
-            agent = get_opportunity_hunter_agent(config_override)
+    msg_lower = req.message.lower()
+    is_generation = (
+        ("code" in msg_lower and any(w in msg_lower for w in ["generate", "create", "write", "build", "new"]))
+        or any(phrase in msg_lower for phrase in ["generate strategy", "create strategy", "write a strategy", "write strategy", "build strategy", "code a strategy", "generate code"])
+        or ("generate" in msg_lower and "strategy" in msg_lower)
+        or ("create" in msg_lower and "strategy" in msg_lower)
+        or ("write" in msg_lower and "strategy" in msg_lower)
+    )
+    persona = STRATEGY_GENERATOR if is_generation else OPPORTUNITY_HUNTER
+    config_override = await config_cache.get_config(app.state.pool, persona.name)
 
-        prompt = req.message
-        if req.instructions:
-            prompt = f"Additional User Instructions: {req.instructions}\n\n{prompt}"
-            
-        async with agent:
-            response = await agent.chat(prompt)
-            text = await response.text()
-            
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"Strategist agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    prompt = req.message
+    if req.instructions:
+        prompt = f"Additional User Instructions: {req.instructions}\n\n{prompt}"
+    return await ask(persona, prompt, config_override)
 
 @app.post("/api/v1/agents/explain")
 async def explain_backtest(request: Request, req: ExplainRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:explain"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        config_override = await config_cache.get_config(app.state.pool, "explainer")
-        agent = get_explainer_agent(config_override)
-        prompt = f"Backtest ID: {req.backtest_id}\nQuery: {req.message}"
-        async with agent:
-            response = await agent.chat(prompt)
-            text = await response.text()
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"Explainer agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    config_override = await config_cache.get_config(app.state.pool, "explainer")
+    return await ask(EXPLAINER, f"Backtest ID: {req.backtest_id}\nQuery: {req.message}", config_override)
 
 class CRORequest(BaseModel):
     message: str
@@ -231,39 +225,13 @@ class OnChainRequest(BaseModel):
 async def chat_with_cro(request: Request, req: CRORequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:cro"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        agent = get_chief_risk_officer()
-        prompt = (
-            "You are the Chief Risk Officer (CRO) of Cryptonite. The operator is consulting you directly "
-            "for portfolio risk assessment, capital preservation, leverage checks, or drawdown analysis.\n\n"
-            f"Operator Query: {req.message}"
-        )
-        async with agent:
-            response = await agent.chat(prompt)
-            text = await response.text()
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"CRO agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await ask(CRO_CHAT, f"Operator Query: {req.message}")
 
 @app.post("/api/v1/agents/onchain")
 async def chat_with_onchain(request: Request, req: OnChainRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:onchain"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        agent = get_onchain_analyst()
-        prompt = (
-            "You are the On-Chain & Whale Intelligence Analyst of Cryptonite. The operator is consulting you directly "
-            "regarding blockchain netflows, smart money accumulation, exchange reserves, or network dynamics.\n\n"
-            f"Operator Query: {req.message}"
-        )
-        async with agent:
-            response = await agent.chat(prompt)
-            text = await response.text()
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"On-chain agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await ask(ONCHAIN_CHAT, f"Operator Query: {req.message}")
 
 @app.get("/health")
 def health():

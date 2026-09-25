@@ -1,9 +1,7 @@
-from .fleet import get_explainer_agent, get_research_agent, get_strategist_agent
+from .persona import Persona
 from .strategist_engine import StrategistEngine
 
 __all__ = [
-    "get_research_agent",
-    "get_explainer_agent",
-    "get_strategist_agent",
+    "Persona",
     "StrategistEngine",
 ]
