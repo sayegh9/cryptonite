@@ -175,16 +175,16 @@ Ollama (`OLLAMA_KEEP_ALIVE=-1`, `NUM_PARALLEL=2`, `num_ctx` 8192) on Tailscale; 
 
 ---
 
-## 5. Data model (migrations `021`+)
+## 5. Data model (migrations `022`+; `021` is the A0.3 view contract)
 
 | Migration | Tables / changes |
 |---|---|
-| `021_ai_gateway` | `ai_model_routes`; `llm_cost_ledger` + `role, provider, cached_input_tokens, thinking_tokens, latency_ms, trace_id, status`; `ai_decision_traces (id, parent_id, role, session_id, mandate_id, inputs_ref, tool_calls jsonb, output jsonb, model, cost_usd, created_at)` |
-| `022_ai_sessions` | `ai_sessions`, `ai_messages (session_id, role, content, widgets jsonb, trace_id)`, `ai_session_summaries` |
-| `023_ai_evals` | `ai_eval_sets`, `ai_eval_cases`, `ai_eval_runs (role, model, set_version, metrics jsonb, passed)`, `ai_eval_results` |
-| `024_ai_mandates` | `ai_mandates`, `ai_mandate_equity (mandate_id, ts, equity, hwm)`, `ai_autonomy_events`; `execution_commands.mandate_id` |
-| `025_ai_approvals` | `ai_approvals (id, mandate_id, action_class, payload, expires_at, timeout_policy, status, decided_via, decided_at)`, `notifications_outbox` |
-| `026_ai_outcomes` | `ai_decision_outcomes (decision_id, horizon, return_pct, mfe, mae, labelled_at)`; unify the `agent_safe_positions` contract (F10) |
+| `022_ai_gateway` | `ai_model_routes`; `llm_cost_ledger` + `role, provider, cached_input_tokens, thinking_tokens, latency_ms, trace_id, status`; `ai_decision_traces (id, parent_id, role, session_id, mandate_id, inputs_ref, tool_calls jsonb, output jsonb, model, cost_usd, created_at)` |
+| `023_ai_sessions` | `ai_sessions`, `ai_messages (session_id, role, content, widgets jsonb, trace_id)`, `ai_session_summaries` |
+| `024_ai_evals` | `ai_eval_sets`, `ai_eval_cases`, `ai_eval_runs (role, model, set_version, metrics jsonb, passed)`, `ai_eval_results` |
+| `025_ai_mandates` | `ai_mandates`, `ai_mandate_equity (mandate_id, ts, equity, hwm)`, `ai_autonomy_events`; `execution_commands.mandate_id` |
+| `026_ai_approvals` | `ai_approvals (id, mandate_id, action_class, payload, expires_at, timeout_policy, status, decided_via, decided_at)`, `notifications_outbox` |
+| `027_ai_outcomes` | `ai_decision_outcomes (decision_id, horizon, return_pct, mfe, mae, labelled_at)` |
 
 Grants: the agent role keeps read-only access through `agent_safe_*` views. Only the gateway service role writes ledger and trace rows.
 
@@ -264,7 +264,7 @@ Assumes one operator plus AI pair-programming, about 15 weeks. Each item is an a
 |---|---|---|
 | A0.1 | Merge `feat/perpetuals-phase1` → `main` (O4); triage uncommitted agent/scanner/api work into owned commits | Clean tree on `main`; HANDOFF updated |
 | A0.2 | Dev DB rebuilt from migrations to head (fixes 013 + hand-made 014–016) | `alembic upgrade head` on dev DB ✅ |
-| A0.3 | One `agent_safe_positions` contract (size, weight_pct, unrealized_pnl_pct) for `exit_monitor` + `debate_worker` | Contract test passes for both consumers |
+| A0.3 | One `agent_safe_positions` contract (size, weight_pct, unrealized_pnl_pct) for `exit_monitor` + `debate_worker` — migration `021` | Contract test passes for both consumers |
 | A0.4 | Paper fidelity: limit orders respect the limit price (rest until crossed); funding backfill via `/fapi/v1/fundingRate` | Tests: limit not filled until crossed; gap backfilled idempotently |
 | A0.5 | `KillSwitchPanel` → PAPER | Playwright: terminal trip latches PAPER |
 | A0.6 | Enforce D11: API refuses `DEBATE_EXECUTION_MODE=autonomous` until mandates exist | Test: setting it is rejected |
@@ -277,11 +277,11 @@ Assumes one operator plus AI pair-programming, about 15 weeks. Each item is an a
 | ID | Item | Acceptance |
 |---|---|---|
 | A1.1 | **Spike (2 days):** Pydantic AI on Gemini 2.5 Flash/Pro with the 20-prompt set | ≥ 95% tool chains, ≥ 99% valid structured output, latency/cost ≤ today. Pass → Pydantic AI; fail → thin wrapper (D3) |
-| A1.2 | `gateway/` skeleton: router, provider backend, registry, trace; migration `021` | Unit tests with test models; no `google.antigravity` import outside `providers/` |
+| A1.2 | `gateway/` skeleton: router, provider backend, registry, trace; migration `022` | Unit tests with test models; no `google.antigravity` import outside `providers/` |
 | A1.3 | Budget guard: ledger writes on every call, $25 cap, 70% alert, degrade order | Test: cap reached → debates refused, exits still run |
 | A1.4 | Port `fleet.py`, `debate_fleet.py`, `agent_worker` and `debate_worker` to the gateway; verdicts as Pydantic models (fixes F8) | Old endpoints behave the same; parse-fallback path deleted; pytest runs without API keys |
 | A1.5 | Tool registry with READ / REDUCE_RISK / ADD_RISK tags; permission gate (mandate stub = deny ADD_RISK) | Test: an ADD_RISK tool call without approval is refused and traced |
-| A1.6 | Evals v1: CLI, `023` tables, spike set as `v1` | `evals run` produces a stored, comparable report |
+| A1.6 | Evals v1: CLI, `024` tables, spike set as `v1` | `evals run` produces a stored, comparable report |
 | A1.7 | Remove `google.antigravity` dependency | `uv lock` without it; macOS x86 pytest works |
 
 **Gate 1:** every model call goes through the gateway and is costed and traced; the spend panel shows real numbers.
@@ -303,7 +303,7 @@ Assumes one operator plus AI pair-programming, about 15 weeks. Each item is an a
 
 | ID | Item | Acceptance |
 |---|---|---|
-| A3.1 | Migration `022`; session + memory service; summary compaction | Brain recalls earlier turns across a reload |
+| A3.1 | Migration `023`; session + memory service; summary compaction | Brain recalls earlier turns across a reload |
 | A3.2 | Brain agent with the planner + tool set (market, research, debate, explain, propose_order) | "Analyze BTC → propose → paper order (approved)" in one conversation |
 | A3.3 | SSE stream endpoint + typed widget events | Tokens and widgets stream; cancel works |
 | A3.4 | **Brain Home** UI (replaces the persona picker), inline widgets, context rail | Playwright spec with mocked SSE; no hydration errors |
@@ -328,9 +328,9 @@ Assumes one operator plus AI pair-programming, about 15 weeks. Each item is an a
 
 | ID | Item | Acceptance |
 |---|---|---|
-| A5.1 | Migration `024`; mandate check in the dispatcher path; new reject codes | Property tests: no AI order escapes its mandate; 1–25% clamp untouched |
+| A5.1 | Migration `025`; mandate check in the dispatcher path; new reject codes | Property tests: no AI order escapes its mandate; 1–25% clamp untouched |
 | A5.2 | Mandate equity + HWM tracker; 20% hard stop → flatten, HALT, demote (O2) | Replay test: hard stop triggers, flattens, and latches |
-| A5.3 | Migration `025`; approvals with expiry and timeout policy (D8) | Tests: ADD_RISK timeout = no; REDUCE_RISK = proceed |
+| A5.3 | Migration `026`; approvals with expiry and timeout policy (D8) | Tests: ADD_RISK timeout = no; REDUCE_RISK = proceed |
 | A5.4 | `services/notifier`: Telegram long polling, chat_id allow-list, TOTP for ADD_RISK, ntfy for Critical; route `send_alert` | Live test with a test bot; foreign chat ignored |
 | A5.5 | Autonomy state machine + gate evaluator (promotion proposal, operator TOTP confirm, auto demotion) | Unit tests for every transition in §4.5 |
 | A5.6 | **Mission Control**, Mandate editor, Autonomy & Evals UI | Playwright: approve/veto flow, halted state, degraded banner |
@@ -354,7 +354,7 @@ Assumes one operator plus AI pair-programming, about 15 weeks. Each item is an a
 
 | ID | Item | Acceptance |
 |---|---|---|
-| A7.1 | Migration `026`; outcome labeller (returns at fixed horizons, MFE/MAE) replaces the 1h reflection heuristic (F10) | Reflections are ranked by outcome |
+| A7.1 | Migration `027`; outcome labeller (returns at fixed horizons, MFE/MAE) replaces the 1h reflection heuristic (F10) | Reflections are ranked by outcome |
 | A7.2 | Calibration dashboard (reliability chart per role) | Visible in Autonomy & Evals |
 | A7.3 | 30-day L2 candidacy run on one mandate | §4.5 gate evaluator reports pass/fail |
 | A7.4 | Triage distillation: QLoRA (Unsloth) on Gemma 4 12B / Qwen3 14B from logged triage + outcomes; later-data holdout | Certifies only if it beats the base local model |
@@ -459,18 +459,18 @@ The orchestrator template names agents that aren't installed here. Substitutes:
 | Performance Benchmarker | `agent-skills:performance-optimization` / `ripwire-perf-target` | skill |
 | Legal Compliance Checker | not needed (single operator, paper only; D1) | — |
 
-Also used: `agency-database-optimizer` (migrations 021–026), `agency-application-security-engineer` (notifier, approvals, Tailscale), `agency-ui-designer` + `agency-ui-finish-gate-reviewer` (surfaces), `agency-minimal-change-engineer` (Phase 0 fixes), `agent-skills:source-driven-development` (Pydantic AI, Gemini, Ollama, Telegram Bot API, Optuna docs), `agent-skills:deprecation-and-migration` (antigravity removal, `DEBATE_EXECUTION_MODE` removal, re-embedding), `agent-skills:observability-and-instrumentation` (traces, ledger), `agent-skills:documentation-and-adrs` (ADR per decision D3/O1–O4), `ripwire-layers` (arch rules: gateway is the only provider import site), `ripwire-write-tests`, `agency-project-shepherd` (weekly status + HANDOFF), `code-review` (pre-merge on each phase branch).
+Also used: `agency-database-optimizer` (migrations 021–027), `agency-application-security-engineer` (notifier, approvals, Tailscale), `agency-ui-designer` + `agency-ui-finish-gate-reviewer` (surfaces), `agency-minimal-change-engineer` (Phase 0 fixes), `agent-skills:source-driven-development` (Pydantic AI, Gemini, Ollama, Telegram Bot API, Optuna docs), `agent-skills:deprecation-and-migration` (antigravity removal, `DEBATE_EXECUTION_MODE` removal, re-embedding), `agent-skills:observability-and-instrumentation` (traces, ledger), `agent-skills:documentation-and-adrs` (ADR per decision D3/O1–O4), `ripwire-layers` (arch rules: gateway is the only provider import site), `ripwire-write-tests`, `agency-project-shepherd` (weekly status + HANDOFF), `code-review` (pre-merge on each phase branch).
 
 ### 14.3 Assignments per phase
 
 | Phase | Lead | Supporting | QA / review | Operator (human-only) |
 |---|---|---|---|---|
 | **0 Foundation** | `agency-minimal-change-engineer` | `agency-database-optimizer` (A0.2, A0.3), `agency-backend-architect` (A0.4), `agency-frontend-developer` (A0.5), `agent-skills:git-workflow-and-versioning` (A0.1) | test-engineer, code-reviewer, `ripwire-change-check`; A0.4–A0.6 RED | Decide O4; **own the triage of the other author's uncommitted work (A0.1)**; Gate 0 sign-off |
-| **1 Gateway + evals** | `agency-ai-engineer` | `agency-software-architect` (A1.2 design + ADR), `source-driven-development` (A1.1), `agency-database-optimizer` (021, 023), `deprecation-and-migration` (A1.7), `observability-and-instrumentation` (A1.2 traces) | test-engineer, code-reviewer, `ripwire-layers` rule; A1.3, A1.5 RED | **A1.1 spike pass/fail call**; Gate 1 sign-off |
+| **1 Gateway + evals** | `agency-ai-engineer` | `agency-software-architect` (A1.2 design + ADR), `source-driven-development` (A1.1), `agency-database-optimizer` (022, 024), `deprecation-and-migration` (A1.7), `observability-and-instrumentation` (A1.2 traces) | test-engineer, code-reviewer, `ripwire-layers` rule; A1.3, A1.5 RED | **A1.1 spike pass/fail call**; Gate 1 sign-off |
 | **2 Cost controls** | `agency-ai-engineer` | `agency-prompt-engineer` (A2.4, A2.5), `agency-backend-architect` (A2.1, A2.2), `performance-optimization` (brief size / latency) | test-engineer, eval runs (§8); A2.1 RED | Accept the 7-day spend reading; Gate 2 |
 | **3 One Brain** | `agency-ai-engineer` (A3.1–A3.3, A3.6) + `agency-frontend-developer` (A3.4, A3.5) | `agency-ux-architect` + `agency-ui-designer` (Brain Home, widgets, Trace drawer), `agency-prompt-engineer` (planner prompt), `api-and-interface-design` (SSE event schema) | `agency-test-automation-engineer` (Playwright + mocked SSE), `agency-ui-finish-gate-reviewer`, `design:accessibility-review` | Use Brain Home daily for a week (Gate 3) |
 | **4 Research loop** | `agency-ai-engineer` | `agency-backend-architect` (async backtest jobs, Optuna), `agency-investment-researcher` (walk-forward / OOS design, A4.5), `agency-prompt-engineer` | test-engineer, code-reviewer | Judge the first 3 AI-built strategies |
-| **5 Mandates + autonomy + Telegram** | `agency-backend-architect` (A5.1–A5.3, A5.5, A5.7) + `agency-frontend-developer` (A5.6) | `agency-database-optimizer` (024, 025), `agency-application-security-engineer` (A5.4 HMAC, chat_id, TOTP), `agency-devops-automator` (notifier service), `agency-ui-designer` (Mission Control, Telegram cards) | **all RED**: security-auditor + `doubt-driven-development` + property/replay tests; `agent-skills:ship` at gate | **Create the Telegram bot (BotFather) and ntfy topic; hold TOTP**; decide O1, O2; Gate 5 |
+| **5 Mandates + autonomy + Telegram** | `agency-backend-architect` (A5.1–A5.3, A5.5, A5.7) + `agency-frontend-developer` (A5.6) | `agency-database-optimizer` (025, 026), `agency-application-security-engineer` (A5.4 HMAC, chat_id, TOTP), `agency-devops-automator` (notifier service), `agency-ui-designer` (Mission Control, Telegram cards) | **all RED**: security-auditor + `doubt-driven-development` + property/replay tests; `agent-skills:ship` at gate | **Create the Telegram bot (BotFather) and ntfy topic; hold TOTP**; decide O1, O2; Gate 5 |
 | **6 Local tier** | `agency-ai-engineer` | `agency-devops-automator` (Ollama, Tailscale, `services/sentiment` scripts), `agency-application-security-engineer` (exposure review), `source-driven-development` (Ollama / llama.cpp) | eval certification runs (§8), fallback drill | **Install on the workstation** (Claude supplies scripts; it has no access to that machine) |
 | **7 Earned autonomy** | `agency-ai-engineer` | `agency-investment-researcher` (outcome labels, calibration), `dataviz` (calibration chart), `agency-project-shepherd` (30-day run tracking) | test-engineer; A7.3 RED | **Confirm L2 promotion with TOTP** (G4) |
 
