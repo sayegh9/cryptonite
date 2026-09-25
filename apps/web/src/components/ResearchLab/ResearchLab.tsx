@@ -452,7 +452,11 @@ export const ResearchLab: React.FC = () => {
                       setRunError(null);
                       const res = await fetch("/api/v1/instruments/backfill", {
                         method: "POST",
-                        headers: { "Content-Type": "application/json" },
+                        credentials: "include",
+                        headers: {
+                          "Content-Type": "application/json",
+                          "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "",
+                        },
                         body: JSON.stringify({
                           instrument_id: instrumentId,
                           timeframe: timeframe,
