@@ -5,7 +5,7 @@ from google.antigravity.types import CapabilitiesConfig
 import google.antigravity.hooks.policy as pol
 
 # Tools
-from cryptonite_agents.tools import query_postgres_readonly, query_parquet_duckdb
+from cryptonite_agents.tools import query_postgres_readonly, query_parquet_duckdb, get_scanner_context, get_live_market_data
 
 logger = logging.getLogger(__name__)
 api_key = os.getenv("GEMINI_API_KEY")
@@ -16,7 +16,7 @@ def _base_cfg(role_prompt: str, model: str = "gemini-2.5-flash") -> LocalAgentCo
         capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
         policies=[pol.allow_all()],
         system_instructions=role_prompt,
-        tools=[query_postgres_readonly, query_parquet_duckdb],
+        tools=[get_live_market_data, query_postgres_readonly, query_parquet_duckdb, get_scanner_context],
         model_name=model,
     )
 
@@ -25,7 +25,7 @@ def get_market_analyst() -> Agent:
         role_prompt=(
             "You are the Market Analyst for Cryptonite. Your role is to analyze "
             "technical price action, volume profiles, and quantitative momentum. "
-            "Output concise observations without making a final buy/sell call."
+            "Output concise observations without making a final buy/sell call. Also explicitly analyze the provided funding rate and Open Interest (OI) data to assess derivative sentiment."
         ),
         model="gemini-2.5-flash"
     ))
@@ -34,7 +34,7 @@ def get_sentiment_analyst() -> Agent:
     return Agent(config=_base_cfg(
         role_prompt=(
             "You are the Sentiment & News Analyst for Cryptonite. Your role is to synthesize "
-            "recent crypto news and social sentiment to identify catalysts."
+            "recent crypto news and social sentiment to identify catalysts. Additionally, consider how derivatives funding rates and OI shifts align with the sentiment."
         ),
         model="gemini-2.5-flash"
     ))
@@ -44,7 +44,7 @@ def get_onchain_analyst() -> Agent:
     return Agent(config=_base_cfg(
         role_prompt=(
             "You are the On-Chain Analyst for Cryptonite. You use RPC data (like whale movements, "
-            "exchange inflows/outflows) to gauge fundamental crypto network health."
+            "exchange inflows/outflows) to gauge fundamental crypto network health. Incorporate funding divergence and OI squeezes into your analysis."
         ),
         model="gemini-2.5-flash"
     ))
@@ -122,6 +122,33 @@ def get_chief_risk_officer() -> Agent:
             "Your output MUST be a strict JSON object overriding or confirming the decision: "
             "{'final_allocation_pct': float, 'conviction_level': 'Buy' | 'Overweight' | 'Hold' | 'Underweight' | 'Sell', 'risk_reasoning': string}. "
             "Ensure allocation_pct does NOT exceed 25.0."
+        ),
+        model="gemini-2.5-pro"
+    ))
+
+def get_exit_bull_debater() -> Agent:
+    return Agent(config=_base_cfg(
+        role_prompt=(
+            "You are the Exit Bull Researcher. Your goal is to argue to Cut/Hedge the position "
+            "based on the available market data. Highlight reasons why the position should be closed or reduced."
+        ),
+        model="gemini-2.5-flash"
+    ))
+
+def get_exit_bear_debater() -> Agent:
+    return Agent(config=_base_cfg(
+        role_prompt=(
+            "You are the Exit Bear Researcher. Your goal is to argue to Hold/Add to the position "
+            "based on the available market data. Highlight reasons why the position is still strong."
+        ),
+        model="gemini-2.5-flash"
+    ))
+
+def get_exit_manager() -> Agent:
+    return Agent(config=_base_cfg(
+        role_prompt=(
+            "You are the Exit Manager. You synthesize the debate into a strict JSON object: "
+            "{'recommendation': 'REDUCE' | 'HOLD' | 'CLOSE', 'conviction_score': float, 'target_stop_price': float, 'reasoning': 'string'}."
         ),
         model="gemini-2.5-pro"
     ))

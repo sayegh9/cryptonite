@@ -36,6 +36,43 @@ def query_postgres_readonly(sql: str) -> str:
     except Exception as e:
         return f"Database Error: {e}"
 
+def get_scanner_context(instrument_id: str) -> str:
+    """Gets the most recent signal candidates from the scanner for the instrument."""
+    sql = f"SELECT * FROM signal_candidates WHERE instrument_id = '{instrument_id}' ORDER BY created_at DESC LIMIT 5"
+    return query_postgres_readonly(sql)
+
+def get_live_market_data(symbols: str = "BTCUSDT") -> str:
+    """Fetches real-time live 24h ticker prices, 24h change %, and volume from Binance for one or more comma-separated symbols (e.g. 'BTCUSDT' or 'BTCUSDT,ETHUSDT')."""
+    sym_list = [s.strip().split(".")[0].upper() for s in symbols.split(",") if s.strip()]
+    if not sym_list:
+        return "Error: No symbols provided"
+    try:
+        import httpx
+        if len(sym_list) == 1:
+            params = {"symbol": sym_list[0]}
+        else:
+            params = {"symbols": "[" + ",".join(f'"{s}"' for s in sym_list) + "]"}
+        resp = httpx.get("https://api.binance.com/api/v3/ticker/24hr", params=params, timeout=5.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, dict):
+                data = [data]
+            results = [
+                {
+                    "symbol": item["symbol"],
+                    "last_price": float(item["lastPrice"]),
+                    "price_change_24h_pct": float(item["priceChangePercent"]),
+                    "high_24h": float(item["highPrice"]),
+                    "low_24h": float(item["lowPrice"]),
+                    "volume_24h": float(item["volume"]),
+                }
+                for item in data
+            ]
+            return json.dumps(results, indent=2)
+        return f"Binance API returned status {resp.status_code}: {resp.text}"
+    except Exception as e:
+        return f"Error fetching live market data: {e}"
+
 def query_parquet_duckdb(query: str) -> str:
     """Executes a DuckDB SQL query against the massive Parquet data catalog.
     
@@ -61,8 +98,11 @@ def query_parquet_duckdb(query: str) -> str:
                 if not Path(resolved_literal).resolve().is_relative_to(Path(CATALOG_PATH).resolve()):
                     return f"Security Error: Unauthorized file access attempted outside catalog path. Blocked: {literal}"
         
-        result = duckdb.query(full_query).df()
-        return result.to_json(orient="records")
+        rel = duckdb.query(full_query)
+        columns = rel.columns
+        records = [dict(zip(columns, row)) for row in rel.fetchall()]
+        # Serialize datetime objects using default str if necessary
+        return json.dumps(records, default=str)
     except Exception as e:
         return f"DuckDB Error: {e}"
 
@@ -152,4 +192,89 @@ def run_execution_analysis(snapshot_json: str) -> str:
         signal = engine.analyze(snapshot)
         return signal.model_dump_json(indent=2)
     except Exception as e:
-        return f"Analysis Error: {e}"
+        return f"Error executing StrategistEngine: {e}"
+
+def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: str, conviction_score: float, reasoning: str) -> str:
+    """
+    Stages a proposed trading strategy into the AI Brain Action Inbox for user approval.
+    Use this when you have formulated a strategy that you believe should be executed.
+    This routes the proposal through the Debate Pipeline and strict risk guardrails.
+    """
+    import os
+    import urllib.request
+    import urllib.error
+    import json
+    
+    payload = {
+        "symbol": instrument_id,
+        "timeframe": timeframe,
+        "custom_thesis": f"Recommendation: {recommendation}\nScore: {conviction_score}\nReasoning: {reasoning}"
+    }
+    
+    data_bytes = json.dumps(payload).encode('utf-8')
+    
+    # Try endpoints in priority order (Env var -> Docker DNS -> Host localhost)
+    candidate_urls = []
+    if os.getenv("API_BASE_URL"):
+        candidate_urls.append(f"{os.getenv('API_BASE_URL').rstrip('/')}/api/v1/agents/debates/trigger")
+    candidate_urls.extend([
+        "http://api:8000/api/v1/agents/debates/trigger",
+        "http://cryptonite_api:8000/api/v1/agents/debates/trigger",
+        "http://127.0.0.1:8000/api/v1/agents/debates/trigger",
+        "http://localhost:8000/api/v1/agents/debates/trigger",
+    ])
+    
+    last_err = None
+    for url in candidate_urls:
+        try:
+            req = urllib.request.Request(
+                url,
+                data=data_bytes,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as response:
+                res = json.loads(response.read().decode('utf-8'))
+                return f"Success: Proposal staged to Action Inbox (Msg ID: {res.get('id')})"
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
+            return f"Error staging proposal: Server returned {e.code} - {err_body}"
+        except urllib.error.URLError as e:
+            last_err = f"URL Error: {e.reason}"
+            continue
+        except Exception as e:
+            last_err = str(e)
+            continue
+            
+    return f"Error staging proposal: {last_err}"
+
+def compare_live_vs_backtest(instrument_id: str, backtest_id: str) -> str:
+    """
+    Compares live trading fills from PostgreSQL against a specific Nautilus backtest.
+    Use this to analyze slippage, performance delta, and drift between simulation and reality.
+    """
+    import json
+    
+    try:
+        pg_fills = query_postgres_readonly(f"SELECT fill_price, quantity, side, created_at FROM agent_safe_orders WHERE instrument_id = '{instrument_id}' AND status = 'FILLED' ORDER BY created_at DESC LIMIT 50")
+        bt_tearsheet = read_nautilus_tearsheet(backtest_id)
+        
+        try:
+            live_data = json.loads(pg_fills)
+        except:
+            live_data = pg_fills
+            
+        try:
+            bt_data = json.loads(bt_tearsheet)
+        except:
+            bt_data = bt_tearsheet
+            
+        result = {
+            "live_fills_summary": live_data,
+            "backtest_metrics": bt_data,
+            "analysis_directive": "Compare the fill_price of the live trades against the entry_price/exit_price of the backtest. Calculate the average slippage and determine if the live execution is degrading the Sharpe Ratio."
+        }
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return f"Error comparing live vs backtest: {e}"
+

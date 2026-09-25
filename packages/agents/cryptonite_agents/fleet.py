@@ -4,7 +4,7 @@ import os
 from google.antigravity import Agent, LocalAgentConfig
 from google.antigravity.types import CapabilitiesConfig
 import google.antigravity.hooks.policy as pol
-from cryptonite_agents.tools import query_postgres_readonly, query_parquet_duckdb, read_nautilus_tearsheet
+from cryptonite_agents.tools import query_postgres_readonly, query_parquet_duckdb, read_nautilus_tearsheet, get_live_market_data, stage_debate_proposal, compare_live_vs_backtest
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +19,11 @@ def get_research_agent(config_override: dict | None = None) -> Agent:
         policies=[pol.allow_all()],
         system_instructions=(config_override or {}).get("system_instructions") or (
             "You are a Senior Quantitative Analyst for the Cryptonite trading platform. "
-            "You have access to PostgreSQL for live execution data and DuckDB for historical Parquet ticks. "
+            "You have access to get_live_market_data for real-time prices, PostgreSQL for live execution data, and DuckDB for historical Parquet ticks. "
             "Always aggregate data using DuckDB rather than dumping raw rows into context. "
             "Answer the operator's analytical questions concisely."
         ),
-        tools=[query_postgres_readonly, query_parquet_duckdb],
+        tools=[get_live_market_data, query_postgres_readonly, query_parquet_duckdb, stage_debate_proposal, compare_live_vs_backtest],
         model_name=(config_override or {}).get("model_name"),
         temperature=(config_override or {}).get("temperature"),
     )
@@ -49,7 +49,10 @@ def get_strategist_agent(custom_instructions: str | None = None, config_override
     from cryptonite_agents.tools import run_execution_analysis
     default_prompt = (
         "You are the Execution_Strategist_Agent, an institutional-grade quantitative analyst. "
-        "Your primary directive is to protect paper and live capital by identifying high-probability setups."
+        "Your primary directive is to protect paper and live capital by identifying high-probability setups.\n"
+        "When formulating or executing a trading setup:\n"
+        "1. Call the `stage_debate_proposal` tool to route it through the Action & Decision Inbox for governance approval.\n"
+        "2. Provide a structured JSON strategy manifest codeblock enclosed in ```json with `instrument_id`, `trade_size` / `allocation_usd`, `max_position_notional_usd`, and `risk_limits` so the operator interface renders the interactive 1-click execution card."
     )
     
     cfg = LocalAgentConfig(
@@ -57,7 +60,7 @@ def get_strategist_agent(custom_instructions: str | None = None, config_override
         capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
         policies=[pol.allow_all()],
         system_instructions=custom_instructions or (config_override or {}).get("system_instructions") or default_prompt,
-        tools=[run_execution_analysis],
+        tools=[run_execution_analysis, stage_debate_proposal, compare_live_vs_backtest],
         model_name=(config_override or {}).get("model_name"),
         temperature=(config_override or {}).get("temperature"),
     )
@@ -72,10 +75,10 @@ def get_opportunity_hunter_agent(config_override: dict | None = None) -> Agent:
         system_instructions=(config_override or {}).get("system_instructions") or (
             "You are the Opportunity Hunter agent. You listen for Pub/Sub Candidate Alerts "
             "emitted by the Polars scanner. When an alert is received, evaluate the setup "
-            "based on price action and technical indicators before suggesting trading opportunities. "
+            "based on live price action and technical indicators before suggesting trading opportunities. "
             "Do not continuously scan the market via tick-loops."
         ),
-        tools=[query_postgres_readonly, query_parquet_duckdb],
+        tools=[get_live_market_data, query_postgres_readonly, query_parquet_duckdb],
         model_name=(config_override or {}).get("model_name"),
         temperature=(config_override or {}).get("temperature"),
     )
@@ -85,7 +88,19 @@ def get_strategy_generator_agent(config_override: dict | None = None) -> Agent:
     default_prompt = (
         "You are an elite Nautilus Trader strategy developer for the Cryptonite platform. "
         "The user will describe a trading strategy idea. "
-        "You must output ONLY valid, executable Python code. Do not include markdown blocks or introductory text. "
+        "You must output a structured JSON deployment manifest block followed by the valid, executable Python code in a code block. "
+        "Do not include introductory or concluding text.\n\n"
+        "1. First, output a deployment manifest in exactly this format:\n"
+        "```json:manifest\n"
+        "{\n"
+        '  "strategy_name": "Suggested Name",\n'
+        '  "instrument_id": "BTCUSDT.BINANCE",\n'
+        '  "timeframe": "15m",\n'
+        '  "allocation_usd": 10000,\n'
+        '  "parameters": {}\n'
+        "}\n"
+        "```\n\n"
+        "2. Then, output the Python code in a ```python block.\n"
         "Your code MUST import and inherit from Cryptonite base classes:\n"
         "from cryptonite_strategies.base import CryptoniteStrategy, CryptoniteStrategyConfig\n\n"
         "Implementation rules:\n"

@@ -91,9 +91,28 @@ class ReflectionEngine:
                 run_id = row['run_id']
                 instrument_id = row['instrument_id']
                 
-                # In a real system, we'd query execution_fills to get the exact Entry and Exit prices.
-                # Here we simulate the PnL outcome.
-                actual_outcome_pnl = 0.05 # 5% mock win
+                # Query actual realized PnL from closed paper positions
+                pnl_row = await conn.fetchrow(
+                    """
+                    SELECT COALESCE(SUM(realized_pnl), 0) as total_pnl,
+                           COALESCE(AVG(entry_price), 0) as avg_entry
+                    FROM paper_positions
+                    WHERE instrument_id = $1
+                      AND status = 'CLOSED'
+                      AND closed_at >= $2
+                      AND closed_at <= $3
+                    """,
+                    instrument_id,
+                    row['created_at'],
+                    row['completed_at']
+                )
+
+                if pnl_row and pnl_row['avg_entry'] and float(pnl_row['avg_entry']) > 0:
+                    actual_outcome_pnl = float(pnl_row['total_pnl']) / float(pnl_row['avg_entry'])
+                else:
+                    # No matching closed positions found — skip reflection for this run
+                    logger.info(f"No closed positions found for {instrument_id} in debate window. Skipping reflection.")
+                    continue
                 
                 # Fetch benchmark return from DuckDB
                 benchmark_return = self._get_benchmark_return(
@@ -120,12 +139,28 @@ class ReflectionEngine:
                     resp = await agent.chat(reflection_prompt)
                     lesson = await resp.text()
                 
+                # Generate Embedding for the lesson
+                try:
+                    from google import genai
+                    client = genai.Client(api_key=api_key)
+                    embed_result = await client.aio.models.embed_content(
+                        model="text-embedding-004",
+                        contents=lesson
+                    )
+                    embedding_vector = embed_result.embeddings[0].values
+                    embedding_str = f"[{','.join(map(str, embedding_vector))}]"
+                except Exception as e:
+                    logger.error(f"Failed to generate embedding: {e}")
+                    embedding_str = None
+
+                outcome_tag = "WIN" if actual_outcome_pnl > 0 else "LOSS" if actual_outcome_pnl < 0 else "FLAT"
+
                 # Save to Postgres
                 await conn.execute(
                     """
-                    INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding, instrument_type, outcome)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """,
-                    run_id, actual_outcome_pnl, alpha, lesson
+                    run_id, actual_outcome_pnl, alpha, lesson, embedding_str, instrument_id, outcome_tag
                 )
                 logger.info(f"Generated reflection for run {run_id}: Alpha {alpha*100:.2f}%")
