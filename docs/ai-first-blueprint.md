@@ -267,7 +267,7 @@ Assumes one operator plus AI pair-programming, about 15 weeks. Each item is an a
 | A0.3 | One `agent_safe_positions` contract (size, weight_pct, unrealized_pnl_pct) for `exit_monitor` + `debate_worker` — migration `021` | Contract test passes for both consumers |
 | A0.4 | Paper fidelity: limit orders respect the limit price (rest until crossed); funding backfill via `/fapi/v1/fundingRate` | Tests: limit not filled until crossed; gap backfilled idempotently |
 | A0.5 | `KillSwitchPanel` → PAPER | Playwright: terminal trip latches PAPER |
-| A0.6 | Enforce D11: API refuses `DEBATE_EXECUTION_MODE=autonomous` until mandates exist | Test: setting it is rejected |
+| A0.6 | Enforce D11: the debate worker ignores `DEBATE_EXECUTION_MODE=autonomous` until mandates exist (no API writes the setting; it is DB-only) | Test: every setting resolves to interactive |
 | A0.7 | pytest on a clean checkout (no hang); fix stale `research_lab.spec.ts` | Full gates green |
 
 **Gate 0:** all gates green on `main`, dev DB at head, autonomous mode frozen.

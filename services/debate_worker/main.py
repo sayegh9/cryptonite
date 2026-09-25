@@ -16,6 +16,17 @@ DEBATE_QUEUE = "stream:debate_queue"
 DEBATE_WORKER_GROUP = "debate_workers"
 DEBATE_WORKER_NAME = f"worker-{uuid.uuid4().hex[:8]}"
 
+def resolve_execution_mode(configured: str | None) -> str:
+    """Autonomous debate execution is frozen until AI mandates exist (AI-first blueprint D11, A0.6).
+
+    A debate may only ever stage a decision for operator approval; the DB setting cannot
+    re-enable autonomous orders. Mandated autonomy (Phase 5) replaces this switch.
+    """
+    if configured == "autonomous":
+        logger.warning("DEBATE_EXECUTION_MODE=autonomous ignored: autonomous execution is frozen until mandates exist")
+    return "interactive"
+
+
 async def init_redis_group(redis_client: redis.Redis):
     try:
         await redis_client.xgroup_create(DEBATE_QUEUE, DEBATE_WORKER_GROUP, id="0", mkstream=True)
@@ -301,7 +312,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict):
         async with pg_pool.acquire() as conn:
             # Check system setting for autonomous vs interactive
             mode_row = await conn.fetchrow("SELECT value FROM system_settings WHERE key = 'DEBATE_EXECUTION_MODE'")
-            execution_mode = mode_row["value"] if mode_row else "interactive"
+            execution_mode = resolve_execution_mode(mode_row["value"] if mode_row else None)
             
             final_status = 'COMPLETED' if execution_mode == 'autonomous' else 'PENDING_APPROVAL'
             
@@ -432,7 +443,7 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict):
                 
         async with pg_pool.acquire() as conn:
             mode_row = await conn.fetchrow("SELECT value FROM system_settings WHERE key = 'DEBATE_EXECUTION_MODE'")
-            execution_mode = mode_row["value"] if mode_row else "interactive"
+            execution_mode = resolve_execution_mode(mode_row["value"] if mode_row else None)
             final_status = 'COMPLETED' if execution_mode == 'autonomous' else 'PENDING_APPROVAL'
             
             await conn.execute(
