@@ -19,6 +19,7 @@ import sys
 from dataclasses import asdict
 
 import redis.asyncio as aioredis
+from redis.exceptions import RedisError
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_agents.research.client import ResearchApiClient
 from cryptonite_agents.research.loop import ResearchLoop
@@ -52,7 +53,9 @@ async def main(argv: list[str]) -> int:
     d.add_argument("--hours", type=int, default=24)
     args = parser.parse_args(argv)
 
-    redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    # The socket timeout must outlast the queue's blocking pop: redis-py 8 otherwise times the read out
+    # at exactly the BLPOP timeout, racing Redis's empty reply
+    redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), socket_timeout=30)
     try:
         if args.cmd == "digest":
             print(json.dumps(await publish_digest(redis, hours=args.hours), indent=2))
@@ -68,8 +71,12 @@ async def main(argv: list[str]) -> int:
                     "is_days": args.is_days, "oos_days": args.oos_days, "n_trials": args.trials}
             print(json.dumps(asdict(await loop.run(spec_from(item))), indent=2, default=str))
             return 0
-        while True:  # worker
-            await work_once(redis, loop)
+        while True:  # worker: a Redis blip must not kill it
+            try:
+                await work_once(redis, loop)
+            except (RedisError, OSError) as e:
+                logging.warning("research queue unavailable (%s); retrying in 5 s", e)
+                await asyncio.sleep(5)
     finally:
         await redis.aclose()
 

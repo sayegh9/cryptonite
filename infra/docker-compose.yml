@@ -363,6 +363,7 @@ services:
       dockerfile: infra/docker/agent_worker.Dockerfile
     profiles: ["research"]
     command: ["python", "-m", "cryptonite_agents.research", "worker"]
+    restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
