@@ -1,5 +1,26 @@
 # HANDOFF
 
+## AI-First Program — Phase 2 complete (2026-09-25)
+
+Phase 3 runs in parallel in a cloud session on `feat/ai-first-phase3-brain` (ownership contract: blueprint §14.5); its PR targets `feat/ai-first-phase0`.
+
+| Item | Status | Commits |
+|---|---|---|
+| A2.1 pre-debate gate | kill switch / daily loss / headroom / freshness / brief / cooldown before any model call | `72d7c17` |
+| A2.2 market brief | built per candidate by the scanner, cached in Redis, shared by all debate roles | `db5de14` |
+| A2.3 triage (Flash-Lite) | 20 cases ×2: 0 good setups missed; 5/6 bad avoided by the model, 6/6 with the code staleness check | `72d7c17`, `87b3cca` |
+| A2.4 lite debate + merged risk panel | ≥ 5% allocations always get the full review; merged panel = 4/4 like the 4-call panel, 27% cheaper | `72d7c17` |
+| A2.5 thinking/output limits | per role in `routes.py`; explicit context caching not done (implicit only) | `72d7c17` |
+| A2.6 deterministic exits | live-quote hard + trailing stops (AI-owned instruments only), event-triggered exit debates; replay: 0 missed stops, −81% exit debates | `e02cb3d` |
+
+- Evidence and decisions: [ADR 0002](docs/adr/0002-debate-cost-controls.md). Independent review: FAIL (3 critical: low-conviction large allocations skipped review, stale model stops could auto-close, stops read a price that never updates) → fixed → PASS.
+- **Deploy step (databases already at 021, e.g. any other dev DB):** `GRANT SELECT ON agent_safe_positions TO cryptonite_api;` — the debate worker runs as that role and could not read its context, so real debates failed. Applied to this dev DB. Fresh databases get it from 021.
+- The exit monitor is opt-in (`--profile monitoring`), runs as `cryptonite_api`, and alerts loudly when it has no fresh quote.
+- Gates: pytest **545 passed / 2 failed** on an isolated DB (instruments reference data; `test_duckdb_query_p95_latency` wall-clock flake). Scoped AI/debate suites 93/93.
+- Gate 2 (typical day ≤ $6 over 7 days) can only be measured once the stack runs Phase 2 code: restart `debate_worker` (and `scanner`), then read `llm_cost_ledger`.
+- Known, deferred: `stage_debate_proposal` bypasses the gate (budget-bounded); price stops ignore perp leverage; the close lookup uses `LIKE` on `idempotency_key` (table scan when a stop is active).
+- Next: Phase 4 (research loop). Found while scoping it: **model-written strategies cannot be backtested today** — the runner only loads registry strategies by slug and ignores `strategy_versions.python_code`.
+
 ## AI-First Program — Phase 1 complete (2026-09-25)
 
 | Item | Status | Commits |
