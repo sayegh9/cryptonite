@@ -323,8 +323,8 @@ services:
     build:
       context: ..
       dockerfile: infra/docker/scanner.Dockerfile
-    # Incomplete: needs a P&L column on agent_safe_positions, debate_runs.type, and the
-    # debate_worker exit queue consumer. Start explicitly with --profile monitoring.
+    # Deterministic exits (stops on AI-owned positions) + event-triggered exit debates.
+    # Opt-in: start with --profile monitoring. See docs/adr/0002-debate-cost-controls.md.
     profiles: ["monitoring"]
     command: ["python", "-m", "cryptonite_scanner_service.exit_monitor"]
     depends_on:
@@ -333,8 +333,8 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      DATABASE_URL: postgresql://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
       REDIS_URL: redis://redis:6379/0
     env_file:
       - ../.env

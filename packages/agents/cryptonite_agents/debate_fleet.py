@@ -5,17 +5,35 @@ Verdict personas return validated contracts from ``cryptonite_schemas.debate``.
 
 from cryptonite_agents.persona import Persona
 from cryptonite_agents.tools import LIVE_MARKET_DATA, QUERY_PARQUET, QUERY_POSTGRES, SCANNER_CONTEXT
-from cryptonite_schemas.debate import ExitDecision, PortfolioDecision, RiskDecision, TriageDecision
+from cryptonite_schemas.debate import (
+    ExitDecision,
+    LiteDebateDecision,
+    PortfolioDecision,
+    RiskDecision,
+    TriageDecision,
+)
 
 DEBATE_TOOLS = (LIVE_MARKET_DATA, QUERY_POSTGRES, QUERY_PARQUET, SCANNER_CONTEXT)
 
 TRIAGE = Persona(
     "Triage", "triage",
-    "You screen scanner candidates before a costly multi-agent debate. Decide whether the setup "
-    "deserves a full debate: worth_debate true only for a clean, liquid setup with a clear trigger "
-    "and room to target; false for chop, conflicting timeframes, thin volume, poor reward-to-risk or "
-    "stale data. Give a confidence (0-1) and a one-sentence reason.",
+    "You screen scanner candidates before a costly multi-agent debate. worth_debate is false if ANY of "
+    "these holds: reward-to-risk below 1.5; the last closed bar is older than two bars of the candidate's "
+    "timeframe (or the data is marked stale); the two highest timeframes shown both trend against the "
+    "trade's direction; volume below 1.0x average with price inside a range (chop). Otherwise "
+    "worth_debate is true only for a clean, liquid setup with a clear trigger and room to target. "
+    "Give a confidence (0-1) and a one-sentence reason naming the deciding factor.",
     output_type=TriageDecision,
+)
+
+DEBATE_LITE = Persona(
+    "Lite Debate", "debate.lite",
+    "You run a compact investment debate for Cryptonite on one market brief. First argue the strongest "
+    "bull case, then the strongest bear case, each grounded only in the brief's data. Then decide as the "
+    "portfolio manager: recommendation (BUY, HOLD or SELL; spot only, so SELL means exit or stay out), "
+    "conviction_score (0-1), allocation_pct (percent of equity, at most 25; 0 for HOLD) and reasoning. "
+    "Prefer HOLD when the data is mixed, stale or thin.",
+    output_type=LiteDebateDecision,
 )
 
 MARKET_ANALYST = Persona(
@@ -103,6 +121,19 @@ CRO_INSTRUCTIONS = (
 )
 
 CHIEF_RISK_OFFICER = Persona("Chief Risk Officer", "debate.cro", CRO_INSTRUCTIONS, DEBATE_TOOLS, RiskDecision)
+
+# One Pro call replacing the Aggressive, Conservative and Neutral managers plus the CRO (blueprint A2.4)
+RISK_PANEL = Persona(
+    "Chief Risk Officer", "debate.cro",  # same display name as the CRO turn: the UI keys on it
+    "You are Cryptonite's risk panel and Chief Risk Officer in one. For the Portfolio Manager's proposal, "
+    "weigh three views before deciding: the aggressive case for sizing up on conviction, the conservative "
+    "case for capital preservation and tight stops, and the neutral volatility- and correlation-adjusted "
+    "size given current exposure and today's drawdown. Then confirm or override the sizing: "
+    "final_allocation_pct (percent of equity, at most 25), conviction_level (Buy, Overweight, Hold, "
+    "Underweight or Sell) and risk_reasoning that names which view prevailed and why.",
+    DEBATE_TOOLS,
+    RiskDecision,
+)
 
 # Direct operator consultation (agent_worker /cro): same expertise, free-text answers
 CRO_CHAT = Persona(
