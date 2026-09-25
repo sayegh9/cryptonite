@@ -59,10 +59,8 @@ async def _enqueue_command(
     payload: dict[str, Any],
     requester_id: str = "web-ui",
     idempotency_key: str | None = None,
-    # Defaults mirror the execution_commands column defaults (DEMO executor). Paper-engine commands
-    # must pass environment="PAPER": the orchestrator only claims PAPER rows.
-    environment: str = "DEMO",
-    account_id: str = "DEMO-ACCOUNT-001",
+    environment: str = "PAPER",
+    account_id: str = "PAPER-ACCOUNT-001",
 ) -> dict[str, Any]:
     cmd_id = uuid.uuid4()
     idem_key = idempotency_key or f"{command_type}:{cmd_id}"
@@ -312,6 +310,6 @@ async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: d
         command_type="MANUAL_ORDER",
         target_instance_id="MANUAL_TRADE",
         payload=payload,
-        environment="PAPER",  # executed by the paper orchestrator
+        environment="PAPER",
         account_id="PAPER-ACCOUNT-001",
     )
