@@ -17,6 +17,7 @@ from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.routes import (
     settings,
     agents,
+    brain,
     auth,
     backtests,
     bars,
@@ -137,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(market.router)
     app.include_router(alerts.router)
     app.include_router(agents.router)
+    app.include_router(brain.router)
 
     start_time = time.monotonic()
 
