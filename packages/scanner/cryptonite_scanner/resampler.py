@@ -57,10 +57,12 @@ def resample_1m_bars(df_1m: pl.DataFrame, target_timeframe: str) -> pl.DataFrame
     # Handle ts_event_ns from analytics lake if bar_open_ns is not yet set
     exprs = []
     if "bar_open_ns" not in df_1m.columns:
-        if "ts_event_ns" in df_1m.columns:
+        if "ts_init_ns" in df_1m.columns:
+            exprs.append(pl.col("ts_init_ns").cast(pl.Int64).alias("bar_open_ns"))
+        elif "ts_event_ns" in df_1m.columns:
             exprs.append(pl.col("ts_event_ns").cast(pl.Int64).alias("bar_open_ns"))
         else:
-            raise ValueError("Input DataFrame missing bar_open_ns or ts_event_ns")
+            raise ValueError("Input DataFrame missing bar_open_ns, ts_init_ns, or ts_event_ns")
     else:
         exprs.append(pl.col("bar_open_ns").cast(pl.Int64))
 

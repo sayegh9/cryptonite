@@ -20,6 +20,8 @@ class AnalyticsQueryEngine:
         venue: str = "binance",
         market_type: str = "spot",
     ) -> str:
+        if symbol.upper().endswith(f".{venue.upper()}"):
+            symbol = symbol.split(".")[0]
         pattern = (
             self.base_dir
             / "binance_klines_enriched"
@@ -49,9 +51,9 @@ class AnalyticsQueryEngine:
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         query = f"""
-            SELECT * FROM read_parquet('{glob_path}')
+            SELECT DISTINCT ON (ts_init_ns) * FROM read_parquet('{glob_path}')
             {where_sql}
-            ORDER BY ts_event_ns ASC
+            ORDER BY ts_init_ns ASC, ts_event_ns DESC
         """
         try:
             arrow_table = self._con.execute(query).to_arrow_table()
@@ -68,6 +70,37 @@ class AnalyticsQueryEngine:
             return res[0] if res else 0
         except duckdb.IOException:
             return 0
+
+
+    def _get_derivatives_glob_path(self, symbol: str, timeframe: str = "1m") -> str:
+        pattern = self.base_dir / "derivatives" / "binance" / "perpetual" / timeframe / symbol.upper() / "*.parquet"
+        return str(pattern)
+
+    def query_derivatives_df(
+        self,
+        symbol: str,
+        timeframe: str = "1m",
+        start_ns: int | None = None,
+        end_ns: int | None = None,
+    ) -> pl.DataFrame:
+        glob_path = self._get_derivatives_glob_path(symbol, timeframe)
+        where_clauses = []
+        if start_ns is not None:
+            where_clauses.append(f"ts_event_ns >= {start_ns}")
+        if end_ns is not None:
+            where_clauses.append(f"ts_event_ns <= {end_ns}")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        query = f"""
+            SELECT DISTINCT ON (ts_event_ns) * FROM read_parquet('{glob_path}')
+            {where_sql}
+            ORDER BY ts_event_ns DESC
+        """
+        try:
+            arrow_table = self._con.execute(query).to_arrow_table()
+            return pl.from_arrow(arrow_table)  # type: ignore
+        except duckdb.IOException:
+            return pl.DataFrame()
 
     def get_timestamp_range(
         self, symbol: str, timeframe: str = "1m"
