@@ -1,9 +1,11 @@
 """Institutional quantitative backtest runner using NautilusTrader BacktestNode."""
 
 import hashlib
+import inspect
 import json
 import logging
 import math
+import os
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -22,6 +24,7 @@ from cryptonite_backtester.storage import BacktestArtifactStore
 from cryptonite_schemas.identifiers import to_nautilus_bar_type
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from cryptonite_strategies.registry import (
+    STRATEGY_REGISTRY,
     get_source_tree_hash,
     get_strategy_class,
     get_strategy_config_class,
@@ -44,6 +47,36 @@ from nautilus_trader.model import (
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("cryptonite.backtester.runner")
+
+
+SANDBOX_ENV_FLAG = "CRYPTONITE_STRATEGY_SANDBOX"
+_NON_PARAMETERS = {"self", "instrument_id", "bar_type", "evaluation_start_ns", "kwargs"}
+
+
+def resolve_strategy(request: "BacktestRunRequest") -> tuple[type, type, dict[str, Any]]:
+    """(strategy class, config class, default parameters) for a run.
+
+    Registry strategies load in-process. Model-written code (``python_code`` for a slug outside the
+    registry) is validated and executed with restricted builtins, and only inside the sandbox
+    subprocess (``cryptonite_backtester.sandbox``), never in a process that holds secrets.
+    """
+    if request.strategy_slug in STRATEGY_REGISTRY:
+        meta = get_strategy_meta(request.strategy_slug)
+        return (get_strategy_class(request.strategy_slug), get_strategy_config_class(request.strategy_slug),
+                dict(meta["default_parameters"]))
+    if not request.python_code:
+        raise KeyError(f"Strategy '{request.strategy_slug}' is neither registered nor has source code")
+    if os.environ.get(SANDBOX_ENV_FLAG) != "1":
+        raise RuntimeError("model-written strategies only run in the backtest sandbox subprocess")
+    from cryptonite_strategies.validation import safe_exec
+
+    strat_cls, cfg_cls = safe_exec(request.python_code, module_name=f"ai_{request.strategy_slug.replace('-', '_')}")
+    defaults = {
+        name: p.default
+        for name, p in inspect.signature(cfg_cls.__init__).parameters.items()
+        if name not in _NON_PARAMETERS and p.default is not inspect.Parameter.empty
+    }
+    return strat_cls, cfg_cls, defaults
 
 
 class BacktestRunRequest(BaseModel):
@@ -299,11 +332,10 @@ class BacktestRunner:
         node.build()
 
         # 7. Instantiate Strategy with merged parameters
-        meta = get_strategy_meta(request.strategy_slug)
-        merged_params = dict(meta["default_parameters"])
+        strat_cls, cfg_cls, defaults = resolve_strategy(request)
+        merged_params = dict(defaults)
         merged_params.update(request.parameters)
 
-        cfg_cls = get_strategy_config_class(request.strategy_slug)
         strat_cfg = cfg_cls(
             instrument_id=request.instrument_id,
             bar_type=request.bar_type,
@@ -311,7 +343,6 @@ class BacktestRunner:
             **merged_params,
         )
 
-        strat_cls = get_strategy_class(request.strategy_slug)
         strategy = strat_cls(config=strat_cfg)
         node.add_strategy(run_cfg.id, strategy)
 

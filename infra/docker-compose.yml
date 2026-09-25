@@ -199,10 +199,45 @@ services:
       - ../data/nautilus_catalog:/app/data/nautilus_catalog:ro
       - ../data/analytics_lake:/app/data/analytics_lake:ro
       - ../data/backtest_artifacts:/app/data/backtest_artifacts
+      - sandbox_jobs:/app/data/sandbox_jobs
     ports:
       - "127.0.0.1:8083:8083"
     networks:
       - isolated_backtester_net
+    restart: unless-stopped
+
+  # Runs model-written strategy code (blueprint Phase 4, ADR 0003). This container is the security
+  # boundary: no network, no env file or secrets, read-only root, own PID namespace, process/memory/CPU
+  # caps. The server (root with only SETUID/SETGID/CHOWN/KILL, group 1000 to share the jobs volume with
+  # the backtester) runs each job's model code as uid 1001 in a private /tmp scratch dir: that uid
+  # cannot reach the jobs volume, signal or ptrace the server, or see other jobs.
+  strategy_sandbox:
+    build:
+      context: ..
+      dockerfile: infra/docker/backtester.Dockerfile
+    container_name: cryptonite_strategy_sandbox
+    command: ["python", "-m", "cryptonite_backtester.sandbox", "serve",
+              "--jobs", "/app/data/sandbox_jobs", "--catalog", "/app/data/nautilus_catalog",
+              "--work", "/tmp", "--child-uid", "1001", "--scrub", "/dev/shm"]
+    environment:
+      CRYPTONITE_STRATEGY_SANDBOX: "1"
+      CRYPTONITE_SANDBOX_KILL_ALL: "1"  # after each job, kill every process but the server
+    init: true  # reaps orphans; the server must not be PID 1 for kill(-1)
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=0755,uid=0,gid=0  # only the server creates the per-job scratch dirs
+    volumes:
+      - ../data/nautilus_catalog:/app/data/nautilus_catalog:ro
+      - sandbox_jobs:/app/data/sandbox_jobs
+    user: "0:1000"
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, KILL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 8g
+    cpus: 2
     restart: unless-stopped
 
   orchestrator:
@@ -319,6 +354,32 @@ services:
     volumes:
       - ../data:/app/data:rw
 
+  research_worker:
+    # Overnight strategy research (blueprint Phase 4): works off research:queue. Opt-in:
+    # start with --profile research. Needs CRYPTONITE_AGENT_API_TOKEN (operator-scoped machine
+    # token) in .env; backtests run in the backtester's sandbox, reports land in data/research_reports.
+    build:
+      context: ..
+      dockerfile: infra/docker/agent_worker.Dockerfile
+    profiles: ["research"]
+    command: ["python", "-m", "cryptonite_agents.research", "worker"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379/0
+      AGENT_TOOLS_DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
+      AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
+      RESEARCH_REPORTS_PATH: /app/data/research_reports
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data:rw
+      - ../packages/agents:/app/packages/agents
+
   exit_monitor:
     build:
       context: ..
@@ -389,6 +450,12 @@ services:
       - test_venv:/tmp/.venv
 
 volumes:
+  sandbox_jobs:  # size-capped tmpfs: the sandbox cannot fill the host disk
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=4g,uid=1000,gid=1000,mode=0770
   postgres_data:
   redis_data:
   test_uv_cache:
