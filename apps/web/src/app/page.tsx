@@ -366,6 +366,7 @@ export default function TerminalPage() {
                 {/* Left Column (35%) */}
                 <div className="lg:col-span-4 space-y-6">
                   <KillSwitchPanel />
+                  <KillSwitchPanel environment="DEMO" accountId="DEMO-ACCOUNT-001" />
                   <RiskLimitsEditor />
                 </div>
                 {/* Right Column (65%) */}
