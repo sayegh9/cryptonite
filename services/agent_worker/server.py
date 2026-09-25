@@ -253,6 +253,7 @@ class BrainNoteRequest(BaseModel):
     widget_id: str | None = Field(default=None, max_length=128)
     status: str | None = Field(default=None, pattern="^(APPROVED|REJECTED|FAILED)$")
     command_id: str | None = Field(default=None, max_length=128)
+    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED)$")
 
 
 def sse(event: str, data: dict) -> str:
@@ -302,9 +303,12 @@ async def brain_note(session_id: str, request: Request, req: BrainNoteRequest):
     """Record an operator action (e.g. an approved order card) in the conversation."""
     patch = {k: v for k, v in {"status": req.status, "command_id": req.command_id}.items() if v is not None}
     try:
-        await request.app.state.brain.note(req.operator_id, session_id, req.content, req.widget_id, patch or None)
+        applied = await request.app.state.brain.note(req.operator_id, session_id, req.content, req.widget_id,
+                                                     patch or None, req.expect_status)
     except SessionNotFound:
         raise HTTPException(status_code=404, detail="Session not found")
+    if not applied:
+        raise HTTPException(status_code=409, detail=f"Card is not {req.expect_status}")
     return {"status": "ok"}
 
 

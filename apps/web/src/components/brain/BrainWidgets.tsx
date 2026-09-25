@@ -204,7 +204,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <dd className="text-zinc-100">{widget.allocation_pct}% of equity</dd>
         </div>
         <div>
-          <dt className="text-zinc-500">Stop</dt>
+          <dt className="text-zinc-500">Proposed stop</dt>
           <dd className="text-zinc-100">{widget.stop_loss ? fmt(widget.stop_loss) : "—"}</dd>
         </div>
         <div>
@@ -225,7 +225,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           </button>
           <button
             type="button"
-            onClick={() => rejectOrderCard(widget)}
+            onClick={() => rejectOrderCard(widget).catch((e) => setError(e?.message || "Reject failed"))}
             className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] font-bold text-zinc-300 hover:bg-zinc-800"
           >
             Reject
@@ -235,8 +235,9 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       {pending && confirming && (
         <div className="mt-3 rounded border border-amber-700 bg-zinc-950 p-2" role="group" aria-label="Confirm paper order">
           <p className="mb-2 text-zinc-300">
-            Send a PAPER {widget.side} {widget.quantity} {widget.instrument_id} {widget.order_type} order? The risk engine still applies the
-            1–25% equity clamp and the kill switch.
+            Send a PAPER {widget.side} {widget.instrument_id} {widget.order_type} order sized at {widget.allocation_pct}% of equity?
+            The risk engine still applies the 1–25% equity clamp and the kill switch. The position is stopped out by the exit
+            monitor&apos;s hard and trailing stops, not by the proposed stop price; approval is refused while the exit monitor is down.
           </p>
           <div className="flex gap-2">
             <button

@@ -7,13 +7,14 @@ Market data, research SQL/Parquet and debate staging reuse the registered tools 
 - ``explain_backtest`` (READ): reads a backtest tearsheet and renders it.
 - ``propose_order`` (ADD_RISK): stages an order card for the operator. The permission gate holds it
   (ADD_RISK needs approval), and even an approved call only returns the proposal: the Brain has no
-  path to an order. The operator's Approve button sends the card to the existing paper manual-order
-  API (``POST /api/v1/paper/orders``), which enqueues a command for GuardedOrderDispatcher.
+  path to an order. The operator's Approve button calls the API's card-approve endpoint, which queues
+  one PAPER order for GuardedOrderDispatcher (see ``cryptonite_api.routes.brain``).
 """
 
 import json
+from typing import Annotated, Literal
 
-from cryptonite_agents.brain.widgets import OrderProposal
+from cryptonite_agents.brain.widgets import MAX_ALLOCATION_PCT, MIN_ALLOCATION_PCT, OrderProposal
 from cryptonite_agents.gateway import RiskClass, tool
 from cryptonite_agents.tools import (
     COMPARE_LIVE_VS_BACKTEST,
@@ -24,6 +25,7 @@ from cryptonite_agents.tools import (
     STAGE_DEBATE_PROPOSAL,
     read_nautilus_tearsheet,
 )
+from pydantic import Field
 
 
 @tool(RiskClass.READ, name="show_price_chart")
@@ -42,15 +44,15 @@ def explain_backtest(backtest_id: str = "latest") -> str:
 
 @tool(RiskClass.ADD_RISK, name="propose_order")
 def propose_order(
-    instrument_id: str,
-    side: str,
-    quantity: float,
-    allocation_pct: float,
-    order_type: str = "MARKET",
-    limit_price: float | None = None,
-    stop_loss: float | None = None,
-    take_profit: float | None = None,
-    rationale: str = "",
+    instrument_id: Annotated[str, Field(min_length=3, max_length=64)],
+    side: Literal["BUY", "SELL"],
+    quantity: Annotated[float, Field(gt=0)],
+    allocation_pct: Annotated[float, Field(ge=MIN_ALLOCATION_PCT, le=MAX_ALLOCATION_PCT)],
+    order_type: Literal["MARKET", "LIMIT"] = "MARKET",
+    limit_price: Annotated[float | None, Field(gt=0)] = None,
+    stop_loss: Annotated[float | None, Field(gt=0)] = None,
+    take_profit: Annotated[float | None, Field(gt=0)] = None,
+    rationale: Annotated[str, Field(max_length=2000)] = "",
 ) -> str:
     """Propose a PAPER order to the operator as an order card. You cannot place orders: the operator
     approves or rejects the card. instrument_id like 'BTCUSDT.BINANCE'; side BUY or SELL; quantity in

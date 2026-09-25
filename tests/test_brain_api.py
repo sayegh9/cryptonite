@@ -110,12 +110,14 @@ def test_note_forwards_only_display_fields(client, worker):
     c.cookies.set(COOKIE_NAME, OPERATOR_SID)
     sid = uuid.uuid4()
     res = c.post(f"/api/v1/agents/brain/sessions/{sid}/notes", headers={"X-CSRF-Token": CSRF},
-                 json={"content": "approved", "widget_id": "c1", "status": "APPROVED", "command_id": "cmd-1"})
+                 json={"content": "rejected", "widget_id": "c1", "status": "REJECTED"})
     assert res.status_code == 200
-    assert json.loads(worker[-1].content)["operator_id"] == "u-op"
-    bad = c.post(f"/api/v1/agents/brain/sessions/{sid}/notes", headers={"X-CSRF-Token": CSRF},
-                 json={"content": "x", "status": "EXECUTE_NOW"})
-    assert bad.status_code == 422
+    sent = json.loads(worker[-1].content)
+    assert sent["operator_id"] == "u-op" and sent["expect_status"] == "PENDING_APPROVAL"  # only from pending
+    for status in ("EXECUTE_NOW", "APPROVED"):  # approval only through the approve endpoint
+        bad = c.post(f"/api/v1/agents/brain/sessions/{sid}/notes", headers={"X-CSRF-Token": CSRF},
+                     json={"content": "x", "widget_id": "c1", "status": status})
+        assert bad.status_code == 422
 
 
 def test_trace_endpoint_returns_trace_with_children(client):
@@ -136,3 +138,138 @@ def test_trace_endpoint_returns_trace_with_children(client):
     assert body["trace"]["tool_calls"][0]["status"] == "DENIED" and body["trace"]["cost_usd"] == "0.0123"
     assert [ch["role"] for ch in body["children"]] == ["summarize"]
     assert c.get(f"/api/v1/agents/brain/traces/{uuid.uuid4()}").status_code == 404
+
+
+# --- Order card approval (server-side, idempotent, protected by the exit monitor) ---
+
+CARD = {"kind": "order_card", "id": "card-1", "instrument_id": "BTCUSDT.BINANCE", "side": "BUY", "quantity": 0.01,
+        "order_type": "MARKET", "limit_price": None, "allocation_pct": 5.0, "stop_loss": 58000.0,
+        "take_profit": None, "status": "PENDING_APPROVAL", "trace_id": str(uuid.uuid4()), "command_id": None}
+
+
+class _Redis:
+    def __init__(self, value):
+        self.value = value
+
+    async def get(self, key):
+        assert key == "exit_monitor:heartbeat"
+        return self.value
+
+
+class _Hub:
+    def __init__(self, value):
+        self.redis = _Redis(value)
+
+
+class _CommandPool:
+    """execution_commands with its unique idempotency key."""
+
+    def __init__(self):
+        self.rows: dict[str, dict] = {}
+
+    async def fetchrow(self, _sql, cmd_id, key, ctype, target, requester, payload, env, account):
+        if key in self.rows:
+            import asyncpg
+            raise asyncpg.UniqueViolationError("duplicate key")
+        self.rows[key] = {"command_id": cmd_id, "command_type": ctype, "target": target, "requester": requester,
+                          "payload": json.loads(payload), "status": "PENDING", "created_at": None}
+        return self.rows[key]
+
+    async def fetchval(self, _sql, key):
+        return self.rows[key]["command_id"]
+
+
+@pytest.fixture
+def card_worker(monkeypatch):
+    """A worker holding one session with one card; notes honour expect_status like the real store."""
+    card = dict(CARD)
+    notes: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not _valid_signature(request):
+            return httpx.Response(401)
+        if request.method == "GET" and "/sessions/" in request.url.path:
+            return httpx.Response(200, json={"session": {}, "messages": [{"role": "assistant", "widgets": [card]}]})
+        if "/notes" in request.url.path:
+            body = json.loads(request.content)
+            notes.append(body)
+            if body.get("expect_status") and card["status"] != body["expect_status"]:
+                return httpx.Response(409, json={"detail": "not pending"})
+            if body.get("status"):
+                card["status"] = body["status"]
+            if body.get("command_id"):
+                card["command_id"] = body["command_id"]
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(404)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(brain_routes.httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    return card, notes
+
+
+def _approve(c, sid):
+    return c.post(f"/api/v1/agents/brain/sessions/{sid}/cards/card-1/approve", headers={"X-CSRF-Token": CSRF})
+
+
+HEARTBEAT = json.dumps({"stop_loss_pct": 5.0, "trail_activate_pct": 3.0, "trail_pct": 2.0})
+
+
+def test_approving_a_card_queues_one_ai_owned_order_sized_by_its_allocation(client, card_worker):
+    c, app = client
+    card, notes = card_worker
+    app.state.pool, app.state.stream_hub = _CommandPool(), _Hub(HEARTBEAT)
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    sid = uuid.uuid4()
+    res = _approve(c, sid)
+    assert res.status_code == 200, res.text
+    cmd = app.state.pool.rows["brain-card:card-1"]
+    assert cmd["command_type"] == "SUBMIT_ORDER" and cmd["target"] == "AI_DEBATE_WORKER"  # exit monitor owns it
+    assert cmd["requester"] == "operator:u-op"
+    p = cmd["payload"]
+    assert p["allocation_pct"] == 5.0 and "quantity" not in p  # sized by what the operator saw
+    assert p["proposed_stop_loss"] == 58000.0 and p["protection"]["stop_loss_pct"] == 5.0
+    assert p["trace_id"] == CARD["trace_id"] and p["brain_card_id"] == "card-1"
+    assert card["status"] == "APPROVED" and card["command_id"] == res.json()["command_id"]
+    assert notes[0]["expect_status"] == "PENDING_APPROVAL"  # claimed before anything was queued
+
+    # A double click or a retry after a reload never queues a second order
+    again = _approve(c, sid)
+    assert again.status_code == 200 and again.json()["command_id"] == res.json()["command_id"]
+    assert len(app.state.pool.rows) == 1
+    # ...and a late reject cannot flip an approved card
+    rej = c.post(f"/api/v1/agents/brain/sessions/{sid}/notes", headers={"X-CSRF-Token": CSRF},
+                 json={"content": "no", "widget_id": "card-1", "status": "REJECTED"})
+    assert rej.status_code == 409 and card["status"] == "APPROVED"
+
+
+def test_a_crash_between_claim_and_queue_is_retried_without_a_duplicate(client, card_worker):
+    c, app = client
+    card, _ = card_worker
+    card["status"] = "APPROVED"  # claimed, then the API died before the command was queued
+    app.state.pool, app.state.stream_hub = _CommandPool(), _Hub(HEARTBEAT)
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    assert _approve(c, uuid.uuid4()).status_code == 200 and len(app.state.pool.rows) == 1
+
+
+def test_approval_is_refused_while_the_exit_monitor_is_down(client, card_worker):
+    c, app = client
+    card, notes = card_worker
+    app.state.pool, app.state.stream_hub = _CommandPool(), _Hub(None)
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    res = _approve(c, uuid.uuid4())
+    assert res.status_code == 409 and "EXIT_MONITOR_DOWN" in res.json()["detail"]
+    assert app.state.pool.rows == {} and card["status"] == "PENDING_APPROVAL" and notes == []
+
+
+def test_rejected_cards_and_non_operators_cannot_approve(client, card_worker):
+    c, app = client
+    card, _ = card_worker
+    app.state.pool, app.state.stream_hub = _CommandPool(), _Hub(HEARTBEAT)
+    assert _approve(c, uuid.uuid4()).status_code == 401
+    c.cookies.set(COOKIE_NAME, VIEWER_SID)
+    assert _approve(c, uuid.uuid4()).status_code == 403
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    card["status"] = "REJECTED"
+    assert _approve(c, uuid.uuid4()).status_code == 409
+    assert app.state.pool.rows == {}

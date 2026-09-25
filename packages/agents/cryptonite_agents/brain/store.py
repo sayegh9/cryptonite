@@ -21,7 +21,8 @@ class SessionStore(Protocol):
     async def latest_summary(self, session_id: str) -> dict[str, Any] | None: ...
     async def save_summary(self, session_id: str, summary: str, covers_message_id: int,
                            trace_id: str | None = None) -> None: ...
-    async def update_widget(self, session_id: str, widget_id: str, patch: dict[str, Any]) -> bool: ...
+    async def update_widget(self, session_id: str, widget_id: str, patch: dict[str, Any],
+                            expect_status: str | None = None) -> bool: ...
 
 
 def _valid_uuid(value: str | None) -> uuid.UUID | None:
@@ -40,6 +41,15 @@ def _message_row(row: Any) -> dict[str, Any]:
         "trace_id": str(row["trace_id"]) if row["trace_id"] else None,
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
     }
+
+
+def _patch(widgets: list[dict[str, Any]], widget_id: str, patch: dict[str, Any], expect_status: str | None) -> bool:
+    changed = False
+    for w in widgets:
+        if w.get("id") == widget_id and (expect_status is None or w.get("status") == expect_status):
+            w.update(patch)
+            changed = True
+    return changed
 
 
 def _session_row(row: Any) -> dict[str, Any]:
@@ -105,7 +115,11 @@ class PgSessionStore:
                VALUES ($1, $2, $3, $4)""",
             uuid.UUID(session_id), summary, covers_message_id, _valid_uuid(trace_id))
 
-    async def update_widget(self, session_id: str, widget_id: str, patch: dict[str, Any]) -> bool:
+    async def update_widget(self, session_id: str, widget_id: str, patch: dict[str, Any],
+                            expect_status: str | None = None) -> bool:
+        """Patch a widget; with ``expect_status`` only if it currently has that status (row-locked, so
+        an approval and a rejection of the same card cannot both win)."""
+        updated = False
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 rows = await conn.fetch(
@@ -116,12 +130,12 @@ class PgSessionStore:
                     widgets = row["widgets"]
                     if isinstance(widgets, str):
                         widgets = json.loads(widgets)
-                    for w in widgets:
-                        if w.get("id") == widget_id:
-                            w.update(patch)
-                    await conn.execute("UPDATE ai_messages SET widgets = $2::jsonb WHERE id = $1",
-                                       row["id"], json.dumps(widgets, default=str))
-        return bool(rows)
+                    changed = _patch(widgets, widget_id, patch, expect_status)
+                    if changed:
+                        updated = True
+                        await conn.execute("UPDATE ai_messages SET widgets = $2::jsonb WHERE id = $1",
+                                           row["id"], json.dumps(widgets, default=str))
+        return updated
 
 
 class MemorySessionStore:
@@ -175,13 +189,7 @@ class MemorySessionStore:
         self.summaries.append({"session_id": session_id, "summary": summary,
                                "covers_message_id": covers_message_id, "trace_id": trace_id})
 
-    async def update_widget(self, session_id: str, widget_id: str, patch: dict[str, Any]) -> bool:
-        found = False
-        for r in self.rows:
-            if r["session_id"] != session_id:
-                continue
-            for w in r["widgets"]:
-                if w.get("id") == widget_id:
-                    w.update(patch)
-                    found = True
-        return found
+    async def update_widget(self, session_id: str, widget_id: str, patch: dict[str, Any],
+                            expect_status: str | None = None) -> bool:
+        return any([_patch(r["widgets"], widget_id, patch, expect_status)
+                    for r in self.rows if r["session_id"] == session_id])

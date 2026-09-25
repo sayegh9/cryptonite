@@ -292,9 +292,14 @@ class Gateway:
                 last_error = str(e)
                 u = e.usage
                 cost = pricing.cost_usd(model, u.input_tokens, u.output_tokens, u.cached_input_tokens)
+                terminal = emitted or attempt == len(candidates) - 1 or (
+                    isinstance(e, backend.OutputInvalid) and route.fallback_policy is FallbackPolicy.FAIL_CLOSED)
+                # The client already has trace_id from "start": the attempt that ends the stream owns it,
+                # so the Decision Trace of a failed answer resolves; a retried attempt gets its own id
                 ok = await write_call(self.pool, CallRecord(
                     role, model, "ERROR", u.input_tokens, u.output_tokens, u.cached_input_tokens, u.thinking_tokens,
-                    cost, latency, error=last_error, parent_trace_id=parent_trace_id, session_id=ctx.session_id))
+                    cost, latency, error=last_error, trace_id=trace_id if terminal else uuid.uuid4(),
+                    parent_trace_id=parent_trace_id, session_id=ctx.session_id))
                 await self.budget.record(role, cost, persisted=ok)
                 logger.warning("Gateway stream %s attempt %d on %s failed: %s", role, attempt + 1, model, e)
                 if isinstance(e, backend.OutputInvalid) and route.fallback_policy is FallbackPolicy.FAIL_CLOSED:
@@ -311,8 +316,12 @@ class Gateway:
                                      int((time.monotonic() - started) * 1000), trace_id=trace_id,
                                      parent_trace_id=parent_trace_id, session_id=ctx.session_id,
                                      mandate_id=ctx.mandate_id, error="cancelled by caller")
-                    ok = await asyncio.shield(write_call(self.pool, rec))
-                    await self.budget.record(role, cost, persisted=ok)
+                    async def settle() -> None:
+                        ok = await write_call(self.pool, rec)
+                        await self.budget.record(role, cost, persisted=ok)
+
+                    # one shielded task: a re-delivered cancellation cannot skip the budget record
+                    await asyncio.shield(settle())
                 raise
 
         raise ModelUnavailable(role, last_error)

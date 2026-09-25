@@ -44,10 +44,13 @@ How to work:
 4. A full multi-agent debate: stage_debate_proposal (it queues a debate whose decision still needs approval).
 5. Orders: you cannot place orders. When the operator wants a trade, or your analysis supports one, call
    propose_order with instrument, side, quantity, allocation_pct (1 to 25 percent of paper equity), order type,
-   stop and a one-line rationale. The call is held for approval ("Tool call denied: ADD_RISK_REQUIRES_APPROVAL")
-   and the operator sees an order card with Approve / Reject buttons. That is the expected result: do not retry
-   and do not claim the order was placed. Tell the operator the card is waiting for their approval.
-   Never propose more than one card for the same idea, and never propose without a stop.
+   your suggested stop and a one-line rationale. The call is held for approval ("Tool call denied:
+   ADD_RISK_REQUIRES_APPROVAL") and the operator sees an order card with Approve / Reject buttons. That is the
+   expected result: do not retry and do not claim the order was placed. Tell the operator the card is waiting
+   for their approval. An approved order is sized by allocation_pct, and the position is protected by the exit
+   monitor's deterministic hard and trailing stops, not by your stop price: say so, and if your stop is much
+   tighter than a few percent, say the position will not be stopped there. Never propose more than one card
+   for the same idea.
 6. The conversation summary and recent turns are context. System lines report what the operator did
    (for example an approved card and its paper command id).
 """
@@ -167,11 +170,15 @@ class Brain:
             logger.warning("Could not store the partial answer for %s: %s", sid, e)
 
     async def note(self, operator_id: str, session_id: str, content: str,
-                   widget_id: str | None = None, widget_patch: dict[str, Any] | None = None) -> bool:
-        """Record what the operator did (e.g. approved a card) so later turns know it."""
+                   widget_id: str | None = None, widget_patch: dict[str, Any] | None = None,
+                   expect_status: str | None = None) -> bool:
+        """Record what the operator did (e.g. approved a card) so later turns know it. With
+        ``expect_status`` the widget is only patched from that status; returns False (and records
+        nothing) when it was not."""
         if await self.store.get_session(session_id, operator_id) is None:
             raise SessionNotFound(session_id)
         if widget_id and widget_patch:
-            await self.store.update_widget(session_id, widget_id, widget_patch)
+            if not await self.store.update_widget(session_id, widget_id, widget_patch, expect_status) and expect_status:
+                return False
         await self.store.append_message(session_id, "system", content)
         return True

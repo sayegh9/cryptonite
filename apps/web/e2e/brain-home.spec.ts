@@ -2,7 +2,7 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 
 /**
  * Brain Home (blueprint A3.3–A3.5) with a mocked SSE stream:
- * analyze → order card → approve (paper manual-order API) → decision trace; reload recall; stop; brain-ask.
+ * analyze → order card → approve (server-side card approval) → decision trace; reload recall; stop; brain-ask.
  */
 
 const SESSION = "5f0c3a6e-1b2d-4c3e-9f00-000000000001";
@@ -118,10 +118,11 @@ async function mockBackend(page: Page) {
       },
     }),
   );
-  await page.route("**/api/v1/paper/orders", async (route) => {
-    if (route.request().method() !== "POST") return route.fulfill({ json: [] });
-    calls.orders.push({ body: route.request().postDataJSON(), csrf: route.request().headers()["x-csrf-token"] });
-    return route.fulfill({ json: { command_id: "cmd-12345678", command_type: "MANUAL_ORDER", status: "PENDING" } });
+  await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, async (route) => {
+    calls.orders.push({ url: new URL(route.request().url()).pathname, csrf: route.request().headers()["x-csrf-token"] });
+    return route.fulfill({
+      json: { command_id: "cmd-12345678", status: "APPROVED", protection: { stop_loss_pct: 5, trail_activate_pct: 3, trail_pct: 2 } },
+    });
   });
   await page.route("**/agent-api/brain/stream", (route: Route) => {
     calls.stream.push(route.request().postDataJSON());
@@ -138,7 +139,7 @@ async function openBrainHome(page: Page) {
 }
 
 test.describe("Brain Home", () => {
-  test("analyze → order card → approve via the paper order API → decision trace", async ({ page }) => {
+  test("analyze → order card → server-side approval → decision trace", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     const calls = await mockBackend(page);
     await openBrainHome(page);
@@ -164,13 +165,14 @@ test.describe("Brain Home", () => {
     await expect(card).toContainText("ADDS RISK · PAPER");
     await expect(card).toContainText("0.01 BTCUSDT.BINANCE");
     await card.getByRole("button", { name: "Approve…" }).click();
+    // The confirmation says how the order is sized and what actually stops it out
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("sized at 5% of equity");
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("exit monitor");
     await card.getByRole("button", { name: "Confirm paper order" }).click();
     await expect(card.getByRole("status")).toContainText("Approved · paper command cmd-12345678");
-    expect(calls.orders).toEqual([
-      { body: { instrument_id: "BTCUSDT.BINANCE", side: "BUY", order_type: "MARKET", quantity: 0.01 }, csrf: "csrf-test" },
-    ]);
-    await expect.poll(() => calls.notes.length).toBe(1);
-    expect(calls.notes[0]).toMatchObject({ widget_id: "call-1", status: "APPROVED", command_id: "cmd-12345678" });
+    // One server-side call: the API claims the card, queues the order and records the note itself
+    expect(calls.orders).toEqual([{ url: `/agent-api/brain/sessions/${SESSION}/cards/call-1/approve`, csrf: "csrf-test" }]);
+    expect(calls.notes).toEqual([]);
 
     // Every order card links to its decision trace
     await card.getByRole("button", { name: /Open the decision trace/ }).click();

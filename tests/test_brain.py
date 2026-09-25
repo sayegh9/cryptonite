@@ -147,6 +147,16 @@ def test_propose_order_only_returns_a_proposal():
     assert "execution_commands" not in body and "http" not in body.split('"""')[-1]
 
 
+def test_propose_order_arguments_are_validated_before_the_gate():
+    # Out-of-band values make pydantic-ai ask the model to retry instead of "holding" a card that
+    # could never render
+    from cryptonite_agents.gateway.providers.pydantic_ai_backend import _as_tool
+
+    schema = _as_tool(propose_order, lambda spec: None, []).function_schema.json_schema["properties"]
+    assert schema["allocation_pct"]["minimum"] == 1 and schema["allocation_pct"]["maximum"] == 25
+    assert schema["side"]["enum"] == ["BUY", "SELL"] and schema["order_type"]["enum"] == ["MARKET", "LIMIT"]
+
+
 # --- Gateway.stream ----------------------------------------------------------------------------
 
 async def test_stream_yields_tokens_then_done_with_the_start_trace_id():
@@ -282,9 +292,13 @@ async def test_analyze_propose_approve_in_one_conversation():
     assert ends["propose_order"] == "DENIED"  # held by the gate: the Brain placed nothing
     assert events[-1].data["trace_id"] == trace_id
 
-    # The operator approves in the UI; the web calls POST /api/v1/paper/orders, then records the result
-    await brain(store).note("op-1", sid, "Operator approved order card; paper command cmd-42 queued.",
-                            widget_id=card["id"], widget_patch={"status": "APPROVED", "command_id": "cmd-42"})
+    # The operator approves in the UI; the API claims the card from PENDING_APPROVAL, queues the order,
+    # then records the command. A late reject (expecting PENDING_APPROVAL) is refused.
+    assert await brain(store).note("op-1", sid, "Operator approved order card; paper command cmd-42 queued.",
+                                   widget_id=card["id"], widget_patch={"status": "APPROVED", "command_id": "cmd-42"},
+                                   expect_status="PENDING_APPROVAL")
+    assert not await brain(store).note("op-1", sid, "Operator rejected the card.", widget_id=card["id"],
+                                       widget_patch={"status": "REJECTED"}, expect_status="PENDING_APPROVAL")
     stored = await store.messages(sid)
     assert [m["role"] for m in stored] == ["user", "assistant", "system"]
     stored_card = next(w for w in stored[1]["widgets"] if w["id"] == card["id"])

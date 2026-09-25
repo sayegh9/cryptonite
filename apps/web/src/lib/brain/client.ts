@@ -1,4 +1,3 @@
-import { fetchApi } from "@/lib/api";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { readSse } from "./sse";
 import type { BrainSessionSummary, DecisionTrace, OrderCardWidget, StoredBrainMessage } from "./types";
@@ -109,55 +108,41 @@ export async function fetchDecisionTrace(traceId: string): Promise<DecisionTrace
   return res.json();
 }
 
-async function recordNote(content: string, card: OrderCardWidget, status: OrderCardWidget["status"], commandId?: string) {
-  const sessionId = useBrainStore.getState().sessionId;
-  if (!sessionId) return;
-  try {
-    await fetch(`/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/notes`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
-      body: JSON.stringify({ content, widget_id: card.id, status, command_id: commandId ?? null }),
-    });
-  } catch {
-    // The order itself is already queued; the note only keeps the conversation in sync.
-  }
+async function postCard(path: string, body?: unknown): Promise<any> {
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
+  return data;
 }
 
 /**
- * Operator approval of an order card: the existing paper manual-order API, with CSRF.
- * That endpoint enqueues a PAPER command that GuardedOrderDispatcher checks (1–25% clamp, kill switch…).
+ * Operator approval of an order card, decided server-side: the API claims the card, queues one PAPER
+ * order for GuardedOrderDispatcher (1–25% clamp, kill switch…) sized by the card's allocation, and
+ * refuses while the exit monitor (the position's stop) is down. Repeating it never queues a second order.
  */
 export async function approveOrderCard(card: OrderCardWidget): Promise<string> {
-  const payload: Record<string, unknown> = {
-    instrument_id: card.instrument_id,
-    side: card.side,
-    order_type: card.order_type,
-    quantity: card.quantity,
-  };
-  if (card.order_type === "LIMIT" && card.limit_price) payload.price = card.limit_price;
-  try {
-    const res = await fetchApi("/paper/orders", {
-      method: "POST",
-      headers: { "X-CSRF-Token": csrf() },
-      body: JSON.stringify(payload),
-    });
-    const commandId = String(res.command_id ?? res.id ?? "queued");
-    useBrainStore.getState().updateOrderCard(card.id, { status: "APPROVED", command_id: commandId });
-    await recordNote(
-      `Operator approved order card ${card.id}: ${card.side} ${card.quantity} ${card.instrument_id} ${card.order_type}. ` +
-        `Paper command ${commandId} queued for the dispatcher.`,
-      card, "APPROVED", commandId,
-    );
-    return commandId;
-  } catch (err: any) {
-    useBrainStore.getState().updateOrderCard(card.id, { status: "FAILED" });
-    await recordNote(`Operator approved order card ${card.id}, but the paper order API refused it: ${err?.message}.`, card, "FAILED");
-    throw err;
-  }
+  const sessionId = useBrainStore.getState().sessionId;
+  if (!sessionId) throw new Error("No Brain session");
+  const res = await postCard(
+    `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(card.id)}/approve`,
+  );
+  const commandId = String(res.command_id);
+  useBrainStore.getState().updateOrderCard(card.id, { status: "APPROVED", command_id: commandId });
+  return commandId;
 }
 
 export async function rejectOrderCard(card: OrderCardWidget): Promise<void> {
+  const sessionId = useBrainStore.getState().sessionId;
+  if (!sessionId) return;
+  await postCard(`/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/notes`, {
+    content: `Operator rejected order card ${card.id} (${card.side} ${card.instrument_id}, ${card.allocation_pct}% of equity).`,
+    widget_id: card.id,
+    status: "REJECTED",
+  });
   useBrainStore.getState().updateOrderCard(card.id, { status: "REJECTED" });
-  await recordNote(`Operator rejected order card ${card.id} (${card.side} ${card.quantity} ${card.instrument_id}).`, card, "REJECTED");
 }
