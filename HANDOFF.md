@@ -2,6 +2,19 @@
 
 > **Deferred backlog (LE-1 … LE-10)**, agreed for later: see [AUDIT_STATUS.md](AUDIT_STATUS.md#deferred-backlog-marked-for-later-2026-09-29).
 
+## AI-First Program — Phase 3 merged (2026-09-29)
+
+"One Brain" (A3.1–A3.5), PR #1 merged into `feat/ai-first-phase0` as `eae3989`:
+- **Brain copilot:** Gateway streaming, persistent sessions (migration 024, telemetry role, REVOKEd from `agent_ro`), Brain Home and the Copilot drawer, inline widgets, and the Decision Trace drawer.
+- **Order cards:** approval happens only server-side. `POST /api/v1/agents/brain/sessions/{sid}/cards/{id}/approve`:
+  - claims the card first;
+  - queues one AI-owned `SUBMIT_ORDER`, idempotency key `brain-card:<id>`, sized by the card's allocation;
+  - is **refused while the exit monitor heartbeat (`exit_monitor:heartbeat`) is missing**. The exit monitor's hard and trailing stops protect the position; the card's own stop price is advisory.
+- **Review:** FAIL. High: an approved card was a bare manual order with no stop and its allocation ignored. Medium: the approval was client-side and replayable. Both fixed in `02753c6`, and the Lows too; see the PR #1 comment.
+- **Deferred:** a per-turn cap on staging paid debates, and per-operator trace scoping (backlog LE-8).
+- **Deploy:** rebuild `api`, `agent_worker`, `scanner`/`exit_monitor` and `web`, then run the exit monitor (`--profile monitoring`, LE-2) before approving any Brain order card.
+- **Gates on the branch:** pytest 557 passed / 2 known failed; Brain, API and exit-monitor suites 44/44; Playwright 20/20. The merged tree has not been tested yet because Docker was stopped. Run the throwaway-DB suite before deploying.
+
 ## AI-First Program — Phase 4 complete (2026-09-25)
 
 | Item | Status |
