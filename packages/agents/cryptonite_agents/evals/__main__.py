@@ -14,6 +14,7 @@ import json
 import os
 import sys
 
+from cryptonite_agents.brain import brain_gateway_routes
 from cryptonite_agents.evals.runner import run_set, store_run
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 
@@ -34,7 +35,7 @@ async def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     # Eval spend is reported in the run itself and kept out of the production budget/ledger.
-    gateway = Gateway(budget=BudgetGuard(default_cap_usd=10**6))
+    gateway = Gateway(routes=brain_gateway_routes(), budget=BudgetGuard(default_cap_usd=10**6))
     kinds = {k for k in args.kinds.split(",") if k} or None
     personas = {p for p in args.personas.split(",") if p} or None
     results, metrics = await run_set(gateway, args.set, args.model, args.repeat, kinds, personas)

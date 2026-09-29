@@ -78,6 +78,10 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     await expect(brainTab).toBeVisible();
     await brainTab.click();
 
+    // The AI Brain workspace opens on Brain Home; the debate hub is the "Debates" view
+    await expect(page.getByTestId("brain-home")).toBeVisible();
+    await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
+
     // 2. If first-time user tour appears, step through it and complete
     const tourGuideHeader = page.locator("text=First-Time User Guide");
     if (await tourGuideHeader.isVisible({ timeout: 2000 }).catch(() => false)) {

@@ -6,6 +6,8 @@ import { OrchestratorCanvas } from "./OrchestratorCanvas";
 import { ActionInbox } from "./ActionInbox";
 import { AIBrainTourModal } from "./AIBrainTourModal";
 import { useDebateStore } from "@/lib/stores/useDebateStore";
+import { useBrainStore } from "@/lib/stores/useBrainStore";
+import { BrainHome } from "./BrainHome";
 import {
   BrainCircuit,
   HelpCircle,
@@ -13,7 +15,9 @@ import {
   Zap,
   Users,
   Inbox,
-  } from "lucide-react";
+  MessagesSquare,
+  GitBranch,
+} from "lucide-react";
 import { toast } from "sonner";
 
 interface AIBrainWorkspaceProps {
@@ -25,6 +29,8 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
   const [triggerMode, setTriggerMode] = useState<TriggerMode>("high-edge");
   const [selectedAgentId, setSelectedAgentId] = useState<string>("orchestrator");
   const [isTourOpen, setIsTourOpen] = useState(false);
+  const view = useBrainStore((s) => s.workspaceView);
+  const setView = useBrainStore((s) => s.setWorkspaceView);
 
   // Responsive panel visibility with local persistence
   const [showFleet, setShowFleet] = useState<boolean>(true);
@@ -43,14 +49,14 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
       const savedInbox = localStorage.getItem("cryptonite:ai-brain-inbox");
       if (savedInbox !== null) setShowInbox(savedInbox === "true");
 
-      if (isActive) {
+      if (isActive && useBrainStore.getState().workspaceView === "debates") {
         const tourSeen = localStorage.getItem("cryptonite:ai-brain-tour-seen");
         if (!tourSeen) {
           setIsTourOpen(true);
         }
       }
     } catch {}
-  }, [isActive]);
+  }, [isActive, view]);
 
   const toggleFleet = (val: boolean) => {
     setShowFleet(val);
@@ -147,9 +153,30 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
             <ShieldCheck className="w-3 h-3 text-emerald-400 flex-none" />
             <span className="font-bold">SIMULATION MODE (RISK-FREE)</span>
           </div>
+
+          <div role="group" aria-label="AI Brain view" className="flex items-center rounded border border-zinc-800 bg-zinc-900 p-0.5 text-[11px] font-mono flex-none">
+            {([
+              { id: "brain", label: "Brain", Icon: MessagesSquare },
+              { id: "debates", label: "Debates", Icon: GitBranch },
+            ] as const).map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setView(id)}
+                aria-pressed={view === id}
+                className={`flex items-center gap-1 rounded px-2 py-0.5 transition-colors ${
+                  view === id ? "bg-cyan-950/80 text-cyan-300 font-bold" : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Icon className="w-3 h-3" />
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        {/* Panel Toggles & Actions */}
+        {/* Panel Toggles & Actions (Debates view) */}
+        {view === "debates" && (
         <div className="flex items-center space-x-2 flex-none">
           {/* Toggle Left Rail: Fleet Roster */}
           <button
@@ -203,10 +230,17 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
             <span className="hidden sm:inline">❓ How It Works</span>
           </button>
         </div>
+        )}
       </div>
 
-      {/* 3-Column Robust Responsive Layout */}
-      <div className="flex-1 flex min-h-0 min-w-0 bg-zinc-950 overflow-hidden">
+      {view === "brain" && (
+        <div className="flex-1 min-h-0 min-w-0 flex">
+          <BrainHome active={isActive} />
+        </div>
+      )}
+
+      {/* 3-Column Robust Responsive Layout (Debates view) */}
+      <div className={view === "debates" ? "flex-1 flex min-h-0 min-w-0 bg-zinc-950 overflow-hidden" : "hidden"}>
         {/* Zone 1: Agent Fleet Topology (Left Rail) */}
         {showFleet && (
           <aside className="w-64 xl:w-72 flex-none h-full border-r border-zinc-800 bg-zinc-950 flex flex-col min-h-0 min-w-0 z-10 transition-all">

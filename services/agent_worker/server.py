@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import hmac
@@ -9,10 +10,11 @@ from typing import Optional, Callable
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from cryptonite_agents.brain import Brain, MemorySessionStore, PgSessionStore, SessionNotFound, brain_gateway_routes
 from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
@@ -106,8 +108,12 @@ async def startup_event():
     if app.state.telemetry_pool is None:
         logger.error("AI_TELEMETRY_DATABASE_URL not set: LLM spend is counted in this process only")
     app.state.gateway = Gateway(pool=app.state.telemetry_pool, redis=app.state.redis,
+                                routes=brain_gateway_routes(),
                                 budget=BudgetGuard(pool=app.state.telemetry_pool, redis=app.state.redis,
                                                    spend_unknown=app.state.telemetry_pool is None))
+    # Brain sessions live with the gateway's telemetry role (migration 024), never with agent_ro
+    store = PgSessionStore(app.state.telemetry_pool) if app.state.telemetry_pool else MemorySessionStore()
+    app.state.brain = Brain(app.state.gateway, store)
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -232,6 +238,85 @@ async def chat_with_onchain(request: Request, req: OnChainRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:onchain"):
         raise HTTPException(status_code=429, detail="Too many requests")
     return await ask(ONCHAIN_CHAT, f"Operator Query: {req.message}")
+
+# --- Brain (AI-first blueprint A3.1–A3.3) --------------------------------------------------------
+
+class BrainStreamRequest(BaseModel):
+    operator_id: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=8000)
+    session_id: str | None = Field(default=None, max_length=64)
+
+
+class BrainNoteRequest(BaseModel):
+    operator_id: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=2000)
+    widget_id: str | None = Field(default=None, max_length=128)
+    status: str | None = Field(default=None, pattern="^(APPROVED|REJECTED|FAILED)$")
+    command_id: str | None = Field(default=None, max_length=128)
+    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED)$")
+
+
+def sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@app.post("/api/v1/brain/stream")
+async def brain_stream(request: Request, req: BrainStreamRequest):
+    """One Brain turn as Server-Sent Events: session, token, tool_call, widget, done | error.
+
+    Closing the connection cancels the model call (the gateway costs what was billed so far).
+    """
+    if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:brain"):
+        raise HTTPException(status_code=429, detail="Too many requests")
+    brain: Brain = request.app.state.brain
+
+    async def events():
+        try:
+            async for ev in brain.turn(req.operator_id, req.message, req.session_id):
+                yield sse(ev.type, ev.data)
+        except Exception as e:  # never end a stream without telling the client why
+            logger.exception("Brain stream failed")
+            yield sse("error", {"code": "INTERNAL", "message": type(e).__name__})
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/v1/brain/operators/{operator_id}/sessions")
+async def brain_sessions(operator_id: str, request: Request):
+    return {"sessions": await request.app.state.brain.store.list_sessions(operator_id)}
+
+
+@app.get("/api/v1/brain/operators/{operator_id}/sessions/{session_id}")
+async def brain_session(operator_id: str, session_id: str, request: Request):
+    store = request.app.state.brain.store
+    session = await store.get_session(session_id, operator_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    summary = await store.latest_summary(session_id)
+    return {"session": session, "messages": await store.messages(session_id),
+            "summary": summary["summary"] if summary else None}
+
+
+@app.post("/api/v1/brain/sessions/{session_id}/notes")
+async def brain_note(session_id: str, request: Request, req: BrainNoteRequest):
+    """Record an operator action (e.g. an approved order card) in the conversation."""
+    patch = {k: v for k, v in {"status": req.status, "command_id": req.command_id}.items() if v is not None}
+    try:
+        applied = await request.app.state.brain.note(req.operator_id, session_id, req.content, req.widget_id,
+                                                     patch or None, req.expect_status)
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not applied:
+        raise HTTPException(status_code=409, detail=f"Card is not {req.expect_status}")
+    return {"status": "ok"}
+
+
+@app.get("/api/v1/brain/spend")
+async def brain_spend(request: Request):
+    snap = await request.app.state.gateway.budget.snapshot()
+    return {"spent_usd": str(snap["spent_usd"]), "cap_usd": str(snap["cap_usd"])}
+
 
 @app.get("/health")
 def health():

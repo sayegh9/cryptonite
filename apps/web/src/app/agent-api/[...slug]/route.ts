@@ -22,9 +22,11 @@ export async function POST(
 
     headers.set("content-type", request.headers.get("content-type") || "application/json");
 
-    // Allow long-running agent reasoning up to 5 minutes
+    // Allow long-running agent reasoning up to 5 minutes; a client that goes away (Stop button,
+    // closed tab) aborts the upstream call too, which cancels a streaming Brain turn.
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 300_000);
+    request.signal.addEventListener("abort", () => controller.abort(), { once: true });
 
     const backendRes = await fetch(targetUrl, {
       method: "POST",
@@ -32,6 +34,40 @@ export async function POST(
       body,
       signal: controller.signal,
     });
+
+    // Server-Sent Events (Brain stream): pass the body through unbuffered
+    if (backendRes.ok && backendRes.body && (backendRes.headers.get("content-type") || "").startsWith("text/event-stream")) {
+      const upstream = backendRes.body;
+      const relay = new ReadableStream<Uint8Array>({
+        async start(ctrl) {
+          const reader = upstream.getReader();
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              ctrl.enqueue(value);
+            }
+            ctrl.close();
+          } catch (err) {
+            ctrl.error(err);
+          } finally {
+            clearTimeout(timeoutId);
+          }
+        },
+        cancel() {
+          clearTimeout(timeoutId);
+          controller.abort();
+        },
+      });
+      return new NextResponse(relay, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache, no-transform",
+          "x-accel-buffering": "no",
+        },
+      });
+    }
 
     clearTimeout(timeoutId);
 

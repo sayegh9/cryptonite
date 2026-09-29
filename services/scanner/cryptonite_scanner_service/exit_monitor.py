@@ -39,6 +39,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_api:api_dev_pass@127.0.0.1:5432/cryptonite")
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 AI_INSTANCE = "AI_DEBATE_WORKER"
+HEARTBEAT_KEY = "exit_monitor:heartbeat"
 QUOTE_STREAM = "cryptonite:stream:ui_quote_tick"
 
 INTERVAL_S = float(os.getenv("EXIT_MONITOR_INTERVAL_S", "30"))
@@ -269,6 +270,10 @@ async def monitor_loop():
             follower = asyncio.create_task(quotes.follow(redis_client))
         try:
             await monitor_once(pool, redis_client, quotes)
+            # Brain order approvals are refused unless this is fresh: AI-owned positions rely on it for stops
+            await redis_client.set(HEARTBEAT_KEY, json.dumps({
+                "stop_loss_pct": STOP_LOSS_PCT, "trail_activate_pct": TRAIL_ACTIVATE_PCT, "trail_pct": TRAIL_PCT,
+            }), ex=int(max(90, 3 * INTERVAL_S)))
         except Exception as e:
             logger.error(f"Error in exit monitor loop: {e}")
         await asyncio.sleep(INTERVAL_S)

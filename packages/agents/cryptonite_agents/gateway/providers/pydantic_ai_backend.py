@@ -221,3 +221,149 @@ async def embed(model_id: str, texts: Sequence[str]) -> tuple[list[list[float]],
         raise ProviderUnavailable(f"{model_id}: {e}") from e
     vectors = [list(e.values) for e in resp.embeddings]
     return vectors, sum(len(t) for t in texts) // 4
+
+
+# --- Streaming (AI-first blueprint A3.3) --------------------------------------------------------
+# Appended as its own section so the non-streaming path above stays untouched.
+
+import asyncio  # noqa: E402
+from collections.abc import AsyncIterator  # noqa: E402
+
+from pydantic_ai.messages import (  # noqa: E402
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+)
+
+
+@dataclass
+class StreamChunk:
+    """One event of a streamed run: ``token`` (text delta), ``tool_call``, ``tool_result`` or ``result``."""
+
+    kind: str
+    text: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+    result: BackendResult | None = None
+
+
+def _fill_usage(target: Usage | None, messages: Sequence[Any]) -> None:
+    if target is None:
+        return
+    billed = _usage_of(messages)
+    target.input_tokens, target.output_tokens = billed.input_tokens, billed.output_tokens
+    target.cached_input_tokens, target.thinking_tokens = billed.cached_input_tokens, billed.thinking_tokens
+
+
+async def run_model_stream(
+    model_id: str,
+    prompt: str,
+    *,
+    instructions: str | None = None,
+    output_type: Any = str,
+    tools: Sequence[ToolSpec] = (),
+    tool_guard: Callable[[ToolSpec], str | None] = lambda spec: None,
+    max_output_tokens: int | None = None,
+    thinking_budget: int | None = None,
+    temperature: float | None = None,
+    message_history: Sequence[Any] | None = None,
+    timeout_s: float | None = None,
+    usage_out: Usage | None = None,
+) -> AsyncIterator[StreamChunk]:
+    """Like ``run_model`` but yields text deltas and tool events as they happen, then one ``result``.
+
+    Closing the generator early (operator pressed stop, client went away) cancels the model run.
+    ``usage_out`` receives what the provider billed so far, also when the run fails or is cancelled,
+    so the caller can cost partial runs. Every tool call passes ``tool_guard`` exactly as in
+    ``run_model``.
+    """
+    calls: list[dict[str, Any]] = []
+    queue: asyncio.Queue[StreamChunk] = asyncio.Queue()
+    reported: set[int] = set()  # indexes into ``calls`` already attached to a tool_result
+
+    def call_status(tool_name: str) -> str:
+        for i, c in enumerate(calls):
+            if i not in reported and c["tool"] == tool_name:
+                reported.add(i)
+                return c["status"]
+        return "UNKNOWN"
+
+    async def on_events(ctx: Any, events: Any) -> None:
+        async for ev in events:
+            if isinstance(ev, PartStartEvent) and isinstance(ev.part, TextPart) and ev.part.content:
+                queue.put_nowait(StreamChunk("token", text=ev.part.content))
+            elif isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta) and ev.delta.content_delta:
+                queue.put_nowait(StreamChunk("token", text=ev.delta.content_delta))
+            elif isinstance(ev, FunctionToolCallEvent):
+                queue.put_nowait(StreamChunk("tool_call", data={
+                    "tool": ev.part.tool_name, "tool_call_id": ev.part.tool_call_id,
+                    "args": ev.part.args_as_dict()}))
+            elif isinstance(ev, FunctionToolResultEvent):
+                name = getattr(ev.part, "tool_name", None) or ""
+                content = getattr(ev.part, "content", None)
+                queue.put_nowait(StreamChunk("tool_result", data={
+                    "tool": name, "tool_call_id": ev.part.tool_call_id, "status": call_status(name),
+                    "content": content if isinstance(content, str) else str(content)}))
+
+    async def run() -> BackendResult:
+        with capture_run_messages() as run_messages:
+            try:
+                agent = Agent(
+                    _build_model(model_id),
+                    output_type=output_type,
+                    instructions=instructions,
+                    tools=[_as_tool(t, tool_guard, calls) for t in tools],
+                    retries=OUTPUT_RETRIES,
+                )
+                result = await agent.run(
+                    prompt,
+                    message_history=list(message_history) if message_history else None,
+                    model_settings=_settings(model_id, max_output_tokens, thinking_budget, temperature, timeout_s),
+                    event_stream_handler=on_events,
+                )
+            except (UnexpectedModelBehavior, UsageLimitExceeded) as e:
+                raise OutputInvalid(f"{model_id}: {e}", _usage_of(run_messages)) from e
+            except (TimeoutError, ModelAPIError) as e:
+                raise ProviderUnavailable(f"{model_id}: {e}", _usage_of(run_messages)) from e
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # transport errors, tool exceptions, provider setup: never escape raw
+                raise ProviderUnavailable(f"{model_id}: {type(e).__name__}: {e}", _usage_of(run_messages)) from e
+            finally:
+                _fill_usage(usage_out, run_messages)
+        usage = result.usage
+        details = dict(usage.details or {})
+        return BackendResult(
+            output=result.output,
+            model=model_id,
+            input_tokens=usage.input_tokens or 0,
+            output_tokens=usage.output_tokens or 0,  # Gemini: includes thinking tokens
+            cached_input_tokens=usage.cache_read_tokens or 0,
+            thinking_tokens=int(details.get("thoughts_tokens", 0)),
+            tool_calls=calls,
+            messages=list(result.all_messages()),
+        )
+
+    task = asyncio.create_task(run())
+    getter: asyncio.Future[StreamChunk] | None = None
+    try:
+        while True:
+            getter = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield getter.result()
+                continue
+            getter.cancel()
+            while not queue.empty():
+                yield queue.get_nowait()
+            yield StreamChunk("result", result=task.result())  # re-raises the run's BackendError
+            return
+    finally:
+        if getter is not None and not getter.done():
+            getter.cancel()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, BackendError):
+                await task

@@ -2,7 +2,9 @@
 
 Case kinds:
 - ``chat``: a non-empty answer that mentions at least one ``must_mention`` term
-- ``tool_chain``: every ``must_call`` tool was called (and allowed), then a non-empty answer
+- ``tool_chain``: every ``must_call`` tool was called (and allowed), then a non-empty answer;
+  ``must_request`` tools were called at all (ADD_RISK calls are held for approval), ``must_not_call``
+  tools were not
 - ``verdict`` / ``triage``: output validates against the persona's contract (the gateway re-asks on
   invalid output); ``expect`` adds a directional agreement check
 
@@ -18,6 +20,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from cryptonite_agents.brain import BRAIN
 from cryptonite_agents.debate_fleet import (
     CHIEF_RISK_OFFICER,
     DEBATE_LITE,
@@ -43,6 +46,7 @@ PERSONAS: dict[str, Persona] = {
     "triage": TRIAGE,
     "lite": DEBATE_LITE,
     "risk_panel": RISK_PANEL,
+    "brain": BRAIN,  # set brain_v1
 }
 
 
@@ -100,6 +104,11 @@ async def run_case(gateway: Gateway, case: dict[str, Any], model: str) -> CaseRe
     elif kind == "tool_chain":
         called = {c["tool"] for c in res.tool_calls or [] if c["status"] == "OK"}
         checks["called_required_tools"] = set(case.get("must_call", [])) <= called
+        requested = {c["tool"] for c in res.tool_calls or []}  # any status: ADD_RISK is held for approval
+        if case.get("must_request"):
+            checks["requested_approval_tools"] = set(case["must_request"]) <= requested
+        if case.get("must_not_call"):
+            checks["avoided_forbidden_tools"] = not (set(case["must_not_call"]) & requested)
         checks["answered"] = bool(str(res.output).strip())
     elif kind in STRUCTURED_KINDS:
         checks["agrees"] = _agrees(res.output, case.get("expect", {}))
