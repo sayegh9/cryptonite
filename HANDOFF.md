@@ -1,5 +1,7 @@
 # HANDOFF
 
+> **Deferred backlog (LE-1 … LE-10)**, agreed for later: see [AUDIT_STATUS.md](AUDIT_STATUS.md#deferred-backlog-marked-for-later-2026-09-29).
+
 ## AI-First Program — Phase 4 complete (2026-09-25)
 
 | Item | Status |
