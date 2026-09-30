@@ -271,6 +271,7 @@ class FakeConn:
         self.approval = approval
         self.executed: list[tuple] = []
         self.instances: set[str] = set()
+        self.events: list[str] = []  # ai_autonomy_events kinds written
 
     async def fetchrow(self, sql, *args):
         if "WITH claimed" in sql:
@@ -289,7 +290,20 @@ class FakeConn:
     async def fetchval(self, sql, *args):
         if "paper_strategy_instances" in sql:
             return 1 if args[0] in self.instances else None
+        if "INSERT INTO ai_autonomy_events" in sql:
+            self.events.append(args[1])
+            return len(self.events)
         return None
+
+    def transaction(self):
+        class Tx:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return Tx()
 
     async def execute(self, sql, *args):
         if "INSERT INTO paper_strategy_instances" in sql:
@@ -389,6 +403,7 @@ async def test_l3_mandate_trades_without_approval_but_inside_its_budget():
     conn, engine = await run_ai_command({**payload, "quantity": "0.03"}, mandate_row=mandate_row(m))  # 1,538 > 1,000
     assert conn.outcome() == ("REJECTED", "MANDATE_BUDGET_EXCEEDED")
     assert engine.dispatcher.open_orders == {}
+    assert conn.events == ["BREACH", "DEMOTED"]  # §4.5: a breach demotes one level (A5.5)
 
 
 async def test_mandate_cannot_take_an_instrument_someone_else_holds():

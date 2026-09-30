@@ -15,6 +15,8 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from cryptonite_execution.autonomy import AutonomyState, AutonomyTrigger, transition
+from cryptonite_execution.mandate_store import apply_transition, record_event
 from cryptonite_execution.mandates import (
     MandateExposure,
     MandateOrder,
@@ -164,5 +166,14 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
 
 
 async def record_breach(conn, mandate: Mandate, reject: MandateReject, row: Any, payload: dict) -> None:
-    """Hook for the autonomy state machine (A5.5); here only logged."""
-    logger.warning("Mandate breach attempt on %s: %s (%s)", mandate.name, reject, json.dumps(payload, default=str)[:300])
+    """§4.5: any breach demotes one level (L1 stays L1). The BREACH event is what the gate counts."""
+    detail = {"reject": reject.value, "command_id": str(_row_get(row, "command_id")),
+              "instrument_id": payload.get("instrument_id"), "side": payload.get("side")}
+    async with conn.transaction():
+        await record_event(conn, mandate.id, "BREACH", from_level=int(mandate.autonomy_level),
+                           to_level=int(mandate.autonomy_level), reason=reject.value, detail=detail,
+                           actor="risk:mandate_check")
+        t = transition(AutonomyState(mandate.autonomy_level, mandate.status, mandate.allow_perps),
+                       AutonomyTrigger.BREACH, reason=f"breach: {reject.value}")
+        await apply_transition(conn, mandate.id, t, actor="risk:mandate_check", detail=detail)
+    logger.warning("Mandate breach on %s: %s (%s)", mandate.name, reject, json.dumps(detail, default=str)[:300])

@@ -30,6 +30,7 @@ from cryptonite_execution.autonomy import (
     TransitionRefused,
     transition,
 )
+from cryptonite_execution.autonomy_metrics import gate_report, propose_if_ready, report_view
 from cryptonite_execution.mandate_store import (
     MANDATE_COLUMNS,
     apply_transition,
@@ -159,7 +160,11 @@ async def _publish_updated(request: Request, mandate_id: uuid.UUID, change: str)
 
 
 def _dec(v: Any) -> str | None:
-    return None if v is None else str(v)
+    """Decimal as plain text without trailing zeros (4000.00000000 -> 4000)."""
+    if v is None:
+        return None
+    d = Decimal(str(v)).normalize()
+    return format(d, "f")
 
 
 async def mandate_view(conn, row: Any) -> dict[str, Any]:
@@ -179,18 +184,18 @@ async def mandate_view(conn, row: Any) -> dict[str, Any]:
     extra = await conn.fetchrow(
         "SELECT halted_reason, halted_at, level_since, created_at, updated_at FROM ai_mandates WHERE id = $1", m.id)
     return {
-        "id": str(m.id), "name": m.name, "capital_budget_usd": str(m.capital_budget_usd), "instruments": m.instruments,
-        "max_position_pct": str(m.max_position_pct), "max_drawdown_pct": str(m.max_drawdown_pct),
+        "id": str(m.id), "name": m.name, "capital_budget_usd": _dec(m.capital_budget_usd), "instruments": m.instruments,
+        "max_position_pct": _dec(m.max_position_pct), "max_drawdown_pct": _dec(m.max_drawdown_pct),
         "allow_perps": m.allow_perps, "max_leverage": m.max_leverage, "strategies": m.strategies,
         "autonomy_level": int(m.autonomy_level), "level_name": level_name(int(m.autonomy_level)), "status": m.status.value,
         "active_hours_utc": m.active_hours_utc, "veto_window_s": m.veto_window_s, "instance_id": m.instance_id,
         "halted_reason": extra["halted_reason"], "halted_at": extra["halted_at"].isoformat() if extra["halted_at"] else None,
         "level_since": extra["level_since"].isoformat(),
-        "equity": _dec(eq["equity"]) if eq else str(m.capital_budget_usd), "hwm": _dec(eq["hwm"]) if eq else str(m.capital_budget_usd),
+        "equity": _dec(eq["equity"]) if eq else _dec(m.capital_budget_usd), "hwm": _dec(eq["hwm"]) if eq else _dec(m.capital_budget_usd),
         "drawdown_pct": _dec(eq["drawdown_pct"]) if eq else "0", "equity_ts": eq["ts"].isoformat() if eq else None,
-        "exposure_usd": str(exposure), "budget_used_pct": str(round(Decimal(str(exposure)) / m.capital_budget_usd * 100, 2)),
-        "positions": [{"instrument_id": p["instrument_id"], "side": p["side"], "quantity": str(p["quantity"]),
-                       "entry_price": str(p["entry_price"]), "current_price": str(p["current_price"])} for p in positions],
+        "exposure_usd": _dec(exposure), "budget_used_pct": str(round(Decimal(_dec(exposure)) / m.capital_budget_usd * 100, 2)),
+        "positions": [{"instrument_id": p["instrument_id"], "side": p["side"], "quantity": _dec(p["quantity"]),
+                       "entry_price": _dec(p["entry_price"]), "current_price": _dec(p["current_price"])} for p in positions],
         "pending_approvals": pending,
         "pending_proposal": {"id": proposal["id"], "to_level": proposal["to_level"],
                              "created_at": proposal["created_at"].isoformat()} if proposal else None,
@@ -212,7 +217,7 @@ async def get_mandate(mandate_id: uuid.UUID, request: Request, auth: dict = Depe
             raise HTTPException(status_code=404, detail="Mandate not found")
         view = await mandate_view(conn, row)
         view["equity_curve"] = [
-            {"ts": r["ts"].isoformat(), "equity": str(r["equity"]), "hwm": str(r["hwm"]),
+            {"ts": r["ts"].isoformat(), "equity": _dec(r["equity"]), "hwm": _dec(r["hwm"]),
              "benchmark_price": _dec(r["benchmark_price"])}
             for r in reversed(await conn.fetch(
                 "SELECT ts, equity, hwm, benchmark_price FROM ai_mandate_equity WHERE mandate_id = $1 ORDER BY ts DESC LIMIT 500",
@@ -446,3 +451,113 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         "exit_monitor_up": exit_up, "notifier_up": notifier_up, "budget_alert": budget_alert, "degraded": degraded,
     }
 
+
+
+# ------------------------------------------------------------------------------ autonomy (A5.5)
+
+
+class ProposalIn(BaseModel):
+    proposal_id: int
+    totp_code: str | None = None
+
+
+async def _autonomy_view(conn, m: Mandate) -> dict[str, Any]:
+    report, metrics = await gate_report(conn, m)
+    proposal = await conn.fetchrow(
+        """SELECT id, from_level, to_level, detail, created_at FROM ai_autonomy_events
+           WHERE mandate_id = $1 AND kind = 'PROPOSED' AND proposal_status = 'PENDING'""", m.id)
+    events = await conn.fetch(
+        """SELECT id, kind, from_level, to_level, reason, actor, proposal_status, created_at FROM ai_autonomy_events
+           WHERE mandate_id = $1 AND kind IN ('PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'BACKSTOP', 'RESUMED', 'PAUSED', 'BREACH', 'CREATED')
+           ORDER BY id DESC LIMIT 50""", m.id)
+    since = await conn.fetchval("SELECT level_since FROM ai_mandates WHERE id = $1", m.id)
+    return {
+        "mandate_id": str(m.id), "name": m.name, "status": m.status.value, "level": int(m.autonomy_level),
+        "level_name": level_name(int(m.autonomy_level)), "level_since": since.isoformat(),
+        "requested_level": proposal["to_level"] if proposal else None,
+        "proposal": {"id": proposal["id"], "from_level": proposal["from_level"], "to_level": proposal["to_level"],
+                     "created_at": proposal["created_at"].isoformat()} if proposal else None,
+        "gate": report_view(report, metrics),
+        "events": [{"id": e["id"], "kind": e["kind"], "from_level": e["from_level"], "to_level": e["to_level"],
+                    "reason": e["reason"], "actor": e["actor"], "proposal_status": e["proposal_status"],
+                    "created_at": e["created_at"].isoformat()} for e in events],
+    }
+
+
+async def _mandate_or_404(conn, mandate_id: uuid.UUID, *, for_update: bool = False) -> Mandate:
+    m = await load_mandate(conn, mandate_id, for_update=for_update)
+    if m is None:
+        raise HTTPException(status_code=404, detail="Mandate not found")
+    return m
+
+
+@router.get("/mandates/{mandate_id}/autonomy")
+async def get_autonomy(mandate_id: uuid.UUID, request: Request, auth: dict = Depends(require_operator)):
+    """Earned vs requested level and the §4.5 gate checklist with live numbers."""
+    async with request.app.state.pool.acquire() as conn:
+        return await _autonomy_view(conn, await _mandate_or_404(conn, mandate_id))
+
+
+@router.post("/mandates/{mandate_id}/autonomy/evaluate", dependencies=OPERATOR_WRITE)
+async def evaluate_autonomy(mandate_id: uuid.UUID, request: Request, auth: dict = Depends(require_operator)):
+    """Run the gate now; when it passes the *system* records a proposal. Nothing is promoted here."""
+    async with request.app.state.pool.acquire() as conn:
+        async with conn.transaction():
+            m = await _mandate_or_404(conn, mandate_id)
+            await propose_if_ready(conn, m)
+        return await _autonomy_view(conn, m)
+
+
+@router.post("/mandates/{mandate_id}/autonomy/confirm", dependencies=OPERATOR_WRITE)
+async def confirm_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Request, auth: dict = Depends(require_operator)):
+    """The operator confirms a system proposal with TOTP; the gate is re-checked at this moment."""
+    await require_totp(request, auth, req.totp_code)
+    async with request.app.state.pool.acquire() as conn:
+        async with conn.transaction():
+            m = await _mandate_or_404(conn, mandate_id, for_update=True)
+            proposal = await conn.fetchrow(
+                """SELECT id, from_level, to_level FROM ai_autonomy_events WHERE id = $1 AND mandate_id = $2
+                   AND kind = 'PROPOSED' AND proposal_status = 'PENDING' FOR UPDATE""", req.proposal_id, m.id)
+            if proposal is None:
+                raise HTTPException(status_code=409, detail="NO_OPEN_PROPOSAL")
+            if proposal["from_level"] != int(m.autonomy_level):
+                raise HTTPException(status_code=409, detail="PROPOSAL_STALE")
+            report, _ = await gate_report(conn, m)
+            try:
+                t = transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps), AutonomyTrigger.PROMOTION_CONFIRMED,
+                               totp_ok=True, gate=report)
+            except TransitionRefused as e:
+                raise HTTPException(status_code=409, detail=e.code)
+            await conn.execute(
+                "UPDATE ai_autonomy_events SET proposal_status = 'CONFIRMED', resolved_at = now() WHERE id = $1", proposal["id"])
+            await apply_transition(conn, m.id, t, actor=actor(auth),
+                                   detail={"proposal_id": proposal["id"], "gate": report.as_dict(), "totp": True})
+            m = await _mandate_or_404(conn, mandate_id)
+        view = await _autonomy_view(conn, m)
+    await _publish_updated(request, mandate_id, "promoted")
+    return view
+
+
+@router.post("/mandates/{mandate_id}/autonomy/decline", dependencies=OPERATOR_WRITE)
+async def decline_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Request, auth: dict = Depends(require_operator)):
+    async with request.app.state.pool.acquire() as conn:
+        updated = await conn.execute(
+            """UPDATE ai_autonomy_events SET proposal_status = 'CANCELLED', resolved_at = now(), actor = $3
+               WHERE id = $1 AND mandate_id = $2 AND kind = 'PROPOSED' AND proposal_status = 'PENDING'""",
+            req.proposal_id, mandate_id, actor(auth))
+        if updated != "UPDATE 1":
+            raise HTTPException(status_code=409, detail="NO_OPEN_PROPOSAL")
+        return await _autonomy_view(conn, await _mandate_or_404(conn, mandate_id))
+
+
+@router.get("/evals")
+async def eval_results(request: Request, auth: dict = Depends(require_operator)):
+    """Latest eval run per (set, model) with its metrics (§8), for Autonomy & Evals."""
+    async with request.app.state.pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT DISTINCT ON (set_version, model) id, set_version, model, metrics, passed, created_at
+               FROM ai_eval_runs ORDER BY set_version, model, created_at DESC""")
+    return {"runs": [{"id": str(r["id"]), "set_version": r["set_version"], "model": r["model"], "passed": r["passed"],
+                      "metrics": json.loads(r["metrics"]) if isinstance(r["metrics"], str) else r["metrics"],
+                      "created_at": r["created_at"].isoformat()} for r in rows],
+            "calibration": None, "calibration_note": "Calibration is measured from A7.2 (outcome labels); until then the L3 gate fails closed."}

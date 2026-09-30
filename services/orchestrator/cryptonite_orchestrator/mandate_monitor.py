@@ -26,6 +26,7 @@ from typing import Any
 
 from cryptonite_execution.approvals import sweep_expired
 from cryptonite_execution.autonomy import AutonomyState, AutonomyTrigger, transition
+from cryptonite_execution.autonomy_metrics import propose_if_ready
 from cryptonite_execution.mandate_store import apply_transition, load_mandate
 from cryptonite_schemas.mandate import (
     ACCOUNT_BACKSTOP_DRAWDOWN_PCT,
@@ -279,6 +280,27 @@ async def mandate_monitor_once(engine, pool, redis, quotes=None, now: datetime.d
                 await track_mandate(conn, redis, m, quotes, now, account_id, benchmark)
             except Exception as e:  # one broken mandate must not stop the others' stops
                 logger.error("Mandate tracker failed for %s: %s", m.name, e)
+        if time.monotonic() - _last_proposal_check[0] >= PROPOSAL_CHECK_EVERY_S:
+            _last_proposal_check[0] = time.monotonic()
+            await propose_promotions(conn, now)
+
+
+PROPOSAL_CHECK_EVERY_S = 600
+_last_proposal_check = [float("-inf")]
+
+
+async def propose_promotions(conn, now: datetime.datetime) -> list[int]:
+    """§4.5: the system proposes a promotion when a gate passes; only the operator (TOTP) promotes."""
+    proposals = []
+    for row in await conn.fetch("SELECT id FROM ai_mandates WHERE status = 'ACTIVE' AND autonomy_level < 3"):
+        m = await load_mandate(conn, row["id"])
+        try:
+            async with conn.transaction():
+                if (pid := await propose_if_ready(conn, m, now)) is not None:
+                    proposals.append(pid)
+        except Exception as e:
+            logger.error("Gate evaluation failed for %s: %s", m.name, e)
+    return proposals
 
 
 async def sweep_approvals_once(pool, now: datetime.datetime | None = None) -> list:
