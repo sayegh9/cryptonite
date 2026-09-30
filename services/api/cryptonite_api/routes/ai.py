@@ -138,10 +138,37 @@ async def verify_totp(request: Request, code: str | None, *, user_id: Any = None
     return await auth_mgr.verify_totp_code(row["id"], secret, code)
 
 
+TOTP_MAX_FAILURES = 5
+TOTP_LOCKOUT_S = 900
+
+
+async def checked_totp(request: Request, code: str | None, throttle_key: str, **who: Any) -> bool:
+    """``verify_totp`` with a lockout: 5 wrong codes in 15 min lock the key out for 15 min (a 6-digit
+    code must not be brute-forceable). Fails closed when Redis is unavailable."""
+    r = _redis(request)
+    key = f"ai:totp_failures:{throttle_key}"
+    if r is None:
+        return False
+    try:
+        failures = int(await r.get(key) or 0)
+    except Exception:
+        return False
+    if failures >= TOTP_MAX_FAILURES:
+        raise HTTPException(status_code=429, detail="TOTP_LOCKED: too many wrong codes; try again in 15 minutes")
+    if await verify_totp(request, code, **who):
+        return True
+    try:
+        await r.incr(key)
+        await r.expire(key, TOTP_LOCKOUT_S)
+    except Exception:
+        pass
+    return False
+
+
 async def require_totp(request: Request, auth: dict, code: str | None) -> None:
     if not auth.get("user_id"):
         raise HTTPException(status_code=403, detail="TOTP_REQUIRED: a machine token cannot add risk")
-    if not await verify_totp(request, code, user_id=auth["user_id"]):
+    if not await checked_totp(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"]):
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED: this change gives the AI more room; enter your current TOTP code")
 
 
@@ -408,7 +435,7 @@ async def decide_from_telegram(approval_id: uuid.UUID, request: Request):
             raise HTTPException(status_code=404, detail="Approval not found")
         if action == ActionClass.ADD_RISK:
             operator = os.getenv("NOTIFIER_OPERATOR_USERNAME", "")
-            if not operator or not await verify_totp(request, req.totp_code, username=operator):
+            if not operator or not await checked_totp(request, req.totp_code, f"telegram:{operator}", username=operator):
                 raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
     return await _decide(request, approval_id, approve, "telegram", f"telegram:{req.chat_id}")
 

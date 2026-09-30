@@ -327,6 +327,7 @@ async def test_signed_endpoint_rejects_bad_signatures_replays_and_foreign_chats(
 
 async def test_telegram_add_risk_approval_needs_a_valid_totp(h):
     a = await pending(h)
+    await h.redis.delete(f"ai:totp_failures:telegram:{h.username}")
     approve = {"decision": "APPROVE", "chat_id": str(OPERATOR_CHAT)}
     assert (await signed_post(h, a["id"], approve)).status_code == 401
     assert (await signed_post(h, a["id"], {**approve, "totp_code": "000000"})).status_code == 401  # dev bypass is off
@@ -345,3 +346,16 @@ async def test_telegram_reduce_risk_approval_is_one_tap(h):
     assert ok.status_code == 200 and ok.json()["status"] == "APPROVED"
     cmd = await h.pool.fetchrow("SELECT command_type FROM execution_commands WHERE command_id = $1", uuid.UUID(ok.json()["command_id"]))
     assert cmd["command_type"] == "CLOSE_POSITION"
+
+
+async def test_telegram_totp_is_locked_out_after_five_wrong_codes(h):
+    a = await pending(h)
+    await h.redis.delete(f"ai:totp_failures:telegram:{h.username}")
+    approve = {"decision": "APPROVE", "chat_id": str(OPERATOR_CHAT)}
+    wrong = f"{(int(h.totp.now()) + 7) % 1_000_000:06d}"
+    for _ in range(5):
+        assert (await signed_post(h, a["id"], {**approve, "totp_code": wrong})).status_code == 401
+    locked = await signed_post(h, a["id"], {**approve, "totp_code": h.totp.now()})
+    assert locked.status_code == 429  # even the right code, until the lockout ends
+    assert await h.pool.fetchval("SELECT status FROM ai_approvals WHERE id = $1", a["id"]) == "PENDING"
+    await h.redis.delete(f"ai:totp_failures:telegram:{h.username}")
