@@ -33,6 +33,7 @@ dependencies = [
     "cryptonite-executor",
     "cryptonite-orchestrator",
     "cryptonite-agents",
+    "cryptonite-notifier",
     "redis>=5.0.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.31.0",
@@ -66,6 +67,7 @@ members = [
     "services/backtester",
     "services/executor",
     "services/orchestrator",
+    "services/notifier",
 ]
 
 [tool.uv.sources]
@@ -83,6 +85,7 @@ cryptonite-execution = { workspace = true }
 cryptonite-executor = { workspace = true }
 cryptonite-orchestrator = { workspace = true }
 cryptonite-agents = { workspace = true }
+cryptonite-notifier = { workspace = true }
 
 [tool.ruff]
 line-length = 100
