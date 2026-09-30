@@ -20,6 +20,7 @@ from cryptonite_execution.risk import OrderIntent
 from pydantic import ValidationError
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
+from cryptonite_orchestrator.mandate_gate import command_mandate_id, gate_ai_order, is_ai_command, load_mandate
 from nautilus_trader.model import Bar, BarType
 from nautilus_trader.model import Price, Quantity
 
@@ -832,6 +833,14 @@ async def command_poller(pool, engine, quote_cache=None):
                             # rolled-back transaction) recognises its own order instead of placing a second one
                             client_oid = payload.get("client_order_id") or f"{'MANUAL' if cmd_type == 'MANUAL_ORDER' else 'AI'}-{str(row['command_id']).replace('-', '')[:12].upper()}"
                             instance_id = target or ("MANUAL_TRADE" if cmd_type == "MANUAL_ORDER" else "AI_DEBATE_WORKER")
+                            # AI orders are checked against their mandate before the dispatcher (A5.1) and
+                            # are booked under the mandate's own paper instance
+                            ai_order = is_ai_command(cmd_type, target, row.get("requester_id"))
+                            mandate = None
+                            if ai_order and (mandate_ref := command_mandate_id(row, payload)):
+                                mandate = await load_mandate(conn, mandate_ref)
+                                if mandate is not None:
+                                    instance_id = mandate.instance_id
                             
                             try:
                                 intent = OrderIntent(
@@ -876,6 +885,17 @@ async def command_poller(pool, engine, quote_cache=None):
                                         row["command_id"], "DUPLICATE_CLIENT_ORDER_ID",
                                     )
                                 continue
+
+                            if ai_order:
+                                mandate_reject = await gate_ai_order(
+                                    conn, engine, row, payload, intent, mandate, quote_cache.quote(canonical_inst),
+                                )
+                                if mandate_reject:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"], mandate_reject,
+                                    )
+                                    continue
 
                             # Dispatch intent to dispatcher (evaluates risk + atomically reserves)
                             approved = False
