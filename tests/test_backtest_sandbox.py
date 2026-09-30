@@ -108,7 +108,9 @@ def test_the_child_gets_no_secrets(tmp_path, monkeypatch):
     job.rename(claimed)
     run_job(jobs, claimed, tmp_path, timeout_s=10, work_root=tmp_path)
     env = dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
-    assert set(env) <= {"PATH", "HOME", "TMPDIR", "CRYPTONITE_STRATEGY_SANDBOX", "PWD", "SHLVL", "_"}
+    allowed = {"PATH", "HOME", "TMPDIR", "CRYPTONITE_STRATEGY_SANDBOX", "PWD", "SHLVL", "_"}
+    allowed |= {"MALLOC_ARENA_MAX", "RAYON_NUM_THREADS", "OMP_NUM_THREADS"}  # non-secret memory/thread caps
+    assert set(env) <= allowed
     assert env["CRYPTONITE_STRATEGY_SANDBOX"] == "1"
 
 

@@ -327,7 +327,9 @@ def run_job(jobs_dir: Path, job_file: Path, catalog: Path, timeout_s: float = DE
             # file first: once the dir is the child's, the server (no DAC_OVERRIDE) cannot enter it
             os.chown(work / "request.json", child_uid, child_uid)
             os.chown(work, child_uid, child_uid)
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(work), "TMPDIR": str(work), SANDBOX_ENV_FLAG: "1"}
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(work), "TMPDIR": str(work), SANDBOX_ENV_FLAG: "1",
+               # RLIMIT_AS counts virtual memory: per-thread allocator arenas / thread pools scale with core count
+               "MALLOC_ARENA_MAX": "2", "RAYON_NUM_THREADS": "4", "OMP_NUM_THREADS": "4"}
         stderr_path = done / "stderr.log"
         with open(stderr_path, "wb") as stderr:
             proc = subprocess.Popen(
