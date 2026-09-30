@@ -210,7 +210,8 @@ def test_no_accepted_ai_order_escapes_its_mandate(m, order, exposure, approval):
     assert m.status is MandateStatus.ACTIVE
     assert m.allows_instrument(order.instrument_id)
     assert not exposure.other_owner
-    assert notional is not None and notional >= order.quantity * order.ref_price
+    mult = CONVICTION_MULTIPLIER.get(order.conviction_level or "", D("1"))
+    assert notional is not None and notional >= order.quantity * mult * order.ref_price  # what the dispatcher will size
     assert exposure.gross_usd + notional <= m.capital_budget_usd
     assert exposure.instrument_usd + notional <= m.capital_budget_usd * m.max_position_pct / 100
     assert m.max_position_pct <= 25

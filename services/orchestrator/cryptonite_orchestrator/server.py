@@ -20,7 +20,9 @@ from cryptonite_execution.risk import OrderIntent
 from pydantic import ValidationError
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
-from cryptonite_orchestrator.mandate_gate import command_mandate_id, gate_ai_order, is_ai_command, load_mandate
+from cryptonite_execution.mandate_store import load_mandate
+from cryptonite_orchestrator.mandate_gate import command_mandate_id, gate_ai_order, is_ai_command
+from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once
 from nautilus_trader.model import Bar, BarType
 from nautilus_trader.model import Price, Quantity
 
@@ -610,6 +612,15 @@ async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_e
             raise
         except Exception as e:
             logger.error("Risk monitor error: %s", e)
+        if tick % reconcile_every == 0:
+            # Mandate hard stops and the account backstop (A5.2); isolated so a failure here never
+            # stops the daily breaker above
+            try:
+                await mandate_monitor_once(engine, pool, redis)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Mandate monitor error: %s", e)
         await asyncio.sleep(interval_s)
 
 
@@ -691,6 +702,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                 # Spot long closes with a SELL; a perp closes with an opposing reduce-only order
                                 close_side = "BUY" if perp_qty < 0 else "SELL"
                                 close_qty = abs(perp_qty) if perp_qty != 0 else pos_qty
+                                if perp_qty == 0 and payload.get("quantity"):
+                                    # a mandate stop closes only the mandate's own quantity (A5.2)
+                                    close_qty = min(pos_qty, Decimal(str(payload["quantity"])))
                                 quote = quote_cache.quote(canonical_inst)
                                 if quote:
                                     fill_px = Decimal(str(quote.ask_price if close_side == "BUY" else quote.bid_price))
@@ -713,7 +727,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                 else:
                                     engine.dispatcher.handle_fill(
                                         client_order_id=client_oid,
-                                        fill_qty=pos_qty,
+                                        fill_qty=close_qty,
                                         fill_price=fill_px,
                                         commission=comm,
                                         side="SELL",

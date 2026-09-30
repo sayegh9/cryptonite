@@ -32,9 +32,6 @@ from cryptonite_schemas.mandate import (
 
 logger = logging.getLogger("cryptonite.orchestrator.mandates")
 
-MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
-                   "max_leverage, strategies, autonomy_level, status, active_hours_utc, veto_window_s")
-
 
 def is_ai_command(cmd_type: str, target: str | None, requester: str | None) -> bool:
     return cmd_type == "SUBMIT_ORDER" or is_ai_instance(target) or str(requester or "").startswith("ai:")
@@ -50,15 +47,6 @@ def _row_get(row: Any, key: str) -> Any:
 def command_mandate_id(row: Any, payload: dict) -> str | None:
     value = _row_get(row, "mandate_id") or payload.get("mandate_id")
     return str(value) if value else None
-
-
-async def load_mandate(conn, mandate_id: str | uuid.UUID) -> Mandate | None:
-    try:
-        mid = uuid.UUID(str(mandate_id))
-    except ValueError:
-        return None
-    row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mid)
-    return Mandate.from_row(row) if row else None
 
 
 async def ensure_mandate_instance(conn, mandate: Mandate, account_id: str) -> bool:
