@@ -1,5 +1,31 @@
 # HANDOFF
 
+## ▶ Resume here: moving to the Linux workstation (2026-09-30)
+
+**Git is the source of truth.** Every branch is pushed; nothing lives only on the MacBook. On the workstation, **clone fresh**; don't copy the Mac folder: `node_modules`, `.next` and the venvs are macOS builds.
+
+1. **Tools:** Docker Engine + compose plugin (later the NVIDIA Container Toolkit for Phase 6), git, `gh` (`gh auth login`), Node + pnpm@10, uv, graphify, and Claude Code. Copy `~/.claude/skills/` (agency-* skills) and re-install the plugins (agent-skills etc.).
+2. **Clone:** `git clone https://github.com/sayegh9/cryptonite && git checkout feat/ai-first-phase0`.
+3. **Copy these from the Mac over SSH/Tailscale, never through cloud storage or chat** (they are git-ignored secrets and state):
+   - `.env`, which holds the Gemini/Binance keys, the TOTP AES key and `CRYPTONITE_AGENT_API_TOKEN`;
+   - `infra/security/binance_demo_private_key.pem`;
+   - `data/`, about 100 MB: `nautilus_catalog`, `analytics_lake`, `backtest_artifacts`. Alternatively re-backfill it (LE-1).
+   - the dev database dump: `docker exec infra-postgres-1 pg_dump -U cryptonite -Fc cryptonite > cryptonite.dump`, restored with `pg_restore -U cryptonite -d cryptonite --clean`. It holds operator users, TOTP enrollment, paper history, the machine-token hash and the AI ledger. Redis is disposable.
+4. **Bring up and verify:**
+   1. `docker compose -f infra/docker-compose.yml build`. This is the ~1–1.5 GB dependency download, now on the workstation.
+   2. `up -d`.
+   3. `alembic upgrade head`.
+   4. Run the **merged-tree suite on the throwaway DB** (the command is in PR #2); it has not run since PR #1 merged.
+   5. In `apps/web`: `pnpm install`, `npx playwright install chromium`, `pnpm build`, then `npx playwright test`.
+   6. `graphify update .`
+5. **Claude context:** the session transcript and memory are keyed to the Mac path, so they won't follow. Everything needed is in this file, `AUDIT_STATUS.md` (backlog LE-1…LE-10), `docs/ai-first-blueprint.md` and ADRs 0001–0003. To keep the memory note, copy `~/.claude/projects/<mac-slug>/memory/` into the new project's slug dir.
+6. **Starter prompt:** "Read HANDOFF.md 'Resume here' and verify steps 1–4 on this workstation, then continue: PR #2 merge readiness, the local half of Phase 5 when its cloud PR lands, LE-2 (exit monitor), and Phase 6 on this GPU."
+
+**Open items when the move happens:**
+- PR #2 (`feat/ai-first-phase0` → `main`) is open and needs the merged-tree suite before merging.
+- Phase 5 runs in a cloud session on `feat/ai-first-phase5`, with a PR back to `feat/ai-first-phase0`.
+- Branch `claude/elated-shirley-5a992d` (one ingest commit from an earlier session, never merged) is now pushed; decide whether to merge or drop it.
+
 > **Deferred backlog (LE-1 … LE-10)**, agreed for later: see [AUDIT_STATUS.md](AUDIT_STATUS.md#deferred-backlog-marked-for-later-2026-09-29).
 
 ## AI-First Program — Phase 3 merged (2026-09-29)
