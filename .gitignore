@@ -56,3 +56,6 @@ graphify-out/*.json
 scratch/
 .claude/settings.local.json
 .claude/worktrees/
+
+# Migration bundle for the workstation move: holds secrets and a DB dump, never commit
+safe_move/
