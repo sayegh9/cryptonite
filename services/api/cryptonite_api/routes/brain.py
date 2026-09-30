@@ -7,25 +7,28 @@ ever receives from this router.
 
 Decision traces are read here directly, as ``cryptonite_api`` (SELECT granted in migration 024).
 
-An order card is approved only through ``POST .../cards/{widget_id}/approve``, server-side: it claims
-the card (PENDING_APPROVAL -> APPROVED, so a concurrent reject cannot also win), then enqueues one
-PAPER ``SUBMIT_ORDER`` for GuardedOrderDispatcher with the idempotency key ``brain-card:<id>`` (a
-retry or double click never queues a second order), owned by the AI instance so the exit monitor's
-hard and trailing stops protect it, and sized by the allocation the operator saw. It is refused while
-the exit monitor is down, because nothing else would stop the position out.
+An order card is approved only through ``POST .../cards/{widget_id}/approve``, server-side: it resolves
+the mandate the order trades in (A5.1; the named one, else the single ACTIVE mandate that allows the
+instrument), claims the card (PENDING_APPROVAL -> APPROVED, so a concurrent reject cannot also win),
+records an APPROVED ``ai_approvals`` row and enqueues one PAPER ``SUBMIT_ORDER`` bound to it, with the
+idempotency key ``brain-card:<session>:<id>`` (a retry or double click never queues a second order).
+The order is booked under the mandate's own instance, which the exit monitor's hard and trailing stops
+protect, and sized by the allocation the operator saw. It is refused while the exit monitor is down,
+because nothing else would stop the position out.
 """
 
 import json
 import logging
 import os
 import uuid
+from decimal import Decimal
 from typing import Any
 
-import asyncpg
 import httpx
 from cryptonite_api.routes.agents import sign_request
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_operator
-from cryptonite_api.routes.paper import _enqueue_command
+from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
+from cryptonite_execution.mandate_store import resolve_mandate_for
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -34,7 +37,6 @@ logger = logging.getLogger("cryptonite.api.brain")
 
 router = APIRouter(prefix="/api/v1/agents/brain", tags=["brain"])
 
-AI_INSTANCE = "AI_DEBATE_WORKER"  # positions owned by it get the exit monitor's deterministic stops
 EXIT_MONITOR_HEARTBEAT = "exit_monitor:heartbeat"
 AGENT_WORKER_URL = os.getenv("AGENT_WORKER_URL", "http://cryptonite_agent_worker:8085").rstrip("/")
 STREAM_TIMEOUT = httpx.Timeout(300.0, connect=5.0)
@@ -155,9 +157,15 @@ def _find_card(session: dict[str, Any], widget_id: str) -> dict[str, Any] | None
     return None
 
 
+class CardApproveRequest(BaseModel):
+    mandate_id: uuid.UUID | None = None  # default: the single ACTIVE mandate that allows the instrument
+
+
 @router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
-async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator)):
-    """Approve an order card: one PAPER order, at most once, protected by the exit monitor's stops."""
+async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator),
+                             req: CardApproveRequest | None = None):
+    """Approve an order card: one PAPER order inside a mandate, at most once, protected by the exit
+    monitor's stops. The approval is recorded in ``ai_approvals`` and bound to its command (A5.3)."""
     op = operator_id(auth)
     if len(widget_id) > 128:
         raise HTTPException(status_code=422, detail="Invalid card id")
@@ -175,7 +183,17 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
                             "(docker compose --profile monitoring up -d exit_monitor); without it the position has no stop")
     protection = json.loads(raw)
 
-    summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {card['allocation_pct']}% of equity")
+    # Every AI order trades inside a mandate (A5.1); resolve it before the card is claimed
+    pool = request.app.state.pool
+    async with pool.acquire() as conn:
+        mandate, why = await resolve_mandate_for(conn, card["instrument_id"], req.mandate_id if req else None)
+    if mandate is None:
+        raise HTTPException(status_code=409, detail=f"{why}: approve this card inside an ACTIVE mandate that allows "
+                            f"{card['instrument_id']} (Mission Control → Mandates)")
+
+    budget = mandate.capital_budget_usd * Decimal(str(card["allocation_pct"])) / 100
+    summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {card['allocation_pct']}% of mandate "
+               f"{mandate.name} (${budget:,.0f})")
     if card.get("status") == "PENDING_APPROVAL":  # claim it first: a concurrent reject can no longer win
         claimed = await _worker_note(sid, {
             "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "expect_status": "PENDING_APPROVAL",
@@ -186,7 +204,8 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
 
     payload: dict[str, Any] = {
         "instrument_id": card["instrument_id"], "side": card["side"], "order_type": card["order_type"],
-        # sized from the allocation the operator approved (the dispatcher still clamps 1-25%)
+        # sized from the allocation the operator approved, as a share of the mandate's budget
+        # (the mandate check and the dispatcher's 1-25% clamp still apply)
         "allocation_pct": card["allocation_pct"],
         "source": "brain_order_card", "brain_session_id": str(sid), "brain_card_id": widget_id,
         "trace_id": card.get("trace_id"), "proposed_stop_loss": card.get("stop_loss"),
@@ -194,14 +213,19 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     }
     if card["order_type"] == "LIMIT":
         payload["price"] = card["limit_price"]
-    key = f"brain-card:{widget_id}"
-    pool = request.app.state.pool
+    payload["mandate_id"] = str(mandate.id)
+    key = f"brain-card:{sid}:{widget_id}"
+    trace = card.get("trace_id")
     try:
-        cmd = await _enqueue_command(pool, "SUBMIT_ORDER", AI_INSTANCE, payload,
-                                     requester_id=f"operator:{op}", idempotency_key=key)
-        command_id = str(cmd["command_id"])
-    except asyncpg.UniqueViolationError:  # already queued by an earlier attempt
-        command_id = str(await pool.fetchval("SELECT command_id FROM execution_commands WHERE idempotency_key = $1", key))
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                decision = await record_operator_approval(
+                    conn, mandate, "SUBMIT_ORDER", payload, summary=f"Brain order card: {summary}", source="brain_card",
+                    source_ref=f"{sid}:{widget_id}", decided_by=f"operator:{op}", idempotency_key=key,
+                    trace_id=uuid.UUID(trace) if _is_uuid(trace) else None)
+        command_id = str(decision.command_id)
+    except ApprovalConflict as e:
+        raise HTTPException(status_code=409, detail=f"The approval is {e.status}")
     except Exception:
         logger.exception("Could not queue order card %s", widget_id)
         await _worker_note(sid, {"operator_id": op, "widget_id": widget_id, "status": "FAILED",
@@ -212,11 +236,21 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     await _worker_note(sid, {
         "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "command_id": command_id,
         "expect_status": "APPROVED",
-        "content": (f"Paper command {command_id} queued for the dispatcher ({summary}); the exit monitor's "
+        "content": (f"Paper command {command_id} queued for the dispatcher inside mandate {mandate.name} ({summary}); "
+                    f"the exit monitor's "
                     f"{protection.get('stop_loss_pct')}% hard stop and {protection.get('trail_pct')}% trailing stop "
                     f"(after +{protection.get('trail_activate_pct')}%) protect the position."),
     })
-    return {"command_id": command_id, "status": "APPROVED", "protection": protection}
+    return {"command_id": command_id, "status": "APPROVED", "protection": protection, "mandate_id": str(mandate.id),
+            "approval_id": str(decision.approval_id)}
+
+
+def _is_uuid(value: Any) -> bool:
+    try:
+        uuid.UUID(str(value))
+        return value is not None
+    except ValueError:
+        return False
 
 
 @router.get("/spend")

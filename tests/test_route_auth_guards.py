@@ -65,6 +65,12 @@ INLINE_CSRF_WRITES = {
     ("POST", "/api/v1/control/risk-limits"),
 }
 
+# Machine-to-machine writes authenticated by an HMAC signature + single-use nonce instead of an
+# operator session (tested in test_notifier.py): Telegram decisions relayed by the notifier (A5.4).
+SIGNED_MACHINE_WRITES = {
+    ("POST", "/api/v1/ai/notifier/approvals/{approval_id}"),
+}
+
 
 class _FakeConn:
     def __init__(self, tokens: dict[str, list[str]]):
@@ -200,6 +206,8 @@ def test_every_api_mutation_requires_operator_and_csrf():
         calls = set(_dependency_calls(route.dependant))
         for method in route.methods & {"POST", "PUT", "PATCH", "DELETE"}:
             checked.add((method, route.path))
+            if (method, route.path) in SIGNED_MACHINE_WRITES:
+                continue
             if require_operator not in calls:
                 unguarded.append((method, route.path, "operator"))
             if require_csrf not in calls and (method, route.path) not in INLINE_CSRF_WRITES:

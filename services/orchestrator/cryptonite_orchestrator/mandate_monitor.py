@@ -24,6 +24,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from cryptonite_execution.approvals import sweep_expired
 from cryptonite_execution.autonomy import AutonomyState, AutonomyTrigger, transition
 from cryptonite_execution.mandate_store import apply_transition, load_mandate
 from cryptonite_schemas.mandate import (
@@ -280,4 +281,14 @@ async def mandate_monitor_once(engine, pool, redis, quotes=None, now: datetime.d
                 logger.error("Mandate tracker failed for %s: %s", m.name, e)
 
 
-__all__ = ["evaluate_drawdown", "mandate_equity", "mandate_instance_id", "mandate_monitor_once"]
+async def sweep_approvals_once(pool, now: datetime.datetime | None = None) -> list:
+    """D8 timeouts: expired ADD_RISK approvals mean no; expired REDUCE_RISK ones (and L2 veto
+    windows inside active hours) run their command."""
+    async with pool.acquire() as conn:
+        done = await sweep_expired(conn, now)
+    for approval_id, status in done:
+        logger.info("Approval %s timed out: %s", approval_id, status)
+    return done
+
+
+__all__ = ["evaluate_drawdown", "mandate_equity", "mandate_instance_id", "mandate_monitor_once", "sweep_approvals_once"]

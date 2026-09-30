@@ -8,7 +8,9 @@ import secrets
 import httpx
 import os
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_operator, require_csrf
-from cryptonite_api.routes.paper import _enqueue_command
+from cryptonite_execution.approvals import record_operator_approval
+from cryptonite_execution.mandate_store import resolve_mandate_for
+from cryptonite_schemas.mandate import ActionClass
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
@@ -265,6 +267,16 @@ async def approve_debate(
         if overrides.stop_loss_pct is not None:
             payload["stop_loss_pct"] = overrides.stop_loss_pct
 
+    # Every AI order trades inside a mandate (A5.1): the one the debate named, else the single ACTIVE
+    # mandate that allows the instrument. The approval is recorded and bound to its order (A5.3).
+    async with pool.acquire() as conn:
+        mandate_ref = await conn.fetchval("SELECT mandate_id FROM debate_runs WHERE id = $1", run_uuid)
+        mandate, why = await resolve_mandate_for(conn, decision['instrument_id'], mandate_ref)
+    if mandate is None:
+        raise HTTPException(status_code=409, detail=f"{why}: approve this debate inside an ACTIVE mandate that allows "
+                            f"{decision['instrument_id']} (Mission Control → Mandates)")
+    payload["mandate_id"] = str(mandate.id)
+
     # Mark the run decided and enqueue its order atomically, so a run is never
     # COMPLETED without an order (or approved twice by concurrent requests).
     async with pool.acquire() as conn:
@@ -275,15 +287,12 @@ async def approve_debate(
             )
             if updated != "UPDATE 1":
                 raise HTTPException(status_code=409, detail="Debate run was already decided")
-            await _enqueue_command(
-                pool=conn,
-                command_type="SUBMIT_ORDER",
-                target_instance_id="AI_DEBATE_WORKER",
-                payload=payload,
-                requester_id="operator:debate_approval",
+            await record_operator_approval(
+                conn, mandate, "SUBMIT_ORDER", payload,
+                summary=f"Debate verdict: {side} {decision['instrument_id']} at {alloc_pct}% of equity",
+                source="debate", source_ref=str(run_uuid), decided_by="operator:debate_approval",
                 idempotency_key=f"debate_approve:{run_id}",
-                environment="PAPER",
-                account_id=PAPER_ACCOUNT_ID,
+                action=ActionClass.ADD_RISK if side == "BUY" else ActionClass.REDUCE_RISK,
             )
 
     if redis_client:

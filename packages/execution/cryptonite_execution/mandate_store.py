@@ -8,7 +8,7 @@ import json
 import uuid
 from typing import Any
 
-from cryptonite_schemas.mandate import Mandate, MandateStatus
+from cryptonite_schemas.mandate import Mandate, MandateStatus, canonical_instrument
 
 from cryptonite_execution.autonomy import Transition
 
@@ -69,3 +69,26 @@ async def apply_transition(conn, mandate_id: uuid.UUID, t: Transition, *, actor:
 def level_name(level: int) -> str:
     return {1: "L1 Copilot", 2: "L2 Supervised", 3: "L3 Autonomous"}.get(int(level), f"L{level}")
 
+
+
+async def resolve_mandate_for(conn, instrument_id: str, mandate_id: str | uuid.UUID | None = None) -> tuple[Mandate | None, str]:
+    """The mandate an AI order on ``instrument_id`` belongs to: the one named, else the single ACTIVE
+    mandate that allows the instrument. Returns (mandate, "") or (None, reason)."""
+    if mandate_id:
+        m = await load_mandate(conn, mandate_id)
+        if m is None:
+            return None, "MANDATE_NOT_FOUND"
+        if m.status is not MandateStatus.ACTIVE:
+            return None, "MANDATE_HALTED"
+        if not m.allows_instrument(instrument_id):
+            return None, "MANDATE_INSTRUMENT_NOT_ALLOWED"
+        return m, ""
+    rows = await conn.fetch(
+        f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE status = 'ACTIVE' AND $1 = ANY(instruments) ORDER BY created_at",
+        canonical_instrument(instrument_id),
+    )
+    if not rows:
+        return None, "NO_MANDATE"
+    if len(rows) > 1:
+        return None, "AMBIGUOUS_MANDATE"
+    return Mandate.from_row(rows[0]), ""

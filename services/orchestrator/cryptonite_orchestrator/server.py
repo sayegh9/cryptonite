@@ -22,7 +22,7 @@ from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.mandate_store import load_mandate
 from cryptonite_orchestrator.mandate_gate import command_mandate_id, gate_ai_order, is_ai_command
-from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once
+from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from nautilus_trader.model import Bar, BarType
 from nautilus_trader.model import Price, Quantity
 
@@ -621,6 +621,12 @@ async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_e
                 raise
             except Exception as e:
                 logger.error("Mandate monitor error: %s", e)
+            try:
+                await sweep_approvals_once(pool)  # D8 approval timeouts (A5.3)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Approval sweeper error: %s", e)
         await asyncio.sleep(interval_s)
 
 
@@ -825,6 +831,13 @@ async def command_poller(pool, engine, quote_cache=None):
                                 raw_side = "BUY" if rec in ("BUY", "OVERWEIGHT") else "SELL"
                             side = raw_side.upper()
                             
+                            # AI orders are checked against their mandate before the dispatcher (A5.1) and
+                            # are booked under the mandate's own paper instance
+                            ai_order = is_ai_command(cmd_type, target, row.get("requester_id"))
+                            mandate = None
+                            if ai_order and (mandate_ref := command_mandate_id(row, payload)):
+                                mandate = await load_mandate(conn, mandate_ref)
+
                             # Determine quantity
                             qty_val = payload.get("quantity")
                             if not qty_val:
@@ -837,7 +850,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                     )
                                     continue
                                 mark_px = Decimal(str(quote.ask_price if side == "BUY" else quote.bid_price))
-                                notional = engine.dispatcher.cash_balance * (alloc_pct / Decimal("100.0"))
+                                # a mandate order's allocation is a share of the mandate's budget ("6% of mandate")
+                                base = mandate.capital_budget_usd if mandate is not None else engine.dispatcher.cash_balance
+                                notional = base * (alloc_pct / Decimal("100.0"))
                                 qty_val = max(Decimal("0.0001"), notional / mark_px)
                             qty_dec = Decimal(str(qty_val))
                             
@@ -847,14 +862,8 @@ async def command_poller(pool, engine, quote_cache=None):
                             # rolled-back transaction) recognises its own order instead of placing a second one
                             client_oid = payload.get("client_order_id") or f"{'MANUAL' if cmd_type == 'MANUAL_ORDER' else 'AI'}-{str(row['command_id']).replace('-', '')[:12].upper()}"
                             instance_id = target or ("MANUAL_TRADE" if cmd_type == "MANUAL_ORDER" else "AI_DEBATE_WORKER")
-                            # AI orders are checked against their mandate before the dispatcher (A5.1) and
-                            # are booked under the mandate's own paper instance
-                            ai_order = is_ai_command(cmd_type, target, row.get("requester_id"))
-                            mandate = None
-                            if ai_order and (mandate_ref := command_mandate_id(row, payload)):
-                                mandate = await load_mandate(conn, mandate_ref)
-                                if mandate is not None:
-                                    instance_id = mandate.instance_id
+                            if mandate is not None:
+                                instance_id = mandate.instance_id
                             
                             try:
                                 intent = OrderIntent(
