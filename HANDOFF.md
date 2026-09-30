@@ -44,12 +44,11 @@ Branch `feat/ai-first-phase5` → PR to `feat/ai-first-phase0` (not `main`). Dec
 
 **Behaviour change to know before deploying:** after this lands, **no AI order executes without an ACTIVE mandate** that allows its instrument, including an operator-approved Brain order card (409 `NO_MANDATE`). Create a mandate in Mission Control → Mandate editor first (TOTP). New mandates start at L1 Copilot.
 
-**New environment variables** (there is no `.env.example`; add them to `.env`, never commit real values):
-- `TELEGRAM_BOT_TOKEN` — from BotFather (notifier only);
-- `TELEGRAM_ALLOWED_CHAT_IDS` — comma-separated chat ids (notifier **and** api: the API re-checks it);
-- `NOTIFIER_HMAC_SECRET` — random, ≥ 32 bytes (`python -c "import secrets; print(secrets.token_hex(32))"`), shared by notifier and api;
-- `NOTIFIER_OPERATOR_USERNAME` — the operator whose TOTP approves ADD_RISK from Telegram (api);
-- `NTFY_URL` (default `https://ntfy.sh`), `NTFY_TOPIC` (a long random topic name), optional `NTFY_TOKEN`.
+**Also:** approvals, mandate edits that add risk, and promotions need a **human operator session**; the workers' operator-scoped machine token gets 403, and its `/paper/orders` are treated as AI orders (mandate required). `/api/v1/ai` never accepts the dev TOTP `000000` unless `AI_ALLOW_DEV_TOTP=true` (tests only).
+
+**New environment variables** (there is no `.env.example`; never commit real values):
+- in `.env` (api): `TELEGRAM_ALLOWED_CHAT_IDS` (the API re-checks it), `NOTIFIER_HMAC_SECRET` (random, ≥ 32 bytes: `python -c "import secrets; print(secrets.token_hex(32))"`), `NOTIFIER_OPERATOR_USERNAME` (the operator whose TOTP approves ADD_RISK from Telegram); optionally `NOTIFIER_DB_PASSWORD` before running migration 026 outside dev (role `cryptonite_notifier`, dev password `notifier_dev_pass`);
+- in a **new** `.env.notifier` (the notifier's own file, so it never sees the Gemini/Binance/TOTP secrets): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `NOTIFIER_HMAC_SECRET` (same value), `NTFY_URL` (default `https://ntfy.sh`), `NTFY_TOPIC` (a long random topic name), optional `NTFY_TOKEN`. `.env.notifier` is git-ignored.
 
 ### Local steps for the operator (not verifiable in the cloud session)
 
@@ -64,9 +63,9 @@ Branch `feat/ai-first-phase5` → PR to `feat/ai-first-phase0` (not `main`). Dec
 4. **Exit monitor (LE-2) must run** before any AI order: `docker compose -f infra/docker-compose.yml --profile monitoring up -d exit_monitor`; check `redis-cli GET exit_monitor:heartbeat`.
 5. **Create the first mandate** in Mission Control → Mandate editor (e.g. BTC/ETH spot, budget 10,000, max position 10%, hard stop 20%, active hours `08:00-22:00`); confirm it shows at L1 Copilot.
 6. **Live Telegram test (BotFather):**
-   1. In Telegram, talk to `@BotFather`: `/newbot`, pick a name and a username ending in `bot`; copy the token into `.env` as `TELEGRAM_BOT_TOKEN`.
-   2. Send `/start` to your new bot from your own account, then read your chat id: `curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates" | python -m json.tool` → `message.chat.id`. Put it in `TELEGRAM_ALLOWED_CHAT_IDS`. (Stop any other `getUpdates` consumer first; long polling allows one.)
-   3. Set `NOTIFIER_HMAC_SECRET`, `NOTIFIER_OPERATOR_USERNAME`, `NTFY_TOPIC` in `.env`; subscribe to the topic in the ntfy app.
+   1. In Telegram, talk to `@BotFather`: `/newbot`, pick a name and a username ending in `bot`; copy the token into `.env.notifier` as `TELEGRAM_BOT_TOKEN`.
+   2. Send `/start` to your new bot from your own account, then read your chat id: `curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates" | python -m json.tool` → `message.chat.id`. Put it in `TELEGRAM_ALLOWED_CHAT_IDS` in both `.env` and `.env.notifier`. (Stop any other `getUpdates` consumer first; long polling allows one.)
+   3. Set `NOTIFIER_HMAC_SECRET` (same value in both files), `NOTIFIER_OPERATOR_USERNAME` (`.env`) and `NTFY_TOPIC` (`.env.notifier`); subscribe to the topic in the ntfy app.
    4. `docker compose -f infra/docker-compose.yml up -d api` (re-reads `.env`), then `docker compose -f infra/docker-compose.yml --profile notifier up -d notifier`; `docker compose -f infra/docker-compose.yml --profile notifier logs -f notifier` should show `Notifier running: telegram=True chats=1 ntfy=True`, and Mission Control's "Notifier down" banner disappears.
    5. **Foreign chat ignored:** from a second Telegram account (or a group) message the bot; it must not answer and the notifier logs `Dropped a message from a chat that is not allowed`.
    6. **Approval flow:** create a pending ADD_RISK approval (trigger a debate on an instrument of your L1 mandate, or approve nothing and wait for one), tap **Approve 🔐**, send your 6-digit TOTP; the code message disappears and the bot replies `✅ APPROVED · command … queued`. Repeat with **Veto** on another one. Let a third one expire: it must show EXPIRED (no order).

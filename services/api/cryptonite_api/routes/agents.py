@@ -7,7 +7,7 @@ import json
 import secrets
 import httpx
 import os
-from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_operator, require_csrf
+from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_human_operator, require_operator, require_csrf
 from cryptonite_execution.approvals import ApprovalConflict, decide_approval, record_operator_approval
 from cryptonite_execution.mandate_store import resolve_mandate_for
 from cryptonite_schemas.mandate import ActionClass
@@ -202,7 +202,7 @@ async def approve_debate(
     run_id: str,
     request: Request,
     overrides: ApproveRequestOverrides | None = None,
-    _op=Depends(require_operator),
+    _op=Depends(require_human_operator),
     _csrf=Depends(require_csrf)
 ):
     pool = request.app.state.pool
@@ -276,6 +276,17 @@ async def approve_debate(
         raise HTTPException(status_code=409, detail=f"{why}: approve this debate inside an ACTIVE mandate that allows "
                             f"{decision['instrument_id']} (Mission Control → Mandates)")
     payload["mandate_id"] = str(mandate.id)
+    if side == "SELL":
+        # spot is long-only: a debate SELL sells the mandate's own holding, never a budget-sized amount
+        async with pool.acquire() as conn:
+            held = await conn.fetchval(
+                """SELECT COALESCE(SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE -filled_qty END), 0) FROM paper_orders
+                   WHERE instance_id = $1 AND instrument_id = $2 AND filled_qty > 0""",
+                mandate.instance_id, decision['instrument_id'])
+        if not held or float(held) <= 0:
+            raise HTTPException(status_code=409, detail="The mandate holds nothing to sell; reject the debate instead")
+        payload.update(quantity=float(held), order_type="MARKET")
+        payload.pop("price", None)
 
     # The debate worker may already have opened an approval for this run (mandate L1/L2, A5.7):
     # approving it here decides that approval, so the run never gets a second order.

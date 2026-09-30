@@ -159,6 +159,7 @@ def db_url():
 @pytest.fixture
 async def h(db_url, monkeypatch):
     monkeypatch.setenv("ALLOW_DEV_TOTP", "true")  # 000000 in DEV; the real-TOTP path is in test_notifier.py
+    monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "true")  # /api/v1/ai refuses 000000 unless explicitly allowed
     harness = await make_harness(db_url)
     try:
         yield harness
@@ -294,3 +295,12 @@ async def test_mandate_editor_totp_rules(h):
         assert any(x["id"] == mid for x in listed)
         status = (await c.get("/api/v1/ai/status")).json()
         assert status["exit_monitor_up"] is True and "Notifier down" in " ".join(status["degraded"])
+
+
+async def test_changing_the_budget_rebases_the_high_water_mark(h):
+    m = await h.mandate(level=1)
+    before = await h.pool.fetchval("SELECT hwm_rebased_at FROM ai_mandates WHERE id = $1", m.id)
+    async with h.client() as c:
+        res = await c.patch(f"/api/v1/ai/mandates/{m.id}", json={"capital_budget_usd": "7000"}, headers=h.headers)
+    assert res.status_code == 200
+    assert await h.pool.fetchval("SELECT hwm_rebased_at FROM ai_mandates WHERE id = $1", m.id) > before

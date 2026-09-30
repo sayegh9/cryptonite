@@ -16,9 +16,11 @@ AI-first blueprint §4.6 / §5 / D8 (A5.3, A5.4).
 - ``notifications_outbox``: durable Info / Action / Critical notifications for the notifier
   (Telegram, ntfy). ``dedupe_key`` is unique, so a repeated alert is written once.
 
-Roles: ``cryptonite_api`` (API, debate worker, notifier) reads and writes both; the orchestrator runs
+Roles: ``cryptonite_api`` (API, debate worker) reads and writes both; ``cryptonite_notifier`` (new) only
+reads approvals/mandates and marks outbox rows sent; the orchestrator runs
 as the owner. ``cryptonite_agent_ro`` gets nothing.
 """
+import os
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -29,6 +31,8 @@ revision: str = '026'
 down_revision: str | None = '025'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+NOTIFIER_ROLE = "cryptonite_notifier"
 
 
 def upgrade() -> None:
@@ -108,9 +112,29 @@ def upgrade() -> None:
         END IF;
     END $$;
     """)
+    # The notifier's own identity: it reads approvals and mandate names and marks outbox rows sent.
+    # It can neither decide an approval nor touch a mandate (decisions go through the API).
+    password = os.getenv("NOTIFIER_DB_PASSWORD", "notifier_dev_pass").replace("'", "''")
+    op.execute(f"""
+    DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{NOTIFIER_ROLE}') THEN
+            CREATE ROLE {NOTIFIER_ROLE} LOGIN PASSWORD '{password}';
+        END IF;
+    END $$;
+    GRANT SELECT ON TABLE ai_approvals, ai_mandates TO {NOTIFIER_ROLE};
+    GRANT SELECT, UPDATE (status, attempts, last_error, telegram_message_id, sent_at) ON TABLE notifications_outbox TO {NOTIFIER_ROLE};
+    """)
 
 
 def downgrade() -> None:
+    # The role itself is cluster-wide (other databases may still grant it), so it is kept.
+    op.execute(f"""
+    DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{NOTIFIER_ROLE}') THEN
+            REVOKE ALL ON TABLE ai_approvals, ai_mandates, notifications_outbox FROM {NOTIFIER_ROLE};
+        END IF;
+    END $$;
+    """)
     op.drop_column('debate_runs', 'mandate_id')
     op.drop_index('ix_notifications_outbox_pending', table_name='notifications_outbox')
     op.drop_table('notifications_outbox')

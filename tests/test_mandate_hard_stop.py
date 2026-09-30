@@ -192,3 +192,54 @@ async def test_account_backstop_latches_everything(db):
     assert await pool.fetchval(
         "SELECT count(*) FROM execution_commands WHERE command_type = 'CLOSE_POSITION' AND target_instance_id = $1", a.instance_id) == 1
     assert redis.publish.call_count == 0
+
+
+async def queue(pool, m, payload, key=None):
+    cid = uuid.uuid4()
+    await pool.execute(
+        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload,
+               status, environment, account_id, mandate_id) VALUES ($1, $2, $3, $4, 'ai:debate_worker', $5::jsonb, 'PENDING', 'PAPER', $6, $7)""",
+        cid, key or f"t:{cid}", payload.pop("_type", "SUBMIT_ORDER"), m.instance_id, json.dumps({**payload, "mandate_id": str(m.id)}),
+        ACCOUNT, m.id)
+    return cid
+
+
+async def drain(pool, engine, quotes, command_ids):
+    task = asyncio.create_task(command_poller(pool, engine, quotes))
+    try:
+        for _ in range(200):
+            rows = await pool.fetch("SELECT command_id, status, error_message FROM execution_commands WHERE command_id = ANY($1::uuid[])",
+                                    command_ids)
+            if all(r["status"] in ("COMPLETED", "REJECTED") for r in rows):
+                return {r["command_id"]: (r["status"], r["error_message"]) for r in rows}
+            await asyncio.sleep(0.05)
+        raise AssertionError("commands not processed")
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_back_to_back_orders_cannot_overrun_the_mandate_before_the_bridge_catches_up(db):
+    """Review finding: exposure must include fills the event bridge has not written to paper_positions yet."""
+    m = await make_mandate(db, level=3)
+    await db.execute("UPDATE ai_mandates SET capital_budget_usd = 1000 WHERE id = $1", m.id)  # 25% cap = 250 USD
+    engine = engine_holding("0")  # bridge mocked: paper_positions never updated
+    first = await queue(db, m, {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.004"})  # ~205 USD
+    second = await queue(db, m, {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.004"})
+    out = await drain(db, engine, quotes_at(50000), [first, second])
+    assert out[first] == ("COMPLETED", None)
+    assert out[second] == ("REJECTED", "MANDATE_POSITION_PCT_EXCEEDED")
+
+
+async def test_a_mandate_close_never_sells_more_than_the_mandate_owns(db):
+    """Review finding: a stale CLOSE_POSITION quantity must not sell another owner's coins."""
+    m = await make_mandate(db, level=1)
+    await hold(db, m.instance_id, "0.1", "50000")
+    engine = engine_holding("0.6")  # 0.5 is a manual holding
+    stale = await queue(db, m, {"_type": "CLOSE_POSITION", "instrument_id": SPOT, "quantity": "1.0", "reason": "EXIT_DEBATE_CLOSE"})
+    await drain(db, engine, quotes_at(50000), [stale])
+    assert engine.dispatcher.get_position_qty(SPOT) == D("0.5")
+    again = await queue(db, m, {"_type": "CLOSE_POSITION", "instrument_id": SPOT, "quantity": "0.1", "reason": "retry"})
+    assert (await drain(db, engine, quotes_at(50000), [again]))[again] == ("COMPLETED", None)
+    assert engine.dispatcher.get_position_qty(SPOT) == D("0.5")  # nothing of its own left: a no-op

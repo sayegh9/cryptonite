@@ -359,3 +359,32 @@ async def test_telegram_totp_is_locked_out_after_five_wrong_codes(h):
     assert locked.status_code == 429  # even the right code, until the lockout ends
     assert await h.pool.fetchval("SELECT status FROM ai_approvals WHERE id = $1", a["id"]) == "PENDING"
     await h.redis.delete(f"ai:totp_failures:telegram:{h.username}")
+
+
+async def test_in_an_allowed_group_only_allowed_people_are_served():
+    n, tg, api, _ = make_notifier(FakePool(approval_row("REDUCE_RISK")))
+    stranger = {"update_id": 3, "message": {"message_id": 9, "chat": {"id": OPERATOR_CHAT}, "from": {"id": FOREIGN_CHAT}, "text": "/status"}}
+    assert await n.handle_update(stranger) == "dropped"
+    me = {"update_id": 4, "message": {"message_id": 9, "chat": {"id": OPERATOR_CHAT}, "from": {"id": OPERATOR_CHAT}, "text": "/help"}}
+    assert await n.handle_update(me) == "help"
+
+
+async def test_the_notifier_role_can_deliver_but_never_decide(h, db_url):
+    """Least privilege (review finding): the notifier marks outbox rows sent; it cannot decide approvals or edit mandates."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    import asyncpg
+
+    parts = urlsplit(db_url)
+    role_url = urlunsplit(parts._replace(netloc=f"cryptonite_notifier:notifier_dev_pass@{parts.netloc.rsplit('@', 1)[-1]}"))
+    await h.pool.execute("INSERT INTO notifications_outbox (tier, kind, title, body) VALUES ('INFO', 'TEST', 'hello', 'world')")
+    pool = await asyncpg.create_pool(role_url, min_size=1, max_size=2)
+    try:
+        n, tg, _, _ = make_notifier(pool)
+        assert await n.dispatch_outbox_once() >= 1
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await pool.execute("UPDATE ai_approvals SET status = 'APPROVED'")
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await pool.execute("UPDATE ai_mandates SET autonomy_level = 3")
+    finally:
+        await pool.close()

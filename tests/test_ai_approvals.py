@@ -357,3 +357,14 @@ async def test_a_crash_between_claim_and_queue_is_retried_without_a_duplicate(h,
             assert res.status_code == 200, res.text
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key = $1", f"brain-card:{sid}:call-1") == 1
     assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals WHERE source = 'brain_card' AND source_ref = $1", f"{sid}:call-1") == 1
+
+
+async def test_a_veto_window_that_runs_past_the_active_hours_times_out_as_no(h):
+    m = await h.mandate(level=2, active_hours="08:00-12:05")
+    async with h.pool.acquire() as conn:
+        a = await create_approval(conn, m, ActionClass.ADD_RISK, "SUBMIT_ORDER", buy_payload(), summary="s",
+                                  source="test", source_ref=uuid.uuid4().hex, now=NOON)
+        assert a["timeout_policy"] == "PROCEED"  # created inside the hours
+        await sweep_expired(conn, now=NOON + datetime.timedelta(minutes=11))  # deadline 12:10 is outside
+    assert await h.pool.fetchval("SELECT status FROM ai_approvals WHERE id = $1", a["id"]) == "EXPIRED"
+    assert await commands_for(h.pool, a["id"]) == []

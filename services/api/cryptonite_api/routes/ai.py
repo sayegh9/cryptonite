@@ -17,7 +17,7 @@ import uuid
 from decimal import Decimal
 from typing import Any, Literal
 
-from cryptonite_api.routes.auth import OPERATOR_WRITE, require_operator
+from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution.approvals import (
     APPROVAL_COLUMNS,
     ApprovalConflict,
@@ -127,6 +127,9 @@ async def verify_totp(request: Request, code: str | None, *, user_id: Any = None
     if row is None:
         return False
     if code == "000000":
+        # The login's dev bypass is on by default outside PROD; approving AI risk never inherits it
+        if os.getenv("AI_ALLOW_DEV_TOTP", "false").lower() not in ("true", "1", "yes"):
+            return False
         return await auth_mgr.verify_totp_code(row["id"], "", code)
     if not row["totp_secret_ciphertext"]:
         return False
@@ -149,19 +152,20 @@ async def checked_totp(request: Request, code: str | None, throttle_key: str, **
     key = f"ai:totp_failures:{throttle_key}"
     if r is None:
         return False
-    try:
-        failures = int(await r.get(key) or 0)
+    try:  # count the attempt before checking it, so parallel guesses cannot overshoot the limit
+        attempts = int(await r.incr(key))
+        if attempts == 1:
+            await r.expire(key, TOTP_LOCKOUT_S)
     except Exception:
         return False
-    if failures >= TOTP_MAX_FAILURES:
+    if attempts > TOTP_MAX_FAILURES:
         raise HTTPException(status_code=429, detail="TOTP_LOCKED: too many wrong codes; try again in 15 minutes")
     if await verify_totp(request, code, **who):
+        try:
+            await r.decr(key)  # a correct code is not a failure
+        except Exception:
+            pass
         return True
-    try:
-        await r.incr(key)
-        await r.expire(key, TOTP_LOCKOUT_S)
-    except Exception:
-        pass
     return False
 
 
@@ -260,7 +264,7 @@ async def get_mandate(mandate_id: uuid.UUID, request: Request, auth: dict = Depe
 
 
 @router.post("/mandates", dependencies=OPERATOR_WRITE, status_code=201)
-async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(require_operator)):
+async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(require_human_operator)):
     """A new mandate always starts at L1 Copilot; creating one gives the AI room, so it needs TOTP."""
     if req.allow_perps:
         raise HTTPException(status_code=422, detail="MANDATE_PERPS_NOT_ALLOWED: perps can be enabled only after L3 (O1)")
@@ -291,7 +295,7 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
 
 
 @router.patch("/mandates/{mandate_id}", dependencies=OPERATOR_WRITE)
-async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Request, auth: dict = Depends(require_operator)):
+async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Request, auth: dict = Depends(require_human_operator)):
     """Tightening is free; anything that gives the AI more room needs TOTP."""
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
@@ -312,7 +316,11 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
             await conn.execute(
                 """UPDATE ai_mandates SET name = $2, capital_budget_usd = $3, instruments = $4, max_position_pct = $5,
                        max_drawdown_pct = $6, allow_perps = $7, max_leverage = $8, strategies = $9, active_hours_utc = $10,
-                       veto_window_s = $11, updated_at = now() WHERE id = $1""",
+                       veto_window_s = $11, updated_at = now(),
+                       -- a new budget is a new baseline: without a rebase a smaller budget reads as a drawdown
+                       hwm_rebased_at = CASE WHEN capital_budget_usd <> $3 THEN now() ELSE hwm_rebased_at END,
+                       last_dd_demotion_hwm = CASE WHEN capital_budget_usd <> $3 THEN NULL ELSE last_dd_demotion_hwm END
+                   WHERE id = $1""",
                 mandate_id, new.name, new.capital_budget_usd, new.instruments, new.max_position_pct, new.max_drawdown_pct,
                 new.allow_perps, new.max_leverage, new.strategies, new.active_hours_utc, new.veto_window_s)
             changed = {k: [str(getattr(old, k)), str(getattr(new, k))] for k in patch if getattr(old, k) != getattr(new, k)}
@@ -352,7 +360,7 @@ async def pause_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, au
 
 
 @router.post("/mandates/{mandate_id}/resume", dependencies=OPERATOR_WRITE)
-async def resume_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, auth: dict = Depends(require_operator)):
+async def resume_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, auth: dict = Depends(require_human_operator)):
     """Resuming a halted or paused mandate needs TOTP; its high-water mark restarts from here."""
     await require_totp(request, auth, req.totp_code)
     return await _transition(request, auth, mandate_id, AutonomyTrigger.RESUME, totp_ok=True, reason=req.reason)
@@ -403,7 +411,7 @@ async def _decide(request: Request, approval_id: uuid.UUID, approve: bool, via: 
 
 
 @router.post("/approvals/{approval_id}/decision", dependencies=OPERATOR_WRITE)
-async def decide_from_web(approval_id: uuid.UUID, req: DecisionIn, request: Request, auth: dict = Depends(require_operator)):
+async def decide_from_web(approval_id: uuid.UUID, req: DecisionIn, request: Request, auth: dict = Depends(require_human_operator)):
     """The logged-in operator (password + TOTP at login, CSRF here) approves or vetoes."""
     return await _decide(request, approval_id, req.decision == "APPROVE", "web", actor(auth))
 
@@ -526,7 +534,7 @@ async def get_autonomy(mandate_id: uuid.UUID, request: Request, auth: dict = Dep
 
 
 @router.post("/mandates/{mandate_id}/autonomy/evaluate", dependencies=OPERATOR_WRITE)
-async def evaluate_autonomy(mandate_id: uuid.UUID, request: Request, auth: dict = Depends(require_operator)):
+async def evaluate_autonomy(mandate_id: uuid.UUID, request: Request, auth: dict = Depends(require_human_operator)):
     """Run the gate now; when it passes the *system* records a proposal. Nothing is promoted here."""
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
@@ -536,7 +544,7 @@ async def evaluate_autonomy(mandate_id: uuid.UUID, request: Request, auth: dict 
 
 
 @router.post("/mandates/{mandate_id}/autonomy/confirm", dependencies=OPERATOR_WRITE)
-async def confirm_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Request, auth: dict = Depends(require_operator)):
+async def confirm_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Request, auth: dict = Depends(require_human_operator)):
     """The operator confirms a system proposal with TOTP; the gate is re-checked at this moment."""
     await require_totp(request, auth, req.totp_code)
     async with request.app.state.pool.acquire() as conn:
@@ -566,7 +574,7 @@ async def confirm_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Req
 
 
 @router.post("/mandates/{mandate_id}/autonomy/decline", dependencies=OPERATOR_WRITE)
-async def decline_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Request, auth: dict = Depends(require_operator)):
+async def decline_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Request, auth: dict = Depends(require_human_operator)):
     async with request.app.state.pool.acquire() as conn:
         updated = await conn.execute(
             """UPDATE ai_autonomy_events SET proposal_status = 'CANCELLED', resolved_at = now(), actor = $3

@@ -72,31 +72,56 @@ async def ensure_mandate_instance(conn, mandate: Mandate, account_id: str) -> bo
     return bool(await conn.fetchval("SELECT 1 FROM paper_strategy_instances WHERE instance_id = $1", mandate.instance_id))
 
 
+async def instance_spot_holdings(conn, instance_id: str) -> dict[str, tuple[Decimal, Decimal]]:
+    """Net filled spot quantity (and average fill price) per instrument for one instance, from
+    ``paper_orders``. The orchestrator writes those rows inside the claim transaction of every fill and
+    close, so unlike ``paper_positions`` (written later by the event bridge) they are never stale."""
+    rows = await conn.fetch(
+        """SELECT instrument_id,
+                  SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE -filled_qty END) AS net,
+                  SUM(CASE WHEN side = 'BUY' THEN filled_qty * COALESCE(avg_fill_price, price, 0) ELSE 0 END)
+                      / NULLIF(SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE 0 END), 0) AS avg_px
+           FROM paper_orders
+           WHERE instance_id = $1 AND filled_qty > 0 AND instrument_id NOT LIKE '%-PERP.%'
+           GROUP BY instrument_id""",
+        instance_id,
+    )
+    return {r["instrument_id"]: (max(Decimal(str(r["net"] or 0)), Decimal("0")), Decimal(str(r["avg_px"] or 0))) for r in rows}
+
+
 async def mandate_exposure(conn, engine, mandate: Mandate, instrument_id: str, ref_prices: dict[str, Decimal]) -> MandateExposure:
-    """The mandate's open positions (DB, valued at their marked price) plus its working entry orders
-    (dispatcher, at their reserved notional), and whether anyone else holds or works the instrument."""
+    """The mandate's holdings (spot: net fills from ``paper_orders``; perps: the dispatcher's position
+    owned by its instance), valued at the live/marked price, plus its working entry orders; and whether
+    anyone else holds or works the instrument."""
     d = engine.dispatcher
     account_id = getattr(engine, "account_id", "PAPER-ACCOUNT-001")
-    rows = await conn.fetch(
-        """SELECT instance_id, instrument_id, side, quantity, current_price FROM paper_positions
-           WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
-             AND (instance_id = $2 OR instrument_id = $3)""",
-        account_id, mandate.instance_id, instrument_id,
-    )
+    marks = {r["instrument_id"]: Decimal(str(r["current_price"])) for r in await conn.fetch(
+        "SELECT instrument_id, current_price FROM paper_positions WHERE instance_id = $1 AND status = 'OPEN'",
+        mandate.instance_id)}
     gross = inst_usd = inst_qty = Decimal("0")
     inst_side = None
-    other_owner = False
-    for r in rows:
-        qty = Decimal(str(r["quantity"]))
-        value = qty * Decimal(str(ref_prices.get(r["instrument_id"]) or r["current_price"]))
-        if r["instance_id"] == mandate.instance_id:
+    for inst, (qty, avg_px) in (await instance_spot_holdings(conn, mandate.instance_id)).items():
+        if qty <= 0:
+            continue
+        value = qty * Decimal(str(ref_prices.get(inst) or marks.get(inst) or avg_px))
+        gross += value
+        if same_instrument(inst, instrument_id):
+            inst_usd += value
+            inst_qty += qty
+            inst_side = "LONG"
+    for inst, pos in getattr(d, "perp_positions", {}).items():
+        if getattr(pos, "instance_id", None) == mandate.instance_id and pos.signed_qty != 0:
+            px = Decimal(str(ref_prices.get(inst) or d.mark_prices.get(inst) or pos.entry_price))
+            value = abs(pos.signed_qty) * px
             gross += value
-            if same_instrument(r["instrument_id"], instrument_id):
+            if same_instrument(inst, instrument_id):
                 inst_usd += value
-                inst_qty += qty
-                inst_side = r["side"]
-        elif same_instrument(r["instrument_id"], instrument_id):
-            other_owner = True
+                inst_qty += abs(pos.signed_qty)
+                inst_side = "LONG" if pos.signed_qty > 0 else "SHORT"
+    other_owner = bool(await conn.fetchval(
+        """SELECT 1 FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
+           AND instrument_id = $2 AND instance_id <> $3 LIMIT 1""",
+        account_id, instrument_id, mandate.instance_id))
     for info in getattr(d, "open_orders", {}).values():
         entry = not info.get("reduce_only") and (info.get("is_perp") or info.get("side") == "BUY")
         if info.get("instance_id") == mandate.instance_id:

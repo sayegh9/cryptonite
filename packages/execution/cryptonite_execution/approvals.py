@@ -175,7 +175,7 @@ async def decide_approval(conn, approval_id: uuid.UUID, approve: bool, *, via: s
                 raise ApprovalConflict(a["status"])
             result = Decision(a["id"], a["status"], a["command_id"], replayed=True)
         elif a["expires_at"] <= now:
-            conflict = await _apply_timeout(conn, a)
+            conflict = await _apply_timeout(conn, a, now)
         else:
             await conn.execute(
                 "UPDATE ai_approvals SET status = $2, decided_via = $3, decided_by = $4, decided_at = $5 WHERE id = $1",
@@ -190,8 +190,15 @@ async def decide_approval(conn, approval_id: uuid.UUID, approve: bool, *, via: s
     return result
 
 
-async def _apply_timeout(conn, a: dict[str, Any]) -> str:
-    status = timeout_status(TimeoutPolicy(a["timeout_policy"]))
+async def _apply_timeout(conn, a: dict[str, Any], now: datetime.datetime | None = None) -> str:
+    policy = TimeoutPolicy(a["timeout_policy"])
+    if policy is TimeoutPolicy.PROCEED and a["action_class"] == ActionClass.ADD_RISK:
+        # An L2 veto window proceeds only if the deadline itself falls inside the operator's active
+        # hours (the policy was chosen at creation; a window can run past the end of the hours)
+        hours = await conn.fetchval("SELECT active_hours_utc FROM ai_mandates WHERE id = $1", a["mandate_id"])
+        if not in_active_hours(hours, now or datetime.datetime.now(datetime.UTC)):
+            policy = TimeoutPolicy.DENY
+    status = timeout_status(policy)
     await conn.execute(
         "UPDATE ai_approvals SET status = $2, decided_via = 'timeout', decided_by = 'system', decided_at = now() WHERE id = $1",
         a["id"], status.value,
@@ -240,5 +247,5 @@ async def sweep_expired(conn, now: datetime.datetime | None = None, limit: int =
                 ORDER BY expires_at LIMIT $2 FOR UPDATE SKIP LOCKED""", now, limit)
         for row in rows:
             a = as_dict(row)
-            done.append((a["id"], await _apply_timeout(conn, a)))
+            done.append((a["id"], await _apply_timeout(conn, a, now)))
     return done

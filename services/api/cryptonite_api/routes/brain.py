@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 from cryptonite_api.routes.agents import sign_request
-from cryptonite_api.routes.auth import OPERATOR_WRITE, require_operator
+from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
 from cryptonite_execution.mandate_store import resolve_mandate_for
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -162,7 +162,7 @@ class CardApproveRequest(BaseModel):
 
 
 @router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
-async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator),
+async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_human_operator),
                              req: CardApproveRequest | None = None):
     """Approve an order card: one PAPER order inside a mandate, at most once, protected by the exit
     monitor's stops. The approval is recorded in ``ai_approvals`` and bound to its command (A5.3)."""

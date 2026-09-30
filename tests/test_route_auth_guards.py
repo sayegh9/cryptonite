@@ -221,3 +221,15 @@ def test_protected_reads_declare_require_auth():
     for path in PROTECTED_READS:
         route = next(r for r in reads if r.path_regex.match(path.split("?")[0]))
         assert require_auth in set(_dependency_calls(route.dependant)), route.path
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/ai/approvals/00000000-0000-4000-8000-000000000001/decision",
+    "/api/v1/ai/mandates",
+    "/api/v1/agents/brain/sessions/00000000-0000-4000-8000-000000000001/cards/c1/approve",
+    "/api/v1/agents/debates/00000000-0000-4000-8000-000000000001/approve",
+])
+def test_machine_tokens_cannot_approve_ai_actions_or_widen_mandates(client, path):
+    """A5: the agent workers hold an operator-scoped token; approvals need a human operator session."""
+    res = _send(client, "POST", path, headers={"X-API-Token": OPERATOR_TOKEN})
+    assert res.status_code == 403

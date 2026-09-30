@@ -285,9 +285,16 @@ class FakeConn:
         return None
 
     async def fetch(self, sql, *args):
-        return self.positions if "paper_positions" in sql else []
+        if "FROM paper_orders" in sql:  # net filled holdings of one instance
+            return [{"instrument_id": p["instrument_id"], "net": p["quantity"], "avg_px": p["current_price"]}
+                    for p in self.positions if p["instance_id"] == args[0]]
+        if "paper_positions" in sql:
+            return [p for p in self.positions if p["instance_id"] == args[0]]
+        return []
 
     async def fetchval(self, sql, *args):
+        if "FROM paper_positions" in sql:  # someone else holds the instrument?
+            return 1 if any(p["instrument_id"] == args[1] and p["instance_id"] != args[2] for p in self.positions) else None
         if "paper_strategy_instances" in sql:
             return 1 if args[0] in self.instances else None
         if "INSERT INTO ai_autonomy_events" in sql:

@@ -81,11 +81,12 @@ class MandateReject(StrEnum):
 
 
 # Rejections that mean the AI tried to act outside its limits (§4.5: any breach demotes one level).
-# Missing approval, a halted mandate or a missing price are refusals, not breaches.
+# Missing approval, a halted mandate, a missing price, an instrument someone else holds and a reduce
+# larger than the mandate's (possibly just-changed) holding are refusals, not breaches: they can
+# follow from the operator's own trades or timing, not from the AI overstepping.
 BREACH_CODES = frozenset({
     MandateReject.INSTRUMENT_NOT_ALLOWED, MandateReject.PERPS_NOT_ALLOWED, MandateReject.LEVERAGE_EXCEEDED,
-    MandateReject.BUDGET_EXCEEDED, MandateReject.POSITION_PCT_EXCEEDED, MandateReject.INSTRUMENT_CONFLICT,
-    MandateReject.POSITION_NOT_OWNED,
+    MandateReject.BUDGET_EXCEEDED, MandateReject.POSITION_PCT_EXCEEDED,
 })
 
 

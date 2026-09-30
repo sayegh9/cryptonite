@@ -70,17 +70,23 @@ class Notifier:
     def allowed(self, chat_id: Any) -> bool:
         return chat_id is not None and str(chat_id) in self.config.allowed_chat_ids
 
+    def _sender_allowed(self, obj: dict[str, Any]) -> bool:
+        """The person, not just the chat: in a group every member shares the chat id. In a private chat
+        the user id equals the chat id, so allow-listing your chat id covers both."""
+        sender = (obj.get("from") or {}).get("id")
+        return sender is None or self.allowed(sender)
+
     async def handle_update(self, update: dict[str, Any]) -> str:
         """Returns what happened (for logs and tests)."""
         if cb := update.get("callback_query"):
             chat_id = ((cb.get("message") or {}).get("chat") or {}).get("id")
-            if not self.allowed(chat_id):
+            if not self.allowed(chat_id) or not self._sender_allowed(cb):
                 logger.warning("Dropped a button press from a chat that is not allowed: %s", chat_id)
                 return "dropped"
             return await self._on_callback(cb, chat_id)
         if msg := update.get("message"):
             chat_id = (msg.get("chat") or {}).get("id")
-            if not self.allowed(chat_id):
+            if not self.allowed(chat_id) or not self._sender_allowed(msg):
                 logger.warning("Dropped a message from a chat that is not allowed: %s", chat_id)
                 return "dropped"
             return await self._on_message(msg, chat_id)

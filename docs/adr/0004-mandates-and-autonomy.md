@@ -42,9 +42,27 @@
 | Mandate editor: "changes that add risk require TOTP" | Also any change of active hours counts as risk-adding | Conservative: a wider window lets L2 veto windows proceed |
 | Debate worker writes approvals through `cryptonite_execution.approvals` | Its own small SQL module using the shared schemas policy; an integration test proves the rows are decided by the same code | The debate worker image carries only `cryptonite_agents` and `cryptonite_schemas` (no Nautilus) |
 
+## Independent review (adversarial, before the PR) and what changed
+
+| Finding | Severity | Fix |
+|---|---|---|
+| The agent workers' operator-scoped machine token could approve approvals, Brain cards and debates, widen mandates, or place `/paper/orders` that skipped the mandate check as "manual" | Critical | Approval, mandate-widening and promotion endpoints require a human operator session (`require_human_operator`); machine-token orders are enqueued as `ai:` requests, so the orchestrator holds them to a mandate |
+| Back-to-back orders could overrun a mandate before the event bridge wrote `paper_positions` | High | Mandate holdings come from `paper_orders` fills (written inside the claim transaction), perps from the dispatcher's instance-owned position |
+| A stale `CLOSE_POSITION` quantity could sell another owner's coins | High | A mandate's close is capped at its own filled holding; a perp owned by another instance is refused (`CLOSE_NOT_OWNED`) |
+| The notifier secret plus the dev `000000` TOTP could approve new risk; the notifier had all secrets and a writable DB role | High | `/api/v1/ai` refuses `000000` unless `AI_ALLOW_DEV_TOTP=true`; the notifier gets its own `../.env.notifier` and its own DB role `cryptonite_notifier` (read approvals/mandates, mark outbox rows), tested |
+| Lowering a budget read as a drawdown and could trigger a false hard stop | Medium | A budget change rebases the high-water mark |
+| Mandate stops and approval timeouts ran on the risk monitor's tick, which a failing pass could stall | Medium | Own 5 s timer, isolated |
+| Conflicts and stale-quantity refusals counted as breaches (demotion) | Medium | Only limit violations (instrument, perps, leverage, budget, position %) are breaches; a debate SELL is sized from the mandate's holding |
+| A TOTP code could be replayed in the next 30 s step; the lockout could be overshot in parallel | Medium | The matched step is recorded; attempts are counted before verification (5 per 15 min) |
+| An L2 veto window created inside active hours could proceed after they ended | Low | The policy is re-checked at the deadline |
+| Telegram checked the chat, not the sender | Low | The sender's id must be allow-listed too |
+
+Not changed (accepted, documented): `cryptonite_api` (API, debate worker, exit monitor) can still write `ai_mandates` at the DB level, so a compromised service with that role could raise a level; a DB trigger cannot tell the API's legitimate promotion from abuse while they share the role (least-privilege roles per service are LE-5-style follow-up work). An approval binds to a command by id, and producers are trusted DB writers.
+
 ## Known gaps
 
-- The notifier container uses `env_file: ../.env` like the other services, so it receives secrets it does not need (Gemini, Binance). A dedicated env file is the least-privilege follow-up.
+- `cryptonite_api` is shared by the API, debate worker and exit monitor (see above).
+- Exit-debate REDUCE on a perp flattens the whole perp position (the close path has no partial perp close); AI perps are out of the program goal (O1).
 - An approval card is not edited when it is decided elsewhere (web vs Telegram); the API refuses the second decision (409) and the bot says so.
 - Perps under a mandate are enforced (L3, opt-in, ≤ 5×) but untested end to end with a live perp position; AI perps stay out of the program goal (O1).
 - The live Telegram test with a BotFather token is an operator step (see HANDOFF).

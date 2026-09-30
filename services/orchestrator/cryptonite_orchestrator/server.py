@@ -21,7 +21,8 @@ from pydantic import ValidationError
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.mandate_store import load_mandate
-from cryptonite_orchestrator.mandate_gate import command_mandate_id, gate_ai_order, is_ai_command
+from cryptonite_orchestrator.mandate_gate import command_mandate_id, gate_ai_order, instance_spot_holdings, is_ai_command
+from cryptonite_schemas.mandate import mandate_id_from_instance
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from nautilus_trader.model import Bar, BarType
 from nautilus_trader.model import Price, Quantity
@@ -598,8 +599,10 @@ async def risk_monitor_once(engine, pool, redis, now: datetime.datetime | None =
         logger.critical("DAILY DRAWDOWN BREACH %.2f%%: kill switch tripped", float(drawdown * 100))
 
 
-async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_every: int = 5):
+async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_every: int = 5,
+                       mandate_every_s: float = 5.0):
     tick = 0
+    last_mandate_pass = float("-inf")
     while True:
         try:
             await risk_monitor_once(engine, pool, redis)
@@ -612,9 +615,10 @@ async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_e
             raise
         except Exception as e:
             logger.error("Risk monitor error: %s", e)
-        if tick % reconcile_every == 0:
-            # Mandate hard stops and the account backstop (A5.2); isolated so a failure here never
-            # stops the daily breaker above
+        if time.monotonic() - last_mandate_pass >= mandate_every_s:
+            # Mandate hard stops, the account backstop (A5.2) and approval timeouts (A5.3), on their own
+            # timer and isolated, so a failing pass above can neither stop nor speed them up
+            last_mandate_pass = time.monotonic()
             try:
                 await mandate_monitor_once(engine, pool, redis)
             except asyncio.CancelledError:
@@ -711,6 +715,26 @@ async def command_poller(pool, engine, quote_cache=None):
                                 if perp_qty == 0 and payload.get("quantity"):
                                     # a mandate stop closes only the mandate's own quantity (A5.2)
                                     close_qty = min(pos_qty, Decimal(str(payload["quantity"])))
+                                if mandate_id_from_instance(target) is not None:
+                                    # A mandate's close never sells what it does not own, whatever the
+                                    # (possibly stale) payload says: cap at its own filled holding, and
+                                    # refuse a perp another instance owns
+                                    if perp_qty != 0:
+                                        owner = getattr(engine.dispatcher.perp_positions.get(canonical_inst), "instance_id", None)
+                                        if owner != target:
+                                            await conn.execute(
+                                                "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                                row["command_id"], "CLOSE_NOT_OWNED",
+                                            )
+                                            continue
+                                    else:
+                                        own = (await instance_spot_holdings(conn, target)).get(canonical_inst, (Decimal("0"), None))[0]
+                                        close_qty = min(close_qty, own)
+                            if (pos_qty > Decimal("0") or perp_qty != 0) and close_qty <= 0:
+                                # nothing of the target's own left to close
+                                await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
+                                continue
+                            if pos_qty > Decimal("0") or perp_qty != 0:
                                 quote = quote_cache.quote(canonical_inst)
                                 if quote:
                                     fill_px = Decimal(str(quote.ask_price if close_side == "BUY" else quote.bid_price))
