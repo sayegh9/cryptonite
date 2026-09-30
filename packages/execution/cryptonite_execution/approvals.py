@@ -203,7 +203,23 @@ async def _apply_timeout(conn, a: dict[str, Any]) -> str:
     return status.value
 
 
+async def _sync_source(conn, a: dict[str, Any], status: str) -> None:
+    """A debate's run follows its approval: COMPLETED when the action ran, REJECTED when it did not."""
+    if a.get("source") not in ("debate", "exit_debate"):
+        return
+    try:
+        run_id = uuid.UUID(str(a["source_ref"]))
+    except ValueError:
+        return
+    ran = status in (ApprovalStatus.APPROVED, ApprovalStatus.EXPIRED_PROCEEDED)
+    await conn.execute(
+        "UPDATE debate_runs SET status = $2, completed_at = now() WHERE id = $1 AND status = 'PENDING_APPROVAL'",
+        run_id, "COMPLETED" if ran else "REJECTED",
+    )
+
+
 async def _notify_outcome(conn, a: dict[str, Any], status: str) -> None:
+    await _sync_source(conn, a, status)
     text = {"APPROVED": "approved", "VETOED": "vetoed", "EXPIRED": "expired: timeout means no",
             "EXPIRED_PROCEEDED": "timed out: proceeding"}.get(status, status.lower())
     await conn.execute(

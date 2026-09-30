@@ -11,7 +11,8 @@ AI-first blueprint §4.6 / §5 / D8 (A5.3, A5.4).
   inside the operator's active hours). The orchestrator's sweeper applies it at ``expires_at``.
   ``(source, source_ref)`` is unique, so a retried producer (debate run, Brain card) never creates a
   second approval. ``command_id`` binds an approval to exactly one execution command.
-- ``debate_runs.mandate_id``: the mandate a debate decided for.
+- ``debate_runs.mandate_id``: the mandate a debate decided for; the global ``DEBATE_EXECUTION_MODE``
+  setting is deleted (A5.7: autonomy exists only as a mandate at L2/L3).
 - ``notifications_outbox``: durable Info / Action / Critical notifications for the notifier
   (Telegram, ntfy). ``dedupe_key`` is unique, so a repeated alert is written once.
 
@@ -93,6 +94,8 @@ def upgrade() -> None:
 
     # the mandate a debate ran for (A5.7: autonomous execution exists only inside a mandate)
     op.add_column('debate_runs', sa.Column('mandate_id', postgresql.UUID(as_uuid=True), nullable=True))
+    # A5.7: the global switch is gone; nothing reads it any more
+    op.execute("DELETE FROM system_settings WHERE key = 'DEBATE_EXECUTION_MODE'")
 
     op.execute("""
     DO $$ BEGIN

@@ -25,6 +25,7 @@ from cryptonite_agents.debate_fleet import (
 )
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from gate import AUTOMATIC_SOURCES, pre_debate_gate
+from mandate_routing import route_entry, route_exit
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger("debate_worker")
@@ -74,17 +75,6 @@ async def recall_lessons(pg_pool, gateway: Gateway, context_text: str) -> str:
         async with pg_pool.acquire() as conn:
             lessons = await conn.fetch("SELECT lessons_learned FROM reflections ORDER BY created_at DESC LIMIT 3")
     return "\n- ".join(r["lessons_learned"] for r in lessons) if lessons else "No previous lessons yet."
-
-
-def resolve_execution_mode(configured: str | None) -> str:
-    """Autonomous debate execution is frozen until AI mandates exist (AI-first blueprint D11, A0.6).
-
-    A debate may only ever stage a decision for operator approval; the DB setting cannot
-    re-enable autonomous orders. Mandated autonomy (Phase 5) replaces this switch.
-    """
-    if configured == "autonomous":
-        logger.warning("DEBATE_EXECUTION_MODE=autonomous ignored: autonomous execution is frozen until mandates exist")
-    return "interactive"
 
 
 async def init_redis_group(redis_client: redis.Redis):
@@ -287,52 +277,27 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
             reasoning += "\n\nRisk Adjustment: " + cro_decision.risk_reasoning
 
         async with pg_pool.acquire() as conn:
-            # Check system setting for autonomous vs interactive
-            mode_row = await conn.fetchrow("SELECT value FROM system_settings WHERE key = 'DEBATE_EXECUTION_MODE'")
-            execution_mode = resolve_execution_mode(mode_row["value"] if mode_row else None)
-            
-            final_status = 'COMPLETED' if execution_mode == 'autonomous' else 'PENDING_APPROVAL'
-            if str(conviction_level).upper() == "HOLD":
-                final_status = 'NO_TRADE'  # nothing to approve or execute
+            async with conn.transaction():
+                # Save final decision
+                await conn.execute(
+                    """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning, decision_price)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                    run_id, instrument_id, conviction_level, conviction, allocation, reasoning, decision_price
+                )
+                # Autonomous execution exists only inside a mandate, at its earned level (A5.7; there
+                # is no global execution mode any more): L1 approval, L2 veto window, L3 queued.
+                if str(conviction_level).upper() == "HOLD":
+                    final_status, mandate = 'NO_TRADE', None  # nothing to approve or execute
+                else:
+                    final_status, mandate = await route_entry(
+                        conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
+                        mandate_id=payload.get("mandate_id"),
+                    )
+                await conn.execute(
+                    "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2",
+                    final_status, run_id, mandate.id if mandate else None,
+                )
 
-            # Save final decision
-            await conn.execute(
-                """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning, decision_price)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                run_id, instrument_id, conviction_level, conviction, allocation, reasoning, decision_price
-            )
-            
-            if execution_mode == 'autonomous':
-                # Route to paper execution only if autonomous (or if user approves later)
-                await conn.execute(
-                    """INSERT INTO paper_portfolio_decisions (run_id, instrument_id, decision_payload)
-                       VALUES ($1, $2, $3)""",
-                    run_id, instrument_id, json.dumps({
-                        "recommendation": conviction_level,
-                        "conviction": conviction,
-                        "allocation": allocation
-                    })
-                )
-                
-                await conn.execute(
-                    """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload, status, environment, account_id)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
-                    uuid.uuid4(), f'debate_autonomous:{run_id}', 'SUBMIT_ORDER', 'AI_DEBATE_WORKER', 'ai:debate_worker',
-                    json.dumps({
-                        "account_id": "PAPER-ACCOUNT-001",
-                        "instrument_id": instrument_id,
-                        "recommendation": conviction_level,
-                        "conviction_score": conviction,
-                        "allocation_pct": allocation
-                    }),
-                    'PENDING', 'PAPER', 'PAPER-ACCOUNT-001'
-                )
-                
-            await conn.execute(
-                "UPDATE debate_runs SET status = $1, completed_at = now() WHERE id = $2",
-                final_status, run_id
-            )
-            
         logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level}")
         
         # Publish result to websocket channel
@@ -397,32 +362,20 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
         reasoning = exit_decision.reasoning
 
         async with pg_pool.acquire() as conn:
-            mode_row = await conn.fetchrow("SELECT value FROM system_settings WHERE key = 'DEBATE_EXECUTION_MODE'")
-            execution_mode = resolve_execution_mode(mode_row["value"] if mode_row else None)
-            final_status = 'COMPLETED' if execution_mode == 'autonomous' else 'PENDING_APPROVAL'
-            
-            await conn.execute(
-                """INSERT INTO exit_decisions (id, run_id, instrument_id, recommendation, conviction_score, target_stop_price, reasoning, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, now())""",
-                uuid.uuid4(), run_id, instrument_id, recommendation, conviction, stop_price, reasoning
-            )
-            
-            if execution_mode == 'autonomous' and recommendation in ['REDUCE', 'CLOSE']:
+            async with conn.transaction():
                 await conn.execute(
-                    """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload, status, environment, account_id)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
-                    uuid.uuid4(), f'exit_debate_autonomous:{run_id}', 'MODIFY_ORDER', 'AI_DEBATE_WORKER', 'ai:debate_worker',
-                    json.dumps({
-                        "account_id": "PAPER-ACCOUNT-001",
-                        "instrument_id": instrument_id,
-                        "action": recommendation,
-                        "reduce_only": True
-                    }),
-                    'PENDING', 'PAPER', 'PAPER-ACCOUNT-001'
+                    """INSERT INTO exit_decisions (id, run_id, instrument_id, recommendation, conviction_score, target_stop_price, reasoning, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, now())""",
+                    uuid.uuid4(), run_id, instrument_id, recommendation, conviction, stop_price, reasoning
                 )
-            
-            await conn.execute("UPDATE debate_runs SET status = $1, completed_at = now() WHERE id = $2", final_status, run_id)
-            
+                # Risk reducing on a mandate's own position: immediate at L2/L3, a veto window that
+                # proceeds at L1 (D8). Anything else waits for the operator.
+                final_status, mandate = await route_exit(conn, run_id, instrument_id, recommendation)
+                await conn.execute(
+                    "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2",
+                    final_status, run_id, mandate.id if mandate else None,
+                )
+
     except Exception as e:
         logger.error(f"Exit debate failed for {instrument_id}: {e}")
         async with pg_pool.acquire() as conn:

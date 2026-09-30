@@ -136,3 +136,19 @@ async def test_exit_debate_stages_a_typed_exit_decision(debate_main, pool, monke
     row = await pool.fetchrow("SELECT * FROM exit_decisions WHERE run_id = $1", run_id)
     assert (row["recommendation"], float(row["target_stop_price"])) == ("REDUCE", 61000.0)
     assert await pool.fetchval("SELECT status FROM debate_runs WHERE id = $1", run_id) == "PENDING_APPROVAL"
+
+
+async def test_debate_inside_an_l3_mandate_queues_its_order(debate_main, pool):
+    """A5.7: no global execution mode; an L3 mandate that allows the instrument gets the order queued."""
+    mid = await pool.fetchval(
+        """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level)
+           VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 5, 3) RETURNING id""", f"l3-{uuid.uuid4().hex[:6]}")
+    try:
+        run = await run_debate(debate_main, pool)
+        assert (run["status"], run["mandate_id"]) == ("COMPLETED", mid)
+        cmd = await pool.fetchrow("SELECT * FROM execution_commands WHERE idempotency_key = $1", f"debate:{run['id']}")
+        payload = json.loads(cmd["payload"])
+        assert (cmd["command_type"], cmd["requester_id"], cmd["mandate_id"]) == ("SUBMIT_ORDER", "ai:debate_worker", mid)
+        assert (payload["side"], payload["allocation_pct"]) == ("BUY", 5.0)  # the CRO's 6% capped at the mandate's 5%
+    finally:
+        await pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED' WHERE id = $1", mid)

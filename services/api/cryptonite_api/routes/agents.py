@@ -8,7 +8,7 @@ import secrets
 import httpx
 import os
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_operator, require_csrf
-from cryptonite_execution.approvals import record_operator_approval
+from cryptonite_execution.approvals import ApprovalConflict, decide_approval, record_operator_approval
 from cryptonite_execution.mandate_store import resolve_mandate_for
 from cryptonite_schemas.mandate import ActionClass
 from fastapi import APIRouter, HTTPException, Request, Depends
@@ -276,6 +276,19 @@ async def approve_debate(
         raise HTTPException(status_code=409, detail=f"{why}: approve this debate inside an ACTIVE mandate that allows "
                             f"{decision['instrument_id']} (Mission Control → Mandates)")
     payload["mandate_id"] = str(mandate.id)
+
+    # The debate worker may already have opened an approval for this run (mandate L1/L2, A5.7):
+    # approving it here decides that approval, so the run never gets a second order.
+    async with pool.acquire() as conn:
+        pending_id = await conn.fetchval(
+            "SELECT id FROM ai_approvals WHERE source = 'debate' AND source_ref = $1 AND status = 'PENDING'", str(run_uuid))
+        if pending_id is not None:
+            try:
+                d = await decide_approval(conn, pending_id, True, via="web", decided_by="operator:debate_approval")
+            except ApprovalConflict as e:
+                raise HTTPException(status_code=409, detail=f"The debate's approval is {e.status}")
+            return {"status": "approved", "run_id": str(run_id), "approval_id": str(d.approval_id),
+                    "command_id": str(d.command_id) if d.command_id else None}
 
     # Mark the run decided and enqueue its order atomically, so a run is never
     # COMPLETED without an order (or approved twice by concurrent requests).
