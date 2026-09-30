@@ -384,7 +384,7 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
 async def main():
     logger.info(f"Starting Cryptonite Debate Worker: {DEBATE_WORKER_NAME}")
     
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=30)  # redis-py 8 times a 5 s XREADGROUP out at exactly its block time
     pg_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     
     # The gateway writes telemetry as its own role; the model's SQL tools use the read-only agent role
