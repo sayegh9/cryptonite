@@ -28,6 +28,51 @@
 
 > **Deferred backlog (LE-1 … LE-10)**, agreed for later: see [AUDIT_STATUS.md](AUDIT_STATUS.md#deferred-backlog-marked-for-later-2026-09-29).
 
+## AI-First Program — Phase 5 (cloud session, 2026-09-30): mandates, autonomy, approvals, Telegram
+
+Branch `feat/ai-first-phase5` → PR to `feat/ai-first-phase0` (not `main`). Decisions, evidence and deviations: [ADR 0004](docs/adr/0004-mandates-and-autonomy.md).
+
+| Item | What landed |
+|---|---|
+| A5.1 mandates | Migration `025` (`ai_mandates`, `ai_mandate_equity`, `ai_autonomy_events`, `execution_commands.mandate_id`). Every AI order (SUBMIT_ORDER, AI target, `ai:` requester) passes the mandate check **before** `GuardedOrderDispatcher`; no mandate = `MANDATE_REQUIRED`. Mandates trade under their own instance `AI_MANDATE_<id>`; orders are sized as % of the mandate budget. Property tests (hypothesis). |
+| A5.2 hard stops | Orchestrator risk monitor (5 s): mandate equity vs HWM; ≥ stop → HALTED at L1 + `CLOSE_POSITION` of its own quantity + Critical alert; ≥ ½ stop → one level down; account 20% backstop → PAPER kill switch latched, all mandates halted, AI positions closed. |
+| A5.3 approvals | Migration `026` (`ai_approvals`, `notifications_outbox`, `debate_runs.mandate_id`, deletes the `DEBATE_EXECUTION_MODE` setting). ADD_RISK timeout = no; REDUCE_RISK = proceed; L2 veto window proceeds only inside active hours. Sweeper in the orchestrator. Brain order cards and debate approvals record an approval bound to one command. |
+| A5.4 notifier | `services/notifier`: Telegram long polling (httpx), chat allow-list, TOTP for ADD_RISK, ntfy for Critical, `send_alert` routed through it. Compose profile `notifier`. |
+| A5.5 autonomy | Pure state machine + gate evaluator; system proposals, operator TOTP confirmation, automatic demotion (breach, ½ stop, stop, backstop). |
+| A5.6 web | Mission Control tab (mandate cards, approval queue with countdowns, halted/degraded banners, PAPER kill switch), Mandate editor (TOTP when adding risk), Autonomy & Evals. Stores `useMandateStore`, `useAutonomyStore`; event `cryptonite:mandate-updated`. |
+| A5.7 | `DEBATE_EXECUTION_MODE` deleted; the debate worker routes verdicts by mandate level (`services/debate_worker/mandate_routing.py`). |
+
+**Behaviour change to know before deploying:** after this lands, **no AI order executes without an ACTIVE mandate** that allows its instrument, including an operator-approved Brain order card (409 `NO_MANDATE`). Create a mandate in Mission Control → Mandate editor first (TOTP). New mandates start at L1 Copilot.
+
+**Also:** approvals, mandate edits that add risk, and promotions need a **human operator session**; the workers' operator-scoped machine token gets 403, and its `/paper/orders` are treated as AI orders (mandate required). `/api/v1/ai` never accepts the dev TOTP `000000` unless `AI_ALLOW_DEV_TOTP=true` (tests only).
+
+**New environment variables** (there is no `.env.example`; never commit real values):
+- in `.env` (api): `TELEGRAM_ALLOWED_CHAT_IDS` (the API re-checks it), `NOTIFIER_HMAC_SECRET` (random, ≥ 32 bytes: `python -c "import secrets; print(secrets.token_hex(32))"`), `NOTIFIER_OPERATOR_USERNAME` (the operator whose TOTP approves ADD_RISK from Telegram); optionally `NOTIFIER_DB_PASSWORD` before running migration 026 outside dev (role `cryptonite_notifier`, dev password `notifier_dev_pass`);
+- in a **new** `.env.notifier` (the notifier's own file, so it never sees the Gemini/Binance/TOTP secrets): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `NOTIFIER_HMAC_SECRET` (same value), `NTFY_URL` (default `https://ntfy.sh`), `NTFY_TOPIC` (a long random topic name), optional `NTFY_TOKEN`. `.env.notifier` is git-ignored.
+
+### Local steps for the operator (not verifiable in the cloud session)
+
+1. **Migrations on a throwaway DB first**, then the dev DB:
+   ```
+   docker exec infra-postgres-1 psql -U cryptonite -d cryptonite -c "DROP DATABASE IF EXISTS cryptonite_ci" -c "CREATE DATABASE cryptonite_ci"
+   docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL=redis://redis:6379/15 test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
+   ```
+   Expected: everything passes except the two known ones (`test_instruments_endpoint`, `test_duckdb_query_p95_latency`). Then `alembic -c infra/migrations/alembic.ini upgrade head` on the dev DB (024 → 026).
+2. **Web gates:** in `apps/web`: `pnpm install && pnpm typecheck && pnpm lint && pnpm build && npx playwright install chromium && npx playwright test` (25 specs).
+3. **Rebuild images:** `docker compose -f infra/docker-compose.yml build api orchestrator debate_worker exit_monitor notifier`, then `up -d api orchestrator debate_worker`. The orchestrator now runs the mandate monitor and the approval sweeper; the exit monitor protects `AI_MANDATE_*` positions.
+4. **Exit monitor (LE-2) must run** before any AI order: `docker compose -f infra/docker-compose.yml --profile monitoring up -d exit_monitor`; check `redis-cli GET exit_monitor:heartbeat`.
+5. **Create the first mandate** in Mission Control → Mandate editor (e.g. BTC/ETH spot, budget 10,000, max position 10%, hard stop 20%, active hours `08:00-22:00`); confirm it shows at L1 Copilot.
+6. **Live Telegram test (BotFather):**
+   1. In Telegram, talk to `@BotFather`: `/newbot`, pick a name and a username ending in `bot`; copy the token into `.env.notifier` as `TELEGRAM_BOT_TOKEN`.
+   2. Send `/start` to your new bot from your own account, then read your chat id: `curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates" | python -m json.tool` → `message.chat.id`. Put it in `TELEGRAM_ALLOWED_CHAT_IDS` in both `.env` and `.env.notifier`. (Stop any other `getUpdates` consumer first; long polling allows one.)
+   3. Set `NOTIFIER_HMAC_SECRET` (same value in both files), `NOTIFIER_OPERATOR_USERNAME` (`.env`) and `NTFY_TOPIC` (`.env.notifier`); subscribe to the topic in the ntfy app.
+   4. `docker compose -f infra/docker-compose.yml up -d api` (re-reads `.env`), then `docker compose -f infra/docker-compose.yml --profile notifier up -d notifier`; `docker compose -f infra/docker-compose.yml --profile notifier logs -f notifier` should show `Notifier running: telegram=True chats=1 ntfy=True`, and Mission Control's "Notifier down" banner disappears.
+   5. **Foreign chat ignored:** from a second Telegram account (or a group) message the bot; it must not answer and the notifier logs `Dropped a message from a chat that is not allowed`.
+   6. **Approval flow:** create a pending ADD_RISK approval (trigger a debate on an instrument of your L1 mandate, or approve nothing and wait for one), tap **Approve 🔐**, send your 6-digit TOTP; the code message disappears and the bot replies `✅ APPROVED · command … queued`. Repeat with **Veto** on another one. Let a third one expire: it must show EXPIRED (no order).
+   7. **Critical:** trip the PAPER kill switch from Mission Control (then reset it); Telegram and ntfy both get the Critical alert.
+7. `graphify update .`
+8. **Gate 5** starts now: 14 days of L1 paper trading on one mandate with 0 breaches and working Telegram approvals (check `ai_autonomy_events` for `BREACH` rows and `ai_approvals` outcomes).
+
 ## AI-First Program — Phase 3 merged (2026-09-29)
 
 "One Brain" (A3.1–A3.5), PR #1 merged into `feat/ai-first-phase0` as `eae3989`:

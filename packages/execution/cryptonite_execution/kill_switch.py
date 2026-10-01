@@ -10,20 +10,40 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+NOTIFIER_ALERT_LIST = "notifier:alerts"  # services/notifier relays these to Telegram + ntfy (A5.4)
 
-def send_alert(message: str) -> None:
-    if not SLACK_WEBHOOK_URL:
+
+def _push_to_notifier(message: str, title: str) -> None:
+    import redis  # sync client; runs on a daemon thread so a trip under the lock never waits on I/O
+
+    url = os.getenv("REDIS_URL")
+    if not url:
         return
+    client = redis.Redis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
+    try:
+        client.lpush(NOTIFIER_ALERT_LIST, json.dumps({"title": title, "message": message, "ts": time.time()}))
+        client.ltrim(NOTIFIER_ALERT_LIST, 0, 999)
+    finally:
+        client.close()
+
+
+def send_alert(message: str, title: str = "Kill switch") -> None:
+    """Critical alert: queued for the notifier (Telegram + ntfy); Slack only if a legacy webhook is set."""
     def _send():
         try:
-            req = urllib.request.Request(
-                SLACK_WEBHOOK_URL,
-                data=json.dumps({"text": message}).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
-            )
-            urllib.request.urlopen(req, timeout=5.0)
+            _push_to_notifier(message, title)
         except Exception as e:
-            logger.error(f"Failed to send Slack alert: {e}")
+            logger.error(f"Failed to queue the alert for the notifier: {e}")
+        if SLACK_WEBHOOK_URL:
+            try:
+                req = urllib.request.Request(
+                    SLACK_WEBHOOK_URL,
+                    data=json.dumps({"text": message}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}
+                )
+                urllib.request.urlopen(req, timeout=5.0)
+            except Exception as e:
+                logger.error(f"Failed to send Slack alert: {e}")
     threading.Thread(target=_send, daemon=True).start()
 
 

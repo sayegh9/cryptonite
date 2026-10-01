@@ -140,7 +140,7 @@ export async function rejectOrderCard(card: OrderCardWidget): Promise<void> {
   const sessionId = useBrainStore.getState().sessionId;
   if (!sessionId) return;
   await postCard(`/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/notes`, {
-    content: `Operator rejected order card ${card.id} (${card.side} ${card.instrument_id}, ${card.allocation_pct}% of equity).`,
+    content: `Operator rejected order card ${card.id} (${card.side} ${card.instrument_id}, ${card.allocation_pct}% of mandate).`,
     widget_id: card.id,
     status: "REJECTED",
   });

@@ -305,11 +305,15 @@ async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: d
         "margin_mode": req.margin_mode,
         "reduce_only": req.reduce_only,
     }
+    # A machine token (agent/research workers) is not the operator's hand: its orders are AI orders,
+    # so the orchestrator holds them to a mandate (A5.1) instead of treating them as manual trades.
+    machine = auth.get("type") == "machine_token"
     return await _enqueue_command(
         pool=request.app.state.pool,
         command_type="MANUAL_ORDER",
         target_instance_id="MANUAL_TRADE",
         payload=payload,
+        requester_id="ai:machine-token" if machine else "web-ui",
         environment="PAPER",
         account_id="PAPER-ACCOUNT-001",
     )

@@ -17,6 +17,7 @@ import { MarketOverview } from "@/components/MarketOverview";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { AIBrainWorkspace } from "@/components/brain/AIBrainWorkspace";
 import { DecisionTraceDrawer } from "@/components/brain/DecisionTraceDrawer";
+import { MissionControl } from "@/components/mission/MissionControl";
 import { dispatchBrainAsk } from "@/lib/brain/events";
 import { useBrainSetup } from "@/lib/brain/useBrainSetup";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
@@ -40,7 +41,7 @@ import {
 } from "lucide-react";
 
 export default function TerminalPage() {
-  const [workspaceMode, setWorkspaceMode] = useState<"terminal" | "research" | "portfolio" | "operator" | "markets" | "alerts" | "settings" | "debates">("terminal");
+  const [workspaceMode, setWorkspaceMode] = useState<"terminal" | "research" | "portfolio" | "operator" | "markets" | "alerts" | "settings" | "debates" | "mission">("terminal");
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [operatorAuthenticated, setOperatorAuthenticated] = useState(false);
   const [showScannerBuilder, setShowScannerBuilder] = useState(false);
@@ -254,6 +255,7 @@ export default function TerminalPage() {
               { id: "alerts", label: "Alerts" },
               { id: "portfolio", label: "Portfolio" },
               { id: "debates", label: "AI Brain" },
+              { id: "mission", label: "Mission Control" },
               { id: "operator", label: "Operator" },
               { id: "settings", label: "Settings" },
             ].map((tab) => (
@@ -347,6 +349,13 @@ export default function TerminalPage() {
       <div className={workspaceMode === "debates" ? "flex-1 overflow-hidden relative flex flex-col min-h-0 min-w-0" : "hidden"}>
         <AIBrainWorkspace selectedSymbol={selectedSymbol} isActive={workspaceMode === "debates"} />
       </div>
+
+      {/* Mission Control: mandates, approvals, autonomy (blueprint §7.1) */}
+      {workspaceMode === "mission" && (
+        <div className="flex-1 min-h-0 min-w-0">
+          <MissionControl isActive />
+        </div>
+      )}
 
       {/* On-Demand Secondary Workspaces */}
       {workspaceMode === "markets" && (

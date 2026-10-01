@@ -201,7 +201,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       <dl className="mt-1 grid grid-cols-3 gap-2 text-[10px]">
         <div>
           <dt className="text-zinc-500">Allocation</dt>
-          <dd className="text-zinc-100">{widget.allocation_pct}% of equity</dd>
+          <dd className="text-zinc-100">{widget.allocation_pct}% of mandate</dd>
         </div>
         <div>
           <dt className="text-zinc-500">Proposed stop</dt>
@@ -235,8 +235,9 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       {pending && confirming && (
         <div className="mt-3 rounded border border-amber-700 bg-zinc-950 p-2" role="group" aria-label="Confirm paper order">
           <p className="mb-2 text-zinc-300">
-            Send a PAPER {widget.side} {widget.instrument_id} {widget.order_type} order sized at {widget.allocation_pct}% of equity?
-            The risk engine still applies the 1–25% equity clamp and the kill switch. The position is stopped out by the exit
+            Send a PAPER {widget.side} {widget.instrument_id} {widget.order_type} order sized at {widget.allocation_pct}% of the mandate
+            budget? It trades inside the ACTIVE mandate that allows this instrument; the mandate check, the 1–25% equity clamp and
+            the kill switch still apply. The position is stopped out by the exit
             monitor&apos;s hard and trailing stops, not by the proposed stop price; approval is refused while the exit monitor is down.
           </p>
           <div className="flex gap-2">

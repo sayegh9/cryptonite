@@ -194,12 +194,16 @@ class OperatorAuthManager:
             return False
 
         totp = pyotp.TOTP(raw_secret)
-        # Check if valid within ±1 step (30s)
-        if not totp.verify(token, valid_window=1):
+        # Valid within ±1 step (30 s). Record the step the code *matched*, not the current one, so the
+        # same code cannot be used once in step N and again in N+1.
+        now = time.time()
+        current_step = None
+        for offset in (0, -1, 1):
+            if secrets.compare_digest(totp.at(now + offset * 30), str(token)):
+                current_step = int(now / 30) + offset
+                break
+        if current_step is None:
             return False
-
-        # Compute time step (30s interval)
-        current_step = int(time.time() / 30)
 
         # Check replay cache in DB
         async with self._pool.acquire() as conn:

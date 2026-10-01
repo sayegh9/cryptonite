@@ -7,8 +7,10 @@ import json
 import secrets
 import httpx
 import os
-from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_operator, require_csrf
-from cryptonite_api.routes.paper import _enqueue_command
+from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_human_operator, require_operator, require_csrf
+from cryptonite_execution.approvals import ApprovalConflict, decide_approval, record_operator_approval
+from cryptonite_execution.mandate_store import resolve_mandate_for
+from cryptonite_schemas.mandate import ActionClass
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
@@ -200,7 +202,7 @@ async def approve_debate(
     run_id: str,
     request: Request,
     overrides: ApproveRequestOverrides | None = None,
-    _op=Depends(require_operator),
+    _op=Depends(require_human_operator),
     _csrf=Depends(require_csrf)
 ):
     pool = request.app.state.pool
@@ -265,6 +267,40 @@ async def approve_debate(
         if overrides.stop_loss_pct is not None:
             payload["stop_loss_pct"] = overrides.stop_loss_pct
 
+    # Every AI order trades inside a mandate (A5.1): the one the debate named, else the single ACTIVE
+    # mandate that allows the instrument. The approval is recorded and bound to its order (A5.3).
+    async with pool.acquire() as conn:
+        mandate_ref = await conn.fetchval("SELECT mandate_id FROM debate_runs WHERE id = $1", run_uuid)
+        mandate, why = await resolve_mandate_for(conn, decision['instrument_id'], mandate_ref)
+    if mandate is None:
+        raise HTTPException(status_code=409, detail=f"{why}: approve this debate inside an ACTIVE mandate that allows "
+                            f"{decision['instrument_id']} (Mission Control → Mandates)")
+    payload["mandate_id"] = str(mandate.id)
+    if side == "SELL":
+        # spot is long-only: a debate SELL sells the mandate's own holding, never a budget-sized amount
+        async with pool.acquire() as conn:
+            held = await conn.fetchval(
+                """SELECT COALESCE(SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE -filled_qty END), 0) FROM paper_orders
+                   WHERE instance_id = $1 AND instrument_id = $2 AND filled_qty > 0""",
+                mandate.instance_id, decision['instrument_id'])
+        if not held or float(held) <= 0:
+            raise HTTPException(status_code=409, detail="The mandate holds nothing to sell; reject the debate instead")
+        payload.update(quantity=float(held), order_type="MARKET")
+        payload.pop("price", None)
+
+    # The debate worker may already have opened an approval for this run (mandate L1/L2, A5.7):
+    # approving it here decides that approval, so the run never gets a second order.
+    async with pool.acquire() as conn:
+        pending_id = await conn.fetchval(
+            "SELECT id FROM ai_approvals WHERE source = 'debate' AND source_ref = $1 AND status = 'PENDING'", str(run_uuid))
+        if pending_id is not None:
+            try:
+                d = await decide_approval(conn, pending_id, True, via="web", decided_by="operator:debate_approval")
+            except ApprovalConflict as e:
+                raise HTTPException(status_code=409, detail=f"The debate's approval is {e.status}")
+            return {"status": "approved", "run_id": str(run_id), "approval_id": str(d.approval_id),
+                    "command_id": str(d.command_id) if d.command_id else None}
+
     # Mark the run decided and enqueue its order atomically, so a run is never
     # COMPLETED without an order (or approved twice by concurrent requests).
     async with pool.acquire() as conn:
@@ -275,15 +311,12 @@ async def approve_debate(
             )
             if updated != "UPDATE 1":
                 raise HTTPException(status_code=409, detail="Debate run was already decided")
-            await _enqueue_command(
-                pool=conn,
-                command_type="SUBMIT_ORDER",
-                target_instance_id="AI_DEBATE_WORKER",
-                payload=payload,
-                requester_id="operator:debate_approval",
+            await record_operator_approval(
+                conn, mandate, "SUBMIT_ORDER", payload,
+                summary=f"Debate verdict: {side} {decision['instrument_id']} at {alloc_pct}% of equity",
+                source="debate", source_ref=str(run_uuid), decided_by="operator:debate_approval",
                 idempotency_key=f"debate_approve:{run_id}",
-                environment="PAPER",
-                account_id=PAPER_ACCOUNT_ID,
+                action=ActionClass.ADD_RISK if side == "BUY" else ActionClass.REDUCE_RISK,
             )
 
     if redis_client:

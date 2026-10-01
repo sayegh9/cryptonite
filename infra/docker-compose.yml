@@ -404,6 +404,31 @@ services:
       - ../data:/app/data:rw
       - ../services/scanner:/app/services/scanner
 
+  notifier:
+    build:
+      context: ..
+      dockerfile: infra/docker/notifier.Dockerfile
+    # Telegram approvals (long polling: outbound only, no port) + ntfy for Critical alerts (A5.4).
+    # Opt-in: docker compose --profile notifier up -d notifier. Its own env file ../.env.notifier (not
+    # the shared .env: it needs none of the exchange/LLM/TOTP secrets): TELEGRAM_BOT_TOKEN,
+    # TELEGRAM_ALLOWED_CHAT_IDS, NOTIFIER_HMAC_SECRET (same value as in .env for api), NTFY_TOPIC.
+    profiles: ["notifier"]
+    command: ["python", "-m", "cryptonite_notifier"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://cryptonite_notifier:notifier_dev_pass@postgres:5432/cryptonite
+      REDIS_URL: redis://redis:6379/0
+      CRYPTONITE_API_URL: http://api:8000
+    env_file:
+      - ../.env.notifier
+    restart: unless-stopped
+
   # Fresh named volumes mount root-owned; hand them to the image's uid 1000 once per run.
   test_volumes_init:
     build:

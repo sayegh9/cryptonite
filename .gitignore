@@ -16,6 +16,7 @@ htmlcov/
 
 # Environment & Secrets
 .env
+.env.notifier
 *.pem
 *.key
 *.secret

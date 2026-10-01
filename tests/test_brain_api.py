@@ -215,41 +215,8 @@ def _approve(c, sid):
 HEARTBEAT = json.dumps({"stop_loss_pct": 5.0, "trail_activate_pct": 3.0, "trail_pct": 2.0})
 
 
-def test_approving_a_card_queues_one_ai_owned_order_sized_by_its_allocation(client, card_worker):
-    c, app = client
-    card, notes = card_worker
-    app.state.pool, app.state.stream_hub = _CommandPool(), _Hub(HEARTBEAT)
-    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
-    sid = uuid.uuid4()
-    res = _approve(c, sid)
-    assert res.status_code == 200, res.text
-    cmd = app.state.pool.rows["brain-card:card-1"]
-    assert cmd["command_type"] == "SUBMIT_ORDER" and cmd["target"] == "AI_DEBATE_WORKER"  # exit monitor owns it
-    assert cmd["requester"] == "operator:u-op"
-    p = cmd["payload"]
-    assert p["allocation_pct"] == 5.0 and "quantity" not in p  # sized by what the operator saw
-    assert p["proposed_stop_loss"] == 58000.0 and p["protection"]["stop_loss_pct"] == 5.0
-    assert p["trace_id"] == CARD["trace_id"] and p["brain_card_id"] == "card-1"
-    assert card["status"] == "APPROVED" and card["command_id"] == res.json()["command_id"]
-    assert notes[0]["expect_status"] == "PENDING_APPROVAL"  # claimed before anything was queued
-
-    # A double click or a retry after a reload never queues a second order
-    again = _approve(c, sid)
-    assert again.status_code == 200 and again.json()["command_id"] == res.json()["command_id"]
-    assert len(app.state.pool.rows) == 1
-    # ...and a late reject cannot flip an approved card
-    rej = c.post(f"/api/v1/agents/brain/sessions/{sid}/notes", headers={"X-CSRF-Token": CSRF},
-                 json={"content": "no", "widget_id": "card-1", "status": "REJECTED"})
-    assert rej.status_code == 409 and card["status"] == "APPROVED"
-
-
-def test_a_crash_between_claim_and_queue_is_retried_without_a_duplicate(client, card_worker):
-    c, app = client
-    card, _ = card_worker
-    card["status"] = "APPROVED"  # claimed, then the API died before the command was queued
-    app.state.pool, app.state.stream_hub = _CommandPool(), _Hub(HEARTBEAT)
-    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
-    assert _approve(c, uuid.uuid4()).status_code == 200 and len(app.state.pool.rows) == 1
+# The approve-and-queue path (mandate, ai_approvals row, one bound command, idempotent retries, a crash
+# between the claim and the queue) runs against a real database in test_ai_approvals.py (A5.3).
 
 
 def test_approval_is_refused_while_the_exit_monitor_is_down(client, card_worker):

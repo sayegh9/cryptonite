@@ -20,6 +20,10 @@ from cryptonite_execution.risk import OrderIntent
 from pydantic import ValidationError
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
+from cryptonite_execution.mandate_store import load_mandate
+from cryptonite_orchestrator.mandate_gate import command_mandate_id, gate_ai_order, instance_spot_holdings, is_ai_command
+from cryptonite_schemas.mandate import mandate_id_from_instance
+from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from nautilus_trader.model import Bar, BarType
 from nautilus_trader.model import Price, Quantity
 
@@ -595,8 +599,10 @@ async def risk_monitor_once(engine, pool, redis, now: datetime.datetime | None =
         logger.critical("DAILY DRAWDOWN BREACH %.2f%%: kill switch tripped", float(drawdown * 100))
 
 
-async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_every: int = 5):
+async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_every: int = 5,
+                       mandate_every_s: float = 5.0):
     tick = 0
+    last_mandate_pass = float("-inf")
     while True:
         try:
             await risk_monitor_once(engine, pool, redis)
@@ -609,6 +615,22 @@ async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_e
             raise
         except Exception as e:
             logger.error("Risk monitor error: %s", e)
+        if time.monotonic() - last_mandate_pass >= mandate_every_s:
+            # Mandate hard stops, the account backstop (A5.2) and approval timeouts (A5.3), on their own
+            # timer and isolated, so a failing pass above can neither stop nor speed them up
+            last_mandate_pass = time.monotonic()
+            try:
+                await mandate_monitor_once(engine, pool, redis)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Mandate monitor error: %s", e)
+            try:
+                await sweep_approvals_once(pool)  # D8 approval timeouts (A5.3)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Approval sweeper error: %s", e)
         await asyncio.sleep(interval_s)
 
 
@@ -690,6 +712,29 @@ async def command_poller(pool, engine, quote_cache=None):
                                 # Spot long closes with a SELL; a perp closes with an opposing reduce-only order
                                 close_side = "BUY" if perp_qty < 0 else "SELL"
                                 close_qty = abs(perp_qty) if perp_qty != 0 else pos_qty
+                                if perp_qty == 0 and payload.get("quantity"):
+                                    # a mandate stop closes only the mandate's own quantity (A5.2)
+                                    close_qty = min(pos_qty, Decimal(str(payload["quantity"])))
+                                if mandate_id_from_instance(target) is not None:
+                                    # A mandate's close never sells what it does not own, whatever the
+                                    # (possibly stale) payload says: cap at its own filled holding, and
+                                    # refuse a perp another instance owns
+                                    if perp_qty != 0:
+                                        owner = getattr(engine.dispatcher.perp_positions.get(canonical_inst), "instance_id", None)
+                                        if owner != target:
+                                            await conn.execute(
+                                                "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                                row["command_id"], "CLOSE_NOT_OWNED",
+                                            )
+                                            continue
+                                    else:
+                                        own = (await instance_spot_holdings(conn, target)).get(canonical_inst, (Decimal("0"), None))[0]
+                                        close_qty = min(close_qty, own)
+                            if (pos_qty > Decimal("0") or perp_qty != 0) and close_qty <= 0:
+                                # nothing of the target's own left to close
+                                await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
+                                continue
+                            if pos_qty > Decimal("0") or perp_qty != 0:
                                 quote = quote_cache.quote(canonical_inst)
                                 if quote:
                                     fill_px = Decimal(str(quote.ask_price if close_side == "BUY" else quote.bid_price))
@@ -712,7 +757,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                 else:
                                     engine.dispatcher.handle_fill(
                                         client_order_id=client_oid,
-                                        fill_qty=pos_qty,
+                                        fill_qty=close_qty,
                                         fill_price=fill_px,
                                         commission=comm,
                                         side="SELL",
@@ -810,6 +855,13 @@ async def command_poller(pool, engine, quote_cache=None):
                                 raw_side = "BUY" if rec in ("BUY", "OVERWEIGHT") else "SELL"
                             side = raw_side.upper()
                             
+                            # AI orders are checked against their mandate before the dispatcher (A5.1) and
+                            # are booked under the mandate's own paper instance
+                            ai_order = is_ai_command(cmd_type, target, row.get("requester_id"))
+                            mandate = None
+                            if ai_order and (mandate_ref := command_mandate_id(row, payload)):
+                                mandate = await load_mandate(conn, mandate_ref)
+
                             # Determine quantity
                             qty_val = payload.get("quantity")
                             if not qty_val:
@@ -822,7 +874,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                     )
                                     continue
                                 mark_px = Decimal(str(quote.ask_price if side == "BUY" else quote.bid_price))
-                                notional = engine.dispatcher.cash_balance * (alloc_pct / Decimal("100.0"))
+                                # a mandate order's allocation is a share of the mandate's budget ("6% of mandate")
+                                base = mandate.capital_budget_usd if mandate is not None else engine.dispatcher.cash_balance
+                                notional = base * (alloc_pct / Decimal("100.0"))
                                 qty_val = max(Decimal("0.0001"), notional / mark_px)
                             qty_dec = Decimal(str(qty_val))
                             
@@ -832,6 +886,8 @@ async def command_poller(pool, engine, quote_cache=None):
                             # rolled-back transaction) recognises its own order instead of placing a second one
                             client_oid = payload.get("client_order_id") or f"{'MANUAL' if cmd_type == 'MANUAL_ORDER' else 'AI'}-{str(row['command_id']).replace('-', '')[:12].upper()}"
                             instance_id = target or ("MANUAL_TRADE" if cmd_type == "MANUAL_ORDER" else "AI_DEBATE_WORKER")
+                            if mandate is not None:
+                                instance_id = mandate.instance_id
                             
                             try:
                                 intent = OrderIntent(
@@ -876,6 +932,17 @@ async def command_poller(pool, engine, quote_cache=None):
                                         row["command_id"], "DUPLICATE_CLIENT_ORDER_ID",
                                     )
                                 continue
+
+                            if ai_order:
+                                mandate_reject = await gate_ai_order(
+                                    conn, engine, row, payload, intent, mandate, quote_cache.quote(canonical_inst),
+                                )
+                                if mandate_reject:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"], mandate_reject,
+                                    )
+                                    continue
 
                             # Dispatch intent to dispatcher (evaluates risk + atomically reserves)
                             approved = False

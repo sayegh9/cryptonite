@@ -6,6 +6,9 @@ import { fetchApi } from "@/lib/api";
 import { fetchBrainSpend, listBrainSessions, loadBrainHistory } from "@/lib/brain/client";
 import type { BrainSessionSummary } from "@/lib/brain/types";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
+import { listMandates } from "@/lib/mission/client";
+import { MANDATE_UPDATED_EVENT } from "@/lib/mission/events";
+import type { Mandate } from "@/lib/mission/types";
 
 interface RailPosition {
   instrument_id: string;
@@ -33,6 +36,7 @@ export function BrainContextRail() {
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [spend, setSpend] = useState<{ spent: number; cap: number } | null>(null);
   const [sessions, setSessions] = useState<BrainSessionSummary[]>([]);
+  const [mandates, setMandates] = useState<Mandate[] | null>(null);
   const sessionId = useBrainStore((s) => s.sessionId);
   const streaming = useBrainStore((s) => s.streaming);
 
@@ -48,6 +52,14 @@ export function BrainContextRail() {
     const s = await fetchBrainSpend().catch(() => null);
     setSpend(s ? { spent: Number(s.spent_usd), cap: Number(s.cap_usd) } : null);
     setSessions(await listBrainSessions().catch(() => []));
+    setMandates(await listMandates().catch(() => null));
+  }, []);
+
+  // Mission Control edits (cryptonite:mandate-updated) show up here without a reload
+  useEffect(() => {
+    const onUpdated = () => void listMandates().then(setMandates).catch(() => undefined);
+    window.addEventListener(MANDATE_UPDATED_EVENT, onUpdated);
+    return () => window.removeEventListener(MANDATE_UPDATED_EVENT, onUpdated);
   }, []);
 
   useEffect(() => {
@@ -119,10 +131,26 @@ export function BrainContextRail() {
       </RailSection>
 
       <RailSection icon={<ShieldCheck className="h-3 w-3 text-emerald-400" />} title="Mandates">
-        <p className="text-zinc-400" data-testid="brain-rail-mandates">
-          No mandates yet (Phase 5). Autonomy: <span className="text-zinc-100">L1 Copilot</span>. Every order the Brain proposes waits for your
-          approval.
-        </p>
+        <div className="text-zinc-400" data-testid="brain-rail-mandates">
+          {mandates && mandates.length > 0 ? (
+            <ul className="space-y-1">
+              {mandates.map((m) => (
+                <li key={m.id} className="flex justify-between gap-2">
+                  <span className="truncate text-zinc-200">{m.name}</span>
+                  <span className={m.status === "HALTED" ? "text-rose-400" : "text-zinc-400"}>
+                    {m.level_name}
+                    {m.status !== "ACTIVE" ? ` · ${m.status}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>
+              No active mandate. Autonomy: <span className="text-zinc-100">L1 Copilot</span>. Every order the Brain proposes waits for your
+              approval, inside a mandate you set in Mission Control.
+            </p>
+          )}
+        </div>
       </RailSection>
 
       <RailSection icon={<History className="h-3 w-3 text-zinc-400" />} title="Conversations">

@@ -890,7 +890,7 @@ class GuardedOrderDispatcher:
         drawdown_pct = (self.high_water_mark - current_equity) / self.high_water_mark
         if drawdown_pct >= drawdown_limit:
             if not self.daily_loss_latched:
-                send_alert(f"📉 *DAILY DRAWDOWN LIMIT BREACHED* 📉\nDrawdown: {float(drawdown_pct * 100):.2f}%")
+                send_alert(f"📉 *DAILY DRAWDOWN LIMIT BREACHED* 📉\nDrawdown: {float(drawdown_pct * 100):.2f}%", title="Daily drawdown breaker")
                 logger.critical("Daily loss limit breached: %.2f%% drawdown from HWM. Latching entries!", float(drawdown_pct * 100))
             self.daily_loss_latched = True
             return True
