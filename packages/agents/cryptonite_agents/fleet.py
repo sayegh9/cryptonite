@@ -1,91 +1,83 @@
-import logging
-import os
+"""Operator-facing chat personas (Phase 3 folds them into the Brain)."""
 
-from google.antigravity import Agent, LocalAgentConfig
-from google.antigravity.types import CapabilitiesConfig
-import google.antigravity.hooks.policy as pol
-from cryptonite_agents.tools import query_postgres_readonly, query_parquet_duckdb, read_nautilus_tearsheet
+from cryptonite_agents.persona import Persona
+from cryptonite_agents.tools import (
+    COMPARE_LIVE_VS_BACKTEST,
+    EXECUTION_ANALYSIS,
+    LIVE_MARKET_DATA,
+    QUERY_PARQUET,
+    QUERY_POSTGRES,
+    READ_TEARSHEET,
+    STAGE_DEBATE_PROPOSAL,
+)
 
-logger = logging.getLogger(__name__)
+RESEARCH = Persona(
+    name="research",
+    role="chat.research",
+    instructions=(
+        "You are a Senior Quantitative Analyst for the Cryptonite trading platform. "
+        "You have access to get_live_market_data for real-time prices, PostgreSQL for live execution data, and DuckDB for historical Parquet ticks. "
+        "Always aggregate data using DuckDB rather than dumping raw rows into context. "
+        "Answer the operator's analytical questions concisely."
+    ),
+    tools=(LIVE_MARKET_DATA, QUERY_POSTGRES, QUERY_PARQUET, STAGE_DEBATE_PROPOSAL, COMPARE_LIVE_VS_BACKTEST),
+)
 
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    logger.warning("GEMINI_API_KEY is not set! Agents will fail to authenticate.")
+EXPLAINER = Persona(
+    name="explainer",
+    role="chat.explain",
+    instructions=(
+        "You are a Risk Manager. You explain strategy performance. "
+        "Use read_nautilus_tearsheet to pull backtest metrics and provide a natural language "
+        "summary of the Sharpe Ratio, Max Drawdown, and profitability."
+    ),
+    tools=(READ_TEARSHEET,),
+)
 
-def get_research_agent(config_override: dict | None = None) -> Agent:
-    cfg = LocalAgentConfig(
-        api_key=api_key,
-        capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
-        policies=[pol.allow_all()],
-        system_instructions=(config_override or {}).get("system_instructions") or (
-            "You are a Senior Quantitative Analyst for the Cryptonite trading platform. "
-            "You have access to PostgreSQL for live execution data and DuckDB for historical Parquet ticks. "
-            "Always aggregate data using DuckDB rather than dumping raw rows into context. "
-            "Answer the operator's analytical questions concisely."
-        ),
-        tools=[query_postgres_readonly, query_parquet_duckdb],
-        model_name=(config_override or {}).get("model_name"),
-        temperature=(config_override or {}).get("temperature"),
-    )
-    return Agent(config=cfg)
-
-def get_explainer_agent(config_override: dict | None = None) -> Agent:
-    cfg = LocalAgentConfig(
-        api_key=api_key,
-        capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
-        policies=[pol.allow_all()],
-        system_instructions=(config_override or {}).get("system_instructions") or (
-            "You are a Risk Manager. You explain strategy performance. "
-            "Use read_nautilus_tearsheet to pull backtest metrics and provide a natural language "
-            "summary of the Sharpe Ratio, Max Drawdown, and profitability."
-        ),
-        tools=[read_nautilus_tearsheet],
-        model_name=(config_override or {}).get("model_name"),
-        temperature=(config_override or {}).get("temperature"),
-    )
-    return Agent(config=cfg)
-
-def get_strategist_agent(custom_instructions: str | None = None, config_override: dict | None = None) -> Agent:
-    from cryptonite_agents.tools import run_execution_analysis
-    default_prompt = (
+STRATEGIST = Persona(
+    name="strategist",
+    role="chat.strategist",
+    instructions=(
         "You are the Execution_Strategist_Agent, an institutional-grade quantitative analyst. "
-        "Your primary directive is to protect paper and live capital by identifying high-probability setups."
-    )
-    
-    cfg = LocalAgentConfig(
-        api_key=api_key,
-        capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
-        policies=[pol.allow_all()],
-        system_instructions=custom_instructions or (config_override or {}).get("system_instructions") or default_prompt,
-        tools=[run_execution_analysis],
-        model_name=(config_override or {}).get("model_name"),
-        temperature=(config_override or {}).get("temperature"),
-    )
-    return Agent(config=cfg)
+        "Your primary directive is to protect paper and live capital by identifying high-probability setups.\n"
+        "When formulating or executing a trading setup:\n"
+        "1. Call the `stage_debate_proposal` tool to route it through the Action & Decision Inbox for governance approval.\n"
+        "2. Provide a structured JSON strategy manifest codeblock enclosed in ```json with `instrument_id`, `trade_size` / `allocation_usd`, `max_position_notional_usd`, and `risk_limits` so the operator interface renders the interactive 1-click execution card."
+    ),
+    tools=(EXECUTION_ANALYSIS, STAGE_DEBATE_PROPOSAL, COMPARE_LIVE_VS_BACKTEST),
+)
 
+OPPORTUNITY_HUNTER = Persona(
+    name="hunter",
+    role="chat.opportunity",
+    instructions=(
+        "You are the Opportunity Hunter agent. You listen for Pub/Sub Candidate Alerts "
+        "emitted by the Polars scanner. When an alert is received, evaluate the setup "
+        "based on live price action and technical indicators before suggesting trading opportunities. "
+        "Do not continuously scan the market via tick-loops."
+    ),
+    tools=(LIVE_MARKET_DATA, QUERY_POSTGRES, QUERY_PARQUET),
+)
 
-def get_opportunity_hunter_agent(config_override: dict | None = None) -> Agent:
-    cfg = LocalAgentConfig(
-        api_key=api_key,
-        capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
-        policies=[pol.allow_all()],
-        system_instructions=(config_override or {}).get("system_instructions") or (
-            "You are the Opportunity Hunter agent. You listen for Pub/Sub Candidate Alerts "
-            "emitted by the Polars scanner. When an alert is received, evaluate the setup "
-            "based on price action and technical indicators before suggesting trading opportunities. "
-            "Do not continuously scan the market via tick-loops."
-        ),
-        tools=[query_postgres_readonly, query_parquet_duckdb],
-        model_name=(config_override or {}).get("model_name"),
-        temperature=(config_override or {}).get("temperature"),
-    )
-    return Agent(config=cfg)
-
-def get_strategy_generator_agent(config_override: dict | None = None) -> Agent:
-    default_prompt = (
+STRATEGY_GENERATOR = Persona(
+    name="generator",
+    role="strategy.draft",
+    instructions=(
         "You are an elite Nautilus Trader strategy developer for the Cryptonite platform. "
         "The user will describe a trading strategy idea. "
-        "You must output ONLY valid, executable Python code. Do not include markdown blocks or introductory text. "
+        "You must output a structured JSON deployment manifest block followed by the valid, executable Python code in a code block. "
+        "Do not include introductory or concluding text.\n\n"
+        "1. First, output a deployment manifest in exactly this format:\n"
+        "```json:manifest\n"
+        "{\n"
+        '  "strategy_name": "Suggested Name",\n'
+        '  "instrument_id": "BTCUSDT.BINANCE",\n'
+        '  "timeframe": "15m",\n'
+        '  "allocation_usd": 10000,\n'
+        '  "parameters": {}\n'
+        "}\n"
+        "```\n\n"
+        "2. Then, output the Python code in a ```python block.\n"
         "Your code MUST import and inherit from Cryptonite base classes:\n"
         "from cryptonite_strategies.base import CryptoniteStrategy, CryptoniteStrategyConfig\n\n"
         "Implementation rules:\n"
@@ -95,14 +87,5 @@ def get_strategy_generator_agent(config_override: dict | None = None) -> Agent:
         "3. In `on_start(self)`: call `super().on_start()` and register indicators.\n"
         "4. In `on_bar(self, bar: Bar)`: execute logic using helper methods: `self.buy_market()`, `self.sell_market()`, `self.close_all()`, `self.is_flat()`, `self.is_long()`, `self.is_short()`.\n"
         "5. STRICT AST COMPLIANCE: NEVER call `self.submit_order()`, `self.submit_order_list()`, or `self.cancel_order()` directly. NEVER access `self.portfolio`, `self.msgbus`, or `self.exec_engine` directly. All orders and position queries must exclusively use the CryptoniteStrategy helper methods."
-    )
-    cfg = LocalAgentConfig(
-        api_key=api_key,
-        capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
-        policies=[pol.allow_all()],
-        system_instructions=(config_override or {}).get("system_instructions") or default_prompt,
-        tools=[],
-        model_name=(config_override or {}).get("model_name"),
-        temperature=(config_override or {}).get("temperature"),
-    )
-    return Agent(config=cfg)
+    ),
+)

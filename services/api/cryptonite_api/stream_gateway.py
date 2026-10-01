@@ -444,12 +444,13 @@ class StreamHub:
                     continue
                     
                 pubsub = self.redis.pubsub()
-                await pubsub.subscribe("CHANNEL_POSITIONS")
+                await pubsub.subscribe("CHANNEL_POSITIONS", "channel:agent_heartbeat")
+                await pubsub.psubscribe("channel:debates:*")
                 
                 async for message in pubsub.listen():
                     if not self._running:
                         break
-                    if message["type"] == "message":
+                    if message["type"] in ("message", "pmessage"):
                         data = message["data"]
                         # Fanout to all clients unconditionally
                         payload = json.loads(data)

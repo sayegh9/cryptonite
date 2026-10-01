@@ -1,5 +1,132 @@
 # HANDOFF
 
+## ▶ Resume here: moving to the Linux workstation (2026-09-30)
+
+**Git is the source of truth.** Every branch is pushed; nothing lives only on the MacBook. On the workstation, **clone fresh**; don't copy the Mac folder: `node_modules`, `.next` and the venvs are macOS builds.
+
+1. **Tools:** Docker Engine + compose plugin (later the NVIDIA Container Toolkit for Phase 6), git, `gh` (`gh auth login`), Node + pnpm@10, uv, graphify, and Claude Code. Copy `~/.claude/skills/` (agency-* skills) and re-install the plugins (agent-skills etc.).
+2. **Clone:** `git clone https://github.com/sayegh9/cryptonite && git checkout feat/ai-first-phase0`.
+3. **Copy these from the Mac over SSH/Tailscale, never through cloud storage or chat** (they are git-ignored secrets and state):
+   - `.env`, which holds the Gemini/Binance keys, the TOTP AES key and `CRYPTONITE_AGENT_API_TOKEN`;
+   - `infra/security/binance_demo_private_key.pem`;
+   - `data/`, about 100 MB: `nautilus_catalog`, `analytics_lake`, `backtest_artifacts`. Alternatively re-backfill it (LE-1).
+   - the dev database dump: `docker exec infra-postgres-1 pg_dump -U cryptonite -Fc cryptonite > cryptonite.dump`, restored with `pg_restore -U cryptonite -d cryptonite --clean`. It holds operator users, TOTP enrollment, paper history, the machine-token hash and the AI ledger. Redis is disposable.
+4. **Bring up and verify:**
+   1. `docker compose -f infra/docker-compose.yml build`. This is the ~1–1.5 GB dependency download, now on the workstation.
+   2. `up -d`.
+   3. `alembic upgrade head`.
+   4. Run the **merged-tree suite on the throwaway DB** (the command is in PR #2); it has not run since PR #1 merged.
+   5. In `apps/web`: `pnpm install`, `npx playwright install chromium`, `pnpm build`, then `npx playwright test`.
+   6. `graphify update .`
+5. **Claude context:** the session transcript and memory are keyed to the Mac path, so they won't follow. Everything needed is in this file, `AUDIT_STATUS.md` (backlog LE-1…LE-10), `docs/ai-first-blueprint.md` and ADRs 0001–0003. To keep the memory note, copy `~/.claude/projects/<mac-slug>/memory/` into the new project's slug dir.
+6. **Starter prompt:** "Read HANDOFF.md 'Resume here' and verify steps 1–4 on this workstation, then continue: PR #2 merge readiness, the local half of Phase 5 when its cloud PR lands, LE-2 (exit monitor), and Phase 6 on this GPU."
+
+**Open items when the move happens:**
+- PR #2 (`feat/ai-first-phase0` → `main`) is open and needs the merged-tree suite before merging.
+- Phase 5 runs in a cloud session on `feat/ai-first-phase5`, with a PR back to `feat/ai-first-phase0`.
+- Branch `claude/elated-shirley-5a992d` (one ingest commit from an earlier session, never merged) is now pushed; decide whether to merge or drop it.
+
+> **Deferred backlog (LE-1 … LE-10)**, agreed for later: see [AUDIT_STATUS.md](AUDIT_STATUS.md#deferred-backlog-marked-for-later-2026-09-29).
+
+## AI-First Program — Phase 3 merged (2026-09-29)
+
+"One Brain" (A3.1–A3.5), PR #1 merged into `feat/ai-first-phase0` as `eae3989`:
+- **Brain copilot:** Gateway streaming, persistent sessions (migration 024, telemetry role, REVOKEd from `agent_ro`), Brain Home and the Copilot drawer, inline widgets, and the Decision Trace drawer.
+- **Order cards:** approval happens only server-side. `POST /api/v1/agents/brain/sessions/{sid}/cards/{id}/approve`:
+  - claims the card first;
+  - queues one AI-owned `SUBMIT_ORDER`, idempotency key `brain-card:<id>`, sized by the card's allocation;
+  - is **refused while the exit monitor heartbeat (`exit_monitor:heartbeat`) is missing**. The exit monitor's hard and trailing stops protect the position; the card's own stop price is advisory.
+- **Review:** FAIL. High: an approved card was a bare manual order with no stop and its allocation ignored. Medium: the approval was client-side and replayable. Both fixed in `02753c6`, and the Lows too; see the PR #1 comment.
+- **Deferred:** a per-turn cap on staging paid debates, and per-operator trace scoping (backlog LE-8).
+- **Deploy:** rebuild `api`, `agent_worker`, `scanner`/`exit_monitor` and `web`, then run the exit monitor (`--profile monitoring`, LE-2) before approving any Brain order card.
+- **Gates on the branch:** pytest 557 passed / 2 known failed; Brain, API and exit-monitor suites 44/44; Playwright 20/20. The merged tree has not been tested yet because Docker was stopped. Run the throwaway-DB suite before deploying.
+
+## AI-First Program — Phase 4 complete (2026-09-25)
+
+| Item | Status |
+|---|---|
+| A4.1 model-written strategies can be backtested | allow-list validator (API 422 on save, 409 vs core slugs) + `strategy_sandbox` container; previously `python_code` was silently ignored |
+| A4.2 drafter | Flash drafts code + parameter space; validator/import/sandbox errors fed back (≤ 3 attempts); live: 4/6 ideas load after the import guide |
+| A4.3 optimizer | Optuna TPE on the in-sample window only; the model never picks numbers |
+| A4.4 overfitting guard + review | OOS trades < 10, OOS return ≤ 0, or OOS Sharpe < 50 % of IS → reject before paying for a Pro review |
+| A4.5 queue + digest | `research:queue`, opt-in `research_worker` (`--profile research`), Brain tool `queue_strategy_research`, daily digest on `channel:system_alerts`; web IS-vs-OOS tearsheet deferred until Phase 3 merges |
+
+- Evidence and decisions: [ADR 0003](docs/adr/0003-strategy-research-loop.md). Security audits: the subprocess sandbox FAILED (critical: the child read the worker's secrets, had network, could hang the worker). Replaced by a container. The re-audit FAILED (high: a FIFO froze the worker; medium: the child could stop the server, the queue wait was unbounded, symlinks on the shared volume). All fixed, and the fixes were verified in a real container probe (ADR table).
+- **Deploy steps:**
+  1. `docker compose -f infra/docker-compose.yml build backtester strategy_sandbox api`, then `up -d strategy_sandbox backtester api`. The sandbox shares the backtester image. The `sandbox_jobs` volume is a 4 GB RAM tmpfs.
+  2. Research needs `CRYPTONITE_AGENT_API_TOKEN`, an operator-scoped machine token. Run it with `docker compose --profile research up -d research_worker`.
+- **Deployed 2026-09-26** (this Mac): `strategy_sandbox`, `backtester`, `api` and `research_worker` are running on fresh images. The image builds took about 45 min because of slow PyPI downloads, not a hang. Live check: a model-written EMA strategy saved through the API with the research token was backtested in the real sandbox (uid 1001, 9 s, artifacts promoted, manifest `sandboxed: true`, scratch dirs empty). A run over 2026-09-10 fails with `DataGapError`: the 1-minute catalog has gaps there. With about 19 days of BTC/ETH data, the research defaults (90 d in-sample + 30 d out-of-sample) cannot run yet. Use shorter windows or backfill first.
+- Research token: `research-worker` in `machine_api_tokens` (scope `operator`, expires 2026-12-24); the plaintext is only in `.env` (`CRYPTONITE_AGENT_API_TOKEN`).
+- redis-py 8.1 times out a `BLPOP` at exactly its block time. The research worker now uses `socket_timeout=30` and retries on Redis errors. `debate_worker` blocks 5 s on `XREADGROUP` with the same library; watch its logs for `Timeout reading` when it next starts.
+- Gates: pytest **594 passed / 1 failed** on the throwaway `cryptonite_ci` DB (the known `test_instruments_endpoint` reference-data failure). Phase 4 suites: 72/72.
+- Not done: web IS-vs-OOS tearsheet (after the Phase 3 merge); a research-report table (reports are JSON files in `data/research_reports/`); Redis `requirepass` and a least-privilege DB role for the backtester, which still connects as `cryptonite`.
+- **Rotate** `GEMINI_API_KEY`, `BINANCE_DEMO_API_KEY` and `CRYPTONITE_TOTP_AES_KEY`: the first audit's probe printed partial values into a transcript.
+
+## AI-First Program — Phase 2 complete (2026-09-25)
+
+Phase 3 runs in parallel in a cloud session on `feat/ai-first-phase3-brain` (ownership contract: blueprint §14.5); its PR targets `feat/ai-first-phase0`.
+
+| Item | Status | Commits |
+|---|---|---|
+| A2.1 pre-debate gate | kill switch / daily loss / headroom / freshness / brief / cooldown before any model call | `72d7c17` |
+| A2.2 market brief | built per candidate by the scanner, cached in Redis, shared by all debate roles | `db5de14` |
+| A2.3 triage (Flash-Lite) | 20 cases ×2: 0 good setups missed; 5/6 bad avoided by the model, 6/6 with the code staleness check | `72d7c17`, `87b3cca` |
+| A2.4 lite debate + merged risk panel | ≥ 5% allocations always get the full review; merged panel = 4/4 like the 4-call panel, 27% cheaper | `72d7c17` |
+| A2.5 thinking/output limits | per role in `routes.py`; explicit context caching not done (implicit only) | `72d7c17` |
+| A2.6 deterministic exits | live-quote hard + trailing stops (AI-owned instruments only), event-triggered exit debates; replay: 0 missed stops, −81% exit debates | `e02cb3d` |
+
+- Evidence and decisions: [ADR 0002](docs/adr/0002-debate-cost-controls.md). Independent review: FAIL (3 critical: low-conviction large allocations skipped review, stale model stops could auto-close, stops read a price that never updates) → fixed → PASS.
+- **Deploy step (databases already at 021, e.g. any other dev DB):** `GRANT SELECT ON agent_safe_positions TO cryptonite_api;` — the debate worker runs as that role and could not read its context, so real debates failed. Applied to this dev DB. Fresh databases get it from 021.
+- The exit monitor is opt-in (`--profile monitoring`), runs as `cryptonite_api`, and alerts loudly when it has no fresh quote.
+- Gates: pytest **545 passed / 2 failed** on an isolated DB (instruments reference data; `test_duckdb_query_p95_latency` wall-clock flake). Scoped AI/debate suites 93/93.
+- Gate 2 (typical day ≤ $6 over 7 days) can only be measured once the stack runs Phase 2 code: restart `debate_worker` (and `scanner`), then read `llm_cost_ledger`.
+- Known, deferred: `stage_debate_proposal` bypasses the gate (budget-bounded); price stops ignore perp leverage; the close lookup uses `LIKE` on `idempotency_key` (table scan when a stop is active).
+- Next: Phase 4 (research loop). Found while scoping it: **model-written strategies cannot be backtested today** — the runner only loads registry strategies by slug and ignores `strategy_versions.python_code`.
+
+## AI-First Program — Phase 1 complete (2026-09-25)
+
+| Item | Status | Commits |
+|---|---|---|
+| A1.1 Pydantic AI spike | PASS — Flash 40/40, Pro 15/15; 100% tool chains, 100% valid structured output; Flash p50 1.2 s vs 4.2 s antigravity baseline; $0.20 total. [ADR 0001](docs/adr/0001-ai-provider-layer.md) | `a5896ae` |
+| A1.2 gateway + migration 022 | `cryptonite_agents.gateway` (routes, pricing, registry, permission, budget, ledger, pydantic-ai backend) | `8dd3399` |
+| A1.3 budget guard | $25/day (D12), priority stop order, exits never blocked, unknown spend blocks optional/interactive | `8dd3399` |
+| A1.4 port | chat personas + debate fleet + reflection on the gateway; typed verdicts, invalid → FAILED | `6893c38` |
+| A1.5 tool registry + permission gate | tools tagged READ/REDUCE/ADD; SQL tool read-only, single statement, NullPool | `8dd3399` |
+| A1.6 evals v1 | `python -m cryptonite_agents.evals run --set v1 --model …`; migration 023 | `dcb968b` |
+| A1.7 remove antigravity | removed from pyproject, uv.lock and both worker images (rebuilt; import check passes) | `8dd3399` + next commit |
+
+- Independent review: FAIL → fixed → PASS. The critical finding: the model-callable SQL tool could write the cost ledger (disabling the budget cap) and, in the debate worker, reroute trade-decision models. Fixed with the `cryptonite_ai_telemetry` role, a read-only `cryptonite_agent_ro` (`default_transaction_read_only=on`), and protected routes.
+- Gates: pytest **409 passed / 1 failed** on an isolated DB (same `test_instruments_endpoint` reference-data case); AI suites 53/53; no test can call Gemini (conftest unsets the key).
+- Dev DB at `023`; LLM cap now 25.00; roles verified (agent_ro cannot write telemetry or read traces).
+- **Deploy notes:** set `AI_TELEMETRY_DB_PASSWORD` before running migration 022 outside dev; agent_worker/debate_worker need `AI_TELEMETRY_DATABASE_URL` + `AGENT_TOOLS_DATABASE_URL` (compose has dev values). Without the telemetry URL, spend counts as unknown and only debates/exits run.
+- Known, deliberate: spend can be ~10 s stale across processes (no reservation); debate worker handles entry and exit queues in one consumer (bounded by the 90 s model timeout); `exit.verdict` fails closed.
+- Next: Gate 1 sign-off, then Phase 2 (cost controls).
+
+## AI-First Program — Phase 0 complete (2026-09-25)
+
+Plan: [docs/ai-first-blueprint.md](docs/ai-first-blueprint.md) (approved; goal §13, assignments §14). Branch: `feat/ai-first-phase0` (from `main`, **not pushed**; `main` fast-forwarded locally to `eebd747`, not pushed).
+
+| Item | Status | Commits |
+|---|---|---|
+| A0.1 triage of unowned work | Done. Committed in topic groups; the debate approval was fixed (side mapping, refuses HOLD, paper equity, 1–25% bound, atomic) and the new endpoints got operator auth + CSRF; fake scanner presets dropped; scratch files → ignored `scratch/`; `base.py` kwargs change reverted (a no-op on Nautilus rc4, which takes config kwargs in `__new__`) | `f4748f0`..`f0cf84e` |
+| A0.2 dev DB at head | Already done on 2026-09-24 (was at 020) | — |
+| A0.3 `agent_safe_positions` contract | Migration `021`: open positions only, signed `size`, `unrealized_pnl_pct`/`weight_pct` in percent; applied to the dev DB | `4d87961` |
+| A0.4 paper fidelity | Working orders matched against live quotes (limits respected, rested limits fill at their limit, no quote = no fill, strategy orders now fill); latch/exit/retry safety; funding history REST backfill. Independent review: PASS after 4 rounds | `a4eea77`, `26ec837` |
+| A0.5 kill switch → PAPER | Operator consoles default to PAPER (+ explicit DEMO panel) | `4063e74` |
+| A0.6 freeze autonomous mode | Debate worker ignores `DEBATE_EXECUTION_MODE=autonomous` | `598b4ee` |
+| A0.7 gates | pytest **370 passed / 1 failed** on an isolated migrated DB (`test_instruments_endpoint` needs reference instruments a fresh DB lacks); no hang. Web typecheck + lint ✅, Playwright **16/16** ✅ (Research Lab spec fixed `3e53632`) | — |
+
+**Important for anyone running tests:** the compose `test` service points at the **dev DB**, and `test_alembic_roundtrip_downgrade_and_upgrade` downgrades that DB to `base`, wiping operator users and reference data. Run the full suite against a throwaway DB instead:
+```
+docker exec infra-postgres-1 psql -U cryptonite -d cryptonite -c "CREATE DATABASE cryptonite_ci"
+docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL=redis://redis:6379/15 test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
+```
+
+- **Running stack:** the orchestrator and derivatives_feed containers still run the code from before A0.4 until they are restarted (`docker compose -f infra/docker-compose.yml restart orchestrator derivatives_feed`). On restart, working orders from before are reconciled to CANCELED.
+- **Still uncommitted:** `exit_monitor.py` (threshold now in percent to match migration 021; still needs `debate_runs.type` or a switch to `trigger_source`), `.agents/`, the `graphify-out/*.json` ignore rule, graphify cache housekeeping.
+- Paper-matching limitations: see AUDIT_STATUS.md.
+- **Next: Gate 0 sign-off by the operator, then Phase 1** (A1.1 Pydantic AI spike).
+
 ## Paper Trading Readiness — SIGNED OFF (2026-09-24, with the limits below)
 
 Architecture reference: [docs/perpetuals-architecture.md](docs/perpetuals-architecture.md). Branch `feat/perpetuals-phase1` pushed to `origin` for review (PR pending); `main` itself is still unpushed.

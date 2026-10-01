@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 
 import asyncpg
 import redis.asyncio as aioredis
+from cryptonite_scanner.brief import build_brief
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import (
     RiskConfig,
@@ -26,6 +27,8 @@ from cryptonite_scanner.models import (
 )
 from cryptonite_scanner.resampler import resample_1m_bars
 from cryptonite_storage.queries import AnalyticsQueryEngine
+
+BRIEF_TTL_S = 2 * 3600
 
 logger = logging.getLogger("cryptonite.scanner.worker")
 
@@ -88,6 +91,27 @@ class ScannerWorker:
         # Launch consumer loops
         self._tasks.append(asyncio.create_task(self._event_consumer_loop()))
         self._tasks.append(asyncio.create_task(self._job_consumer_loop()))
+
+    async def _publish_brief(self, c: Any, candidate_payload: dict[str, Any], frames: dict[str, Any]) -> str | None:
+        """Build the candidate's market brief once and cache it for the debate (blueprint §4.3)."""
+        try:
+            sym = c.instrument_id.split(".")[0].upper()
+            derivatives: dict[str, Any] = {}
+            if raw_mark := await self.redis.get(f"perp:mark:{sym}"):
+                mark = json.loads(raw_mark)
+                derivatives.update(mark_price=mark.get("mark_price"), funding_rate=mark.get("funding_rate"))
+            if raw_oi := await self.redis.get(f"perp:oi:{sym}"):
+                derivatives["open_interest"] = json.loads(raw_oi).get("open_interest")
+            brief = build_brief(
+                c.instrument_id, frames, candidate=candidate_payload,
+                derivatives=derivatives or None, last_bar_close_ns=c.bar_close_inclusive_ns,
+            )
+            key = f"brief:{c.instrument_id}:{c.timeframe}:{c.bar_close_inclusive_ns}"
+            await self.redis.set(key, brief, ex=BRIEF_TTL_S)
+            return key
+        except Exception as e:  # a missing brief degrades the debate context; it never blocks the scan
+            logger.warning("Market brief failed for %s: %s", c.instrument_id, e)
+            return None
 
     async def stop(self) -> None:
         """Stop worker tasks and release connections."""
@@ -383,6 +407,7 @@ class ScannerWorker:
         all_candidates = []
         max_seen_watermark = watermark_ns or 0
 
+        frames_by_inst: dict[str, dict[str, Any]] = {}  # enriched frames, for the market brief
         for inst in source_instruments:
             raw_symbol = inst.split(".")[0]
             # 1. Fetch 1m bars from Analytics Lake via DuckDB
@@ -414,6 +439,7 @@ class ScannerWorker:
                 resampled_df = resample_1m_bars(df_1m, tf)
                 if resampled_df.is_empty():
                     continue
+                frames_by_inst.setdefault(inst, {})[tf] = ScannerEngine.enrich_indicators(resampled_df)
 
                 candidates = ScannerEngine.evaluate(
                     df=resampled_df,
@@ -536,10 +562,14 @@ class ScannerWorker:
                         # AI Debate Engine Integration: Publish to Redis Stream
                         if self.redis:
                             try:
+                                brief_key = await self._publish_brief(
+                                    c, candidate_payload, frames_by_inst.get(c.instrument_id, {})
+                                )
                                 await self.redis.xadd("stream:debate_queue", {
                                     "instrument_id": c.instrument_id,
                                     "trigger_source": "scanner",
-                                    "candidate_payload": json.dumps(candidate_payload)
+                                    "candidate_payload": json.dumps(candidate_payload),
+                                    "brief_key": brief_key or "",
                                 })
                             except Exception as e:
                                 logger.error(f"Failed to push candidate to debate_queue: {e}")

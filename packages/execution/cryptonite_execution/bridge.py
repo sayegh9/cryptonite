@@ -265,20 +265,22 @@ class EventBridgeWorker:
                         instance_id = str(evt["instance_id"])
                         instrument_id = str(evt["instrument_id"])
 
-                        # 3a. Record trade (liquidations have no prior paper_orders row; create it for the FK)
-                        if evt.get("liquidation"):
-                            await conn.execute(
-                                """
-                                INSERT INTO paper_orders (
-                                    client_order_id, instance_id, account_id, instrument_id, side, order_type,
-                                    quantity, price, filled_qty, avg_fill_price, status, last_event_version,
-                                    created_at, updated_at
-                                ) VALUES ($1, $2, $3, $4, $5, 'MARKET', $6, NULL, $6, $7, 'FILLED', $8, now(), now())
-                                ON CONFLICT (client_order_id) DO NOTHING;
-                                """,
-                                client_order_id, instance_id, account_id, instrument_id, side,
-                                trade_qty, trade_px, event_version,
-                            )
+                        # 3a. Record trade. Liquidations and strategy orders may have no paper_orders row yet
+                        # (or the producer's own write failed); create it for the FK.
+                        await conn.execute(
+                            """
+                            INSERT INTO paper_orders (
+                                client_order_id, instance_id, account_id, instrument_id, side, order_type,
+                                quantity, price, filled_qty, avg_fill_price, status, last_event_version,
+                                created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $7, $9, 'FILLED', $10, now(), now())
+                            ON CONFLICT (client_order_id) DO NOTHING;
+                            """,
+                            client_order_id, instance_id, account_id, instrument_id, side,
+                            str(evt.get("order_type") or "MARKET").upper(), trade_qty,
+                            Decimal(str(evt["limit_price"])) if evt.get("limit_price") else None,
+                            trade_px, event_version,
+                        )
                         await conn.execute(
                             """
                             INSERT INTO paper_trades (

@@ -50,3 +50,12 @@ patch*.py
 recovered_compose.txt
 .ua/
 
+graphify-out/*.json
+
+# Local scratch files (never committed)
+scratch/
+.claude/settings.local.json
+.claude/worktrees/
+
+# Migration bundle for the workstation move: holds secrets and a DB dump, never commit
+safe_move/

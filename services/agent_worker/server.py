@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import hmac
@@ -9,12 +10,15 @@ from typing import Optional, Callable
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from cryptonite_agents.fleet import get_research_agent, get_explainer_agent, get_strategy_generator_agent, get_opportunity_hunter_agent
-from cryptonite_agents.debate_fleet import get_chief_risk_officer, get_onchain_analyst
+from cryptonite_agents.brain import Brain, MemorySessionStore, PgSessionStore, SessionNotFound, brain_gateway_routes
+from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
+from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
+from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
+from cryptonite_agents.persona import Persona
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -98,11 +102,25 @@ config_cache = ConfigCache()
 async def startup_event():
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     app.state.redis = redis.from_url(REDIS_URL, decode_responses=True)
+    # The gateway writes telemetry as its own role; the model's SQL tools use the read-only agent role
+    telemetry_url = os.getenv("AI_TELEMETRY_DATABASE_URL")
+    app.state.telemetry_pool = await asyncpg.create_pool(telemetry_url, min_size=1, max_size=3) if telemetry_url else None
+    if app.state.telemetry_pool is None:
+        logger.error("AI_TELEMETRY_DATABASE_URL not set: LLM spend is counted in this process only")
+    app.state.gateway = Gateway(pool=app.state.telemetry_pool, redis=app.state.redis,
+                                routes=brain_gateway_routes(),
+                                budget=BudgetGuard(pool=app.state.telemetry_pool, redis=app.state.redis,
+                                                   spend_unknown=app.state.telemetry_pool is None))
+    # Brain sessions live with the gateway's telemetry role (migration 024), never with agent_ro
+    store = PgSessionStore(app.state.telemetry_pool) if app.state.telemetry_pool else MemorySessionStore()
+    app.state.brain = Brain(app.state.gateway, store)
 
 @app.on_event("shutdown")
 async def shutdown_event():
     if app.state.pool:
         await app.state.pool.close()
+    if getattr(app.state, "telemetry_pool", None):
+        await app.state.telemetry_pool.close()
     if getattr(app.state, "redis", None):
         await app.state.redis.aclose()
 
@@ -146,6 +164,18 @@ async def verify_hmac(request: Request):
 
 app.router.dependencies.append(Depends(verify_hmac))
 
+async def ask(persona: Persona, prompt: str, config: dict | None = None) -> dict:
+    """Run a persona through the AI Gateway and map gateway failures to HTTP errors."""
+    try:
+        result = await persona.run(app.state.gateway, prompt, config=config)
+    except BudgetExceeded as e:
+        raise HTTPException(status_code=429, detail=f"LLM budget: {e.reason}")
+    except GatewayError as e:
+        logger.error(f"{persona.name} agent unavailable: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"response": result.output, "trace_id": str(result.trace_id), "model": result.model}
+
+
 class ChatRequest(BaseModel):
     message: str
     
@@ -161,65 +191,35 @@ class StrategistRequest(BaseModel):
 async def chat_with_researcher(request: Request, req: ChatRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:research"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        config_override = await config_cache.get_config(app.state.pool, "research")
-        agent = get_research_agent(config_override)
-        async with agent:
-            response = await agent.chat(req.message)
-            text = await response.text()
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"Research agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    config_override = await config_cache.get_config(app.state.pool, "research")
+    return await ask(RESEARCH, req.message, config_override)
 
 @app.post("/api/v1/agents/strategist")
 async def chat_with_strategist(request: Request, req: StrategistRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:strategist"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        msg_lower = req.message.lower()
-        is_generation = (
-            ("code" in msg_lower and any(w in msg_lower for w in ["generate", "create", "write", "build", "new"]))
-            or any(phrase in msg_lower for phrase in ["generate strategy", "create strategy", "write a strategy", "write strategy", "build strategy", "code a strategy", "generate code"])
-            or ("generate" in msg_lower and "strategy" in msg_lower)
-            or ("create" in msg_lower and "strategy" in msg_lower)
-            or ("write" in msg_lower and "strategy" in msg_lower)
-        )
-        if is_generation:
-            config_override = await config_cache.get_config(app.state.pool, "generator")
-            agent = get_strategy_generator_agent(config_override)
-        else:
-            config_override = await config_cache.get_config(app.state.pool, "hunter")
-            agent = get_opportunity_hunter_agent(config_override)
+    msg_lower = req.message.lower()
+    is_generation = (
+        ("code" in msg_lower and any(w in msg_lower for w in ["generate", "create", "write", "build", "new"]))
+        or any(phrase in msg_lower for phrase in ["generate strategy", "create strategy", "write a strategy", "write strategy", "build strategy", "code a strategy", "generate code"])
+        or ("generate" in msg_lower and "strategy" in msg_lower)
+        or ("create" in msg_lower and "strategy" in msg_lower)
+        or ("write" in msg_lower and "strategy" in msg_lower)
+    )
+    persona = STRATEGY_GENERATOR if is_generation else OPPORTUNITY_HUNTER
+    config_override = await config_cache.get_config(app.state.pool, persona.name)
 
-        prompt = req.message
-        if req.instructions:
-            prompt = f"Additional User Instructions: {req.instructions}\n\n{prompt}"
-            
-        async with agent:
-            response = await agent.chat(prompt)
-            text = await response.text()
-            
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"Strategist agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    prompt = req.message
+    if req.instructions:
+        prompt = f"Additional User Instructions: {req.instructions}\n\n{prompt}"
+    return await ask(persona, prompt, config_override)
 
 @app.post("/api/v1/agents/explain")
 async def explain_backtest(request: Request, req: ExplainRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:explain"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        config_override = await config_cache.get_config(app.state.pool, "explainer")
-        agent = get_explainer_agent(config_override)
-        prompt = f"Backtest ID: {req.backtest_id}\nQuery: {req.message}"
-        async with agent:
-            response = await agent.chat(prompt)
-            text = await response.text()
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"Explainer agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    config_override = await config_cache.get_config(app.state.pool, "explainer")
+    return await ask(EXPLAINER, f"Backtest ID: {req.backtest_id}\nQuery: {req.message}", config_override)
 
 class CRORequest(BaseModel):
     message: str
@@ -231,39 +231,92 @@ class OnChainRequest(BaseModel):
 async def chat_with_cro(request: Request, req: CRORequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:cro"):
         raise HTTPException(status_code=429, detail="Too many requests")
-    try:
-        agent = get_chief_risk_officer()
-        prompt = (
-            "You are the Chief Risk Officer (CRO) of Cryptonite. The operator is consulting you directly "
-            "for portfolio risk assessment, capital preservation, leverage checks, or drawdown analysis.\n\n"
-            f"Operator Query: {req.message}"
-        )
-        async with agent:
-            response = await agent.chat(prompt)
-            text = await response.text()
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"CRO agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await ask(CRO_CHAT, f"Operator Query: {req.message}")
 
 @app.post("/api/v1/agents/onchain")
 async def chat_with_onchain(request: Request, req: OnChainRequest):
     if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:onchain"):
         raise HTTPException(status_code=429, detail="Too many requests")
+    return await ask(ONCHAIN_CHAT, f"Operator Query: {req.message}")
+
+# --- Brain (AI-first blueprint A3.1–A3.3) --------------------------------------------------------
+
+class BrainStreamRequest(BaseModel):
+    operator_id: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=8000)
+    session_id: str | None = Field(default=None, max_length=64)
+
+
+class BrainNoteRequest(BaseModel):
+    operator_id: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=2000)
+    widget_id: str | None = Field(default=None, max_length=128)
+    status: str | None = Field(default=None, pattern="^(APPROVED|REJECTED|FAILED)$")
+    command_id: str | None = Field(default=None, max_length=128)
+    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED)$")
+
+
+def sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@app.post("/api/v1/brain/stream")
+async def brain_stream(request: Request, req: BrainStreamRequest):
+    """One Brain turn as Server-Sent Events: session, token, tool_call, widget, done | error.
+
+    Closing the connection cancels the model call (the gateway costs what was billed so far).
+    """
+    if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:brain"):
+        raise HTTPException(status_code=429, detail="Too many requests")
+    brain: Brain = request.app.state.brain
+
+    async def events():
+        try:
+            async for ev in brain.turn(req.operator_id, req.message, req.session_id):
+                yield sse(ev.type, ev.data)
+        except Exception as e:  # never end a stream without telling the client why
+            logger.exception("Brain stream failed")
+            yield sse("error", {"code": "INTERNAL", "message": type(e).__name__})
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/v1/brain/operators/{operator_id}/sessions")
+async def brain_sessions(operator_id: str, request: Request):
+    return {"sessions": await request.app.state.brain.store.list_sessions(operator_id)}
+
+
+@app.get("/api/v1/brain/operators/{operator_id}/sessions/{session_id}")
+async def brain_session(operator_id: str, session_id: str, request: Request):
+    store = request.app.state.brain.store
+    session = await store.get_session(session_id, operator_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    summary = await store.latest_summary(session_id)
+    return {"session": session, "messages": await store.messages(session_id),
+            "summary": summary["summary"] if summary else None}
+
+
+@app.post("/api/v1/brain/sessions/{session_id}/notes")
+async def brain_note(session_id: str, request: Request, req: BrainNoteRequest):
+    """Record an operator action (e.g. an approved order card) in the conversation."""
+    patch = {k: v for k, v in {"status": req.status, "command_id": req.command_id}.items() if v is not None}
     try:
-        agent = get_onchain_analyst()
-        prompt = (
-            "You are the On-Chain & Whale Intelligence Analyst of Cryptonite. The operator is consulting you directly "
-            "regarding blockchain netflows, smart money accumulation, exchange reserves, or network dynamics.\n\n"
-            f"Operator Query: {req.message}"
-        )
-        async with agent:
-            response = await agent.chat(prompt)
-            text = await response.text()
-        return {"response": text}
-    except Exception as e:
-        logger.error(f"On-chain agent error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        applied = await request.app.state.brain.note(req.operator_id, session_id, req.content, req.widget_id,
+                                                     patch or None, req.expect_status)
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not applied:
+        raise HTTPException(status_code=409, detail=f"Card is not {req.expect_status}")
+    return {"status": "ok"}
+
+
+@app.get("/api/v1/brain/spend")
+async def brain_spend(request: Request):
+    snap = await request.app.state.gateway.budget.snapshot()
+    return {"spent_usd": str(snap["spent_usd"]), "cap_usd": str(snap["cap_usd"])}
+
 
 @app.get("/health")
 def health():

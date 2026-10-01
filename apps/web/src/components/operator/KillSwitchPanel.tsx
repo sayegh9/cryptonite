@@ -6,8 +6,8 @@ import { AlertTriangle, Power, ShieldAlert, CheckCircle, RefreshCcw } from "luci
 
 /** Kill switch for one (environment, account). DEMO targets the demo executor; PAPER the paper engine. */
 export function KillSwitchPanel({
-  environment = "DEMO",
-  accountId = "DEMO-ACCOUNT-001",
+  environment = "PAPER",
+  accountId = "PAPER-ACCOUNT-001",
 }: { environment?: "DEMO" | "PAPER"; accountId?: string } = {}) {
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);

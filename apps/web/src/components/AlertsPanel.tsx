@@ -56,6 +56,7 @@ export const AlertsPanel: React.FC = () => {
     try {
       await fetchApi("/alerts", {
         method: "POST",
+        headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "" },
         body: JSON.stringify({
           instrument_id: newSymbol.toUpperCase() + ".BINANCE",
           condition: newCondition,
@@ -75,7 +76,10 @@ export const AlertsPanel: React.FC = () => {
 
   const handleDelete = async (id: string) => {
     try {
-      await fetchApi(`/alerts/${id}`, { method: "DELETE" });
+      await fetchApi(`/alerts/${id}`, {
+        method: "DELETE",
+        headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "" },
+      });
       setAlerts((prev) => prev.filter((a) => a.id !== id));
     } catch (err) {
       console.error("Failed to delete alert", err);

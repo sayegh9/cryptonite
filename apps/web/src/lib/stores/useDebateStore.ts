@@ -13,7 +13,8 @@ export interface DebateTurn {
 export interface DebateRun {
   runId: string;
   instrumentId: string;
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PENDING_APPROVAL' | 'FAILED' | 'REJECTED';
+  // NO_TRADE: the verdict was HOLD, so there is nothing to approve
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PENDING_APPROVAL' | 'FAILED' | 'REJECTED' | 'NO_TRADE';
   decision?: string;
   timestamp?: number;
   turns: DebateTurn[];
@@ -44,7 +45,7 @@ export const useDebateStore = create<DebateState>()(persist((set) => ({
   clearCompleted: () => set((state) => {
     const next: Record<string, DebateRun> = {};
     for (const [id, run] of Object.entries(state.activeDebates)) {
-      if (run.status !== 'COMPLETED' && run.status !== 'REJECTED' && run.status !== 'FAILED') {
+      if (run.status !== 'COMPLETED' && run.status !== 'REJECTED' && run.status !== 'FAILED' && run.status !== 'NO_TRADE') {
         next[id] = run;
       }
     }
@@ -239,6 +240,18 @@ export const useDebateStore = create<DebateState>()(persist((set) => ({
 import { useEffect } from 'react';
 import { CryptoniteStreamClient } from '../ws';
 
+const RUN_STATUSES: DebateRun['status'][] = ['PENDING', 'RUNNING', 'COMPLETED', 'PENDING_APPROVAL', 'FAILED', 'REJECTED', 'NO_TRADE'];
+
+/** Status of a run from its DEBATE_COMPLETED event: the worker's status when sent, else from the verdict. */
+export function completedStatus(msg: { status?: string; decision?: unknown }): DebateRun['status'] {
+  const status = String(msg.status ?? '').toUpperCase();
+  if ((RUN_STATUSES as string[]).includes(status)) return status as DebateRun['status'];
+  const verdict = String(msg.decision ?? '').toUpperCase();
+  if (verdict === 'HOLD' || verdict === 'NEUTRAL' || verdict === 'NO_TRADE') return 'NO_TRADE';
+  // Autonomous execution is frozen (A0.6): a finished debate with a trade waits for the operator
+  return 'PENDING_APPROVAL';
+}
+
 export const useDebateStream = (client: CryptoniteStreamClient | null) => {
   const addTurn = useDebateStore((state) => state.addTurn);
   const updateStatus = useDebateStore((state) => state.updateStatus);
@@ -256,11 +269,12 @@ export const useDebateStream = (client: CryptoniteStreamClient | null) => {
           instrumentId: inst,
           timestamp: msg.timestamp || Date.now(),
         });
-        if (msg.role === 'Chief Risk Officer' || msg.status === 'PENDING_APPROVAL') {
-          updateStatus(msg.run_id, inst || 'BTCUSDT.BINANCE', 'PENDING_APPROVAL');
+        // Status comes from the worker (a lite debate may finish without a Chief Risk Officer turn)
+        if (msg.status === 'PENDING_APPROVAL' || msg.status === 'NO_TRADE') {
+          updateStatus(msg.run_id, inst || 'BTCUSDT.BINANCE', msg.status);
         }
       } else if (msg.type === 'DEBATE_COMPLETED') {
-        updateStatus(msg.run_id, msg.instrument_id || msg.instrumentId || 'BTCUSDT.BINANCE', 'COMPLETED', msg.decision);
+        updateStatus(msg.run_id, msg.instrument_id || msg.instrumentId || 'BTCUSDT.BINANCE', completedStatus(msg), msg.decision);
       }
     });
 

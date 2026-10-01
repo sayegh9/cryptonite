@@ -102,11 +102,12 @@ async def search_symbols(
 @router.get("/profile/{symbol}")
 async def get_coin_profile(symbol: str, request: Request) -> dict:
     """Merge Binance 24h ticker + CoinGecko metadata. Cached 15 min."""
-    sym = symbol.upper()
+    sym_clean = symbol.split(".")[0].upper()
+    inst_id = f"{sym_clean}.BINANCE"
     redis = request.app.state.stream_hub.redis
     pool = request.app.state.pool
 
-    cache_key = f"market:profile:{sym}"
+    cache_key = f"market:profile:{sym_clean}"
     cached = await redis.get(cache_key)
     if cached:
         return json.loads(cached)
@@ -114,15 +115,15 @@ async def get_coin_profile(symbol: str, request: Request) -> dict:
     # Resolve base asset from DB (e.g. BTCUSDT -> BTC)
     row = await pool.fetchrow(
         "SELECT base_currency, coingecko_id FROM instruments WHERE instrument_id = $1",
-        f"{sym}.BINANCE",
+        inst_id,
     )
     if not row:
-        raise HTTPException(status_code=404, detail=f"{sym} not onboarded in Cryptonite")
+        raise HTTPException(status_code=404, detail=f"{sym_clean} not onboarded in Cryptonite")
 
     base = row["base_currency"].lower()
     coingecko_id = row["coingecko_id"] or base  # fall back to lowercase base asset
 
-    result: dict = {"symbol": sym}
+    result: dict = {"symbol": sym_clean}
 
     async with httpx.AsyncClient(timeout=8.0, headers=HEADERS) as client:
         # CoinGecko free — no API key needed
@@ -162,7 +163,7 @@ async def get_coin_profile(symbol: str, request: Request) -> dict:
         try:
             bn_resp = await client.get(
                 f"{BINANCE_BASE}/api/v3/ticker/24hr",
-                params={"symbol": sym},
+                params={"symbol": sym_clean},
             )
             if bn_resp.status_code == 200:
                 bn = bn_resp.json()
@@ -174,7 +175,7 @@ async def get_coin_profile(symbol: str, request: Request) -> dict:
                     "volume_24h_quote": float(bn["quoteVolume"]),
                 })
         except Exception as exc:
-            logger.warning("Binance 24h fetch failed for %s: %s", sym, exc)
+            logger.warning("Binance 24h fetch failed for %s: %s", sym_clean, exc)
 
     if len(result) <= 1:  # only has 'symbol'
         raise HTTPException(status_code=503, detail="Unable to fetch market data from upstream providers")

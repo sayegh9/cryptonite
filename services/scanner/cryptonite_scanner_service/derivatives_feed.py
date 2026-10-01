@@ -4,8 +4,10 @@
   and published on ``channel:perp_mark_ticks``.
 - Funding settlements are detected when a symbol's next funding time ``T`` rolls forward. The
   rate and mark from the last tick before the rollover are written to ``funding_rates``,
-  deduplicated by (instrument_id, funding_time_ns). Settlements missed while disconnected
-  are not reconstructed here; REST backfill from /fapi/v1/fundingRate is roadmap C4.
+  deduplicated by (instrument_id, funding_time_ns).
+- Funding history backfill: every hour, /fapi/v1/fundingRate for the last 30 days is inserted
+  with source BINANCE_REST, so settlements missed while the stream was down are filled in.
+  Rows already present (from either source) are left untouched.
 - Open interest is polled from REST (Binance has no OI stream) into ``perp:oi:{symbol}``.
 
 All timestamps come from exchange event times (``E``, ``T``, OI ``time``), never the wall clock.
@@ -19,6 +21,7 @@ import json
 import logging
 import os
 import random
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -42,6 +45,9 @@ MARK_CHANNEL = "channel:perp_mark_ticks"
 MARK_TTL_S = 15
 OI_POLL_INTERVAL_S = 30
 OI_TTL_S = 3 * OI_POLL_INTERVAL_S
+FUNDING_BACKFILL_INTERVAL_S = 3_600
+FUNDING_BACKFILL_LOOKBACK_DAYS = 30
+FUNDING_PAGE_LIMIT = 1_000  # Binance maximum
 STALE_STREAM_S = 30  # @1s stream: no frame for this long means a dead connection
 FUNDING_INTERVAL_HOURS = {1, 2, 4, 8}
 
@@ -50,7 +56,7 @@ HOUR_NS = 3_600 * 1_000_000_000
 
 INSERT_FUNDING_SQL = """
 INSERT INTO funding_rates (instrument_id, funding_time_ns, funding_rate, mark_price, funding_interval_hours, source)
-VALUES ($1, $2, $3, $4, $5, 'STREAM_SETTLEMENT')
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (instrument_id, funding_time_ns) DO NOTHING
 """
 
@@ -152,17 +158,41 @@ class FundingSettlementTracker:
         )
 
 
-async def store_funding_settlements(pool: asyncpg.Pool, settlements: list[FundingSettlement]) -> int:
+async def store_funding_settlements(
+    pool: asyncpg.Pool, settlements: list[FundingSettlement], source: str = "STREAM_SETTLEMENT"
+) -> int:
     """Insert settlements idempotently; returns the number of new rows."""
     inserted = 0
     async with pool.acquire() as conn:
         for s in settlements:
             status = await conn.execute(
                 INSERT_FUNDING_SQL,
-                s.instrument_id, s.funding_time_ns, s.funding_rate, s.mark_price, s.funding_interval_hours,
+                s.instrument_id, s.funding_time_ns, s.funding_rate, s.mark_price, s.funding_interval_hours, source,
             )
             inserted += int(status.rsplit(" ", 1)[-1])
     return inserted
+
+
+def parse_funding_history(symbol: str, rows: list[dict[str, Any]]) -> list[FundingSettlement]:
+    """Turn /fapi/v1/fundingRate rows into settlements, oldest first.
+
+    The interval is the gap to the neighbouring settlement (previous, else next) when it is
+    1/2/4/8 hours; an empty ``markPrice`` (older history) becomes None.
+    """
+    ordered = sorted(rows, key=lambda r: int(r["fundingTime"]))
+    times = [int(r["fundingTime"]) * MS_TO_NS for r in ordered]
+    out = []
+    for i, row in enumerate(ordered):
+        gap = times[i] - times[i - 1] if i > 0 else (times[i + 1] - times[i] if i + 1 < len(times) else 0)
+        hours = gap // HOUR_NS if gap > 0 and gap % HOUR_NS == 0 else None
+        out.append(FundingSettlement(
+            instrument_id=to_perp_instrument_id(symbol),
+            funding_time_ns=times[i],
+            funding_rate=Decimal(row["fundingRate"]),
+            mark_price=Decimal(row["markPrice"]) if row.get("markPrice") else None,
+            funding_interval_hours=hours if hours in FUNDING_INTERVAL_HOURS else None,
+        ))
+    return out
 
 
 class DerivativesFeed:
@@ -259,6 +289,48 @@ class DerivativesFeed:
             except (httpx.HTTPError, KeyError, ValueError) as exc:
                 logger.warning("Open interest poll failed for %s: %s", symbol, exc)
 
+    async def backfill_funding_once(self, now_ms: int, lookback_days: int = FUNDING_BACKFILL_LOOKBACK_DAYS) -> int:
+        """Insert REST funding history for the lookback window; returns the number of new rows."""
+        if self.http is None:
+            raise RuntimeError("http_client is required for funding backfill")
+        inserted = 0
+        for symbol in self.symbols:
+            start_ms = now_ms - lookback_days * 24 * 3_600_000
+            try:
+                history: list[dict[str, Any]] = []
+                while True:
+                    resp = await self.http.get(
+                        f"{self.rest_base_url}/fapi/v1/fundingRate",
+                        params={"symbol": symbol, "startTime": start_ms, "endTime": now_ms, "limit": FUNDING_PAGE_LIMIT},
+                    )
+                    resp.raise_for_status()
+                    rows = resp.json()
+                    history.extend(rows)
+                    if len(rows) < FUNDING_PAGE_LIMIT:
+                        break
+                    start_ms = max(int(r["fundingTime"]) for r in rows) + 1
+                # Parse the whole window at once so every row has a neighbour to infer its interval
+                if history:
+                    inserted += await store_funding_settlements(
+                        self.pool, parse_funding_history(symbol, history), source="BINANCE_REST"
+                    )
+            except (httpx.HTTPError, KeyError, ValueError, ArithmeticError) as exc:
+                logger.warning("Funding backfill failed for %s: %s", symbol, exc)
+        if inserted:
+            logger.info("Funding backfill inserted %d missing settlement(s)", inserted)
+        return inserted
+
+    async def run_funding_backfill(self, stop: asyncio.Event, interval_s: float = FUNDING_BACKFILL_INTERVAL_S) -> None:
+        while not stop.is_set():
+            try:
+                await self.backfill_funding_once(now_ms=int(time.time() * 1000))
+            except Exception as exc:  # noqa: BLE001 - DB outages must not kill the loop
+                logger.warning("Funding backfill error: %s", exc)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval_s)
+            except TimeoutError:
+                pass
+
     async def run_oi_poller(self, stop: asyncio.Event, interval_s: float = OI_POLL_INTERVAL_S) -> None:
         while not stop.is_set():
             await self.poll_open_interest_once()
@@ -280,7 +352,7 @@ async def main() -> None:
     try:
         async with httpx.AsyncClient(timeout=10) as http:
             feed = DerivativesFeed(redis, pool, symbols, http_client=http)
-            await asyncio.gather(feed.run_mark_stream(stop), feed.run_oi_poller(stop))
+            await asyncio.gather(feed.run_mark_stream(stop), feed.run_oi_poller(stop), feed.run_funding_backfill(stop))
     finally:
         stop.set()
         await redis.aclose()

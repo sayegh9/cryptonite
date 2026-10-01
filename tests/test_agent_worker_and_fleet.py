@@ -17,7 +17,13 @@ agent_worker_dir = str(Path(__file__).parent.parent / "services" / "agent_worker
 if agent_worker_dir not in sys.path:
     sys.path.insert(0, agent_worker_dir)
 
-import server as worker_server
+import server as worker_server  # noqa: F401
+from cryptonite_agents.gateway import BudgetGuard, Gateway
+from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
+from cryptonite_agents.gateway.routes import FLASH, PRO
+from decimal import Decimal
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from server import ConfigCache, INTERNAL_HMAC_SECRET, app
 
 
@@ -107,74 +113,81 @@ async def test_config_cache_fetches_from_db_when_stale():
     assert cfg["system_instructions"] == "Custom prompt"
 
 
-def test_strategist_routes_to_generator_when_keywords_present():
-    """Strategist endpoint routes to strategy generator when generation keywords are in message."""
-    mock_agent = MagicMock()
-    mock_response = MagicMock()
-    mock_response.text = AsyncMock(return_value="Generated Strategy Code")
-    mock_agent.chat = AsyncMock(return_value=mock_response)
-    mock_agent.__aenter__ = AsyncMock(return_value=mock_agent)
-    mock_agent.__aexit__ = AsyncMock(return_value=None)
+class CapturingModel:
+    """A pydantic-ai FunctionModel that records the instructions and prompt it receives."""
 
-    with patch("server.get_strategy_generator_agent", return_value=mock_agent) as mock_get_gen, \
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.instructions: list[str] = []
+        self.prompts: list[str] = []
+
+    def model(self) -> FunctionModel:
+        def fn(messages, info: AgentInfo):
+            request = messages[-1]
+            self.instructions.append(getattr(request, "instructions", "") or "")
+            self.prompts.append(" ".join(str(getattr(p, "content", "")) for p in request.parts))
+            return ModelResponse(parts=[TextPart(self.reply)])
+        return FunctionModel(fn)
+
+
+def post(client, path: str, body: dict):
+    payload = json.dumps(body).encode("utf-8")
+    return client.post(path, content=payload, headers=_generate_hmac_headers("POST", path, payload))
+
+
+def run_worker(path: str, body: dict, reply: str):
+    """Call an agent_worker endpoint with every Gemini model served by a capturing test model."""
+    capture = CapturingModel(reply)
+    with override_model(FLASH, capture.model()), override_model(PRO, capture.model()), \
          patch("server.config_cache.get_config", AsyncMock(return_value={})):
-        
         with TestClient(app) as client:
-            payload = json.dumps({"message": "Please generate code for a new MACD strategy", "instructions": "Use 1h bars"}).encode("utf-8")
-            headers = _generate_hmac_headers("POST", "/api/v1/agents/strategist", payload)
-            
-            resp = client.post("/api/v1/agents/strategist", content=payload, headers=headers)
-            assert resp.status_code == 200
-            assert resp.json() == {"response": "Generated Strategy Code"}
-            
-            mock_get_gen.assert_called_once()
-            called_prompt = mock_agent.chat.call_args[0][0]
-            assert "Additional User Instructions: Use 1h bars" in called_prompt
-            assert "Please generate code for a new MACD strategy" in called_prompt
+            app.state.gateway = Gateway()  # no DB: keep test calls out of the dev cost ledger
+            resp = post(client, path, body)
+    return resp, capture
+
+
+def test_strategist_routes_to_generator_when_keywords_present():
+    resp, capture = run_worker(
+        "/api/v1/agents/strategist",
+        {"message": "Please generate code for a new MACD strategy", "instructions": "Use 1h bars"},
+        "Generated Strategy Code",
+    )
+    assert resp.status_code == 200
+    assert resp.json()["response"] == "Generated Strategy Code"
+    assert "Nautilus Trader strategy developer" in capture.instructions[0]
+    assert "Additional User Instructions: Use 1h bars" in capture.prompts[0]
+    assert "Please generate code for a new MACD strategy" in capture.prompts[0]
 
 
 def test_strategist_routes_to_hunter_when_general_query():
-    """Strategist endpoint routes to opportunity hunter when no code generation keywords are present."""
-    mock_agent = MagicMock()
-    mock_response = MagicMock()
-    mock_response.text = AsyncMock(return_value="Market opportunities identified")
-    mock_agent.chat = AsyncMock(return_value=mock_response)
-    mock_agent.__aenter__ = AsyncMock(return_value=mock_agent)
-    mock_agent.__aexit__ = AsyncMock(return_value=None)
-
-    with patch("server.get_opportunity_hunter_agent", return_value=mock_agent) as mock_get_hunter, \
-         patch("server.config_cache.get_config", AsyncMock(return_value={})):
-        
-        with TestClient(app) as client:
-            payload = json.dumps({"message": "What tokens have unusual volume today?"}).encode("utf-8")
-            headers = _generate_hmac_headers("POST", "/api/v1/agents/strategist", payload)
-            
-            resp = client.post("/api/v1/agents/strategist", content=payload, headers=headers)
-            assert resp.status_code == 200
-            assert resp.json() == {"response": "Market opportunities identified"}
-            mock_get_hunter.assert_called_once()
+    resp, capture = run_worker(
+        "/api/v1/agents/strategist", {"message": "What tokens have unusual volume today?"},
+        "Market opportunities identified",
+    )
+    assert resp.status_code == 200
+    assert resp.json()["response"] == "Market opportunities identified"
+    assert "Opportunity Hunter" in capture.instructions[0]
 
 
 def test_explain_backtest_endpoint_formatting():
-    """Explainer endpoint receives backtest_id and formats prompt correctly."""
-    mock_agent = MagicMock()
-    mock_response = MagicMock()
-    mock_response.text = AsyncMock(return_value="Tearsheet explanation")
-    mock_agent.chat = AsyncMock(return_value=mock_response)
-    mock_agent.__aenter__ = AsyncMock(return_value=mock_agent)
-    mock_agent.__aexit__ = AsyncMock(return_value=None)
+    resp, capture = run_worker(
+        "/api/v1/agents/explain", {"backtest_id": "bt-999-xyz", "message": "Why was max drawdown 15%?"},
+        "Tearsheet explanation",
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["response"] == "Tearsheet explanation" and body["trace_id"]
+    assert "Backtest ID: bt-999-xyz" in capture.prompts[0]
+    assert "Query: Why was max drawdown 15%?" in capture.prompts[0]
 
-    with patch("server.get_explainer_agent", return_value=mock_agent) as mock_get_explainer, \
-         patch("server.config_cache.get_config", AsyncMock(return_value={})):
-        
+
+def test_budget_exhaustion_returns_429_not_a_model_call():
+    capture = CapturingModel("should not be called")
+    with override_model(FLASH, capture.model()), patch("server.config_cache.get_config", AsyncMock(return_value={})):
         with TestClient(app) as client:
-            payload = json.dumps({"backtest_id": "bt-999-xyz", "message": "Why was max drawdown 15%?"}).encode("utf-8")
-            headers = _generate_hmac_headers("POST", "/api/v1/agents/explain", payload)
-            
-            resp = client.post("/api/v1/agents/explain", content=payload, headers=headers)
-            assert resp.status_code == 200
-            assert resp.json() == {"response": "Tearsheet explanation"}
-            mock_get_explainer.assert_called_once()
-            called_prompt = mock_agent.chat.call_args[0][0]
-            assert "Backtest ID: bt-999-xyz" in called_prompt
-            assert "Query: Why was max drawdown 15%?" in called_prompt
+            budget = BudgetGuard(default_cap_usd=Decimal("1"))
+            client.portal.call(budget.record, "chat.research", Decimal("5"))
+            app.state.gateway = Gateway(budget=budget)
+            resp = post(client, "/api/v1/agents/chat", {"message": "hi"})
+    assert resp.status_code == 429 and "DAILY_BUDGET" in resp.json()["detail"]
+    assert capture.prompts == []

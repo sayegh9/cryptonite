@@ -385,11 +385,14 @@ class OperatorAuthManager:
 
         # 3. Refresh activity timestamp and extend Redis TTL
         data["last_active_at"] = now_ms
-        await self._redis.set(
-            f"session:{session_id}",
-            json.dumps(data),
-            ex=self._session_ttl_secs,
-        )
+        try:
+            await self._redis.set(
+                f"session:{session_id}",
+                json.dumps(data),
+                ex=self._session_ttl_secs,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to refresh session TTL in Redis: {e}")
         return data
 
     async def verify_operator_step_up(self, username: str, step_up_password: str) -> bool:

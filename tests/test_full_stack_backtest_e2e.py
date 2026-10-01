@@ -29,7 +29,7 @@ from connections import DB_URL, REDIS_URL
 
 
 @pytest.mark.asyncio
-async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path):
+async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path, operator_auth):
     cat_dir = tmp_path / "nautilus_catalog"
     art_dir = tmp_path / "backtest_artifacts"
     mgr = NautilusCatalogManager(cat_dir)

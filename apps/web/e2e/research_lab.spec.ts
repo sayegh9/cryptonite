@@ -234,8 +234,8 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await strategySelect.selectOption("rsi-reversal");
 
     // Verify dynamic parameters updated to RSI parameters
-    await expect(page.getByText("RSI Period:")).toBeVisible();
-    await expect(page.getByText("Oversold Threshold:")).toBeVisible();
+    await expect(page.getByText("RSI Period", { exact: true })).toBeVisible();
+    await expect(page.getByText("Oversold Threshold", { exact: true })).toBeVisible();
 
     // 3. Switch execution profiles
     const adverseBtn = page.getByText("Adverse Slippage (Stress)");

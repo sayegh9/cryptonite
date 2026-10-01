@@ -72,11 +72,20 @@ Cryptonite is organized as a unified monorepo divided into modular Python core p
 | **Scanner Engine** | `cryptonite_scanner` | `8082` | Polars / Python | High-throughput vectorized technical screener running complex polars expressions across thousands of bars in under 10ms. |
 | **Backtester Worker**| `cryptonite_backtester` | `8083` | Nautilus Trader / C++ | Executes deterministic, tick/bar-level discrete event backtests with slippage, latency models, and historical data cadence validation. |
 | **Execution Engine** | `cryptonite_executor` | `8084` | Nautilus / Python | Live/testnet order execution engine managing order lifecycles, cross/isolated margin risk, position reconciliation, and fill tracking. |
-| **AI Agent Worker** | `cryptonite_agent_worker` | `8085` (Internal) | Google Antigravity SDK | Autonomous quantitative operations fleet (Research, Explainer, Strategist, Generator) equipped with read-only database query and DuckDB tools. Authenticated via HMAC. |
-| **Web Frontend** | Host Process | `3000` (Bound to `0.0.0.0`) | Next.js 16 / React | High-density trading workstation with TradingView charts, real-time WebSocket feeds, research tear sheets, and operator control panel. Accessible over LAN. |
-| **Primary Database** | `cryptonite_postgres` | `5432` | PostgreSQL 16 | Durable state storage for users, strategies, backtest runs, order ledgers, and transactional outbox. |
-| **Execution Redis** | `cryptonite_redis` | `6379` | Redis 7 Alpine | Ultra-low latency pub/sub bus for market data streams, order signals, and execution events. |
-| **Agent Redis** | `cryptonite_redis_agents` | `6380` | Redis 7 Alpine | Dedicated isolated session cache and long-term conversational memory for AI agents. |
+| **AI Agent Worker** | `cryptonite_agent_worker` | `8085` (Internal) | Google Antigravity SDK | 1-on-1 quantitative operations fleet (Research, Explainer, Strategist, CRO, On-Chain) equipped with read-only database query and DuckDB tools. Authenticated via HMAC. |
+| **Debate Worker** | `cryptonite_debate_worker` | Internal Worker Daemon | Google Antigravity SDK | Multi-agent adversarial debate engine (Bull vs Bear, Risk Committee, Reflection loop). Consumes Redis Streams (`stream:debate_queue`, `stream:exit_debate_queue`) and stages trade allocations. |
+| **Web Frontend** | Host Process | `3000` (Bound to `0.0.0.0`) | Next.js 16 / React 19 | High-density trading workstation with TradingView charts, real-time WebSocket feeds, research tear sheets, and operator control panel. Accessible over LAN. |
+| **Primary Database** | `cryptonite_postgres` | `5432` | PostgreSQL 16 / pgvector | Durable state storage for users, strategies, backtest runs, order ledgers, and transactional outbox. |
+| **Execution Redis** | `cryptonite_redis` | `6379` | Redis 7 Alpine | Ultra-low latency pub/sub bus for market data streams, order signals, and execution events (DB 0: Telemetry/Streams; DB 1: Agent Cache). |
+| **Agent Redis** | `cryptonite_redis` (DB 1) | `6379` (Internal) | Redis 7 Alpine | Consolidated session cache and conversational memory for AI agents. |
+
+### 1.2 Trading Venue Support (Spot vs. Futures)
+Currently, Cryptonite is deployed end-to-end as a **Spot-only** trading platform. While the underlying execution engine (`BinanceCompositeAdapter`) supports both Spot and USD-M Futures order routing, the data pipelines are exclusively configured for Spot:
+* **Ingestion:** `cryptonite_ingest` connects exclusively to the Binance Spot WebSocket (`wss://stream.binance.com:9443/stream`).
+* **Onboarding:** Instrument onboarding queries `https://api.binance.com/api/v3/exchangeInfo` (Spot) and hardcodes the `market_type` to `SPOT` in the PostgreSQL database.
+* **Analysis:** The backtester, AI agents, and scanners rely entirely on the Spot market data ingested by the aforementioned services. 
+
+To enable Futures trading, the ingestion and onboarding pipelines must be updated to route `.PERP` pairs to the `fstream` WebSockets and `fapi` REST endpoints.
 
 ---
 
@@ -293,45 +302,189 @@ Cryptonite is engineered to allow seamless operational monitoring from secondary
 * **Access URL**: `http://192.168.1.203:3000` (Operator credentials: `admin` / `admin123` / TOTP: `000000`).
 
 
-### 2.5 AI Adversarial Debate Engine (`debate_worker`)
-Integrates the `TradingAgents` pattern into the Cryptonite core, converting single-agent queries into a rigorously orchestrated, multi-persona adversarial debate before any trade is proposed.
+---
 
-**Core Workflow**:
-1. **Analyst Fleet**: Specialized Gemini Flash agents (Market, Sentiment, On-Chain) gather parallel intelligence dossiers, caching expensive on-chain RPC calls in Redis.
-2. **Adversarial Debate**: A `Bull Researcher` and `Bear Researcher` debate the dossier.
-3. **Risk & Synthesis**: A `Portfolio Manager` sets initial sizing, followed by a Risk Debate (Aggressive, Conservative, Neutral). The `Chief Risk Officer` outputs final allocation caps (max 25.0%).
-4. **Interactive Validation**: In `interactive` mode, decisions pause at `PENDING_APPROVAL` and await human authorization in the workstation UI. In `autonomous` mode, approved allocations flow straight into `paper_portfolio_decisions`.
-5. **Reflection Loop**: Completed trades are joined with Nautilus Parquet telemetry to calculate true Alpha. Lessons learned are autonomously fed back into the Portfolio Manager's prompt context for future iterations.
+## 9. AI Operations Architecture: Copilot, Debate Fleet & AI Brain Workspace
 
-**Security Constraints**:
-- Uses the `AntiCorruptionLayer` pattern for strict SQL bounds.
-- Connects exclusively as `cryptonite_agent_ro` (Read-Only postgres user for agent views).
-- Cannot bypass the `GuardedOrderDispatcher` global risk invariants.
+Cryptonite organizes quantitative AI operations into three deeply integrated, specialized operational layers that form the **Alpha Lifecycle**:
+
+```mermaid
+flowchart TD
+    subgraph CopilotLayer ["1. Interactive AI Copilot (cryptonite_agent_worker:8085)"]
+        Trader["Quant Operator"] -->|HTTP /agent-api| CopilotUI["Floating AI Copilot (AgentChatPanel)"]
+        CopilotUI -->|FastAPI HMAC Proxy| Worker["Agent Worker Service"]
+        Worker --> Research["Research Intelligence (Postgres + DuckDB)"]
+        Worker --> Strategist["Execution Strategist (Nautilus Code Gen)"]
+        Worker --> Explainer["Backtest Explainer (Tearsheet Audit)"]
+        Worker --> CRO["Chief Risk Officer (Risk Bounds)"]
+        Worker --> OnChain["On-Chain Analyst (Node RPC / Flows)"]
+    end
+
+    subgraph BrainWorkspace ["2. AI Brain Orchestrator & Action Inbox (AIBrainWorkspace)"]
+        OrchestratorCanvas["Orchestrator Canvas (OrchestratorCanvas.tsx)"]
+        ActionInbox["Action & Decision Inbox (ActionInbox.tsx)"]
+        InlineCards["Inline Action Cards (ReactMarkdown Manifest Interceptor)"]
+        TelemetryEngine["Live WebSocket Telemetry Engine (Redis HEARTBEAT)"]
+        OrchestratorCanvas --> InlineCards
+        OrchestratorCanvas --> TelemetryEngine
+        InlineCards -->|Event: cryptonite:load-strategy| ResearchLab["Research Lab (Backtest UI)"]
+        InlineCards -->|Trigger On-Demand| DebateWorker["Debate Worker Daemon"]
+        InlineCards -->|Stage Order| ActionInbox
+    end
+
+    subgraph DebateLayer ["3. Autonomous Background Debate Fleet (cryptonite_debate_worker)"]
+        ScannerTrigger["Polars Scanner Alert"] -->|stream:debate_queue| DebateWorker
+        UIHeaderTrigger["Chart Header 'Run Debate'"] -->|stream:debate_queue| DebateWorker
+        DebateWorker --> AnalystFleet["Market, Sentiment & On-Chain Analysts"]
+        AnalystFleet --> DebateArena["Adversarial Bull vs. Bear Debate"]
+        DebateArena --> RiskCommittee["Aggressive, Conservative & Neutral Risk"]
+        RiskCommittee --> CROApproval["CRO Synthesis (Max 25% Allocation)"]
+        CROApproval --> Staging["Execution Staging Canvas (PENDING_APPROVAL)"]
+        Staging -->|Operator Approve (Hold 2s)| OutboxQueue["Transactional Outbox -> Order Execution"]
+        OutboxQueue --> ReflectionEngine["Reflection Engine (Alpha vs BTC/ETH Feedback)"]
+        ReflectionEngine -.->|Historical Lessons via pgvector| DebateArena
+    end
+
+    CopilotLayer -.->|1-Click Workflow Bridges| BrainWorkspace
+    BrainWorkspace <--> DebateLayer
+```
+
+### 9.1 Interactive 1-on-1 AI Copilot (`cryptonite_agent_worker`)
+* **Framework**: Google Antigravity SDK with Google Gemini (`gemini-2.5-pro` & `gemini-2.5-flash`).
+* **Persona Isolation**: Fully independent state threads (`threads[mode]`) and input draft memory (`drafts[mode]`) across all 5 personas:
+  1. **Research Intelligence**: Performs deep columnar SQL queries over partitioned Parquet historical ticks and live Postgres ingest batches.
+  2. **Execution Strategist**: Generates AST-compliant Python strategy definitions inheriting from `CryptoniteStrategy` and `CryptoniteStrategyConfig`.
+  3. **Backtest Explainer**: Audits simulation artifacts, parses tearsheets, and dynamically synthesizes Sharpe ratio and drawdown curves.
+  4. **Chief Risk Officer (CRO)**: Evaluates capital limits, drawdown budgets, and margin utilization.
+  5. **On-Chain & Whale Intelligence**: Analyzes exchange reserve changes, whale wallet accumulations, and funding rate divergences.
+* **Resilience & Dependencies**: The worker container includes `redis` (async token bucket rate limiting) and `numpy` (DuckDB parquet math kernels), authenticated via rotating HMAC-SHA256 nonces.
+* **Extended Gateway Timeout**: The Next.js `/agent-api/[...slug]` proxy implements a 300-second execution timeout and full `GET` / `POST` support, ensuring multi-step reasoning queries complete without premature 504 timeouts.
+
+### 9.2 The Alpha Lifecycle Integration & AI Brain Workspace (`AIBrainWorkspace`)
+The AI Brain workspace (`OrchestratorCanvas.tsx`, `ActionInbox.tsx`, `AgentFleetRoster.tsx`) unites the Copilot, Research Lab, and Execution Outbox into a continuous feedback loop:
+1. **Interactive Strategy Manifest Cards (`InlineActionCard`)**:
+   - `ReactMarkdown` automatically intercepts JSON code blocks containing strategy parameters (`instrument_id`, `max_position_notional_usd`, `allocation_usd`).
+   - Renders rich interactive UI cards with:
+     - **[🧪 Backtest in Lab]**: Dispatches a custom window event (`cryptonite:load-strategy`) containing the generated Python code, pre-filling strategy parameters into the Research Lab.
+     - **[⚔️ Trigger Debate]**: Instantly triggers an adversarial debate on the newly formulated strategy.
+     - **[📥 Stage to Inbox]**: Directly registers the strategy proposal into the Action Inbox.
+2. **Inline Risk Allocation Sliders**:
+   - Each manifest card includes an embedded `<AllocationSlider>` bounded between 1.0% and the institutional **25.0% maximum portfolio equity concentration ceiling** ($25,000 max on $100k equity).
+3. **Live Redis WebSocket Telemetry Engine**:
+   - Subscribes directly to Redis `HEARTBEAT` streams via `getStreamClient()`, capturing sub-agent latency and execution states in real-time.
+   - Dynamically renders thought traces during query execution and persists the captured telemetry alongside message history, eliminating hardcoded mock delays.
+4. **Dynamic Context Tags & Diagnostics**:
+   - **`@Backtest(latest)`**: Injects system instructions for the LLM to call `read_nautilus_tearsheet` and ground its arguments in empirical backtest data (Sharpe Ratio, Max Drawdown).
+   - **`/delta @PaperPosition(latest)`**: Injects directives to execute `compare_live_vs_backtest`, calculating real-time execution slippage and Sharpe degradation between live fills and backtest models.
+
+### 9.3 Agent Tool Fleet & Security Guardrails (`cryptonite_agents.tools`)
+All agents operate under strict Role-Based Access Control (`cryptonite_agent_ro` read-only database user):
+* **`stage_debate_proposal`**: Safely stages debate and execution proposals by dispatching signed HTTP requests to the API gateway (`POST /debates/trigger`), maintaining database read-only constraints without privilege errors.
+* **`compare_live_vs_backtest`**: Queries live PostgreSQL `agent_safe_orders` fills and joins them against DuckDB `trades.parquet` to calculate price slippage and drift.
+* **`query_parquet_duckdb`**: Native DuckDB SQL execution optimized with `.fetchall()` to query raw Parquet lakehouse files without requiring Pandas.
+* **`read_nautilus_tearsheet`**: Reads `equity_curve.parquet` and `trades.parquet` from the Nautilus run directory, returning structured KPI summaries (return %, max drawdown %, win rate, total trades).
+* **`get_live_market_data`**: Fetches real-time price, orderbook depth, and 24h stats directly from Redis and Binance.
+* **`query_postgres_readonly`**: Enforces strict read-only analytical queries against PostgreSQL with query length and timeout limits.
+
+### 9.4 Action Inbox Exact Order Sizing & Database State Reconciliation
+* **PostgreSQL Hydration (`GET /api/v1/agents/debates`)**: The Action & Decision Inbox actively hydrates historical and active debate proposals directly from the PostgreSQL database (`debate_runs` and `portfolio_decisions`), rather than relying solely on transient WebSocket events or volatile browser memory.
+* **Bi-directional Cache Reconciliation**: The client-side state store (`useDebateStore.ts`) reconciles with the database on load, automatically purging locally cached ghost/orphaned items if they have been removed or truncated in PostgreSQL.
+* **Card Hierarchy & Temporal Ordering**: Each proposal card features a dedicated stacked metadata header with formatted timestamps (`new Date(timestamp).toLocaleString()`) and clock icon indicators, ordered strictly by creation date with newest proposals at the top.
+* **Exact Order Sizing Math**:
+When approving staged debate proposals via `POST /debates/{run_id}/approve`:
+- The API gateway queries `trading_balances` for live USDT account equity.
+- Queries live mid-market prices via Redis or Binance.
+- Derives exact base asset order quantity:
+  $$\text{Quantity} = \frac{\text{Equity}_{\text{USDT}} \times (\text{Allocation}_{\%} / 100)}{\text{Price}_{\text{Market}}}$$
+- Translates percentage allocations into exact orders before dispatching to `execution_commands`, ensuring the Nautilus executor receives fully validated, non-zero order quantities.
+
+### 9.5 Autonomous TradingAgents Debate Engine (`cryptonite_debate_worker`)
+* **Architecture**: Multi-agent adversarial consensus pipeline implementing the `TradingAgents` pattern.
+* **Queue Topology**: Consumes from Redis Streams (`stream:debate_queue` for entry debates, `stream:exit_debate_queue` for position exit monitoring).
+* **Consensus Workflow**:
+  1. **Analyst Fleet**: Generates structured dossiers on technical indicators, news sentiment, and on-chain RPC flows.
+  2. **Bull vs. Bear Debate**: Adversarial debaters challenge bullish and bearish assumptions using real telemetry.
+  3. **Risk Committee & CRO Verdict**: Aggressive, Conservative, and Neutral managers propose position limits, capped by the Chief Risk Officer at a maximum 25% portfolio allocation.
+  4. **Execution Staging (`PENDING_APPROVAL`)**: Staged trades appear directly in the terminal's docked debate sidebar or the Execution Staging Canvas, permitting 1-click execution or operator parameter overrides.
+  5. **Reflection Feedback Loop**: Evaluates completed trade outcomes against BTC/ETH benchmarks and autonomously stores lessons learned in `reflections` to guide future debate rounds.
+
+### 9.6 Vectorized Reflection Memory & Semantic Recall (`pgvector`)
+* **Self-Improving Feedback Loop**: The `reflections` table records quantitative and qualitative trade post-mortems comparing actual trade PnL against benchmark BTC/ETH beta over identical time horizons.
+* **Embeddings & Regime Indexing**: Uses 768-dimensional dense vector embeddings (`vector(768)`) generated via Google Gemini text-embedding models:
+  - Indexed by `instrument_type`, `volatility_regime`, `timeframe`, and `outcome` (`PROFITABLE`, `LOSS`, `BREAKEVEN`).
+  - When new debate rounds initialize, the debate fleet performs cosine similarity nearest-neighbor queries to retrieve contextually relevant historical mistakes or winning heuristics, eliminating repetitive strategy pitfalls without manual code changes.
+
+### 9.7 Dynamic Position Exit Monitoring (`stream:exit_debate_queue`)
+* **Continuous Position Surveillance**: The `cryptonite_scanner` exit monitor continuously tracks open positions against trailing volatility and RSI/Bollinger exhaustion signals.
+* **Exit Consensus Engine**: When exit conditions trigger, an exit debate event is pushed to `stream:exit_debate_queue`.
+* **Exit Decisions Table (`exit_decisions`)**: Records exit debate recommendations, conviction scores, target stop prices, and detailed reasoning, enabling structured de-risking and automated trailing stops.
 
 ---
 
-## 9. Modern UI/UX Workstation & AI Copilot Integrations
+## 10. Modern Bloomberg-Style Workstation UI
 
-Cryptonite features an institutional, Bloomberg-inspired desktop terminal interface engineered in Next.js 16 with Tailwind CSS 4 and Lucide icons:
+Cryptonite features an institutional workstation engineered in Next.js 16 (React 19) with Tailwind CSS 4, Lightweight Charts 5, and Base UI components:
 
-### 9.1 Bloomberg-Style 3-Column Resizable Workspace (`TerminalWorkspace.tsx`)
-* **3-Column Resizable Grid**: Includes a main TradingView chart view, real-time Orderbook depth panel, and AI Consensus Debate sidebar.
-* **Dynamic Sidebar Toggles**: Interactive header controls (`Show Orderbook`, `Show AI Debate Sidebar`) and panel close buttons allow traders to collapse sidebars.
-* **Canvas Expansion**: Collapsing sidebars dynamically expands the chart canvas to 100% viewport width without layout distortion.
-* **State Persistence**: Workspace layout preferences are persisted across browser sessions via `localStorage`.
+### 10.1 Modular Terminal Workspace (`TerminalWorkspace.tsx`)
+* **Quick-Toggles Toolbar**: Dedicated toggles for **Watchlist**, **Orderbook**, **AI Debate**, and **Operator Control** with real-time mode indicators.
+* **Integrated Operator Sidebar**: Operators can open the **Operator Control** sidebar directly inside the main Trading Terminal via the right toolbar toggle (red Shield icon). This embeds the full Kill-Switch panel alongside active charts, eliminating the need to navigate away from live market telemetry during emergency situations.
+* **Layout Persistence**: All panel visibility settings persist across browser sessions in `localStorage` (`cryptonite:panel-watchlist`, `cryptonite:panel-orderbook`, `cryptonite:panel-debate`, `cryptonite:panel-operator`).
+* **Fluid Multi-Chart Canvas**: Canvas automatically resizes to 100% of viewport when sidebars are collapsed, without canvas stutter or aspect ratio distortion.
 
-### 9.2 Freely Draggable & Resizable AI Copilot (`AgentChatPanel.tsx`)
-* **Floating Window**: The AI Copilot panel can be freely dragged across the viewport via pointer capture on its header bar and resized via bottom/side handles.
-* **5 Specialized AI Personas**:
-  1. **Research Agent** (`Senior Quantitative Analyst`): Market structure, technical indicators, RSI trends.
-  2. **Strategist Agent** (`Execution & Strategy Architect`): Writes production-ready Nautilus Python strategies.
-  3. **Explainer Agent** (`Risk & Performance Manager`): Parses backtest tearsheets and performance metrics.
-  4. **CRO Agent** (`Chief Risk Officer`): Evaluates risk exposure, position bounds, and margin limits.
-  5. **On-Chain Agent** (`On-Chain Intelligence`): Queries exchange flow and liquidity metrics.
-* **Isolated Threads & Draft Storage**: Each persona maintains an independent conversation history and draft input state. Switching tabs preserves active draft text.
-* **Selection & 1-Click Code Actions**: Full `select-text` capability for copying response text, with 1-click **Copy Code** and **Save Strategy** buttons.
+### 10.2 Real-Time Orderbook L2 Depth (`OrderbookPanel.tsx`)
+* **Live Price Anchoring**: Listens to WebSocket `open_kline` and `closed_bar_committed` feeds to continuously anchor mid-market price and dynamic spreads.
+* **Depth Visualization**: Renders visual depth percentage bars for bid and ask tiers with smooth transition animations.
+* **Tick Grouping Controls**: Traders can switch tick granularity between `0.1`, `1`, and `10` USDT steps with a single click.
+* **SSR Hydration-Safe**: Employs an `isMounted` gate, deterministic initial seed (`0`), and explicit `en-US` number formatting to guarantee 0 hydration mismatches.
 
-### 9.3 On-Demand Consensus Debate Triggers (`/debates/trigger`)
-* **Chart Header Trigger**: Click `[Trigger AI Consensus Debate]` on the active chart header to push an on-demand debate payload to `stream:debate_queue`.
-* **Command Palette Integration**: Press `⌘D` inside the `CommandPalette` (`Ctrl/Cmd + K`) to queue debates instantly for any symbol.
-* **Unauthenticated Analytical Access**: Copilot and debate trigger routes (`/api/v1/agents/*`) permit analytical queries without forcing administrative operator logins, enabling seamless trader exploration directly from the terminal.
+### 10.3 Docked AI Consensus Debate Sidebar (`DebateTranscriptViewer.tsx`)
+* **Live Telemetry Stream**: Displays active debate status (`RUNNING`, `PENDING_APPROVAL`, `COMPLETED`) with pulsing indicators.
+* **Role-Coded Hierarchy**: Color-coded cards for Sentiment Analyst, Bull/Bear Researchers, Portfolio Manager, and CRO.
+* **Contained Markdown Tables**: All markdown tables and code blocks are wrapped in responsive horizontal scroll containers (`overflow-x-auto`, `break-words max-w-[200px]`), preventing layout breaking or overlapping columns on compact sidebars.
+
+### 10.4 Freely Draggable & Resizable AI Copilot (`AgentChatPanel.tsx`)
+* **8-Direction Resizing**: Resize from any edge (`n`, `s`, `e`, `w`) or corner (`ne`, `nw`, `se`, `sw`) with visual grip indicators.
+* **Viewport Clamping & Re-centering**: Drag freely across the chart canvas or click the **Center Window** (`Crosshair`) button to snap back to center.
+* **Text Selection & 1-Click Clipboard**: Full native text cursor selection (`select-text cursor-text`), per-message **Copy** buttons, and header **Copy All** transcript export.
+
+### 10.5 High-Assurance Execution Staging Canvas (`ExecutionStagingCanvas.tsx`)
+* **Stage Gate Workflow**: Triggered whenever an adversarial debate run transitions into `PENDING_APPROVAL` status.
+* **Real-Time Price Drift**: Calculates delta between `decision_price` (at debate consensus) and streaming mid-market prices, warning the operator of slippage risk before execution.
+* **Institutional Parameter Overrides**:
+  - **Allocation Slider**: Adjustable position sizing from 0.5% up to the 25.0% institutional hard ceiling.
+  - **Order Type**: Toggle between `Market` and `Limit` with configurable offset basis points.
+  - **Stop-Loss Protection**: Dynamic downside stop-loss percentage override.
+* **2-Second Hold-to-Approve**: Enforces a deliberate 2000ms press-and-hold interaction with animated progress feedback to prevent accidental execution, alongside an immediate 1-click **Reject** option.
+* **Transactional Dispatch**: Dispatches approved commands via authenticated `POST /debates/{run_id}/approve` into PostgreSQL's `execution_commands` outbox.
+
+### 10.6 Portfolio & Paper Execution Console (`PortfolioConsole.tsx`)
+* **Real-Time Position Ledger & Allocation Tracking**: 
+  - Subscribes to the `CHANNEL_POSITIONS` Redis WebSocket stream to receive zero-latency push updates of all active positions, account balance, total equity, and realized PnL.
+  - Implements a dynamic **Capital Allocation & Concentration Risk Gauge**, enforcing the 25% single-asset institutional concentration limit with visual red/yellow/green threshold indicators.
+* **Granular AI Execution Attribution**:
+  - Replaces ambiguous conviction stats with precise "Origin" intent tagging. 
+  - Features an animated **Position Attribution Drawer** (slide-over panel) detailing exact AI debate origins (`AI_DEBATE_WORKER`), entry vs. mark prices, and verifiable risk invariant checks.
+* **Multi-Tab Execution Journals**:
+  - **Execution Orders Journal**: Logs all generated intents and order states (Pending, Filled, Canceled). Operators can instantly abort `PENDING` orders with 1-click execution.
+  - **Executed Trades Ledger**: Reconciles the historical trade log including side, fill prices, and executed commissions mapped directly to the PostgreSQL persistence layer.
+* **Strategy Operations & Emergency Overrides**:
+  - **Dynamic Deploy Modal**: Populates active registered strategies securely from `/api/v1/strategies`.
+  - **Optimistic Strategy Controls**: Operators can `Pause`, `Resume`, or `Stop` any running algorithmic strategy instance. The interface employs optimistic UI updates to instantly reflect transitions while securely dispatching commands to the orchestrator.
+  - **Emergency Flatten All**: An overarching institutional stop-switch that concurrently dispatches `CLOSE_POSITION` commands for all `OPEN` inventory across every running strategy.
+  - **Strategy Details Drawer**: A dedicated slide-over panel for each running strategy instance, exposing runtime variables, resolved configurations, status, and direct shortcuts to the strategy-specific operations dashboard.
+
+### 10.7 Industrial Execution Kill-Switch Panel (`KillSwitchPanel.tsx`)
+* **Physical Safety Aesthetic**: Completely redesigned with industrial control-room visual cues, deep shadows, and state-dependent glow dynamics.
+  - **Armed Normal Mode**: Emerald ambient border glow with active system telemetry.
+  - **Latched Emergency Mode**: High-contrast flashing hazard striping (`repeating-linear-gradient`) and intense rose/red danger illumination across the workspace.
+* **Tactile Mechanical Switch Controls**: Prominently styled, oversized action trigger featuring one-touch trip mechanics with mandatory reason tracking and generation-counter increments.
+* **Dual Execution Surfaces**: Rendered both within the full `/operator` management dashboard and the docked slide-out panel inside `TerminalWorkspace.tsx`.
+
+---
+
+## 11. Security, Authentication & Risk Governance
+
+### 11.1 Machine & Operator Authentication
+* **Unified Auth Dependency (`routes/auth.py`)**: Supports HttpOnly session cookies for operator browser interfaces, as well as bearer/header machine tokens (`X-API-Token`).
+* **Deterministic SHA-256 Token Hashing**: Machine tokens are hashed natively in Python via `hashlib.sha256(token.encode('utf-8')).hexdigest()` before matching against `machine_api_tokens.token_hash` in PostgreSQL. This eliminates asyncpg type inference ambiguity (avoiding `DataError` on raw bytea/text conversion) and guarantees reliable high-frequency polling by automated monitoring services.
+* **Role-Based Privilege Escalation**: Read-only access for agent fleet workers, mandatory CSRF checks for cookie-based state modifications, and operator/admin role gates on all emergency execution endpoints.

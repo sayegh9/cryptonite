@@ -4,13 +4,13 @@ import json
 from uuid import UUID
 
 from cryptonite_scanner.models import SignalCandidateRead
-from cryptonite_api.routes.auth import require_operator, require_csrf
+from cryptonite_api.routes.auth import AUTHED_READ, require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Query, Request
 
 router = APIRouter(prefix="/api/v1/signals", tags=["signals"])
 
 
-@router.get("")
+@router.get("", dependencies=AUTHED_READ)
 async def get_signals(
     request: Request,
     symbol: str | None = Query(None, description="Symbol e.g. BTCUSDT"),
@@ -77,7 +77,7 @@ async def get_signals(
     ]
 
 
-@router.get("/{candidate_id}")
+@router.get("/{candidate_id}", dependencies=AUTHED_READ)
 async def get_signal_detail(candidate_id: UUID, request: Request) -> SignalCandidateRead:
     """Get single candidate detail by ID."""
     pool = request.app.state.pool

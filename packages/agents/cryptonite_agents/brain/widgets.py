@@ -1,0 +1,145 @@
+"""Typed inline widgets the Brain streams next to its text (blueprint §7.1 Brain Home).
+
+Widgets are derived from tool calls, never from free text, so a widget always matches a call that
+passed the permission gate and is recorded in the decision trace.
+"""
+
+import json
+import logging
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+logger = logging.getLogger("cryptonite.agents.brain.widgets")
+
+MIN_ALLOCATION_PCT, MAX_ALLOCATION_PCT = 1.0, 25.0  # mirrors the dispatcher's invariant equity clamp
+
+
+class PriceChartWidget(BaseModel):
+    kind: Literal["price_chart"] = "price_chart"
+    id: str
+    symbol: str
+    timeframe: str = "1h"
+
+
+class TearsheetWidget(BaseModel):
+    kind: Literal["tearsheet"] = "tearsheet"
+    id: str
+    backtest_id: str
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class OrderProposal(BaseModel):
+    """What ``propose_order`` may stage. The card is a proposal; the dispatcher still decides."""
+
+    instrument_id: str = Field(min_length=3, max_length=64)
+    side: Literal["BUY", "SELL"]
+    quantity: float = Field(gt=0)
+    order_type: Literal["MARKET", "LIMIT"] = "MARKET"
+    limit_price: float | None = Field(default=None, gt=0)
+    allocation_pct: float = Field(ge=MIN_ALLOCATION_PCT, le=MAX_ALLOCATION_PCT)
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
+    rationale: str = Field(default="", max_length=2000)
+
+    @field_validator("side", "order_type", mode="before")
+    @classmethod
+    def _upper(cls, v: Any) -> Any:
+        return v.upper() if isinstance(v, str) else v
+
+    @field_validator("instrument_id", mode="before")
+    @classmethod
+    def _instrument(cls, v: Any) -> Any:
+        if not isinstance(v, str):
+            return v
+        v = v.strip().upper()
+        return v if "." in v else f"{v}.BINANCE"
+
+    @model_validator(mode="after")
+    def _limit_needs_price(self) -> "OrderProposal":
+        if self.order_type == "LIMIT" and self.limit_price is None:
+            raise ValueError("LIMIT orders need a limit_price")
+        return self
+
+
+class OrderCardWidget(OrderProposal):
+    kind: Literal["order_card"] = "order_card"
+    id: str
+    risk_class: Literal["ADD_RISK"] = "ADD_RISK"
+    status: Literal["PENDING_APPROVAL", "APPROVED", "REJECTED", "FAILED"] = "PENDING_APPROVAL"
+    trace_id: str | None = None
+    command_id: str | None = None
+
+
+class DebateSummaryWidget(BaseModel):
+    kind: Literal["debate_summary"] = "debate_summary"
+    id: str
+    instrument_id: str
+    timeframe: str = "1m"
+    recommendation: str | None = None
+    conviction_score: float | None = None
+    status: Literal["QUEUED", "FAILED"] = "QUEUED"
+    message: str = ""
+
+
+def _parse_json(content: str | None) -> dict[str, Any] | None:
+    if not content:
+        return None
+    try:
+        data = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def widget_for_tool(
+    tool: str,
+    args: dict[str, Any] | None,
+    *,
+    call_id: str,
+    status: str = "OK",
+    content: str | None = None,
+    trace_id: str | None = None,
+) -> dict[str, Any] | None:
+    """The widget a tool call renders as, or None. Invalid arguments never become a widget."""
+    args = args or {}
+    try:
+        if tool == "show_price_chart":
+            return PriceChartWidget(id=call_id, symbol=str(args.get("symbol", "BTCUSDT")).upper(),
+                                    timeframe=str(args.get("timeframe") or "1h")).model_dump()
+        if tool in ("explain_backtest", "read_nautilus_tearsheet") and status == "OK":
+            metrics = _parse_json(content) or {}
+            backtest_id = str(args.get("backtest_id") or metrics.get("backtest_id") or "latest")
+            return TearsheetWidget(id=call_id, backtest_id=backtest_id, metrics=metrics).model_dump()
+        if tool == "propose_order":
+            # The gate holds ADD_RISK for approval (status DENIED): that is exactly when the card shows
+            card = OrderCardWidget(id=call_id, trace_id=trace_id, **args)
+            return card.model_dump()
+        if tool == "stage_debate_proposal" and status == "OK":
+            queued = bool(content) and content.startswith("Success")
+            return DebateSummaryWidget(
+                id=call_id, instrument_id=str(args.get("instrument_id", "")),
+                timeframe=str(args.get("timeframe") or "1m"),
+                recommendation=args.get("recommendation"), conviction_score=args.get("conviction_score"),
+                status="QUEUED" if queued else "FAILED", message=(content or "")[:500],
+            ).model_dump()
+    except (ValidationError, ValueError, TypeError) as e:
+        logger.warning("Tool %s produced no widget (invalid arguments): %s", tool, e)
+    return None
+
+
+def describe_widget(widget: dict[str, Any]) -> str:
+    """A one-line transcript form, so later turns (and summaries) remember what was shown."""
+    kind = widget.get("kind")
+    if kind == "order_card":
+        return (f"[order card {widget.get('id')}: {widget.get('side')} {widget.get('quantity')} "
+                f"{widget.get('instrument_id')} {widget.get('order_type')} "
+                f"({widget.get('allocation_pct')}% of equity), status {widget.get('status')}"
+                + (f", paper command {widget['command_id']}" if widget.get("command_id") else "") + "]")
+    if kind == "price_chart":
+        return f"[price chart {widget.get('symbol')} {widget.get('timeframe')}]"
+    if kind == "tearsheet":
+        return f"[tearsheet for backtest {widget.get('backtest_id')}]"
+    if kind == "debate_summary":
+        return f"[debate {widget.get('status', '').lower()} for {widget.get('instrument_id')}]"
+    return f"[{kind}]"

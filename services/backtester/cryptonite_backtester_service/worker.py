@@ -26,6 +26,7 @@ from uuid import UUID
 
 import asyncpg
 from cryptonite_backtester.runner import BacktestRunner, BacktestRunRequest
+from cryptonite_backtester.sandbox import DEFAULT_JOBS_DIR, run_in_sandbox
 from cryptonite_backtester.storage import BacktestArtifactStore
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 
@@ -70,6 +71,7 @@ class BacktestWorker:
         self.pool: asyncpg.Pool | None = None
         self.runner = BacktestRunner(self.catalog_path, self.artifacts_path)
         self.artifact_store = BacktestArtifactStore(self.artifacts_path)
+        self.sandbox_jobs_path = Path(os.getenv("STRATEGY_SANDBOX_JOBS_PATH", DEFAULT_JOBS_DIR))
         self._running = False
         self._task: asyncio.Task[None] | None = None
 
@@ -323,8 +325,17 @@ class BacktestWorker:
 
             heartbeat_task = asyncio.create_task(lease_heartbeat())
             try:
-                # Execute securely with context propagation
-                result_dict = await asyncio.to_thread(self.runner.run, request)
+                if request.strategy_slug not in STRATEGY_REGISTRY and request.python_code:
+                    # Model-written code never runs in this process (it holds DB credentials)
+                    result_dict = await run_in_sandbox(request, self.artifact_store, self.sandbox_jobs_path)
+                    # The sandbox's own catalog manifest is untrusted; rebuild it from the worker's catalog
+                    result_dict["catalog_manifest"] = await asyncio.to_thread(
+                        self.runner.build_catalog_manifest, request.bar_type,
+                        request.warmup_start_ns, request.evaluation_end_ns,
+                    )
+                else:
+                    # Execute securely with context propagation
+                    result_dict = await asyncio.to_thread(self.runner.run, request)
             finally:
                 heartbeat_task.cancel()
                 try:
@@ -405,6 +416,7 @@ class BacktestWorker:
                         "sharpe_ratio": result_dict["sharpe_ratio"],
                         "max_drawdown": result_dict["max_drawdown"],
                         "artifact_manifest": result_dict["artifact_manifest"],
+                        "sandboxed": bool(result_dict.get("sandboxed")),
                     }
                     await conn.execute(
                         """

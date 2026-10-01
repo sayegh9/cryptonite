@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 from cryptonite_backtester.execution_profiles import VALID_PROFILES, resolve_execution_profile
 from cryptonite_backtester.runner import BacktestRunRequest, compute_run_config_hash
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
-from cryptonite_api.routes.auth import require_operator, require_csrf
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from pydantic import BaseModel, Field
@@ -35,7 +35,7 @@ class CreateBacktestRequest(BaseModel):
     execution_profile: str = "optimistic"
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED, dependencies=OPERATOR_WRITE)
 async def create_backtest_run(
     req: CreateBacktestRequest,
     request: Request,
@@ -139,7 +139,7 @@ async def create_backtest_run(
     }
 
 
-@router.get("")
+@router.get("", dependencies=AUTHED_READ)
 async def list_backtest_runs(
     request: Request,
     strategy_slug: str | None = None,
@@ -210,7 +210,7 @@ async def list_backtest_runs(
     return results
 
 
-@router.get("/compare")
+@router.get("/compare", dependencies=AUTHED_READ)
 async def compare_backtest_runs(
     run_ids: str = Query(..., description="Comma-separated run UUIDs"),
     request: Request = None,
@@ -272,7 +272,7 @@ async def compare_backtest_runs(
     return {"runs": runs_comparison}
 
 
-@router.get("/{run_id}")
+@router.get("/{run_id}", dependencies=AUTHED_READ)
 async def get_backtest_run(
     run_id: UUID,
     request: Request,
@@ -358,7 +358,7 @@ async def get_backtest_run(
     }
 
 
-@router.get("/{run_id}/results")
+@router.get("/{run_id}/results", dependencies=AUTHED_READ)
 async def get_backtest_results(
     run_id: UUID,
     request: Request,
@@ -370,7 +370,7 @@ async def get_backtest_results(
     return run["results"]
 
 
-@router.get("/{run_id}/trades")
+@router.get("/{run_id}/trades", dependencies=AUTHED_READ)
 
 async def get_backtest_trades(
     run_id: UUID,
@@ -411,7 +411,7 @@ async def get_backtest_trades(
     }
 
 
-@router.get("/{run_id}/manifest")
+@router.get("/{run_id}/manifest", dependencies=AUTHED_READ)
 async def get_backtest_manifest(
     run_id: UUID,
 ) -> dict[str, Any]:

@@ -4,8 +4,14 @@
 The Kill-Switch is a durable mechanism to halt all automated trading and order admission across the fleet immediately. It uses a generation-based latch. When tripped, the current generation is latched, and no strategies can place new orders. The Executor is responsible for asynchronously shutting down active producers and cancelling outstanding venue orders.
 
 ## Triggering the Kill-Switch
-**Emergency Trigger (API / UI)**
-Operators can trigger the kill switch via the UI dashboard (red SHIELD icon) or via the API:
+**Emergency Trigger (UI)**
+Operators can trigger the kill switch from two convenient UI locations:
+1. **Trading Terminal Workspace**: Click the red **Shield** icon in the right-sidebar toolbar to slide out the **Operator Control** panel directly beside the charts.
+2. **Dedicated Operator Console**: Navigate to `/operator` (or the **Operator** navigation tab).
+
+Both locations render the industrial Kill-Switch panel with live status, dynamic hazard indicators, and one-touch trip action.
+
+**Emergency Trigger (API)**
 ```bash
 curl -X POST https://api.cryptonite.com/api/v1/paper/kill-switch \
      -H "Cookie: cryptonite_session=<session>" \

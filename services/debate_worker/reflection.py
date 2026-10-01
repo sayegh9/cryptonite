@@ -7,32 +7,25 @@ import asyncpg
 from decimal import Decimal
 from typing import Optional
 
-from google.antigravity import Agent, LocalAgentConfig
-from google.antigravity.types import CapabilitiesConfig
-import google.antigravity.hooks.policy as pol
+from cryptonite_agents.gateway import Gateway
+from cryptonite_agents.persona import Persona
 
 logger = logging.getLogger(__name__)
-api_key = os.getenv("GEMINI_API_KEY")
 NAUTILUS_CATALOG_PATH = os.getenv("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog")
 
-def get_reflection_agent() -> Agent:
-    return Agent(config=LocalAgentConfig(
-        api_key=api_key,
-        capabilities=CapabilitiesConfig(enabled_tools=[], enable_subagents=False),
-        policies=[pol.allow_all()],
-        system_instructions=(
-            "You are the Quantitative Reviewer at Cryptonite. "
-            "Your job is to analyze completed trades, their actual PnL, and their Alpha versus "
-            "the Bitcoin/Ethereum benchmarks. Identify *why* a trade succeeded or failed. "
-            "Output exactly one concise paragraph of 'lessons learned' that will be injected into "
-            "the Portfolio Manager's prompt in the future."
-        ),
-        model_name="gemini-2.5-flash",
-    ))
+REVIEWER = Persona(
+    "Quantitative Reviewer", "reflection",
+    "You are the Quantitative Reviewer at Cryptonite. "
+    "Your job is to analyze completed trades, their actual PnL, and their Alpha versus "
+    "the Bitcoin/Ethereum benchmarks. Identify *why* a trade succeeded or failed. "
+    "Output exactly one concise paragraph of 'lessons learned' that will be injected into "
+    "the Portfolio Manager's prompt in the future.",
+)
 
 class ReflectionEngine:
-    def __init__(self, pg_pool: asyncpg.Pool):
+    def __init__(self, pg_pool: asyncpg.Pool, gateway: Gateway | None = None):
         self.pg_pool = pg_pool
+        self.gateway = gateway or Gateway()
         # Connect to DuckDB for benchmark data (read-only)
         self.duck = duckdb.connect(database=':memory:')
 
@@ -91,9 +84,28 @@ class ReflectionEngine:
                 run_id = row['run_id']
                 instrument_id = row['instrument_id']
                 
-                # In a real system, we'd query execution_fills to get the exact Entry and Exit prices.
-                # Here we simulate the PnL outcome.
-                actual_outcome_pnl = 0.05 # 5% mock win
+                # Query actual realized PnL from closed paper positions
+                pnl_row = await conn.fetchrow(
+                    """
+                    SELECT COALESCE(SUM(realized_pnl), 0) as total_pnl,
+                           COALESCE(AVG(entry_price), 0) as avg_entry
+                    FROM paper_positions
+                    WHERE instrument_id = $1
+                      AND status = 'CLOSED'
+                      AND closed_at >= $2
+                      AND closed_at <= $3
+                    """,
+                    instrument_id,
+                    row['created_at'],
+                    row['completed_at']
+                )
+
+                if pnl_row and pnl_row['avg_entry'] and float(pnl_row['avg_entry']) > 0:
+                    actual_outcome_pnl = float(pnl_row['total_pnl']) / float(pnl_row['avg_entry'])
+                else:
+                    # No matching closed positions found — skip reflection for this run
+                    logger.info(f"No closed positions found for {instrument_id} in debate window. Skipping reflection.")
+                    continue
                 
                 # Fetch benchmark return from DuckDB
                 benchmark_return = self._get_benchmark_return(
@@ -115,17 +127,24 @@ class ReflectionEngine:
                     "What is the key lesson learned here?"
                 )
                 
-                agent = get_reflection_agent()
-                async with agent:
-                    resp = await agent.chat(reflection_prompt)
-                    lesson = await resp.text()
-                
+                lesson = (await REVIEWER.run(self.gateway, reflection_prompt)).output
+
+                # Generate Embedding for the lesson
+                try:
+                    (embedding_vector,) = await self.gateway.embed([lesson])
+                    embedding_str = f"[{','.join(map(str, embedding_vector))}]"
+                except Exception as e:
+                    logger.error(f"Failed to generate embedding: {e}")
+                    embedding_str = None
+
+                outcome_tag = "WIN" if actual_outcome_pnl > 0 else "LOSS" if actual_outcome_pnl < 0 else "FLAT"
+
                 # Save to Postgres
                 await conn.execute(
                     """
-                    INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding, instrument_type, outcome)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                     """,
-                    run_id, actual_outcome_pnl, alpha, lesson
+                    run_id, actual_outcome_pnl, alpha, lesson, embedding_str, instrument_id, outcome_tag
                 )
                 logger.info(f"Generated reflection for run {run_id}: Alpha {alpha*100:.2f}%")

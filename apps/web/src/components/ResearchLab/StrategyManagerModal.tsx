@@ -76,6 +76,8 @@ export function StrategyManagerModal({
     try {
       const res = await fetch(`/api/v1/strategies/${slug}`, {
         method: "DELETE",
+        credentials: "include",
+        headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "" },
       });
       if (res.ok) {
         onStrategiesChanged();

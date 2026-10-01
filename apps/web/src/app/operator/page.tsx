@@ -56,6 +56,7 @@ export default function OperatorDashboard() {
         {/* Left Column: Kill Switch & Active Strategies */}
         <div className="xl:col-span-1 space-y-6">
           <KillSwitchPanel />
+          <KillSwitchPanel environment="DEMO" accountId="DEMO-ACCOUNT-001" />
           <StrategyInstancesPanel />
         </div>
 

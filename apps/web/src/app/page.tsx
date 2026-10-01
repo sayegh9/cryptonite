@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { MultiChartGrid } from "@/components/MultiChartGrid";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 import { ScannerStudio } from "@/components/ScannerStudio";
@@ -16,6 +16,10 @@ import { AlertsPanel } from "@/components/AlertsPanel";
 import { MarketOverview } from "@/components/MarketOverview";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { AIBrainWorkspace } from "@/components/brain/AIBrainWorkspace";
+import { DecisionTraceDrawer } from "@/components/brain/DecisionTraceDrawer";
+import { dispatchBrainAsk } from "@/lib/brain/events";
+import { useBrainSetup } from "@/lib/brain/useBrainSetup";
+import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { useDebateStream, useDebateStore } from "@/lib/stores/useDebateStore";
 import { usePerpetualStream } from "@/lib/stores/usePerpetualStore";
 import { TerminalWorkspace } from "@/components/terminal/TerminalWorkspace";
@@ -48,6 +52,16 @@ export default function TerminalPage() {
   } | null>(null);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [profileSymbol, setProfileSymbol] = useState<string | null>(null);
+
+  // Brain: restore the session and route cryptonite:brain-ask / cryptonite:brain-open-trace.
+  // An ask from another workspace opens the Copilot drawer; inside the AI Brain workspace it goes to Brain Home.
+  const workspaceModeRef = useRef(workspaceMode);
+  workspaceModeRef.current = workspaceMode;
+  const onBrainAsk = useCallback(() => {
+    if (workspaceModeRef.current === "debates") useBrainStore.getState().setWorkspaceView("brain");
+    else setIsAgentChatOpen(true);
+  }, []);
+  useBrainSetup(onBrainAsk);
 
   useDebateStream(wsConnected ? getStreamClient() : null);
   usePerpetualStream(wsConnected);
@@ -139,8 +153,10 @@ export default function TerminalPage() {
         setWorkspaceMode(e.detail.mode as any);
       }
     };
-    const copilotHandler = () => {
+    // Legacy "open copilot" callers ({ prompt, autoSend }) now talk to the Brain
+    const copilotHandler = (e: CustomEvent) => {
       setIsAgentChatOpen(true);
+      if (e.detail?.prompt) dispatchBrainAsk({ prompt: String(e.detail.prompt), send: Boolean(e.detail.autoSend) });
     };
     const debateTriggerHandler = async (e: CustomEvent) => {
       const sym = e.detail?.symbol || selectedSymbol;
@@ -158,6 +174,7 @@ export default function TerminalPage() {
         });
         const res = await fetch("/agent-api/debates/trigger", {
           method: "POST",
+          credentials: "include",
           headers: {
             "Content-Type": "application/json",
             "X-CSRF-Token": localStorage.getItem("csrf_token") || "",
@@ -266,7 +283,7 @@ export default function TerminalPage() {
             className="flex items-center space-x-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-cyan-400 rounded transition-colors font-mono text-xs font-bold"
           >
             <BrainCircuit className="w-3.5 h-3.5" />
-            <span>AI Copilot</span>
+            <span>Brain</span>
           </button>
         </div>
       </header>
@@ -366,6 +383,7 @@ export default function TerminalPage() {
                 {/* Left Column (35%) */}
                 <div className="lg:col-span-4 space-y-6">
                   <KillSwitchPanel />
+                  <KillSwitchPanel environment="DEMO" accountId="DEMO-ACCOUNT-001" />
                   <RiskLimitsEditor />
                 </div>
                 {/* Right Column (65%) */}
@@ -417,7 +435,14 @@ export default function TerminalPage() {
         isOpen={isAgentChatOpen}
         onClose={() => setIsAgentChatOpen(false)}
         activeBacktestId={activeBacktestRun?.id || null}
+        onExpand={() => {
+          setIsAgentChatOpen(false);
+          useBrainStore.getState().setWorkspaceView("brain");
+          setWorkspaceMode("debates");
+        }}
       />
+
+      <DecisionTraceDrawer />
 
       <CoinProfileModal 
         symbol={profileSymbol} 

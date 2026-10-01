@@ -11,7 +11,8 @@
 5. [Portfolio Console & Risk Analytics](#5-portfolio-console--risk-analytics)
 6. [AI Copilot & Multi-Agent Operations](#6-ai-copilot--multi-agent-operations)
 7. [Operator Control Plane & Emergency Governance](#7-operator-control-plane--emergency-governance)
-8. [Troubleshooting & Frequently Asked Questions](#8-troubleshooting--frequently-asked-questions)
+8. [Remote LAN & Multi-Device Access Guide](#8-remote-lan--multi-device-access-guide)
+9. [Troubleshooting & Frequently Asked Questions](#9-troubleshooting--frequently-asked-questions)
 
 ---
 
@@ -33,7 +34,9 @@
 * **Two-Factor TOTP**: `000000` *(development bypass)*
 * **Execution Environment**: Binance Demo / Testnet (Isolated paper risk)
 
----
+### 1.3 Supported Markets
+* **Spot Trading**: Fully supported end-to-end. You can onboard any Binance Spot pair (e.g., `BTCUSDT`, `ETHUSDT`) via the Command Palette to immediately begin streaming live data, generating AI research, and trading.
+* **Futures Trading**: *Not currently supported.* While the backend execution engine has the infrastructure to route USD-M Futures, the market data ingestion pipelines currently only track Spot markets.
 
 ## 2. Trading Terminal & Live Market Data
 
@@ -42,12 +45,19 @@ The **Trading Terminal** is your primary workspace for active market observation
 ![Trading Terminal](./screenshots/01_trading_terminal.png)
 
 ### Key Features & Workflow:
-1. **Bloomberg-Style 3-Column Resizable Workspace**: Features an interactive TradingView chart, live orderbook depth panel, and AI Consensus Debate sidebar.
-2. **Dynamic Sidebar & Canvas Controls**: Click `Show Orderbook` or `Show AI Debate Sidebar` in the toolbar to toggle sidebars. Closing sidebars automatically expands the chart canvas to 100% full width. Layout preferences are persisted in `localStorage`.
-3. **On-Demand Consensus Debate**: Click `[Trigger AI Consensus Debate]` on the chart header or press `⌘D` in the Command Palette to launch a multi-agent Bull vs. Bear debate for the active ticker.
-4. **Timeframe Selector**: Toggle effortlessly between `1m`, `5m`, `15m`, `1h`, `4h`, and `1d` intervals.
-5. **Multi-Asset Watchlist**: View live 24h ticker updates, spread dynamics, and quick-switch between major trading pairs (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`).
-6. **Sub-millisecond Latency Bar**: Bottom telemetry displays DuckDB p95 query latency (~12ms) and Polars vectorized execution speeds (~8ms).
+1. **Bloomberg-Style Resizable Workspace**: Features an interactive Lightweight Charts / TradingView multi-chart view, real-time Orderbook depth panel, AI Consensus Debate sidebar, and dockable Operator Control panel.
+2. **Panels Quick-Toggles Toolbar**: Use the dedicated top toolbar to toggle the **Watchlist**, **Orderbook**, **AI Debate**, and **Operator Control** (Shield icon) sidebars independently. The mode indicator reflects your active layout state (`Full Canvas`, `2-Column`, or `3-Column`). All toggles persist in `localStorage` across page reloads.
+3. **Embedded Operator Emergency Sidebar**: Click the red Shield icon in the top toolbar to slide out the **Execution Kill-Switch** panel directly inside your trading chart view, enabling rapid emergency risk containment without switching tabs.
+4. **Real-Time Orderbook L2 Depth**:
+   - Anchors live mid-market prices directly from WebSocket kline streams.
+   - Visualizes proportional buy/sell volume with dynamic color-coded depth bars (green for bids, red for asks).
+   - Instant spread and spread percentage calculations updated on every incoming tick.
+   - Interactive tick grouping step controls (`0.1`, `1`, `10` USDT) to adjust price aggregation on the fly.
+5. **Docked AI Consensus Debate Sidebar**: Embedded live transcript stream showing Bull vs. Bear debate arguments, risk manager assessments, and execution staging directly alongside your chart.
+6. **On-Demand Consensus Debate**: Click `[Trigger AI Consensus Debate]` on any chart header, click **"Run Debate Now"** in the debate sidebar, or press `⌘D` in the Command Palette to queue an adversarial debate for the active ticker.
+7. **Timeframe Selector**: Toggle effortlessly between `1m`, `5m`, `15m`, `1h`, `4h`, and `1d` intervals.
+8. **Multi-Asset Watchlist**: View live 24h ticker updates, spread dynamics, and quick-switch between major trading pairs (`BTCUSDT`, `ETHUSDT`, `SOLUSDT`).
+9. **Sub-millisecond Latency Bar**: Bottom telemetry displays DuckDB p95 query latency (~12ms) and Polars vectorized execution speeds (~8ms).
 
 ---
 
@@ -114,29 +124,88 @@ The **AI Copilot** provides an autonomous quantitative operations analyst direct
 
 ![AI Copilot Active Chat](./manual_images/06b_ai_chat_detail.png)
 
-### Floating Window & Persona Controls:
-- **Freely Draggable & Resizable**: Drag the floating panel via its header bar and resize from the bottom or right handles. Toggle docking to lock it to the right sidebar.
-- **5 Specialized AI Personas**:
-  1. **Research Agent (`Senior Quantitative Analyst`)**: Technical market structure, volume profile, RSI trends, and level discovery.
-  2. **Strategist Agent (`Execution & Strategy Architect`)**: Writes production-ready Nautilus Python code (`StrategyConfig` & `Strategy`). Includes a 1-click green **"Save Strategy"** button.
-  3. **Explainer Agent (`Risk & Performance Manager`)**: Ingests backtest run tearsheets (`trades.parquet`, `equity_curve.parquet`) to analyze Sharpe ratio, drawdowns, and regime bias.
-  4. **CRO Agent (`Chief Risk Officer`)**: Evaluates portfolio risk, leverage limits, and position concentration bounds.
-  5. **On-Chain Agent (`On-Chain Intelligence`)**: Analyzes exchange inflows, netflow anomalies, and whale liquidity movements.
-- **Isolated Threads & Draft Storage**: Each persona maintains a separate conversation history and draft input box. Switching persona tabs preserves your un-sent text.
-- **1-Click Text & Code Copying**: Select text directly or click **Copy Code** to copy Python snippets into your clipboard.
+### 6.1 Floating Window & Precision Window Controls
+The Copilot interface is engineered for maximum flexibility across multi-monitor or single-screen trading setups:
+- **8-Direction Resizing**: Resize smoothly from any edge (North, South, East, West) or corner (North-East, North-West, South-East, South-West) with visual corner grip indicators and viewport boundary clamping.
+- **Header Dragging**: Grab anywhere on the top title bar to move the panel freely over charts or blotters without blocking execution triggers.
+- **Center Window Button**: Click the target crosshair (`⌖`) button in the header to instantly re-center the panel on your active viewport.
+- **Dock / Float Toggle**: Switch between a floating overlay and a fixed right sidebar docked into the terminal grid.
+- **Native Text Highlighting**: Full cursor text selection (`select-text cursor-text`) enabled across all messages, tables, and code snippets.
+- **1-Click Message Copying**: Hover over any user or agent message bubble to access the dedicated **Copy** button with animated checkmark confirmation.
+- **Transcript Export ("Copy All")**: Click **Copy All** in the header to export the full conversation transcript with role tags and timestamps directly to your clipboard.
 
-### 6.1 Market Intelligence & Discovery
-The platform includes a full-featured Market Intelligence suite:
-- **Command Palette**: Press `Ctrl/Cmd + K` anywhere in the app to quickly search for assets, run commands, or trigger debates (`⌘D`).
-- **Watchlists**: Pin your favorite instruments to the sidebar for real-time tracking.
-- **Alerts Engine**: Set custom price alerts evaluating in the background with real-time WebSocket breach notifications.
-- **Extended Timeout**: `/agent-api` Next.js proxy route implements a 300s timeout to support deep multi-step quantitative agent queries without gateway timeouts.
+### 6.2 5 Specialized AI Personas & Isolated Memory
+The Copilot routes queries to specialized backend agents, each maintaining an independent conversation thread (`threads[mode]`) and un-sent draft memory (`drafts[mode]`):
 
-### Example Prompts to Try:
+| Persona | Role | Primary Use Cases | Available Tools |
+| :--- | :--- | :--- | :--- |
+| **Research Intelligence** | Senior Quantitative Analyst | Market structure, technical indicators, volume profiles, candle aggregations. | Read-Only PostgreSQL, DuckDB Parquet engine |
+| **Execution Strategist** | Strategy Architect | Generates production-ready NautilusTrader Python strategies; includes 1-click **Save Strategy** card. | `CryptoniteStrategy` AST generator |
+| **Backtest Explainer** | Risk & Performance Manager | Parses tearsheets (`trades.parquet`, `equity_curve.parquet`), analyzes Sharpe ratio, drawdown, and slippage. | Nautilus Tearsheet parser, DuckDB metric fallback |
+| **Chief Risk Officer (CRO)** | Capital Preservation | Evaluates max leverage brackets, margin buffers, position sizing bounds, and drawdown risks. | Position limits, Risk rules |
+| **On-Chain Intelligence** | Whale & Liquidity Analyst | Analyzes exchange netflows, smart money accumulation, and funding rate divergences. | Blockchain node RPC tools, exchange reserves |
+
+### 6.3 AI Architecture: Copilot vs. AI Brain Workspace vs. Debate Fleet
+Cryptonite offers three complementary ways to interact with quantitative AI:
+1. **Interactive AI Copilot (Floating/Docked Window)**: Designed for immediate 1-on-1 assistance while viewing charts. You can brainstorm ideas, review specific backtest runs, or audit risk bounds without leaving your active chart layout.
+2. **AI Brain Workspace (`AIBrainWorkspace`)**: The centralized institutional command canvas. It unifies multi-agent orchestration (`OrchestratorCanvas`), decision auditing (`ActionInbox`), real-time Redis telemetry, and 1-click strategy backtest bridges.
+3. **TradingAgents Debate Fleet (Background Engine)**: Runs asynchronously in the background. Triggered by Scanner alerts or the chart's **"Run Debate Now"** button. Bull and Bear debaters argue the trade, the Risk Committee sets sizing, and the CRO stages an order (`PENDING_APPROVAL`) ready for 1-click execution.
+
+### 6.4 Example Prompts to Try:
 * *"Analyze the hourly volume distribution of BTCUSDT over the past 30 days."*
 * *"Evaluate backtest run `latest` and explain why max drawdown reached 14%."*
-* *"Generate a complete Nautilus Trader strategy in Python that trades 15m Bollinger Band breakouts with an ATR trailing stop."*
+* *"Generate a complete Nautilus Trader strategy in Python that trades 15m Bollinger Band breakouts with an ATR trailing stop. Include the strategy manifest."*
+* *"@Backtest(latest) Review this run. Does the max drawdown exceed our 5% tolerance?"*
+* *"/delta @PaperPosition(latest) Check fill slippage between live execution and backtest."*
 * *"Check risk bounds for a 10x leveraged long position on ETHUSDT given current volatility."*
+
+### 6.5 The Alpha Lifecycle in Action (AI Brain Operations)
+The **AI Brain Workspace** implements an end-to-end quantitative feedback loop:
+
+#### 1. Strategy Formulation & 1-Click Workflow Bridges
+When asking the Execution Strategist or Lead Orchestrator for a strategy, the agent returns an AST-compliant Python strategy and a JSON strategy manifest.
+- **Interactive Strategy Manifest Card**: The canvas intercepts the manifest and displays an interactive UI card.
+- **`[🧪 Backtest in Lab]`**: 1-click button that pushes the strategy code to the **Research Lab**, auto-navigates to the tab, and pre-fills the backtest configuration immediately.
+- **`[⚔️ Trigger Debate]`**: Instantly dispatches a consensus debate across Bull, Bear, and Risk Committee agents to stress-test the thesis.
+- **`[📥 Stage to Inbox]`**: Directly queues the proposal into the Action Inbox.
+
+#### 2. Embedded Risk Sliders (25.0% Concentration Cap)
+- Each strategy card features an inline **Allocation Sizing** slider.
+- Sizing is strictly clamped between `1.0%` and the institutional **25.0% maximum equity ceiling** ($25,000 max on $100k equity), enforcing portfolio guardrails before staging.
+
+#### 3. Dynamic Context Tags (`@Backtest`, `/delta`)
+- **`@Backtest(latest)`**: Click `+ Attach Backtest` on the input rail to inject empirical backtest metrics (Sharpe Ratio, Max Drawdown, Win Rate) into the prompt context via `read_nautilus_tearsheet`.
+- **`/delta @PaperPosition(latest)`**: Click `+ Delta Diagnostic` on the input rail to trigger `compare_live_vs_backtest`. The agent compares actual fill prices from PostgreSQL against theoretical entries from DuckDB `trades.parquet`, calculating slippage and Sharpe decay.
+
+#### 4. Live Telemetry Stream
+- During agent thinking and execution, the chat renders live sub-agent status traces via WebSocket (`channel:agent_heartbeat`), showing exact tool execution and sub-agent latencies in real time without mock delays.
+
+### 6.6 Execution Governance: Interactive Staging Canvas vs. Action Inbox
+Cryptonite supports two execution approval mechanisms for multi-agent debate recommendations:
+
+#### 1. Interactive Staging Mode (`PENDING_APPROVAL`)
+When a debate session concludes with actionable conviction:
+- **Execution Staging Canvas / Action Inbox**: Staged trades display proposed direction (`LONG`, `SHORT`), CRO conviction score, and proposed allocation.
+- **Inbox Organization & Cleanliness Controls**:
+  - **Database State Synchronization**: The Inbox automatically loads historical and pending proposals directly from PostgreSQL (`debate_runs`). When database records are wiped or archived, the client store automatically purges local browser cache.
+  - **Temporal Ordering & Timestamp Cards**: Each card displays a dedicated clock icon and formatted date/time stacked neatly underneath the instrument symbol, sorted chronologically with the latest proposals first.
+  - **Filter Tabs**: Toggle between **`Pending`** (actionable items), **`Staged`** (approved trades), **`Rejected`** (dismissed runs), and **`All`** with real-time badge counts.
+  - **1-Click Card Dismiss**: Click the trash icon (`✕`) on any card header to instantly dismiss that proposal from view.
+  - **`Clear History`**: A 1-click header button that purges all inactive, completed, and rejected items from view while preserving active pending approvals.
+  - **`Purge All`**: Flushes local proposal history.
+- **Real-Time Price Drift**: Live telemetry tracks drift between `decision_price` and streaming mid-price.
+- **Exact Quantity Sizing**: When approving in the Action Inbox, the API gateway dynamically computes the exact order quantity:
+  $$\text{Quantity} = \frac{\text{Equity}_{\text{USDT}} \times (\text{Allocation}_{\%} / 100)}{\text{Price}_{\text{Market}}}$$
+- **High-Assurance Execution ("Hold to Approve")**: Requires a **2-second continuous hold** with animated progress to prevent accidental triggers, or an instant **Reject** button.
+- **Transactional Outbox Dispatch**: Approved decisions dispatch signed commands to `execution_commands`, where `cryptonite_outbox` immediately routes them to the exchange gateway with full auditability.
+
+#### 2. Autonomous Background Execution Mode
+For systematic, unattended algorithmic operations:
+- High-conviction debate proposals automatically bypass the interactive staging queue and commit directly to the transactional outbox (`execution_commands`).
+- All autonomous actions remain strictly bounded by pre-trade risk checks:
+  - Hard concentration ceiling capped at 25.0% portfolio equity.
+  - Zero-DB I/O risk check in NautilusTrader execution engine.
+  - Daily UTC loss limit (-3.0%) with automatic kill-switch latching.
 
 ---
 
@@ -158,12 +227,17 @@ Once authenticated, the console displays live execution status, the global kill 
 ![Operator Dashboard](./screenshots/07_operator_dashboard.png)
 
 ### 7.3 The Global Execution Kill-Switch
-* **Armed State**: Green indicator confirms normal execution mode.
-* **Tripping the Kill-Switch**: In an emergency or severe market anomaly, click the red **TRIP KILL-SWITCH** button:
-  1. Instantly terminates all live strategy loops.
-  2. Cancels all outstanding limit and stop orders on connected exchanges.
-  3. Rejects any new orders with HTTP 423 Locked.
-* **Resume Execution**: Requires manual operator re-authentication to disarm and reset generation counters.
+The Kill-Switch can be triggered from either the full **Operator Dashboard** (`/operator`) or the **Operator Control** sidebar inside the main **Trading Terminal**:
+* **Industrial Safety Visual Feedback**:
+  - **Armed Normal State**: Emerald ambient glowing border confirms automated execution is active.
+  - **Latched Emergency State**: Pulsing hazard stripes and danger-red backdrop immediately alert operators across the screen.
+* **Tripping the Kill-Switch**: In an emergency, anomaly, or sudden market volatility:
+  1. Click the prominent **TRIP KILL-SWITCH** button.
+  2. Enter an optional reason for audit logging.
+  3. Instantly terminates all live strategy loops.
+  4. Cancels all outstanding limit and stop orders on connected exchanges.
+  5. Rejects any new orders with HTTP 423 Locked.
+* **Resume Execution**: Requires manual operator re-authentication and reason verification to disarm and increment the generation counter.
 
 ### 7.4 Deploying a New Strategy Instance
 Click **Deploy New** in the Active Strategy Instances card:
@@ -188,7 +262,16 @@ Click **Manual Trade** to dispatch direct orders to the exchange:
 ### 7.6 Multi-Asset Reconciliation Ledger
 The bottom panel runs continuous zero-tolerance audits comparing Binance exchange balances and open orders against internal PostgreSQL records. Any discrepancy is flagged immediately with an audit run ID for post-mortem analysis.
 
-### 7.7 System Configuration & Settings Dashboard
+### 7.7 Portfolio & Paper Execution Console
+The `PORTFOLIO` workspace offers comprehensive, real-time oversight over all paper trading activities and algorithmic execution.
+* **Capital Allocation Gauge**: A real-time institutional risk indicator enforcing a maximum 25% single-asset portfolio concentration limit, ensuring algorithmic strategies do not overextend total equity.
+* **Position Ledger & AI Attribution**: Active open positions update instantly via zero-latency Redis WebSockets. Each position features a dedicated **Attribution Drawer** (accessible via a slide-over panel) detailing the exact AI debate run that originated the trade, mark-to-market prices, and invariant risk bounds.
+* **Strategy Operations Management**: Operators can seamlessly manage any live algorithmic instance.
+  - **Optimistic Controls**: The Play (Resume), Pause, and Stop buttons provide instant UI feedback through optimistic updates while securely dispatching commands to the backend orchestrator.
+  - **Strategy Drill-Down**: Clicking any running strategy opens a dedicated drawer showing the configuration, parameters, allocation, and a direct shortcut to its isolated dashboard.
+* **Emergency "Flatten All" Protocol**: A single overriding stop-switch that concurrently triggers `CLOSE_POSITION` liquidations for every open algorithmic trade across the entire portfolio.
+
+### 7.8 System Configuration & Settings Dashboard
 Cryptonite features a dynamic System Configuration panel accessed via the **Settings** (Gear icon) tab in the main sidebar.
 * **Agent Prompt Customization**: Dynamically overwrite the system instructions, LLM model choice (e.g., `gemini-2.5-pro` vs `gemini-2.5-flash`), and temperature for all AI Agents. Changes take effect instantly without restarting containers.
 * **Environment & Security Health**: Provides a read-only audit view of critical `.env` configurations, including the presence of Gemini and Binance API keys, the active Environment Mode (DEMO vs PROD), and the Kill-Switch status.
@@ -223,4 +306,3 @@ Run `docker compose ps` from the `infra/` folder. All services (`postgres`, `red
 
 ### Q4: Cannot connect from another device on the Wi-Fi?
 Verify that the host firewall permits ingress on ports `3000` (Next.js) and `8000` (API Gateway / WebSocket). Ensure both devices are on the `192.168.1.0/24` subnet.
-

@@ -23,6 +23,23 @@
 | `apps/web` | Partial | Commit pending refactor; e2e run | typecheck + lint pass; `InteractiveModeToggle` deleted |
 | Observability (cross-cutting) | Stub | OpenTelemetry tracing across workers | No distributed traces |
 
+## Deferred backlog: marked for later (2026-09-29)
+
+These were agreed to be done later, not in the current phase. Each item has an ID; when you pick one up, strike it here and put its commit next to it.
+
+| ID | Item | Why it matters | Effort | Downloads |
+|---|---|---|---|---|
+| LE-1 | **Backfill market history**: at least 120 d of BTCUSDT/ETHUSDT, 1m and 1h, into the Nautilus catalog, and repair gaps. `scripts/backfill_gaps.py` writes the Analytics Lake; confirm or extend it so it also writes the catalog | The catalog holds about 19 d with gaps. Research needs 90 d in-sample + 30 d out-of-sample, and backtests over gappy days fail with `DataGapError` | about 2–3 h including checks | Binance public REST klines: about 350 requests of 1000 bars per symbol per 120 d at 1m, about 15–30 MB total, 5–15 min |
+| LE-2 | **Run the exit monitor permanently** (`--profile monitoring`) and alert when it is down | Protects AI-owned positions. After the Phase 3 merge, Brain order approvals are refused while its heartbeat is missing | about 30 min (rebuild the scanner image with the heartbeat code, start it, verify the heartbeat) | none if the image cache holds; otherwise a PyPI re-download (see LE-7) |
+| LE-3 | **Debate worker on redis-py 8**: watch for `Timeout reading` on its 5 s `XREADGROUP`; if it appears, set `socket_timeout` above the block time, as the research worker does | The research worker crashed on the same library behaviour | about 15–30 min | none |
+| LE-4 | **Redis `requirepass`** across compose and all clients | Any container on the network can read and write queues and streams | about 1–2 h | none |
+| LE-5 | **Least-privilege DB role for the backtester** (it connects as the owner `cryptonite`) | Limits what a compromised worker could do | about 1–2 h (migration, grants, compose) | none |
+| LE-6 | **Research-report table** (reports are JSON files in `data/research_reports/`) | Queryable history for the digest and the Brain | about 2 h (migration after Phase 5's 025/026) | none |
+| LE-7 | **Reproducible, faster images**: install from `uv.lock` (`uv sync --frozen`, as `ingest.Dockerfile` does) with a BuildKit cache mount, instead of unpinned `uv pip install` | Builds took about 45 min on slow PyPI and silently picked up redis-py 8 | about 2–3 h | one full dependency download to seed the cache (about 1–1.5 GB with nautilus_trader, pyarrow, polars, duckdb) |
+| LE-8 | **Brain**: a per-turn cap on `stage_debate_proposal` (paid debates without approval, budget-capped); scope decision traces per operator if multi-user ever happens | Deferred Lows from the PR #1 review | about 1 h | none |
+| LE-9 | **Known red tests**: `test_instruments_endpoint` (reference data) and `test_duckdb_query_p95_latency` (wall-clock flake) | Gates stay "N passed / 2 known failed" | about 1–2 h | none |
+| LE-10 | **Dev-data cleanup**: probe strategy `ai-gen-b7342cd3` ("Sandbox Probe EMA") with its two backtest runs; the untracked `data/backtest_artifacts/77fa3037-…/`; test rows from `test_backtest_outbox_relay` / `test_worker_three_way_recovery_matrix`, which ran once against the dev DB on 2026-09-25 | Keeps the dev DB and the UI tidy | about 15 min | none |
+
 ## Deterministic Audit Findings (2026-09-24)
 
 - Tools: `tsc --noEmit`, ESLint, `uvx ruff` 0.16.8 (repo config), `pnpm audit`, `uv lock --check`, `pip check` in the `infra-*` images, AST import scan, graphify @ `90427f7`
@@ -40,3 +57,9 @@
 ### Architectural Debt
 - 6 God Nodes (>30 edges): `NautilusCatalogManager` 47, `OperatorAuthManager` 42, `to_nautilus_bar_type()` 37, `DemoExecutionPipeline` 32, `TwoStoreCoordinator` 31, `LatchedKillSwitch` 30
 - No import cycles; no packages→services or schemas→sibling imports; no dependency conflicts (`pnpm audit` clean, `pip check` clean)
+
+## Paper matching known limitations (A0.4, 2026-09-25)
+
+- Paper strategy position queries (`is_long`/`is_short`/`is_flat`) and `close_all` read the dispatcher's **account-level** ledger: strategies (and manual trades) sharing an instrument see and close the same position. Per-instance positions arrive with mandates (blueprint Phase 5).
+- Working orders live in memory only; an orchestrator restart cancels them (their `paper_orders` rows are reconciled to CANCELED on startup).
+- Fills are top-of-book, full size, no queue position; maker fills pay the taker fee (conservative). A capped exit (position shrank while resting) is recorded FILLED with `filled_qty < quantity`.
