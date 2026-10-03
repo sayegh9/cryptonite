@@ -105,17 +105,18 @@ async def test_retrieval_only_compares_vectors_of_the_query_model(db_url, recall
     try:
         async with pool.acquire() as conn:
             run = await conn.fetchval("INSERT INTO debate_runs (instrument_id, trigger_source) VALUES ('BTCUSDT.BINANCE', 'test') RETURNING id")
-            rows = [("other model, nearest vector", 1.0, "google:text-embedding-004"),
-                    ("same model, far vector", 0.0, LOCAL),
-                    ("same model, near vector", 0.9, LOCAL)]
-            for lesson, first, model in rows:
+            rows = [("other model, nearest vector", 1.0, "google:text-embedding-004", 0.5),
+                    ("same model, far vector, big outcome", 0.0, LOCAL, -0.04),
+                    ("same model, near vector, small outcome", 0.9, LOCAL, 0.01)]
+            for lesson, first, model, alpha in rows:
                 await conn.execute(
                     "INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding, embedding_model) "
-                    "VALUES ($1, 0, 0, $2, $3, $4)", run, lesson, _vec(first), model)
+                    "VALUES ($1, 0, $5, $2, $3, $4)", run, lesson, _vec(first), model, alpha)
         text = await recall_lessons(pool, _QueryGateway(LOCAL), "brief")
-        assert text.split("\n- ") == ["same model, near vector", "same model, far vector"]
+        # other-model vectors never appear; among the same model's nearest, the bigger outcome leads
+        assert text.split("\n- ") == ["same model, far vector, big outcome", "same model, near vector, small outcome"]
         # a model with no stored vectors yet falls back to the most recent lessons, never to other spaces
         recent = await recall_lessons(pool, _QueryGateway("ollama:brand-new"), "brief")
-        assert recent.split("\n- ")[0] == "same model, near vector"
+        assert recent.split("\n- ")[0] == "same model, near vector, small outcome"
     finally:
         await pool.close()

@@ -61,14 +61,17 @@ def turn_text(output) -> str:
 
 
 async def recall_lessons(pg_pool, gateway: Gateway, context_text: str) -> str:
-    """The 3 reflections closest to this context (pgvector), else the 3 most recent. Only vectors from
-    the model that embedded the query are compared: different embedding models are different spaces."""
+    """Of the 10 reflections closest to this context (pgvector), the 3 with the largest outcome
+    (absolute alpha) come first (A7.1: lessons ranked by outcome); else the 3 most recent. Only vectors
+    from the model that embedded the query are compared: different embedding models are different spaces."""
     try:
         (vector,), model = await gateway.embed_tagged([context_text], kind="query")
         q_emb_str = f"[{','.join(map(str, vector))}]"
         async with pg_pool.acquire() as conn:
             lessons = await conn.fetch(
-                "SELECT lessons_learned FROM reflections WHERE embedding_model = $2 ORDER BY embedding <=> $1 LIMIT 3",
+                """WITH near AS (SELECT lessons_learned, alpha_vs_benchmark, embedding <=> $1 AS distance
+                                 FROM reflections WHERE embedding_model = $2 ORDER BY distance LIMIT 10)
+                   SELECT lessons_learned FROM near ORDER BY abs(alpha_vs_benchmark) DESC, distance LIMIT 3""",
                 q_emb_str, model,
             )
         if not lessons:  # nothing embedded with this model yet (e.g. right after a model switch)
