@@ -191,8 +191,8 @@ services:
     env_file:
       - ../.env
     environment:
-      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
+      DATABASE_URL: postgresql://cryptonite_backtester:backtester_dev_pass@postgres:5432/cryptonite
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_backtester:backtester_dev_pass@postgres:5432/cryptonite
       REDIS_URL: redis://redis:6379/0
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
