@@ -28,6 +28,43 @@
 
 > **Deferred backlog (LE-1 … LE-10)**, agreed for later: see [AUDIT_STATUS.md](AUDIT_STATUS.md#deferred-backlog-marked-for-later-2026-09-29).
 
+## AI-First Program — Phase 6 (workstation, 2026-10-03): local tier, in progress
+
+Branch `feat/ai-first-phase6` (from `feat/ai-first-phase0`, includes the ingest fix of PR #5).
+
+**Workstation setup (done by the operator, needs sudo):**
+- One Ollama: the snap install was removed. The systemd service runs `/usr/local/bin/ollama` **0.33.2**.
+- `/etc/systemd/system/ollama.service.d/cryptonite.conf`: `OLLAMA_HOST=172.17.0.1:11434` (docker bridge only), `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_CONTEXT_LENGTH=8192`, `After=docker.service`.
+- Verified: reachable from containers on `infra_default` and `infra_agents_net`; refused on loopback and the LAN address (invariant 8).
+- On the host, the CLI needs `OLLAMA_HOST=172.17.0.1:11434 ollama ...`.
+- Upgrade to v0.35.1 is **paused**: GitHub downloads crawled. The partial file and resume/install steps are in `~/Downloads/ollama-v0.35.1/README-resume.txt`. Not blocking: every model below runs on 0.33.2.
+
+**Models pulled** (operator-approved): `qwen3.5:9b` 6.6 GB, `gemma4:12b-it-qat` 7.2 GB, `qwen3.5:4b` 3.4 GB, `embeddinggemma` 0.62 GB (768-d). Sentiment weights (CryptoBERT, FinBERT) are in `~/models/hf`, outside the repo; FinBERT ships only as a pickle `.bin` with no stated license.
+
+**A6.1 (done):**
+- `gateway/local_tier.py`: health probe of Ollama `/api/tags`, published to Redis `local_tier:health`.
+- Fast fallback for DEGRADE routes whose local primary is down or not pulled. FAIL_CLOSED, protected and pinned models never switch.
+- `/ai/status` gains a `local_tier` field and banner.
+- Compose: `OLLAMA_BASE_URL` plus host-gateway on api, agent_worker, debate_worker and research_worker.
+- Fix: Ollama ignored `thinking_budget=0`, so Qwen3.5 reasoned before every triage answer. Now `reasoning_effort: "none"` (19 s → 0.7 s for a one-word answer).
+- **Drill** (`scripts/local_tier_drill.py`, 2026-10-03, primary `qwen3.5:4b`, fallback Flash-Lite):
+  - Healthy: 120/120 local, ~110–135 ms.
+  - `systemctl stop ollama`: `tier=DOWN`, every call answered by Flash-Lite in 0.6–1.7 s, no timeout stalls, health published as down (probe error only).
+  - `systemctl start ollama`: back to local on the next call (~10 s; first call 5.6 s while the model reloads).
+
+**A6.2 bake-off (first pass, not a certification):** existing triage cases `v1` + `v2` (10 cases) × 3 repeats.
+
+| Model | Agreement v1 / v2 | Structured valid | p50 latency | Cost |
+|---|---|---|---|---|
+| `google:gemini-2.5-flash-lite` (current) | 100% / 80% | 100% | ~0.8 s | $0.0018 total |
+| `ollama:gemma4:12b-it-qat` | 100% / 86.7% | 100% | 0.96–1.5 s | 0 |
+| `ollama:qwen3.5:9b` | 100% / 86.7% | 100% | ~1.5 s | 0 |
+| `ollama:qwen3.5:4b` | 100% / 86.7% | 100% | ~4 s | 0 |
+
+All four models miss `triage-8` (an EMA cross with reward-to-risk 2.46, labelled not worth a debate; the label is arguable). **Next:** a larger labelled triage set plus `tagging` and `summarize` eval kinds before certifying a winner and routing production traffic locally.
+
+**Known build issue (LE-7):** images `uv pip install` unpinned dependencies (the API image resolved `pydantic-ai-slim` 2.54.0), so deployed versions can drift from the locked versions the tests use. Builds also fail on transient download errors and must be retried.
+
 ## AI-First Program — Phase 5 (cloud session, 2026-09-30): mandates, autonomy, approvals, Telegram
 
 Branch `feat/ai-first-phase5` → PR to `feat/ai-first-phase0` (not `main`). Decisions, evidence and deviations: [ADR 0004](docs/adr/0004-mandates-and-autonomy.md).
