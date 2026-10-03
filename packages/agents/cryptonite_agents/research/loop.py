@@ -181,7 +181,7 @@ class ResearchLoop:
             drafted = await self._draft(spec, report)
             if drafted is None:
                 report.reason = f"no valid draft after {MAX_DRAFT_ATTEMPTS} attempts"
-                return self._save(report)
+                return await self._save(report)
             draft, saved = drafted
             report.strategy_slug, report.strategy_name = saved["slug"], draft.name
 
@@ -192,7 +192,7 @@ class ResearchLoop:
             report.overfitting_flags = overfitting_flags(report.in_sample, report.out_of_sample)
             if report.overfitting_flags:
                 report.status, report.reason = "REJECT", "overfitting guard: " + "; ".join(report.overfitting_flags)
-                return self._save(report)
+                return await self._save(report)
 
             review = await REVIEWER.run(self.gateway, self._review_prompt(draft, report))
             report.cost_usd += float(review.cost_usd)
@@ -200,7 +200,7 @@ class ResearchLoop:
             report.status, report.reason = review.output.verdict, review.output.summary
         except (GatewayError, BudgetExceeded, ResearchApiError) as e:
             report.status, report.reason = "FAILED", str(e)
-        return self._save(report)
+        return await self._save(report)
 
     @staticmethod
     def _review_prompt(draft: StrategyDraft, report: ResearchReport) -> str:
@@ -211,11 +211,15 @@ class ResearchLoop:
                 f"In-sample: {json.dumps(fmt(report.in_sample))}\nOut-of-sample: {json.dumps(fmt(report.out_of_sample))}\n"
                 f"Trials run: {len(report.trials)}")
 
-    def _save(self, report: ResearchReport) -> ResearchReport:
+    async def _save(self, report: ResearchReport) -> ResearchReport:
         try:
             self.reports_dir.mkdir(parents=True, exist_ok=True)
             (self.reports_dir / f"{report.id}.json").write_text(json.dumps(asdict(report), indent=2, default=str))
         except OSError as e:
-            logger.error("Could not write research report %s: %s", report.id, e)
+            logger.error("Could not write research report file %s: %s", report.id, e)
+        try:  # queryable history (LE-6); the JSON file stays as the artifact copy
+            await self.client.save_report(json.loads(json.dumps(asdict(report), default=str)))
+        except Exception as e:
+            logger.warning("Research report %s not stored in the API: %s", report.id, e)
         logger.info("Research %s: %s (%s)", report.id, report.status, report.reason[:200])
         return report

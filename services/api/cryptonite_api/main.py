@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.routes import (
     settings,
+    research,
     ai,
     agents,
     brain,
@@ -141,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(brain.router)
     app.include_router(ai.router)
+    app.include_router(research.router)
 
     start_time = time.monotonic()
 
