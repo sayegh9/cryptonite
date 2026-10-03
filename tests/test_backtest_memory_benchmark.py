@@ -124,6 +124,7 @@ def _setup_benchmark_catalog(catalog_dir: Path, num_bars: int = 100_000) -> tupl
     return str(inst_id), str(bar_type), base_ts, eval_start_ns, eval_end_ns
 
 
+@pytest.mark.performance  # process-lifetime peak RSS: polluted by earlier tests in a full run (LE-9)
 def test_100k_bars_peak_rss_benchmark(tmp_path: Path):
     """Execute 100,000-bar backtest and verify bounded Peak RSS (VmHWM) under chunk_size=100,000."""
     cat_dir = tmp_path / "nautilus_catalog"
