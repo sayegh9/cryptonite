@@ -212,3 +212,13 @@ async def test_streaming_skips_a_down_local_tier():
 def test_published_health_tolerates_garbage():
     assert read_published(None) is None
     assert read_published("{not json") is None
+
+
+def test_thinking_off_reaches_ollama_as_reasoning_effort_none():
+    """Routes with thinking_budget=0 (triage, summarize) must not let a local model think: Ollama's
+    OpenAI-compatible API needs ``reasoning_effort: "none"``, it ignores Gemini-style settings."""
+    from cryptonite_agents.gateway.providers.pydantic_ai_backend import _settings
+
+    assert _settings(LOCAL, 512, 0, None, 30)["extra_body"] == {"reasoning_effort": "none"}
+    assert "extra_body" not in _settings(LOCAL, 512, None, None, 30)  # provider default when unset
+    assert "extra_body" not in _settings("google:gemini-2.5-flash-lite", 512, 0, None, 30)

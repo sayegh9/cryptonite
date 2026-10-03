@@ -126,6 +126,10 @@ def _settings(model_id: str, max_output_tokens: int | None, thinking_budget: int
             budget = max(thinking_budget, PRO_MIN_THINKING_BUDGET) if "-pro" in model_id else thinking_budget
             base["google_thinking_config"] = {"thinking_budget": budget}
         return GoogleModelSettings(**base)
+    if model_id.startswith("ollama:") and thinking_budget == 0:
+        # Ollama's OpenAI-compatible API ignores ``think``; ``reasoning_effort: "none"`` turns thinking off
+        # (qwen3.5:4b one-word triage: 19 s / 265 tokens -> 0.7 s / 4 tokens on the workstation, 2026-10-03)
+        base["extra_body"] = {"reasoning_effort": "none"}
     return ModelSettings(**base)
 
 
