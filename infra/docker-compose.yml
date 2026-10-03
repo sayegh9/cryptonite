@@ -26,13 +26,14 @@ services:
     # - DB 1: AI Agent worker session cache and conversational memory (consolidated from cryptonite_redis_agents)
     image: redis:7-alpine
     container_name: cryptonite_redis
-    command: ["redis-server", "--appendonly", "yes"]
+    # LE-4: password from .env (REDIS_PASSWORD); every client URL below carries it
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-redis_dev_pass}"]
     volumes:
       - redis_data:/data
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_dev_pass}", "--no-auth-warning", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -59,7 +60,7 @@ services:
     environment:
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       INGEST_SYMBOLS: BTCUSDT,ETHUSDT
@@ -93,7 +94,7 @@ services:
     environment:
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       PORT: 8081
     ports:
       - "127.0.0.1:8081:8081"
@@ -114,7 +115,7 @@ services:
     environment:
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       PORT: 8082
     volumes:
@@ -142,7 +143,7 @@ services:
     # No env_file: public market data only, so the .env secrets (exchange/LLM keys) stay out
     environment:
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       PERP_SYMBOLS: BTCUSDT,ETHUSDT
     restart: unless-stopped
 
@@ -167,7 +168,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       PORT: 8000
     volumes:
@@ -193,7 +194,7 @@ services:
     environment:
       DATABASE_URL: postgresql://cryptonite_backtester:backtester_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_backtester:backtester_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       BACKTEST_ARTIFACTS_PATH: /app/data/backtest_artifacts
@@ -262,7 +263,7 @@ services:
       - ACCOUNT_ID=PAPER-ACCOUNT-001
       - DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       - ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
     volumes:
       - ../services/orchestrator:/app/services/orchestrator
       - ../packages/execution:/app/packages/execution
@@ -285,7 +286,7 @@ services:
     environment:
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       PORT: 8084
       ENVIRONMENT: DEMO
@@ -323,7 +324,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/1
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/1
       AGENT_TOOLS_DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
@@ -354,7 +355,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       DATABASE_URL: postgresql://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       AGENT_TOOLS_DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
@@ -383,7 +384,7 @@ services:
     environment:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       API_BASE_URL: http://api:8000
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       AGENT_TOOLS_DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       RESEARCH_REPORTS_PATH: /app/data/research_reports
@@ -409,7 +410,7 @@ services:
     environment:
       DATABASE_URL: postgresql://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
     env_file:
       - ../.env
     volumes:
@@ -435,7 +436,7 @@ services:
         condition: service_started
     environment:
       DATABASE_URL: postgresql://cryptonite_notifier:notifier_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       CRYPTONITE_API_URL: http://api:8000
     env_file:
       - ../.env.notifier
@@ -459,7 +460,7 @@ services:
     environment:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       DATABASE_URL: postgresql://cryptonite_api:api_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       LEARNER_INTERVAL_S: "300"
@@ -528,7 +529,7 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
     volumes:
       - ..:/workspace
       - test_uv_cache:/tmp/.uv-cache
