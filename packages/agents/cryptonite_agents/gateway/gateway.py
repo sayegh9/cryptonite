@@ -35,6 +35,10 @@ from cryptonite_agents.gateway.routes import (
 logger = logging.getLogger("cryptonite.agents.gateway")
 
 ROUTES_TTL_S = 30.0
+# Small, distillable roles keep their prompt in the trace (A7.4); their inputs are briefs, headlines
+# and chat summaries the platform already stores. Other roles never log prompts.
+LOG_INPUT_ROLES = frozenset({"triage", "tagging", "summarize"})
+MAX_LOGGED_INPUT = 20_000
 
 
 class GatewayError(Exception):
@@ -196,6 +200,7 @@ class Gateway:
                 role, res.model, "OK", res.input_tokens, res.output_tokens, res.cached_input_tokens,
                 res.thinking_tokens, cost, latency, parent_trace_id=parent_trace_id, session_id=ctx.session_id,
                 mandate_id=ctx.mandate_id, tool_calls=res.tool_calls, output=res.output,
+                input=prompt[:MAX_LOGGED_INPUT] if role in LOG_INPUT_ROLES else None,
             )
             ok = await write_call(self.pool, rec)
             await self.budget.record(role, cost, persisted=ok)

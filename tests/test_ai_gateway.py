@@ -422,3 +422,22 @@ async def test_missing_ledger_treats_spend_as_unknown():
     with pytest.raises(BudgetExceeded, match="SPEND_UNKNOWN"):
         await guard.check(RoleRoute("r", PRIMARY, priority=BudgetPriority.INTERACTIVE))
     await guard.check(RoleRoute("r", PRIMARY, priority=BudgetPriority.CRITICAL))
+
+
+async def test_distillable_roles_keep_their_prompt_in_the_trace(db_url):
+    """A7.4: triage/tagging/summarize traces keep the prompt (for distillation); other roles never do."""
+    telemetry = await asyncpg.create_pool(as_role(db_url, "cryptonite_ai_telemetry", "ai_telemetry_dev_pass"),
+                                          min_size=1, max_size=2)
+    owner = await asyncpg.connect(db_url)
+    try:
+        routes = {r: RoleRoute(r, PRIMARY) for r in ("triage", "debate.side")}
+        gw = Gateway(pool=telemetry, routes=routes, budget=BudgetGuard())
+        with override_model(PRIMARY, TestModel(custom_output_text="ok")):
+            t = await gw.run("triage", "MARKET BRIEF BTCUSDT.BINANCE ...")
+            d = await gw.run("debate.side", "argue the bull case")
+        rows = {r["role"]: r["input"] for r in await owner.fetch(
+            "SELECT role, input FROM ai_decision_traces WHERE id = ANY($1::uuid[])", [t.trace_id, d.trace_id])}
+        assert rows == {"triage": "MARKET BRIEF BTCUSDT.BINANCE ...", "debate.side": None}
+    finally:
+        await owner.close()
+        await telemetry.close()
