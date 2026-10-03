@@ -93,6 +93,9 @@ class GapRecoveryManager:
                 limit=1000,
             )
 
+            # A gap that reaches "now" returns the still-open kline; committing it would move the
+            # checkpoint past the live bar, and the stream's real closed bar would then be skipped
+            raw_klines = [k for k in raw_klines if k.is_closed]
             if not raw_klines:
                 continue
 

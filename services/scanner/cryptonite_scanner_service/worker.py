@@ -68,7 +68,7 @@ class ScannerWorker:
         """Initialize connections and start event / job consumption loops."""
         logger.info("Starting ScannerWorker consumer=%s group=%s", self.consumer_name, self.consumer_group)
         self.pool = await asyncpg.create_pool(self.database_url, min_size=2, max_size=10)
-        self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
+        self.redis = aioredis.from_url(self.redis_url, decode_responses=True, socket_timeout=30)  # redis-py 8 times a blocking read out at exactly its block time (LE-3)
 
         # Ensure Redis consumer group exists on cryptonite:stream:closed_bar_committed
         try:

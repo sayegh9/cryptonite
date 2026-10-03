@@ -59,8 +59,11 @@ async def fetch_klines_page(
                 raise
             await asyncio.sleep(1.0 * (attempt + 1))
 
+    now_ms = int(time.time() * 1000) - 2_000  # same rule as BinanceRestClient: the forming kline is not closed
     results = []
     for r in raw_rows:
+        if int(r[6]) >= now_ms:
+            continue
         results.append(
             RawBinanceKline(
                 open_time_ms=int(r[0]),
