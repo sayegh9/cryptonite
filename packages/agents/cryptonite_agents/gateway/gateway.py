@@ -20,6 +20,7 @@ from typing import Any
 from cryptonite_agents.gateway import pricing
 from cryptonite_agents.gateway.budget import BudgetExceeded, BudgetGuard
 from cryptonite_agents.gateway.ledger import CallRecord, write_call
+from cryptonite_agents.gateway.local_tier import LocalTierHealth, is_local
 from cryptonite_agents.gateway.permission import CallContext, PermissionGate, ToolDenied
 from cryptonite_agents.gateway.providers import pydantic_ai_backend as backend
 from cryptonite_agents.gateway.registry import ToolSpec
@@ -76,8 +77,10 @@ class Gateway:
         routes: dict[str, RoleRoute] | None = None,
         budget: BudgetGuard | None = None,
         permission: PermissionGate | None = None,
+        local_tier: LocalTierHealth | None = None,
     ) -> None:
         self.pool = pool
+        self.local_tier = local_tier or LocalTierHealth(redis=redis)
         self.budget = budget or BudgetGuard(pool=pool, redis=redis)
         self.permission = permission or PermissionGate()
         self._defaults = dict(routes or DEFAULT_ROUTES)
@@ -103,6 +106,27 @@ class Gateway:
         except Exception as e:
             logger.warning("Could not load ai_model_routes, using defaults: %s", e)
         self._routes_loaded_at = time.monotonic()
+
+    async def _candidates(self, route: RoleRoute, model_override: str | None) -> list[str]:
+        candidates = [route.primary_model]
+        # An explicitly chosen model (operator override, eval) is pinned: falling back would silently
+        # answer with a different model than the one asked for
+        if route.fallback_policy is FallbackPolicy.DEGRADE and route.fallback_model and not model_override:
+            candidates.append(route.fallback_model)
+        # A local primary that is down (or not pulled) is skipped, not timed out on every call (A6.1). Only
+        # DEGRADE routes have a second candidate, so FAIL_CLOSED roles and pinned models never switch.
+        if len(candidates) > 1 and is_local(candidates[0]) and await self.local_tier.is_down(candidates[0]):
+            logger.info("Local tier unavailable: %s skips %s", route.role, candidates[0])
+            candidates = candidates[1:]
+        return candidates
+
+    async def _note_local(self, model: str, error: Exception | None) -> None:
+        if not is_local(model):
+            return
+        if error is None:
+            await self.local_tier.mark_up()
+        elif isinstance(error, backend.ProviderUnavailable):  # not OutputInvalid: a bad answer is no outage
+            await self.local_tier.on_call_failure(model, error)
 
     async def run(
         self,
@@ -138,11 +162,7 @@ class Gateway:
                 logger.warning("Tool call denied for %s: %s", role, denied)
                 return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
 
-        candidates = [route.primary_model]
-        # An explicitly chosen model (operator override, eval) is pinned: falling back would silently
-        # answer with a different model than the one asked for
-        if route.fallback_policy is FallbackPolicy.DEGRADE and route.fallback_model and not model_override:
-            candidates.append(route.fallback_model)
+        candidates = await self._candidates(route, model_override)
 
         last_error = "no candidates"
         for attempt, model in enumerate(candidates):
@@ -164,10 +184,12 @@ class Gateway:
                     cost, latency, error=last_error, parent_trace_id=parent_trace_id, session_id=ctx.session_id))
                 await self.budget.record(role, cost, persisted=ok)
                 logger.warning("Gateway %s attempt %d on %s failed: %s", role, attempt + 1, model, e)
+                await self._note_local(model, e)
                 if isinstance(e, backend.OutputInvalid) and route.fallback_policy is FallbackPolicy.FAIL_CLOSED:
                     raise InvalidModelOutput(role, last_error) from e
                 continue
 
+            await self._note_local(model, None)
             latency = int((time.monotonic() - started) * 1000)
             cost = pricing.cost_usd(res.model, res.input_tokens, res.output_tokens, res.cached_input_tokens)
             rec = CallRecord(
@@ -180,7 +202,7 @@ class Gateway:
             return GatewayResult(
                 output=res.output, role=role, model=res.model, cost_usd=cost, input_tokens=res.input_tokens,
                 output_tokens=res.output_tokens, thinking_tokens=res.thinking_tokens, latency_ms=latency,
-                trace_id=rec.trace_id, fell_back=attempt > 0, tool_calls=res.tool_calls, messages=res.messages,
+                trace_id=rec.trace_id, fell_back=model != route.primary_model, tool_calls=res.tool_calls, messages=res.messages,
             )
 
         raise ModelUnavailable(role, last_error)
@@ -242,9 +264,7 @@ class Gateway:
                 logger.warning("Tool call denied for %s: %s", role, denied)
                 return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
 
-        candidates = [route.primary_model]
-        if route.fallback_policy is FallbackPolicy.DEGRADE and route.fallback_model and not model_override:
-            candidates.append(route.fallback_model)
+        candidates = await self._candidates(route, model_override)
 
         trace_id = uuid.uuid4()
         yield GatewayStreamEvent("start", data={"trace_id": str(trace_id), "role": role})
@@ -268,6 +288,7 @@ class Gateway:
                             yield GatewayStreamEvent(chunk.kind, text=chunk.text, data=chunk.data)
                             continue
                         res = chunk.result
+                        await self._note_local(model, None)
                         latency = int((time.monotonic() - started) * 1000)
                         cost = pricing.cost_usd(res.model, res.input_tokens, res.output_tokens,
                                                 res.cached_input_tokens)
@@ -284,7 +305,7 @@ class Gateway:
                             output=res.output, role=role, model=res.model, cost_usd=cost,
                             input_tokens=res.input_tokens, output_tokens=res.output_tokens,
                             thinking_tokens=res.thinking_tokens, latency_ms=latency, trace_id=trace_id,
-                            fell_back=attempt > 0, tool_calls=res.tool_calls, messages=res.messages,
+                            fell_back=model != route.primary_model, tool_calls=res.tool_calls, messages=res.messages,
                         ))
                         return
             except backend.BackendError as e:
@@ -292,6 +313,7 @@ class Gateway:
                 last_error = str(e)
                 u = e.usage
                 cost = pricing.cost_usd(model, u.input_tokens, u.output_tokens, u.cached_input_tokens)
+                await self._note_local(model, e)
                 terminal = emitted or attempt == len(candidates) - 1 or (
                     isinstance(e, backend.OutputInvalid) and route.fallback_policy is FallbackPolicy.FAIL_CLOSED)
                 # The client already has trace_id from "start": the attempt that ends the stream owns it,

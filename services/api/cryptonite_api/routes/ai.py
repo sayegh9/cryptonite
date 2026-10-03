@@ -17,6 +17,8 @@ import uuid
 from decimal import Decimal
 from typing import Any, Literal
 
+from cryptonite_agents.gateway.local_tier import HEALTH_KEY as LOCAL_TIER_HEALTH
+from cryptonite_agents.gateway.local_tier import read_published as read_local_tier
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution.approvals import (
     APPROVAL_COLUMNS,
@@ -454,10 +456,12 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
     r = _redis(request)
     exit_up = notifier_up = False
     budget_alert = False
+    local_tier = None
     if r is not None:
         try:
             exit_up = bool(await r.get(EXIT_MONITOR_HEARTBEAT))
             notifier_up = bool(await r.get(NOTIFIER_HEARTBEAT))
+            local_tier = read_local_tier(await r.get(LOCAL_TIER_HEALTH))
             budget_alert = bool(await r.get(f"llm_budget_alert:{datetime.datetime.now(datetime.UTC).date().isoformat()}"))
         except Exception:
             pass
@@ -476,6 +480,8 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         degraded.append("Notifier down: no Telegram approvals or Critical alerts")
     if budget_alert:
         degraded.append("LLM spend passed 70% of the daily cap: optional AI work degrades first")
+    if local_tier and not local_tier.get("healthy"):
+        degraded.append("Local model tier down: local roles fall back to the cloud model; trade decisions fail closed")
     return {
         "kill_switch": {"latched": bool(ks and ks["is_latched"]), "reason": ks["reason"] if ks else None,
                         "latched_by": ks["latched_by"] if ks else None},
@@ -484,6 +490,9 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         "account": {"equity": _dec(backstop["equity"]), "hwm": _dec(backstop["hwm"]), "drawdown_pct": _dec(backstop["drawdown_pct"]),
                     "backstop_pct": "20"} if backstop else None,
         "exit_monitor_up": exit_up, "notifier_up": notifier_up, "budget_alert": budget_alert, "degraded": degraded,
+        # None until a gateway has probed the local tier (no role routed to it yet)
+        "local_tier": {"healthy": bool(local_tier.get("healthy")), "models": local_tier.get("models", []),
+                       "error": local_tier.get("error"), "checked_at": local_tier.get("checked_at")} if local_tier else None,
     }
 
 
