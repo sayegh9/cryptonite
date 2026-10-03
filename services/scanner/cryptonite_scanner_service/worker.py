@@ -25,12 +25,14 @@ from cryptonite_scanner.models import (
     RuleGroup,
     RuleOperator,
 )
-from cryptonite_scanner.resampler import resample_1m_bars
+from cryptonite_scanner.resampler import TIMEFRAME_MINUTES, resample_1m_bars
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
 BRIEF_TTL_S = 2 * 3600
 
 logger = logging.getLogger("cryptonite.scanner.worker")
+
+SCAN_LOOKBACK_BARS = 300  # EMA-200 plus warm-up, in bars of the run's largest timeframe
 
 DEFAULT_DB_URL = "postgresql://cryptonite_scanner:scanner_dev_pass@127.0.0.1:5432/cryptonite"
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
@@ -51,6 +53,7 @@ class ScannerWorker:
         self.database_url = database_url or os.getenv("DATABASE_URL", DEFAULT_DB_URL)
         self.redis_url = redis_url or os.getenv("REDIS_URL", DEFAULT_REDIS_URL)
         self.lake_path = Path(analytics_lake_path or os.getenv("ANALYTICS_LAKE_PATH", DEFAULT_LAKE_PATH)).resolve()
+        self._file_digests: dict[tuple[str, int, int], str] = {}  # (path, size, mtime) -> sha256
         self.consumer_group = consumer_group
         self.consumer_name = consumer_name or f"worker-{os.getpid()}-{uuid4().hex[:6]}"
 
@@ -91,6 +94,37 @@ class ScannerWorker:
         # Launch consumer loops
         self._tasks.append(asyncio.create_task(self._event_consumer_loop()))
         self._tasks.append(asyncio.create_task(self._job_consumer_loop()))
+
+    def _partition_digests(self, inst_dir: Path, since_date: str) -> dict[str, str]:
+        """sha256 per date partition (``date=YYYY-MM-DD``) from ``since_date`` on, over the sorted
+        ``name:sha256`` of its parquet files. File hashes are cached by (path, size, mtime), so an
+        unchanged file is never re-read; storing per-partition digests instead of every file path keeps
+        a scan_runs row at a few kB instead of hundreds."""
+        out: dict[str, str] = {}
+        for part in sorted(inst_dir.glob("date=*")):
+            if part.name.removeprefix("date=") < since_date:
+                continue
+            entries = []
+            for f in sorted(part.glob("*.parquet")):
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                key = (str(f), st.st_size, st.st_mtime_ns)
+                digest = self._file_digests.get(key)
+                if digest is None:
+                    h = hashlib.sha256()
+                    try:
+                        with open(f, "rb") as fh:
+                            while chunk := fh.read(65536):
+                                h.update(chunk)
+                        digest = h.hexdigest()
+                    except OSError:
+                        digest = ""
+                    self._file_digests[key] = digest
+                entries.append(f"{f.name}:{digest}")
+            out[str(part)] = hashlib.sha256("\n".join(entries).encode()).hexdigest()
+        return out
 
     async def _publish_brief(self, c: Any, candidate_payload: dict[str, Any], frames: dict[str, Any]) -> str | None:
         """Build the candidate's market brief once and cache it for the debate (blueprint §4.3)."""
@@ -408,28 +442,24 @@ class ScannerWorker:
         max_seen_watermark = watermark_ns or 0
 
         frames_by_inst: dict[str, dict[str, Any]] = {}  # enriched frames, for the market brief
+        # Only the history the indicators need: EMA-200 plus warm-up on the largest timeframe. Loading the
+        # whole lake on every run grew with every backfilled day.
+        lookback_min = SCAN_LOOKBACK_BARS * max(TIMEFRAME_MINUTES.get(tf, 60) for tf in source_timeframes)
+        start_ns = time.time_ns() - lookback_min * 60 * 1_000_000_000
+        since_date = time.strftime("%Y-%m-%d", time.gmtime(start_ns / 1e9))
         for inst in source_instruments:
             raw_symbol = inst.split(".")[0]
             # 1. Fetch 1m bars from Analytics Lake via DuckDB
-            df_1m = self.query_engine.query_bars_df(symbol=raw_symbol, timeframe="1m")
+            df_1m = self.query_engine.query_bars_df(symbol=raw_symbol, timeframe="1m", start_ns=start_ns)
             if df_1m.is_empty():
                 continue
 
-            # Record source files and checksums
+            # Provenance: one digest per date partition read, over (file name, file sha256) of its files
             inst_lake_dir = self.lake_path / "binance_klines_enriched" / "binance" / "spot" / "1m" / raw_symbol
             if inst_lake_dir.exists():
-                for p_file in inst_lake_dir.glob("date=*/*.parquet"):
-                    file_str = str(p_file)
-                    source_partition_paths.append(file_str)
-                    if file_str not in source_partition_checksums:
-                        h = hashlib.sha256()
-                        try:
-                            with open(p_file, "rb") as fh:
-                                while chunk := fh.read(65536):
-                                    h.update(chunk)
-                            source_partition_checksums[file_str] = h.hexdigest()
-                        except Exception:
-                            source_partition_checksums[file_str] = ""
+                for part, digest in self._partition_digests(inst_lake_dir, since_date).items():
+                    source_partition_paths.append(part)
+                    source_partition_checksums[part] = digest
 
             max_bar_ts = int(df_1m["ts_event_ns"].max()) if "ts_event_ns" in df_1m.columns else 0
             max_seen_watermark = max(max_seen_watermark, max_bar_ts)
