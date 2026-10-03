@@ -1,12 +1,9 @@
 import asyncio
 import logging
-import duckdb
-import json
 import os
-import asyncpg
-from decimal import Decimal
-from typing import Optional
 
+import asyncpg
+import duckdb
 from cryptonite_agents.gateway import Gateway
 from cryptonite_agents.persona import Persona
 
@@ -130,21 +127,23 @@ class ReflectionEngine:
                 lesson = (await REVIEWER.run(self.gateway, reflection_prompt)).output
 
                 # Generate Embedding for the lesson
+                embedding_model = None
                 try:
-                    (embedding_vector,) = await self.gateway.embed([lesson])
+                    (embedding_vector,), embedding_model = await self.gateway.embed_tagged([lesson], kind="document")
                     embedding_str = f"[{','.join(map(str, embedding_vector))}]"
                 except Exception as e:
                     logger.error(f"Failed to generate embedding: {e}")
-                    embedding_str = None
+                    embedding_str, embedding_model = None, None
 
                 outcome_tag = "WIN" if actual_outcome_pnl > 0 else "LOSS" if actual_outcome_pnl < 0 else "FLAT"
 
                 # Save to Postgres
                 await conn.execute(
                     """
-                    INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding, instrument_type, outcome)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding,
+                                             embedding_model, instrument_type, outcome)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     """,
-                    run_id, actual_outcome_pnl, alpha, lesson, embedding_str, instrument_id, outcome_tag
+                    run_id, actual_outcome_pnl, alpha, lesson, embedding_str, embedding_model, instrument_id, outcome_tag
                 )
                 logger.info(f"Generated reflection for run {run_id}: Alpha {alpha*100:.2f}%")

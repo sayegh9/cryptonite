@@ -209,11 +209,34 @@ async def run_model(
     )
 
 
-async def embed(model_id: str, texts: Sequence[str]) -> tuple[list[list[float]], int]:
-    """Embed ``texts``; returns (vectors, approximate input tokens)."""
+# EmbeddingGemma is trained with task prefixes; documents and queries use different ones
+_EMBEDDINGGEMMA_PREFIX = {"query": "task: search result | query: ", "document": "title: none | text: "}
+
+
+async def _ollama_embed(name: str, texts: Sequence[str], kind: str) -> tuple[list[list[float]], int]:
+    import httpx
+
+    from cryptonite_agents.gateway.local_tier import ollama_root
+
+    if name.startswith("embeddinggemma"):
+        texts = [_EMBEDDINGGEMMA_PREFIX[kind] + t for t in texts]
+    try:
+        async with httpx.AsyncClient(base_url=ollama_root(), timeout=60) as client:
+            resp = await client.post("/api/embed", json={"model": name, "input": list(texts)})
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        raise ProviderUnavailable(f"ollama:{name}: {type(e).__name__}: {e}") from e
+    return data["embeddings"], int(data.get("prompt_eval_count") or 0)
+
+
+async def embed(model_id: str, texts: Sequence[str], kind: str = "document") -> tuple[list[list[float]], int]:
+    """Embed ``texts`` (``kind``: "document" to store, "query" to search); returns (vectors, input tokens)."""
     if model_id in _OVERRIDES and hasattr(_OVERRIDES[model_id], "embed_texts"):
         return await _OVERRIDES[model_id].embed_texts(texts)  # test double
     provider, _, name = model_id.partition(":")
+    if provider == "ollama":
+        return await _ollama_embed(name, texts, kind)
     if provider != "google":
         raise ProviderUnavailable(f"no embedding backend for {model_id!r}")
     from google import genai  # provider SDK, confined to this module

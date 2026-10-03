@@ -61,15 +61,19 @@ def turn_text(output) -> str:
 
 
 async def recall_lessons(pg_pool, gateway: Gateway, context_text: str) -> str:
-    """The 3 reflections closest to this context (pgvector), else the 3 most recent."""
+    """The 3 reflections closest to this context (pgvector), else the 3 most recent. Only vectors from
+    the model that embedded the query are compared: different embedding models are different spaces."""
     try:
-        (vector,) = await gateway.embed([context_text])
+        (vector,), model = await gateway.embed_tagged([context_text], kind="query")
         q_emb_str = f"[{','.join(map(str, vector))}]"
         async with pg_pool.acquire() as conn:
             lessons = await conn.fetch(
-                "SELECT lessons_learned FROM reflections WHERE embedding IS NOT NULL ORDER BY embedding <=> $1 LIMIT 3",
-                q_emb_str,
+                "SELECT lessons_learned FROM reflections WHERE embedding_model = $2 ORDER BY embedding <=> $1 LIMIT 3",
+                q_emb_str, model,
             )
+        if not lessons:  # nothing embedded with this model yet (e.g. right after a model switch)
+            async with pg_pool.acquire() as conn:
+                lessons = await conn.fetch("SELECT lessons_learned FROM reflections ORDER BY created_at DESC LIMIT 3")
     except Exception as e:
         logger.error(f"Semantic retrieval failed: {e}")
         async with pg_pool.acquire() as conn:

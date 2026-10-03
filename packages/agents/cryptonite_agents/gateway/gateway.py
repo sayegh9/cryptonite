@@ -207,20 +207,31 @@ class Gateway:
 
         raise ModelUnavailable(role, last_error)
 
-    async def embed(self, texts: Sequence[str], role: str = "embed") -> list[list[float]]:
+    async def embed(self, texts: Sequence[str], role: str = "embed", kind: str = "document") -> list[list[float]]:
+        return (await self.embed_tagged(texts, role=role, kind=kind))[0]
+
+    async def embed_tagged(self, texts: Sequence[str], role: str = "embed", kind: str = "document",
+                           model_override: str | None = None) -> tuple[list[list[float]], str]:
+        """Vectors plus the model that produced them. Vectors from different models are not comparable,
+        so callers store and filter by that model, and ``embed`` never falls back to another one: a
+        down local tier fails fast here, and retrieval degrades to recency instead (A6.4)."""
         route = await self.route(role)
+        model = normalize_model_id(model_override) if model_override else route.primary_model
         await self.budget.check(route)
+        if is_local(model) and await self.local_tier.is_down(model):
+            raise ModelUnavailable(role, f"local tier unavailable for {model}")
         started = time.monotonic()
         try:
-            vectors, tokens = await backend.embed(route.primary_model, texts)
+            vectors, tokens = await backend.embed(model, texts, kind)
         except backend.ProviderUnavailable as e:
-            await write_call(self.pool, CallRecord(role, route.primary_model, "ERROR", error=str(e)))
+            await write_call(self.pool, CallRecord(role, model, "ERROR", error=str(e)))
+            await self._note_local(model, e)
             raise ModelUnavailable(role, str(e)) from e
-        cost = pricing.cost_usd(route.primary_model, tokens, 0)
-        ok = await write_call(self.pool, CallRecord(role, route.primary_model, "OK", input_tokens=tokens, cost_usd=cost,
+        cost = pricing.cost_usd(model, tokens, 0)
+        ok = await write_call(self.pool, CallRecord(role, model, "OK", input_tokens=tokens, cost_usd=cost,
                                                     latency_ms=int((time.monotonic() - started) * 1000)))
         await self.budget.record(role, cost, persisted=ok)
-        return vectors
+        return vectors, model
 
     async def stream(
         self,
