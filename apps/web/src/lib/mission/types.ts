@@ -88,6 +88,22 @@ export interface AutonomyView {
   events: { id: number; kind: string; from_level: number | null; to_level: number | null; reason: string; actor: string; created_at: string }[];
 }
 
+/** Confidence calibration of one role (A7.2): bins of stated confidence vs hit rate, ECE in pp. */
+export interface CalibrationBin {
+  lo: number;
+  hi: number;
+  n: number;
+  mean_confidence: number | null;
+  hit_rate: number | null;
+}
+
+export interface Reliability {
+  n: number;
+  min_samples: number;
+  ece_pp: number | null;
+  bins: CalibrationBin[];
+}
+
 export interface EvalRun {
   id: string;
   set_version: string;

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { fetchAutonomy, fetchEvals } from "@/lib/mission/client";
-import type { AutonomyView, EvalRun } from "@/lib/mission/types";
+import type { AutonomyView, EvalRun, Reliability } from "@/lib/mission/types";
 
 /**
  * Autonomy & Evals state (blueprint §4.5, §7.1). Persisted: which mandate is open and whether the
@@ -14,6 +14,7 @@ interface AutonomyState {
   view: AutonomyView | null;
   evals: EvalRun[];
   calibrationNote: string | null;
+  calibration: Record<string, Reliability> | null;
   error: string | null;
 
   setMandateId: (id: string | null) => void;
@@ -31,6 +32,7 @@ export const useAutonomyStore = create<AutonomyState>()(
       view: null,
       evals: [],
       calibrationNote: null,
+      calibration: null,
       error: null,
 
       setMandateId: (mandateId) => set({ mandateId, view: null }),
@@ -42,6 +44,7 @@ export const useAutonomyStore = create<AutonomyState>()(
           view: v.status === "fulfilled" ? v.value : prev.view,
           evals: e.status === "fulfilled" ? e.value.runs : prev.evals,
           calibrationNote: e.status === "fulfilled" ? e.value.calibration_note : prev.calibrationNote,
+          calibration: e.status === "fulfilled" ? e.value.calibration ?? null : prev.calibration,
           error: v.status === "rejected" ? (v.reason as Error)?.message || "Gate report unavailable." : null,
         }));
       },

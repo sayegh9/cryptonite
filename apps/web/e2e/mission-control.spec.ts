@@ -329,4 +329,35 @@ test.describe("Mission Control", () => {
     expect(calls.confirms).toEqual([{ proposal_id: 77, totp_code: "112233" }]);
     expect(reactErrors).toEqual([]);
   });
+  test("autonomy: calibration reliability chart with a table view", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockBackend(page);
+    const bins = [
+      { lo: 0, hi: 0.2, n: 0, mean_confidence: null, hit_rate: null },
+      { lo: 0.2, hi: 0.4, n: 6, mean_confidence: 0.31, hit_rate: 0.33 },
+      { lo: 0.4, hi: 0.6, n: 9, mean_confidence: 0.52, hit_rate: 0.44 },
+      { lo: 0.6, hi: 0.8, n: 7, mean_confidence: 0.7, hit_rate: 0.57 },
+      { lo: 0.8, hi: 1, n: 2, mean_confidence: 0.85, hit_rate: 0.5 },
+    ];
+    await page.route("**/api/v1/ai/evals", (route) =>
+      route.fulfill({
+        json: {
+          runs: [],
+          calibration: { "debate.verdict": { n: 24, min_samples: 20, ece_pp: 8.4, bins } },
+          calibration_note: "Verdict conviction vs 24h outcome over 24 labelled decisions: expected calibration error 8.4 pp.",
+        },
+      }),
+    );
+    await openMissionControl(page);
+    await page.getByRole("tab", { name: "Autonomy & Evals" }).click();
+
+    const chart = page.getByTestId("reliability-debate.verdict");
+    await expect(chart).toContainText("24 labelled");
+    await expect(chart).toContainText("ECE 8.4 pp");
+    await expect(chart.getByRole("img")).toHaveAttribute("aria-label", /52% stated, 44% right, n 9/);
+    const table = page.getByRole("table", { name: "Reliability table for debate.verdict" });
+    await expect(table.getByRole("row")).toHaveCount(6); // header + 5 bins, empty bins included
+    await expect(table).toContainText("60–80%");
+    expect(reactErrors).toEqual([]);
+  });
 });

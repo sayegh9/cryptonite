@@ -1,5 +1,5 @@
 import { fetchApi } from "@/lib/api";
-import type { AiStatus, Approval, AutonomyView, EvalRun, Mandate } from "./types";
+import type { AiStatus, Approval, AutonomyView, EvalRun, Mandate, Reliability } from "./types";
 
 /** /api/v1/ai/* (the web reaches the backend only via /api/v1). Writes carry the CSRF token. */
 
@@ -13,7 +13,11 @@ export const listMandates = async (): Promise<Mandate[]> => (await fetchApi("/ai
 export const listApprovals = async (): Promise<{ now: string; approvals: Approval[] }> => fetchApi("/ai/approvals?status=pending");
 export const fetchAiStatus = async (): Promise<AiStatus> => fetchApi("/ai/status");
 export const fetchAutonomy = async (mandateId: string): Promise<AutonomyView> => fetchApi(`/ai/mandates/${mandateId}/autonomy`);
-export const fetchEvals = async (): Promise<{ runs: EvalRun[]; calibration_note: string }> => fetchApi("/ai/evals");
+export const fetchEvals = async (): Promise<{
+  runs: EvalRun[];
+  calibration_note: string;
+  calibration: Record<string, Reliability> | null;
+}> => fetchApi("/ai/evals");
 
 export const decideApproval = (id: string, decision: "APPROVE" | "VETO") => write(`/ai/approvals/${id}/decision`, { decision });
 export const createMandate = (body: Record<string, unknown>): Promise<Mandate> => write("/ai/mandates", body);

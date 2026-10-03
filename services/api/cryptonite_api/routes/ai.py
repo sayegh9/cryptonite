@@ -33,6 +33,7 @@ from cryptonite_execution.autonomy import (
     transition,
 )
 from cryptonite_execution.autonomy_metrics import gate_report, propose_if_ready, report_view
+from cryptonite_execution.calibration import reliability, verdict_points
 from cryptonite_execution.mandate_store import (
     MANDATE_COLUMNS,
     apply_transition,
@@ -601,7 +602,12 @@ async def eval_results(request: Request, auth: dict = Depends(require_operator))
         rows = await conn.fetch(
             """SELECT DISTINCT ON (set_version, model) id, set_version, model, metrics, passed, created_at
                FROM ai_eval_runs ORDER BY set_version, model, created_at DESC""")
+        verdict = reliability(await verdict_points(conn))
     return {"runs": [{"id": str(r["id"]), "set_version": r["set_version"], "model": r["model"], "passed": r["passed"],
                       "metrics": json.loads(r["metrics"]) if isinstance(r["metrics"], str) else r["metrics"],
                       "created_at": r["created_at"].isoformat()} for r in rows],
-            "calibration": None, "calibration_note": "Calibration is measured from A7.2 (outcome labels); until then the L3 gate fails closed."}
+            "calibration": {"debate.verdict": verdict},
+            "calibration_note": (f"Verdict conviction vs 24h outcome over {verdict['n']} labelled decisions: "
+                                 f"expected calibration error {verdict['ece_pp']} pp." if verdict["ece_pp"] is not None else
+                                 f"{verdict['n']} labelled decisions so far; calibration is reported from "
+                                 f"{verdict['min_samples']} on (until then the L3 gate fails closed).")}

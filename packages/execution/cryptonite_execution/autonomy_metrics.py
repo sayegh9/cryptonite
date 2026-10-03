@@ -7,7 +7,8 @@ Everything is measured since the mandate reached its current level (``level_sinc
 - Sortino of daily mandate equity vs Sortino of BTC buy-and-hold over the same days (the tracker
   stores the BTC price with every snapshot); fees are already inside mandate equity;
 - veto rate: vetoed / decided ADD_RISK approvals created at L2;
-- calibration: not measured before A7.2 (``None``), so the L3 gate fails closed.
+- calibration (A7.2): expected calibration error of the mandate's verdict conviction against 24h
+  outcomes (``calibration.py``); ``None`` below the minimum sample, so the L3 gate fails closed.
 
 ``propose_if_ready`` records a system promotion proposal when the gate passes (never a promotion).
 """
@@ -27,6 +28,7 @@ from cryptonite_execution.autonomy import (
     period_returns,
     sortino,
 )
+from cryptonite_execution.calibration import calibration_error_pp
 from cryptonite_execution.mandate_store import record_event
 
 
@@ -61,7 +63,8 @@ async def gate_metrics(conn, mandate: Mandate, now: datetime.datetime | None = N
         max_drawdown_pct=Decimal(str(max_dd)) if max_dd is not None else None, breaches=int(breaches or 0),
         sortino=sortino(period_returns(eq)),
         benchmark_sortino=sortino(period_returns(bench)) if len(bench) == len(eq) else None,
-        honest_paper=True, calibration_error_pp=None, veto_rate_pct=veto_rate,
+        honest_paper=True, calibration_error_pp=await calibration_error_pp(conn, mandate.id, since),
+        veto_rate_pct=veto_rate,
     )
 
 
