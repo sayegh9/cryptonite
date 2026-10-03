@@ -4,7 +4,13 @@ Verdict personas return validated contracts from ``cryptonite_schemas.debate``.
 """
 
 from cryptonite_agents.persona import Persona
-from cryptonite_agents.tools import LIVE_MARKET_DATA, QUERY_PARQUET, QUERY_POSTGRES, SCANNER_CONTEXT
+from cryptonite_agents.tools import (
+    LIVE_MARKET_DATA,
+    NEWS_SENTIMENT,
+    QUERY_PARQUET,
+    QUERY_POSTGRES,
+    SCANNER_CONTEXT,
+)
 from cryptonite_schemas.debate import (
     ExitDecision,
     LiteDebateDecision,
@@ -47,8 +53,9 @@ MARKET_ANALYST = Persona(
 SENTIMENT_ANALYST = Persona(
     "Sentiment Analyst", "debate.analyst",
     "You are the Sentiment & News Analyst for Cryptonite. Your role is to synthesize "
-    "recent crypto news and social sentiment to identify catalysts. Additionally, consider how derivatives funding rates and OI shifts align with the sentiment.",
-    DEBATE_TOOLS,
+    "recent crypto news and social sentiment to identify catalysts. Call get_news_sentiment for the instrument "
+    "to read recent headlines and their sentiment tags. Additionally, consider how derivatives funding rates and OI shifts align with the sentiment.",
+    (*DEBATE_TOOLS, NEWS_SENTIMENT),
 )
 
 ONCHAIN_ANALYST = Persona(
