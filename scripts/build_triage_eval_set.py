@@ -160,6 +160,9 @@ def main() -> None:
     p.add_argument("--per-class", type=int, default=30)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--source", choices=["synthetic", "lake"], default="synthetic")
+    p.add_argument("--max-states", type=int, default=400, help="lake: sampled 15m closes per symbol")
+    p.add_argument("--since-days-ago", type=float, help="lake: only closes newer than this (a later-data holdout)")
+    p.add_argument("--until-days-ago", type=float, help="lake: only closes older than this (training data)")
     args = p.parse_args()
     rng = random.Random(args.seed)
     if args.source == "synthetic":
@@ -176,8 +179,13 @@ def main() -> None:
         lo, hi = int(df["ts_event_ns"].min()) + HISTORY_DAYS * 86400 * 10**9, int(df["ts_event_ns"].max())
         # 1m bars are stamped at their close, so a 15m bar closes exactly on a 15m boundary
         closes = list(range(lo - lo % TF_NS["15m"] + TF_NS["15m"], hi + 1, TF_NS["15m"]))
+        now_ns = int(datetime.now(UTC).timestamp() * 1e9)
+        if args.since_days_ago is not None:
+            closes = [c for c in closes if c >= now_ns - args.since_days_ago * 86400e9]
+        if args.until_days_ago is not None:
+            closes = [c for c in closes if c < now_ns - args.until_days_ago * 86400e9]
         rng.shuffle(closes)
-        for end_ns in closes[:400]:
+        for end_ns in closes[:args.max_states]:
             frames = frames_at(df, end_ns)
             if frames is None:
                 continue
