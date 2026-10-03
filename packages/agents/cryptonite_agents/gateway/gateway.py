@@ -39,6 +39,8 @@ ROUTES_TTL_S = 30.0
 # and chat summaries the platform already stores. Other roles never log prompts.
 LOG_INPUT_ROLES = frozenset({"triage", "tagging", "summarize"})
 MAX_LOGGED_INPUT = 20_000
+# Tools that start paid or external work, capped per model turn (LE-8)
+PER_TURN_TOOL_LIMITS = {"stage_debate_proposal": 1}
 
 
 class GatewayError(Exception):
@@ -111,6 +113,28 @@ class Gateway:
             logger.warning("Could not load ai_model_routes, using defaults: %s", e)
         self._routes_loaded_at = time.monotonic()
 
+    def _guard(self, role: str, ctx: CallContext):
+        """Per-call tool gate: the permission check, plus per-turn caps on tools that start paid work
+        (LE-8: one model turn must not queue a burst of debates)."""
+        used: dict[str, int] = {}
+
+        def guard(spec: ToolSpec) -> str | None:
+            try:
+                self.permission.check(spec, ctx)
+            except ToolDenied as denied:
+                logger.warning("Tool call denied for %s: %s", role, denied)
+                return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
+            limit = PER_TURN_TOOL_LIMITS.get(spec.name)
+            if limit is not None:
+                if used.get(spec.name, 0) >= limit:
+                    logger.warning("Tool call denied for %s: %s over its per-turn limit", role, spec.name)
+                    return (f"Tool call denied: {spec.name} is limited to {limit} per turn. "
+                            "Tell the operator what else you would stage instead of calling it again.")
+                used[spec.name] = used.get(spec.name, 0) + 1
+            return None
+
+        return guard
+
     async def _candidates(self, route: RoleRoute, model_override: str | None) -> list[str]:
         candidates = [route.primary_model]
         # An explicitly chosen model (operator override, eval) is pinned: falling back would silently
@@ -158,13 +182,7 @@ class Gateway:
                                                    parent_trace_id=parent_trace_id, session_id=ctx.session_id))
             raise
 
-        def guard(spec: ToolSpec) -> str | None:
-            try:
-                self.permission.check(spec, ctx)
-                return None
-            except ToolDenied as denied:
-                logger.warning("Tool call denied for %s: %s", role, denied)
-                return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
+        guard = self._guard(role, ctx)
 
         candidates = await self._candidates(route, model_override)
 
@@ -272,13 +290,7 @@ class Gateway:
                                                    parent_trace_id=parent_trace_id, session_id=ctx.session_id))
             raise
 
-        def guard(spec: ToolSpec) -> str | None:
-            try:
-                self.permission.check(spec, ctx)
-                return None
-            except ToolDenied as denied:
-                logger.warning("Tool call denied for %s: %s", role, denied)
-                return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
+        guard = self._guard(role, ctx)
 
         candidates = await self._candidates(route, model_override)
 
