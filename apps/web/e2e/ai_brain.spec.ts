@@ -123,18 +123,134 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     await riskChip.click();
     await expect(page.locator("text=Orchestrator Synthesis for")).toBeVisible({ timeout: 5000 });
 
-    // 8. Test Demo Debate Trigger & Action Card Generation
-    const demoDebateBtn = page.locator("button", { hasText: "⚡ Trigger BTCUSDT Debate" });
-    await demoDebateBtn.click();
+    // 8. Triggering a debate only queues it: no card is invented locally
+    const triggerBtn = page.locator("button", { hasText: "⚡ Trigger BTCUSDT Debate" });
+    await triggerBtn.click();
+    await expect(page.getByText("Debate queued: BTCUSDT")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator("text=PENDING_APPROVAL")).toHaveCount(0);
+  });
 
-    // Verify Action Card appeared in Action Inbox
+  test("approves a server PENDING_APPROVAL debate with the operator's allocation_pct", async ({ page }) => {
+    const RUN_ID = "11111111-2222-4333-8444-555555555555";
+    let approveBody: Record<string, unknown> | null = null;
+
+    await page.addInitScript(() => {
+      localStorage.setItem("csrf_token", "test-csrf");
+      localStorage.setItem("cryptonite:ai-brain-tour-seen", "true");
+    });
+    await page.route("**/api/v1/paper/**", async (route) => {
+      const url = route.request().url();
+      const body = url.includes("/paper/accounts")
+        ? [{ account_id: "PAPER-ACCOUNT-001", venue: "PAPER", currency: "USDT", starting_balance: "10000", cash_balance: "10000", total_equity: "10000", realized_pnl: "0", daily_realized_pnl: "0", daily_loss_latched: false }]
+        : url.includes("/paper/kill-switch") ? { id: 1, is_latched: false } : [];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.route("**/api/v1/agents/debates*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { runId: RUN_ID, instrumentId: "ETHUSDT.BINANCE", status: "PENDING_APPROVAL", decision: "BUY (70% Conviction) • test", timestamp: Date.now(), turns: [] },
+        ]),
+      });
+    });
+    await page.route(`**/api/v1/agents/debates/${RUN_ID}/decision`, async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ run_id: RUN_ID, allocation_pct: 5 }) });
+    });
+    await page.route(`**/api/v1/agents/debates/${RUN_ID}/approve`, async (route) => {
+      approveBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "approved", run_id: RUN_ID, allocation_pct: 2 }),
+      });
+    });
+
+    await page.goto("/");
+    await page.locator("button", { hasText: "AI Brain" }).click();
+    await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
+
     await expect(page.locator("text=PENDING_APPROVAL")).toBeVisible({ timeout: 5000 });
-    const approveBtn = page.locator("[data-testid='approve-debate-btn']");
-    await approveBtn.dispatchEvent("click");
+    // The slider starts at the AI's proposal and shows USD only from the known equity (10,000)
+    await expect(page.getByText("AI proposed 5%")).toBeVisible();
+    await expect(page.getByTestId("inbox-size-usd")).toContainText("$500");
 
-    // Verify status update by switching to Staged tab
-    const stagedTab = page.locator("button", { hasText: "Staged" });
-    await stagedTab.click();
+    await page.getByLabel(/Allocation: \d+% of equity/).fill("2");
+    await expect(page.getByTestId("inbox-size-usd")).toContainText("$200");
+
+    const approveBtn = page.getByTestId("approve-debate-btn");
+    await expect(approveBtn).toBeEnabled();
+    await approveBtn.click();
+
+    await expect.poll(() => approveBody).not.toBeNull();
+    expect(approveBody).toEqual({ allocation_pct: 2 });
+    expect(approveBody).not.toHaveProperty("targetAllocationUsd");
+
+    // The card shows the server's status (COMPLETED after a confirmed approval)
+    await page.locator("button", { hasText: "Staged" }).click();
     await expect(page.locator("text=COMPLETED").first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test("approve without a session shows an error, never a local COMPLETED", async ({ page }) => {
+    const RUN_ID = "aaaaaaaa-2222-4333-8444-555555555555";
+    let approveCalled = false;
+    await page.addInitScript(() => {
+      localStorage.removeItem("csrf_token");
+      localStorage.setItem("cryptonite:ai-brain-tour-seen", "true");
+    });
+    await page.route("**/api/v1/auth/me", (route) => route.fulfill({ status: 401, contentType: "application/json", body: "{}" }));
+    await page.route("**/api/v1/paper/**", async (route) => {
+      const url = route.request().url();
+      const body = url.includes("/paper/accounts")
+        ? [{ account_id: "PAPER-ACCOUNT-001", total_equity: "10000", cash_balance: "10000", starting_balance: "10000", realized_pnl: "0", daily_realized_pnl: "0" }]
+        : url.includes("/paper/kill-switch") ? { id: 1, is_latched: false } : [];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.route("**/api/v1/agents/debates*", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ runId: RUN_ID, instrumentId: "BTCUSDT.BINANCE", status: "PENDING_APPROVAL", decision: "BUY", timestamp: Date.now(), turns: [] }]),
+    }));
+    await page.route(`**/api/v1/agents/debates/${RUN_ID}/decision`, (route) => route.fulfill({ status: 404, contentType: "application/json", body: "{}" }));
+    await page.route(`**/api/v1/agents/debates/${RUN_ID}/approve`, async (route) => {
+      approveCalled = true;
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    });
+
+    await page.goto("/");
+    await page.locator("button", { hasText: "AI Brain" }).click();
+    await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
+    await expect(page.locator("text=PENDING_APPROVAL")).toBeVisible({ timeout: 5000 });
+    await page.getByTestId("approve-debate-btn").click();
+
+    await expect(page.getByTestId("inbox-action-error")).toContainText("Session expired, sign in again");
+    expect(approveCalled).toBe(false);
+    await expect(page.locator("text=PENDING_APPROVAL")).toBeVisible();
+  });
+
+  test("agent and portfolio failures show errors, never invented analysis or sizes", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("cryptonite:ai-brain-tour-seen", "true"));
+    await page.route("**/agent-api/**", (route) => route.fulfill({ status: 500, contentType: "application/json", body: "{}" }));
+    await page.route("**/api/v1/paper/**", (route) => route.fulfill({ status: 500, contentType: "application/json", body: "{}" }));
+    await page.route("**/api/v1/agents/debates*", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ runId: "bbbbbbbb-2222-4333-8444-555555555555", instrumentId: "BTCUSDT.BINANCE", status: "PENDING_APPROVAL", decision: "BUY", timestamp: Date.now(), turns: [] }]),
+    }));
+    await page.route("**/api/v1/agents/debates/*/decision", (route) => route.fulfill({ status: 500, contentType: "application/json", body: "{}" }));
+
+    await page.goto("/");
+    await page.locator("button", { hasText: "AI Brain" }).click();
+    await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
+
+    await page.locator("button", { hasText: "Audit Capital & Risk" }).click();
+    await expect(page.getByTestId("canvas-agent-error")).toContainText("agent unavailable: 500");
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    const canvas = page.locator("main");
+    await expect(canvas.getByText(/RSI|CRO approved|Setup approved/)).toHaveCount(0);
+
+    // Unknown equity: size shows as unavailable and Approve is disabled
+    await expect(page.getByTestId("inbox-size-usd")).toHaveText("equity unavailable");
+    await expect(page.getByTestId("approve-debate-btn")).toBeDisabled();
   });
 });

@@ -8,10 +8,12 @@ import { BrainCircuit, Search, ShieldCheck, Zap, ArrowRight, ArrowLeft, CheckCir
 interface AIBrainTourModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onRunDemo?: () => void;
+  /** Queue a real debate on `symbol` (the same trigger call as the toolbar button). */
+  onRunDebate?: () => void;
+  symbol?: string;
 }
 
-export function AIBrainTourModal({ isOpen, onClose, onRunDemo }: AIBrainTourModalProps) {
+export function AIBrainTourModal({ isOpen, onClose, onRunDebate, symbol }: AIBrainTourModalProps) {
   const [step, setStep] = useState<number>(1);
   const totalSteps = 3;
 
@@ -36,10 +38,10 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDemo }: AIBrainTourModa
     onClose();
   };
 
-  const handleTryDemo = () => {
+  const handleRunDebate = () => {
     handleComplete();
-    if (onRunDemo) {
-      onRunDemo();
+    if (onRunDebate) {
+      onRunDebate();
     }
   };
 
@@ -139,14 +141,14 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDemo }: AIBrainTourModa
               <div className="p-3.5 bg-zinc-900/90 border border-zinc-800 rounded-lg space-y-2.5">
                 <div className="flex items-center justify-between text-xs font-mono">
                   <span className="text-emerald-400 font-bold flex items-center space-x-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>High Conviction Setup (82%)</span>
+                    <span className="w-2 h-2 rounded-full bg-zinc-500" />
+                    <span>Verdict &amp; conviction (example layout)</span>
                   </span>
-                  <span className="text-zinc-400 font-bold">ETHUSDT Long</span>
+                  <span className="text-zinc-400 font-bold">&lt;symbol&gt; · &lt;side&gt;</span>
                 </div>
                 <ul className="text-xs space-y-1 text-zinc-300 list-disc list-inside">
-                  <li><strong>Thesis:</strong> Orderbook bid wall at $3,150 + 1h momentum alignment.</li>
-                  <li><strong>Invalidation:</strong> Stop-loss placed below structural swing at $3,120.</li>
+                  <li><strong>Thesis:</strong> the portfolio manager's reasoning from the debate.</li>
+                  <li><strong>Size:</strong> a % of paper equity (1–25%), shown in USD only when equity is known.</li>
                 </ul>
                 <div className="pt-2 border-t border-zinc-800 flex flex-wrap items-center justify-between gap-2">
                   <span className="text-[11px] font-mono text-zinc-400">Interactive Sizing Slider</span>
@@ -205,11 +207,11 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDemo }: AIBrainTourModa
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
                     size="sm"
-                    onClick={handleTryDemo}
+                    onClick={handleRunDebate}
                     className="bg-purple-600 hover:bg-purple-500 text-white font-bold h-8 text-xs font-mono flex items-center space-x-1"
                   >
                     <Zap className="w-3 h-3" />
-                    <span>Try a Demo Debate</span>
+                    <span>Run a real debate on {symbol || "the active symbol"}</span>
                   </Button>
                   <Button
                     size="sm"

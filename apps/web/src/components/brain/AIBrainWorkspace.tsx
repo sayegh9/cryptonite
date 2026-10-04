@@ -37,7 +37,6 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
   const [showInbox, setShowInbox] = useState<boolean>(true);
 
   const activeDebates = useDebateStore((state) => state.activeDebates);
-  const addDebateRun = useDebateStore((state) => state.addDebateRun);
   const activeDebatesCount = Object.keys(activeDebates).length;
 
   // Restore panel preferences & auto-open tour for first-time user
@@ -72,58 +71,11 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
     } catch {}
   };
 
-  const handleRunDemoDebate = () => {
-    const demoRunId = "demo-" + Date.now();
-    const sym = selectedSymbol || "BTCUSDT";
-
-    addDebateRun({
-      runId: demoRunId,
-      instrumentId: sym,
-      status: "PENDING_APPROVAL",
-      decision: `OVERWEIGHT (84% Conviction) • Long Setup with $25,000 max size • Stop at -1.6%`,
-      turns: [
-        {
-          runId: demoRunId,
-          role: "Market Scout",
-          content: `Pulled L2 orderbook depth for ${sym}. Detected significant institutional bid wall of 420 BTC ($28.5M) at swing support. Funding rate is neutral-positive (0.008% / 8h).`,
-          timestamp: Date.now() - 3000,
-        },
-        {
-          runId: demoRunId,
-          role: "Bull Debater",
-          content: `Strong bullish momentum breakout detected on 15m/1h timeframes. Volume delta is +2.4x standard deviation. Target upside resistance: +3.2%.`,
-          timestamp: Date.now() - 2000,
-        },
-        {
-          runId: demoRunId,
-          role: "Bear Debater",
-          content: `Caution: 4H RSI is near overbought (68.4). Watch for a potential liquidity sweep before continuation. Invalidation tight stop is mandatory.`,
-          timestamp: Date.now() - 1000,
-        },
-        {
-          runId: demoRunId,
-          role: "Risk Guardian (CRO)",
-          content: `Calculated position sizing bounds. Recommended max allocation: $25,000 USD. Stop-loss placed at -1.6% below swing support. Max drawdown: $400.`,
-          timestamp: Date.now(),
-        },
-      ],
-    });
-
-    // Automatically open inbox if hidden so user sees the decision card
-    if (!showInbox) toggleInbox(true);
-
-    toast.success(`Demo Debate Generated: ${sym}`, {
-      description: "Action Card staged in Action Inbox for review and approval.",
-    });
-  };
-
+  // Queues a real debate; nothing is added to the inbox until the worker reports the run
   const handleTriggerLiveDebate = async (symbol: string) => {
     const sym = symbol || selectedSymbol || "BTCUSDT";
-    // Optimistically generate debate in state for instantaneous operator feedback
-    handleRunDemoDebate();
-
     try {
-      await fetch("/agent-api/debates/trigger", {
+      const res = await fetch("/agent-api/debates/trigger", {
         method: "POST",
         credentials: "include",
         headers: {
@@ -132,8 +84,17 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
         },
         body: JSON.stringify({ symbol: sym, timeframe: "1m" }),
       });
-    } catch {
-      // Ignore background network error in demo / standalone mode
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const detail = typeof body.detail === "string" ? body.detail : typeof body.error === "string" ? body.error : "";
+        throw new Error(res.status === 401 || res.status === 403 ? "Session expired, sign in again" : detail || `HTTP ${res.status}`);
+      }
+      if (!showInbox) toggleInbox(true);
+      toast.success(`Debate queued: ${sym}`, {
+        description: "Its card appears in the Action Inbox when the debate worker reports it.",
+      });
+    } catch (err) {
+      toast.error(`Debate not queued: ${sym}`, { description: err instanceof Error ? err.message : "Network error" });
     }
   };
 
@@ -268,7 +229,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
         {/* Zone 3: Action & Decision Inbox (Right Rail) */}
         {showInbox && (
           <aside className="w-72 xl:w-80 flex-none h-full border-l border-zinc-800 bg-zinc-950 flex flex-col min-h-0 min-w-0 z-10 transition-all">
-            <ActionInbox onRunDemoDebate={handleRunDemoDebate} />
+            <ActionInbox onTriggerDebate={() => handleTriggerLiveDebate(selectedSymbol)} symbol={selectedSymbol || "BTCUSDT"} />
           </aside>
         )}
       </div>
@@ -277,7 +238,8 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
       <AIBrainTourModal
         isOpen={isTourOpen}
         onClose={() => setIsTourOpen(false)}
-        onRunDemo={handleRunDemoDebate}
+        onRunDebate={() => handleTriggerLiveDebate(selectedSymbol)}
+        symbol={selectedSymbol || "BTCUSDT"}
       />
     </div>
   );
