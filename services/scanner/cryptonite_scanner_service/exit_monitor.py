@@ -267,7 +267,7 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook) -> None:
 
 async def monitor_loop():
     logger.info("Starting exit monitor (stop %.1f%%, trail %.1f%% after +%.1f%%)", STOP_LOSS_PCT, TRAIL_PCT, TRAIL_ACTIVATE_PCT)
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=30)  # redis-py 8 times a blocking read out at exactly its block time (LE-3)
     pool = await asyncpg.create_pool(DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"), min_size=1, max_size=2)
     quotes = QuoteBook()
     follower = asyncio.create_task(quotes.follow(redis_client))
