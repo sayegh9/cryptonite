@@ -530,6 +530,7 @@ services:
       UV_FROZEN: "1"
       UV_PYTHON_DOWNLOADS: never
       PYTHONDONTWRITEBYTECODE: "1"
+      CRYPTONITE_ENV: test  # allows the all-zero dev TOTP key (R7.10)
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0

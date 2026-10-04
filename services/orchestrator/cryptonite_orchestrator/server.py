@@ -31,6 +31,7 @@ from cryptonite_orchestrator.mandate_gate import (
 )
 from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, MandateReject, mandate_id_from_instance
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
+from cryptonite_orchestrator.ops_monitor import ops_monitor
 from nautilus_trader.model import Bar, BarType
 from nautilus_trader.model import Price, Quantity
 
@@ -682,7 +683,8 @@ async def command_poller(pool, engine, quote_cache=None):
                         payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
                         acc_id = getattr(engine, "account_id", ACCOUNT_ID)
                         
-                        logger.info("Orchestrator processing %s for %s", cmd_type, target)
+                        trace_id = row.get("decision_trace_id") or payload.get("decision_trace_id")
+                        logger.info("Orchestrator processing %s for %s (decision_trace_id=%s)", cmd_type, target, trace_id)
                         
                         if cmd_type == "DEPLOY":
                             await conn.execute("""
@@ -1013,6 +1015,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                         )
                                     if fill:
                                         await apply_paper_fill(conn, engine, fill, instance_id, order_type, price_dec)
+                                        logger.info("Order %s filled at %s (decision_trace_id=%s)", client_oid, fill.price, trace_id)
                                     else:
                                         # Works until a quote reaches it: a non-marketable limit rests at its
                                         # limit; an order without a quote yet takes the first quote.
@@ -1030,7 +1033,8 @@ async def command_poller(pool, engine, quote_cache=None):
                                             client_oid, instance_id, acc_id, canonical_inst,
                                             side, order_type, qty_dec, price_dec,
                                         )
-                                        logger.info("Order %s accepted and working: %s %s %s @ %s", client_oid, order_type, side, qty_dec, price_dec)
+                                        logger.info("Order %s accepted and working: %s %s %s @ %s (decision_trace_id=%s)",
+                                                    client_oid, order_type, side, qty_dec, price_dec, trace_id)
 
                                     await conn.execute(
                                         """
@@ -1287,6 +1291,7 @@ async def main():
     asyncio.create_task(consume_perp_marks(redis, engine))
     asyncio.create_task(risk_monitor(engine, pool, redis))
     asyncio.create_task(publish_positions())
+    asyncio.create_task(ops_monitor(engine, pool, redis))  # enforced limits (R1.8) + heartbeat alerts (R7.5)
 
     # Stream consumer for nautilus:stream:bus
     stream_name = "nautilus:stream:bus"

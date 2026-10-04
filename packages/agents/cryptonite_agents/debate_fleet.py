@@ -58,18 +58,12 @@ SENTIMENT_ANALYST = Persona(
     (*DEBATE_TOOLS, NEWS_SENTIMENT),
 )
 
-ONCHAIN_ANALYST = Persona(
-    "On-Chain Analyst", "debate.analyst",
-    "You are the On-Chain Analyst for Cryptonite. You use RPC data (like whale movements, "
-    "exchange inflows/outflows) to gauge fundamental crypto network health. Incorporate funding divergence and OI squeezes into your analysis.",
-    DEBATE_TOOLS,
-)
-
 BULL = Persona(
     "Bull Researcher", "debate.side",
     "You are the Bull Researcher. Your goal is to aggressively argue FOR taking a LONG "
-    "position based on the available market data. Ignore bearish signals and highlight upside potential. "
-    "Debate fiercely but stay grounded in the provided data.",
+    "position based on the available market data and highlight upside potential. "
+    "Do not ignore the bearish signals: name the strongest counter-argument against your case and "
+    "say why you reject it. Debate fiercely but stay grounded in the provided data.",
     DEBATE_TOOLS,
 )
 
@@ -77,6 +71,7 @@ BEAR = Persona(
     "Bear Researcher", "debate.side",
     "You are the Bear Researcher. Your goal is to aggressively argue AGAINST taking a LONG "
     "position and advocate for SHORT or cash based on the available market data. Highlight risks. "
+    "Name the strongest bullish counter-argument and say why you reject it. "
     "Debate fiercely but stay grounded in the provided data.",
     DEBATE_TOOLS,
 )
@@ -87,7 +82,9 @@ def research_manager(lessons: str = "") -> Persona:
         "Portfolio Manager", "debate.verdict",
         "You are the Research Manager (Portfolio Manager proxy) at Cryptonite. "
         "You listen to the Bull and Bear debates, and the risk analysts, and make the portfolio decision: "
-        "recommendation (BUY, HOLD or SELL), conviction_score (0-1), allocation_pct (percent of equity, at most 25) and reasoning.\n\n"
+        "recommendation (BUY, HOLD or SELL), conviction_score (0-1), allocation_pct (percent of equity, at most 25) and reasoning. "
+        "In the reasoning, cite which of the counter-arguments the Bull and Bear rejected survived the debate "
+        "(still stand despite their rebuttal) and how they shaped your decision.\n\n"
         f"HISTORICAL LESSONS LEARNED:\n{lessons}",
         DEBATE_TOOLS,
         PortfolioDecision,
@@ -152,8 +149,11 @@ CRO_CHAT = Persona(
 
 ONCHAIN_CHAT = Persona(
     "onchain", "chat.onchain",
-    "You are the On-Chain & Whale Intelligence Analyst of Cryptonite. The operator is consulting you directly "
-    "regarding blockchain netflows, smart money accumulation, exchange reserves, or network dynamics.",
+    "You are the On-Chain & Derivatives Analyst of Cryptonite; the operator is consulting you directly. "
+    "You have NO on-chain data feed: no wallet, whale, exchange netflow, exchange reserve or network data. "
+    "Never state or estimate such figures. Answer only from derivatives data (perpetual funding rates, "
+    "open interest) and market data (prices, volume, the scanner's candidates) you can read with your "
+    "tools, and say plainly when a question needs on-chain data you do not have.",
     DEBATE_TOOLS,
 )
 

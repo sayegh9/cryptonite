@@ -195,3 +195,40 @@ async def test_web_approval_of_a_debate_decides_its_open_approval_once(h, routin
     assert again.status_code == 409  # the run is no longer pending
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE payload->>'run_id' = $1", str(run_id)) == 1
     assert await h.pool.fetchval("SELECT status FROM debate_runs WHERE id = $1", run_id) == "COMPLETED"
+
+
+# --- R7.4: decision_trace_id set at insert on every command a debate leads to ----------------------
+
+TRACE = "0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e"
+
+
+async def test_l3_command_carries_the_decision_trace_id(h, routing):
+    await h.mandate(level=3)
+    run_id = uuid.uuid4()
+    async with h.pool.acquire() as conn:
+        await routing.route_entry(conn, run_id, BTC, "Buy", 0.8, 5.0, decision_trace_id=TRACE)
+    cmd = await h.pool.fetchrow("SELECT decision_trace_id, payload FROM execution_commands WHERE idempotency_key = $1",
+                                f"debate:{run_id}")
+    assert str(cmd["decision_trace_id"]) == TRACE
+    assert json.loads(cmd["payload"])["decision_trace_id"] == TRACE
+
+
+async def test_approved_command_carries_the_decision_trace_id(h, routing):
+    from cryptonite_execution.approvals import decide_approval
+    await h.mandate(level=1)
+    run_id = uuid.uuid4()
+    async with h.pool.acquire() as conn:
+        await routing.route_entry(conn, run_id, BTC, "Buy", 0.8, 5.0, decision_trace_id=TRACE)
+        approval_id = await conn.fetchval("SELECT id FROM ai_approvals WHERE source_ref = $1", str(run_id))
+        decision = await decide_approval(conn, approval_id, True, via="web", decided_by="operator:test")
+    assert str(await h.pool.fetchval("SELECT decision_trace_id FROM execution_commands WHERE command_id = $1",
+                                     decision.command_id)) == TRACE
+
+
+async def test_commands_without_a_trace_keep_it_null(h, routing):
+    await h.mandate(level=3)
+    run_id = uuid.uuid4()
+    async with h.pool.acquire() as conn:
+        await routing.route_entry(conn, run_id, BTC, "Buy", 0.8, 5.0)
+    assert await h.pool.fetchval("SELECT decision_trace_id FROM execution_commands WHERE idempotency_key = $1",
+                                 f"debate:{run_id}") is None

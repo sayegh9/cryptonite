@@ -3,14 +3,24 @@
 Built by the scanner from the indicator frames it already computes, once per candidate bar, and
 shared by every agent in the debate instead of each one pulling raw rows (fewer tokens, one stable
 view of the market). Target size: well under 2k tokens.
+
+``brief_data`` is the structured twin of ``build_brief`` (same numbers, as JSON) and ``hard_rejects``
+applies the TRIAGE persona's hard rules to it in code, so the gate can reject the obvious cases without
+a model call (remediation R3.1). The rules are the eval labels' rules
+(``scripts/build_triage_eval_set.py``); stale data is the gate's own ``STALE_CANDIDATE`` check.
 """
 
+import math
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
 
 LEVEL_LOOKBACK_BARS = 50
+MIN_REWARD_TO_RISK = 1.5
+CHOP_MAX_VOLUME_RATIO = 0.8
+TIMEFRAME_UNIT_S = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
 def _f(value: Any, digits: int = 2) -> str:
@@ -39,6 +49,15 @@ def _trend(row: dict[str, Any]) -> str:
     if close < e20 < e50 and (e200 is None or e50 < e200):
         return "down"
     return "mixed"
+
+
+def _reward_to_risk(entry: Any, stop: Any, target: Any) -> float | None:
+    """(target - entry) / (entry - stop): same sign for longs and shorts; negative = wrong side."""
+    try:
+        risk = float(entry) - float(stop)
+        return (float(target) - float(entry)) / risk if risk else None
+    except (TypeError, ValueError):
+        return None
 
 
 def timeframe_line(timeframe: str, df: pl.DataFrame) -> str | None:
@@ -86,12 +105,7 @@ def build_brief(
             lines.append(line)
     if candidate:
         entry, stop, target = (candidate.get(k) for k in ("suggested_entry", "suggested_stop", "suggested_target"))
-        rr = None
-        try:  # (target - entry) / (entry - stop): same sign for longs and shorts; negative = wrong side
-            risk = float(entry) - float(stop)
-            rr = (float(target) - float(entry)) / risk if risk else None
-        except (TypeError, ValueError):
-            pass
+        rr = _reward_to_risk(entry, stop, target)
         lines.append(
             f"Scanner candidate ({candidate.get('timeframe', '?')}): entry {_f(entry)}, stop {_f(stop)}, "
             f"target {_f(target)}, reward-to-risk {_f(rr)}; rules: {', '.join(map(str, candidate.get('matched_rules') or [])) or 'n/a'}"
@@ -104,3 +118,108 @@ def build_brief(
             f"open interest {_f(derivatives.get('open_interest'), 0)}"
         )
     return "\n".join(lines)
+
+
+def _num(value: Any) -> float | None:
+    """A finite float, or None (JSON has no NaN)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _bands(row: dict[str, Any]) -> str | None:
+    if row.get("bb_upper") is None or row.get("bb_lower") is None or row.get("close") is None:
+        return None
+    return "above" if row["close"] > row["bb_upper"] else "below" if row["close"] < row["bb_lower"] else "inside"
+
+
+def timeframe_seconds(timeframe: str) -> int | None:
+    """``"15m"`` -> 900; None for anything that is not ``<n><m|h|d|w>``."""
+    m = re.fullmatch(r"(\d+)([mhdw])", str(timeframe or ""))
+    return int(m.group(1)) * TIMEFRAME_UNIT_S[m.group(2)] if m else None
+
+
+def timeframe_state(timeframe: str, df: pl.DataFrame) -> dict[str, Any] | None:
+    """The numbers ``timeframe_line`` renders, as a dict (None for an empty frame)."""
+    if df.is_empty():
+        return None
+    row = df.tail(1).to_dicts()[0]
+    return {
+        "timeframe": timeframe,
+        "close": _num(row.get("close")),
+        "trend": _trend(row),
+        "rsi": _num(row.get("rsi")),
+        "macd_hist": _num(row.get("macd_hist")),
+        "bands": _bands(row),
+        "atr": _num(row.get("atr")),
+        "volume_ratio": _num(row.get("volume_ratio")),
+    }
+
+
+def brief_data(
+    instrument_id: str,
+    frames: dict[str, pl.DataFrame],
+    *,
+    candidate: dict[str, Any] | None = None,
+    derivatives: dict[str, Any] | None = None,
+    last_bar_close_ns: int | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Structured twin of ``build_brief`` (same arguments, same numbers), JSON-serialisable."""
+    now = now or datetime.now(UTC)
+    data: dict[str, Any] = {
+        "instrument_id": instrument_id,
+        "as_of": now.isoformat(),
+        "last_bar_close_ns": last_bar_close_ns,
+        "timeframes": [s for tf, df in frames.items() if (s := timeframe_state(tf, df)) is not None],
+        "candidate": None,
+        "derivatives": None,
+    }
+    if candidate:
+        entry, stop, target = (candidate.get(k) for k in ("suggested_entry", "suggested_stop", "suggested_target"))
+        data["candidate"] = {
+            "timeframe": candidate.get("timeframe"),
+            "entry": _num(entry),
+            "stop": _num(stop),
+            "target": _num(target),
+            "reward_to_risk": _num(_reward_to_risk(entry, stop, target)),
+            "matched_rules": [str(r) for r in candidate.get("matched_rules") or []],
+        }
+    if derivatives:
+        data["derivatives"] = {k: _num(derivatives.get(k)) for k in ("mark_price", "funding_rate", "open_interest")}
+    return data
+
+
+def hard_rejects(data: dict[str, Any] | None) -> list[str]:
+    """The TRIAGE hard rules that ``data`` (``brief_data``) clearly hits, in a fixed order.
+
+    - ``REWARD_TO_RISK``: the candidate's reward-to-risk is below 1.5 (negative = stop on the wrong side);
+    - ``TIMEFRAMES_AGAINST``: the two highest timeframes in the brief both trend down (spot is long-only);
+    - ``CHOP``: on the candidate's timeframe, volume <= 0.8x average with price inside the Bollinger bands.
+
+    A rule is applied only when every input it needs is present; missing data never rejects.
+    """
+    if not isinstance(data, dict):
+        return []
+    hits: list[str] = []
+    candidate = data.get("candidate") if isinstance(data.get("candidate"), dict) else {}
+    states = [s for s in data.get("timeframes") or [] if isinstance(s, dict)]
+
+    rr = _num(candidate.get("reward_to_risk"))
+    if rr is not None and rr < MIN_REWARD_TO_RISK:
+        hits.append("REWARD_TO_RISK")
+
+    ranked = [(timeframe_seconds(s.get("timeframe")), s.get("trend")) for s in states]
+    if len(ranked) >= 2 and all(sec is not None for sec, _ in ranked):
+        top = sorted(ranked, key=lambda x: x[0], reverse=True)[:2]
+        if top[0][0] != top[1][0] and all(t == "down" for _, t in top):  # "unknown" trend = missing input
+            hits.append("TIMEFRAMES_AGAINST")
+
+    own = [s for s in states if candidate.get("timeframe") and s.get("timeframe") == candidate.get("timeframe")]
+    if len(own) == 1:
+        volume, bands = _num(own[0].get("volume_ratio")), own[0].get("bands")
+        if volume is not None and volume <= CHOP_MAX_VOLUME_RATIO and bands == "inside":
+            hits.append("CHOP")
+    return hits

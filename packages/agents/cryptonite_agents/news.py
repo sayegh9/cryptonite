@@ -37,6 +37,13 @@ SENTIMENT_URL = os.getenv("SENTIMENT_URL", "http://sentiment:8090")
 
 _cache: dict[str, tuple[float, list[dict]]] = {}
 _lock = threading.Lock()
+_last_tag_ok: list[float] = []  # unix seconds of the last successful /classify call in this process
+
+
+def last_tag_ok() -> float | None:
+    """When the sentiment service last answered in this process (the debate worker publishes it as
+    ``sentiment:last_ok``: the service itself has no Redis access by design)."""
+    return _last_tag_ok[-1] if _last_tag_ok else None
 
 
 def _parse(xml_text: str, source: str) -> list[dict]:
@@ -95,7 +102,9 @@ def tag(texts: list[str], source: str = "news") -> list[dict] | None:
     try:
         resp = httpx.post(f"{SENTIMENT_URL}/classify", json={"texts": texts[:64], "source": source}, timeout=10.0)
         resp.raise_for_status()
-        return resp.json()["results"]
+        results = resp.json()["results"]
+        _last_tag_ok[:] = [time.time()]
+        return results
     except Exception as e:
         logger.warning("Sentiment service unavailable: %s", type(e).__name__)
         return None

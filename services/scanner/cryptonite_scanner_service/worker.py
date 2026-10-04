@@ -11,13 +11,14 @@ import json
 import logging
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
 import redis.asyncio as aioredis
-from cryptonite_scanner.brief import build_brief
+from cryptonite_scanner.brief import brief_data, build_brief
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import (
     RiskConfig,
@@ -136,12 +137,16 @@ class ScannerWorker:
                 derivatives.update(mark_price=mark.get("mark_price"), funding_rate=mark.get("funding_rate"))
             if raw_oi := await self.redis.get(f"perp:oi:{sym}"):
                 derivatives["open_interest"] = json.loads(raw_oi).get("open_interest")
-            brief = build_brief(
-                c.instrument_id, frames, candidate=candidate_payload,
-                derivatives=derivatives or None, last_bar_close_ns=c.bar_close_inclusive_ns,
-            )
+            now = datetime.now(UTC)
+            args = dict(candidate=candidate_payload, derivatives=derivatives or None,
+                        last_bar_close_ns=c.bar_close_inclusive_ns, now=now)
+            brief = build_brief(c.instrument_id, frames, **args)
             key = f"brief:{c.instrument_id}:{c.timeframe}:{c.bar_close_inclusive_ns}"
             await self.redis.set(key, brief, ex=BRIEF_TTL_S)
+            try:  # the structured twin lets the gate apply the hard triage rules in code (R3.1)
+                await self.redis.set(f"{key}:data", json.dumps(brief_data(c.instrument_id, frames, **args)), ex=BRIEF_TTL_S)
+            except Exception as e:  # without it the gate falls back to the model, as before
+                logger.warning("Market brief data failed for %s: %s", c.instrument_id, e)
             return key
         except Exception as e:  # a missing brief degrades the debate context; it never blocks the scan
             logger.warning("Market brief failed for %s: %s", c.instrument_id, e)
@@ -587,6 +592,8 @@ class ScannerWorker:
                             "suggested_target": str(c.suggested_target),
                             "matched_rules": c.matched_rules,
                             "metrics": c.metrics,
+                            # R7.4: follows this setup through gate, triage, debate, approval, command and fill
+                            "decision_trace_id": str(uuid4()),
                         }
                         
                         # AI Debate Engine Integration: Publish to Redis Stream
@@ -595,6 +602,8 @@ class ScannerWorker:
                                 brief_key = await self._publish_brief(
                                     c, candidate_payload, frames_by_inst.get(c.instrument_id, {})
                                 )
+                                logger.info("Candidate %s %s %s queued for debate (decision_trace_id=%s)",
+                                            c.id, c.instrument_id, c.timeframe, candidate_payload["decision_trace_id"])
                                 await self.redis.xadd("stream:debate_queue", {
                                     "instrument_id": c.instrument_id,
                                     "trigger_source": "scanner",
