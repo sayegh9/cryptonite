@@ -118,6 +118,8 @@ interface PortfolioState {
   loaded: boolean; // first REST round-trip has completed
   lastSnapshotAt: number | null;
   lastRestOkAt: number | null;
+  /** When `account` was last confirmed by REST or a snapshot (null = never this session). */
+  accountAt: number | null;
   restDegraded: boolean; // at least one endpoint failed on the last poll; last-known data is shown
   equityHwm: { day: string; value: number } | null; // intraday high-water mark (persisted)
   ledger: LedgerPrefs;
@@ -215,6 +217,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
   loaded: false,
   lastSnapshotAt: null,
   lastRestOkAt: null,
+  accountAt: null,
   restDegraded: false,
   equityHwm: null,
   ledger: { tab: 'orders', range: 'all', symbol: '', origin: '', side: '', pageSize: 25 },
@@ -246,6 +249,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
           for (const k of LIVE_ACCOUNT_FIELDS) (next as unknown as Record<string, unknown>)[k] = s.account[k];
         }
         patch.account = reuse(s.account ?? undefined, next);
+        patch.accountAt = Date.now();
       }
     }
 
@@ -321,6 +325,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
     if (isRecord(msg.account)) {
       const merged = coerceAccount({ ...(s.account ?? { account_id: PRIMARY_ACCOUNT_ID }), ...msg.account });
       patch.account = reuse(s.account ?? undefined, merged);
+      patch.accountAt = Date.now();
       patch.equityHwm = nextHwm(s.equityHwm, patch.account);
     }
     return patch;
