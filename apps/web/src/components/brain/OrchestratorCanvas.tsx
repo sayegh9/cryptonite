@@ -12,7 +12,6 @@ import {
   Search,
   Zap,
   Tag,
-  ArrowRight,
   CheckCircle2,
   ShieldCheck,
   Cpu,
@@ -23,16 +22,30 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
+import { usePaperEquity, EQUITY_MAX_AGE_MS } from "@/lib/portfolio/usePaperEquity";
+import { Fresh } from "@/components/Fresh";
+
+interface Dispatch {
+  agent: string;
+  /** Not reported by the heartbeat stream: null renders nothing rather than a made-up latency. */
+  latencyMs: number | null;
+  status: string;
+}
 
 interface Message {
   id: string;
-  role: "user" | "assistant";
+  /** "system" = produced by this UI (errors), never model text */
+  role: "user" | "assistant" | "system";
   agentId: string;
   agentName: string;
   content: string;
-  dispatches?: { agent: string; latencyMs: number; status: string }[];
+  dispatches?: Dispatch[];
+  /** On a system error: the operator prompt to send again */
+  retryPrompt?: string;
   timestamp: number;
 }
+
+const newId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
 interface OrchestratorCanvasProps {
   selectedAgentId?: string;
@@ -125,9 +138,23 @@ const AGENT_CONFIGS: Record<
   },
 };
 
-function InlineActionCard({ codeStr, onTriggerDebate }: { codeStr: string, onTriggerDebate?: (symbol: string) => void }) {
-  const [size, setSize] = useState<number>(2500); // Default placeholder
-  const totalEquity = 100000; // Mock total equity for UI preview, in real app fetched from store
+/** Symbol named by a manifest JSON (instrument_id / symbol), else null. */
+function manifestSymbol(codeStr: string): string | null {
+  try {
+    const j = JSON.parse(codeStr);
+    const raw = j?.instrument_id ?? j?.symbol;
+    return typeof raw === "string" && raw ? raw.split(".")[0].toUpperCase() : null;
+  } catch {
+    const m = codeStr.match(/"(?:instrument_id|symbol)"\s*:\s*"([A-Z0-9]+)/i);
+    return m ? m[1].toUpperCase() : null;
+  }
+}
+
+function InlineActionCard({ codeStr, onTriggerDebate, fallbackSymbol }: { codeStr: string; onTriggerDebate?: (symbol: string) => void; fallbackSymbol: string }) {
+  // Allocation in % of the paper account's equity; USD only when that equity is known
+  const [pct, setPct] = useState<number>(5);
+  const equity = usePaperEquity();
+  const symbol = manifestSymbol(codeStr) ?? fallbackSymbol;
 
   return (
     <div className="my-4 p-4 rounded-xl border border-cyan-500/30 bg-cyan-950/20 font-sans shadow-lg">
@@ -140,28 +167,34 @@ function InlineActionCard({ codeStr, onTriggerDebate }: { codeStr: string, onTri
         <code>{codeStr}</code>
       </pre>
 
-      {/* Interactive Sizing Slider */}
-      <div className="p-3 bg-zinc-950/50 border border-zinc-800/60 rounded-lg space-y-2 mb-4 font-mono text-[10px]">
+      {/* Sizing preview: % of paper equity, disabled while equity is unknown */}
+      <div className="p-3 bg-zinc-950/50 border border-zinc-800/60 rounded-lg space-y-2 mb-4 font-mono text-[11px]" data-testid="manifest-sizing">
         <div className="flex items-center justify-between text-zinc-400">
           <span className="flex items-center space-x-1">
-            <Sliders className="w-3 h-3 text-cyan-400" />
-            <span>Allocation Sizing (Max 25%):</span>
+            <Sliders className="w-3 h-3 text-cyan-400" aria-hidden="true" />
+            <span>Allocation: {pct}% of equity (1–25%)</span>
           </span>
-          <span className="text-cyan-300 font-bold">${size.toLocaleString()} USD</span>
+          <span className="text-cyan-300 font-bold tabular-nums">
+            <Fresh
+              value={equity.usable ? equity.equity : null}
+              asOf={equity.asOf}
+              maxAgeMs={EQUITY_MAX_AGE_MS}
+              format={(e) => `≈ $${((e * pct) / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+              unknownText="equity unavailable"
+            />
+          </span>
         </div>
         <input
           type="range"
-          min={totalEquity * 0.01}
-          max={totalEquity * 0.25}
-          step={totalEquity * 0.01}
-          value={size}
-          onChange={(e) => setSize(Number(e.target.value))}
-          className="w-full accent-cyan-400 h-1.5 bg-zinc-800 rounded-full cursor-pointer appearance-none"
+          min={1}
+          max={25}
+          step={1}
+          value={pct}
+          disabled={!equity.usable}
+          aria-label="Allocation in percent of equity"
+          onChange={(e) => setPct(Number(e.target.value))}
+          className="w-full accent-cyan-400 h-1.5 bg-zinc-800 rounded-full cursor-pointer appearance-none disabled:cursor-not-allowed disabled:opacity-40"
         />
-        <div className="flex items-center justify-between text-[9px] text-zinc-500">
-          <span>Min: ${(totalEquity * 0.01).toLocaleString()}</span>
-          <span>Max: ${(totalEquity * 0.25).toLocaleString()}</span>
-        </div>
       </div>
 
       <div className="flex flex-wrap gap-2 mt-2">
@@ -173,15 +206,11 @@ function InlineActionCard({ codeStr, onTriggerDebate }: { codeStr: string, onTri
         }} className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/40 text-blue-300 border border-blue-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
           <BrainCircuit className="w-3.5 h-3.5" /> Backtest in Lab
         </button>
-        <button onClick={() => {
-          if (onTriggerDebate) onTriggerDebate("BTCUSDT");
-          toast.success("Debate triggered on strategy");
-        }} className="px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
-          <Zap className="w-3.5 h-3.5" /> Trigger Debate
-        </button>
-        <button onClick={() => toast.success("Staged to Action Inbox")} className="px-3 py-1.5 bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-300 border border-cyan-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
-          <ArrowRight className="w-3.5 h-3.5" /> Stage to Inbox
-        </button>
+        {onTriggerDebate && (
+          <button onClick={() => onTriggerDebate(symbol)} className="px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
+            <Zap className="w-3.5 h-3.5" /> Trigger {symbol} Debate
+          </button>
+        )}
       </div>
     </div>
   );
@@ -197,7 +226,7 @@ export function OrchestratorCanvas({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [liveTelemetry, setLiveTelemetry] = useState<{ agent: string; latencyMs: number; status: string }[]>([]);
+  const [liveTelemetry, setLiveTelemetry] = useState<Dispatch[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const currentAgent = AGENT_CONFIGS[selectedAgentId] || AGENT_CONFIGS.orchestrator;
@@ -219,7 +248,7 @@ export function OrchestratorCanvas({
           setLiveTelemetry((prev) => {
             const existing = prev.find((t) => t.agent === data.agentId);
             if (existing && existing.status === data.msg) return prev; // Avoid duplicates
-            return [...prev, { agent: data.agentId, latencyMs: 15, status: data.msg }].slice(-5);
+            return [...prev, { agent: data.agentId, latencyMs: null, status: data.msg }].slice(-5);
           });
         }
       });
@@ -232,101 +261,6 @@ export function OrchestratorCanvas({
     const match = text.match(/\b(BTC|ETH|SOL|XRP|BNB|DOGE|ADA|AVAX|SUI|LINK|DOT|NEAR|MATIC|ATOM|APT|OP|ARB|UNI)\b/i);
     if (match) return match[1].toUpperCase() + "USDT";
     return activeSymbol || "BTCUSDT";
-  };
-
-  // Generate dynamic, context-aware financial synthesis when offline or mock fallback is needed
-  const generateDynamicSynthesis = (agentId: string, promptText: string, sym: string): string => {
-    const symBase = sym.replace("USDT", "").replace(".BINANCE", "");
-
-    if (agentId === "scout") {
-      return `### 🔍 Market Data Scout: Technical Structure for **${symBase}/USDT**
-
-**1. Multi-Timeframe Structure Analysis:**
-- **15m Microstructure:** Price oscillating inside an ascending volume channel. 15m RSI at **54.2** (Neutral-Bullish). Cumulative Volume Delta (CVD) shows persistent spot buyer absorption.
-- **1H Intermediate Flow:** Local consolidation above key exponential moving averages (20 EMA > 50 EMA). Orderbook depth indicates bid wall clustering **+2.4x** stronger than ask depth.
-- **4H Structural Bias:** Higher-low market structure intact. Breaking above the 4H supply cluster opens upside expansion toward the next structural resistance band.
-- **1D Macro Trend:** Long-term regime is expanding with 1D RSI sitting at **58.6**. Weekly trendline support remains firmly defended.
-
-**2. Key Liquidity & Pivot Levels:**
-- **Immediate Resistance (R1):** \`+2.85%\` above spot (Liquidity Pool & Ask Imbalance)
-- **Major Resistance (R2):** \`+5.40%\` (Macro Supply Zone)
-- **Dynamic Support (S1):** \`-1.45%\` (15m/1H VWAP Confluence)
-- **Structural Invalidation (S2):** \`-3.10%\` (4H Swing Low)
-
-**3. Orderbook & Microstructure Telemetry:**
-- **L2 Bid/Ask Ratio:** **1.82:1** (Heavy institutional limit bids queued below spot).
-- **Funding Rate Spread:** **+0.0072% / 8h** (Healthy, non-overheated long positioning).
-- **Open Interest (OI) Delta:** **+$14.2M (+3.1%)** over the last 4 hours, indicating fresh capital expansion.`;
-    }
-
-    if (agentId === "cro") {
-      return `### 🛡️ Risk Guardian (CRO): Risk Audit for **${symBase}/USDT**
-
-**1. Capital Preservation & Portfolio Bounds:**
-- **Portfolio Sizing Cap:** Max allocation capped at **$25,000 USD** to strictly maintain the **< 25% single-asset concentration ceiling**.
-- **Recommended Capital at Risk:** **$400 - $600 USD** (0.75% to 1.0% of total portfolio equity).
-
-**2. Stop-Loss & Invalidation Parameters:**
-- **Strict Invalidation Level:** **-1.65%** below current entry support.
-- **Max Calculated Drawdown:** **$412.50 USD** under adverse market slip.
-- **Margin Utilization:** **18.4%** (Well within the safe < 40% threshold).
-
-**3. Stress-Test Scenarios:**
-- **-5% Market Flash Dip:** Total portfolio impact limited to **-0.41%** equity drawdown due to strict stop triggers.
-- **-10% Sector-Wide Liquidation Cascade:** Stop-loss guarantees capital preservation with zero liquidation risk.
-
-*Verdict: Setup approved from a risk governance perspective. Check the Action Inbox to review or modify sizing.*`;
-    }
-
-    if (agentId === "debater") {
-      return `### ⚔️ Adversarial Consensus Debate on **${symBase}/USDT**
-
-**🟢 Bull Debater (Long Thesis):**
-- *Momentum & Liquidity:* Strong spot bid absorption at dynamic support with expanding CVD.
-- *Order Flow:* Funding rates remain balanced with no extreme long crowdedness.
-- *Target Objective:* First upside target at **+3.4%**, secondary expansion to **+6.2%**.
-
-**🔴 Bear Debater (Counter-Thesis & Traps):**
-- *Liquidity Sweep Risk:* 4H resistance has rejected price twice in recent sessions. Watch for an initial fakeout sweep of swing highs before sustained continuation.
-- *Volume Divergence:* Ensure 15m volume confirms the breakout before committing maximum size.
-
-**⚖️ Synthesized Verdict:**
-- **Directional Bias:** **BULLISH CONVICTION (78%)**
-- **Recommended Strategy:** Scale in with a 50% initial tranche, adding the remaining 50% upon confirmed 1H candle close above resistance.
-- **Stop Invalidation:** Strict exit at **-1.55%** below dynamic support.`;
-    }
-
-    if (agentId === "outbox") {
-      return `### ⚡ Execution Outbox Relay: Routing Telemetry for **${symBase}/USDT**
-
-**1. Order Routing Parameters:**
-- **Execution Target:** \`PAPER-SIMULATOR-001\` (Nautilus Trader v2.0rc4 Core)
-- **Order Type:** \`LIMIT_MAKER\` (Post-Only to capture maker rebates and prevent slippage).
-- **Execution Latency p95:** **14ms** via Async Redis Streams & C++ Nautilus kernel.
-
-**2. Transactional Outbox State:**
-- **State Machine:** \`STAGED\` ➔ \`PENDING_OPERATOR_APPROVAL\` ➔ \`DISPATCHED\`
-- **Database Consistency:** Guaranteed atomic ACID commits to PostgreSQL with 0 double-dispatch risk.
-
-*To stage an execution to the Transactional Outbox, click 'Approve & Stage' in the Action Inbox on the right.*`;
-    }
-
-    // Default: Lead Orchestrator
-    return `### 🧠 Orchestrator Synthesis for **${symBase}/USDT**
-
-**1. Market Structure & Technical Alignment (via Market Scout):**
-- Price action across **15m, 1H, 4H, and 1D** displays structured accumulation.
-- Orderbook depth reveals substantial limit support clustered at key swing lows with **+1.9x bid imbalance**.
-
-**2. Consensus Evaluation (via Bull/Bear Debaters):**
-- **Bull Thesis:** Higher-low momentum continuation supported by positive volume delta and healthy funding rates.
-- **Bear Counter:** Potential liquidity test of local support before continuation. Mandatory stop required at **-1.6%**.
-
-**3. Risk & Governance Assessment (via Risk Guardian CRO):**
-- **Recommended Max Size:** **$20,000 - $25,000 USD** (Adheres strictly to the 25% concentration ceiling).
-- **Risk/Reward Profile:** **2.4:1 R:R** with upside expansion target at **+3.8%**.
-
-*All telemetry verified. You can explore deeper with individual specialists or stage execution in the Action Inbox.*`;
   };
 
   // Dynamic starter chips per agent
@@ -471,29 +405,33 @@ export function OrchestratorCanvas({
     }
   };
 
-  const handleSend = async (customPrompt?: string) => {
+  const handleSend = async (customPrompt?: string, retryOf?: string) => {
     const textToSend = customPrompt || input;
     if (!textToSend.trim() || loading) return;
 
     const targetSym = parseTargetSymbol(textToSend);
 
-    const userMsg: Message = {
-      id: "user-" + Date.now(),
-      role: "user",
-      agentId: selectedAgentId,
-      agentName: "Operator",
-      content: textToSend,
-      timestamp: Date.now(),
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
+    if (retryOf) {
+      // Retry replaces its error notice; the operator's message is already on the canvas
+      setMessages((prev) => prev.filter((m) => m.id !== retryOf));
+    } else {
+      const userMsg: Message = {
+        id: newId("user"),
+        role: "user",
+        agentId: selectedAgentId,
+        agentName: "Operator",
+        content: textToSend,
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+    }
     if (!customPrompt) setInput("");
     setLoading(true);
     setLiveTelemetry([]); // Clear trace for new request
 
     try {
-      // If user asks to debate, trigger background debate event
-      if (textToSend.toLowerCase().includes("debate") && onTriggerDebate) {
+      // If user asks to debate, trigger background debate event (not again on retry)
+      if (!retryOf && textToSend.toLowerCase().includes("debate") && onTriggerDebate) {
         onTriggerDebate(targetSym);
       }
 
@@ -515,21 +453,17 @@ export function OrchestratorCanvas({
           symbol: targetSym,
           timeframe: activeTimeframe,
         }),
-      }).catch(() => null);
+      });
 
-      let responseText = "";
-      if (res && (res.response || res.message)) {
-        responseText = res.response || res.message;
-      } else {
-        // Fallback to rich dynamic synthesis tailored to the agent, symbol, and prompt
-        responseText = generateDynamicSynthesis(selectedAgentId, textToSend, targetSym);
-      }
+      const responseText = typeof res?.response === "string" && res.response ? res.response
+        : typeof res?.message === "string" && res.message ? res.message : "";
+      if (!responseText) throw Object.assign(new Error("empty response"), { status: "empty response" });
 
       // Capture current liveTelemetry before it gets cleared or updated by next turn
       const capturedTelemetry = [...liveTelemetry];
 
       const assistantMsg: Message = {
-        id: "asst-" + Date.now(),
+        id: newId("asst"),
         role: "assistant",
         agentId: selectedAgentId,
         agentName: currentAgent.name,
@@ -540,7 +474,18 @@ export function OrchestratorCanvas({
 
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err: any) {
-      toast.error(`Agent error: ${err.message || "Failed to fetch response"}`);
+      // Never invent an answer: the canvas shows that the agent did not respond, with a Retry
+      const status = err?.status ?? (err instanceof TypeError ? "network error" : err?.message || "unknown error");
+      const errorMsg: Message = {
+        id: newId("sys"),
+        role: "system",
+        agentId: selectedAgentId,
+        agentName: currentAgent.name,
+        content: `agent unavailable: ${status}`,
+        retryPrompt: textToSend,
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setLoading(false);
     }
@@ -669,6 +614,31 @@ export function OrchestratorCanvas({
             messages.map((msg) => {
               const msgAgentConfig = AGENT_CONFIGS[msg.agentId] || AGENT_CONFIGS.orchestrator;
               const MsgIcon = msgAgentConfig.icon;
+              if (msg.role === "system") {
+                return (
+                  <div
+                    key={msg.id}
+                    role="alert"
+                    data-testid="canvas-agent-error"
+                    className="flex items-center justify-between gap-3 rounded-lg border border-rose-900/60 bg-rose-950/30 px-3 py-2 font-mono text-[11px] text-rose-300"
+                  >
+                    <span>
+                      <span className="text-zinc-500">{msg.agentName} · {new Date(msg.timestamp).toLocaleTimeString()} · </span>
+                      {msg.content}
+                    </span>
+                    {msg.retryPrompt && (
+                      <button
+                        type="button"
+                        onClick={() => handleSend(msg.retryPrompt, msg.id)}
+                        disabled={loading}
+                        className="flex-none rounded border border-rose-800 px-2 py-0.5 text-rose-200 hover:bg-rose-900/40 disabled:opacity-50"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                );
+              }
               return (
                 <div
                   key={msg.id}
@@ -708,7 +678,7 @@ export function OrchestratorCanvas({
                               <span className="text-zinc-300 font-semibold">{d.agent}:</span>
                               <span className="truncate">{d.status}</span>
                             </span>
-                            <span className="text-zinc-500 text-[9px] flex-none">{d.latencyMs}ms</span>
+                            {d.latencyMs !== null && <span className="text-zinc-500 text-[10px] flex-none">{d.latencyMs}ms</span>}
                           </div>
                         ))}
                       </div>
@@ -726,7 +696,7 @@ export function OrchestratorCanvas({
                               
                               // Check if this looks like a strategy manifest JSON block
                               if (match && match[1].includes('json') && (codeStr.includes('allocation_usd') || codeStr.includes('instrument_id') || codeStr.includes('max_position_notional_usd'))) {
-                                return <InlineActionCard codeStr={codeStr} onTriggerDebate={onTriggerDebate} />;
+                                return <InlineActionCard codeStr={codeStr} onTriggerDebate={onTriggerDebate} fallbackSymbol={activeSymbol || "BTCUSDT"} />;
                               }
                               
                               const isInline = !match && !codeStr.includes('\n');
@@ -777,7 +747,7 @@ export function OrchestratorCanvas({
                         <span className="text-zinc-300 font-semibold">{d.agent}:</span>
                         <span className="truncate">{d.status}</span>
                       </span>
-                      <span className="text-zinc-500 text-[9px] flex-none">{d.latencyMs}ms</span>
+                      {d.latencyMs !== null && <span className="text-zinc-500 text-[10px] flex-none">{d.latencyMs}ms</span>}
                     </div>
                   ))}
                 </div>
