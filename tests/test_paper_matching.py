@@ -70,3 +70,36 @@ def test_match_working_orders_filters_by_instrument_and_marks_rest():
     # The rested limit later fills as maker at its limit.
     fills = match_working_orders(open_orders, SPOT, D("97"), D("98"))
     assert [(f.client_order_id, f.price, f.liquidity) for f in fills if f.client_order_id == "A"] == [("A", D("99"), MAKER)]
+
+
+def test_unknown_top_size_keeps_the_touch():
+    assert match_order("C1", order("BUY", "MARKET", qty="50"), D("100"), D("101")).price == D("101")
+
+
+def test_order_within_top_size_takes_the_touch():
+    fill = match_order("C1", order("BUY", "MARKET", qty="0.5"), D("100"), D("101"), D("2"), D("1"))
+    assert fill.price == D("101")
+
+
+def test_order_larger_than_top_size_pays_impact_against_it():
+    # 3x the ask size: 2 extra multiples x 5 bps = 10 bps above the ask
+    fill = match_order("C1", order("BUY", "MARKET", qty="3"), D("100"), D("101"), D("9"), D("1"))
+    assert fill.price == D("101.10100000")
+    # the bid side uses the bid size
+    fill = match_order("C1", order("SELL", "MARKET", qty="3"), D("100"), D("101"), D("1"), D("9"))
+    assert fill.price == D("99.90000000")
+
+
+def test_impact_is_capped():
+    fill = match_order("C1", order("BUY", "MARKET", qty="1000"), D("100"), D("101"), D("1"), D("1"))
+    assert fill.price == D("101.50500000")  # 50 bps cap
+
+
+def test_marketable_limit_impact_never_exceeds_the_limit():
+    fill = match_order("C1", order("BUY", "LIMIT", "101.05", qty="3"), D("100"), D("101"), D("9"), D("1"))
+    assert (fill.price, fill.liquidity) == (D("101.05"), TAKER)
+
+
+def test_maker_fill_ignores_size():
+    fill = match_order("C1", order("BUY", "LIMIT", "100.5", qty="50", rested=True), D("99"), D("100"), D("1"), D("1"))
+    assert (fill.price, fill.liquidity) == (D("100.5"), MAKER)
