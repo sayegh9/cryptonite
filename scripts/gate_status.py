@@ -25,7 +25,10 @@ async def main() -> None:
             print(json.dumps({
                 "mandate": m.name, "level": int(m.autonomy_level), "status": str(m.status),
                 "gate_for": f"L{int(m.autonomy_level) + 1}", "passed": report.passed,
-                "checks": [{"check": c.name, "need": c.required, "have": c.actual, "ok": c.passed} for c in report.checks],
+                # informational checks (R4.2/R4.3) are shown with their 90% interval; they never decide "passed"
+                "checks": [{"check": c.name, "need": c.required, "have": c.actual, "ok": c.passed,
+                            **({"informational": True} if c.informational else {}),
+                            **({"interval": list(c.interval)} if c.interval else {})} for c in report.checks],
             }, indent=1, default=str))
     finally:
         await conn.close()
