@@ -33,8 +33,6 @@ import { getStreamClient } from "@/lib/ws";
 import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
 import {
-  Activity,
-  Zap,
   ShieldCheck,
   Radio,
   BrainCircuit,
@@ -52,6 +50,7 @@ export default function TerminalPage() {
     candleTime: number;
   } | null>(null);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [streamOpen, setStreamOpen] = useState<boolean>(false);
   const [profileSymbol, setProfileSymbol] = useState<string | null>(null);
 
   // Brain: restore the session and route cryptonite:brain-ask / cryptonite:brain-open-trace.
@@ -116,12 +115,16 @@ export default function TerminalPage() {
       }
     });
 
+    // Stream consumers attach after a short grace period even without an ack (they need the
+    // client object, not a live socket); the footer shows the socket's real state.
     const timer = setTimeout(() => {
       setWsConnected(true);
     }, 1500);
+    const poll = setInterval(() => setStreamOpen(client.isOpen()), 1000);
 
     return () => {
       clearTimeout(timer);
+      clearInterval(poll);
       unsubscribe();
     };
   }, []);
@@ -162,17 +165,8 @@ export default function TerminalPage() {
     const debateTriggerHandler = async (e: CustomEvent) => {
       const sym = e.detail?.symbol || selectedSymbol;
       const customThesis = e.detail?.customThesis;
-      const addTurn = useDebateStore.getState().addTurn;
       try {
-        addTurn({
-          runId: "pending-" + Date.now(),
-          role: "System",
-          content: customThesis ? `Initiating debate for ${sym} with thesis: ${customThesis}` : `Initiating multi-agent consensus debate for ${sym}...`,
-          timestamp: Date.now(),
-        });
-        toast.success(`AI Debate Initiated: ${sym}`, {
-          description: "TradingAgents intelligence gathering started in background.",
-        });
+        // No local placeholder run: the inbox shows the debate once the worker reports it
         const res = await fetch("/agent-api/debates/trigger", {
           method: "POST",
           credentials: "include",
@@ -186,6 +180,9 @@ export default function TerminalPage() {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.detail || err.message || "Failed to queue debate");
         }
+        toast.success(`Debate queued: ${sym}`, {
+          description: customThesis ? `Thesis: ${customThesis}` : "Its card appears in the AI Brain inbox when the worker reports it.",
+        });
       } catch (err: any) {
         toast.error(`Debate trigger error: ${err.message}`);
       }
@@ -414,21 +411,10 @@ export default function TerminalPage() {
       <footer className="h-7 flex-none bg-zinc-950 border-t border-zinc-900 px-4 flex items-center justify-between text-[11px] text-zinc-500 z-20 font-mono">
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-1.5">
-            <Radio className={`w-3 h-3 ${wsConnected ? "text-emerald-400 animate-pulse" : "text-amber-400"}`} />
-            <span className={wsConnected ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"}>
-              {wsConnected ? "STREAM ONLINE" : "CONNECTING..."}
+            <Radio className={`w-3 h-3 ${streamOpen ? "text-emerald-400 animate-pulse" : "text-amber-400"}`} aria-hidden="true" />
+            <span className={streamOpen ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"} role="status">
+              {streamOpen ? "STREAM ONLINE" : "STREAM OFFLINE · reconnecting"}
             </span>
-          </div>
-
-          <div className="flex items-center space-x-3 hidden sm:flex border-l border-zinc-800 pl-4">
-            <div className="flex items-center space-x-1">
-              <Activity className="w-3 h-3 text-zinc-600" />
-              <span>DuckDB p95: <span className="text-zinc-300">12ms</span></span>
-            </div>
-            <div className="flex items-center space-x-1">
-              <Zap className="w-3 h-3 text-zinc-600" />
-              <span>Polars p95: <span className="text-zinc-300">8ms</span></span>
-            </div>
           </div>
         </div>
 

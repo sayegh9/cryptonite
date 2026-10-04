@@ -792,7 +792,7 @@ export function TradingViewChart({
                     className="bg-cyan-600 hover:bg-cyan-500 text-white border-0"
                     onClick={() => {
                       setIndicators([...indicators, {
-                        id: Math.random().toString(),
+                        id: crypto.randomUUID(),
                         type: newIndType,
                         period: newIndPeriod,
                         pane: ["SMA", "EMA", "WMA", "WEMA", "SD"].includes(newIndType) ? "main" : "bottom",

@@ -83,6 +83,11 @@ export class CryptoniteStreamClient {
     }
   }
 
+  /** True only while the socket is actually open (not merely constructed or reconnecting). */
+  public isOpen(): boolean {
+    return typeof WebSocket !== "undefined" && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
   public subscribe(handler: MessageHandler): () => void {
     this.listeners.add(handler);
     return () => {

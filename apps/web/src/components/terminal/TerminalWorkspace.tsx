@@ -226,7 +226,7 @@ export function TerminalWorkspace({
                   <div className="h-7 bg-zinc-900/80 border-b border-white/5 px-3 flex items-center justify-between flex-none select-none">
                     <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-[10px] font-bold uppercase tracking-wider">
                       <BookOpen className="w-3 h-3 text-cyan-400" />
-                      <span>Orderbook L2</span>
+                      <span>Last Price</span>
                     </div>
                     <button
                       onClick={() => toggleOrderbook(false)}

@@ -38,7 +38,13 @@ export default [
       "react/prop-types": "off",
       "react/no-unescaped-entities": "off",
       "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "ignoreRestSiblings": true }],
-      "@typescript-eslint/no-explicit-any": "off"
+      "@typescript-eslint/no-explicit-any": "off",
+      // Random numbers must never be rendered as data (R1.5); use crypto.randomUUID() for ids
+      "no-restricted-properties": ["error", {
+        "object": "Math",
+        "property": "random",
+        "message": "Math.random is banned: use crypto.randomUUID() for ids; never fabricate data."
+      }]
     },
     settings: {
       react: {

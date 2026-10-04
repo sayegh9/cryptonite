@@ -84,7 +84,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
     setStatusMessage("Enqueuing scan job...");
 
     try {
-      const reqId = "req-" + Math.random().toString(36).substring(2, 10);
+      const reqId = `req-${crypto.randomUUID()}`;
       const job: ScanJob = await fetchApi(`/scanners/${selectedSpec.id}/run`, {
         method: "POST",
         headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "" },

@@ -98,7 +98,7 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
               </div>
               {status?.account && (
                 <p className="font-mono text-[10px] text-zinc-500" data-testid="account-backstop">
-                  Account drawdown {Number(status.account.drawdown_pct ?? 0).toFixed(2)}% of the {status.account.backstop_pct}% backstop
+                  Account drawdown {status.account.drawdown_pct == null ? "—" : `${Number(status.account.drawdown_pct).toFixed(2)}%`} of the {status.account.backstop_pct}% backstop
                   (latches everything).
                 </p>
               )}

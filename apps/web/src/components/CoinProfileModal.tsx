@@ -113,11 +113,11 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
                 <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">Live Price</span>
                 <div className="flex items-end space-x-3">
                   <span className="text-2xl font-bold font-mono">
-                    ${profile.last_price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) || "0.00"}
+                    {profile.last_price != null ? `$${profile.last_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : "—"}
                   </span>
                   <div className={`flex items-center space-x-1 text-sm font-mono pb-1 ${isUp ? "text-emerald-400" : "text-red-400"}`}>
-                    <span>{isUp ? "▲" : "▼"}</span>
-                    <span>{Math.abs(profile.change_24h_pct || 0).toFixed(2)}%</span>
+                    <span>{profile.change_24h_pct == null ? "" : isUp ? "▲" : "▼"}</span>
+                    <span>{profile.change_24h_pct != null ? `${Math.abs(profile.change_24h_pct).toFixed(2)}%` : "—"}</span>
                   </div>
                 </div>
               </div>
@@ -126,15 +126,15 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
               <div className="grid grid-cols-3 gap-2 border-t border-b border-white/5 py-4">
                 <div className="flex flex-col space-y-1">
                   <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">24h High</span>
-                  <span className="text-xs font-mono">${profile.high_24h?.toLocaleString() || "-"}</span>
+                  <span className="text-xs font-mono">{profile.high_24h != null ? `$${profile.high_24h.toLocaleString()}` : "—"}</span>
                 </div>
                 <div className="flex flex-col space-y-1">
                   <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">24h Low</span>
-                  <span className="text-xs font-mono">${profile.low_24h?.toLocaleString() || "-"}</span>
+                  <span className="text-xs font-mono">{profile.low_24h != null ? `$${profile.low_24h.toLocaleString()}` : "—"}</span>
                 </div>
                 <div className="flex flex-col space-y-1">
                   <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">24h Vol</span>
-                  <span className="text-xs font-mono">${((profile.volume_24h_quote || 0) / 1000000).toFixed(1)}M</span>
+                  <span className="text-xs font-mono">{profile.volume_24h_quote != null ? `$${(profile.volume_24h_quote / 1000000).toFixed(1)}M` : "—"}</span>
                 </div>
               </div>
 
