@@ -11,6 +11,7 @@ import { AutonomyEvals } from "./AutonomyEvals";
 import { MandateCard } from "./MandateCard";
 import { MandateEditor } from "./MandateEditor";
 import { MissionBanners } from "./MissionBanners";
+import { dispatchSwitchWorkspace } from "@/lib/navigation";
 
 const VIEWS: { id: MissionView; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -25,7 +26,7 @@ let hydrated = false;
  * states, one PAPER kill switch; plus the Mandate editor and Autonomy & Evals views.
  */
 export function MissionControl({ isActive }: { isActive: boolean }) {
-  const { view, setView, mandates, approvals, status, loaded, error, refresh, selectedMandateId, selectMandate } = useMandateStore();
+  const { view, mandates, approvals, status, loaded, error, refresh, selectedMandateId, selectMandate } = useMandateStore();
 
   useEffect(() => {
     if (!hydrated) {
@@ -62,7 +63,7 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
                 key={v.id}
                 role="tab"
                 aria-selected={view === v.id}
-                onClick={() => setView(v.id)}
+                onClick={() => dispatchSwitchWorkspace({ mode: "mission", view: v.id })}
                 className={`rounded px-2 py-1 font-bold ${view === v.id ? "bg-cyan-900/50 text-cyan-300" : "text-zinc-400 hover:text-zinc-200"}`}
               >
                 {v.label}

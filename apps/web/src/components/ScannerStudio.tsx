@@ -124,7 +124,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-zinc-950 border-t border-white/5">
+    <div id="scanner-studio" className="flex flex-col h-full w-full bg-zinc-950 border-t border-white/5">
       {/* Studio Header / Controls */}
       <div className="flex flex-wrap items-center justify-between p-3 bg-zinc-950 border-b border-white/5 gap-2">
         <div className="flex items-center space-x-3">

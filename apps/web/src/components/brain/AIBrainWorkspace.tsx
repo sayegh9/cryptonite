@@ -8,6 +8,7 @@ import { AIBrainTourModal } from "./AIBrainTourModal";
 import { useDebateStore } from "@/lib/stores/useDebateStore";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { BrainHome } from "./BrainHome";
+import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import {
   BrainCircuit,
   HelpCircle,
@@ -30,7 +31,6 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
   const [selectedAgentId, setSelectedAgentId] = useState<string>("orchestrator");
   const [isTourOpen, setIsTourOpen] = useState(false);
   const view = useBrainStore((s) => s.workspaceView);
-  const setView = useBrainStore((s) => s.setWorkspaceView);
 
   // Responsive panel visibility with local persistence
   const [showFleet, setShowFleet] = useState<boolean>(true);
@@ -123,7 +123,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
               <button
                 key={id}
                 type="button"
-                onClick={() => setView(id)}
+                onClick={() => dispatchSwitchWorkspace({ mode: "debates", view: id === "brain" ? "home" : "debates" })}
                 aria-pressed={view === id}
                 className={`flex items-center gap-1 rounded px-2 py-0.5 transition-colors ${
                   view === id ? "bg-cyan-950/80 text-cyan-300 font-bold" : "text-zinc-400 hover:text-zinc-200"

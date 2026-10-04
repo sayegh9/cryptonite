@@ -1,6 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { Suspense, useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
+import { buildQuery, DEFAULT_WORKSPACE, NAV_GROUPS, parseView, parseWorkspace, type WorkspaceMode } from "@/lib/navigation";
+import { type MissionView, useMandateStore } from "@/lib/stores/useMandateStore";
 import { MultiChartGrid } from "@/components/MultiChartGrid";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 import { ScannerStudio } from "@/components/ScannerStudio";
@@ -38,8 +41,58 @@ import {
   BrainCircuit,
 } from "lucide-react";
 
+// useSearchParams in a prerendered page must sit under a Suspense boundary (or `pnpm build` fails)
 export default function TerminalPage() {
-  const [workspaceMode, setWorkspaceMode] = useState<"terminal" | "research" | "portfolio" | "operator" | "markets" | "alerts" | "settings" | "debates" | "mission">("terminal");
+  return (
+    <Suspense fallback={null}>
+      <Workstation />
+    </Suspense>
+  );
+}
+
+function Workstation() {
+  // R6.1: the URL is the source of truth for the workspace and its sub-view (?ws=…&view=…)
+  const searchParams = useSearchParams();
+  const workspaceMode: WorkspaceMode = parseWorkspace(searchParams.get("ws")) ?? DEFAULT_WORKSPACE;
+  const urlView = parseView(workspaceMode, searchParams.get("view"));
+  const navigate = useCallback((mode: WorkspaceMode, view?: string | null) => {
+    // Workspaces with sub-views always carry one, so Back restores the exact view
+    if (!view && mode === "debates") view = useBrainStore.getState().workspaceView === "debates" ? "debates" : "home";
+    if (!view && mode === "mission") view = useMandateStore.getState().view;
+    const query = buildQuery(mode, view);
+    if (query !== window.location.search) window.history.pushState(null, "", query);
+  }, []);
+  const setWorkspaceMode = useCallback((mode: WorkspaceMode) => navigate(mode), [navigate]);
+
+  // URL view -> stores (also after their persisted state rehydrates, so a stored view never overrides the URL)
+  const urlViewRef = useRef({ mode: workspaceMode, view: urlView });
+  urlViewRef.current = { mode: workspaceMode, view: urlView };
+  useEffect(() => {
+    const apply = () => {
+      const { mode, view } = urlViewRef.current;
+      if (!view) return;
+      // A set before rehydration would persist the defaults over the stored session; wait for it
+      if (mode === "debates" && useBrainStore.persist.hasHydrated()) {
+        useBrainStore.getState().setWorkspaceView(view === "home" ? "brain" : "debates");
+      }
+      if (mode === "mission" && useMandateStore.persist.hasHydrated()) useMandateStore.getState().setView(view as MissionView);
+    };
+    apply();
+    const unsubBrain = useBrainStore.persist.onFinishHydration(apply);
+    const unsubMission = useMandateStore.persist.onFinishHydration(apply);
+    return () => {
+      unsubBrain();
+      unsubMission();
+    };
+  }, [workspaceMode, urlView]);
+
+  // Terminal "Scanner" view: bring the scanner panel into view
+  useEffect(() => {
+    if (workspaceMode !== "terminal" || urlView !== "scanner") return;
+    const t = setTimeout(() => document.getElementById("scanner-studio")?.scrollIntoView({ block: "nearest" }), 50);
+    return () => clearTimeout(t);
+  }, [workspaceMode, urlView]);
+
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [operatorAuthenticated, setOperatorAuthenticated] = useState(false);
   const [showScannerBuilder, setShowScannerBuilder] = useState(false);
@@ -58,9 +111,9 @@ export default function TerminalPage() {
   const workspaceModeRef = useRef(workspaceMode);
   workspaceModeRef.current = workspaceMode;
   const onBrainAsk = useCallback(() => {
-    if (workspaceModeRef.current === "debates") useBrainStore.getState().setWorkspaceView("brain");
+    if (workspaceModeRef.current === "debates") navigate("debates", "home");
     else setIsAgentChatOpen(true);
-  }, []);
+  }, [navigate]);
   useBrainSetup(onBrainAsk);
 
   useDebateStream(wsConnected ? getStreamClient() : null);
@@ -153,8 +206,9 @@ export default function TerminalPage() {
       }
     };
     const switchWsHandler = (e: CustomEvent) => {
-      if (e.detail?.mode) {
-        setWorkspaceMode(e.detail.mode as any);
+      const mode = parseWorkspace(e.detail?.mode);
+      if (mode) {
+        navigate(mode, typeof e.detail?.view === "string" ? e.detail.view : null);
       }
     };
     // Legacy "open copilot" callers ({ prompt, autoSend }) now talk to the Brain
@@ -201,7 +255,7 @@ export default function TerminalPage() {
       window.removeEventListener("cryptonite:open-copilot" as any, copilotHandler);
       window.removeEventListener("cryptonite:trigger-debate" as any, debateTriggerHandler);
     };
-  }, [selectedSymbol]);
+  }, [selectedSymbol, navigate, setWorkspaceMode]);
 
   // Update subscriptions when selectedSymbol changes
   useEffect(() => {
@@ -244,31 +298,36 @@ export default function TerminalPage() {
             </span>
           </div>
 
-          <div className="flex items-center space-x-6 h-full font-mono text-xs font-semibold">
-            {[
-              { id: "terminal", label: "Terminal" },
-              { id: "markets", label: "Markets" },
-              { id: "research", label: "Research Lab" },
-              { id: "alerts", label: "Alerts" },
-              { id: "portfolio", label: "Portfolio" },
-              { id: "debates", label: "AI Brain" },
-              { id: "mission", label: "Mission Control" },
-              { id: "operator", label: "Operator" },
-              { id: "settings", label: "Settings" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setWorkspaceMode(tab.id as any)}
-                className={`h-full flex items-center border-b-2 px-1 transition-colors ${
-                  workspaceMode === tab.id
-                    ? "border-cyan-500 text-cyan-400"
-                    : "border-transparent text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
-                }`}
+          <nav aria-label="Workspaces" className="flex items-center h-full font-mono text-xs font-semibold overflow-x-auto">
+            {NAV_GROUPS.map((group, gi) => (
+              <div
+                key={group.id}
+                role="group"
+                aria-label={group.label}
+                className={`flex items-center h-full gap-4 ${gi > 0 ? "ml-4 pl-4 border-l border-zinc-800" : ""}`}
               >
-                {tab.label}
-              </button>
+                <span className="text-[10px] uppercase tracking-widest text-zinc-500 select-none" aria-hidden="true">{group.label}</span>
+                {group.items.map((tab) => {
+                  const active = workspaceMode === tab.mode && (tab.view ? urlView === tab.view : !(tab.mode === "terminal" && urlView === "scanner"));
+                  return (
+                    <button
+                      key={`${tab.mode}-${tab.view ?? ""}`}
+                      type="button"
+                      onClick={() => navigate(tab.mode, tab.view)}
+                      aria-current={active ? "page" : undefined}
+                      className={`h-full flex items-center border-b-2 px-1 whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${
+                        active
+                          ? "border-cyan-500 text-cyan-400"
+                          : "border-transparent text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
             ))}
-          </div>
+          </nav>
         </div>
 
         <div className="flex items-center space-x-4">
@@ -432,8 +491,7 @@ export default function TerminalPage() {
         activeBacktestId={activeBacktestRun?.id || null}
         onExpand={() => {
           setIsAgentChatOpen(false);
-          useBrainStore.getState().setWorkspaceView("brain");
-          setWorkspaceMode("debates");
+          navigate("debates", "home");
         }}
       />
 

@@ -14,8 +14,8 @@ async function openOperator(page: Page, limits: { status: number; body: unknown 
         mandates: [{ id: "m1", name: "BTC-ETH spot L1", status: "ACTIVE", capital_budget_usd: "2000", max_position_pct: "50", max_drawdown_pct: "10", allow_perps: false, max_leverage: 1 }],
       }),
     }));
-  await page.goto("/");
-  await page.locator("header button", { hasText: "Operator" }).click();
+  // Direct link: the stubbed mandates are partial, so do not land on Mission Control first
+  await page.goto("/?ws=operator");
   return page.getByTestId("enforced-limits");
 }
 

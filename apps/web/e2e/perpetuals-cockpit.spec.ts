@@ -14,7 +14,7 @@ function collectReactErrors(page: Page): string[] {
 }
 
 async function openTradeSidebar(page: Page) {
-  await page.goto("/");
+  await page.goto("/?ws=terminal");
   await page.getByRole("button", { name: "Show Trade Sidebar" }).click();
   const ticket = page.getByRole("form", { name: "Order entry" });
   const hud = page.getByRole("region", { name: "Margin risk" });
