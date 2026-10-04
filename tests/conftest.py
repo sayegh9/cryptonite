@@ -1,6 +1,7 @@
 """Shared pytest fixtures for Cryptonite test suite."""
 
 import json
+import os
 import tempfile
 import time
 from decimal import Decimal
@@ -21,6 +22,9 @@ from nautilus_trader.model import (
 )
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# The API may fall back to the all-zero dev TOTP key only in dev/test (R7.10); tests are "test"
+os.environ.setdefault("CRYPTONITE_ENV", "test")
 
 
 @pytest.fixture(autouse=True)

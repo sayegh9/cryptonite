@@ -30,6 +30,7 @@ logger = logging.getLogger("cryptonite.api.auth")
 
 DEFAULT_SECRET_PATH = "/run/secrets/cryptonite_totp_aes_key"
 FALLBACK_DEV_KEY = b"0" * 32  # 32-byte fallback key for dev/test environments only
+DEV_ENVS = frozenset({"dev", "test"})  # CRYPTONITE_ENV values that may use FALLBACK_DEV_KEY
 
 
 def get_totp_aes_key() -> bytes:
@@ -58,7 +59,15 @@ def get_totp_aes_key() -> bytes:
         except Exception:
             pass
 
-    logger.warning("Using FALLBACK_DEV_KEY for TOTP encryption. Safe only in dev/test.")
+    # A deploy or restore without the key must not silently encrypt TOTP secrets with zeros (R7.10)
+    env = os.getenv("CRYPTONITE_ENV", "").strip().lower()
+    if env not in DEV_ENVS:
+        raise RuntimeError(
+            "TOTP AES key missing or invalid: provide 32 bytes (raw or base64) in "
+            f"{DEFAULT_SECRET_PATH} or CRYPTONITE_TOTP_AES_KEY. The all-zero dev key is used only when "
+            f"CRYPTONITE_ENV is one of {sorted(DEV_ENVS)} (it is {env or 'unset'})."
+        )
+    logger.warning("Using FALLBACK_DEV_KEY for TOTP encryption (CRYPTONITE_ENV=%s). Safe only in dev/test.", env)
     return FALLBACK_DEV_KEY
 
 
