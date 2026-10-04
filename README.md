@@ -1,206 +1,205 @@
 # Cryptonite
 
-Cryptonite is an institutional-grade, low-latency cryptocurrency algorithmic trading workstation. It unites tick/candle streaming, high-frequency technical screener calculations, discrete-event backtesting, and full operator trade governance within a modern single-pane dashboard.
+**A self-hosted crypto trading workstation where a team of AI agents researches, debates and proposes
+trades, and deterministic risk controls decide what is allowed to happen.**
 
-It is a self-hosted cryptocurrency intelligence and algorithmic trading platform designed for auditable research, deterministic risk controls, and automated execution with NautilusTrader.
+Cryptonite combines live market data, a vectorized scanner, NautilusTrader backtesting and paper
+execution with an AI layer: a copilot you can talk to, a debate fleet that argues every trade, a
+research loop that writes and tests strategies, and a learner that grades past decisions against what
+the market actually did. The AI can only act inside **mandates** you define (budget, instruments,
+position limit, hard stop), at an **autonomy level** it has to earn, and every risk-adding order waits
+for your approval, in the web app or on Telegram with a one-time code.
 
-## Current state (2026-10-04)
+> **Paper and testnet only.** Cryptonite trades a paper account and the Binance demo environment. It is
+> research software, not investment advice.
 
-The **AI-First program** (Phases 0–7) is built on branch `feat/ai-first-phase6`: one AI gateway with a
-local model tier (Gemma 4 12B on Ollama for triage and summaries), trading **mandates** with autonomy
-levels and Telegram approvals, a news-sentiment service, an outcome-labelling learner, and a strategy
-research loop. What runs and how: [docs/ai-first-program.md](docs/ai-first-program.md). Current status and
-open items: [HANDOFF.md](HANDOFF.md).
+![The Brain copilot analysing BTCUSDT: tool calls, a live chart and an order proposal waiting for approval](docs/screenshots/11_brain_copilot_order_proposal.png)
 
-**No AI order executes without an active mandate**, and every order still passes `GuardedOrderDispatcher`
-(1–25% equity clamp).
+## The agents in action
 
-## Platform Screenshots
-
-| Trading Terminal | AI Copilot |
+| Brain copilot | Agent fleet |
 | :---: | :---: |
-| ![Trading Terminal](docs/screenshots/01_trading_terminal.png) | ![AI Copilot](docs/screenshots/05_ai_copilot.png) |
+| ![Brain copilot answering with a chart and an order card](docs/screenshots/11_brain_copilot_order_proposal.png) | ![Agent fleet: orchestrator, market scout, bull/bear debaters, risk guardian, execution relay](docs/screenshots/12_agent_fleet.png) |
+| Ask in plain language. The Brain calls tools (charts, scanner, live prices, backtests), answers with widgets, and can only **propose** an order card that you approve or reject. | The debate fleet: analysts gather market, news-sentiment and on-chain context, bull and bear researchers argue, and a risk panel and chief risk officer set the verdict and size. |
+| **Mission Control** | **Autonomy & evals** |
+| ![Mission Control: mandate card, approval queue, PAPER kill switch](docs/screenshots/13_mission_control.png) | ![Autonomy gate checklist, verdict calibration chart and autonomy events](docs/screenshots/14_autonomy_and_evals.png) |
+| Mandates with budget used and drawdown against the hard stop, the approval queue, and the PAPER kill switch. | The gate a mandate must pass to move up a level, how well the debate's confidence matches outcomes (calibration), and every breach, promotion and demotion. |
+| **Trading terminal** | **Portfolio & paper execution** |
+| ![Multi-chart terminal with live orderbook](docs/screenshots/15_terminal_live.png) | ![Portfolio console with positions, exposure and the order journal](docs/screenshots/16_portfolio_console.png) |
+| Live Binance charts, L2 orderbook, watchlist, the Polars scanner, and a **Run Debate** button on every chart. | Paper positions per mandate, session drawdown, exposure, strategy instances and the full order journal. |
 
-| Research Lab | Portfolio Console |
-| :---: | :---: |
-| ![Research Lab](docs/screenshots/03_research_lab.png) | ![Portfolio Console](docs/screenshots/04_portfolio_console.png) |
+## What you can use it for
 
-## Architecture Core Principles
-- **AI and UI can propose.**
-- **Deterministic rules and risk controls decide.**
-- **NautilusTrader executes.**
-- **Spot Trading Native:** Fully integrated pipeline for Spot markets (Futures routing is supported in the execution adapter, but ingestion/onboarding pipelines currently track Spot pairs exclusively).
+- **Trade with an AI copilot, keep the final say.** Ask "is there a trade on BTC 4h?"; get the analysis,
+  the chart and a sized order proposal. Nothing executes until you approve it.
+- **Run supervised AI trading on paper.** Give the AI a mandate (for example $10,000, BTC and ETH, 10%
+  max position, 20% hard stop). The scanner finds setups, a cheap local model triages them, the debate
+  fleet decides, and risk-adding orders come to your phone for approval.
+- **Let autonomy be earned, not granted.** Mandates start at L1 Copilot. The system proposes a promotion
+  only when the gate passes (days at level, closed trades, no breaches, drawdown, return against holding
+  BTC, calibrated confidence), and only you can confirm it. Losses demote automatically.
+- **Research strategies with an AI that cannot cheat itself.** Queue an idea; the research worker drafts
+  the code, backtests it in a sandbox, tunes parameters on in-sample data only, and rejects anything that
+  fails out of sample before it pays for a senior-model review.
+- **Screen and watch markets.** Vectorized technical scans, price alerts, and an exit monitor that
+  enforces hard and trailing stops on every AI-owned position.
+- **Paper-trade perpetual futures.** 1–20× leverage, isolated or cross margin, Binance-tiered liquidation
+  prices and funding.
+- **Operate the AI like a system.** Every model call goes through one gateway with a daily budget, a
+  ledger, decision traces you can open from any answer ("Why?"), evals, and local models on your own GPU.
 
-## System Architecture
+## How it works
+
+1. **Market data:** Binance WebSocket and REST into a NautilusTrader Parquet catalog and an analytics
+   lake (DuckDB / Polars). 120 days of 1m and 1h history are backfilled and gap-checked.
+2. **Scanner:** Polars indicator rules find candidates and build a shared **market brief** for each.
+3. **Pre-debate gate:** deterministic checks first (kill switch, daily loss, headroom, data freshness,
+   cooldown), then a **triage** call on a local model (Gemma 4 12B) decides whether a full debate is
+   worth paying for.
+4. **Debate:** analysts (market, news sentiment via FinBERT, on-chain), bull vs bear, a risk panel, and a
+   verdict from Gemini Pro. Lessons from similar past decisions are recalled by vector search.
+5. **Mandate routing:** the verdict goes to the owning mandate's autonomy level: an approval at L1, a
+   veto window at L2, direct at L3. No mandate means no order.
+6. **Execution:** an approved order is sized against the mandate budget, checked against the mandate,
+   then against `GuardedOrderDispatcher` (the non-bypassable 1–25% equity clamp, daily drawdown circuit
+   breaker and kill switch), and written through a transactional outbox to the paper engine.
+7. **Learning:** the learner labels every decision's outcome at 1h, 4h, 24h and 72h, writes reflections
+   from the 24h result, and measures how well verdict confidence matches reality.
+
+The rules that never change: **AI and UI propose. Deterministic rules and risk controls decide.
+NautilusTrader executes.**
 
 ```mermaid
-flowchart TB
-    subgraph MarketData ["Market Data & Ingestion Layer"]
-        BinanceWS["Binance WebSocket / REST API"] --> Ingest["cryptonite_ingest (Port 8080)"]
-        Ingest --> ParquetCat["Nautilus Parquet Catalog (/data/nautilus_catalog)"]
-        Ingest --> RedisPubSub["Redis Event Stream (redis:6379)"]
+flowchart LR
+    subgraph Data["Market data"]
+        Binance["Binance WS / REST"] --> Ingest["ingest"]
+        Ingest --> Lake[("Parquet catalog<br/>+ analytics lake")]
     end
-
-    subgraph AnalyticalCores ["Vectorized Analytical & Research Cores"]
-        RedisPubSub --> Scanner["cryptonite_scanner (Port 8082)<br/>Polars Vectorized Core"]
-        ParquetCat --> Backtester["cryptonite_backtester (Port 8083)<br/>Nautilus Event-Driven Engine"]
+    subgraph Brain["AI layer (one gateway)"]
+        Scanner["scanner<br/>briefs"] --> Gate["pre-debate gate<br/>+ local triage"]
+        Gate --> Debate["debate fleet<br/>(Gemini)"]
+        Copilot["Brain copilot"]
+        Research["research worker"]
+        Learner["learner<br/>outcomes, calibration"]
     end
-
-    subgraph ExecutionPlane ["Execution & Settlement Layer"]
-        Executor["cryptonite_executor (Port 8084)<br/>Order State Machine & Risk Engine"]
-        Outbox["cryptonite_outbox (Port 8081)<br/>Transactional Outbox Poller"]
-        Executor --> Outbox
-        Outbox --> BinanceLive["Binance Testnet / Live REST & WS"]
+    subgraph Control["Control"]
+        Mandates["mandates +<br/>autonomy levels"]
+        Approvals["approvals<br/>web / Telegram + TOTP"]
+        Risk["GuardedOrderDispatcher<br/>kill switch"]
     end
-
-    subgraph Persistence ["Persistence & Caching"]
-        Postgres[(PostgreSQL 16 Engine<br/>Relational & Audit State)]
-        RedisExec[(Redis 7 - Execution Stream)]
-        RedisAgents[(Redis 7 - Agent Memory)]
-    end
-
-    subgraph AIOperations ["AI Operations Layer (AI gateway: Gemini + local Ollama)"]
-        AgentWorker["cryptonite_agent_worker (Port 8085)<br/>1-on-1 Interactive AI Copilot"]
-        DebateWorker["cryptonite_debate_worker<br/>Autonomous Adversarial Debate Fleet"]
-        AgentWorker --> PostgresRO[(Postgres Read-Only Replica<br/>cryptonite_agent_ro)]
-        AgentWorker --> ParquetDuckDB[(Embedded DuckDB Engine<br/>Security Sandboxed)]
-        AgentWorker --> RedisAgents
-        DebateWorker --> RedisPubSub
-        DebateWorker --> Postgres
-        DebateWorker --> Outbox
-    end
-
-    subgraph Interface ["Institutional Interface Layer"]
-        FastAPI["cryptonite_api (Port 8000, 0.0.0.0)<br/>Gateway REST & WS (/ws/stream)"]
-        WebUI["Next.js 16 Web Terminal (Port 3000)<br/>TradingView, Terminal, Operator Console, AI Copilot"]
-    end
-
-    FastAPI <--> Postgres
-    FastAPI <--> RedisExec
-    WebUI <-->|REST & /agent-api| FastAPI
-    FastAPI -->|HMAC-SHA256 Signed Requests| AgentWorker
-    Executor <--> Postgres
-    Executor <--> RedisExec
-    Scanner --> RedisPubSub
+    Lake --> Scanner
+    Debate --> Mandates
+    Copilot --> Approvals
+    Mandates --> Approvals --> Risk --> Outbox["outbox"] --> Paper["paper engine<br/>(orchestrator)"]
+    Paper --> Learner
+    Ollama["Ollama on the host GPU<br/>Gemma 4, EmbeddingGemma"] -.-> Gate
+    Ollama -.-> Learner
 ```
 
-## Project Structure
+## Safety model
+
+- **Mandates bound everything the AI does:** instruments, budget, max position (1–25% of the budget),
+  hard stop (≤ 20% drawdown), active hours. Breaching half the stop demotes the mandate one level;
+  reaching it halts the mandate and closes its own positions; a 20% account loss latches the PAPER kill
+  switch and halts every mandate.
+- **Approvals are bound to one command** and cannot be replayed. Risk-adding approvals time out to *no*;
+  risk-reducing ones time out to *proceed*. Approving risk needs a human operator session and TOTP.
+- **The AI cannot write what it reads:** model-callable SQL runs as a read-only role; telemetry, ledger
+  and traces are written by a separate role; the backtest worker has its own least-privilege role.
+- **Model-written strategy code** runs in an isolated sandbox container (no network, no secrets,
+  resource-capped) after an allow-list check.
+- **Cost:** a $25/day AI budget with a priority order (exits are never blocked); triage, summaries and
+  embeddings run locally for free.
+- **Infrastructure:** Redis requires a password, service ports are published on localhost only, and the
+  local model server listens on the docker bridge only.
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Web | Next.js 16, React 19, TypeScript, Tailwind v4, Zustand, TradingView Lightweight Charts |
+| Backend | Python 3.12, FastAPI, asyncpg, uv workspace |
+| Trading engine | NautilusTrader 2.0 (backtests, paper execution, Binance demo adapter) |
+| Data | PostgreSQL 16 + pgvector, Redis 7, Parquet, DuckDB, Polars |
+| AI | Pydantic AI gateway; Google Gemini (Flash-Lite, Flash, Pro); Ollama (Gemma 4 12B, EmbeddingGemma); FinBERT; Unsloth QLoRA for distillation |
+| Ops | Docker Compose, Alembic, Playwright, pytest, TruffleHog |
+
+## Project structure
+
 ```
 cryptonite/
-├── apps/
-│   └── web/             # Next.js 16 (React 19) Institutional Web Terminal UI
-├── docs/                # Architecture specifications & data contracts
-├── infra/               # Docker Compose, Dockerfiles, and Alembic migrations
+├── apps/web/            # Next.js workstation: terminal, AI Brain, Mission Control, research, portfolio
 ├── packages/
-│   ├── schemas/         # Shared domain models and abstract source interfaces
-│   ├── storage/         # Nautilus ParquetDataCatalog and Enriched Analytics Lake
-│   ├── execution/       # Order State Machine and Risk Constraints
-│   ├── backtester/      # Nautilus Backtesting Engine wrapper
-│   ├── strategies/      # Base implementations of Quantitative Strategies
-│   └── agents/          # AI gateway (Pydantic AI; Gemini + local Ollama), tools, debate fleet, evals
-└── services/
-    ├── api/             # FastAPI Gateway, REST, WebSocket & Background Alerts
-    ├── ingest/          # Binance WebSocket stream, REST recovery recorder, and On-Chain RPC
-    ├── scanner/         # Polars Vectorized Screening Engine & Exit Surveillance
-    ├── debate_worker/   # Pre-debate gate, triage, debate engine; also runs the learner
-    ├── agent_worker/    # Brain copilot and chat personas (through the AI gateway)
-    ├── orchestrator/    # Paper engine, mandate risk monitor, approval sweeper, autonomy gates
-    ├── notifier/        # Telegram approvals (TOTP) and ntfy Critical alerts
-    ├── sentiment/       # FinBERT news sentiment on CPU (internal network only)
-    └── outbox/          # Transactional Outbox Poller & Binance Execution Bridge
+│   ├── schemas/         # Shared Pydantic contracts (bars, orders, debates, mandates)
+│   ├── storage/         # Nautilus catalog and analytics lake
+│   ├── scanner/         # Polars indicator engine
+│   ├── strategies/      # Strategy base and registry
+│   ├── backtester/      # Nautilus runner and the strategy sandbox
+│   ├── execution/       # Risk engine, mandates, autonomy ladder, calibration, paper pipeline
+│   └── agents/          # AI gateway, tools, Brain, debate fleet, research loop, evals
+├── services/
+│   ├── api/             # REST + WebSocket gateway
+│   ├── ingest/          # Binance market data
+│   ├── scanner/         # Candidates, briefs, exit monitor, derivatives feed
+│   ├── orchestrator/    # Paper engine, mandate risk monitor, approval sweeper, autonomy gates
+│   ├── debate_worker/   # Gate, triage, debates, mandate routing; also runs the learner
+│   ├── agent_worker/    # Brain copilot and chat personas
+│   ├── notifier/        # Telegram approvals and ntfy alerts
+│   ├── sentiment/       # FinBERT news sentiment (CPU)
+│   ├── outbox/          # Transactional outbox relay
+│   └── executor/        # Binance demo execution (opt-in)
+├── infra/               # Docker Compose, Dockerfiles, Alembic migrations
+├── scripts/             # Backfills, evals, drills, distillation, gate status
+└── docs/                # Architecture, ADRs, runbooks, user manual
 ```
 
-## Quick Start
+## Quick start
 
-Secrets live in a git-ignored `.env` at the repo root (`infra/.env` is a symlink to it, so Compose reads
-it). Redis requires `REDIS_PASSWORD` from that file.
+Requirements: Docker with Compose, Node 22 with pnpm 10, and a Google Gemini API key. A local GPU and
+Ollama are optional (without them, local roles fall back to Gemini).
+
+Secrets live in a git-ignored `.env` at the repo root (`infra/.env` is a symlink to it). It needs at
+least `GEMINI_API_KEY`, `REDIS_PASSWORD` and `CRYPTONITE_TOTP_AES_KEY` (encrypts TOTP secrets at
+rest); Telegram approvals add the notifier keys listed in [HANDOFF.md](HANDOFF.md).
 
 ```bash
-# 1. Start Postgres and Redis
+# 1. Postgres and Redis
 docker compose -f infra/docker-compose.yml up -d postgres redis
 
-# 2. Run migrations (through the test image, which has Alembic)
+# 2. Migrations (the test image has Alembic)
 docker compose -f infra/docker-compose.yml run --rm test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
 
-# 3. Start the stack (add --profile monitoring for the exit monitor, --profile notifier for Telegram)
-docker compose -f infra/docker-compose.yml --profile monitoring up -d
+# 3. Create your operator account (prints a TOTP secret for your authenticator app)
+docker compose -f infra/docker-compose.yml exec -T api python - <your-username> <your-password> < scripts/create_operator.py
 
-# 4. Web
+# 4. Start the stack (monitoring = exit monitor, notifier = Telegram)
+docker compose -f infra/docker-compose.yml --profile monitoring --profile notifier up -d
+
+# 5. Web
 cd apps/web && pnpm install && pnpm dev   # http://localhost:3000
 ```
 
-Run the test suite against a throwaway database, never the dev DB (one test downgrades the schema to
-`base`); the exact command is in [HANDOFF.md](HANDOFF.md). The local model tier (Ollama on the host) is
-described in [docs/runbooks/local_ai_tier.md](docs/runbooks/local_ai_tier.md).
+Then sign in, open **Mission Control → Mandate editor**, and create your first mandate. Without one, the
+AI cannot place any order.
 
-## Institutional Web Terminal UI & Workstation
-Cryptonite features a high-density, Bloomberg-style trading workstation:
-- **Modular 3-Column Layout**: Collapsible sidebars with quick toggles for **Watchlist**, **Orderbook**, and **AI Debate** with real-time mode indicators (`Full Canvas`, `2-Column`, `3-Column`) that persist across browser sessions.
-- **Real-Time Orderbook L2 Depth**: Live mid-market price anchoring, dynamic depth volume bars (green/red), instant spread calculation, and customizable tick grouping (`0.1`, `1`, `10` USDT). Fully hydration-safe SSR.
-- **Precision Floating AI Copilot**: 8-direction resizable floating window (`n`, `s`, `e`, `w`, `ne`, `nw`, `se`, `sw`) with viewport clamping, header dragging, a 1-click **Center Window** button, 5 isolated persona conversation threads, native text selection, and 1-click transcript export.
-- **Interactive Execution Staging Canvas**: Live decision price drift telemetry, risk limit overrides (0.5% - 25.0% allocation slider, Market/Limit order types), and a high-assurance **2-second hold-to-approve** safety mechanism.
+Tests run against a throwaway database (one test downgrades the schema); the command is in
+[HANDOFF.md](HANDOFF.md). Local models: [docs/runbooks/local_ai_tier.md](docs/runbooks/local_ai_tier.md).
 
-## Multi-Agent Operations: Copilot vs. Debate Fleet
-Cryptonite separates AI operations into two distinct, specialized operational layers:
-1. **Interactive AI Copilot (`cryptonite_agent_worker:8085`)**: Direct 1-on-1 dialogue with 5 specialized personas (**Research Intelligence**, **Execution Strategist**, **Backtest Explainer**, **Chief Risk Officer**, **On-Chain Intelligence**) maintaining isolated thread histories and un-sent draft states.
-2. **Autonomous Adversarial Debate Fleet (`cryptonite_debate_worker`)**: Background consensus pipeline combining:
-   - **Analyst Fleet:** Market, Sentiment, and On-Chain agents autonomously gather real-time data and generate intelligence dossiers.
-   - **Adversarial Debate:** A Bull Researcher and a Bear Researcher aggressively debate the dossier to expose weaknesses in the trade thesis.
-   - **Portfolio & Risk Managers:** A Portfolio Manager proxy sets an initial allocation, followed by a 3-persona Risk Debate (Aggressive, Conservative, Neutral). The Chief Risk Officer synthesizes the final conviction level (e.g. `OVERWEIGHT` / `HOLD`).
-   - **Learning loop:** the learner labels every debate decision at 1h/4h/24h/72h from the analytics lake, writes a reflection from the 24h outcome with alpha against BTC, and embeds it locally (`embeddinggemma`, `vector(768)`, model recorded per row). Future debates recall the same-model lessons ranked by outcome. Verdict confidence is calibrated (ECE) and feeds the autonomy gate.
-   - **Safety First:** AI agents operate through an Anti-Corruption Layer with strictly read-only, anonymized database access, hard limits on concentration (25.0%), and hardware-level kill-switches.
+## Documentation
 
-## Perpetual Futures (Paper Trading)
+| Document | What it covers |
+|---|---|
+| [docs/ai-first-program.md](docs/ai-first-program.md) | The AI layer as built: services, gateway and routes, mandates, approvals, learning, security |
+| [docs/USER_MANUAL.md](docs/USER_MANUAL.md) | Using the workstation, including Mission Control and Telegram approvals |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Contracts, schemas, Redis channels, frontend stores |
+| [docs/adr/](docs/adr/) | Decisions: provider layer, cost controls, research loop, mandates, local tier |
+| [docs/runbooks/](docs/runbooks/) | Kill switch, token rotation, DB bootstrap, local AI tier |
+| [docs/perpetuals-architecture.md](docs/perpetuals-architecture.md) | Perpetual futures paper trading |
+| [HANDOFF.md](HANDOFF.md) · [AUDIT_STATUS.md](AUDIT_STATUS.md) | Current status, open items, backlog |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Release notes from before the AI-First program |
 
-BTCUSDT / ETHUSDT USD-M perpetuals run on the paper engine alongside spot: 1–20× leverage, isolated or cross margin, shorts, reduce-only, exact Binance-tiered liquidation prices, synthetic liquidations, and funding settlement. Risk invariants: entry notional ≥ 1% and position notional ≤ 25% of equity, mark price ≤ 10 s old, 5% daily drawdown circuit breaker (resets at 00:00 UTC), and a PAPER kill switch that still lets reduce-only exits through. Market data comes from Binance `fstream` (`/market` for marks, `/public` for book tickers, coalesced to 50 Hz). The terminal's **Trade** sidebar has the order ticket, margin risk HUD, and PAPER kill switch.
+## Status
 
-- Architecture: [docs/perpetuals-architecture.md](docs/perpetuals-architecture.md) · design decisions: [docs/perpetuals-phase1-blueprint.md](docs/perpetuals-phase1-blueprint.md) · operating limits: [HANDOFF.md](HANDOFF.md)
-- Run: `docker compose -f infra/docker-compose.yml up -d postgres redis ingest derivatives_feed orchestrator api`, then `cd apps/web && pnpm dev` and open `http://localhost:3000`
-
-## Transactional Outbox Execution Pipeline
-To ensure high availability and prevent dual-write hazards during network partitions, execution logic uses the transactional outbox pattern.
-
-```mermaid
-sequenceDiagram
-    participant Strategy as Strategy / Operator / Debate Fleet
-    participant Executor as cryptonite_executor
-    participant DB as PostgreSQL (Outbox)
-    participant OutboxService as cryptonite_outbox
-    participant Exchange as Binance Testnet API
-
-    Strategy->>Executor: Submit Order Request
-    Executor->>Executor: Evaluate Risk Limits & Margin Bounds
-    Executor->>DB: ATOMIC TX: Insert Order + Insert Outbox Event
-    DB-->>Executor: Commit OK
-    OutboxService->>DB: Poll PENDING Outbox Events (FOR UPDATE SKIP LOCKED)
-    OutboxService->>Exchange: Signed REST Order Submission
-    Exchange-->>OutboxService: Execution Report (ACK / REJECT / FILLED)
-    OutboxService->>DB: Update Order Status & Mark Outbox PROCESSED
-```
-
-### Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
-- **Database-Backed Action & Decision Inbox**: Refactored the Action Inbox to hydrate directly from PostgreSQL (`GET /api/v1/agents/debates`), with automatic client-side cache reconciliation that purges local browser storage when database records are cleared. Added formatted timestamps and strict chronological sorting.
-- **Docked Operator Control Sidebar**: Added direct access to the Execution Kill-Switch panel from the main Trading Terminal via the right-sidebar toolbar (red Shield toggle), allowing traders to manage risk and trip emergency stops without leaving active charts.
-- **Industrial Kill-Switch Redesign**: Completely overhauled `KillSwitchPanel.tsx` with physical control-room styling, dynamic ambient glows (Emerald Armed vs. Pulsing Hazard Rose Latched), and generation-based latch verification.
-- **Backend Authentication Hardening**: Fixed machine token type inference bug in `routes/auth.py` with Python `hashlib.sha256` pre-hashing, eliminating intermittent 500 errors during high-frequency telemetry polling.
-- **Paper Trading Reset & Balance Seeding**: Cleaned demo/test ledgers while preserving core system execution vehicles (`AI_DEBATE_WORKER`, `MANUAL_TRADE`), and seeded $100,000 USDT paper balances across DEMO and PAPER environments.
-
-### Previous Updates (v0.4.0 - Alpha Lifecycle Integration)
-- **Unified Alpha Lifecycle Integration**: Transformed Copilot, Research Lab, and the AI Brain Workspace into an interconnected quantitative loop with 1-click workflow bridges.
-- **AI Brain Orchestrator & Inline Action Cards**: `OrchestratorCanvas` automatically intercepts strategy manifests and renders interactive `<InlineActionCard>` blocks with 1-click **[🧪 Backtest in Lab]** (auto-prefilling Nautilus parameters), **[⚔️ Trigger Debate]**, and **[📥 Stage to Inbox]**.
-- **Interactive Risk Allocation Sliders**: Embedded inline allocation sizing strictly clamped to the institutional 25.0% max portfolio equity ceiling ($25k max on $100k account).
-- **Live Redis Telemetry Stream**: Replaced mock thought latencies with real-time WebSocket subscriptions to Redis `HEARTBEAT` streams, rendering live sub-agent status traces during query execution.
-- **Dynamic Context Tags & System Prompts**: Added `@Backtest(latest)` and `/delta @PaperPosition(latest)` quick tags on the input rail that inject invisible system directives for `read_nautilus_tearsheet` and `compare_live_vs_backtest`.
-- **Live vs. Backtest Delta Diagnostic Tool**: Built `compare_live_vs_backtest` to compare live PostgreSQL fills (`agent_safe_orders`) against Nautilus historical Parquet trades (`trades.parquet`), diagnosing slippage and Sharpe degradation.
-- **Engine & RBAC Hardening**:
-  - Replaced pandas-dependent DuckDB queries with `.fetchall()`, removing heavy dataframe runtime dependencies.
-  - Added `export async function GET` proxy to `/agent-api/[...slug]/route.ts` for bidirectional state syncing.
-  - Corrected debate staging quantity math in `approve_debate` to derive exact base asset quantity from live equity and real-time market prices: `quantity = (equity * allocation_pct / 100) / price`.
-  - Added `stage_debate_proposal` tool allowing read-only agent sessions (`cryptonite_agent_ro`) to safely stage proposals via the API gateway.
-
-### Previous Updates (v0.3.0)
-- **End-to-End AI Execution Pipeline**: Connected the AI Debate Engine directly to the `cryptonite_executor` via the transactional outbox (`execution_commands`). Autonomous mode now fully executes orders without operator intervention within strict risk bounds. *(Superseded: autonomous mode was frozen in Phase 0 and replaced by mandates and autonomy levels in Phase 5.)*
-- **Interactive Execution Staging & Safety**: Added the Execution Staging Canvas featuring 2-second hold-to-approve mechanics, parameter overrides, and live price drift monitoring.
-- **Modular Bloomberg-Style Terminal & Orderbook L2**: Added 3-column layout controls, dynamic depth bars, and 8-direction floating Copilot with zero hydration mismatches.
-- **Reflection Engine & Vector Recall**: Added pgvector 768-dimensional embeddings for historical trade reflections, enabling continuous self-improvement across changing volatility regimes.
-- **Telemetry & Parquet Enhancements**: Resolved DuckDB cross-schema compatibility issues between Nautilus Parquet catalogs (`ts_init_ns`/`ts_event_ns`) and Polars resamplers (`bar_open_ns`), ensuring real-time charting and AI vector queries are 100% consistent.
+All AI-First phases (0–7) are on `main`. A mandate is running at L1 on paper; promotion to L2 depends on
+30 closed trades and 30 days at the level. A distilled triage model has passed certification and is
+waiting for an Ollama upgrade to be deployed. See [HANDOFF.md](HANDOFF.md) for the live state.

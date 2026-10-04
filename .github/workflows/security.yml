@@ -4,20 +4,20 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: TruffleHog Secret Scanner
-      uses: trufflesecurity/trufflehog@main
+    - uses: actions/checkout@v4
       with:
-        path: ./
-        base: ${{ github.event.repository.default_branch }}
-        head: HEAD
+        fetch-depth: 0  # TruffleHog walks the commit range, so it needs the history
+
+    # No base/head inputs: the action scans the pushed commits on a push and base..head on a pull
+    # request. A fixed base of the default branch made every push to main compare main with itself
+    # ("BASE and HEAD commits are the same") and fail without scanning anything.
+    - name: TruffleHog Secret Scanner
+      uses: trufflesecurity/trufflehog@v3.97.9
 
     - name: Clean Working Tree Check
       run: |
