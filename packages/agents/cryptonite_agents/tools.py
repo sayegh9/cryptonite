@@ -165,6 +165,9 @@ def read_nautilus_tearsheet(backtest_id: str) -> str:
                 summary["timeframe"] = m.get("timeframe")
                 summary["evaluation_start_ns"] = m.get("evaluation_start_ns")
                 summary["evaluation_end_ns"] = m.get("evaluation_end_ns")
+                # None = legacy metrics (equity only at fills): do not compare its drawdown/Sharpe with v2 runs
+                summary["metrics_version"] = m.get("metrics_version")
+                summary["benchmark"] = m.get("benchmark")
             except Exception:
                 pass
 

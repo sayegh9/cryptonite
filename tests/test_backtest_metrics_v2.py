@@ -186,3 +186,52 @@ def test_conservative_run_pays_taker_fees_on_every_fill_and_reports_v2_metrics(t
     # metrics_version describes outputs: the input hash does not contain it
     _, meta = resolve_execution_profile("conservative", starting_balance="10000.00 USDT", random_seed=42)
     assert res["run_config_hash"] == compute_run_config_hash(req, meta)
+
+
+# --- R2.4: re-run legacy runs ----------------------------------------------------------------------
+
+async def test_rerun_script_queues_a_copy_of_legacy_runs_only():
+    import importlib.util
+    from pathlib import Path
+
+    import asyncpg
+    from connections import DB_URL
+
+    spec = importlib.util.spec_from_file_location(
+        "rerun_backtests", Path(__file__).resolve().parents[1] / "scripts" / "rerun_backtests.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    conn = await asyncpg.connect(DB_URL)
+    tx = conn.transaction()
+    await tx.start()
+    try:
+        strategy = await conn.fetchval("INSERT INTO strategies (name, slug, description, author) "
+                                       "VALUES ('r', 'rerun-test', 'd', 'a') RETURNING id")
+        version = await conn.fetchval(
+            "INSERT INTO strategy_versions (strategy_id, version_num, code_hash, git_commit, default_parameters, "
+            "parameter_schema) VALUES ($1, 1, 'h', 'c', '{}'::jsonb, '{}'::jsonb) RETURNING id", strategy)
+        runs = {}
+        for name, metrics in (("legacy", {}), ("v2", {"metrics": {"metrics_version": 2}})):
+            runs[name] = await conn.fetchval(
+                "INSERT INTO backtest_runs (strategy_version_id, instrument_id, bar_type, timeframe, parameters, "
+                "warmup_start_ns, evaluation_start_ns, evaluation_end_ns, execution_profile, run_config_hash, status) "
+                "VALUES ($1, 'BTCUSDT.BINANCE', 'BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL', '1m', '{\"fast_period\": 5}', "
+                "0, 1, 2, 'optimistic', 'h', 'COMPLETED') RETURNING id", version)
+            await conn.execute(
+                "INSERT INTO backtest_results (backtest_run_id, total_return, max_drawdown, win_rate, total_trades, "
+                "winning_trades, losing_trades, avg_trade_pnl, max_consecutive_losses, downsampled_equity, "
+                "monthly_returns, catalog_manifest, artifact_manifest) "
+                "VALUES ($1, 0, 0, 0, 0, 0, 0, 0, 0, '[]', '{}', '[]', $2::jsonb)", runs[name], json.dumps(metrics))
+
+        dry = await mod.rerun(conn, list(runs.values()), None, dry_run=True)
+        assert dry == [(runs["legacy"], None)]
+        queued = await mod.rerun(conn, list(runs.values()), None)
+        assert [old for old, _ in queued] == [runs["legacy"]]
+        new = await conn.fetchrow("SELECT * FROM backtest_runs WHERE id = $1", queued[0][1])
+        assert new["status"] == "PENDING" and new["execution_profile"] == "optimistic"
+        assert json.loads(new["parameters"]) == {"fast_period": 5} and len(new["run_config_hash"]) == 64
+        assert len(await mod.rerun(conn, list(runs.values()), None, include_v2=True, dry_run=True)) == 2
+    finally:
+        await tx.rollback()
+        await conn.close()
