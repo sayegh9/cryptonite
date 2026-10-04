@@ -2,15 +2,26 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
+# LE-7: every Python service installs the uv.lock environment the tests run against (no unpinned
+# installs), from a BuildKit cache shared by all images so rebuilds do not re-download.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_LOCK_TIMEOUT=3600 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+
+RUN --mount=type=cache,target=/root/.cache/pip pip install uv==0.12.17
+
+COPY pyproject.toml uv.lock README.md ./
+COPY packages ./packages
+COPY services ./services
+
+RUN --mount=type=cache,target=/root/.cache/uv,id=cryptonite-uv,sharing=locked \
+    uv sync --frozen --no-dev --all-packages
+
 ENV PYTHONPATH=/app/packages/agents:/app/packages/schemas:/app/services/agent_worker
-
-RUN pip install uv
-
-COPY packages/ ./packages/
-COPY services/agent_worker/ ./services/agent_worker/
-
-RUN uv pip install --system "pydantic-ai-slim[google,openai]>=2.50.0" "pydantic>=2.12" "optuna>=5.0.0" duckdb sqlalchemy psycopg2-binary asyncpg httpx fastapi uvicorn pyarrow redis numpy
 
 EXPOSE 8085
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8085"]

@@ -270,11 +270,14 @@ services:
       - ../packages/strategies:/app/packages/strategies
     restart: unless-stopped
 
+  # Binance Demo venue executor: opt-in (`--profile binance_demo`). The paper stack does not use it, and it
+  # needs a real ed25519 key in infra/security/binance_demo_private_key.pem (the repo ships an empty one).
   executor:
     build:
       context: ..
       dockerfile: infra/docker/executor.Dockerfile
     container_name: cryptonite_executor
+    profiles: ["binance_demo"]
     user: "1000:1000"
     depends_on:
       postgres:

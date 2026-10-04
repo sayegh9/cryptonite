@@ -84,6 +84,31 @@ Runs were 2 repeats each. Flash-Lite cost $0.013 for everything.
 - **Tagging:** not evaluated yet; the role arrives with the A6.3 sentiment service.
 - **Real-history triage cases:** `--source lake` exists but needs the LE-1 backfill. The lake currently has about 9.5k of the expected 23k 1m bars over 16 days, so the strict resampler rejects most windows.
 
+**A6.3 sentiment (2026-10-04).** `services/sentiment` (CryptoBERT + FinBERT, CPU, internal network only, no secrets; weights in `~/models/hf`, mounted read-only) and the `get_news_sentiment` tool for the debate's Sentiment & News Analyst. Before this, the analyst had **no news source at all**. Tagging eval (`scripts/eval_sentiment.py`; 180 balanced financial-news items + 36 hand-labelled crypto items, macro-F1):
+
+| Tagger | News | Crypto | Latency |
+|---|---|---|---|
+| FinBERT (service) | 0.727 | 0.80 | 26 ms |
+| CryptoBERT (service) | 0.311 | 0.53 | 24 ms |
+| `gemma4:12b-it-qat` | 0.761 (3 invalid) | 0.97 (2 invalid) | 0.64 s |
+| `gemini-2.5-flash-lite` | **0.828** | **1.00** | 0.77 s |
+
+The news tool uses FinBERT, which is fast and free for 12 headlines per call. CryptoBERT is not used. The `tagging` route stays on Flash-Lite.
+
+**A6.4 embeddings.** Google retired `text-embedding-004` (404), so production reflection embeds and semantic lesson lookup had silently failed. The fix: local `ollama:embeddinggemma` (768-d, matches the column) with model-tagged vectors (migration 027), retrieval that only compares same-model vectors, and `scripts/reembed_reflections.py`, which switches all rows and the route in one transaction. Recall eval (`scripts/eval_embeddings.py`): embeddinggemma hit@1 1.0 and recall@3 1.0, the same as `gemini-embedding-001` (3072-d).
+
+**Phase 7.**
+- **A7.1:** migration 028 `ai_decision_outcomes`; the learner service (one instance) labels 1h/4h/24h/72h returns plus MFE/MAE from the lake and writes reflections from the 24h outcome. The old reflection engine was never started. Lessons are ranked by outcome.
+- **A7.2:** verdict calibration (ECE in pp) feeds the L3 gate (None below 20 labelled decisions, so it fails closed); there is a reliability chart in Autonomy & Evals.
+- **A7.3:** the L2 candidacy is the `BTC-ETH spot L1` mandate at L1 since 2026-10-01 09:15 (earliest L2 2026-10-31; it needs 30 closed trades). Check it with `scripts/gate_status.py`.
+- **A7.4:** distillation tooling (data builder, Unsloth QLoRA trainer, certification eval), trained on the host GPU in `~/cryptonite-train`. The trace inputs of distillable roles are now logged (migration 029).
+
+**Operations notes.**
+- **Migrate before deploying:** the new orchestrator and API read tables from migrations 027–031.
+- **Redis password:** Redis requires `REDIS_PASSWORD` (from `.env`), so host tools need `redis-cli -a`.
+- **Backtester role:** the backtester connects as `cryptonite_backtester` (migration 030).
+- **Scanner storage:** `scan_runs` stores one digest per date partition, after it had grown to 21 GB.
+
 **Known build issue (LE-7):** images `uv pip install` unpinned dependencies (the API image resolved `pydantic-ai-slim` 2.54.0), so deployed versions can drift from the locked versions the tests use. Builds also fail on transient download errors and must be retried.
 
 ## AI-First Program — Phase 5 (cloud session, 2026-09-30): mandates, autonomy, approvals, Telegram
