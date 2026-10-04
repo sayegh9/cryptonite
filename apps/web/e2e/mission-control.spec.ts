@@ -221,6 +221,42 @@ test.describe("Mission Control", () => {
     expect(reactErrors).toEqual([]);
   });
 
+  test("approval shows quote, slippage, mandate room, worst-case loss and past decisions (R6.4)", async ({ page }) => {
+    const a = {
+      ...approval("cccccccc-0000-4000-8000-000000000003", "ADD_RISK", "BUY ETHUSDT 6% of mandate ($600)", 500),
+      payload: { instrument_id: "ETHUSDT.BINANCE", symbol: "ETHUSDT", side: "BUY", quantity: 0.2, price: 3000, allocation_pct: 6, stop_loss_pct: 5 },
+      similar_decisions: [
+        { created_at: "2026-09-28T10:00:00Z", recommendation: "BUY", return_pct: 0.012 },
+        { created_at: "2026-09-20T10:00:00Z", recommendation: "BUY", return_pct: -0.008 },
+      ],
+    };
+    await page.route("**/api/v1/market/prices*", (route) => route.fulfill({ json: [{ symbol: "ETHUSDT", last_price: 3006 }] }));
+    await mockBackend(page, { approvals: [a] });
+    await openMissionControl(page);
+
+    const ctx = page.getByTestId("approval-row").first().getByTestId("approval-context");
+    await expect(ctx.getByTestId("approval-quote")).toContainText("$3,006");
+    await expect(ctx.getByTestId("approval-slippage")).toHaveText("+20.0 bps against");
+    await expect(ctx.getByTestId("approval-room")).toHaveText("$8,800"); // 10,000 budget − 1,200 exposure
+    await expect(ctx.getByTestId("approval-worst-loss")).toHaveText("-$30"); // 0.2 × 3000 × 5%
+    await expect(ctx.getByTestId("approval-resize-note")).toContainText("May be resized");
+    await expect(ctx.getByTestId("approval-similar")).toContainText("+1.20%");
+    await expect(ctx.getByTestId("approval-similar")).toContainText("-0.80%");
+  });
+
+  test("approval context shows unknowns when the quote and history are unavailable", async ({ page }) => {
+    await page.route("**/api/v1/market/prices*", (route) => route.fulfill({ status: 500, json: {} }));
+    await mockBackend(page, {
+      approvals: [{ ...approval("dddddddd-0000-4000-8000-000000000004", "ADD_RISK", "BUY BTCUSDT", 500), payload: { symbol: "BTCUSDT", side: "BUY", quantity: 0.01, price: 60000 } }],
+    });
+    await openMissionControl(page);
+    const ctx = page.getByTestId("approval-context");
+    await expect(ctx.getByTestId("approval-quote")).toHaveText("unavailable");
+    await expect(ctx.getByTestId("approval-slippage")).toHaveText("—");
+    await expect(ctx.getByTestId("approval-worst-loss")).toContainText("no stop in proposal");
+    await expect(ctx.getByTestId("approval-similar")).toHaveCount(0);
+  });
+
   test("halted mandate: banner, reason, and a resume that needs TOTP", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     const halted = mandate({

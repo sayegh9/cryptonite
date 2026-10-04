@@ -5,6 +5,8 @@ import { useDebateStore, DebateRun, type DebateActionError } from "@/lib/stores/
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
 import { usePaperEquity, EQUITY_MAX_AGE_MS } from "@/lib/portfolio/usePaperEquity";
 import { Fresh } from "@/components/Fresh";
+import { ApprovalRiskContext, sideOf, type SimilarDecision } from "@/components/ApprovalRiskContext";
+import { metricOrNull } from "@/lib/freshness";
 import {
   ShieldCheck,
   CheckCircle2,
@@ -52,6 +54,8 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
   const [sizingMap, setSizingMap] = useState<Record<string, number>>({});
   // The AI's proposed allocation_pct per run, from /debates/{id}/decision (null = not available)
   const [proposedPct, setProposedPct] = useState<Record<string, number | null>>({});
+  // The run's portfolio decision (decision_price, recommendation, …) for the approval context
+  const [decisions, setDecisions] = useState<Record<string, Record<string, unknown> | null>>({});
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [pendingRunId, setPendingRunId] = useState<string | null>(null);
@@ -202,6 +206,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
         if (cancelled) return;
         const pct = d && d.allocation_pct !== undefined && d.allocation_pct !== null ? Number(d.allocation_pct) : NaN;
         setProposedPct((prev) => ({ ...prev, [runId]: Number.isFinite(pct) ? clampPct(pct) : null }));
+        setDecisions((prev) => ({ ...prev, [runId]: d && typeof d === "object" ? d : null }));
       });
     }
     return () => {
@@ -637,6 +642,16 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                       <span>25% max</span>
                     </div>
                     <p className="text-[10px] text-zinc-500">Final size may be reduced to the mandate's room.</p>
+                    <ApprovalRiskContext
+                      symbol={symbolDisplay === "UNKNOWN" ? null : symbolDisplay}
+                      side={sideOf(decisions[run.runId]?.recommendation ?? run.decision)}
+                      decisionPrice={metricOrNull(decisions[run.runId]?.decision_price)}
+                      notionalUsd={equity.usable && equity.equity !== null ? (equity.equity * currentPct) / 100 : null}
+                      stopPct={null}
+                      roomUsd={null}
+                      requestedPct={currentPct}
+                      similar={Array.isArray(decisions[run.runId]?.similar_decisions) ? (decisions[run.runId]!.similar_decisions as SimilarDecision[]) : null}
+                    />
                   </div>
                 )}
 

@@ -1,4 +1,5 @@
 /** Mission Control contracts (blueprint §4.4–§4.6, §7.1): the shapes /api/v1/ai/* returns. */
+import type { SimilarDecision } from "@/components/ApprovalRiskContext";
 
 export type MandateStatus = "ACTIVE" | "HALTED" | "PAUSED" | "ARCHIVED";
 export type ActionClass = "ADD_RISK" | "REDUCE_RISK";
@@ -56,6 +57,10 @@ export interface Approval {
   decided_via: string | null;
   command_id: string | null;
   trace_id: string | null;
+  /** The command the approval would queue (instrument_id, side, quantity, price, allocation_pct, …) */
+  payload?: Record<string, unknown> | null;
+  /** Up to 3 past decisions on the same instrument and side (read-only; omitted when unavailable) */
+  similar_decisions?: SimilarDecision[] | null;
 }
 
 export interface AiStatus {

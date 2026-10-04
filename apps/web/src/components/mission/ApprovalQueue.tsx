@@ -5,8 +5,32 @@ import { toast } from "sonner";
 import { decideApproval } from "@/lib/mission/client";
 import { dispatchMandateUpdated } from "@/lib/mission/events";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
-import type { Approval } from "@/lib/mission/types";
+import type { Approval, Mandate } from "@/lib/mission/types";
+import { ApprovalRiskContext, sideOf, type ApprovalRiskInput } from "@/components/ApprovalRiskContext";
+import { metricOrNull } from "@/lib/freshness";
 import { useMandateStore } from "@/lib/stores/useMandateStore";
+
+/** Risk context inputs from an approval's command payload and its mandate (unknown -> null). */
+function contextOf(a: Approval, mandates: Mandate[]): ApprovalRiskInput {
+  const p = a.payload ?? {};
+  const price = metricOrNull(p.price);
+  const qty = metricOrNull(p.quantity);
+  const stopPrice = metricOrNull(p.stop_price);
+  const stopLossPct = metricOrNull(p.stop_loss_pct); // percent, e.g. 5 = 5%
+  const m = mandates.find((x) => x.id === a.mandate_id);
+  const budget = metricOrNull(m?.capital_budget_usd);
+  const exposure = metricOrNull(m?.exposure_usd);
+  return {
+    symbol: typeof p.symbol === "string" ? p.symbol : typeof p.instrument_id === "string" ? p.instrument_id.split(".")[0] : null,
+    side: sideOf(p.side ?? p.recommendation),
+    decisionPrice: price,
+    notionalUsd: price !== null && qty !== null ? price * qty : null,
+    stopPct: stopLossPct !== null ? stopLossPct / 100 : stopPrice !== null && price ? Math.abs(price - stopPrice) / price : null,
+    roomUsd: budget !== null && exposure !== null ? Math.max(0, budget - exposure) : null,
+    requestedPct: metricOrNull(p.allocation_pct),
+    similar: a.similar_decisions ?? null,
+  };
+}
 
 const clock = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
@@ -25,6 +49,7 @@ const DONE_TEXT: Record<string, string> = {
 export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[]; onDecided: () => void }) {
   const offset = useMandateStore((s) => s.clockOffsetMs);
   const markDecided = useMandateStore((s) => s.markDecided);
+  const mandates = useMandateStore((s) => s.mandates);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
@@ -112,6 +137,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                   </>
                 )}
               </p>
+              {pending && a.command_type === "SUBMIT_ORDER" && <ApprovalRiskContext {...contextOf(a, mandates)} />}
               {pending ? (
                 <div className="mt-2 flex gap-2">
                   <button
