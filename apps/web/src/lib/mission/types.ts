@@ -73,6 +73,10 @@ export interface GateCheck {
   required: string;
   actual: string;
   passed: boolean;
+  /** Reported but not required: the gate's `passed` ignores it (R4.7, D6). Missing = required. */
+  informational?: boolean;
+  /** 90% interval [lo, hi] of the measured value, as strings (R4.2). */
+  interval?: [string, string] | null;
 }
 
 export interface AutonomyView {

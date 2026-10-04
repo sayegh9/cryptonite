@@ -5,7 +5,7 @@ import { CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { confirmPromotion, declinePromotion, evaluateAutonomy } from "@/lib/mission/client";
 import { dispatchMandateUpdated } from "@/lib/mission/events";
-import type { Mandate } from "@/lib/mission/types";
+import type { GateCheck, Mandate } from "@/lib/mission/types";
 import { useAutonomyStore } from "@/lib/stores/useAutonomyStore";
 import ReliabilityChart from "./ReliabilityChart";
 
@@ -18,7 +18,13 @@ const CHECK_LABEL: Record<string, string> = {
   sortino_vs_btc_hold: "Sortino vs BTC hold",
   calibration_error_pp: "Calibration error",
   veto_rate_pct: "Operator veto rate",
+  expectancy_lower_bound: "Expectancy lower bound",
+  sortino_diff_lower_bound: "Sortino − BTC hold, lower bound",
+  calibration_ece_ci: "Calibration error interval",
 };
+
+const intervalText = (iv: GateCheck["interval"]) =>
+  Array.isArray(iv) && iv.length === 2 ? `90% CI [${iv[0]}, ${iv[1]}]` : null;
 
 /** Autonomy & Evals (§4.5, §7.1): earned vs requested level, the gate with live numbers, TOTP promotion. */
 export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
@@ -108,22 +114,47 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
                 </tr>
               </thead>
               <tbody>
-                {view.gate.checks.map((c) => (
-                  <tr key={c.name} className="border-t border-zinc-900" data-testid="gate-check">
-                    <td className="py-1">{CHECK_LABEL[c.name] ?? c.name}</td>
-                    <td className="py-1 text-zinc-400">{c.required}</td>
-                    <td className="py-1">{c.actual}</td>
-                    <td className="py-1">
-                      {c.passed ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 className="h-3 w-3" /> pass</span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-red-300"><XCircle className="h-3 w-3" /> fail</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {view.gate.checks.map((c) => {
+                  const iv = intervalText(c.interval);
+                  return (
+                    <tr
+                      key={c.name}
+                      className={`border-t border-zinc-900 ${c.informational ? "text-zinc-400" : ""}`}
+                      data-testid={c.informational ? "gate-check-info" : "gate-check"}
+                    >
+                      <td className="py-1">
+                        {CHECK_LABEL[c.name] ?? c.name}
+                        {c.informational && (
+                          <span
+                            className="ml-1 rounded border border-sky-800 bg-sky-950/40 px-1 text-[10px] text-sky-300"
+                            title="Reported only: does not block promotion until the operator makes it required (D6)"
+                          >
+                            informational
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1 text-zinc-400">{c.required}</td>
+                      <td className="py-1 tabular-nums">
+                        {c.actual}
+                        {iv && <div className="text-[10px] text-zinc-500" data-testid="gate-check-interval">{iv}</div>}
+                      </td>
+                      <td className="py-1">
+                        {c.passed ? (
+                          <span className="inline-flex items-center gap-1 text-emerald-300"><CheckCircle2 className="h-3 w-3" aria-hidden="true" /> pass</span>
+                        ) : c.informational ? (
+                          <span className="inline-flex items-center gap-1 text-amber-300"><XCircle className="h-3 w-3" aria-hidden="true" /> below (not blocking)</span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-red-300"><XCircle className="h-3 w-3" aria-hidden="true" /> fail</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+            {view.gate.checks.some((c) => c.informational) && (
+              <p className="mt-1 text-[10px] text-zinc-500">Informational checks are shown with their 90% interval and do not affect PASSED.</p>
+            )}
 
             {view.proposal && (
               <form

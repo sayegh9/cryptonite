@@ -136,6 +136,8 @@ async function mockBackend(page: Page, opts: { status?: unknown; mandates?: unkn
             { name: "max_drawdown_pct", required: "<= 10%", actual: "6.2", passed: true },
             { name: "mandate_breaches", required: "0", actual: "0", passed: true },
             { name: "sortino_vs_btc_hold", required: "> BTC hold (after fees)", actual: "1.80 vs 0.90", passed: true },
+            { name: "expectancy_lower_bound", required: "> 0", actual: "0.12%", passed: false, informational: true, interval: ["-0.05%", "0.29%"] },
+            { name: "sortino_diff_lower_bound", required: "> 0", actual: "0.90", passed: true, informational: true, interval: ["0.10", "1.70"] },
           ],
           metrics: {},
         },
@@ -319,6 +321,13 @@ test.describe("Mission Control", () => {
     await expect(page.getByTestId("autonomy-requested")).toHaveText("L2");
     await expect(page.getByTestId("gate-check")).toHaveCount(5);
     await expect(page.getByRole("table", { name: "Promotion gate checklist" })).toContainText("1.80 vs 0.90");
+    // R4.4: informational checks are marked, show their interval, and do not fail the gate
+    const info = page.getByTestId("gate-check-info");
+    await expect(info).toHaveCount(2);
+    await expect(info.first()).toContainText("informational");
+    await expect(info.first()).toContainText("90% CI [-0.05%, 0.29%]");
+    await expect(info.first()).toContainText("below (not blocking)");
+    await expect(page.getByText("PASSED", { exact: true })).toBeVisible();
     await expect(page.getByTestId("calibration-note")).toContainText("A7.2");
 
     const confirm = page.getByRole("form", { name: "Confirm promotion" });
