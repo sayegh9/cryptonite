@@ -166,7 +166,7 @@ test.describe("Brain Home", () => {
     await expect(card).toContainText("0.01 BTCUSDT.BINANCE");
     await card.getByRole("button", { name: "Approve…" }).click();
     // The confirmation says how the order is sized and what actually stops it out
-    await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("sized at 5% of equity");
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("sized at 5% of the mandate");
     await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("exit monitor");
     await card.getByRole("button", { name: "Confirm paper order" }).click();
     await expect(card.getByRole("status")).toContainText("Approved · paper command cmd-12345678");

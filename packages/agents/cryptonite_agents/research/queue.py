@@ -10,6 +10,7 @@ so Gemini's Batch API (results hours later) does not fit it; the loop runs on st
 """
 
 import json
+import logging
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -63,17 +64,20 @@ async def work_once(redis, loop: ResearchLoop, block_s: int = 5) -> str | None:
     return report.id
 
 
-def build_digest(reports_dir: Path = REPORTS_DIR, hours: int = 24, now: datetime | None = None) -> dict[str, Any]:
+def build_digest(reports_dir: Path = REPORTS_DIR, hours: int = 24, now: datetime | None = None,
+                 reports: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """``reports`` from the API's research_reports history (LE-6); without them, the JSON files."""
     now = now or datetime.now(UTC)
     since = now - timedelta(hours=hours)
-    reports = []
-    for path in sorted(reports_dir.glob("*.json")) if reports_dir.exists() else []:
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        if datetime.fromisoformat(data["created_at"]) >= since:
-            reports.append(data)
+    if reports is None:
+        reports = []
+        for path in sorted(reports_dir.glob("*.json")) if reports_dir.exists() else []:
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if datetime.fromisoformat(data["created_at"]) >= since:
+                reports.append(data)
     by_status: dict[str, int] = {}
     for r in reports:
         by_status[r["status"]] = by_status.get(r["status"], 0) + 1
@@ -89,7 +93,13 @@ def build_digest(reports_dir: Path = REPORTS_DIR, hours: int = 24, now: datetime
             "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in reports), 4)}
 
 
-async def publish_digest(redis, reports_dir: Path = REPORTS_DIR, hours: int = 24) -> dict[str, Any]:
-    digest = build_digest(reports_dir, hours)
+async def publish_digest(redis, reports_dir: Path = REPORTS_DIR, hours: int = 24, client=None) -> dict[str, Any]:
+    reports = None
+    if client is not None:
+        try:
+            reports = await client.list_reports(hours)
+        except Exception as e:  # the API being down must not stop the digest: fall back to the files
+            logging.getLogger("cryptonite.agents.research").warning("Digest falls back to report files: %s", e)
+    digest = build_digest(reports_dir, hours, reports=reports)
     await redis.publish(DIGEST_CHANNEL, json.dumps({"type": "RESEARCH_DIGEST", "severity": "INFO", **digest}))
     return digest

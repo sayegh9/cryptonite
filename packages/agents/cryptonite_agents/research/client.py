@@ -34,6 +34,16 @@ class ResearchApiClient:
             raise ResearchApiError(f"{method} {path} -> {resp.status_code}: {resp.text[:500]}")
         return resp.json()
 
+    async def save_report(self, report: dict[str, Any]) -> dict[str, Any]:
+        """Store a research report in the API's queryable history (LE-6); idempotent per report id."""
+        body = {k: report.get(k) for k in ("id", "idea", "status", "reason", "strategy_slug", "strategy_name",
+                                           "in_sample", "out_of_sample", "cost_usd", "created_at")}
+        body["report"] = report
+        return await self._request("POST", "/research/reports", json=body)
+
+    async def list_reports(self, hours: int = 24) -> list[dict[str, Any]]:
+        return (await self._request("GET", "/research/reports", params={"hours": hours}))["reports"]
+
     async def save_strategy(self, name: str, description: str, python_code: str) -> dict[str, Any]:
         return await self._request("POST", "/strategies", json={
             "name": name, "description": description, "python_code": python_code,

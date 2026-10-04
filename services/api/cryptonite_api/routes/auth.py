@@ -103,6 +103,14 @@ async def require_operator(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient privileges")
     return auth_data
 
+async def require_human_operator(auth_data: dict = Depends(require_operator)) -> dict:
+    """An operator *session* (password + TOTP login), never a machine token. Approving AI actions and
+    giving the AI more room must not be possible for the agent workers' operator-scoped tokens (A5)."""
+    if auth_data.get("type") != "cookie" or not auth_data.get("user_id"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="An operator session is required (machine tokens cannot approve AI actions)")
+    return auth_data
+
+
 async def require_csrf(
     request: Request,
     auth_data: dict = Depends(require_auth),

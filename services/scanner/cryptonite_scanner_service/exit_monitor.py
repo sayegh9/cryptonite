@@ -10,7 +10,8 @@ Every ``INTERVAL_S`` each open paper position is evaluated with pure rules (``ev
 
 A triggered stop closes the position with a PAPER ``CLOSE_POSITION`` command (risk reducing, so it
 runs immediately; blueprint D8) — only when every open row on the instrument, on either side, was
-opened by the AI (``AI_DEBATE_WORKER``). CLOSE_POSITION flattens the account's whole instrument, so a
+opened by one AI owner: ``AI_DEBATE_WORKER`` or a mandate's own instance ``AI_MANDATE_<id>`` (the close
+targets that owner, so the bridge books it on the owner's position row). CLOSE_POSITION flattens the account's whole instrument, so a
 shared instrument only gets an alert. A rejected close is retried; alerts are debounced.
 
 Model-proposed exit stops (``exit_decisions.target_stop_price``) are recommendations for the
@@ -64,6 +65,7 @@ class Position:
     ai_owned: bool  # every open row on the instrument (either side) was opened by the AI
     opened_ts: int = 0  # identity of the position (earliest open row), for per-position state
     funding_rate: float | None = None
+    owner_instance: str = AI_INSTANCE  # the one AI instance (legacy or a mandate's) that owns every row
 
     @property
     def pnl_pct(self) -> float:
@@ -152,14 +154,18 @@ async def load_positions(conn, redis_client, quotes: QuoteBook) -> list[Position
         """
         WITH open_rows AS (
             SELECT * FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
-        ), owners AS (  -- CLOSE_POSITION flattens the whole instrument: ownership spans both sides
-            SELECT instrument_id, BOOL_AND(instance_id = $2) AS ai_owned FROM open_rows GROUP BY instrument_id
+        ), owners AS (  -- CLOSE_POSITION flattens the whole instrument: ownership spans both sides.
+            -- AI-owned: one owner, the legacy AI instance or a mandate's own instance (A5.2)
+            SELECT instrument_id,
+                   BOOL_AND(instance_id = $2 OR instance_id LIKE 'AI!_MANDATE!_%' ESCAPE '!') AND COUNT(DISTINCT instance_id) = 1 AS ai_owned,
+                   MIN(instance_id) AS owner
+            FROM open_rows GROUP BY instrument_id
         )
         SELECT r.instrument_id, r.side,
                SUM(r.quantity * r.entry_price) / NULLIF(SUM(r.quantity), 0) AS entry_price,
-               MIN(r.opened_at) AS opened_at, o.ai_owned
+               MIN(r.opened_at) AS opened_at, o.ai_owned, o.owner
         FROM open_rows r JOIN owners o USING (instrument_id)
-        GROUP BY r.instrument_id, r.side, o.ai_owned
+        GROUP BY r.instrument_id, r.side, o.ai_owned, o.owner
         """,
         PAPER_ACCOUNT_ID, AI_INSTANCE,
     )
@@ -185,6 +191,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook) -> list[Position
         positions.append(Position(
             r["instrument_id"], r["side"], float(r["entry_price"] or 0), price, bool(r["ai_owned"]),
             int(r["opened_at"].timestamp()) if r["opened_at"] else 0, funding,
+            r["owner"] if r["ai_owned"] else AI_INSTANCE,
         ))
     return positions
 
@@ -216,7 +223,7 @@ async def enqueue_close(conn, pos: Position, reason: str) -> bool:
                requester_id, payload, status, environment, account_id)
            VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
            ON CONFLICT (idempotency_key) DO NOTHING""",
-        uuid.uuid4(), f"{prefix}:{attempts}", AI_INSTANCE,
+        uuid.uuid4(), f"{prefix}:{attempts}", pos.owner_instance,
         json.dumps({"instrument_id": pos.instrument_id, "reason": reason}), PAPER_ACCOUNT_ID,
     )
     return True
@@ -260,7 +267,7 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook) -> None:
 
 async def monitor_loop():
     logger.info("Starting exit monitor (stop %.1f%%, trail %.1f%% after +%.1f%%)", STOP_LOSS_PCT, TRAIL_PCT, TRAIL_ACTIVATE_PCT)
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=30)  # redis-py 8 times a blocking read out at exactly its block time (LE-3)
     pool = await asyncpg.create_pool(DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"), min_size=1, max_size=2)
     quotes = QuoteBook()
     follower = asyncio.create_task(quotes.follow(redis_client))

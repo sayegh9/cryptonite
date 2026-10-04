@@ -232,3 +232,28 @@ async def test_missing_quotes_raise_a_critical_alert(db_url):
         assert len(alerts) == 1 and alerts[0]["severity"] == "CRITICAL"
     finally:
         await pool.close()
+
+
+async def test_mandate_position_is_protected_and_closed_under_its_own_instance(db_url):
+    """A5.2: positions booked under a mandate's own instance keep the deterministic stops."""
+    mandate_instance = "AI_MANDATE_" + uuid.uuid4().hex
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        await seed(pool, [mandate_instance], price=94.0)
+        await em.monitor_once(pool, Redis(), book(94.0))
+        row = await pool.fetchrow("SELECT command_type, target_instance_id FROM execution_commands")
+        assert (row["command_type"], row["target_instance_id"]) == ("CLOSE_POSITION", mandate_instance)
+    finally:
+        await pool.close()
+
+
+async def test_two_ai_owners_on_one_instrument_only_alert(db_url):
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        await seed(pool, ["AI_MANDATE_" + uuid.uuid4().hex, "AI_DEBATE_WORKER"], price=94.0)
+        redis = Redis()
+        await em.monitor_once(pool, redis, book(94.0))
+        assert await pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+        assert redis.published[-1]["action"] == "ALERT"
+    finally:
+        await pool.close()

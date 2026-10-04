@@ -89,3 +89,57 @@ async def test_runs_are_stored(db_url):
         assert float(stored) == 1.0
     finally:
         await pool.close()
+
+
+# --- A6.2: summary kind and the generated sets ----------------------------------------------------
+
+SUMMARY_CASE = {"id": "s", "kind": "summary", "persona": "summarizer", "prompt": "turns...",
+                "must_keep": ["cmd-1a2b3c4d", "0.25", "pending", "3%"], "max_words": 30}
+
+
+def text_model(text: str) -> FunctionModel:
+    return FunctionModel(lambda messages, info: ModelResponse(parts=[TextPart(text)]))
+
+
+async def test_summary_passes_when_every_fact_is_kept():
+    keep = "Operator caps risk at 3% per trade. ETH buy 0.25 is PENDING; BTC buy queued as cmd-1A2B3C4D."
+    with override_model(MODEL, text_model(keep)):
+        res = await runner.run_case(Gateway(), SUMMARY_CASE, MODEL)
+    assert res.passed and res.checks == {"answered": True, "within_words": True, "kept_facts": True, "no_headings": True}
+
+
+@pytest.mark.parametrize("text, failed", [
+    ("Operator caps risk at 3% per trade. ETH buy 0.25 is pending.", "kept_facts"),  # lost the command id
+    ("# Summary\nRisk 3%. ETH 0.25 pending. cmd-1a2b3c4d queued.", "no_headings"),
+    ("Risk 3%. ETH 0.25 pending. cmd-1a2b3c4d. " + "filler " * 40, "within_words"),
+])
+async def test_summary_fails_on_lost_facts_headings_or_length(text, failed):
+    with override_model(MODEL, text_model(text)):
+        res = await runner.run_case(Gateway(), SUMMARY_CASE, MODEL)
+    assert not res.passed and res.checks[failed] is False
+
+
+def test_summary_metric_is_reported():
+    ok = runner.CaseResult("a", "summary", MODEL, True, True)
+    bad = runner.CaseResult("b", "summary", MODEL, False, True)
+    assert runner.summarize([ok, bad])["summary_rate"] == 0.5
+
+
+@pytest.mark.parametrize("name", ["triage_v3", "summarize_v1"])
+def test_generated_sets_are_well_formed(name):
+    cases = runner.load_set(name)
+    assert cases and len({c["id"] for c in cases}) == len(cases)
+    for c in cases:
+        assert c["persona"] in runner.PERSONAS
+        if c["kind"] == "triage":
+            assert c["expect"]["worth_debate"] in ([True], [False]) and c["prompt"].startswith("MARKET BRIEF")
+        else:
+            assert c["kind"] == "summary" and c["must_keep"] and "## New turns to merge" in c["prompt"]
+
+
+def test_triage_v3_is_balanced_across_rules():
+    cases = runner.load_set("triage_v3")
+    worth = [c["expect"]["worth_debate"][0] for c in cases]
+    assert worth.count(True) == worth.count(False)
+    assert {c["label_reason"] for c in cases if not c["expect"]["worth_debate"][0]} == {
+        "reward_to_risk_below_1.5", "stale_data", "both_timeframes_against", "chop"}

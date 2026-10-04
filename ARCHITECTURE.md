@@ -2,6 +2,8 @@
 
 This document maps all high-level contracts, database schemas, Redis communication channels, and core TypeScript/Python types across the Cryptonite platform.
 
+> The AI-First program (Phases 0–7: AI gateway, local model tier, mandates and autonomy, approvals and Telegram, learner, sentiment, research loop) is described in [docs/ai-first-program.md](docs/ai-first-program.md). This page covers the shared contracts; section 7 summarises what the program added.
+
 ---
 
 ## 1. System Communication Architecture
@@ -27,11 +29,24 @@ This document maps all high-level contracts, database schemas, Redis communicati
                │
 ┌──────────────▼──────────────────────────────────────────────┐
 │                    Backend Worker Services                  │
-│  - debate_worker: Multi-agent debate & consensus engine     │
+│  - debate_worker: gate, triage, debate, mandate routing     │
+│  - learner: outcome labels, reflections (single instance)   │
+│  - agent_worker: Brain copilot / chat personas              │
+│  - orchestrator: paper engine, mandate monitor, approvals   │
 │  - ingest: Binance Kline WebSocket ingester                 │
-│  - backtester: NautilusTrader simulation node               │
-│  - executor: Order execution & risk dispatcher              │
-└─────────────────────────────────────────────────────────────┘
+│  - scanner / exit_monitor: candidates, briefs, stops        │
+│  - backtester + strategy_sandbox: NautilusTrader runs       │
+│  - research_worker: strategy research loop (opt-in)         │
+│  - sentiment: FinBERT news sentiment (CPU)                  │
+│  - notifier: Telegram approvals, ntfy alerts (opt-in)       │
+│  - executor: Binance demo execution (opt-in)                │
+└──────────────┬──────────────────────────────────────────────┘
+               │ AI gateway (packages/agents/.../gateway)
+     ┌─────────▼──────────┐   ┌────────────────────────────────┐
+     │  Google Gemini API │   │ Ollama on the host (systemd),  │
+     │  Flash-Lite/Flash/ │   │ docker bridge only:            │
+     │  Pro               │   │ gemma4:12b-it-qat,embeddinggemma│
+     └────────────────────┘   └────────────────────────────────┘
 ```
 
 ---
@@ -142,18 +157,11 @@ CREATE TABLE backtest_runs (
 ```
 
 ### C. Agent Vector Reflections
-```sql
-CREATE TABLE agent_reflections (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    run_id VARCHAR(100) NOT NULL,
-    agent_name VARCHAR(50) NOT NULL,
-    instrument_id VARCHAR(50) NOT NULL,
-    reflection_text TEXT NOT NULL,
-    outcome VARCHAR(20) NOT NULL, -- WIN, LOSS, NEUTRAL
-    embedding vector(1536),       -- pgvector for semantic retrieval
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-```
+
+Table `reflections` (migrations 017, 027): one lesson per labelled decision, `embedding vector(768)` plus
+`embedding_model` (the model that produced the vector, e.g. `ollama:embeddinggemma`). Retrieval only
+compares vectors from the same model. The learner writes these from `ai_decision_outcomes` (migration 028).
+See the migrations in `infra/migrations/versions/` for exact columns.
 
 ---
 
@@ -176,3 +184,16 @@ Located at: `packages/execution/cryptonite_execution/risk.py`
 1. **Max Position Sizing Clamp:** Single trade allocation capped at 25% of total portfolio equity.
 2. **Global Drawdown Circuit Breaker:** Daily realized loss latching immediately trips the emergency kill-switch.
 3. **Transactional Outbox Fencing:** Every staged trade is dual-written to PostgreSQL transactional outbox before dispatching to Redis execution stream.
+
+---
+
+## 7. AI-First Program Additions (Phases 0–7)
+
+Full description: [docs/ai-first-program.md](docs/ai-first-program.md).
+
+- **AI gateway:** every model call goes through `cryptonite_agents.gateway` (routes per role, DB overrides in `ai_model_routes`, budget guard, tool permission gate, ledger in `llm_cost_ledger` and `ai_decision_traces`). Local Ollama models are first-class route targets with a health probe (`local_tier:health`) and fast fallback.
+- **Mandate check before the dispatcher:** an AI order (`SUBMIT_ORDER` from an AI requester or target) needs an ACTIVE mandate that allows its instrument; it is sized against the mandate budget and then passes `GuardedOrderDispatcher` as before. No mandate = `MANDATE_REQUIRED` / 409 `NO_MANDATE`.
+- **Approvals:** `ai_approvals` binds one approval to one execution command; ADD_RISK at L1 needs the operator (web or Telegram with TOTP).
+- **New tables:** `ai_mandates`, `ai_mandate_equity`, `ai_autonomy_events`, `ai_approvals`, `notifications_outbox`, `ai_decision_outcomes`, `research_reports` (migrations 022–031).
+- **New Redis keys:** `local_tier:health`, `learner:heartbeat`, `exit_monitor:heartbeat`, `research:queue`, `brief:*`. Redis requires a password (`REDIS_PASSWORD`).
+- **New frontend contracts:** stores `useMandateStore`, `useAutonomyStore`; event `cryptonite:mandate-updated`; Mission Control workspace (mandates, approval queue, autonomy & evals with the reliability chart).

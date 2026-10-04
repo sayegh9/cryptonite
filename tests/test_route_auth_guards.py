@@ -65,6 +65,12 @@ INLINE_CSRF_WRITES = {
     ("POST", "/api/v1/control/risk-limits"),
 }
 
+# Machine-to-machine writes authenticated by an HMAC signature + single-use nonce instead of an
+# operator session (tested in test_notifier.py): Telegram decisions relayed by the notifier (A5.4).
+SIGNED_MACHINE_WRITES = {
+    ("POST", "/api/v1/ai/notifier/approvals/{approval_id}"),
+}
+
 
 class _FakeConn:
     def __init__(self, tokens: dict[str, list[str]]):
@@ -200,6 +206,8 @@ def test_every_api_mutation_requires_operator_and_csrf():
         calls = set(_dependency_calls(route.dependant))
         for method in route.methods & {"POST", "PUT", "PATCH", "DELETE"}:
             checked.add((method, route.path))
+            if (method, route.path) in SIGNED_MACHINE_WRITES:
+                continue
             if require_operator not in calls:
                 unguarded.append((method, route.path, "operator"))
             if require_csrf not in calls and (method, route.path) not in INLINE_CSRF_WRITES:
@@ -213,3 +221,15 @@ def test_protected_reads_declare_require_auth():
     for path in PROTECTED_READS:
         route = next(r for r in reads if r.path_regex.match(path.split("?")[0]))
         assert require_auth in set(_dependency_calls(route.dependant)), route.path
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/ai/approvals/00000000-0000-4000-8000-000000000001/decision",
+    "/api/v1/ai/mandates",
+    "/api/v1/agents/brain/sessions/00000000-0000-4000-8000-000000000001/cards/c1/approve",
+    "/api/v1/agents/debates/00000000-0000-4000-8000-000000000001/approve",
+])
+def test_machine_tokens_cannot_approve_ai_actions_or_widen_mandates(client, path):
+    """A5: the agent workers hold an operator-scoped token; approvals need a human operator session."""
+    res = _send(client, "POST", path, headers={"X-API-Token": OPERATOR_TOKEN})
+    assert res.status_code == 403

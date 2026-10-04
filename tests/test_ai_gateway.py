@@ -27,7 +27,7 @@ from cryptonite_agents.gateway.routes import DEFAULT_ROUTES, route_from_row
 from migrated_db import migrated_database
 from pydantic import BaseModel, Field
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
@@ -190,6 +190,30 @@ async def test_add_risk_tool_is_denied_without_approval_and_read_tools_run():
     assert ran == ["read"]
     by_tool = {c["tool"]: c["status"] for c in res.tool_calls}
     assert by_tool == {"read_prices": "OK", "place_order": "DENIED"}
+
+
+async def test_a_turn_can_stage_at_most_one_paid_debate():
+    """LE-8: stage_debate_proposal queues a paid debate; one model turn may call it once."""
+    staged = []
+
+    def stage_debate_proposal(instrument_id: str) -> str:
+        """Stage a debate."""
+        staged.append(instrument_id)
+        return "staged"
+
+    def two_calls(messages, info: AgentInfo):
+        if any(getattr(p, "part_kind", "") == "tool-return" for m in messages for p in getattr(m, "parts", [])):
+            return ModelResponse(parts=[TextPart("done")])
+        return ModelResponse(parts=[ToolCallPart("stage_debate_proposal", {"instrument_id": "BTCUSDT.BINANCE"}),
+                                    ToolCallPart("stage_debate_proposal", {"instrument_id": "ETHUSDT.BINANCE"})])
+
+    spec = ToolSpec("stage_debate_proposal", stage_debate_proposal, RiskClass.READ, "Stage a debate.", side_effects=True)
+    with override_model(PRIMARY, FunctionModel(two_calls)):
+        res = await gateway().run("r", "go", tools=[spec])
+        again = await gateway().run("r", "go", tools=[spec])  # a new turn gets a fresh allowance
+    assert staged == ["BTCUSDT.BINANCE", "BTCUSDT.BINANCE"]  # each turn: the first call runs, the second is denied
+    assert [c["status"] for c in res.tool_calls] == ["OK", "DENIED"]
+    assert [c["status"] for c in again.tool_calls] == ["OK", "DENIED"]
 
 
 # --- Pricing ---------------------------------------------------------------------------------
@@ -422,3 +446,22 @@ async def test_missing_ledger_treats_spend_as_unknown():
     with pytest.raises(BudgetExceeded, match="SPEND_UNKNOWN"):
         await guard.check(RoleRoute("r", PRIMARY, priority=BudgetPriority.INTERACTIVE))
     await guard.check(RoleRoute("r", PRIMARY, priority=BudgetPriority.CRITICAL))
+
+
+async def test_distillable_roles_keep_their_prompt_in_the_trace(db_url):
+    """A7.4: triage/tagging/summarize traces keep the prompt (for distillation); other roles never do."""
+    telemetry = await asyncpg.create_pool(as_role(db_url, "cryptonite_ai_telemetry", "ai_telemetry_dev_pass"),
+                                          min_size=1, max_size=2)
+    owner = await asyncpg.connect(db_url)
+    try:
+        routes = {r: RoleRoute(r, PRIMARY) for r in ("triage", "debate.side")}
+        gw = Gateway(pool=telemetry, routes=routes, budget=BudgetGuard())
+        with override_model(PRIMARY, TestModel(custom_output_text="ok")):
+            t = await gw.run("triage", "MARKET BRIEF BTCUSDT.BINANCE ...")
+            d = await gw.run("debate.side", "argue the bull case")
+        rows = {r["role"]: r["input"] for r in await owner.fetch(
+            "SELECT role, input FROM ai_decision_traces WHERE id = ANY($1::uuid[])", [t.trace_id, d.trace_id])}
+        assert rows == {"triage": "MARKET BRIEF BTCUSDT.BINANCE ...", "debate.side": None}
+    finally:
+        await owner.close()
+        await telemetry.close()

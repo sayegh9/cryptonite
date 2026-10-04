@@ -7,9 +7,12 @@ Case kinds:
   tools were not
 - ``verdict`` / ``triage``: output validates against the persona's contract (the gateway re-asks on
   invalid output); ``expect`` adds a directional agreement check
+- ``summary``: the Brain's compaction summary (``summarize`` role, its production instructions) keeps
+  every ``must_keep`` fact (order-card command ids, sizes, the operator's limits), stays within
+  ``max_words`` and uses no headings
 
 Headline metrics: ``structured_valid_rate`` (verdict + triage outputs that validated),
-``tool_chain_rate``, ``agreement_rate``, cost and latency.
+``tool_chain_rate``, ``agreement_rate``, ``summary_rate``, cost and latency.
 """
 
 import json
@@ -21,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from cryptonite_agents.brain import BRAIN
+from cryptonite_agents.brain.memory import SUMMARY_INSTRUCTIONS, SUMMARY_ROLE
 from cryptonite_agents.debate_fleet import (
     CHIEF_RISK_OFFICER,
     DEBATE_LITE,
@@ -47,6 +51,7 @@ PERSONAS: dict[str, Persona] = {
     "lite": DEBATE_LITE,
     "risk_panel": RISK_PANEL,
     "brain": BRAIN,  # set brain_v1
+    "summarizer": Persona("Summarizer", SUMMARY_ROLE, SUMMARY_INSTRUCTIONS),  # set summarize_v1
 }
 
 
@@ -112,6 +117,13 @@ async def run_case(gateway: Gateway, case: dict[str, Any], model: str) -> CaseRe
         checks["answered"] = bool(str(res.output).strip())
     elif kind in STRUCTURED_KINDS:
         checks["agrees"] = _agrees(res.output, case.get("expect", {}))
+    elif kind == "summary":
+        text = str(res.output)
+        low = text.lower()
+        checks["answered"] = bool(text.strip())
+        checks["within_words"] = len(text.split()) <= case.get("max_words", 200)
+        checks["kept_facts"] = all(f.lower() in low for f in case.get("must_keep", []))
+        checks["no_headings"] = not any(line.lstrip().startswith("#") for line in text.splitlines())
     return CaseResult(
         case["id"], kind, res.model,
         passed=all(checks.values()), valid=True, checks=checks,
@@ -134,6 +146,7 @@ def summarize(results: list[CaseResult]) -> dict[str, Any]:
         "tool_chain_rate": rate([r.passed for r in tool_chains]),
         "agreement_rate": rate([r.checks.get("agrees", False) for r in structured if r.valid]),
         "chat_rate": rate([r.passed for r in results if r.kind == "chat"]),
+        "summary_rate": rate([r.passed for r in results if r.kind == "summary"]),
         "errors": sum(1 for r in results if not r.valid),
         "cost_usd": str(sum((r.cost_usd for r in results), Decimal("0"))),
         "latency_p50_ms": int(statistics.median(latencies)) if latencies else None,

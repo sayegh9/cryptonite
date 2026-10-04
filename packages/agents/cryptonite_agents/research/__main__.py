@@ -58,7 +58,7 @@ async def main(argv: list[str]) -> int:
     redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), socket_timeout=30)
     try:
         if args.cmd == "digest":
-            print(json.dumps(await publish_digest(redis, hours=args.hours), indent=2))
+            print(json.dumps(await publish_digest(redis, hours=args.hours, client=ResearchApiClient()), indent=2))
             return 0
         if args.cmd == "enqueue":
             pos = await enqueue(redis, args.idea, args.instrument, args.timeframe,

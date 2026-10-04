@@ -142,7 +142,8 @@ def backfill_cmd(symbol: str, timeframe: str, days: int, catalog_dir: str, analy
                 end_time_ms=now_ms,
                 limit=1000,
             )
-            console.print(f"Fetched {len(raw_klines)} historical bars from Binance.")
+            raw_klines = [k for k in raw_klines if k.is_closed]  # drop the still-forming last bar
+            console.print(f"Fetched {len(raw_klines)} closed historical bars from Binance.")
 
             if not raw_klines:
                 return

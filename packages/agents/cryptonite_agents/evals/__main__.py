@@ -55,7 +55,7 @@ async def main(argv: list[str]) -> int:
               "passed": passed, "failures": failures,
               "cases": [{"id": r.case_id, "kind": r.kind, "passed": r.passed, "valid": r.valid, "checks": r.checks,
                          "latency_ms": r.latency_ms, "cost_usd": str(r.cost_usd), "error": r.error,
-                         "output": r.output if r.kind in ("verdict", "triage") else None} for r in results]}
+                         "output": r.output if r.kind in ("verdict", "triage", "summary") else None} for r in results]}
 
     if args.store:
         import asyncpg

@@ -40,6 +40,23 @@ These were agreed to be done later, not in the current phase. Each item has an I
 | LE-9 | **Known red tests**: `test_instruments_endpoint` (reference data) and `test_duckdb_query_p95_latency` (wall-clock flake) | Gates stay "N passed / 2 known failed" | about 1–2 h | none |
 | LE-10 | **Dev-data cleanup**: probe strategy `ai-gen-b7342cd3` ("Sandbox Probe EMA") with its two backtest runs; the untracked `data/backtest_artifacts/77fa3037-…/`; test rows from `test_backtest_outbox_relay` / `test_worker_three_way_recovery_matrix`, which ran once against the dev DB on 2026-09-25 | Keeps the dev DB and the UI tidy | about 15 min | none |
 
+### Backlog status (2026-10-04, workstation)
+
+| ID | Status |
+|---|---|
+| LE-1 | **Done** `c2d906d`: `scripts/backfill_history.py` (catalog + lake, gaps only) + `repair_catalog_series.py`. BTC/ETH 1m and 1h 100.0% complete over 120 d; 324,631 bars; duplicates, an empty file pair and mixed-precision files repaired. |
+| LE-2 | **Done** (workstation): exit monitor runs permanently; the fixed scanner image adds the same redis timeout fix to it (`c297d08`). |
+| LE-3 | **Done** `f898a83` (debate worker), `c297d08` (scanner worker, exit monitor). |
+| LE-4 | **Done** `c1622c5`: Redis `--requirepass ${REDIS_PASSWORD}`; all 15 client URLs carry it. Live after the next full redeploy; host tools need `redis-cli -a`. |
+| LE-5 | **Done** `aed1b88`: migration 030, role `cryptonite_backtester`; compose uses it. |
+| LE-6 | **Done** `dfec999`: migration 031 `research_reports`, API `/api/v1/research/reports`, digest reads it. |
+| LE-7 | **Done** (see its commit): every Python image installs `uv sync --frozen --no-dev --all-packages` with uv 0.12.17 and a shared BuildKit cache. |
+| LE-8 | **Done** `c0430ae`: `stage_debate_proposal` capped at 1 per turn. Per-operator trace scoping stays open (only for multi-user). |
+| LE-9 | **Done** `b256ac6`: instruments test seeds its data; the two wall-clock/peak-RSS benchmarks are `performance`-marked. |
+| LE-10 | **Done** (dev DB, 2026-10-04): 221 test strategies (+ their 11 runs), 92 test operator accounts, 12 E2E paper accounts and their rows, 2 untracked artifact dirs removed; core `ema-cross` renamed back. Backup of the touched tables: `~/backups/cryptonite-LE10-tables-2026-10-04.dump`. |
+
+**New finding, fixed** `7469d9c`: `scan_runs` stored every lake file path + sha256 per run (~711 kB/row) and grew to 21 GB (14 GB on 2026-10-03 alone). Scanner now stores one digest per date partition and loads a bounded lookback; existing rows compacted, VACUUM FULL: 21 GB -> 251 MB.
+
 ## Deterministic Audit Findings (2026-09-24)
 
 - Tools: `tsc --noEmit`, ESLint, `uvx ruff` 0.16.8 (repo config), `pnpm audit`, `uv lock --check`, `pip check` in the `infra-*` images, AST import scan, graphify @ `90427f7`

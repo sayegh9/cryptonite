@@ -82,3 +82,50 @@ async def test_subscribe_before_backfill_recovery(
         identifier=str(bar_type),
     )
     assert len(missing) == 0
+
+
+@pytest.mark.asyncio
+async def test_rest_client_reports_the_still_forming_kline_as_open(monkeypatch):
+    """A range ending "now" returns the live kline last; it must not claim to be closed."""
+    import time
+
+    import httpx
+    from cryptonite_ingest.client import BinanceRestClient
+
+    now_ms = int(time.time() * 1000)
+
+    def row(open_ms, close_ms):
+        return [open_ms, "1", "2", "0.5", "1.5", "10", close_ms, "15", 3, "5", "7", "0"]
+
+    rows = [row(now_ms - 7_200_000, now_ms - 3_600_001), row(now_ms - 1_800_000, now_ms + 1_799_999)]
+    client = BinanceRestClient()
+    client._rate_delay = 0
+    client._client = httpx.AsyncClient(base_url="https://test", transport=httpx.MockTransport(lambda req: httpx.Response(200, json=rows)))
+    klines = await client.fetch_klines("BTCUSDT", "1h", start_time_ms=now_ms - 7_200_000, end_time_ms=now_ms)
+    await client._client.aclose()
+    assert [k.is_closed for k in klines] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_recovery_never_commits_the_open_kline(
+    temp_nautilus_dir, temp_analytics_dir, sample_currency_pair, sample_raw_klines
+):
+    """Committing the still-forming bar moved the checkpoint past it, so the stream's real closed bar
+    was skipped as "older than checkpoint" (workstation, 2026-10-03)."""
+    nautilus_mgr = NautilusCatalogManager(temp_nautilus_dir)
+    nautilus_mgr.write_instruments([sample_currency_pair])
+    coordinator = TwoStoreCoordinator(
+        nautilus_manager=nautilus_mgr, analytics_writer=AnalyticsLakeWriter(temp_analytics_dir), pg_pool=None,
+    )
+    still_open = sample_raw_klines[2].model_copy(update={"is_closed": False})
+    recovery_mgr = GapRecoveryManager(
+        rest_client=MockRestClient([*sample_raw_klines[:2], still_open]),  # type: ignore
+        coordinator=coordinator, nautilus_manager=nautilus_mgr, pg_pool=None,
+    )
+    recovered = await recovery_mgr.recover_gaps_for_stream(
+        symbol="BTCUSDT", timeframe="1m", bar_type=to_nautilus_bar_type("BTCUSDT.BINANCE", "1m"),
+        price_precision=2, size_precision=5,
+        stream_client=BinanceStreamClient(symbols=["BTCUSDT"], timeframes=["1m"]),
+    )
+    assert recovered == 2
+    assert AnalyticsQueryEngine(temp_analytics_dir).count_bars("BTCUSDT", "1m") == 2

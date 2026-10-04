@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -11,6 +12,9 @@ from cryptonite_schemas.bar import RawBinanceKline
 logger = logging.getLogger("cryptonite.client")
 
 BINANCE_SPOT_BASE_URL = "https://api.binance.com"
+
+
+CLOSED_MARGIN_MS = 2_000
 
 
 class BinanceRestClient:
@@ -118,6 +122,9 @@ class BinanceRestClient:
                     raise
                 await asyncio.sleep(1.0 * (attempt + 1))
 
+        # The last kline of a range ending "now" is still forming; never report it as closed. The margin
+        # covers this host's clock running ahead of Binance's (a partial bar would block the real one).
+        now_ms = int(time.time() * 1000) - CLOSED_MARGIN_MS
         results = []
         for r in raw_rows:
             # Binance kline array schema:
@@ -137,7 +144,7 @@ class BinanceRestClient:
                     trades_count=int(r[8]),
                     taker_buy_base_volume=str(r[9]),
                     taker_buy_quote_volume=str(r[10]),
-                    is_closed=True,
+                    is_closed=int(r[6]) < now_ms,
                 )
             )
         return results
