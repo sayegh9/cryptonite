@@ -163,7 +163,10 @@ test.describe("Brain Home", () => {
     // The order card: risk-adding is labelled, not only coloured
     const card = answer.getByTestId("brain-widget-order-card");
     await expect(card).toContainText("ADDS RISK · PAPER");
-    await expect(card).toContainText("0.01 BTCUSDT.BINANCE");
+    await expect(card).toContainText("BTCUSDT.BINANCE");
+    // the size shown is the allocation that is approved, never the model's own quantity guess
+    await expect(card).toContainText("5% of mandate");
+    await expect(card).not.toContainText("0.01");
     await card.getByRole("button", { name: "Approve…" }).click();
     // The confirmation says how the order is sized and what actually stops it out
     await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("sized at 5% of the mandate");

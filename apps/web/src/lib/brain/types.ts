@@ -26,7 +26,8 @@ export interface OrderCardWidget {
   id: string;
   instrument_id: string;
   side: "BUY" | "SELL";
-  quantity: number;
+  /** Not shown: an approved order is sized from allocation_pct at the live price (capped by the mandate). */
+  quantity?: number | null;
   order_type: "MARKET" | "LIMIT";
   limit_price: number | null;
   allocation_pct: number;

@@ -10,8 +10,10 @@ Autonomous execution exists only inside a mandate, at the level it has earned:
 - risk reducing (a spot SELL of what the mandate holds, an exit debate's REDUCE/CLOSE) runs at once
   at L2/L3; at L1 it waits a short veto window that *proceeds* at timeout (D8).
 
-The allocation is capped at the mandate's own position limit before anything is queued, so a model
-never "breaches" by over-sizing. This module writes the same rows ``cryptonite_execution.approvals``
+The allocation is capped at the room the mandate has left under its own position limit and budget
+(what it already holds counts) before anything is queued or sent for approval, so a model never
+"breaches" by over-sizing; with less than ``MIN_MANDATE_ENTRY_PCT`` of room there is no trade. The
+orchestrator sizes the order to the exact room again at execution. This module writes the same rows ``cryptonite_execution.approvals``
 writes; the orchestrator's sweeper and the API decide them. (The debate worker image does not carry
 the execution package, only ``cryptonite_schemas``.)
 """
@@ -25,6 +27,7 @@ from typing import Any
 from cryptonite_schemas.mandate import (
     DEFAULT_APPROVAL_TTL_S,
     DEFAULT_REDUCE_VETO_S,
+    MIN_MANDATE_ENTRY_PCT,
     ActionClass,
     AutonomyLevel,
     Mandate,
@@ -64,6 +67,19 @@ async def mandate_holding(conn, mandate: Mandate, instrument_id: str) -> Decimal
            WHERE account_id = $1 AND instance_id = $2 AND instrument_id = $3 AND status = 'OPEN'""",
         PAPER_ACCOUNT_ID, mandate.instance_id, canonical_instrument(instrument_id))
     return Decimal(str(qty or 0))
+
+
+async def entry_room_pct(conn, mandate: Mandate, instrument_id: str) -> Decimal:
+    """Room for a new entry, as % of the mandate budget: under the instrument's position limit and under
+    the budget, with the mandate's open positions at their last marked price."""
+    row = await conn.fetchrow(
+        """SELECT COALESCE(SUM(quantity * current_price), 0) AS gross,
+                  COALESCE(SUM(quantity * current_price) FILTER (WHERE instrument_id = $3), 0) AS inst
+           FROM paper_positions WHERE account_id = $1 AND instance_id = $2 AND status = 'OPEN' AND quantity > 0""",
+        PAPER_ACCOUNT_ID, mandate.instance_id, canonical_instrument(instrument_id))
+    budget = mandate.capital_budget_usd
+    room = min(budget * mandate.max_position_pct / 100 - Decimal(str(row["inst"])), budget - Decimal(str(row["gross"])))
+    return max(Decimal("0"), room / budget * 100)
 
 
 async def position_owner(conn, instrument_id: str) -> tuple[Mandate | None, Decimal]:
@@ -129,7 +145,10 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     base = {"instrument_id": canonical_instrument(instrument_id), "side": side, "order_type": "MARKET",
             "recommendation": recommendation, "conviction_score": conviction, "source": "debate", "run_id": str(run_id)}
     if side == "BUY":
-        alloc = min(float(allocation_pct), float(mandate.max_position_pct))
+        room = await entry_room_pct(conn, mandate, instrument_id)
+        if room < MIN_MANDATE_ENTRY_PCT:
+            return "NO_TRADE", mandate  # already at the position limit: nothing to ask the operator
+        alloc = round(min(float(allocation_pct), float(mandate.max_position_pct), float(room)), 2)
         payload = {**base, "allocation_pct": alloc}
         summary = (f"BUY {base['instrument_id']} {alloc:g}% of mandate "
                    f"(${float(mandate.capital_budget_usd) * alloc / 100:,.0f}) · conviction {conviction:.2f}")

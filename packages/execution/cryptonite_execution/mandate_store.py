@@ -6,6 +6,7 @@ Autonomy transitions are computed by ``cryptonite_execution.autonomy`` and persi
 
 import json
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from cryptonite_schemas.mandate import Mandate, MandateStatus, canonical_instrument
@@ -92,3 +93,17 @@ async def resolve_mandate_for(conn, instrument_id: str, mandate_id: str | uuid.U
     if len(rows) > 1:
         return None, "AMBIGUOUS_MANDATE"
     return Mandate.from_row(rows[0]), ""
+
+
+async def entry_room_pct(conn, mandate: Mandate, instrument_id: str) -> Decimal:
+    """Room for a new entry, as % of the mandate budget: under the instrument's position limit and under
+    the budget, with the mandate's open positions at their last marked price. (The orchestrator sizes the
+    order to the exact room at execution; this is for deciding whether to ask at all.)"""
+    row = await conn.fetchrow(
+        """SELECT COALESCE(SUM(quantity * current_price), 0) AS gross,
+                  COALESCE(SUM(quantity * current_price) FILTER (WHERE instrument_id = $2), 0) AS inst
+           FROM paper_positions WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0""",
+        mandate.instance_id, canonical_instrument(instrument_id))
+    budget = mandate.capital_budget_usd
+    room = min(budget * mandate.max_position_pct / 100 - Decimal(str(row["inst"])), budget - Decimal(str(row["gross"])))
+    return max(Decimal("0"), room / budget * 100)

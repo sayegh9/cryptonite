@@ -1,8 +1,45 @@
 """Institutional quantitative performance metrics calculation for backtest results."""
 
+import bisect
 import math
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
+
+
+def account_equity_series(
+    balances: Iterable[tuple[int, str, float]],
+    fills: list[tuple[int, float]],
+    *,
+    quote_currency: str,
+    start_ns: int,
+) -> list[tuple[int, float]]:
+    """Equity over time from a cash account's balance rows, in the quote currency.
+
+    A spot account reports one balance row per currency per account update (USDT and BTC, say).
+    Equity at each update is the quote balance plus every other balance valued at the last fill price
+    (balances only change on fills, so that price is the one the trade happened at). Treating each row's
+    total as equity mixed BTC quantities into a USDT curve and reported a -100% return. One instrument
+    per backtest, so every non-quote balance is its base asset.
+
+    ``balances``: (ts_ns, currency, total) in report order; ``fills``: (ts_ns, price) of filled orders.
+    """
+    fills = sorted(fills)
+    fill_ts = [ts for ts, _ in fills]
+    held: dict[str, float] = {}
+    series: list[tuple[int, float]] = []
+    for ts_ns, currency, total in balances:
+        held[currency] = total
+        if ts_ns < start_ns:
+            continue
+        i = bisect.bisect_right(fill_ts, ts_ns)
+        price = fills[i - 1][1] if i else (fills[0][1] if fills else 0.0)
+        equity = held.get(quote_currency, 0.0) + sum(q * price for c, q in held.items() if c != quote_currency)
+        if series and series[-1][0] == ts_ns:
+            series[-1] = (ts_ns, equity)  # one point per update: the rows of one timestamp are one state
+        else:
+            series.append((ts_ns, equity))
+    return series
 
 
 def calculate_performance_metrics(

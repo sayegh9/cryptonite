@@ -21,8 +21,15 @@ from pydantic import ValidationError
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.mandate_store import load_mandate
-from cryptonite_orchestrator.mandate_gate import command_mandate_id, gate_ai_order, instance_spot_holdings, is_ai_command
-from cryptonite_schemas.mandate import mandate_id_from_instance
+from cryptonite_execution.mandates import max_entry_quantity
+from cryptonite_orchestrator.mandate_gate import (
+    command_mandate_id,
+    gate_ai_order,
+    instance_spot_holdings,
+    is_ai_command,
+    mandate_exposure,
+)
+from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, MandateReject, mandate_id_from_instance
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from nautilus_trader.model import Bar, BarType
 from nautilus_trader.model import Price, Quantity
@@ -91,6 +98,9 @@ class SimpleQuoteCache:
 
 DEFAULT_FEE_RATE = Decimal("0.001")
 MAX_MATCH_QUOTE_AGE_NS = 5_000_000_000  # a backlog of older quotes never fills working orders
+# An entry sized to the mandate's room keeps 1% back, so a quote tick between sizing and the mandate
+# check cannot push it over the limit
+SIZING_MARGIN = Decimal("0.99")
 
 UPSERT_FILLED_ORDER_SQL = """
     INSERT INTO paper_orders (
@@ -878,6 +888,27 @@ async def command_poller(pool, engine, quote_cache=None):
                                 base = mandate.capital_budget_usd if mandate is not None else engine.dispatcher.cash_balance
                                 notional = base * (alloc_pct / Decimal("100.0"))
                                 qty_val = max(Decimal("0.0001"), notional / mark_px)
+                                if mandate is not None and side == "BUY" and not payload.get("reduce_only"):
+                                    # An entry adds to what the mandate already holds: size it down to the
+                                    # room left under its position limit and budget (an approval is an upper
+                                    # bound), so it passes the mandate check instead of being refused as a breach
+                                    order_type_for_size = str(payload.get("order_type", "MARKET")).upper()
+                                    exposure = await mandate_exposure(conn, engine, mandate, canonical_inst, {canonical_inst: mark_px})
+                                    room_qty = max_entry_quantity(mandate, exposure, mark_px, order_type=order_type_for_size) * SIZING_MARGIN
+                                    if room_qty * mark_px < mandate.capital_budget_usd * MIN_MANDATE_ENTRY_PCT / Decimal("100"):
+                                        reason = (f"{MandateReject.POSITION_LIMIT_REACHED.value}: the mandate holds "
+                                                  f"${exposure.instrument_usd:,.0f} of {canonical_inst} (limit "
+                                                  f"{mandate.max_position_pct}% of ${mandate.capital_budget_usd:,.0f})")
+                                        logger.info("AI entry %s not placed: %s", row["command_id"], reason)
+                                        await conn.execute(
+                                            "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                            row["command_id"], reason,
+                                        )
+                                        continue
+                                    if room_qty < qty_val:
+                                        logger.info("AI entry %s sized down from %s to %s: mandate %s position limit",
+                                                    row["command_id"], qty_val, room_qty, mandate.name)
+                                        qty_val = room_qty
                             qty_dec = Decimal(str(qty_val))
                             
                             price_dec = Decimal(str(payload["price"])) if payload.get("price") else None
