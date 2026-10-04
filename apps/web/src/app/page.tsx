@@ -5,7 +5,7 @@ import { MultiChartGrid } from "@/components/MultiChartGrid";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 import { ScannerStudio } from "@/components/ScannerStudio";
 import { KillSwitchPanel } from "@/components/operator/KillSwitchPanel";
-import { RiskLimitsEditor } from "@/components/operator/RiskLimitsEditor";
+import { EnforcedLimitsCard } from "@/components/operator/EnforcedLimitsCard";
 import { StrategyInstancesPanel } from "@/components/operator/StrategyInstancesPanel";
 import { ReconciliationLedger } from "@/components/operator/ReconciliationLedger";
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
@@ -390,7 +390,7 @@ export default function TerminalPage() {
                 <div className="lg:col-span-4 space-y-6">
                   <KillSwitchPanel />
                   <KillSwitchPanel environment="DEMO" accountId="DEMO-ACCOUNT-001" />
-                  <RiskLimitsEditor />
+                  <EnforcedLimitsCard />
                 </div>
                 {/* Right Column (65%) */}
                 <div className="lg:col-span-8 space-y-6">

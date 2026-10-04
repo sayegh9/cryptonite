@@ -79,7 +79,7 @@ export default function OperatorDashboard() {
               </div>
               <div className="bg-zinc-950 p-2.5 rounded border border-zinc-800/80">
                 <span className="text-zinc-500 block text-[10px]">ADVISORY LOCK</span>
-                <span className="text-cyan-400 font-bold">ACTIVE (PG 16)</span>
+                <span className="text-zinc-300 font-bold">PG 16 (status not reported)</span>
               </div>
               <div className="bg-zinc-950 p-2.5 rounded border border-zinc-800/80">
                 <span className="text-zinc-500 block text-[10px]">SESSION STORAGE</span>

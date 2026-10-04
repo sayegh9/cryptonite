@@ -102,8 +102,6 @@ export interface LedgerPrefs {
 }
 
 export const PRIMARY_ACCOUNT_ID = 'PAPER-ACCOUNT-001';
-/** Phase-1 risk engine default (`RiskEngine.max_daily_loss_pct`); the API does not expose the live value. */
-export const DAILY_DRAWDOWN_LIMIT = 0.05;
 /** A WS snapshot younger than this is fresher than any REST row for live (mark-dependent) fields. */
 const SNAPSHOT_FRESH_MS = 5000;
 
