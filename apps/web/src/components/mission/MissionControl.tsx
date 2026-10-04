@@ -11,6 +11,7 @@ import { AutonomyEvals } from "./AutonomyEvals";
 import { MandateCard } from "./MandateCard";
 import { MandateEditor } from "./MandateEditor";
 import { MissionBanners } from "./MissionBanners";
+import { MissionHealth } from "./MissionHealth";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 
 const VIEWS: { id: MissionView; label: string }[] = [
@@ -84,8 +85,9 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
       )}
 
       <div className="mt-3 min-h-0 flex-1">
+        {view === "overview" && <MissionHealth status={status} />}
         {view === "overview" && (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-12">
             <div className="space-y-3 xl:col-span-7">
               {loaded && mandates.length === 0 && (
                 <p className="rounded border border-zinc-800 p-3 font-mono text-[11px] text-zinc-500">

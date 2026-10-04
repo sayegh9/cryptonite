@@ -277,7 +277,29 @@ test.describe("Mission Control", () => {
     await expect(banner).toContainText("PAPER kill switch latched");
     await expect(banner).toContainText("Exit monitor down");
     await expect(banner).toContainText("Notifier down");
+
+    // R6.3 health tiles: reported heartbeats are up/down, unreported ones are unknown, never "up"
+    await expect(page.getByTestId("health-exit-monitor")).toHaveAttribute("data-health", "down");
+    await expect(page.getByTestId("health-notifier")).toHaveAttribute("data-health", "down");
+    await expect(page.getByTestId("health-learner")).toHaveAttribute("data-health", "unknown");
+    await expect(page.getByTestId("health-learner")).toContainText("not reported");
+    await expect(page.getByTestId("health-sentiment")).toHaveAttribute("data-health", "unknown");
+    await expect(page.getByTestId("health-local-tier")).toContainText("not probed yet");
+    await expect(page.getByTestId("health-ai-spend")).toContainText("unavailable");
     expect(reactErrors).toEqual([]);
+  });
+
+  test("health shows AI spend vs budget and fresh heartbeats", async ({ page }) => {
+    await page.route("**/agent-api/brain/spend", (route) => route.fulfill({ json: { spent_usd: "3.10", cap_usd: "25.00" } }));
+    await mockBackend(page, {
+      status: { ...OK_STATUS, learner_up: true, sentiment_last_ok: Math.floor(Date.now() / 1000) - 60, local_tier: { healthy: true, models: ["qwen"], error: null, checked_at: null } },
+    });
+    await openMissionControl(page);
+    await expect(page.getByTestId("health-ai-spend")).toContainText("$3.10 / $25.00");
+    await expect(page.getByTestId("health-exit-monitor")).toHaveAttribute("data-health", "up");
+    await expect(page.getByTestId("health-learner")).toHaveAttribute("data-health", "up");
+    await expect(page.getByTestId("health-sentiment")).toHaveAttribute("data-health", "up");
+    await expect(page.getByTestId("health-local-tier")).toHaveAttribute("data-health", "up");
   });
 
   test("mandate editor asks for TOTP only when a change adds risk", async ({ page }) => {

@@ -45,6 +45,13 @@ export function knownPositive(v: unknown): number | null {
   return isKnownNumber(n) && n > 0 ? n : null;
 }
 
+/** Finite number from a number or decimal string, else null. */
+export function metricOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function ageLabel(asOf: AsOf, now: number = Date.now()): string {
   const ms = asOfMs(asOf);
   if (ms === null) return "unknown";

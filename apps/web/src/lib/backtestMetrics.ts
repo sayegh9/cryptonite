@@ -1,3 +1,5 @@
+import { metricOrNull } from "@/lib/freshness";
+
 /**
  * Backtest metric versions (R2.2-R2.4). Version 2 marks equity to market at every bar close and
  * adds a buy-and-hold benchmark, fees and turnover. A run without `metrics_version` was computed
@@ -39,11 +41,7 @@ export function versionsOf(runs: { metrics?: VersionedMetrics | null }[]): strin
 }
 
 /** Number from a metric field (the API may send decimals as strings), or null when absent. */
-export function metricNum(v: unknown): number | null {
-  if (v === null || v === undefined || v === "") return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
+export const metricNum = metricOrNull;
 
 export const fmtSignedPct = (v: number | null, digits = 2) =>
   v === null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(digits)}%`;

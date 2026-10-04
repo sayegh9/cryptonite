@@ -66,6 +66,12 @@ export interface AiStatus {
   notifier_up: boolean;
   budget_alert: boolean;
   degraded: string[];
+  /** null until a gateway has probed the local model tier */
+  local_tier?: { healthy: boolean; models: string[]; error: string | null; checked_at: string | null } | null;
+  /** Not yet reported by /ai/status (R6.3/R7.5): absent = unknown */
+  learner_up?: boolean | null;
+  /** Unix seconds of the debate worker's last successful get_news_sentiment (`sentiment:last_ok`, N19) */
+  sentiment_last_ok?: number | string | null;
 }
 
 export interface GateCheck {
