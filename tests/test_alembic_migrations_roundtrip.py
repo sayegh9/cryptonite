@@ -1,9 +1,18 @@
 """Roundtrip downgrade and upgrade test for Alembic migrations."""
 
 import subprocess
+from pathlib import Path
+
 import asyncpg
 import pytest
 from connections import DB_URL
+
+VERSIONS = Path(__file__).resolve().parents[1] / "infra" / "migrations" / "versions"
+
+
+def script_head() -> str:
+    """The newest revision file's id (revisions are numbered 001, 002, ...)."""
+    return max(p.name.split("_", 1)[0] for p in VERSIONS.glob("[0-9][0-9][0-9]_*.py"))
 
 
 
@@ -55,7 +64,8 @@ async def test_alembic_roundtrip_downgrade_and_upgrade():
     pool = await asyncpg.create_pool(DB_URL)
     try:
         ver = await pool.fetchval("SELECT version_num FROM alembic_version;")
-        assert ver == "013", f"Expected head version 013, got {ver}"
+        head = script_head()
+        assert ver == head, f"Expected head version {head}, got {ver}"
 
         expected_tables = {
             "strategies",
