@@ -30,7 +30,7 @@ The throwaway-DB test command (Phase 0 section below) needs the Redis password i
   Telegram and ntfy (steps under Phase 5 below).
 - Merges: #6, #5 into phase0; #4 into `main`.
 - Sudo items: `sudo apt install python3.12-dev` (Triton compiles during training); the Ollama v0.35.1
-  install (`~/Downloads/ollama-v0.35.1/README-resume.txt`); optional Tailscale; optional NVIDIA Container
+  install (`~/Downloads/ollama-v0.35.1/README-resume.txt`; also unblocks deploying the distilled triage model, A7.4); optional Tailscale; optional NVIDIA Container
   Toolkit (only if training should move into Docker).
 
 ## Moving to the Linux workstation (2026-09-30, done 2026-10-01; kept for reference)
@@ -146,6 +146,9 @@ The news tool uses FinBERT, which is fast and free for 12 headlines per call. Cr
     The student also gets the stale-data rule right (8/8 on each set), which every model in the bake-off failed. Caveat: `triage_v3` comes from the same generator as the synthetic training half (different seed), so the real-history holdout is the stronger evidence.
   - Unconstrained, the base answers in `key: value` lines rather than JSON; the eval scores the decision either way (production decodes under Ollama's JSON schema) and reports strict JSON separately.
   - **Deployment:** Ollama 0.33 cannot load this LoRA as an `ADAPTER` for Gemma 4, so `scripts/distill_triage_export.py` merges it into 16-bit weights and imports them with `ollama create -q q4_K_M`. The 12 GB GPU holds one 7 GB model, so the student must also serve `summarize` to replace base Gemma; it is re-certified through Ollama (both eval sets) before any route changes.
+  - **Deployment blocked (2026-10-04):** the merge works, but Ollama 0.33.2 refuses to import the merged weights: `unsupported architecture "Gemma4UnifiedForConditionalGeneration"` (the HF 12B checkpoint is the unified audio/vision variant; Ollama only serves it from its own registry build). **Production keeps base `gemma4:12b-it-qat`.** Next try after the Ollama v0.35.1 upgrade: re-run `scripts/distill_triage_export.py` (about 20 min, needs about 48 GB free disk while importing), then run `python -m cryptonite_agents.evals run --set triage_lake_v1` / `triage_v3` / `summarize_v1` against the imported model before routing. A llama.cpp GGUF export would need `build-essential` and `cmake` (sudo) and its own Gemma 4 support check.
+  - A failed import leaves its uploaded weights as an orphan blob in `/usr/share/ollama/.ollama/models/blobs` (23.9 GB here). Ollama 0.33's startup prune does **not** remove it; delete it by hand once no manifest references it (done 2026-10-04).
+  - The real-history holdout is now a permanent eval set: `triage_lake_v1` (80 cases, 40 worth a debate).
 
 **Operations notes.**
 - **Migrate before deploying:** the new orchestrator and API read tables from migrations 027–031.
