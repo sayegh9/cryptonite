@@ -59,17 +59,19 @@ def main() -> None:
     text_tok = getattr(tokenizer, "tokenizer", tokenizer)  # multimodal processors wrap the text tokenizer
     texts = [text_tok.apply_chat_template(r["messages"], tokenize=False) for r in rows]
     dataset = Dataset.from_dict({"text": texts})
+    # 5% warm-up (TRL 0.24 / transformers 5.x take steps, not a ratio): batch 2 x accumulation 4
+    warmup_steps = max(1, int(0.05 * args.epochs * len(texts) / 8))
 
     trainer = SFTTrainer(
-        model=model, tokenizer=tokenizer, train_dataset=dataset,
+        model=model, processing_class=text_tok, train_dataset=dataset,
         args=SFTConfig(dataset_text_field="text", per_device_train_batch_size=2, gradient_accumulation_steps=4,
-                       num_train_epochs=args.epochs, learning_rate=args.lr, warmup_ratio=0.05,
+                       num_train_epochs=args.epochs, learning_rate=args.lr, warmup_steps=warmup_steps,
                        lr_scheduler_type="cosine", logging_steps=10, optim="adamw_8bit", weight_decay=0.01,
-                       seed=args.seed, bf16=True, max_seq_length=args.max_seq, report_to="none",
+                       seed=args.seed, bf16=True, max_length=args.max_seq, report_to="none",
                        output_dir=str(Path(args.out).expanduser()) + "-ckpt", save_strategy="no"))
     # learn the answer, not the brief: loss only on the assistant turn
     user_marker, model_marker = response_markers(texts[0])
-    trainer = train_on_responses_only(trainer, instruction_part=user_marker, response_part=model_marker)
+    trainer = train_on_responses_only(trainer, instruction_part=user_marker, response_part=model_marker, tokenizer=text_tok)
     stats = trainer.train()
     out = Path(args.out).expanduser()
     model.save_pretrained(out)

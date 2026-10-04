@@ -1,6 +1,37 @@
 # HANDOFF
 
-## ▶ Resume here: moving to the Linux workstation (2026-09-30)
+## ▶ Resume here (2026-10-04, Linux workstation)
+
+**Where things are.** The stack runs on the Linux workstation (the Mac move below is done). Work is on
+`feat/ai-first-phase6`, which holds Phases 6–7 and backlog LE-1…LE-10 and includes the ingest fix.
+Alembic head is `031`. What the system now is: [docs/ai-first-program.md](docs/ai-first-program.md).
+Local model operations: [docs/runbooks/local_ai_tier.md](docs/runbooks/local_ai_tier.md).
+
+**Pull requests** (`main` merges stay with the operator):
+- `sayegh9/cryptonite#6` `feat/ai-first-phase6` → `feat/ai-first-phase0`: Phases 6–7, LE-1…LE-10, the `scan_runs` fix.
+- `sayegh9/cryptonite#5` `fix/ingest-recovery-open-kline` → `feat/ai-first-phase0`: already contained in #6.
+- `sayegh9/cryptonite#4` `feat/ai-first-phase0` → `main`: Phase 5 (and, once #6 merges, Phases 6–7).
+
+**Production AI routes:** `triage` and `summarize` on `ollama:gemma4:12b-it-qat` (DEGRADE fallback
+Flash-Lite / Flash), `embed` on `ollama:embeddinggemma`, everything else on Gemini. Models on disk:
+`gemma4:12b-it-qat`, `qwen3.5:9b` (bake-off runner-up), `embeddinggemma`; `qwen3.5:4b` was deleted.
+
+**Gates last run (2026-10-04):** pytest 804 passed / 0 failed on the throwaway DB; Playwright 26/26.
+
+**Waiting on time, not work:**
+- Gate 5: 14 days of L1 paper trading with 0 breaches and working approvals (earliest about 2026-10-15).
+- L2 candidacy of `BTC-ETH spot L1`: earliest 2026-10-31, needs 30 closed trades
+  (`scripts/gate_status.py`).
+
+**Waiting on the operator:**
+- Telegram live checks: foreign chat ignored; approve / veto / expire; kill-switch Critical alert on
+  Telegram and ntfy (steps under Phase 5 below).
+- Merges: #6, #5 into phase0; #4 into `main`.
+- Sudo items: `sudo apt install python3.12-dev` (Triton compiles during training); the Ollama v0.35.1
+  install (`~/Downloads/ollama-v0.35.1/README-resume.txt`); optional Tailscale; optional NVIDIA Container
+  Toolkit (only if training should move into Docker).
+
+## Moving to the Linux workstation (2026-09-30, done 2026-10-01; kept for reference)
 
 **Git is the source of truth.** Every branch is pushed; nothing lives only on the MacBook. On the workstation, **clone fresh**; don't copy the Mac folder: `node_modules`, `.next` and the venvs are macOS builds.
 
@@ -28,7 +59,7 @@
 
 > **Deferred backlog (LE-1 … LE-10)**, agreed for later: see [AUDIT_STATUS.md](AUDIT_STATUS.md#deferred-backlog-marked-for-later-2026-09-29).
 
-## AI-First Program — Phase 6 (workstation, 2026-10-03): local tier, in progress
+## AI-First Program — Phases 6–7 (workstation, 2026-10-03 … 10-04): local tier and learning
 
 Branch `feat/ai-first-phase6` (from `feat/ai-first-phase0`, includes the ingest fix of PR #5).
 
@@ -39,7 +70,7 @@ Branch `feat/ai-first-phase6` (from `feat/ai-first-phase0`, includes the ingest 
 - On the host, the CLI needs `OLLAMA_HOST=172.17.0.1:11434 ollama ...`.
 - Upgrade to v0.35.1 is **paused**: GitHub downloads crawled. The partial file and resume/install steps are in `~/Downloads/ollama-v0.35.1/README-resume.txt`. Not blocking: every model below runs on 0.33.2.
 
-**Models pulled** (operator-approved): `qwen3.5:9b` 6.6 GB, `gemma4:12b-it-qat` 7.2 GB, `qwen3.5:4b` 3.4 GB, `embeddinggemma` 0.62 GB (768-d). Sentiment weights (CryptoBERT, FinBERT) are in `~/models/hf`, outside the repo; FinBERT ships only as a pickle `.bin` with no stated license.
+**Models pulled** (operator-approved): `qwen3.5:9b` 6.6 GB, `gemma4:12b-it-qat` 7.2 GB, `embeddinggemma` 0.62 GB (768-d). `qwen3.5:4b` (3.4 GB) was pulled for the bake-off and deleted on 2026-10-04 (weakest and slowest). Sentiment weights (CryptoBERT, FinBERT) are in `~/models/hf`, outside the repo; FinBERT ships only as a pickle `.bin` with no stated license.
 
 **A6.1 (done):**
 - `gateway/local_tier.py`: health probe of Ollama `/api/tags`, published to Redis `local_tier:health`.
@@ -80,7 +111,7 @@ Runs were 2 repeats each. Flash-Lite cost $0.013 for everything.
 
 - **Stale:** every model fails the stale rule; it needs "older than 2 bars of 15m" arithmetic. Production never sends stale candidates to triage: `services/debate_worker/gate.py` rejects them first (`STALE_CANDIDATE`, same 2-bar threshold). So "excl. stale" is the production-relevant triage score.
 - **Flash-Lite summaries:** they drop order sizes and command ids, and in one case attached an old command id to a different, pending card (a misattribution).
-- **Recommendation:** Gemma 4 12B for `triage` and `summarize`, with Flash-Lite as the DEGRADE fallback. It is best or tied on every production-relevant column and the only model with perfect summaries. Its latency is fine for both roles. Switching the production routes is the operator's call. Note that `qwen3.5:4b` is both the weakest and the slowest model here.
+- **Recommendation:** Gemma 4 12B for `triage` and `summarize`, with Flash-Lite as the DEGRADE fallback. It is best or tied on every production-relevant column and the only model with perfect summaries. Its latency is fine for both roles. **Operator decision 2026-10-04: switched.** `triage` and `summarize` run on Gemma 4 12B with DEGRADE fallbacks (`ai_model_routes`). Note that `qwen3.5:4b` is both the weakest and the slowest model here.
 - **Tagging:** not evaluated yet; the role arrives with the A6.3 sentiment service.
 - **Real-history triage cases:** `--source lake` exists but needs the LE-1 backfill. The lake currently has about 9.5k of the expected 23k 1m bars over 16 days, so the strict resampler rejects most windows.
 
@@ -109,7 +140,7 @@ The news tool uses FinBERT, which is fast and free for 12 headlines per call. Cr
 - **Backtester role:** the backtester connects as `cryptonite_backtester` (migration 030).
 - **Scanner storage:** `scan_runs` stores one digest per date partition, after it had grown to 21 GB.
 
-**Known build issue (LE-7):** images `uv pip install` unpinned dependencies (the API image resolved `pydantic-ai-slim` 2.54.0), so deployed versions can drift from the locked versions the tests use. Builds also fail on transient download errors and must be retried.
+**Build (LE-7, fixed):** images install from the lockfile (`uv sync --frozen`), so deployed versions match the tests; details in [docs/run-and-deployment-changes.md](docs/run-and-deployment-changes.md#8-update-log-october-2026-linux-workstation-ai-first-phases-57).
 
 ## AI-First Program — Phase 5 (cloud session, 2026-09-30): mandates, autonomy, approvals, Telegram
 

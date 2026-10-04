@@ -13,6 +13,7 @@
 7. [Operator Control Plane & Emergency Governance](#7-operator-control-plane--emergency-governance)
 8. [Remote LAN & Multi-Device Access Guide](#8-remote-lan--multi-device-access-guide)
 9. [Troubleshooting & Frequently Asked Questions](#9-troubleshooting--frequently-asked-questions)
+10. [Mission Control: Mandates, Autonomy & Approvals](#10-mission-control-mandates-autonomy--approvals)
 
 ---
 
@@ -31,7 +32,7 @@
 ### 1.2 Default Operator Credentials
 * **Operator ID**: `admin`
 * **Master Password**: `admin123`
-* **Two-Factor TOTP**: `000000` *(development bypass)*
+* **Two-Factor TOTP**: the 6-digit code from your authenticator app (enroll with `scripts/create_operator.py`). The development bypass `000000` works only for login on a dev stack with `ALLOW_DEV_TOTP` enabled, and **never** for AI actions (approvals, mandate changes, promotions).
 * **Execution Environment**: Binance Demo / Testnet (Isolated paper risk)
 
 ### 1.3 Supported Markets
@@ -199,13 +200,12 @@ When a debate session concludes with actionable conviction:
 - **High-Assurance Execution ("Hold to Approve")**: Requires a **2-second continuous hold** with animated progress to prevent accidental triggers, or an instant **Reject** button.
 - **Transactional Outbox Dispatch**: Approved decisions dispatch signed commands to `execution_commands`, where `cryptonite_outbox` immediately routes them to the exchange gateway with full auditability.
 
-#### 2. Autonomous Background Execution Mode
-For systematic, unattended algorithmic operations:
-- High-conviction debate proposals automatically bypass the interactive staging queue and commit directly to the transactional outbox (`execution_commands`).
-- All autonomous actions remain strictly bounded by pre-trade risk checks:
-  - Hard concentration ceiling capped at 25.0% portfolio equity.
-  - Zero-DB I/O risk check in NautilusTrader execution engine.
-  - Daily UTC loss limit (-3.0%) with automatic kill-switch latching.
+#### 2. Mandate-Based Execution (replaces "Autonomous Background Execution Mode")
+The old global autonomous mode is gone. Whether a debate verdict waits for you or executes on its own
+now depends on the **mandate** that owns the instrument and its **autonomy level**; see
+[chapter 10](#10-mission-control-mandates-autonomy--approvals). Without an active mandate, no AI order
+executes at all, including an order card you approved yourself. All AI orders remain bounded by the
+pre-trade risk checks (25.0% concentration ceiling, daily loss limit with kill-switch latching).
 
 ---
 
@@ -302,7 +302,58 @@ Ensure your Google Gemini API key is configured in the root `.env` file under `G
 Nautilus Trader requires strict chronological monotonicity. If this occurs, the data catalog contains overlapping parquet files. The updated `cryptonite_backtester` cadence engine automatically sorts and deduplicates timestamps before starting.
 
 ### Q3: How do I verify Docker service health?
-Run `docker compose ps` from the `infra/` folder. All services (`postgres`, `redis`, `api`, `ingest`, `scanner`, `backtester`, `executor`, `agent_worker`) should show `Up` or `Healthy`.
+Run `docker compose ps` from the `infra/` folder. The core services (`postgres`, `redis`, `api`, `ingest`, `scanner`, `orchestrator`, `backtester`, `strategy_sandbox`, `agent_worker`, `debate_worker`, `learner`, `sentiment`) should show `Up` or `Healthy`; `exit_monitor`, `notifier`, `research_worker` and `executor` run only with their profiles. Mission Control shows a banner when the notifier, the exit monitor or the local AI tier is down.
 
 ### Q4: Cannot connect from another device on the Wi-Fi?
 Verify that the host firewall permits ingress on ports `3000` (Next.js) and `8000` (API Gateway / WebSocket). Ensure both devices are on the `192.168.1.0/24` subnet.
+
+---
+
+## 10. Mission Control: Mandates, Autonomy & Approvals
+
+Open **Mission Control** from the workspace tabs. It has four parts: mandate cards, the approval queue,
+the mandate editor, and Autonomy & Evals.
+
+### 10.1 Mandates
+A mandate is the AI's permission to trade: which instruments, how much budget, the largest position (as a
+percentage of the budget), a **hard stop** (loss from the mandate's high-water mark), and active hours.
+Each mandate trades under its own instance (`AI_MANDATE_<id>`), so its positions and P&L are separate.
+
+**To create one:** Mission Control → **Mandate editor**, fill in the fields (for example BTC/ETH spot,
+budget 10,000, max position 10%, hard stop 20%, active hours `08:00-22:00`) and confirm with your TOTP.
+New mandates always start at **L1 Copilot**. Anything that adds risk to a mandate (bigger budget, more
+instruments, looser stop) needs TOTP; reducing risk does not.
+
+### 10.2 Autonomy levels
+| Level | What the AI may do |
+|---|---|
+| **L1 Copilot** | Proposes; every risk-adding action waits for your approval |
+| **L2 Supervised** | Acts inside the mandate; risk-adding actions wait out a veto window, and only inside active hours |
+| **L3 Autonomous** | Acts inside the mandate; you get a digest |
+
+The system **proposes** a promotion when the mandate passes its gate (enough closed trades and days at
+the level, no breaches, and for L3 a well-calibrated verdict confidence). Only you can confirm it, with
+TOTP. Demotion is automatic: half the hard stop drops one level; the full hard stop halts the mandate at
+L1 and closes its own positions; a 20% account loss latches the PAPER kill switch and halts every
+mandate.
+
+### 10.3 Approvals
+Pending approvals show in the queue with a countdown. **Approve** or **Veto** each one.
+- A risk-adding approval that times out counts as **no**.
+- A risk-reducing one (closing or shrinking a position) that times out **proceeds**.
+
+### 10.4 Telegram and phone alerts
+With the notifier running (`--profile notifier`), the bot `@cryptonitez_bot` sends each approval to your
+Telegram chat with **Approve 🔐** and **Veto** buttons. To approve a risk-adding order, tap Approve and
+send your 6-digit TOTP to the bot; it deletes the code message and confirms. Messages from any chat not
+on the allow-list are ignored. Critical alerts (hard stop, kill switch) also go to the ntfy app.
+
+### 10.5 Autonomy & Evals
+Shows each mandate's gate checklist, model eval results, and the **reliability chart**: how often the
+debate's verdicts were right at each stated confidence. Points near the diagonal mean the confidence can
+be trusted; the L3 gate needs at least 20 labelled decisions before it can pass.
+
+### 10.6 Local AI
+Quick decisions (triage: "is this setup worth a full debate?") and summaries run on a local model on
+this machine's GPU; the full debate and the final verdict use Gemini. If the local model is down, those
+calls fall back to Gemini automatically, and Mission Control shows a banner.

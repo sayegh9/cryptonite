@@ -5,7 +5,9 @@
 
 ### Executive Overview
 
-**Cryptonite** is an institutional-grade, low-latency quantitative algorithmic trading platform engineered for cryptocurrency markets. Designed to bridge the gap between high-frequency research and real-capital execution, Cryptonite couples a **Nautilus Trader** event-driven backtesting engine and a **Polars-powered vectorized scanner** with a resilient microservices architecture, strict margin risk controls, and a multi-agent AI operations fleet driven by the **Google Antigravity SDK & Google Gemini**.
+**Cryptonite** is an institutional-grade, low-latency quantitative algorithmic trading platform engineered for cryptocurrency markets. Designed to bridge the gap between high-frequency research and real-capital execution, Cryptonite couples a **Nautilus Trader** event-driven backtesting engine and a **Polars-powered vectorized scanner** with a resilient microservices architecture, strict margin risk controls, and a multi-agent AI operations fleet driven by **Google Gemini and local open models (Ollama)** through one AI gateway.
+
+> **Current state (2026-10-04):** the AI-First program (Phases 0–7) changed the AI layer substantially: the Antigravity SDK was replaced by a Pydantic AI gateway, AI orders now need a **mandate**, approvals can come from Telegram, and a learner labels outcomes. The authoritative description is [ai-first-program.md](ai-first-program.md); where this document disagrees with it, that page is current.
 
 The system is deployed locally or in high-availability clusters using containerized microservices backed by PostgreSQL, Redis 7, DuckDB, and Apache Parquet column-oriented time-series catalogs.
 
@@ -72,9 +74,14 @@ Cryptonite is organized as a unified monorepo divided into modular Python core p
 | **Scanner Engine** | `cryptonite_scanner` | `8082` | Polars / Python | High-throughput vectorized technical screener running complex polars expressions across thousands of bars in under 10ms. |
 | **Backtester Worker**| `cryptonite_backtester` | `8083` | Nautilus Trader / C++ | Executes deterministic, tick/bar-level discrete event backtests with slippage, latency models, and historical data cadence validation. |
 | **Execution Engine** | `cryptonite_executor` | `8084` | Nautilus / Python | Live/testnet order execution engine managing order lifecycles, cross/isolated margin risk, position reconciliation, and fill tracking. |
-| **AI Agent Worker** | `cryptonite_agent_worker` | `8085` (Internal) | Google Antigravity SDK | 1-on-1 quantitative operations fleet (Research, Explainer, Strategist, CRO, On-Chain) equipped with read-only database query and DuckDB tools. Authenticated via HMAC. |
-| **Debate Worker** | `cryptonite_debate_worker` | Internal Worker Daemon | Google Antigravity SDK | Multi-agent adversarial debate engine (Bull vs Bear, Risk Committee, Reflection loop). Consumes Redis Streams (`stream:debate_queue`, `stream:exit_debate_queue`) and stages trade allocations. |
+| **AI Agent Worker** | `cryptonite_agent_worker` | `8085` (Internal) | AI gateway (Pydantic AI) | 1-on-1 quantitative operations fleet (Research, Explainer, Strategist, CRO, On-Chain) equipped with read-only database query and DuckDB tools. Authenticated via HMAC. |
+| **Debate Worker** | `cryptonite_debate_worker` | Internal Worker Daemon | AI gateway (Pydantic AI) | Multi-agent adversarial debate engine (Bull vs Bear, Risk Committee, Reflection loop). Consumes Redis Streams (`stream:debate_queue`, `stream:exit_debate_queue`) and stages trade allocations. |
 | **Web Frontend** | Host Process | `3000` (Bound to `0.0.0.0`) | Next.js 16 / React 19 | High-density trading workstation with TradingView charts, real-time WebSocket feeds, research tear sheets, and operator control panel. Accessible over LAN. |
+| **Orchestrator** | `infra-orchestrator-1` | Internal | Python / AsyncIO | Paper engine, mandate risk monitor (5 s), approval sweeper, autonomy gate evaluator. |
+| **Learner** | `infra-learner-1` | Internal | Python / AsyncIO | Single instance: labels debate outcomes (1h/4h/24h/72h), writes and embeds reflections. |
+| **Sentiment** | `infra-sentiment-1` | Internal network only | FastAPI / PyTorch CPU | FinBERT news-headline sentiment for the debate's news analyst. |
+| **Notifier** | `infra-notifier-1` (profile `notifier`) | Outbound only | Python / httpx | Telegram approvals (TOTP for ADD_RISK), ntfy Critical alerts. |
+| **Local model tier** | host systemd `ollama` | `172.17.0.1:11434` (docker bridge only) | Ollama | Gemma 4 12B for triage and summaries, EmbeddingGemma for embeddings. See [runbooks/local_ai_tier.md](runbooks/local_ai_tier.md). |
 | **Primary Database** | `cryptonite_postgres` | `5432` | PostgreSQL 16 / pgvector | Durable state storage for users, strategies, backtest runs, order ledgers, and transactional outbox. |
 | **Execution Redis** | `cryptonite_redis` | `6379` | Redis 7 Alpine | Ultra-low latency pub/sub bus for market data streams, order signals, and execution events (DB 0: Telemetry/Streams; DB 1: Agent Cache). |
 | **Agent Redis** | `cryptonite_redis` (DB 1) | `6379` (Internal) | Redis 7 Alpine | Consolidated session cache and conversational memory for AI agents. |
@@ -240,8 +247,17 @@ The system is configured via a root `.env` file loaded by Docker Compose:
 BINANCE_DEMO_API_KEY=your_binance_api_key
 BINANCE_DEMO_API_SECRET=your_binance_api_secret
 
-# AI Operations & Antigravity SDK
+# AI Operations (AI gateway)
 GEMINI_API_KEY=your_google_gemini_api_key
+OLLAMA_BASE_URL=http://host.docker.internal:11434/v1   # compose default
+
+# Redis (requirepass; every client URL carries it)
+REDIS_PASSWORD=a_long_random_password
+
+# Approvals & notifier (see HANDOFF.md, Phase 5; the notifier's own secrets go in .env.notifier)
+TELEGRAM_ALLOWED_CHAT_IDS=your_chat_id
+NOTIFIER_HMAC_SECRET=random_32_bytes_hex
+NOTIFIER_OPERATOR_USERNAME=admin
 
 # Cryptography & Sessions
 CRYPTONITE_TOTP_AES_KEY=your_base64_aes256_key
@@ -249,7 +265,7 @@ OPERATOR_SESSION_SECRET=your_random_session_secret
 
 # Database & Cache URLs
 DATABASE_URL=postgresql://cryptonite:cryptonite@localhost:5432/cryptonite
-REDIS_URL=redis://localhost:6379/0
+REDIS_URL=redis://:${REDIS_PASSWORD}@localhost:6379/0
 REDIS_AGENTS_URL=redis://localhost:6380/0
 
 # Storage Paths
@@ -402,15 +418,16 @@ When approving staged debate proposals via `POST /debates/{run_id}/approve`:
 * **Architecture**: Multi-agent adversarial consensus pipeline implementing the `TradingAgents` pattern.
 * **Queue Topology**: Consumes from Redis Streams (`stream:debate_queue` for entry debates, `stream:exit_debate_queue` for position exit monitoring).
 * **Consensus Workflow**:
+  0. **Before any model call (Phase 2):** a deterministic pre-debate gate (kill switch, daily loss, headroom, freshness, cooldown) and a cheap **triage** call (local Gemma 4) decide whether a candidate is worth a debate at all.
   1. **Analyst Fleet**: Generates structured dossiers on technical indicators, news sentiment, and on-chain RPC flows.
   2. **Bull vs. Bear Debate**: Adversarial debaters challenge bullish and bearish assumptions using real telemetry.
   3. **Risk Committee & CRO Verdict**: Aggressive, Conservative, and Neutral managers propose position limits, capped by the Chief Risk Officer at a maximum 25% portfolio allocation.
-  4. **Execution Staging (`PENDING_APPROVAL`)**: Staged trades appear directly in the terminal's docked debate sidebar or the Execution Staging Canvas, permitting 1-click execution or operator parameter overrides.
+  4. **Execution Staging (`PENDING_APPROVAL`)**: Staged trades appear directly in the terminal's docked debate sidebar or the Execution Staging Canvas, permitting 1-click execution or operator parameter overrides. Since Phase 5, verdicts are routed by the owning **mandate's autonomy level** (L1: approval required; L2: veto window; L3: acts), and nothing executes without an active mandate.
   5. **Reflection Feedback Loop**: Evaluates completed trade outcomes against BTC/ETH benchmarks and autonomously stores lessons learned in `reflections` to guide future debate rounds.
 
 ### 9.6 Vectorized Reflection Memory & Semantic Recall (`pgvector`)
 * **Self-Improving Feedback Loop**: The `reflections` table records quantitative and qualitative trade post-mortems comparing actual trade PnL against benchmark BTC/ETH beta over identical time horizons.
-* **Embeddings & Regime Indexing**: Uses 768-dimensional dense vector embeddings (`vector(768)`) generated via Google Gemini text-embedding models:
+* **Embeddings & Regime Indexing**: Uses 768-dimensional dense vector embeddings (`vector(768)`) generated locally by `ollama:embeddinggemma` (Google retired `text-embedding-004`); each row records its `embedding_model` and recall only compares same-model vectors. Since Phase 7 the learner writes reflections from labelled 24h outcomes and ranks recalled lessons by outcome:
   - Indexed by `instrument_type`, `volatility_regime`, `timeframe`, and `outcome` (`PROFITABLE`, `LOSS`, `BREAKEVEN`).
   - When new debate rounds initialize, the debate fleet performs cosine similarity nearest-neighbor queries to retrieve contextually relevant historical mistakes or winning heuristics, eliminating repetitive strategy pitfalls without manual code changes.
 

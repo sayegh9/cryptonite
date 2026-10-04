@@ -22,7 +22,7 @@ from collections import defaultdict
 from pathlib import Path
 
 
-def parse(text: str) -> bool | None:
+def parse_json(text: str) -> bool | None:
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         return None
@@ -33,7 +33,18 @@ def parse(text: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def score(answers: list[bool | None], cases: list[dict]) -> dict:
+def parse(text: str) -> bool | None:
+    """The decision, in JSON or as a ``worth_debate: True`` line. Production decodes under Ollama's JSON
+    schema, so the format is enforced there; unconstrained here, the base often answers in key: value
+    lines. Scoring the decision either way keeps the comparison about triage, not formatting."""
+    value = parse_json(text)
+    if value is not None:
+        return value
+    m = re.search(r"worth_debate\W{0,3}\s*(true|false)\b", text, re.I)
+    return None if not m else m.group(1).lower() == "true"
+
+
+def score(answers: list[bool | None], cases: list[dict], json_ok: list[bool]) -> dict:
     by = defaultdict(lambda: [0, 0])
     for a, c in zip(answers, cases, strict=True):
         reason = c.get("label_reason", "?").split("+")[0]
@@ -45,14 +56,15 @@ def score(answers: list[bool | None], cases: list[dict]) -> dict:
     ex_n = n - by["stale_data"][1]
     return {"agreement": round(ok / n, 4), "agreement_excl_stale": round(ex_ok / ex_n, 4) if ex_n else None,
             "valid": round(sum(a is not None for a in answers) / len(answers), 4),
+            "json_valid": round(sum(json_ok) / len(json_ok), 4),
             "by_rule": {k: f"{v[0]}/{v[1]}" for k, v in sorted(by.items())}}
 
 
-def answer_all(model, tokenizer, system: str, cases: list[dict], max_new: int = 96) -> list[bool | None]:
+def answer_all(model, tokenizer, system: str, cases: list[dict], max_new: int = 96) -> tuple[list[bool | None], list[bool]]:
     import torch
 
     text_tok = getattr(tokenizer, "tokenizer", tokenizer)
-    out = []
+    out, json_ok = [], []
     for c in cases:
         prompt = text_tok.apply_chat_template([{"role": "system", "content": system},
                                                {"role": "user", "content": c["prompt"]}],
@@ -60,8 +72,10 @@ def answer_all(model, tokenizer, system: str, cases: list[dict], max_new: int = 
         ids = text_tok(prompt, return_tensors="pt").to(model.device)
         with torch.inference_mode():
             gen = model.generate(**ids, max_new_tokens=max_new, do_sample=False)
-        out.append(parse(text_tok.decode(gen[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)))
-    return out
+        text = text_tok.decode(gen[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
+        out.append(parse(text))
+        json_ok.append(parse_json(text) is not None)
+    return out, json_ok
 
 
 def main() -> None:
@@ -84,7 +98,8 @@ def main() -> None:
                                                      load_in_4bit=True)
         FastModel.for_inference(model)
         for name, cases in sets.items():
-            report["sets"].setdefault(name, {})[who] = score(answer_all(model, tokenizer, system, cases), cases)
+            answers, json_ok = answer_all(model, tokenizer, system, cases)
+            report["sets"].setdefault(name, {})[who] = score(answers, cases, json_ok)
             print(json.dumps({"model": who, "set": name, **report["sets"][name][who]}), flush=True)
         del model
         import gc
