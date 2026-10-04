@@ -1,51 +1,12 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import {
-  BrainCircuit,
-  Send,
-  Sparkles,
-  Loader2,
-  Trash2,
-  TrendingUp,
-  ShieldAlert,
-  Search,
-  Zap,
-  Tag,
-  CheckCircle2,
-  ShieldCheck,
-  Cpu,
-  Layers,
-  Sliders,
-} from "lucide-react";
+import { BrainCircuit, Send, Loader2, Trash2, Zap, Tag } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { fetchApi } from "@/lib/api";
-import { toast } from "sonner";
-import { usePaperEquity, EQUITY_MAX_AGE_MS } from "@/lib/portfolio/usePaperEquity";
-import { Fresh } from "@/components/Fresh";
-
-interface Dispatch {
-  agent: string;
-  /** Not reported by the heartbeat stream: null renders nothing rather than a made-up latency. */
-  latencyMs: number | null;
-  status: string;
-}
-
-interface Message {
-  id: string;
-  /** "system" = produced by this UI (errors), never model text */
-  role: "user" | "assistant" | "system";
-  agentId: string;
-  agentName: string;
-  content: string;
-  dispatches?: Dispatch[];
-  /** On a system error: the operator prompt to send again */
-  retryPrompt?: string;
-  timestamp: number;
-}
-
-const newId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
+import { AGENT_CONFIGS, newId, parseTargetSymbol as parseSymbol, starterChips, type Dispatch, type Message } from "./canvas/agents";
+import { InlineActionCard } from "./canvas/InlineActionCard";
 
 interface OrchestratorCanvasProps {
   selectedAgentId?: string;
@@ -55,166 +16,6 @@ interface OrchestratorCanvasProps {
   onTriggerDebate?: (symbol: string) => void;
 }
 
-const AGENT_CONFIGS: Record<
-  string,
-  {
-    id: string;
-    name: string;
-    shortName: string;
-    roleTitle: string;
-    icon: any;
-    color: string;
-    bgBorder: string;
-    badgeColor: string;
-    endpoint: string;
-    placeholder: string;
-    description: string;
-  }
-> = {
-  orchestrator: {
-    id: "orchestrator",
-    name: "Lead Orchestrator",
-    shortName: "Lead Copilot",
-    roleTitle: "Chief AI Copilot & Dispatcher",
-    icon: BrainCircuit,
-    color: "text-cyan-400",
-    bgBorder: "border-cyan-500/30 bg-cyan-950/20",
-    badgeColor: "bg-cyan-950/80 border-cyan-700/60 text-cyan-300",
-    endpoint: "/agent-api/chat",
-    placeholder: "Ask the Lead Orchestrator to coordinate fleet, synthesize multi-asset briefs, or audit trades...",
-    description: "Understands natural language, coordinates specialist fleet, and synthesizes action briefs.",
-  },
-  scout: {
-    id: "scout",
-    name: "Market Data Scout",
-    shortName: "Market Scout",
-    roleTitle: "Technical & Orderbook Analyst",
-    icon: Search,
-    color: "text-blue-400",
-    bgBorder: "border-blue-500/30 bg-blue-950/20",
-    badgeColor: "bg-blue-950/80 border-blue-700/60 text-blue-300",
-    endpoint: "/agent-api/chat",
-    placeholder: "Ask Market Data Scout about multi-timeframe technical structure, orderbook depth, funding rate...",
-    description: "Gathers live L2 orderbook depth, funding rate spreads, and Polars technical indicators.",
-  },
-  debater: {
-    id: "debater",
-    name: "Bull / Bear Debaters",
-    shortName: "Bull/Bear Arena",
-    roleTitle: "Adversarial Setup Stress-Testing",
-    icon: Zap,
-    color: "text-purple-400",
-    bgBorder: "border-purple-500/30 bg-purple-950/20",
-    badgeColor: "bg-purple-950/80 border-purple-700/60 text-purple-300",
-    endpoint: "/agent-api/strategist",
-    placeholder: "Prompt Bull/Bear Debaters to challenge trade setups, expose traps, and stress-test conviction...",
-    description: "Autonomous LLMs debating opposing theses to expose traps and validate trade conviction.",
-  },
-  cro: {
-    id: "cro",
-    name: "Risk Guardian (CRO)",
-    shortName: "Risk (CRO)",
-    roleTitle: "Chief Risk & Margin Officer",
-    icon: ShieldAlert,
-    color: "text-amber-400",
-    bgBorder: "border-amber-500/30 bg-amber-950/20",
-    badgeColor: "bg-amber-950/80 border-amber-700/60 text-amber-300",
-    endpoint: "/agent-api/cro",
-    placeholder: "Ask Chief Risk Officer about position sizing, 25% max concentration, drawdown stress-tests...",
-    description: "Enforces max 25% concentration limit, computes stop-loss levels, and guards margin bounds.",
-  },
-  outbox: {
-    id: "outbox",
-    name: "Execution Outbox Relay",
-    shortName: "Execution Outbox",
-    roleTitle: "Nautilus Execution Bridge",
-    icon: CheckCircle2,
-    color: "text-emerald-400",
-    bgBorder: "border-emerald-500/30 bg-emerald-950/20",
-    badgeColor: "bg-emerald-950/80 border-emerald-700/60 text-emerald-300",
-    endpoint: "/agent-api/chat",
-    placeholder: "Ask Execution Relay about order staging, execution latency, Nautilus routing parameters...",
-    description: "Stages approved proposals into PostgreSQL transactional outbox for live/testnet execution.",
-  },
-};
-
-/** Symbol named by a manifest JSON (instrument_id / symbol), else null. */
-function manifestSymbol(codeStr: string): string | null {
-  try {
-    const j = JSON.parse(codeStr);
-    const raw = j?.instrument_id ?? j?.symbol;
-    return typeof raw === "string" && raw ? raw.split(".")[0].toUpperCase() : null;
-  } catch {
-    const m = codeStr.match(/"(?:instrument_id|symbol)"\s*:\s*"([A-Z0-9]+)/i);
-    return m ? m[1].toUpperCase() : null;
-  }
-}
-
-function InlineActionCard({ codeStr, onTriggerDebate, fallbackSymbol }: { codeStr: string; onTriggerDebate?: (symbol: string) => void; fallbackSymbol: string }) {
-  // Allocation in % of the paper account's equity; USD only when that equity is known
-  const [pct, setPct] = useState<number>(5);
-  const equity = usePaperEquity();
-  const symbol = manifestSymbol(codeStr) ?? fallbackSymbol;
-
-  return (
-    <div className="my-4 p-4 rounded-xl border border-cyan-500/30 bg-cyan-950/20 font-sans shadow-lg">
-      <div className="flex items-center justify-between mb-3 border-b border-cyan-800/50 pb-2">
-        <div className="font-bold text-cyan-300 flex items-center gap-2">
-          <Sparkles className="w-4 h-4" /> Strategy Manifest
-        </div>
-      </div>
-      <pre className="text-2xs text-zinc-300 bg-zinc-900/80 p-3 rounded-lg overflow-x-auto mb-4 border border-zinc-800">
-        <code>{codeStr}</code>
-      </pre>
-
-      {/* Sizing preview: % of paper equity, disabled while equity is unknown */}
-      <div className="p-3 bg-zinc-950/50 border border-zinc-800/60 rounded-lg space-y-2 mb-4 font-mono text-2xs" data-testid="manifest-sizing">
-        <div className="flex items-center justify-between text-zinc-400">
-          <span className="flex items-center space-x-1">
-            <Sliders className="w-3 h-3 text-cyan-400" aria-hidden="true" />
-            <span>Allocation: {pct}% of equity (1–25%)</span>
-          </span>
-          <span className="text-cyan-300 font-bold tabular-nums">
-            <Fresh
-              value={equity.usable ? equity.equity : null}
-              asOf={equity.asOf}
-              maxAgeMs={EQUITY_MAX_AGE_MS}
-              format={(e) => `≈ $${((e * pct) / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
-              unknownText="equity unavailable"
-            />
-          </span>
-        </div>
-        <input
-          type="range"
-          min={1}
-          max={25}
-          step={1}
-          value={pct}
-          disabled={!equity.usable}
-          aria-label="Allocation in percent of equity"
-          onChange={(e) => setPct(Number(e.target.value))}
-          className="w-full accent-cyan-400 h-1.5 bg-zinc-800 rounded-full cursor-pointer appearance-none disabled:cursor-not-allowed disabled:opacity-40"
-        />
-      </div>
-
-      <div className="flex flex-wrap gap-2 mt-2">
-        <button onClick={() => {
-          window.dispatchEvent(new CustomEvent("cryptonite:load-strategy", {
-            detail: { name: "Generated", code: codeStr }
-          }));
-          toast.success("Strategy pushed to Research Lab");
-        }} className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/40 text-blue-300 border border-blue-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
-          <BrainCircuit className="w-3.5 h-3.5" /> Backtest in Lab
-        </button>
-        {onTriggerDebate && (
-          <button onClick={() => onTriggerDebate(symbol)} className="px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
-            <Zap className="w-3.5 h-3.5" /> Trigger {symbol} Debate
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
 
 export function OrchestratorCanvas({
   selectedAgentId = "orchestrator",
@@ -256,160 +57,12 @@ export function OrchestratorCanvas({
     return () => unsub?.();
   }, []);
 
-  // Extract symbol from user text, or default to activeSymbol
-  const parseTargetSymbol = (text: string): string => {
-    const match = text.match(/\b(BTC|ETH|SOL|XRP|BNB|DOGE|ADA|AVAX|SUI|LINK|DOT|NEAR|MATIC|ATOM|APT|OP|ARB|UNI)\b/i);
-    if (match) return match[1].toUpperCase() + "USDT";
-    return activeSymbol || "BTCUSDT";
-  };
-
-  // Dynamic starter chips per agent
-  const getStarterChips = () => {
-    const sym = activeSymbol || "BTCUSDT";
-    switch (selectedAgentId) {
-      case "scout":
-        return [
-          {
-            icon: Search,
-            color: "text-blue-400 border-blue-500/30 hover:border-blue-500 bg-blue-950/20",
-            title: `Analyze ${sym} Multi-Timeframe Structure`,
-            prompt: `Analyze the technical market structure of ${sym} across 15m, 1h, 4h, and 1D timeframes.`,
-          },
-          {
-            icon: Layers,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: `Check ${sym} Orderbook Depth`,
-            prompt: `Examine L2 orderbook depth, bid/ask imbalances, and institutional liquidity walls for ${sym}.`,
-          },
-          {
-            icon: TrendingUp,
-            color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500 bg-emerald-950/20",
-            title: "Scan Volume Delta & RSI",
-            prompt: `Scan top crypto pairs for RSI divergence, funding rate anomalies, and volume surges.`,
-          },
-          {
-            icon: Tag,
-            color: "text-purple-400 border-purple-500/30 hover:border-purple-500 bg-purple-950/20",
-            title: `Calculate ${sym} Pivot Levels`,
-            prompt: `Calculate key support, resistance, and Fibonacci pivot levels for ${sym}.`,
-          },
-        ];
-      case "cro":
-        return [
-          {
-            icon: ShieldAlert,
-            color: "text-amber-400 border-amber-500/30 hover:border-amber-500 bg-amber-950/20",
-            title: `Audit Margin for ${sym}`,
-            prompt: `Audit portfolio margin utilization, leverage bounds, and 25% max concentration for a ${sym} trade.`,
-          },
-          {
-            icon: ShieldCheck,
-            color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500 bg-emerald-950/20",
-            title: "Compute Risk-Adjusted Sizing",
-            prompt: "Calculate optimal position size for a 1.5% stop-loss risking no more than 1% of total equity.",
-          },
-          {
-            icon: TrendingUp,
-            color: "text-rose-400 border-rose-500/30 hover:border-rose-500 bg-rose-950/20",
-            title: "Stress-Test -10% Market Shock",
-            prompt: "Stress-test our current open portfolio positions against a sudden -10% market-wide flash crash.",
-          },
-          {
-            icon: BrainCircuit,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: "Review Risk Limits Policy",
-            prompt: "Review daily loss limits, kill-switch thresholds, and drawdowns.",
-          },
-        ];
-      case "debater":
-        return [
-          {
-            icon: Zap,
-            color: "text-purple-400 border-purple-500/30 hover:border-purple-500 bg-purple-950/20",
-            title: `Run ${sym} Consensus Debate`,
-            prompt: `Debate the current momentum breakout and orderbook liquidity for ${sym}.`,
-          },
-          {
-            icon: ShieldAlert,
-            color: "text-amber-400 border-amber-500/30 hover:border-amber-500 bg-amber-950/20",
-            title: `Expose ${sym} Liquidity Traps`,
-            prompt: `Identify potential bear traps, liquidity sweeps, and invalidation risks for ${sym}.`,
-          },
-          {
-            icon: TrendingUp,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: `Stress-test Long Thesis for ${sym}`,
-            prompt: `Aggressively debate the bullish thesis for ${sym} against macro headwinds.`,
-          },
-          {
-            icon: CheckCircle2,
-            color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500 bg-emerald-950/20",
-            title: "Synthesize Trade Conviction",
-            prompt: `Synthesize the multi-agent consensus and compute the conviction percentage for ${sym}.`,
-          },
-        ];
-      case "outbox":
-        return [
-          {
-            icon: CheckCircle2,
-            color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500 bg-emerald-950/20",
-            title: `Stage ${sym} Order to Outbox`,
-            prompt: `Stage a limit buy order for ${sym} with a 5 bps slippage bound into the Transactional Outbox.`,
-          },
-          {
-            icon: Cpu,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: "Verify Nautilus Engine Latency",
-            prompt: "Check Nautilus Trader order routing latency and paper engine heartbeat status.",
-          },
-          {
-            icon: Layers,
-            color: "text-blue-400 border-blue-500/30 hover:border-blue-500 bg-blue-950/20",
-            title: "Audit Reconciliation Ledger",
-            prompt: "Inspect the PostgreSQL Transactional Outbox state machine for any pending or orphaned orders.",
-          },
-          {
-            icon: ShieldCheck,
-            color: "text-purple-400 border-purple-500/30 hover:border-purple-500 bg-purple-950/20",
-            title: "Explain Outbox State Machine",
-            prompt: "Explain how the PostgreSQL Transactional Outbox guarantees zero double-executions.",
-          },
-        ];
-      default: // orchestrator
-        return [
-          {
-            icon: Zap,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: `Run ${sym.replace("USDT", "") || "BTC"} Consensus Debate`,
-            prompt: `Debate the current momentum breakout and orderbook liquidity for ${sym}.`,
-          },
-          {
-            icon: ShieldAlert,
-            color: "text-amber-400 border-amber-500/30 hover:border-amber-500 bg-amber-950/20",
-            title: "Audit Capital & Risk",
-            prompt: "Audit active exposures, margin utilization, and verify we comply with the 25% max concentration rule.",
-          },
-          {
-            icon: Search,
-            color: "text-blue-400 border-blue-500/30 hover:border-blue-500 bg-blue-950/20",
-            title: "Scan Momentum Breakouts",
-            prompt: "Scan top crypto instruments across 15m and 1h for volume spikes, RSI divergence, and orderbook bid walls.",
-          },
-          {
-            icon: TrendingUp,
-            color: "text-purple-400 border-purple-500/30 hover:border-purple-500 bg-purple-950/20",
-            title: "Explain Strategy Alpha",
-            prompt: "Summarize the key alpha drivers and slippage risks of our active quantitative momentum strategies.",
-          },
-        ];
-    }
-  };
 
   const handleSend = async (customPrompt?: string, retryOf?: string) => {
     const textToSend = customPrompt || input;
     if (!textToSend.trim() || loading) return;
 
-    const targetSym = parseTargetSymbol(textToSend);
+    const targetSym = parseSymbol(textToSend, activeSymbol);
 
     if (retryOf) {
       // Retry replaces its error notice; the operator's message is already on the canvas
@@ -590,7 +243,7 @@ export function OrchestratorCanvas({
 
               {/* 1-Touch Starter Prompt Chips tailored to Active Agent */}
               <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2 text-left pt-2">
-                {getStarterChips().map((chip, i) => {
+                {starterChips(selectedAgentId, activeSymbol || "BTCUSDT").map((chip, i) => {
                   const Icon = chip.icon;
                   return (
                     <button

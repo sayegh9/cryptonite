@@ -217,6 +217,7 @@ test.describe("Mission Control", () => {
     expect(calls.decisions).toEqual([]);
     await page.getByRole("button", { name: "Approve: BUY ETHUSDT 6% of mandate ($600)" }).focus();
     await page.keyboard.press("Enter");
+    await expect(page.getByRole("button", { name: "Confirm approve: BUY ETHUSDT 6% of mandate ($600)" })).toBeFocused();
     await page.keyboard.press("Enter"); // the confirm button has focus
     await expect(rows.nth(0).getByRole("status")).toContainText("Approved · command queued · cmd-9f8e");
     await page.getByRole("button", { name: "Veto: Close BTCUSDT (exit debate)" }).click();
