@@ -3,6 +3,7 @@
 import React from "react";
 import { BacktestMetrics } from "@/lib/types";
 import { AlertCircle, TrendingUp, TrendingDown } from "lucide-react";
+import { fmtSignedPct, metricNum, metricsVersion } from "@/lib/backtestMetrics";
 
 interface Props {
   metrics: BacktestMetrics;
@@ -11,9 +12,35 @@ interface Props {
 
 export const TearsheetCards: React.FC<Props> = ({ metrics, executionProfile }) => {
   const isPositive = metrics.total_return >= 0;
+  const version = metricsVersion(metrics);
+  const bench = metrics.benchmark ?? null;
+  const fees = metricNum(metrics.fees_paid);
+  const turnover = metricNum(metrics.turnover);
+  const benchReturn = metricNum(bench?.total_return);
+  const benchSharpe = metricNum(bench?.sharpe_ratio);
+  const benchDd = metricNum(bench?.max_drawdown);
+  const alpha = metricNum(bench?.alpha_vs_hold);
 
   return (
     <div className="flex flex-col space-y-3 w-full font-mono">
+      <div className="flex flex-wrap items-center gap-2 text-[11px]" data-testid="metrics-version">
+        {version === null ? (
+          <span
+            className="px-2 py-0.5 rounded border border-amber-700 bg-amber-950/50 text-amber-300 font-bold"
+            title="Computed before mark-to-market equity: drawdown can be understated and Sharpe overstated. Re-run to compare with current runs."
+          >
+            legacy metrics
+          </span>
+        ) : (
+          <span className="px-2 py-0.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-400">metrics v{version}</span>
+        )}
+        {executionProfile === "optimistic" && (
+          <span className="px-2 py-0.5 rounded border border-rose-800 bg-rose-950/40 text-rose-300 font-bold">
+            optimistic profile: no costs – not for decisions
+          </span>
+        )}
+      </div>
+
       <div className="flex items-center justify-between">
         {/* Institutional Timing Contract Disclosure Banner */}
         <div className="flex-1 flex items-start space-x-2.5 bg-cyan-950/40 border border-cyan-800/60 rounded px-3 py-2 text-[11px] text-cyan-300 mr-4">
@@ -168,6 +195,42 @@ export const TearsheetCards: React.FC<Props> = ({ metrics, executionProfile }) =
             </span>
           </div>
         </div>
+
+        {/* Fees paid */}
+        <div className="bg-zinc-900 border border-white/5 rounded p-3 flex flex-col justify-between">
+          <span className="text-[11px] text-zinc-400 uppercase tracking-wider">Fees Paid</span>
+          <span className="mt-1 text-lg font-black text-zinc-200 tabular-nums" data-testid="metric-fees">
+            {fees === null ? "—" : `$${fees.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          </span>
+        </div>
+
+        {/* Turnover */}
+        <div className="bg-zinc-900 border border-white/5 rounded p-3 flex flex-col justify-between">
+          <span className="text-[11px] text-zinc-400 uppercase tracking-wider" title="Traded notional divided by starting equity">Turnover</span>
+          <span className="mt-1 text-lg font-black text-zinc-200 tabular-nums" data-testid="metric-turnover">
+            {turnover === null ? "—" : `${turnover.toFixed(2)}×`}
+          </span>
+        </div>
+      </div>
+
+      {/* Buy-and-hold benchmark over the same window */}
+      <div className="bg-zinc-900/60 border border-white/5 rounded p-3" data-testid="benchmark-block">
+        <div className="text-[11px] text-zinc-400 uppercase tracking-wider mb-2">Benchmark: buy &amp; hold, same instrument and window</div>
+        {bench === null ? (
+          <p className="text-[11px] text-zinc-500">
+            {version === null ? "Not computed for legacy runs: re-run to see the benchmark." : "Not reported for this run."}
+          </p>
+        ) : (
+          <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs tabular-nums">
+            <div><dt className="text-zinc-500 text-[11px]">Hold return</dt><dd className="text-zinc-200 font-bold">{fmtSignedPct(benchReturn)}</dd></div>
+            <div><dt className="text-zinc-500 text-[11px]">Hold Sharpe</dt><dd className="text-zinc-200 font-bold">{benchSharpe === null ? "—" : benchSharpe.toFixed(2)}</dd></div>
+            <div><dt className="text-zinc-500 text-[11px]">Hold max DD</dt><dd className="text-rose-400 font-bold">{benchDd === null ? "—" : `-${(benchDd * 100).toFixed(2)}%`}</dd></div>
+            <div>
+              <dt className="text-zinc-500 text-[11px]">Alpha vs hold</dt>
+              <dd className={`font-bold ${alpha === null ? "text-zinc-400" : alpha >= 0 ? "text-emerald-400" : "text-rose-400"}`} data-testid="metric-alpha">{fmtSignedPct(alpha)}</dd>
+            </div>
+          </dl>
+        )}
       </div>
     </div>
   );

@@ -32,7 +32,8 @@ export const ResearchLab: React.FC = () => {
   const selectedSlug = useBacktestStore((state) => state.selectedSlug);
   const setSelectedSlug = useBacktestStore((state) => state.setSelectedSlug);
   const [parameters, setParameters] = useState<Record<string, any>>({});
-  const [executionProfile, setExecutionProfile] = useState<string>("optimistic");
+  // Conservative (fees + slippage, like the paper engine) by default; optimistic is costless (R2.1)
+  const [executionProfile, setExecutionProfile] = useState<string>("conservative");
   const [timeframe, setTimeframe] = useState<string>("1m");
   const [instrumentId, setInstrumentId] = useState<string>("BTCUSDT.BINANCE");
 
@@ -300,10 +301,10 @@ export const ResearchLab: React.FC = () => {
             <div className="space-y-2">
               {[
                 {
-                  id: "optimistic",
-                  label: "Baseline (Optimistic)",
-                  desc: "Zero slippage, zero fees, DefaultFillModel",
-                  color: "border-emerald-800 text-emerald-400",
+                  id: "conservative",
+                  label: "Conservative Institutional",
+                  desc: "80% limit fills, 50% slip, 5/10 bps fees",
+                  color: "border-purple-800 text-purple-400",
                 },
                 {
                   id: "adverse_slippage",
@@ -312,16 +313,17 @@ export const ResearchLab: React.FC = () => {
                   color: "border-amber-800 text-amber-400",
                 },
                 {
-                  id: "conservative",
-                  label: "Conservative Institutional",
-                  desc: "80% limit fills, 50% slip, 5/10 bps fees",
-                  color: "border-purple-800 text-purple-400",
+                  id: "optimistic",
+                  label: "Optimistic: no costs – not for decisions",
+                  desc: "Zero slippage, zero fees, DefaultFillModel",
+                  color: "border-rose-800 text-rose-400",
                 },
               ].map((p) => (
                 <button
                   key={p.id}
                   type="button"
                   onClick={() => setExecutionProfile(p.id)}
+                  aria-pressed={executionProfile === p.id}
                   className={`w-full text-left p-2.5 rounded border transition-colors ${
                     executionProfile === p.id
                       ? `bg-cyan-950/20 border-cyan-500/50 text-zinc-100 ring-1 ring-cyan-500/20`
