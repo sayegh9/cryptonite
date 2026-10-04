@@ -24,6 +24,14 @@ class FakeApi:
     def __init__(self, oos_factor: float = 0.8, reject_first: bool = True):
         self.oos_factor, self.reject_first = oos_factor, reject_first
         self.saved, self.backtests = [], []
+        self.history = {"bar_type": "bt", "start_ns": 0, "end_ns": 10**18}
+        self.earlier_trials = 0
+
+    async def coverage(self, bar_type):
+        return self.history
+
+    async def trials_tested(self, instrument_id, timeframe, days):
+        return self.earlier_trials
 
     async def save_strategy(self, name, description, python_code):
         if self.reject_first and not self.saved:
@@ -83,8 +91,16 @@ async def test_full_loop_feeds_back_violations_optimizes_and_promotes(tmp_path):
     assert calls["review"] == 1
     saved = json.loads((tmp_path / f"{report.id}.json").read_text())
     assert saved["status"] == "PROMOTE" and saved["strategy_slug"] == "ai-gen-abc123"
-    assert all(window == WINDOWS[0] for _, window in api.backtests[:-1])  # optimization never sees OOS data
+    # optimization (walk-forward folds), the full in-sample run and robustness never see OOS data
+    oos_runs = [i for i, (_, w) in enumerate(api.backtests) if w == WINDOWS[1]]
+    assert len(oos_runs) == 1
+    assert all(w[2] <= WINDOWS[0][2] for _, w in api.backtests[:oos_runs[0]])
+    assert {w for _, w in api.backtests[1:1 + 4]} == {(2, 12, 13), (4, 14, 15), (6, 16, 17), (8, 18, 20)}  # 4 folds
     assert api.backtests[0][0] == {} and report.baseline["run_id"] == "r1"  # baseline at defaults first
+    assert len(report.folds) == 4 and report.dsr is None  # windows of a few ns: DSR not computable, not a reject
+    assert report.robustness["fragile"] is False and {r["value"] for r in report.robustness["results"]} >= {
+        report.best_parameters["period"] - 2, report.best_parameters["period"] + 2}
+    assert report.holdout == {} and saved["instrument_id"] == "BTCUSDT.BINANCE"  # no holdout window in this spec
 
 
 async def test_overfitting_is_rejected_before_paying_for_a_review(tmp_path):
@@ -114,10 +130,14 @@ def test_overfitting_flags():
 def test_windows_are_ordered_and_bar_type_is_derived():
     s = rq.spec_from({"idea": "x", "instrument_id": "ETHUSDT.BINANCE", "timeframe": "4h", "is_days": 90, "oos_days": 30},
                      now_ns=1_000 * rq.DAY_NS)
-    (is_warm, is_start, is_end), (_, oos_start, oos_end) = s.in_sample, s.out_of_sample
-    assert is_warm < is_start < is_end < oos_start < oos_end
-    assert oos_start - is_start == 90 * rq.DAY_NS and oos_end == 1_000 * rq.DAY_NS
+    (is_warm, is_start, is_end), (_, oos_start, oos_end), (_, ho_start, ho_end) = s.in_sample, s.out_of_sample, s.holdout
+    assert is_warm < is_start < is_end < oos_start < oos_end < ho_start < ho_end
+    assert oos_start - is_start == 90 * rq.DAY_NS and ho_start - oos_start == 30 * rq.DAY_NS
+    assert ho_end == 1_000 * rq.DAY_NS and ho_end - ho_start == rq.HOLDOUT_DAYS * rq.DAY_NS  # the newest data
     assert s.bar_type == "ETHUSDT.BINANCE-4-HOUR-LAST-EXTERNAL"
+    no_holdout = rq.spec_from({"idea": "x", "instrument_id": "ETHUSDT.BINANCE", "timeframe": "1h", "holdout_days": 0},
+                              now_ns=1_000 * rq.DAY_NS)
+    assert no_holdout.holdout is None and no_holdout.out_of_sample[2] == 1_000 * rq.DAY_NS
 
 
 def test_digest_summarizes_recent_reports(tmp_path):
@@ -181,3 +201,140 @@ async def test_sandbox_load_errors_are_fed_back_to_the_drafter(tmp_path):
     report = await run(FailsFirstRun(reject_first=False), model, tmp_path, trials=4)
     assert report.status == "PROMOTE"
     assert calls["draft"] == 2 and "name 'type' is not defined" in calls["draft_prompts"][1]
+
+
+# --- Phase 5: research validation ----------------------------------------------------------------
+
+D = rq.DAY_NS
+REAL = rq.spec_from({"idea": "x", "instrument_id": "BTCUSDT.BINANCE", "timeframe": "1h", "is_days": 90,
+                     "oos_days": 30, "holdout_days": 30, "n_trials": 50}, now_ns=1_000 * D)
+
+
+async def run_spec(api, model, tmp_path, s):
+    with override_model(FLASH, model), override_model(PRO, model):
+        return await ResearchLoop(Gateway(), api, reports_dir=tmp_path).run(s)
+
+
+async def test_a_spec_longer_than_the_history_is_refused_before_any_call(tmp_path):
+    """R5.0: 10 + 90 + 30 + 30 = 160 days needed, 120 available -> a clear FAILED, no model or backtest call."""
+    api = FakeApi(reject_first=False)
+    api.history = {"bar_type": REAL.bar_type, "start_ns": 880 * D, "end_ns": 1_000 * D}
+    model, calls = scripted()
+    report = await run_spec(api, model, tmp_path, REAL)
+    assert report.status == "FAILED" and report.reason.startswith("insufficient history")
+    assert "160 days" in report.reason and "120 contiguous days" in report.reason
+    assert calls["draft"] == 0 and api.backtests == []
+
+    api.history = {"bar_type": REAL.bar_type, "start_ns": 800 * D, "end_ns": 1_000 * D - 3_600 * 10**9}
+    from cryptonite_agents.research.validation import check_history
+    check_history([REAL.in_sample, REAL.out_of_sample, REAL.holdout], api.history)  # 200 days, 1 h behind: fine
+
+
+class RandomEntryApi(FakeApi):
+    """Every parameter set is a coin flip: per-fold Sharpe is noise around 0, whatever the parameters."""
+
+    def __init__(self, seed=0, holdout_return=0.03):
+        super().__init__(reject_first=False)
+        import random
+        self.rng, self.holdout_return = random.Random(seed), holdout_return
+
+    async def backtest(self, slug, instrument_id, bar_type, timeframe, parameters, window):
+        self.backtests.append((parameters, window))
+        days = (window[2] - window[1]) / D
+        sharpe = self.rng.gauss(0, (365 / days) ** 0.5)  # sampling spread of an annualized Sharpe of pure noise
+        if window in (REAL.in_sample, REAL.out_of_sample):
+            sharpe = 1.5  # let the full-window checks pass so that only the DSR stands in the way
+        ret = self.holdout_return if window == REAL.holdout else 0.05
+        return {"run_id": f"r{len(self.backtests)}", "sharpe_ratio": sharpe, "total_trades": 40,
+                "total_return": ret, "max_drawdown": 0.04}
+
+
+async def test_dsr_rejects_a_random_entry_strategy_over_50_trials(tmp_path):
+    api = RandomEntryApi()
+    api.earlier_trials = 25
+    model, calls = scripted()
+    report = await run_spec(api, model, tmp_path, REAL)
+    assert report.status == "REJECT" and "deflated Sharpe ratio" in report.reason, report.reason
+    assert report.dsr is not None and report.dsr < 0.95 and report.trials_tested == 75
+    assert calls["review"] == 0 and report.holdout == {}
+    assert all(w[2] < REAL.holdout[1] for _, w in api.backtests)  # the holdout was never touched
+
+
+def test_deflated_sharpe_ratio_units():
+    import random
+
+    from cryptonite_agents.research.validation import deflated_sharpe_ratio
+
+    rng = random.Random(42)
+    noise = [rng.gauss(0, (365 / 72) ** 0.5) for _ in range(50)]  # 50 random-entry trials over 72 days
+    assert deflated_sharpe_ratio(max(noise), noise, 50, 72) < 0.95
+    assert deflated_sharpe_ratio(max(noise), noise, 1, 72) > deflated_sharpe_ratio(max(noise), noise, 50, 72)
+    strong = [4.0 + rng.gauss(0, 0.2) for _ in range(50)]  # a real edge, stable across trials, over a year
+    assert deflated_sharpe_ratio(max(strong), strong, 50, 365) > 0.95
+    assert deflated_sharpe_ratio(1.0, [1.0], 1, 1) is None
+
+
+def test_anchored_folds_cover_the_in_sample_window_after_the_first_segment():
+    from cryptonite_agents.research.validation import anchored_folds
+
+    folds = anchored_folds(REAL.in_sample)
+    _, start, end = REAL.in_sample
+    assert len(folds) == 4 and folds[0][1] == start + (end - start) // 5 and folds[-1][2] == end
+    assert all(a[2] < b[1] for a, b in zip(folds, folds[1:]))
+    assert all(f[1] - f[0] == REAL.in_sample[1] - REAL.in_sample[0] for f in folds)  # same warm-up
+
+
+class StablePromotable(FakeApi):
+    def __init__(self, holdout_return):
+        super().__init__(reject_first=False)
+        self.holdout_return = holdout_return
+
+    async def backtest(self, slug, instrument_id, bar_type, timeframe, parameters, window):
+        m = await super().backtest(slug, instrument_id, bar_type, timeframe, parameters, window)
+        m["sharpe_ratio"] = 6 + 0.2 * m["sharpe_ratio"]  # a strong edge, stable across parameters: DSR passes
+        if window == REAL.holdout:
+            m["total_return"] = self.holdout_return
+        return m
+
+
+@pytest.mark.parametrize("holdout_return, status", [(0.02, "PROMOTE"), (-0.02, "REJECT")])
+async def test_holdout_is_scored_once_and_only_for_promote(tmp_path, holdout_return, status):
+    api = StablePromotable(holdout_return)
+    model, calls = scripted("PROMOTE")
+    report = await run_spec(api, model, tmp_path, REAL)
+    assert report.status == status, report.reason
+    assert [w for _, w in api.backtests].count(REAL.holdout) == 1 and api.backtests[-1][1] == REAL.holdout
+    assert report.holdout["total_return"] == holdout_return and report.dsr > 0.95
+    if status == "REJECT":
+        assert report.reason.startswith("holdout: holdout return is not positive")
+
+    api, (model, _) = StablePromotable(0.02), scripted("REVISE")
+    report = await run_spec(api, model, tmp_path, REAL)
+    assert report.status == "REVISE" and report.holdout == {} and REAL.holdout not in [w for _, w in api.backtests]
+
+
+async def test_a_fragile_optimum_is_flagged_for_the_review(tmp_path):
+    class Peaky(StablePromotable):
+        async def backtest(self, slug, instrument_id, bar_type, timeframe, parameters, window):
+            m = await super().backtest(slug, instrument_id, bar_type, timeframe, parameters, window)
+            if window == REAL.in_sample and parameters.get("period") != self.best:
+                m["sharpe_ratio"] = 0.2
+            return m
+
+    api = Peaky(0.02)
+    api.best = None
+    model, _ = scripted("PROMOTE")
+    with override_model(FLASH, model), override_model(PRO, model):
+        loop = ResearchLoop(Gateway(), api, reports_dir=tmp_path)
+        original = loop._optimize
+
+        async def remember_best(*a):
+            params, full = await original(*a)
+            api.best = params["period"]
+            full["sharpe_ratio"] = 6.0
+            return params, full
+
+        loop._optimize = remember_best
+        report = await loop.run(REAL)
+    assert report.robustness["fragile"] is True and report.robustness["worst_retention"] < 0.5
+    assert len(report.robustness["results"]) == 2

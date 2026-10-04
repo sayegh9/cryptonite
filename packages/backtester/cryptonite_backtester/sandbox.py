@@ -89,6 +89,18 @@ class EquityPoint(BaseModel):
         return _finite(v)
 
 
+class Benchmark(BaseModel):
+    total_return: float | None = None
+    sharpe_ratio: float | None = None
+    max_drawdown: float | None = None
+    alpha_vs_hold: float | None = None
+
+    @field_validator("total_return", "sharpe_ratio", "max_drawdown", "alpha_vs_hold")
+    @classmethod
+    def _bounded(cls, v: float | None) -> float | None:
+        return _finite(v)
+
+
 class SandboxResult(BaseModel):
     """The only shape the worker accepts from the sandbox: bounded, finite numbers. Unknown keys are
     dropped; the catalog and artifact manifests are rebuilt by the worker."""
@@ -108,9 +120,13 @@ class SandboxResult(BaseModel):
     max_consecutive_losses: int = Field(ge=0, le=1_000_000)
     downsampled_equity: list[EquityPoint] = Field(default_factory=list, max_length=600)
     monthly_returns: dict[str, dict[str, float]] = Field(default_factory=dict, max_length=100)
+    metrics_version: int | None = Field(default=None, ge=1, le=100)
+    fees_paid: float | None = None
+    turnover: float | None = None
+    benchmark: Benchmark | None = None
 
     @field_validator("total_return", "cagr", "sharpe_ratio", "sortino_ratio", "max_drawdown",
-                     "profit_factor", "win_rate", "avg_trade_pnl")
+                     "profit_factor", "win_rate", "avg_trade_pnl", "fees_paid", "turnover")
     @classmethod
     def _bounded(cls, v: float | None) -> float | None:
         return _finite(v)
@@ -200,13 +216,16 @@ def collect(jobs_dir: Path, job_id: str, request: BacktestRunRequest, store: Bac
             data = _read_under(done, job_id, "artifacts", _staging_name(request), name, limit=MAX_ARTIFACT_BYTES)
             (dst_dir / name).write_bytes(data)
             artifacts[name] = {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+        metrics = {k: result[k] for k in ("metrics_version", "benchmark", "fees_paid", "turnover")}
+        if metrics["metrics_version"] is not None:
+            artifacts["metrics"] = metrics
         manifest = json.dumps({
             "run_id": str(request.run_id), "attempt_id": str(request.attempt_id), "sandboxed": True,
             "strategy_slug": request.strategy_slug, "strategy_version_id": str(request.strategy_version_id),
             "instrument_id": request.instrument_id, "bar_type": request.bar_type, "timeframe": request.timeframe,
             "parameters": request.parameters, "execution_profile": request.execution_profile,
             "warmup_start_ns": request.warmup_start_ns, "evaluation_start_ns": request.evaluation_start_ns,
-            "evaluation_end_ns": request.evaluation_end_ns, "artifacts": artifacts,
+            "evaluation_end_ns": request.evaluation_end_ns, "artifacts": artifacts, **metrics,
         }, indent=2, sort_keys=True, default=str).encode()
         (dst_dir / "manifest.json").write_bytes(manifest)
         artifacts["manifest.json"] = {"sha256": hashlib.sha256(manifest).hexdigest(), "size_bytes": len(manifest)}

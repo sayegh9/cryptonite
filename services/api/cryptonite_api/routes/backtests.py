@@ -7,16 +7,23 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import duckdb
-import pyarrow.parquet as pq
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE
 from cryptonite_backtester.execution_profiles import VALID_PROFILES, resolve_execution_profile
 from cryptonite_backtester.runner import BacktestRunRequest, compute_run_config_hash
-from cryptonite_strategies.registry import STRATEGY_REGISTRY
-from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Query, Request, status
-
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1/backtests", tags=["backtests"])
+
+_V2_KEYS = ("metrics_version", "benchmark", "fees_paid", "turnover")
+
+
+def _v2_metrics(raw: Any) -> dict[str, Any]:
+    """metrics_version, benchmark, fees_paid, turnover kept under the artifact manifest's ``metrics``
+    key (R2.2/R2.3). A run without them is legacy (fill-only equity): only ``metrics_version: None``."""
+    extra = json.loads(raw) if isinstance(raw, str) else raw
+    extra = extra if isinstance(extra, dict) else {}
+    return {k: extra.get(k) for k in _V2_KEYS}
 
 DEFAULT_ARTIFACTS_PATH = "data/backtest_artifacts"
 
@@ -32,7 +39,7 @@ class CreateBacktestRequest(BaseModel):
     warmup_start_ns: int
     evaluation_start_ns: int
     evaluation_end_ns: int
-    execution_profile: str = "optimistic"
+    execution_profile: str = "conservative"  # fees + slippage, as the paper engine; "optimistic" has no costs
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, dependencies=OPERATOR_WRITE)
@@ -51,12 +58,12 @@ async def create_backtest_run(
     if req.warmup_start_ns >= req.evaluation_start_ns:
         raise HTTPException(
             status_code=400,
-            detail=f"warmup_start_ns must be strictly less than evaluation_start_ns",
+            detail="warmup_start_ns must be strictly less than evaluation_start_ns",
         )
     if req.evaluation_start_ns >= req.evaluation_end_ns:
         raise HTTPException(
             status_code=400,
-            detail=f"evaluation_start_ns must be strictly less than evaluation_end_ns",
+            detail="evaluation_start_ns must be strictly less than evaluation_end_ns",
         )
 
     # Locate active strategy version
@@ -170,7 +177,8 @@ async def list_backtest_runs(
     SELECT br.id, br.instrument_id, br.bar_type, br.timeframe, br.execution_profile,
            br.status, br.run_config_hash, br.created_at, br.started_at, br.completed_at,
            br.error_message, s.slug AS strategy_slug, s.name AS strategy_name,
-           res.total_return, res.sharpe_ratio, res.max_drawdown, res.win_rate, res.total_trades
+           res.total_return, res.sharpe_ratio, res.max_drawdown, res.win_rate, res.total_trades,
+           res.artifact_manifest->'metrics' AS v2_metrics
     FROM backtest_runs br
     JOIN strategy_versions sv ON sv.id = br.strategy_version_id
     JOIN strategies s ON s.id = sv.strategy_id
@@ -205,6 +213,7 @@ async def list_backtest_runs(
                 "max_drawdown": float(r["max_drawdown"]),
                 "win_rate": float(r["win_rate"]),
                 "total_trades": r["total_trades"],
+                **_v2_metrics(r["v2_metrics"]),
             }
         results.append(item)
     return results
@@ -234,7 +243,8 @@ async def compare_backtest_runs(
            s.slug AS strategy_slug, s.name AS strategy_name, br.parameters,
            res.total_return, res.cagr, res.sharpe_ratio, res.sortino_ratio,
            res.max_drawdown, res.profit_factor, res.win_rate, res.total_trades,
-           res.winning_trades, res.losing_trades, res.avg_trade_pnl, res.max_consecutive_losses
+           res.winning_trades, res.losing_trades, res.avg_trade_pnl, res.max_consecutive_losses,
+           res.artifact_manifest->'metrics' AS v2_metrics
     FROM backtest_runs br
     JOIN strategy_versions sv ON sv.id = br.strategy_version_id
     JOIN strategies s ON s.id = sv.strategy_id
@@ -267,9 +277,47 @@ async def compare_backtest_runs(
                 "losing_trades": r["losing_trades"],
                 "avg_trade_pnl": float(r["avg_trade_pnl"]) if r["avg_trade_pnl"] is not None else None,
                 "max_consecutive_losses": r["max_consecutive_losses"],
+                **_v2_metrics(r["v2_metrics"]),
             } if r["total_return"] is not None else None,
         })
     return {"runs": runs_comparison}
+
+
+_BAR_STEP_S = {"MINUTE": 60, "HOUR": 3_600, "DAY": 86_400}
+
+
+def contiguous_history(intervals: list[tuple[int, int]], step_ns: int) -> tuple[int, int] | None:
+    """(start, end) of the run of catalog intervals that ends at the newest bar, joining intervals whose
+    gap is at most one bar step. File-level only: gaps inside a file are the backtest cadence check's job."""
+    merged: tuple[int, int] | None = None
+    for start, end in sorted(intervals, reverse=True):
+        if merged is None:
+            merged = (start, end)
+        elif merged[0] - end <= step_ns:
+            merged = (min(start, merged[0]), merged[1])
+        else:
+            break
+    return merged
+
+
+@router.get("/coverage", dependencies=AUTHED_READ)
+async def catalog_coverage(bar_type: str = Query(..., min_length=1, max_length=128)) -> dict[str, Any]:
+    """Contiguous Nautilus catalog history of a bar type (R5.0: the research loop refuses a spec that
+    needs more history than this before it spends anything)."""
+    from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
+
+    parts = bar_type.rsplit("-", 4)  # <instrument>-<n>-<UNIT>-LAST-EXTERNAL
+    if len(parts) != 5 or not parts[1].isdigit() or parts[2] not in _BAR_STEP_S:
+        raise HTTPException(status_code=400, detail=f"Unsupported bar_type '{bar_type}'.")
+    step_ns = int(parts[1]) * _BAR_STEP_S[parts[2]] * 1_000_000_000
+    mgr = NautilusCatalogManager(os.environ.get("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog"))
+    try:
+        intervals = [(int(s), int(e)) for s, e in mgr.get_intervals(identifier=bar_type)]
+    except Exception:  # no data for this bar type yet
+        intervals = []
+    merged = contiguous_history(intervals, step_ns)
+    return {"bar_type": bar_type, "start_ns": merged[0] if merged else None, "end_ns": merged[1] if merged else None,
+            "days": round((merged[1] - merged[0]) / 86_400e9, 2) if merged else 0.0}
 
 
 @router.get("/{run_id}", dependencies=AUTHED_READ)
@@ -329,6 +377,7 @@ async def get_backtest_run(
                 "losing_trades": r["losing_trades"],
                 "avg_trade_pnl": float(r["avg_trade_pnl"]),
                 "max_consecutive_losses": r["max_consecutive_losses"],
+                **_v2_metrics(art_man.get("metrics") if isinstance(art_man, dict) else None),
             },
             "downsampled_equity": downsampled_eq,
             "monthly_returns": monthly_ret,
@@ -425,6 +474,6 @@ async def get_backtest_manifest(
             detail=f"Manifest artifact for run '{run_id}' not found.",
         )
 
-    with open(manifest_path, "r") as f:
+    with open(manifest_path) as f:
         data = json.load(f)
     return data
