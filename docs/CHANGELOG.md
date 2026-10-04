@@ -1,0 +1,30 @@
+# Changelog
+
+Release notes from before the AI-First program. Phases 0–7 of that program are described in [ai-first-program.md](ai-first-program.md) and logged in [HANDOFF.md](../HANDOFF.md).
+
+## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
+- **Database-Backed Action & Decision Inbox**: Refactored the Action Inbox to hydrate directly from PostgreSQL (`GET /api/v1/agents/debates`), with automatic client-side cache reconciliation that purges local browser storage when database records are cleared. Added formatted timestamps and strict chronological sorting.
+- **Docked Operator Control Sidebar**: Added direct access to the Execution Kill-Switch panel from the main Trading Terminal via the right-sidebar toolbar (red Shield toggle), allowing traders to manage risk and trip emergency stops without leaving active charts.
+- **Industrial Kill-Switch Redesign**: Completely overhauled `KillSwitchPanel.tsx` with physical control-room styling, dynamic ambient glows (Emerald Armed vs. Pulsing Hazard Rose Latched), and generation-based latch verification.
+- **Backend Authentication Hardening**: Fixed machine token type inference bug in `routes/auth.py` with Python `hashlib.sha256` pre-hashing, eliminating intermittent 500 errors during high-frequency telemetry polling.
+- **Paper Trading Reset & Balance Seeding**: Cleaned demo/test ledgers while preserving core system execution vehicles (`AI_DEBATE_WORKER`, `MANUAL_TRADE`), and seeded $100,000 USDT paper balances across DEMO and PAPER environments.
+
+## Previous Updates (v0.4.0 - Alpha Lifecycle Integration)
+- **Unified Alpha Lifecycle Integration**: Transformed Copilot, Research Lab, and the AI Brain Workspace into an interconnected quantitative loop with 1-click workflow bridges.
+- **AI Brain Orchestrator & Inline Action Cards**: `OrchestratorCanvas` automatically intercepts strategy manifests and renders interactive `<InlineActionCard>` blocks with 1-click **[🧪 Backtest in Lab]** (auto-prefilling Nautilus parameters), **[⚔️ Trigger Debate]**, and **[📥 Stage to Inbox]**.
+- **Interactive Risk Allocation Sliders**: Embedded inline allocation sizing strictly clamped to the institutional 25.0% max portfolio equity ceiling ($25k max on $100k account).
+- **Live Redis Telemetry Stream**: Replaced mock thought latencies with real-time WebSocket subscriptions to Redis `HEARTBEAT` streams, rendering live sub-agent status traces during query execution.
+- **Dynamic Context Tags & System Prompts**: Added `@Backtest(latest)` and `/delta @PaperPosition(latest)` quick tags on the input rail that inject invisible system directives for `read_nautilus_tearsheet` and `compare_live_vs_backtest`.
+- **Live vs. Backtest Delta Diagnostic Tool**: Built `compare_live_vs_backtest` to compare live PostgreSQL fills (`agent_safe_orders`) against Nautilus historical Parquet trades (`trades.parquet`), diagnosing slippage and Sharpe degradation.
+- **Engine & RBAC Hardening**:
+  - Replaced pandas-dependent DuckDB queries with `.fetchall()`, removing heavy dataframe runtime dependencies.
+  - Added `export async function GET` proxy to `/agent-api/[...slug]/route.ts` for bidirectional state syncing.
+  - Corrected debate staging quantity math in `approve_debate` to derive exact base asset quantity from live equity and real-time market prices: `quantity = (equity * allocation_pct / 100) / price`.
+  - Added `stage_debate_proposal` tool allowing read-only agent sessions (`cryptonite_agent_ro`) to safely stage proposals via the API gateway.
+
+## Previous Updates (v0.3.0)
+- **End-to-End AI Execution Pipeline**: Connected the AI Debate Engine directly to the `cryptonite_executor` via the transactional outbox (`execution_commands`). Autonomous mode now fully executes orders without operator intervention within strict risk bounds. *(Superseded: autonomous mode was frozen in Phase 0 and replaced by mandates and autonomy levels in Phase 5.)*
+- **Interactive Execution Staging & Safety**: Added the Execution Staging Canvas featuring 2-second hold-to-approve mechanics, parameter overrides, and live price drift monitoring.
+- **Modular Bloomberg-Style Terminal & Orderbook L2**: Added 3-column layout controls, dynamic depth bars, and 8-direction floating Copilot with zero hydration mismatches.
+- **Reflection Engine & Vector Recall**: Added pgvector 768-dimensional embeddings for historical trade reflections, enabling continuous self-improvement across changing volatility regimes.
+- **Telemetry & Parquet Enhancements**: Resolved DuckDB cross-schema compatibility issues between Nautilus Parquet catalogs (`ts_init_ns`/`ts_event_ns`) and Polars resamplers (`bar_open_ns`), ensuring real-time charting and AI vector queries are 100% consistent.
