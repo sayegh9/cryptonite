@@ -13,15 +13,6 @@ from uuid import UUID
 import nautilus_trader
 import pyarrow as pa
 import pyarrow.parquet as pq
-from cryptonite_backtester.cadence import (
-    DataGapError,
-    InsufficientWarmupError,
-    validate_bar_cadence,
-)
-from cryptonite_backtester.execution_profiles import resolve_execution_profile
-from cryptonite_backtester.metrics import account_equity_series, calculate_performance_metrics
-from cryptonite_backtester.storage import BacktestArtifactStore
-from cryptonite_schemas.identifiers import to_nautilus_bar_type
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from cryptonite_strategies.registry import (
     STRATEGY_REGISTRY,
@@ -37,7 +28,6 @@ from nautilus_trader.backtest import (
     BacktestRunConfig,
 )
 from nautilus_trader.model import (
-    Bar,
     BarAggregation,
     BarSpecification,
     InstrumentId,
@@ -46,12 +36,32 @@ from nautilus_trader.model import (
 )
 from pydantic import BaseModel, Field
 
+from cryptonite_backtester.cadence import (
+    validate_bar_cadence,
+)
+from cryptonite_backtester.execution_profiles import resolve_execution_profile
+from cryptonite_backtester.metrics import (
+    METRICS_VERSION,
+    benchmark_metrics,
+    calculate_performance_metrics,
+    fees_and_turnover,
+    marked_equity_series,
+)
+from cryptonite_backtester.storage import BacktestArtifactStore
+
 logger = logging.getLogger("cryptonite.backtester.runner")
 
 
 SANDBOX_ENV_FLAG = "CRYPTONITE_STRATEGY_SANDBOX"
 QUOTE_CURRENCY = "USDT"  # the simulated cash account is funded and valued in USDT
 _NON_PARAMETERS = {"self", "instrument_id", "bar_type", "evaluation_start_ns", "kwargs"}
+
+
+def _commissions(order: Any) -> list[tuple[float, str]]:
+    """(amount, currency) of every commission an order paid (Nautilus keys them by currency)."""
+    raw = order.commissions()
+    money = raw.values() if isinstance(raw, dict) else raw
+    return [(float(m.as_double()), str(m.currency)) for m in money]
 
 
 def resolve_strategy(request: "BacktestRunRequest") -> tuple[type, type, dict[str, Any]]:
@@ -228,6 +238,15 @@ class BacktestRunner:
         for ts in sorted(list(all_ts)):
             yield ts
 
+    def query_catalog_closes(self, bar_type_str: str, start_ns: int, end_ns: int) -> list[tuple[int, float]]:
+        """(ts_event, close) of every bar in [start_ns, end_ns], one per timestamp, for mark-to-market."""
+        closes: dict[int, float] = {}
+        for b in self.catalog_manager.query_bars(identifiers=[bar_type_str], start=start_ns, end=end_ns):
+            ts = int(b.ts_event)
+            if start_ns <= ts <= end_ns:
+                closes[ts] = float(b.close)
+        return sorted(closes.items())
+
     def run(self, request: BacktestRunRequest) -> dict[str, Any]:
         """Execute backtest with BacktestNode and return the complete result record."""
         run_id_str = str(request.run_id)
@@ -349,7 +368,7 @@ class BacktestRunner:
 
         # 8. Run simulation & extract outputs safely before disposing node
         try:
-            results = node.run()
+            node.run()
             try:
                 acc_report = node.generate_account_report(run_cfg.id, venue=Venue("BINANCE"))
             except Exception:
@@ -374,15 +393,18 @@ class BacktestRunner:
                     f"prior to evaluation_start_ns {request.evaluation_start_ns}ns"
                 )
 
-        # 10. Extract Equity Curve series (isolated strictly to evaluation period)
+        # 10. Extract Equity Curve series (isolated strictly to evaluation period), marked to market at
+        # every bar close of the window (R2.2): holdings change only at fills, their value at every bar
+        closes = self.query_catalog_closes(request.bar_type, request.evaluation_start_ns, request.evaluation_end_ns)
         equity_series: list[tuple[int, float]] = []
         if acc_report is not None and len(acc_report) > 0:
             # one row per currency per account update: value the base asset, never add it as equity
             balances = [(int(dt.timestamp() * 1e9), str(row.get("currency", QUOTE_CURRENCY)), float(row["total"]))
                         for dt, row in acc_report.iterrows()]
             fills = [(int(o.ts_last), float(o.avg_px)) for o in orders if o.avg_px and float(o.filled_qty) > 0]
-            equity_series = account_equity_series(balances, fills, quote_currency=QUOTE_CURRENCY,
-                                                  start_ns=request.evaluation_start_ns)
+            equity_series = marked_equity_series(balances, fills, closes, quote_currency=QUOTE_CURRENCY,
+                                                 start_ns=request.evaluation_start_ns,
+                                                 end_ns=request.evaluation_end_ns)
 
         if not equity_series:
             equity_series = [
@@ -417,6 +439,17 @@ class BacktestRunner:
             trades=trades_list,
             initial_balance=request.initial_balance,
         )
+        fees_paid, turnover = fees_and_turnover(
+            ((float(o.filled_qty), float(o.avg_px or 0.0), _commissions(o)) for o in orders if float(o.filled_qty) > 0),
+            quote_currency=QUOTE_CURRENCY,
+            initial_balance=request.initial_balance,
+        )
+        extra_metrics = {
+            "metrics_version": METRICS_VERSION,
+            "benchmark": benchmark_metrics(closes, request.initial_balance, perf_metrics["total_return"]),
+            "fees_paid": fees_paid,
+            "turnover": turnover,
+        }
 
         # 13. Build Arrow tables for artifacts
         # Equity table
@@ -532,6 +565,7 @@ class BacktestRunner:
             "nautilus_version": nautilus_trader.__version__,
             "source_tree_hash": get_source_tree_hash(),
             "catalog_manifest": catalog_manifest,
+            **extra_metrics,  # metrics_version lives here and in the results, never in run_config_hash
             "realism_disclosure": (
                 "OHLCV bar backtesting uses simulated L1 matching and cannot reconstruct "
                 "order-book depth, spread variation, queue position, or exchange latency. "
@@ -547,6 +581,7 @@ class BacktestRunner:
                 trades_table=trades_table,
                 orders_table=orders_table,
                 manifest_meta=manifest_meta,
+                metrics=extra_metrics,
             )
         else:
             artifact_manifest = self.artifact_store.persist_artifacts(
@@ -555,6 +590,7 @@ class BacktestRunner:
                 trades_table=trades_table,
                 orders_table=orders_table,
                 manifest_meta=manifest_meta,
+                metrics=extra_metrics,
             )
 
         return {
@@ -574,6 +610,7 @@ class BacktestRunner:
             "max_consecutive_losses": perf_metrics["max_consecutive_losses"],
             "downsampled_equity": perf_metrics["downsampled_equity"],
             "monthly_returns": perf_metrics["monthly_returns"],
+            **extra_metrics,
             "catalog_manifest": catalog_manifest,
             "artifact_manifest": artifact_manifest,
         }

@@ -89,8 +89,13 @@ class BacktestArtifactStore:
         trades_table: pa.Table,
         orders_table: pa.Table,
         manifest_meta: dict[str, Any],
+        metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Atomically persist artifacts into an attempt-specific staging directory."""
+        """Atomically persist artifacts into an attempt-specific staging directory.
+
+        ``metrics`` (``metrics_version``, benchmark, fees, turnover) is stored under the ``metrics`` key of
+        the artifact manifest, which is what the database keeps, so a run recovered from disk keeps it.
+        """
         staging_dir = self.get_staging_dir(run_id, attempt_id)
         staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -108,6 +113,8 @@ class BacktestArtifactStore:
             "trades.parquet": {"sha256": tr_hash, "size_bytes": tr_size},
             "orders.parquet": {"sha256": ord_hash, "size_bytes": ord_size},
         }
+        if metrics is not None:
+            artifacts_meta["metrics"] = metrics
 
         full_manifest = {
             **manifest_meta,
@@ -153,6 +160,7 @@ class BacktestArtifactStore:
         trades_table: pa.Table,
         orders_table: pa.Table,
         manifest_meta: dict[str, Any],
+        metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Atomically persist all three Parquet artifact tables and manifest.json directly into run_dir.
         
@@ -175,6 +183,8 @@ class BacktestArtifactStore:
             "trades.parquet": {"sha256": tr_hash, "size_bytes": tr_size},
             "orders.parquet": {"sha256": ord_hash, "size_bytes": ord_size},
         }
+        if metrics is not None:
+            artifacts_meta["metrics"] = metrics
 
         full_manifest = {
             **manifest_meta,
@@ -199,7 +209,7 @@ class BacktestArtifactStore:
         if not manifest_path.is_file():
             return None
         try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
+            with open(manifest_path, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return None

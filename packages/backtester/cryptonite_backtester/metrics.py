@@ -3,8 +3,12 @@
 import bisect
 import math
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
+
+# 2: equity marked at every bar close, Sharpe/Sortino on a full UTC daily grid, benchmark, fees and
+# turnover (remediation R2.2/R2.3). Results without ``metrics_version`` are legacy (fill-only equity).
+METRICS_VERSION = 2
 
 
 def account_equity_series(
@@ -42,6 +46,141 @@ def account_equity_series(
     return series
 
 
+def marked_equity_series(
+    balances: Iterable[tuple[int, str, float]],
+    fills: list[tuple[int, float]],
+    closes: list[tuple[int, float]],
+    *,
+    quote_currency: str,
+    start_ns: int,
+    end_ns: int | None = None,
+) -> list[tuple[int, float]]:
+    """Mark-to-market equity: holdings from the balance rows (constant between fills), valued at every
+    bar close of the evaluation window and at every account update.
+
+    ``account_equity_series`` values holdings only at fills, so a trade that falls 15% and recovers
+    between two fills shows no drawdown at all. Here each bar close is a point of the curve. At a
+    timestamp with both a fill and a bar, the bar close is the mark. Without ``closes`` this is the
+    fill-only curve of ``account_equity_series``.
+    """
+    events: list[tuple[int, int, Any, Any]] = []  # (ts, order, a, b): fills, then closes, then balances
+    events += [(ts, 0, px, None) for ts, px in fills]
+    events += [(ts, 1, px, None) for ts, px in closes]
+    events += [(ts, 2, cur, total) for ts, cur, total in balances]
+    events.sort(key=lambda e: (e[0], e[1]))  # stable: balance rows keep their report order
+
+    held: dict[str, float] = {}
+    price = 0.0
+    series: list[tuple[int, float]] = []
+    i = 0
+    while i < len(events):
+        ts = events[i][0]
+        while i < len(events) and events[i][0] == ts:
+            _, kind, a, b = events[i]
+            if kind == 2:
+                held[a] = b
+            else:
+                price = a
+            i += 1
+        if ts < start_ns or (end_ns is not None and ts > end_ns):
+            continue
+        equity = held.get(quote_currency, 0.0) + sum(q * price for c, q in held.items() if c != quote_currency)
+        series.append((ts, equity))
+    return series
+
+
+_DAY_NS = 86_400 * 10**9
+
+
+def daily_grid_returns(equity_curve: list[tuple[int, float]], initial_balance: float) -> list[float]:
+    """Daily returns on the full UTC calendar grid from the first to the last point of the curve.
+
+    Each day's equity is its last point, carried forward through days without points (0% return), so
+    quiet days are not dropped from the Sharpe/Sortino sample. The first day is measured against
+    ``initial_balance``.
+    """
+    if not equity_curve:
+        return []
+    by_day: dict[int, float] = {}
+    for ts_ns, eq in equity_curve:
+        by_day[ts_ns // _DAY_NS] = eq
+    first, last = min(by_day), max(by_day)
+    returns: list[float] = []
+    prev = initial_balance
+    curr = initial_balance
+    for day in range(first, last + 1):
+        curr = by_day.get(day, curr)
+        if prev > 0:
+            returns.append((curr - prev) / prev)
+        prev = curr
+    return returns
+
+
+def sharpe_sortino(daily_returns: list[float]) -> tuple[float | None, float | None]:
+    """Annualized (365 d) Sharpe and Sortino of daily returns, 0% risk-free; None when undefined."""
+    if len(daily_returns) < 2:
+        return None, None
+    n = len(daily_returns)
+    mean_ret = sum(daily_returns) / n
+    std_dev = math.sqrt(sum((r - mean_ret) ** 2 for r in daily_returns) / (n - 1))
+    sharpe = (mean_ret / std_dev) * math.sqrt(365.0) if std_dev > 1e-12 else None
+    downside_variance = sum(min(r, 0.0) ** 2 for r in daily_returns) / n  # threshold 0
+    sortino = (mean_ret / math.sqrt(downside_variance)) * math.sqrt(365.0) if downside_variance > 1e-12 else None
+    return sharpe, sortino
+
+
+def max_drawdown_of(values: Iterable[float]) -> float:
+    peak = -math.inf
+    worst = 0.0
+    for eq in values:
+        peak = max(peak, eq)
+        if peak > 0:
+            worst = max(worst, (peak - eq) / peak)
+    return worst
+
+
+def benchmark_metrics(
+    closes: list[tuple[int, float]],
+    initial_balance: float,
+    strategy_total_return: float,
+) -> dict[str, float | None] | None:
+    """Buy-and-hold of the instrument over the evaluation window (bought at the first close, no costs)."""
+    closes = [(ts, c) for ts, c in sorted(closes) if c > 0]
+    if not closes or initial_balance <= 0:
+        return None
+    c0 = closes[0][1]
+    curve = [(ts, initial_balance * c / c0) for ts, c in closes]
+    total_return = curve[-1][1] / initial_balance - 1.0
+    sharpe, _ = sharpe_sortino(daily_grid_returns(curve, initial_balance))
+    return {
+        "total_return": round(total_return, 6),
+        "sharpe_ratio": round(sharpe, 4) if sharpe is not None else None,
+        "max_drawdown": round(max_drawdown_of(eq for _, eq in curve), 4),
+        "alpha_vs_hold": round(strategy_total_return - total_return, 6),
+    }
+
+
+def fees_and_turnover(
+    orders: Iterable[tuple[float, float, list[tuple[float, str]]]],
+    *,
+    quote_currency: str,
+    initial_balance: float,
+) -> tuple[float, float]:
+    """(fees paid in the quote currency, turnover as traded notional / initial balance).
+
+    ``orders``: (filled_qty, avg_px, [(commission amount, currency), ...]) per order. A commission
+    charged in the base asset is valued at the order's average price.
+    """
+    fees = 0.0
+    notional = 0.0
+    for qty, px, commissions in orders:
+        notional += qty * px
+        for amount, currency in commissions:
+            fees += amount if currency == quote_currency else amount * px
+    turnover = notional / initial_balance if initial_balance > 0 else 0.0
+    return round(fees, 8), round(turnover, 6)
+
+
 def calculate_performance_metrics(
     equity_curve: list[tuple[int, float]],
     trades: list[dict[str, Any]],
@@ -52,6 +191,8 @@ def calculate_performance_metrics(
     Conventions:
     - 0% risk-free rate
     - 365-day annualization for cryptocurrency markets
+    - Sharpe/Sortino from daily returns on a full UTC calendar grid (``daily_grid_returns``)
+    - Max drawdown over every point of ``equity_curve`` (pass ``marked_equity_series`` for mark-to-market)
     - CAGR is None (NULL) if backtest evaluation span is less than 30 days
     - Profit factor is None (NULL) if there are 0 losing trades (prevents infinity)
     - Downsampled equity curve capped at 500 points preserving initial and final values
@@ -93,40 +234,10 @@ def calculate_performance_metrics(
         if dd > max_drawdown:
             max_drawdown = dd
 
-    # 4. Daily returns for Sharpe and Sortino
-    daily_equities: dict[str, float] = {}
-    for ts_ns, eq in equity_curve:
-        dt = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
-        day_key = dt.strftime("%Y-%m-%d")
-        daily_equities[day_key] = eq  # Last equity of that day
+    # 4. Daily returns for Sharpe and Sortino, on a full UTC daily grid (days without points count as 0%)
+    daily_returns = daily_grid_returns(equity_curve, initial_balance)
 
-    sorted_days = sorted(daily_equities.keys())
-    daily_returns: list[float] = []
-    prev_val = initial_balance
-    for d in sorted_days:
-        curr_val = daily_equities[d]
-        if prev_val > 0:
-            ret = (curr_val - prev_val) / prev_val
-            daily_returns.append(ret)
-        prev_val = curr_val
-
-    sharpe_ratio: float | None = None
-    sortino_ratio: float | None = None
-
-    if len(daily_returns) >= 2:
-        mean_ret = sum(daily_returns) / len(daily_returns)
-        variance = sum((r - mean_ret) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
-        std_dev = math.sqrt(variance)
-
-        if std_dev > 1e-12:
-            sharpe_ratio = (mean_ret / std_dev) * math.sqrt(365.0)
-
-        # Downside deviation for Sortino (threshold = 0)
-        downside_sq_sum = sum(min(r, 0.0) ** 2 for r in daily_returns)
-        downside_variance = downside_sq_sum / len(daily_returns)
-        if downside_variance > 1e-12:
-            downside_std = math.sqrt(downside_variance)
-            sortino_ratio = (mean_ret / downside_std) * math.sqrt(365.0)
+    sharpe_ratio, sortino_ratio = sharpe_sortino(daily_returns)
 
     # 5. Trade metrics
     total_trades = len(trades)
@@ -196,7 +307,7 @@ def calculate_performance_metrics(
     # Track month-start and month-end equities
     month_equities: dict[str, dict[str, list[float]]] = {}
     for ts_ns, eq in equity_curve:
-        dt = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
+        dt = datetime.fromtimestamp(ts_ns / 1e9, tz=UTC)
         yr = str(dt.year)
         mo = str(dt.month)
         if yr not in month_equities:
