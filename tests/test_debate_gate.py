@@ -230,8 +230,8 @@ async def test_merged_risk_panel_replaces_four_calls_with_one(main, pool, monkey
     monkeypatch.setattr(main, "RISK_PANEL_MODE", "merged")
     models = Models()
     await run(main, pool, {"instrument_id": INSTRUMENT, "trigger_source": "user_on_demand"}, models)
-    # 3 analysts + bull/bear/bull + (no risk managers) = 6 text calls; PM + merged CRO
-    assert (models.calls["text"], models.calls["pm"], models.calls["cro"]) == (6, 1, 1)
+    # 2 analysts (no On-Chain Analyst, R3.2) + bull/bear/bull + (no risk managers) = 5 text calls; PM + merged CRO
+    assert (models.calls["text"], models.calls["pm"], models.calls["cro"]) == (5, 1, 1)
 
 
 
@@ -259,3 +259,96 @@ async def test_triage_outage_releases_the_cooldown(gate, pool):
     first = await gate.pre_debate_gate(pool, redis, scanner_payload(), Gateway(), "MARKET BRIEF")
     assert first.reason == "TRIAGE_UNAVAILABLE"
     assert not any(k.startswith("debate:cooldown:") for k in redis.kv)
+
+
+# --- Rule triage (R3.1): hard rules in code before the model -------------------------------------
+
+def brief_data(rr=2.5, t15="up", t1h="up", vol15=1.3, bands15="above"):
+    return {"timeframes": [{"timeframe": "5m", "trend": "up", "volume_ratio": 1.0, "bands": "inside"},
+                           {"timeframe": "15m", "trend": t15, "volume_ratio": vol15, "bands": bands15},
+                           {"timeframe": "1h", "trend": t1h, "volume_ratio": 1.0, "bands": "inside"}],
+            "candidate": {"timeframe": "15m", "reward_to_risk": rr}}
+
+
+@pytest.mark.parametrize("data, reason", [
+    (brief_data(rr=1.2), "TRIAGE_RULE_REWARD_TO_RISK"),
+    (brief_data(t15="down", t1h="down"), "TRIAGE_RULE_TIMEFRAMES_AGAINST"),
+    (brief_data(vol15=0.6, bands15="inside"), "TRIAGE_RULE_CHOP"),
+])
+async def test_rule_triage_rejects_without_a_model_call(gate, pool, data, reason):
+    models = Models()
+    redis = Redis()
+    with override_model(FLASH_LITE, models.model()):
+        decision = await gate.pre_debate_gate(pool, redis, scanner_payload(timeframe="15m"), Gateway(),
+                                              "MARKET BRIEF", brief_data=data)
+    assert (decision.allowed, decision.reason) == (False, reason)
+    assert sum(models.calls.values()) == 0
+    assert any(k.startswith("debate:cooldown:") for k in redis.kv)  # kept, like a model rejection
+    assert any(k.endswith(f":{reason}") and v == 1 for k, v in redis.kv.items())  # counted like other rejections
+
+
+@pytest.mark.parametrize("data", [
+    None,  # no structured brief (scanner older than the debate worker)
+    {"timeframes": [], "candidate": None},
+    brief_data(rr=None),
+    {"timeframes": [{"timeframe": "1h", "trend": "down"}], "candidate": {"timeframe": "15m"}},
+    {"timeframes": [{"timeframe": "15m", "trend": "unknown"}, {"timeframe": "1h", "trend": "down"}],
+     "candidate": {"timeframe": "15m", "reward_to_risk": 2.0}},
+    "not a dict",
+])
+async def test_missing_rule_inputs_fall_through_to_the_model(gate, pool, data):
+    models = Models(triage=True)
+    with override_model(FLASH_LITE, models.model()):
+        decision = await gate.pre_debate_gate(pool, Redis(), scanner_payload(timeframe="15m"), Gateway(),
+                                              "MARKET BRIEF", brief_data=data)
+    assert decision.reason == "TRIAGE_ACCEPTED"
+    assert models.calls == Counter({"triage": 1})
+
+
+async def test_worker_reads_the_scanner_brief_data_and_skips_the_model(main, pool):
+    redis = Redis("MARKET BRIEF BTCUSDT")
+    redis.kv["brief:k:data"] = json.dumps(brief_data(rr=0.9))
+    models = Models()
+    assert await run(main, pool, scanner_payload(timeframe="15m"), models, redis) is None
+    assert sum(models.calls.values()) == 0
+
+
+async def test_worker_with_clean_brief_data_still_asks_the_model(main, pool):
+    redis = Redis("MARKET BRIEF BTCUSDT")
+    redis.kv["brief:k:data"] = json.dumps(brief_data())
+    models = Models(triage=False)
+    assert await run(main, pool, scanner_payload(timeframe="15m"), models, redis) is None
+    assert models.calls == Counter({"triage": 1})
+
+
+# --- R3.2 / R7.4 / R7.5 ---------------------------------------------------------------------------
+
+def test_full_debate_analysts_have_no_onchain_analyst(main):
+    from cryptonite_agents import debate_fleet
+    assert main.FULL_DEBATE_ANALYSTS == (debate_fleet.MARKET_ANALYST, debate_fleet.SENTIMENT_ANALYST)
+    assert not hasattr(debate_fleet, "ONCHAIN_ANALYST")
+    assert "NO on-chain data feed" in debate_fleet.ONCHAIN_CHAT.instructions
+
+
+async def test_decision_trace_id_follows_the_candidate_into_the_run(main, pool):
+    trace = "7d4f3f2e-9a0b-4c1d-8e2f-3a4b5c6d7e8f"
+    payload = scanner_payload()
+    payload["candidate_payload"] = json.dumps({**json.loads(payload["candidate_payload"]), "decision_trace_id": trace})
+    run_row = await run(main, pool, payload, Models())
+    assert str(run_row["decision_trace_id"]) == trace
+
+
+async def test_operator_debate_gets_its_own_trace_id(main, pool):
+    run_row = await run(main, pool, {"instrument_id": INSTRUMENT, "trigger_source": "user_on_demand"}, Models())
+    assert run_row["decision_trace_id"] is not None
+
+
+async def test_sentiment_last_ok_is_published_after_a_tagging_success(main, monkeypatch):
+    from cryptonite_agents import news
+    redis = Redis()
+    monkeypatch.setattr(news, "_last_tag_ok", [])
+    await main.publish_sentiment_ok(redis)
+    assert "sentiment:last_ok" not in redis.kv  # unknown until the service has answered once
+    monkeypatch.setattr(news, "_last_tag_ok", [1_790_000_000.5])
+    await main.publish_sentiment_ok(redis)
+    assert redis.kv["sentiment:last_ok"] == 1_790_000_000

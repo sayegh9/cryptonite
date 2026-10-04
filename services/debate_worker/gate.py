@@ -5,7 +5,10 @@ Automatic (scanner) triggers pass, in order, before any model is called:
   2. position at the concentration cap -> a new entry could not be sized
   3. stale candidate                  -> the setup is old news
   4. cooldown per instrument+timeframe -> one debate per setup window
-  5. triage (Flash-Lite, one cheap call on the market brief) -> worth a full debate?
+  5. hard triage rules in code (R3.1, ``cryptonite_scanner.brief.hard_rejects`` on the scanner's
+     structured brief): reward-to-risk < 1.5, the two highest timeframes both trending down, chop
+     -> ``TRIAGE_RULE_<NAME>`` with no model call. Missing data never rejects: it falls through to 6.
+  6. triage (Flash-Lite, one cheap call on the market brief) -> worth a full debate?
 Operator-triggered debates (dashboard, chat, stage_debate_proposal) skip the gate: that spend is an
 explicit choice.
 """
@@ -13,11 +16,13 @@ explicit choice.
 import datetime
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from cryptonite_agents.debate_fleet import TRIAGE
 from cryptonite_agents.gateway import Gateway
+from cryptonite_scanner.brief import hard_rejects
 from cryptonite_schemas.debate import TriageDecision
 
 logger = logging.getLogger("debate_worker.gate")
@@ -49,16 +54,43 @@ async def _count(redis, reason: str) -> None:
         pass
 
 
+def decision_trace_id(payload: dict[str, Any]) -> str:
+    """R7.4: the scanner's id for this setup (candidate payload), the trigger's own, or a new one."""
+    try:
+        candidate = json.loads(payload.get("candidate_payload") or "{}")
+    except (TypeError, ValueError):
+        candidate = {}
+    trace = (candidate.get("decision_trace_id") if isinstance(candidate, dict) else None) or payload.get("decision_trace_id")
+    try:
+        return str(uuid.UUID(str(trace)))
+    except (TypeError, ValueError):
+        return str(uuid.uuid4())
+
+
 async def pre_debate_gate(pg_pool, redis, payload: dict[str, Any], gateway: Gateway | None,
-                          brief: str | None, now_s: float | None = None) -> GateDecision:
-    decision = await _evaluate(pg_pool, redis, payload, gateway, brief, now_s)
+                          brief: str | None, now_s: float | None = None,
+                          brief_data: dict[str, Any] | None = None) -> GateDecision:
+    decision = await _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data)
     await _count(redis, decision.reason)
+    trace = payload.get("decision_trace_id")
     if not decision.allowed:
-        logger.info("Debate skipped for %s: %s", payload.get("instrument_id"), decision.reason)
+        logger.info("Debate skipped for %s: %s (decision_trace_id=%s)", payload.get("instrument_id"), decision.reason, trace)
+    else:
+        logger.info("Debate allowed for %s: %s (decision_trace_id=%s)", payload.get("instrument_id"), decision.reason, trace)
     return decision
 
 
-async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s) -> GateDecision:
+def _rule_rejection(brief_data: dict[str, Any] | None) -> str | None:
+    """The first hard triage rule the structured brief hits, or None (also for malformed data)."""
+    try:
+        hits = hard_rejects(brief_data) if brief_data else []
+    except Exception as e:  # a bad payload must not block the model path
+        logger.warning("Triage rules skipped: %s", e)
+        return None
+    return f"TRIAGE_RULE_{hits[0]}" if hits else None
+
+
+async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=None) -> GateDecision:
     if payload.get("trigger_source", "scanner") not in AUTOMATIC_SOURCES:
         return GateDecision(True, "OPERATOR_TRIGGER")
 
@@ -94,6 +126,10 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s) -> GateDecis
     cooldown_key = f"debate:cooldown:{instrument_id}:{timeframe}"
     if not await redis.set(cooldown_key, "1", nx=True, ex=COOLDOWN_S):
         return GateDecision(False, "COOLDOWN")
+
+    # Like a model rejection, a rule rejection keeps the cooldown: one decision per setup window
+    if (rule := _rule_rejection(brief_data)) is not None:
+        return GateDecision(False, rule)
 
     if gateway is None:
         return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key)

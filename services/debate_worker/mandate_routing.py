@@ -120,21 +120,31 @@ async def _approval(conn, mandate: Mandate, action: ActionClass, command_type: s
     return approval_id
 
 
+def _trace_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(payload["decision_trace_id"])) if payload.get("decision_trace_id") else None
+    except ValueError:
+        return None
+
+
 async def _enqueue(conn, mandate: Mandate, command_type: str, payload: dict[str, Any], key: str) -> None:
+    # decision_trace_id is written at insert: the API role cannot UPDATE execution_commands (R7.4)
     await conn.execute(
         """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, requester_id,
-               payload, status, environment, account_id, mandate_id)
-           VALUES ($1, $2, $3, $4, 'ai:debate_worker', $5::jsonb, 'PENDING', 'PAPER', $6, $7)
+               payload, status, environment, account_id, mandate_id, decision_trace_id)
+           VALUES ($1, $2, $3, $4, 'ai:debate_worker', $5::jsonb, 'PENDING', 'PAPER', $6, $7, $8)
            ON CONFLICT (idempotency_key) DO NOTHING""",
         uuid.uuid4(), key, command_type, mandate.instance_id,
         json.dumps({**payload, "mandate_id": str(mandate.id), "account_id": PAPER_ACCOUNT_ID}, default=str),
-        PAPER_ACCOUNT_ID, mandate.id)
+        PAPER_ACCOUNT_ID, mandate.id, _trace_uuid(payload))
 
 
 async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendation: str, conviction: float,
                       allocation_pct: float, *, mandate_id: str | None = None,
-                      now: datetime.datetime | None = None) -> tuple[str, Mandate | None]:
-    """Returns (debate_runs status, mandate)."""
+                      now: datetime.datetime | None = None,
+                      decision_trace_id: str | None = None) -> tuple[str, Mandate | None]:
+    """Returns (debate_runs status, mandate). ``decision_trace_id`` (R7.4) rides in the command and
+    approval payloads so the order and its fill can be traced back to the scanner candidate."""
     now = now or datetime.datetime.now(datetime.UTC)
     side = side_of(recommendation)
     if side is None:
@@ -144,6 +154,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         return "PENDING_APPROVAL", None  # outside any mandate: only the operator can act on it
     base = {"instrument_id": canonical_instrument(instrument_id), "side": side, "order_type": "MARKET",
             "recommendation": recommendation, "conviction_score": conviction, "source": "debate", "run_id": str(run_id)}
+    if decision_trace_id:
+        base["decision_trace_id"] = str(decision_trace_id)
     if side == "BUY":
         room = await entry_room_pct(conn, mandate, instrument_id)
         if room < MIN_MANDATE_ENTRY_PCT:

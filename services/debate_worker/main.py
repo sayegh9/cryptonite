@@ -18,13 +18,13 @@ from cryptonite_agents.debate_fleet import (
     EXIT_MANAGER,
     MARKET_ANALYST,
     NEUTRAL_RISK,
-    ONCHAIN_ANALYST,
     RISK_PANEL,
     SENTIMENT_ANALYST,
     research_manager,
 )
+from cryptonite_agents import news
 from cryptonite_agents.gateway import BudgetGuard, Gateway
-from gate import AUTOMATIC_SOURCES, pre_debate_gate
+from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate
 from mandate_routing import route_entry, route_exit
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
@@ -40,6 +40,9 @@ LITE_MAX_ALLOCATION_PCT = 5.0  # below this a lite verdict stands on its own
 LITE_MIN_CONVICTION = 0.35  # a small lite verdict weaker than this is recorded as NO_TRADE
 # "merged": one Pro risk-panel call; "full": 3 risk managers + CRO (4 calls). See docs/adr/0002.
 RISK_PANEL_MODE = os.getenv("DEBATE_RISK_PANEL_MODE", "merged")
+# R3.2: no on-chain feed exists, so the full debate has no On-Chain Analyst (it argued from invented data)
+FULL_DEBATE_ANALYSTS = (MARKET_ANALYST, SENTIMENT_ANALYST)
+SENTIMENT_LAST_OK_KEY = "sentiment:last_ok"  # R7.5: the sentiment service has no Redis access by design
 
 
 async def load_brief(redis_client, payload: dict) -> str | None:
@@ -53,6 +56,30 @@ async def load_brief(redis_client, payload: dict) -> str | None:
     except Exception as e:
         logger.warning(f"Could not load market brief {key}: {e}")
         return None
+
+
+async def load_brief_data(redis_client, payload: dict) -> dict | None:
+    """The structured twin of the brief (``<brief_key>:data``), if the scanner stored one."""
+    key = payload.get("brief_key")
+    if not key or not str(key).startswith("brief:"):
+        return None
+    try:
+        raw = await redis_client.get(f"{key}:data")
+        data = json.loads(raw) if raw else None
+        return data if isinstance(data, dict) else None
+    except Exception as e:  # missing or bad data only means the gate asks the model, as before
+        logger.warning(f"Could not load market brief data {key}: {e}")
+        return None
+
+
+async def publish_sentiment_ok(redis_client) -> None:
+    """Record the last time the local sentiment service tagged headlines for this process."""
+    if (ts := news.last_tag_ok()) is None:
+        return
+    try:
+        await redis_client.set(SENTIMENT_LAST_OK_KEY, int(ts))
+    except Exception as e:
+        logger.debug(f"Could not publish {SENTIMENT_LAST_OK_KEY}: {e}")
 
 
 def turn_text(output) -> str:
@@ -141,9 +168,12 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     instrument_id = payload.get("instrument_id")
     trigger_source = payload.get("trigger_source", "scanner")
     
-    logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source}")
+    trace_id = decision_trace_id(payload)
+    payload = {**payload, "decision_trace_id": trace_id}
+    logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source} (decision_trace_id={trace_id})")
     brief = await load_brief(redis_client, payload)
-    gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief)
+    gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
+                                 brief_data=await load_brief_data(redis_client, payload))
     if not gate.allowed:
         return
     acl = AntiCorruptionLayer(pg_pool)
@@ -174,9 +204,9 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     
     async with pg_pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at)
-               VALUES ($1, $2, 'RUNNING', $3, now())""",
-            run_id, instrument_id, trigger_source
+            """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, decision_trace_id)
+               VALUES ($1, $2, 'RUNNING', $3, now(), $4)""",
+            run_id, instrument_id, trigger_source, uuid.UUID(trace_id)
         )
     
     try:
@@ -228,8 +258,9 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                 reasoning = f"{lite.reasoning}\n\nBull: {lite.bull_case}\n\nBear: {lite.bear_case}"
 
         if lite is None:
-            analysts = (MARKET_ANALYST, SENTIMENT_ANALYST, ONCHAIN_ANALYST)
+            analysts = FULL_DEBATE_ANALYSTS
             results = await asyncio.gather(*(run_agent(a, prompt) for a in analysts))
+            await publish_sentiment_ok(redis_client)
             intel_dossier = "\n\n".join(section(a, r) for a, r in zip(analysts, results))
 
             logger.info(f"Phase 2: Bull vs Bear Debate for {instrument_id}...")
@@ -298,14 +329,14 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                 else:
                     final_status, mandate = await route_entry(
                         conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
-                        mandate_id=payload.get("mandate_id"),
+                        mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id,
                     )
                 await conn.execute(
                     "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2",
                     final_status, run_id, mandate.id if mandate else None,
                 )
 
-        logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level}")
+        logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level} (decision_trace_id={trace_id})")
         
         # Publish result to websocket channel
         await redis_client.publish(f"channel:debates:{instrument_id}", json.dumps({
@@ -316,7 +347,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         }))
 
     except Exception as e:
-        logger.error(f"Debate failed for {instrument_id}: {e}")
+        logger.error(f"Debate failed for {instrument_id}: {e} (decision_trace_id={trace_id})")
         if gate.cooldown_key:  # a failed run must not block the setup for the cooldown window
             await redis_client.delete(gate.cooldown_key)
         async with pg_pool.acquire() as conn:

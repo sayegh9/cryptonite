@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
-from cryptonite_scanner.brief import _trend, build_brief
+from cryptonite_scanner.brief import _trend, build_brief, hard_rejects
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.resampler import resample_1m_bars
 from cryptonite_storage.queries import AnalyticsQueryEngine
@@ -68,10 +68,16 @@ def frames_at(df_1m: pl.DataFrame, end_ns: int) -> dict[str, pl.DataFrame] | Non
 
 def label(rr: float, age_min: float, t15: str, t1h: str, vol15: float | None, bb15: str) -> tuple[bool | None, str]:
     stale, fresh = age_min > 30, age_min < 15
-    both_down = t15 == "down" and t1h == "down"
-    chop = vol15 is not None and vol15 <= 0.8 and bb15 == "inside"
-    hard = [r for r, hit in (("reward_to_risk_below_1.5", rr < 1.5), ("stale_data", stale),
-                             ("both_timeframes_against", both_down), ("chop", chop)) if hit]
+    # The rule part is the production one (the gate rejects the same cases without a model call, R3.1)
+    rules = set(hard_rejects({
+        "timeframes": [{"timeframe": "15m", "trend": t15, "volume_ratio": vol15,
+                        "bands": bb15 if bb15 in ("inside", "above", "below") else None},
+                       {"timeframe": "1h", "trend": t1h}],
+        "candidate": {"timeframe": "15m", "reward_to_risk": rr},
+    }))
+    hard = [r for r, hit in (("reward_to_risk_below_1.5", "REWARD_TO_RISK" in rules), ("stale_data", stale),
+                             ("both_timeframes_against", "TIMEFRAMES_AGAINST" in rules),
+                             ("chop", "CHOP" in rules)) if hit]
     if hard:
         return False, hard[0] if len(hard) == 1 else "+".join(hard)
     clean = (rr >= 2.0 and fresh and "down" not in (t15, t1h) and "up" in (t15, t1h)
