@@ -212,7 +212,7 @@ async def approve_debate(
         raise HTTPException(status_code=400, detail="Invalid run_id format")
 
     async with pool.acquire() as conn:
-        run = await conn.fetchrow("SELECT status FROM debate_runs WHERE id = $1", run_uuid)
+        run = await conn.fetchrow("SELECT status, decision_trace_id FROM debate_runs WHERE id = $1", run_uuid)
         if not run:
             raise HTTPException(status_code=404, detail="Debate run not found")
         if run['status'] != 'PENDING_APPROVAL':
@@ -260,6 +260,8 @@ async def approve_debate(
         "allocation_pct": alloc_pct,
         "account_id": PAPER_ACCOUNT_ID,
     }
+    if run['decision_trace_id']:  # R7.4: candidate -> debate -> approval -> command -> fill
+        payload["decision_trace_id"] = str(run['decision_trace_id'])
 
     if overrides:
         if overrides.limit_offset_pct is not None:
@@ -325,6 +327,7 @@ async def approve_debate(
             "run_id": str(run_id)
         }))
 
+    logger.info("Debate %s approved (decision_trace_id=%s)", run_id, payload.get("decision_trace_id"))
     return {"status": "approved", "run_id": str(run_id), **payload}
 
 @router.post("/debates/{run_id}/reject")

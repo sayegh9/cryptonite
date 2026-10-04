@@ -144,13 +144,17 @@ async def enqueue_approval_command(conn, approval: dict[str, Any], *, idempotenc
     payload = {**approval["payload"], "approval_id": str(approval["id"]), "mandate_id": str(approval["mandate_id"])}
     payload.setdefault("account_id", "PAPER-ACCOUNT-001")
     requester = f"approval:{approval.get('decided_via') or 'timeout'}:{approval.get('decided_by') or 'system'}"
+    try:  # R7.4: set at insert (the API role has no UPDATE on execution_commands)
+        trace = uuid.UUID(str(payload["decision_trace_id"])) if payload.get("decision_trace_id") else None
+    except ValueError:
+        trace = None
     cid = await conn.fetchval(
         """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, requester_id,
-               payload, status, environment, account_id, mandate_id)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'PENDING', 'PAPER', $7, $8)
+               payload, status, environment, account_id, mandate_id, decision_trace_id)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'PENDING', 'PAPER', $7, $8, $9)
            ON CONFLICT (idempotency_key) DO NOTHING RETURNING command_id""",
         uuid.uuid4(), key, approval["command_type"], mandate_instance_id(approval["mandate_id"]), requester[:128],
-        json.dumps(payload, default=str), payload["account_id"], approval["mandate_id"],
+        json.dumps(payload, default=str), payload["account_id"], approval["mandate_id"], trace,
     )
     if cid is None:
         cid = await conn.fetchval("SELECT command_id FROM execution_commands WHERE idempotency_key = $1", key)

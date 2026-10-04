@@ -592,6 +592,8 @@ class ScannerWorker:
                             "suggested_target": str(c.suggested_target),
                             "matched_rules": c.matched_rules,
                             "metrics": c.metrics,
+                            # R7.4: follows this setup through gate, triage, debate, approval, command and fill
+                            "decision_trace_id": str(uuid4()),
                         }
                         
                         # AI Debate Engine Integration: Publish to Redis Stream
@@ -600,6 +602,8 @@ class ScannerWorker:
                                 brief_key = await self._publish_brief(
                                     c, candidate_payload, frames_by_inst.get(c.instrument_id, {})
                                 )
+                                logger.info("Candidate %s %s %s queued for debate (decision_trace_id=%s)",
+                                            c.id, c.instrument_id, c.timeframe, candidate_payload["decision_trace_id"])
                                 await self.redis.xadd("stream:debate_queue", {
                                     "instrument_id": c.instrument_id,
                                     "trigger_source": "scanner",
