@@ -706,7 +706,7 @@ export function TradingViewChart({
           <TickerPriceCell price={currentPrice} />
           {priceChangePct !== null && (
             <span
-              className={`font-mono text-[10px] px-1.5 py-0.5 rounded font-medium ${
+              className={`font-mono text-2xs px-1.5 py-0.5 rounded font-medium ${
                 priceChangePct >= 0 ? "bg-emerald-950/80 text-emerald-400 border border-emerald-800/40" : "bg-red-950/80 text-red-400 border border-red-800/40"
               }`}
             >
@@ -722,7 +722,7 @@ export function TradingViewChart({
           <button
             onClick={handleTriggerDebate}
             disabled={triggeringDebate}
-            className="flex items-center space-x-1.5 px-2 py-0.5 text-[11px] font-medium rounded text-purple-400 hover:text-purple-200 bg-purple-950/20 hover:bg-purple-950/50 transition-colors border border-purple-800/40 hover:border-purple-600/60 focus-visible:ring-1 focus-visible:ring-purple-500 outline-none"
+            className="flex items-center space-x-1.5 px-2 py-0.5 text-2xs font-medium rounded text-purple-400 hover:text-purple-200 bg-purple-950/20 hover:bg-purple-950/50 transition-colors border border-purple-800/40 hover:border-purple-600/60 focus-visible:ring-1 focus-visible:ring-purple-500 outline-none"
             title={`Trigger AI Consensus Debate on ${symbol}`}
             aria-label={`Trigger AI Consensus Debate on ${symbol}`}
           >
@@ -737,7 +737,7 @@ export function TradingViewChart({
               e.stopPropagation();
               handleStyleChange(e.target.value as ChartStyle);
             }}
-            className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 rounded px-2 py-0.5 text-[11px] font-medium focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer transition-colors"
+            className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 rounded px-2 py-0.5 text-2xs font-medium focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer transition-colors"
             title="Select Chart Style"
             aria-label="Select Chart Style"
           >
@@ -750,7 +750,7 @@ export function TradingViewChart({
 
           {/* Indicators Dialog */}
           <Dialog open={showIndDialog} onOpenChange={setShowIndDialog}>
-            <DialogTrigger className="flex items-center space-x-1 px-2 py-0.5 text-[11px] font-medium rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 transition-colors border border-transparent hover:border-zinc-700">
+            <DialogTrigger className="flex items-center space-x-1 px-2 py-0.5 text-2xs font-medium rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 transition-colors border border-transparent hover:border-zinc-700">
               <Settings2 className="w-3 h-3" />
               <span>Indicators</span>
             </DialogTrigger>
@@ -844,7 +844,7 @@ export function TradingViewChart({
                 e.stopPropagation();
                 onTimeframeChange?.(tf);
               }}
-              className={`px-2 py-0.5 text-[11px] font-medium rounded transition-colors ${
+              className={`px-2 py-0.5 text-2xs font-medium rounded transition-colors ${
                 timeframe === tf
                   ? "bg-cyan-500 text-zinc-950 font-bold shadow-sm"
                   : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60"
@@ -879,13 +879,13 @@ export function TradingViewChart({
           href="https://www.tradingview.com/lightweight-charts/"
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[10px] text-zinc-500 hover:text-cyan-400 transition-colors"
+          className="text-2xs text-zinc-500 hover:text-cyan-400 transition-colors"
         >
           Market charts powered by TradingView Lightweight Charts™ (Apache-2.0)
         </a>
         <div className="flex items-center space-x-1.5">
           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-[10px] font-mono text-zinc-500">LIVE FEED</span>
+          <span className="text-2xs font-mono text-zinc-500">LIVE FEED</span>
         </div>
       </div>
     </div>

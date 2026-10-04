@@ -97,7 +97,7 @@ export function KillSwitchPanel({
           <span>Execution Kill-Switch · {environment}</span>
         </h2>
         <div className="flex items-center space-x-2">
-          <span className="text-[10px] font-mono text-zinc-500">
+          <span className="text-2xs font-mono text-zinc-500">
             GEN: {status?.latch_generation}
           </span>
           <button onClick={loadStatus} className="p-1 hover:text-cyan-400 text-zinc-500 transition-colors">
@@ -106,20 +106,20 @@ export function KillSwitchPanel({
         </div>
       </div>
 
-      {error && <div className="bg-rose-950/50 text-rose-400 text-[11px] font-mono px-3 py-2 rounded mb-4">{error}</div>}
+      {error && <div className="bg-rose-950/50 text-rose-400 text-2xs font-mono px-3 py-2 rounded mb-4">{error}</div>}
 
       <div className="flex items-center justify-center p-6 border border-dashed border-white/5 rounded mb-6 bg-zinc-950">
         {isLatched ? (
           <div className="flex flex-col items-center text-rose-500 animate-pulse">
             <ShieldAlert className="w-12 h-12 mb-2" />
             <span className="text-xl font-black tracking-widest">LATCHED</span>
-            <span className="text-[10px] font-mono mt-1 text-zinc-500">TRADING HALTED</span>
+            <span className="text-2xs font-mono mt-1 text-zinc-500">TRADING HALTED</span>
           </div>
         ) : (
           <div className="flex flex-col items-center text-emerald-500">
             <CheckCircle className="w-12 h-12 mb-2" />
             <span className="text-xl font-black tracking-widest">ARMED</span>
-            <span className="text-[10px] font-mono mt-1 text-zinc-500">EXECUTOR OPERATIONAL</span>
+            <span className="text-2xs font-mono mt-1 text-zinc-500">EXECUTOR OPERATIONAL</span>
           </div>
         )}
       </div>
@@ -156,7 +156,7 @@ export function KillSwitchPanel({
           </h3>
           <form onSubmit={handleReset} className="space-y-3">
             <div>
-              <label className="block text-[10px] font-mono text-zinc-400 mb-1.5 font-bold uppercase tracking-wider">Audit Reason (Min 5 chars)</label>
+              <label className="block text-2xs font-mono text-zinc-400 mb-1.5 font-bold uppercase tracking-wider">Audit Reason (Min 5 chars)</label>
               <input
                 type="text"
                 className="w-full bg-zinc-950 border border-white/5 rounded px-3 py-2 text-zinc-200 focus:border-amber-500 focus:outline-none text-xs transition-colors"
@@ -167,7 +167,7 @@ export function KillSwitchPanel({
               />
             </div>
             <div>
-              <label className="block text-[10px] font-mono text-zinc-400 mb-1.5 font-bold uppercase tracking-wider">Step-Up Password</label>
+              <label className="block text-2xs font-mono text-zinc-400 mb-1.5 font-bold uppercase tracking-wider">Step-Up Password</label>
               <input
                 type="password"
                 className="w-full bg-zinc-950 border border-white/5 rounded px-3 py-2 text-zinc-200 focus:border-amber-500 focus:outline-none text-xs transition-colors"
@@ -180,14 +180,14 @@ export function KillSwitchPanel({
               <button
                 type="button"
                 onClick={() => setShowReset(false)}
-                className="flex-1 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-zinc-300 py-2 rounded font-bold text-[10px] uppercase tracking-wider transition-colors"
+                className="flex-1 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-zinc-300 py-2 rounded font-bold text-2xs uppercase tracking-wider transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={actionLoading}
-                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white py-2 rounded font-bold text-[10px] uppercase tracking-wider transition-colors"
+                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white py-2 rounded font-bold text-2xs uppercase tracking-wider transition-colors"
               >
                 Request Reset
               </button>

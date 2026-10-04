@@ -16,8 +16,8 @@ const fmt = (n: number, digits = 2) => n.toLocaleString("en-US", { minimumFracti
 
 function WidgetFrame({ icon, title, children, testId }: { icon: React.ReactNode; title: string; children: React.ReactNode; testId: string }) {
   return (
-    <section data-testid={testId} className="mt-2 rounded-lg border border-zinc-800 bg-zinc-950/80 p-3 font-mono text-[11px] text-zinc-300">
-      <header className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+    <section data-testid={testId} className="mt-2 rounded-lg border border-zinc-800 bg-zinc-950/80 p-3 font-mono text-2xs text-zinc-300">
+      <header className="mb-2 flex items-center gap-1.5 text-2xs font-bold uppercase tracking-wider text-zinc-400">
         {icon}
         <span>{title}</span>
       </header>
@@ -74,7 +74,7 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
           <svg viewBox={`0 0 ${W} ${H}`} className="h-[72px] w-full" role="img" aria-label={`${widget.symbol} price, ${closes.length} bars`}>
             <path d={path} fill="none" strokeWidth="1.5" className={up ? "stroke-emerald-400" : "stroke-rose-400"} />
           </svg>
-          <div className="mt-1 flex justify-between text-[10px] text-zinc-400">
+          <div className="mt-1 flex justify-between text-2xs text-zinc-400">
             <span>
               Last <span className="text-zinc-100">{fmt(closes[closes.length - 1])}</span>
             </span>
@@ -113,7 +113,7 @@ function TearsheetCard({ widget }: { widget: TearsheetWidget }) {
         <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
           {entries.slice(0, 9).map(([k, v]) => (
             <div key={k} className="flex flex-col">
-              <dt className="text-[9px] uppercase text-zinc-500">{METRIC_LABELS[k] ?? k}</dt>
+              <dt className="text-2xs uppercase text-zinc-500">{METRIC_LABELS[k] ?? k}</dt>
               <dd className="text-zinc-100">{typeof v === "number" ? fmt(v, Number.isInteger(v) ? 0 : 2) : String(v)}</dd>
             </div>
           ))}
@@ -127,7 +127,7 @@ function DebateSummaryCard({ widget }: { widget: DebateSummaryWidget }) {
   return (
     <WidgetFrame testId="brain-widget-debate" icon={<GitBranch className="h-3 w-3 text-purple-400" />} title={`Debate · ${widget.instrument_id}`}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${widget.status === "QUEUED" ? "border-purple-800 text-purple-300" : "border-rose-800 text-rose-300"}`}>
+        <span className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${widget.status === "QUEUED" ? "border-purple-800 text-purple-300" : "border-rose-800 text-rose-300"}`}>
           {widget.status === "QUEUED" ? "QUEUED" : "NOT QUEUED"}
         </span>
         {widget.recommendation && <span>Thesis: {widget.recommendation}</span>}
@@ -164,27 +164,27 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
     <section
       data-testid="brain-widget-order-card"
       aria-label={`Order proposal: ${widget.side} ${widget.allocation_pct}% of mandate ${widget.instrument_id}`}
-      className="mt-2 rounded-lg border border-amber-700/60 bg-amber-950/10 p-3 font-mono text-[11px] text-zinc-300"
+      className="mt-2 rounded-lg border border-amber-700/60 bg-amber-950/10 p-3 font-mono text-2xs text-zinc-300"
     >
       <header className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <AlertTriangle className="h-3 w-3 text-amber-400" aria-hidden />
-          <span className="rounded border border-amber-600 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-black tracking-wider text-amber-300">
+          <span className="rounded border border-amber-600 bg-amber-500/10 px-1.5 py-0.5 text-2xs font-black tracking-wider text-amber-300">
             ADDS RISK · PAPER
           </span>
-          <span className="text-[10px] font-bold uppercase text-zinc-400">Order proposal</span>
+          <span className="text-2xs font-bold uppercase text-zinc-400">Order proposal</span>
         </div>
         {widget.trace_id ? (
           <button
             type="button"
             onClick={() => dispatchBrainOpenTrace(widget.trace_id!)}
-            className="flex items-center gap-1 text-[10px] text-cyan-400 hover:text-cyan-300 hover:underline"
+            className="flex items-center gap-1 text-2xs text-cyan-400 hover:text-cyan-300 hover:underline"
             aria-label="Why? Open the decision trace for this order card"
           >
             <ScrollText className="h-3 w-3" /> Why? (trace)
           </button>
         ) : (
-          <span className="text-[10px] text-zinc-600">no trace</span>
+          <span className="text-2xs text-zinc-600">no trace</span>
         )}
       </header>
 
@@ -196,7 +196,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           {widget.order_type === "LIMIT" && widget.limit_price ? ` @ ${fmt(widget.limit_price)}` : ""}
         </span>
       </div>
-      <dl className="mt-1 grid grid-cols-3 gap-2 text-[10px]">
+      <dl className="mt-1 grid grid-cols-3 gap-2 text-2xs">
         <div>
           <dt className="text-zinc-500">Size</dt>
           <dd className="text-zinc-100" title="Sized at approval from the live price; capped at the room left under the mandate's position limit">
@@ -219,14 +219,14 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <button
             type="button"
             onClick={() => setConfirming(true)}
-            className="flex-1 rounded border border-amber-600 bg-amber-600/20 px-2 py-1.5 text-[11px] font-bold text-amber-200 hover:bg-amber-600/30"
+            className="flex-1 rounded border border-amber-600 bg-amber-600/20 px-2 py-1.5 text-2xs font-bold text-amber-200 hover:bg-amber-600/30"
           >
             Approve…
           </button>
           <button
             type="button"
             onClick={() => rejectOrderCard(widget).catch((e) => setError(e?.message || "Reject failed"))}
-            className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] font-bold text-zinc-300 hover:bg-zinc-800"
+            className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-2xs font-bold text-zinc-300 hover:bg-zinc-800"
           >
             Reject
           </button>
@@ -245,7 +245,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
               type="button"
               disabled={busy}
               onClick={approve}
-              className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-[11px] font-bold text-zinc-950 hover:bg-amber-500 disabled:opacity-50"
+              className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-zinc-950 hover:bg-amber-500 disabled:opacity-50"
             >
               {busy ? "Sending…" : "Confirm paper order"}
             </button>
@@ -253,7 +253,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
               type="button"
               disabled={busy}
               onClick={() => setConfirming(false)}
-              className="rounded border border-zinc-700 px-2 py-1.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
+              className="rounded border border-zinc-700 px-2 py-1.5 text-2xs text-zinc-300 hover:bg-zinc-800"
             >
               Cancel
             </button>

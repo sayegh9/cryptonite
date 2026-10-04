@@ -81,7 +81,7 @@ export function ApprovalRiskContext(props: ApprovalRiskInput) {
   const resized = roomUsd !== null && notionalUsd !== null && notionalUsd > roomUsd;
 
   return (
-    <div className="mt-2 rounded border border-zinc-800 bg-zinc-950/60 p-2 font-mono text-[11px]" data-testid="approval-context">
+    <div className="mt-2 rounded border border-zinc-800 bg-zinc-950/60 p-2 font-mono text-2xs" data-testid="approval-context">
       <dl className="grid grid-cols-2 gap-x-3 gap-y-1 tabular-nums">
         <dt className="text-zinc-500">Live quote</dt>
         <dd className="text-right text-zinc-200" data-testid="approval-quote">
@@ -100,14 +100,14 @@ export function ApprovalRiskContext(props: ApprovalRiskInput) {
           {worstLoss !== null ? `-${usd(worstLoss)}` : stopPct === null ? `${UNKNOWN_TEXT} (no stop in proposal)` : UNKNOWN_TEXT}
         </dd>
       </dl>
-      <p className="mt-1 text-[10px] text-zinc-500" data-testid="approval-resize-note">
+      <p className="mt-1 text-2xs text-zinc-500" data-testid="approval-resize-note">
         {resized
           ? `Larger than the mandate's room: it will be resized to fit ${usd(roomUsd!)}.`
           : `May be resized to ${requestedPct !== null ? `less than ${requestedPct}%` : "a smaller size"} to fit the mandate's room and the 1–25% clamp.`}
       </p>
       {similar && similar.length > 0 && (
         <div className="mt-1 border-t border-zinc-800 pt-1" data-testid="approval-similar">
-          <div className="text-[10px] uppercase tracking-wider text-zinc-500">Last decisions, same instrument and side</div>
+          <div className="text-2xs uppercase tracking-wider text-zinc-500">Last decisions, same instrument and side</div>
           <ul>
             {similar.slice(0, 3).map((d, i) => {
               const r = metricOrNull(d.return_pct);

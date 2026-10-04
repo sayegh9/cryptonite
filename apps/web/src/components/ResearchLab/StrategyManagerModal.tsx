@@ -121,7 +121,7 @@ export function StrategyManagerModal({
             </div>
             <div>
               <h2 className="font-bold text-white text-sm">STRATEGY REGISTRY & MANAGEMENT</h2>
-              <p className="text-[10px] text-zinc-400">
+              <p className="text-2xs text-zinc-400">
                 Inspect code, review parameters, and delete custom/AI-generated strategies.
               </p>
             </div>
@@ -147,7 +147,7 @@ export function StrategyManagerModal({
         <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
           {/* Left: Strategy List */}
           <div className="w-full md:w-80 border-r border-zinc-800 flex flex-col bg-zinc-950/50">
-            <div className="p-3 border-b border-zinc-800/80 bg-zinc-900/30 text-[10px] font-bold text-zinc-400 uppercase tracking-wider flex justify-between items-center">
+            <div className="p-3 border-b border-zinc-800/80 bg-zinc-900/30 text-2xs font-bold text-zinc-400 uppercase tracking-wider flex justify-between items-center">
               <span>Registered Strategies</span>
               <span className="text-zinc-500 font-normal">({strategies.length})</span>
             </div>
@@ -170,16 +170,16 @@ export function StrategyManagerModal({
                       <div className="font-bold text-xs truncate flex items-center space-x-1.5">
                         <span className="truncate">{strat.name}</span>
                         {isCore ? (
-                          <span className="px-1 py-0.2 rounded text-[8.5px] bg-emerald-950 text-emerald-400 border border-emerald-800 uppercase flex-none">
+                          <span className="px-1 py-0.2 rounded text-2xs bg-emerald-950 text-emerald-400 border border-emerald-800 uppercase flex-none">
                             Core
                           </span>
                         ) : (
-                          <span className="px-1 py-0.2 rounded text-[8.5px] bg-indigo-950 text-indigo-300 border border-indigo-800 uppercase flex-none">
+                          <span className="px-1 py-0.2 rounded text-2xs bg-indigo-950 text-indigo-300 border border-indigo-800 uppercase flex-none">
                             AI
                           </span>
                         )}
                       </div>
-                      <div className="text-[10px] text-zinc-500 font-mono truncate mt-0.5">
+                      <div className="text-2xs text-zinc-500 font-mono truncate mt-0.5">
                         {strat.slug}
                       </div>
                     </div>
@@ -213,11 +213,11 @@ export function StrategyManagerModal({
                     <div className="text-lg font-bold text-white flex items-center space-x-2">
                       <span>{detailedStrategy.name}</span>
                       {detailedStrategy.slug.startsWith("ai-gen") ? (
-                        <span className="px-2 py-0.5 rounded text-[10px] bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 font-bold uppercase">
+                        <span className="px-2 py-0.5 rounded text-2xs bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 font-bold uppercase">
                           AI Generated
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 font-bold uppercase">
+                        <span className="px-2 py-0.5 rounded text-2xs bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 font-bold uppercase">
                           Core Template
                         </span>
                       )}
@@ -225,7 +225,7 @@ export function StrategyManagerModal({
                     <div className="text-xs text-zinc-400 mt-1 font-sans">
                       {detailedStrategy.description || "No description provided."}
                     </div>
-                    <div className="text-[10px] text-zinc-500 font-mono mt-1">
+                    <div className="text-2xs text-zinc-500 font-mono mt-1">
                       Slug: <span className="text-zinc-400">{detailedStrategy.slug}</span> • Author:{" "}
                       <span className="text-zinc-400">{detailedStrategy.author}</span> • Active Version:{" "}
                       <span className="text-cyan-400">v{detailedStrategy.version_num}</span>
@@ -245,10 +245,10 @@ export function StrategyManagerModal({
 
                 {/* Default Parameters */}
                 <div>
-                  <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2">
+                  <div className="text-2xs font-bold text-zinc-400 uppercase tracking-wider mb-2">
                     Default Parameters & Schema
                   </div>
-                  <pre className="p-3 bg-zinc-900/90 border border-zinc-800 rounded-lg text-[10.5px] text-zinc-300 overflow-x-auto">
+                  <pre className="p-3 bg-zinc-900/90 border border-zinc-800 rounded-lg text-2xs text-zinc-300 overflow-x-auto">
                     {JSON.stringify(
                       {
                         default_parameters: detailedStrategy.default_parameters,
@@ -263,14 +263,14 @@ export function StrategyManagerModal({
                 {/* Python Source Code */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider flex items-center space-x-1.5">
+                    <div className="text-2xs font-bold text-zinc-400 uppercase tracking-wider flex items-center space-x-1.5">
                       <Code2 className="w-3.5 h-3.5 text-cyan-400" />
                       <span>Python Strategy Implementation</span>
                     </div>
                     {detailedStrategy.python_code && (
                       <button
                         onClick={handleCopyCode}
-                        className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60 rounded text-[10px] font-bold transition-colors flex items-center space-x-1"
+                        className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-700/60 rounded text-2xs font-bold transition-colors flex items-center space-x-1"
                       >
                         {copiedCode ? (
                           <>
@@ -292,7 +292,7 @@ export function StrategyManagerModal({
                       Loading strategy source code...
                     </div>
                   ) : detailedStrategy.python_code ? (
-                    <pre className="p-4 bg-zinc-900/95 border border-zinc-800 rounded-lg text-[11px] text-zinc-200 overflow-x-auto leading-relaxed max-h-96">
+                    <pre className="p-4 bg-zinc-900/95 border border-zinc-800 rounded-lg text-2xs text-zinc-200 overflow-x-auto leading-relaxed max-h-96">
                       <code>{detailedStrategy.python_code}</code>
                     </pre>
                   ) : (

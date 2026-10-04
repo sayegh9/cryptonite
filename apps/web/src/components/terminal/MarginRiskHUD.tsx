@@ -53,15 +53,15 @@ export function MarginRiskHUD({ instrumentId }: { instrumentId: string }) {
   return (
     <section className="bg-zinc-950 border border-white/10 rounded p-3 space-y-3 font-mono" aria-label="Margin risk">
       <header className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-300">
+        <div className="flex items-center gap-1.5 text-2xs font-bold uppercase tracking-wider text-zinc-300">
           <Gauge className="w-3 h-3 text-cyan-400" aria-hidden />
           <span>Margin Risk · {instrumentId.replace(".BINANCE", "")}</span>
         </div>
-        {mark && <span className="text-[11px] text-zinc-400">Mark {fmt(mark.markPrice)}</span>}
+        {mark && <span className="text-2xs text-zinc-400">Mark {fmt(mark.markPrice)}</span>}
       </header>
 
       {alert && (
-        <div role="alert" className="flex items-start gap-2 bg-rose-950/50 border border-rose-800/60 rounded p-2 text-[11px] text-rose-300">
+        <div role="alert" className="flex items-start gap-2 bg-rose-950/50 border border-rose-800/60 rounded p-2 text-2xs text-rose-300">
           <AlertTriangle className="w-4 h-4 flex-none mt-0.5" aria-hidden />
           <div className="flex-1">
             <p className="font-bold">LIQUIDATED {alert.instrumentId.replace(".BINANCE", "")} {alert.side}</p>
@@ -75,7 +75,7 @@ export function MarginRiskHUD({ instrumentId }: { instrumentId: string }) {
 
       {position ? (
         <>
-          <div className="flex items-center justify-between text-[11px]">
+          <div className="flex items-center justify-between text-2xs">
             <span className={position.side === "LONG" ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
               {position.side} {position.size}
             </span>
@@ -83,13 +83,13 @@ export function MarginRiskHUD({ instrumentId }: { instrumentId: string }) {
               {position.leverage}x · {position.marginMode} · entry {fmt(position.entryPrice)}
             </span>
           </div>
-          <div className="flex items-center justify-between text-[11px]">
+          <div className="flex items-center justify-between text-2xs">
             <span className="text-zinc-500">Unrealized PnL</span>
             <span className={position.unrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}>{fmt(position.unrealizedPnl)} USDT</span>
           </div>
 
           <div>
-            <div className="flex items-center justify-between text-[10px] uppercase tracking-wider mb-1">
+            <div className="flex items-center justify-between text-2xs uppercase tracking-wider mb-1">
               <span className="text-zinc-500">Liquidation distance</span>
               {risk && distance !== null && (
                 <span className={`${RISK_STYLES[risk].text} font-bold`}>
@@ -110,21 +110,21 @@ export function MarginRiskHUD({ instrumentId }: { instrumentId: string }) {
                 <div className={`h-full ${RISK_STYLES[risk].bar}`} style={{ width: `${Math.min(distance / METER_RANGE, 1) * 100}%` }} />
               )}
             </div>
-            <p className="text-[10px] text-zinc-500 mt-1">
+            <p className="text-2xs text-zinc-500 mt-1">
               Liq. price {position.liquidationPrice !== null ? fmt(position.liquidationPrice) : "— (no bracket data)"}
             </p>
           </div>
 
-          <div className="flex items-center justify-between text-[11px]">
+          <div className="flex items-center justify-between text-2xs">
             <span className="text-zinc-500">Margin ratio (MM / balance)</span>
             <span className={`font-bold ${ratioColor}`}>{ratioPct !== null ? `${ratioPct.toFixed(2)}%` : "—"}</span>
           </div>
         </>
       ) : (
-        <p className="text-[11px] text-zinc-500">No open position on this perpetual.</p>
+        <p className="text-2xs text-zinc-500">No open position on this perpetual.</p>
       )}
 
-      <div className="flex items-center justify-between text-[11px] border-t border-white/5 pt-2">
+      <div className="flex items-center justify-between text-2xs border-t border-white/5 pt-2">
         <span className="flex items-center gap-1 text-zinc-500">
           <Timer className="w-3 h-3" aria-hidden /> Funding
         </span>

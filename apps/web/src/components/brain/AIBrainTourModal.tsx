@@ -53,7 +53,7 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDebate, symbol }: AIBra
 
         <div className="p-4 sm:p-6 space-y-4">
           <DialogHeader className="space-y-1">
-            <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500">
+            <div className="flex items-center justify-between text-2xs font-mono text-zinc-500">
               <span className="uppercase tracking-widest text-cyan-400 font-bold">First-Time User Guide</span>
               <span>Step {step} of {totalSteps}</span>
             </div>
@@ -77,17 +77,17 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDebate, symbol }: AIBra
                 <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded-lg text-center">
                   <BrainCircuit className="w-5 h-5 text-cyan-400 mx-auto mb-1.5" />
                   <div className="font-bold text-xs text-zinc-200">1. Single Prompt</div>
-                  <div className="text-[11px] text-zinc-400 mt-1 leading-normal">Ask questions or type commands in natural language.</div>
+                  <div className="text-2xs text-zinc-400 mt-1 leading-normal">Ask questions or type commands in natural language.</div>
                 </div>
                 <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded-lg text-center">
                   <Search className="w-5 h-5 text-purple-400 mx-auto mb-1.5" />
                   <div className="font-bold text-xs text-zinc-200">2. Auto-Dispatch</div>
-                  <div className="text-[11px] text-zinc-400 mt-1 leading-normal">Specialists gather market data, debate alpha & check risk.</div>
+                  <div className="text-2xs text-zinc-400 mt-1 leading-normal">Specialists gather market data, debate alpha & check risk.</div>
                 </div>
                 <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded-lg text-center">
                   <ShieldCheck className="w-5 h-5 text-emerald-400 mx-auto mb-1.5" />
                   <div className="font-bold text-xs text-zinc-200">3. Actionable Brief</div>
-                  <div className="text-[11px] text-zinc-400 mt-1 leading-normal">Receive concise 3-bullet cards with 1-click approvals.</div>
+                  <div className="text-2xs text-zinc-400 mt-1 leading-normal">Receive concise 3-bullet cards with 1-click approvals.</div>
                 </div>
               </div>
               <div className="p-3 bg-cyan-950/40 border border-cyan-800/50 rounded-lg text-xs text-cyan-300 flex items-start space-x-2">
@@ -109,21 +109,21 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDebate, symbol }: AIBra
                     <span className="w-2 h-2 rounded-full bg-cyan-400 flex-none" />
                     <span className="text-zinc-200 font-bold">Market Scout</span>
                   </div>
-                  <span className="text-[11px] text-zinc-400 truncate text-right">Pulls orderbook depth, funding & volume</span>
+                  <span className="text-2xs text-zinc-400 truncate text-right">Pulls orderbook depth, funding & volume</span>
                 </div>
                 <div className="p-2.5 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-between gap-2">
                   <div className="flex items-center space-x-2 flex-none">
                     <span className="w-2 h-2 rounded-full bg-purple-400 flex-none" />
                     <span className="text-zinc-200 font-bold">Bull vs. Bear Debate</span>
                   </div>
-                  <span className="text-[11px] text-zinc-400 truncate text-right">Aggressively stress-tests trade thesis</span>
+                  <span className="text-2xs text-zinc-400 truncate text-right">Aggressively stress-tests trade thesis</span>
                 </div>
                 <div className="p-2.5 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-between gap-2">
                   <div className="flex items-center space-x-2 flex-none">
                     <span className="w-2 h-2 rounded-full bg-amber-400 flex-none" />
                     <span className="text-zinc-200 font-bold">Risk Guardian (CRO)</span>
                   </div>
-                  <span className="text-[11px] text-zinc-400 truncate text-right">Enforces max 25% risk & stop-loss bounds</span>
+                  <span className="text-2xs text-zinc-400 truncate text-right">Enforces max 25% risk & stop-loss bounds</span>
                 </div>
               </div>
               <p className="text-xs text-zinc-400">
@@ -151,12 +151,12 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDebate, symbol }: AIBra
                   <li><strong>Size:</strong> a % of paper equity (1–25%), shown in USD only when equity is known.</li>
                 </ul>
                 <div className="pt-2 border-t border-zinc-800 flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-[11px] font-mono text-zinc-400">Interactive Sizing Slider</span>
+                  <span className="text-2xs font-mono text-zinc-400">Interactive Sizing Slider</span>
                   <div className="flex items-center space-x-2">
-                    <span className="px-2 py-0.5 bg-emerald-950 text-emerald-400 border border-emerald-800 rounded text-[10px] font-mono font-bold">
+                    <span className="px-2 py-0.5 bg-emerald-950 text-emerald-400 border border-emerald-800 rounded text-2xs font-mono font-bold">
                       1-Click Approve
                     </span>
-                    <span className="px-2 py-0.5 bg-zinc-800 text-zinc-400 rounded text-[10px] font-mono">
+                    <span className="px-2 py-0.5 bg-zinc-800 text-zinc-400 rounded text-2xs font-mono">
                       Reject
                     </span>
                   </div>

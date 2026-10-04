@@ -247,13 +247,13 @@ export const ResearchLab: React.FC = () => {
   return (
     <div className="flex h-full w-full bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
       {/* Left Sidebar: Strategy & Execution Profile Configuration Form */}
-      <aside className="w-80 flex-none h-full border-r border-white/5 bg-zinc-950 flex flex-col min-h-0 font-mono text-[11px]">
+      <aside className="w-80 flex-none h-full border-r border-white/5 bg-zinc-950 flex flex-col min-h-0 font-mono text-2xs">
         <div className="p-4 border-b border-white/5 bg-zinc-950 flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <Sliders className="w-4 h-4 text-cyan-400" />
             <span className="font-bold text-xs text-zinc-200 uppercase tracking-wider">Research Lab</span>
           </div>
-          <span className="text-[10px] bg-cyan-950/30 text-cyan-400 border border-cyan-900/50 px-1.5 py-0.5 rounded font-semibold">
+          <span className="text-2xs bg-cyan-950/30 text-cyan-400 border border-cyan-900/50 px-1.5 py-0.5 rounded font-semibold">
             Nautilus rc4
           </span>
         </div>
@@ -262,13 +262,13 @@ export const ResearchLab: React.FC = () => {
           {/* Strategy Selection */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-[10px] text-zinc-400 uppercase tracking-wider font-bold">
+              <label className="text-2xs text-zinc-400 uppercase tracking-wider font-bold">
                 Target Strategy
               </label>
               <button
                 type="button"
                 onClick={() => setIsManagerOpen(true)}
-                className="text-[10px] text-cyan-400 hover:text-cyan-300 font-mono flex items-center space-x-1 bg-cyan-950/30 hover:bg-cyan-900/40 border border-cyan-800/40 px-1.5 py-0.5 rounded transition-colors"
+                className="text-2xs text-cyan-400 hover:text-cyan-300 font-mono flex items-center space-x-1 bg-cyan-950/30 hover:bg-cyan-900/40 border border-cyan-800/40 px-1.5 py-0.5 rounded transition-colors"
                 title="Manage, inspect and delete registered strategies"
               >
                 <Layers className="w-3 h-3" />
@@ -287,7 +287,7 @@ export const ResearchLab: React.FC = () => {
               ))}
             </select>
             {currentStrategy?.description && (
-              <p className="text-[10px] text-zinc-500 mt-1.5 leading-relaxed">
+              <p className="text-2xs text-zinc-500 mt-1.5 leading-relaxed">
                 {currentStrategy.description}
               </p>
             )}
@@ -295,7 +295,7 @@ export const ResearchLab: React.FC = () => {
 
           {/* Execution Profile */}
           <div>
-            <label className="block text-[10px] text-zinc-400 uppercase tracking-wider mb-2 font-bold">
+            <label className="block text-2xs text-zinc-400 uppercase tracking-wider mb-2 font-bold">
               Execution Profile
             </label>
             <div className="space-y-2">
@@ -331,7 +331,7 @@ export const ResearchLab: React.FC = () => {
                   }`}
                 >
                   <div className="font-semibold text-xs text-zinc-200">{p.label}</div>
-                  <div className="text-[10px] text-zinc-500 mt-1">{p.desc}</div>
+                  <div className="text-2xs text-zinc-500 mt-1">{p.desc}</div>
                 </button>
               ))}
             </div>
@@ -340,7 +340,7 @@ export const ResearchLab: React.FC = () => {
           {/* Settings Grid */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] text-zinc-400 uppercase mb-2 font-bold">Instrument</label>
+              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Instrument</label>
               {instruments.length > 0 ? (
                 <select
                   value={instrumentId}
@@ -364,7 +364,7 @@ export const ResearchLab: React.FC = () => {
               )}
             </div>
             <div>
-              <label className="block text-[10px] text-zinc-400 uppercase mb-2 font-bold">Timeframe</label>
+              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Timeframe</label>
               <select
                 value={timeframe}
                 onChange={(e) => setTimeframe(e.target.value)}
@@ -380,7 +380,7 @@ export const ResearchLab: React.FC = () => {
               </select>
             </div>
             <div className="col-span-2">
-              <label className="block text-[10px] text-zinc-400 uppercase mb-2 font-bold">Lookback Window</label>
+              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Lookback Window</label>
               <select
                 value={lookbackDays}
                 onChange={(e) => setLookbackDays(Number(e.target.value))}
@@ -397,12 +397,12 @@ export const ResearchLab: React.FC = () => {
 
           {/* Dynamic Strategy Parameters */}
           <div>
-            <label className="block text-[10px] text-zinc-400 uppercase tracking-wider mb-2 font-bold flex items-center justify-between">
+            <label className="block text-2xs text-zinc-400 uppercase tracking-wider mb-2 font-bold flex items-center justify-between">
               <span>Strategy Parameters</span>
-              <span className="text-[9px] text-zinc-500">v{currentStrategy?.version_num || 1}</span>
+              <span className="text-2xs text-zinc-500">v{currentStrategy?.version_num || 1}</span>
             </label>
             {!currentStrategy?.parameter_schema || Object.keys(currentStrategy.parameter_schema).length === 0 ? (
-              <div className="text-[10px] text-zinc-500 bg-zinc-900/50 p-3 rounded border border-white/5 text-center italic">
+              <div className="text-2xs text-zinc-500 bg-zinc-900/50 p-3 rounded border border-white/5 text-center italic">
                 No tunable parameters configured.<br/>Executing with strategy defaults.
               </div>
             ) : (
@@ -414,7 +414,7 @@ export const ResearchLab: React.FC = () => {
                         {schema.title || k}
                       </div>
                       {schema.description && (
-                        <div className="text-[9px] text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity absolute bg-black border border-white/10 p-1.5 rounded z-10 -ml-1 mt-1 max-w-[200px]">
+                        <div className="text-2xs text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity absolute bg-black border border-white/10 p-1.5 rounded z-10 -ml-1 mt-1 max-w-[200px]">
                           {schema.description}
                         </div>
                       )}
@@ -446,7 +446,7 @@ export const ResearchLab: React.FC = () => {
           {/* Run Error Message */}
           {runError && (
             <div className="p-3 rounded bg-rose-950/30 border border-rose-900/50 flex flex-col space-y-2">
-              <div className="text-rose-400 text-[10px] leading-relaxed flex items-start space-x-2">
+              <div className="text-rose-400 text-2xs leading-relaxed flex items-start space-x-2">
                 <AlertTriangle className="w-3.5 h-3.5 flex-none mt-0.5" />
                 <span>{runError}</span>
               </div>
@@ -540,12 +540,12 @@ export const ResearchLab: React.FC = () => {
 
           {/* Active Run Status & Manifest Trigger */}
           {activeRun && (
-            <div className="flex items-center space-x-3 text-[11px]">
+            <div className="flex items-center space-x-3 text-2xs">
               <span className="text-zinc-400">
                 Run: <strong className="text-zinc-200">{activeRun.id.slice(0, 8)}</strong>
               </span>
               <span
-                className={`px-1.5 py-0.5 rounded font-bold uppercase text-[10px] ${
+                className={`px-1.5 py-0.5 rounded font-bold uppercase text-2xs ${
                   activeRun.status === "COMPLETED"
                     ? "bg-emerald-950/40 text-emerald-400 border border-emerald-900/50"
                     : activeRun.status === "FAILED"

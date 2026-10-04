@@ -190,16 +190,16 @@ export const AlertsPanel: React.FC = () => {
 
               <div className="flex items-center space-x-4">
                 {alert.is_active ? (
-                  <span className="text-[10px] text-emerald-500 bg-emerald-950/50 px-2 py-0.5 rounded">
+                  <span className="text-2xs text-emerald-500 bg-emerald-950/50 px-2 py-0.5 rounded">
                     ACTIVE
                   </span>
                 ) : (
                   <div className="text-right">
-                    <span className="text-[10px] text-amber-500 bg-amber-950/50 px-2 py-0.5 rounded block">
+                    <span className="text-2xs text-amber-500 bg-amber-950/50 px-2 py-0.5 rounded block">
                       TRIGGERED
                     </span>
                     {alert.triggered_at && (
-                      <span className="text-[9px] text-zinc-500 block mt-1">
+                      <span className="text-2xs text-zinc-500 block mt-1">
                         {new Date(alert.triggered_at).toLocaleTimeString()}
                       </span>
                     )}
@@ -217,7 +217,7 @@ export const AlertsPanel: React.FC = () => {
         )}
       </div>
 
-      <div className="p-2 border-t border-white/5 text-center text-[10px] text-zinc-600 shrink-0">
+      <div className="p-2 border-t border-white/5 text-center text-2xs text-zinc-600 shrink-0">
         Alerts evaluate every 15s against live Binance prices
       </div>
     </div>

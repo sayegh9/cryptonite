@@ -76,21 +76,21 @@ const StrategyRow = React.memo(function StrategyRow({ st, stats, equity, onSelec
         <div className="flex items-center gap-2">
           <StatusDot status={st.status} />
           <span className="font-bold text-zinc-200 truncate">{st.instance_id}</span>
-          <span className={`text-[9px] font-black tracking-wider ${statusText(st.status)}`}>{st.status}</span>
+          <span className={`text-2xs font-black tracking-wider ${statusText(st.status)}`}>{st.status}</span>
         </div>
-        <div className="mt-0.5 pl-4 text-[10px] text-zinc-500 truncate">
+        <div className="mt-0.5 pl-4 text-2xs text-zinc-500 truncate">
           {st.strategy_name} · {st.instrument_id} · {st.timeframe}
         </div>
       </div>
 
       <div className="flex flex-col items-end">
         <Sparkline values={stats.curve7d} label={`${st.strategy_name} 7-day cumulative realized PnL`} />
-        <span className={`text-[10px] font-bold tabular-nums ${stats.pnl7d > 0 ? "text-emerald-400" : stats.pnl7d < 0 ? "text-red-400" : "text-zinc-500"}`}>
+        <span className={`text-2xs font-bold tabular-nums ${stats.pnl7d > 0 ? "text-emerald-400" : stats.pnl7d < 0 ? "text-red-400" : "text-zinc-500"}`}>
           7d {fmtSignedUsd(stats.pnl7d)}
         </span>
       </div>
 
-      <dl className="grid grid-cols-2 gap-x-2 text-[10px] tabular-nums">
+      <dl className="grid grid-cols-2 gap-x-2 text-2xs tabular-nums">
         <dt className="text-zinc-500">Win</dt>
         <dd className={`text-right font-bold ${stats.winRate === null ? "text-zinc-600" : stats.winRate >= 0.5 ? "text-emerald-400" : "text-amber-400"}`}>
           {stats.winRate === null ? "—" : fmtPct(stats.winRate, 0)}
@@ -104,7 +104,7 @@ const StrategyRow = React.memo(function StrategyRow({ st, stats, equity, onSelec
       </dl>
 
       <div className="min-w-0">
-        <div className="flex justify-between text-[10px] mb-1 tabular-nums">
+        <div className="flex justify-between text-2xs mb-1 tabular-nums">
           <span className="text-zinc-400">{fmtCompactUsd(stats.openNotional)} / {fmtCompactUsd(alloc)}</span>
           <span className="text-zinc-500">{equity > 0 ? fmtPct(alloc / equity) : "—"} eq</span>
         </div>
@@ -166,7 +166,7 @@ export function StrategyDashboard({ onSelect }: { onSelect: (instanceId: string)
           <span id="strategy-instances-title">Strategy Instances</span>
         </span>
         {visible.length > 0 && (
-          <span className="text-[10px] font-normal normal-case tracking-normal text-zinc-500">
+          <span className="text-2xs font-normal normal-case tracking-normal text-zinc-500">
             {live} live · {paused} paused · {visible.length - live - paused} halted
           </span>
         )}

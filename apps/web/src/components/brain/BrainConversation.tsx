@@ -37,7 +37,7 @@ function ToolChips({ message }: { message: BrainMessage }) {
         return (
           <li
             key={c.id}
-            className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-mono ${
+            className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-2xs font-mono ${
               held
                 ? "border-amber-700 text-amber-300"
                 : c.status === "RUNNING"
@@ -58,7 +58,7 @@ function ToolChips({ message }: { message: BrainMessage }) {
 function MessageView({ message }: { message: BrainMessage }) {
   if (message.role === "system") {
     return (
-      <div className="flex items-start gap-1.5 px-2 text-[10px] font-mono text-zinc-500" data-testid="brain-system-note">
+      <div className="flex items-start gap-1.5 px-2 text-2xs font-mono text-zinc-500" data-testid="brain-system-note">
         <Info className="mt-0.5 h-3 w-3 flex-none" />
         <span>{message.content}</span>
       </div>
@@ -72,7 +72,7 @@ function MessageView({ message }: { message: BrainMessage }) {
           user ? "border-cyan-800/50 bg-cyan-950/40 text-cyan-100" : "border-zinc-800/80 bg-zinc-900/90 text-zinc-200"
         }`}
       >
-        <div className="mb-1 flex items-center justify-between gap-3 text-[10px] font-mono uppercase tracking-wider text-zinc-400">
+        <div className="mb-1 flex items-center justify-between gap-3 text-2xs font-mono uppercase tracking-wider text-zinc-400">
           <span className="flex items-center gap-1">
             {user ? <UserIcon className="h-3 w-3 text-cyan-400" /> : <BrainCircuit className="h-3 w-3 text-cyan-400" />}
             {user ? "You" : "Brain"}
@@ -91,7 +91,7 @@ function MessageView({ message }: { message: BrainMessage }) {
         {user ? (
           <p className="whitespace-pre-wrap text-xs">{message.content}</p>
         ) : (
-          <div className="text-xs leading-relaxed [&_p]:my-1 [&_ul]:my-1 [&_table]:text-[10px]">
+          <div className="text-xs leading-relaxed [&_p]:my-1 [&_ul]:my-1 [&_table]:text-2xs">
             {message.content ? (
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
             ) : message.status === "streaming" ? (
@@ -105,9 +105,9 @@ function MessageView({ message }: { message: BrainMessage }) {
         {message.widgets.map((w) => (
           <BrainWidgetView key={w.id} widget={w} />
         ))}
-        {message.status === "stopped" && <p className="mt-1 text-[10px] font-mono text-zinc-500">Stopped.</p>}
+        {message.status === "stopped" && <p className="mt-1 text-2xs font-mono text-zinc-500">Stopped.</p>}
         {message.status === "error" && message.error && (
-          <p role="alert" className="mt-1 flex items-center gap-1 text-[10px] font-mono text-rose-400">
+          <p role="alert" className="mt-1 flex items-center gap-1 text-2xs font-mono text-rose-400">
             <ShieldAlert className="h-3 w-3" />
             {message.error.code === "BUDGET"
               ? `Daily AI budget reached: ${message.error.message}`
@@ -157,7 +157,7 @@ export function BrainConversation({ compact = false }: { compact?: boolean }) {
           <div className="mx-auto max-w-md py-10 text-center font-mono">
             <BrainCircuit className="mx-auto mb-3 h-10 w-10 text-cyan-400/40" />
             <p className="text-sm font-semibold text-zinc-200">One conversation with the Brain</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+            <p className="mt-1 text-2xs leading-relaxed text-zinc-400">
               It reads markets, research data and backtests, and can stage debates. It can only <em>propose</em> paper orders:
               every order card waits for your approval.
             </p>
@@ -167,7 +167,7 @@ export function BrainConversation({ compact = false }: { compact?: boolean }) {
                   key={s}
                   type="button"
                   onClick={() => submit(s)}
-                  className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-left text-[11px] text-zinc-300 hover:border-cyan-800 hover:text-cyan-200"
+                  className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-left text-2xs text-zinc-300 hover:border-cyan-800 hover:text-cyan-200"
                 >
                   {s}
                 </button>
@@ -210,7 +210,7 @@ export function BrainConversation({ compact = false }: { compact?: boolean }) {
             <button
               type="button"
               onClick={stopBrain}
-              className="flex items-center gap-1 rounded-lg border border-rose-800 bg-rose-950/60 px-3 py-2 text-[11px] font-bold text-rose-300 hover:bg-rose-900"
+              className="flex items-center gap-1 rounded-lg border border-rose-800 bg-rose-950/60 px-3 py-2 text-2xs font-bold text-rose-300 hover:bg-rose-900"
               aria-label="Stop the Brain"
             >
               <Square className="h-3 w-3" /> Stop
@@ -219,7 +219,7 @@ export function BrainConversation({ compact = false }: { compact?: boolean }) {
             <button
               type="submit"
               disabled={!draft.trim()}
-              className="flex items-center gap-1 rounded-lg bg-cyan-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-cyan-500 disabled:opacity-40"
+              className="flex items-center gap-1 rounded-lg bg-cyan-600 px-3 py-2 text-2xs font-bold text-white hover:bg-cyan-500 disabled:opacity-40"
               aria-label="Send to the Brain"
             >
               <Send className="h-3 w-3" /> Send

@@ -163,12 +163,12 @@ function InlineActionCard({ codeStr, onTriggerDebate, fallbackSymbol }: { codeSt
           <Sparkles className="w-4 h-4" /> Strategy Manifest
         </div>
       </div>
-      <pre className="text-[10px] text-zinc-300 bg-zinc-900/80 p-3 rounded-lg overflow-x-auto mb-4 border border-zinc-800">
+      <pre className="text-2xs text-zinc-300 bg-zinc-900/80 p-3 rounded-lg overflow-x-auto mb-4 border border-zinc-800">
         <code>{codeStr}</code>
       </pre>
 
       {/* Sizing preview: % of paper equity, disabled while equity is unknown */}
-      <div className="p-3 bg-zinc-950/50 border border-zinc-800/60 rounded-lg space-y-2 mb-4 font-mono text-[11px]" data-testid="manifest-sizing">
+      <div className="p-3 bg-zinc-950/50 border border-zinc-800/60 rounded-lg space-y-2 mb-4 font-mono text-2xs" data-testid="manifest-sizing">
         <div className="flex items-center justify-between text-zinc-400">
           <span className="flex items-center space-x-1">
             <Sliders className="w-3 h-3 text-cyan-400" aria-hidden="true" />
@@ -523,7 +523,7 @@ export function OrchestratorCanvas({
             </div>
             <div className="hidden md:block">
               <div className="font-bold text-xs text-zinc-100 leading-none">{currentAgent.name} Canvas</div>
-              <div className="text-[9.5px] text-zinc-400 font-mono mt-0.5">{currentAgent.roleTitle}</div>
+              <div className="text-2xs text-zinc-400 font-mono mt-0.5">{currentAgent.roleTitle}</div>
             </div>
           </div>
 
@@ -536,7 +536,7 @@ export function OrchestratorCanvas({
                 <button
                   key={ag.id}
                   onClick={() => onSelectAgent && onSelectAgent(ag.id)}
-                  className={`px-2 py-1 rounded text-[10px] font-mono transition-all flex items-center space-x-1 ${
+                  className={`px-2 py-1 rounded text-2xs font-mono transition-all flex items-center space-x-1 ${
                     isAgSelected
                       ? `${ag.badgeColor} font-bold shadow-sm`
                       : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
@@ -553,14 +553,14 @@ export function OrchestratorCanvas({
 
         {/* Right Info & Actions */}
         <div className="flex items-center space-x-2 flex-none">
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-cyan-300 border border-zinc-700 hidden lg:inline">
+          <span className="text-2xs font-mono px-2 py-0.5 rounded bg-zinc-800 text-cyan-300 border border-zinc-700 hidden lg:inline">
             Symbol Context: {activeSymbol} ({activeTimeframe})
           </span>
 
           {messages.length > 0 && (
             <button
               onClick={() => setMessages([])}
-              className="flex items-center space-x-1 text-[10px] font-mono text-zinc-500 hover:text-zinc-300 px-2 py-0.5 rounded hover:bg-zinc-900 transition-colors"
+              className="flex items-center space-x-1 text-2xs font-mono text-zinc-500 hover:text-zinc-300 px-2 py-0.5 rounded hover:bg-zinc-900 transition-colors"
               title="Clear canvas history"
             >
               <Trash2 className="w-3 h-3" />
@@ -601,7 +601,7 @@ export function OrchestratorCanvas({
                       <Icon className="w-4 h-4 flex-none mt-0.5" />
                       <div className="min-w-0 flex-1">
                         <div className="font-bold text-zinc-200 truncate">{chip.title}</div>
-                        <div className="text-[10px] text-zinc-400 line-clamp-1 mt-0.5">
+                        <div className="text-2xs text-zinc-400 line-clamp-1 mt-0.5">
                           {chip.prompt}
                         </div>
                       </div>
@@ -620,7 +620,7 @@ export function OrchestratorCanvas({
                     key={msg.id}
                     role="alert"
                     data-testid="canvas-agent-error"
-                    className="flex items-center justify-between gap-3 rounded-lg border border-rose-900/60 bg-rose-950/30 px-3 py-2 font-mono text-[11px] text-rose-300"
+                    className="flex items-center justify-between gap-3 rounded-lg border border-rose-900/60 bg-rose-950/30 px-3 py-2 font-mono text-2xs text-rose-300"
                   >
                     <span>
                       <span className="text-zinc-500">{msg.agentName} · {new Date(msg.timestamp).toLocaleTimeString()} · </span>
@@ -646,7 +646,7 @@ export function OrchestratorCanvas({
                     msg.role === "user" ? "items-end" : "items-start"
                   }`}
                 >
-                  <div className="flex items-center space-x-1.5 text-[10px] font-mono text-zinc-500 px-1">
+                  <div className="flex items-center space-x-1.5 text-2xs font-mono text-zinc-500 px-1">
                     {msg.role === "assistant" && (
                       <span className={`flex items-center space-x-1 font-semibold ${msgAgentConfig.color}`}>
                         <MsgIcon className="w-3 h-3" />
@@ -667,8 +667,8 @@ export function OrchestratorCanvas({
                   >
                     {/* Visual Micro-Dispatch Trace if assistant */}
                     {msg.dispatches && msg.dispatches.length > 0 && (
-                      <div className="mb-2 p-2.5 bg-zinc-950/90 border border-zinc-800/80 rounded-xl font-mono text-[10px] space-y-1">
-                        <div className="text-zinc-500 uppercase tracking-wider text-[9px] font-bold">
+                      <div className="mb-2 p-2.5 bg-zinc-950/90 border border-zinc-800/80 rounded-xl font-mono text-2xs space-y-1">
+                        <div className="text-zinc-500 uppercase tracking-wider text-2xs font-bold">
                           Specialist Execution Trace:
                         </div>
                         {msg.dispatches.map((d, idx) => (
@@ -678,7 +678,7 @@ export function OrchestratorCanvas({
                               <span className="text-zinc-300 font-semibold">{d.agent}:</span>
                               <span className="truncate">{d.status}</span>
                             </span>
-                            {d.latencyMs !== null && <span className="text-zinc-500 text-[10px] flex-none">{d.latencyMs}ms</span>}
+                            {d.latencyMs !== null && <span className="text-zinc-500 text-2xs flex-none">{d.latencyMs}ms</span>}
                           </div>
                         ))}
                       </div>
@@ -702,11 +702,11 @@ export function OrchestratorCanvas({
                               const isInline = !match && !codeStr.includes('\n');
                               
                               return !isInline ? (
-                                <pre className="bg-zinc-900/80 p-3 rounded-lg overflow-x-auto border border-zinc-800 my-2 text-[11px]">
+                                <pre className="bg-zinc-900/80 p-3 rounded-lg overflow-x-auto border border-zinc-800 my-2 text-2xs">
                                   <code className={className} {...rest}>{children}</code>
                                 </pre>
                               ) : (
-                                <code className="bg-zinc-800/80 text-cyan-200 px-1.5 py-0.5 rounded text-[11px]" {...rest}>{children}</code>
+                                <code className="bg-zinc-800/80 text-cyan-200 px-1.5 py-0.5 rounded text-2xs" {...rest}>{children}</code>
                               );
                             }
                           }}
@@ -730,14 +730,14 @@ export function OrchestratorCanvas({
                 <Loader2 className={`w-4 h-4 ${currentAgent.color} animate-spin mt-0.5 flex-none`} />
                 <div className="space-y-0.5">
                   <div className="text-zinc-300">{currentAgent.name} processing query...</div>
-                  <div className="text-[10px] text-zinc-500">Executing background diagnostics...</div>
+                  <div className="text-2xs text-zinc-500">Executing background diagnostics...</div>
                 </div>
               </div>
               
               {/* Live Telemetry Display while loading */}
               {liveTelemetry.length > 0 && (
-                <div className="p-2.5 bg-zinc-950/90 border border-zinc-800/80 rounded-xl font-mono text-[10px] space-y-1">
-                  <div className="text-zinc-500 uppercase tracking-wider text-[9px] font-bold">
+                <div className="p-2.5 bg-zinc-950/90 border border-zinc-800/80 rounded-xl font-mono text-2xs space-y-1">
+                  <div className="text-zinc-500 uppercase tracking-wider text-2xs font-bold">
                     Live Specialist Telemetry:
                   </div>
                   {liveTelemetry.map((d, idx) => (
@@ -747,7 +747,7 @@ export function OrchestratorCanvas({
                         <span className="text-zinc-300 font-semibold">{d.agent}:</span>
                         <span className="truncate">{d.status}</span>
                       </span>
-                      {d.latencyMs !== null && <span className="text-zinc-500 text-[10px] flex-none">{d.latencyMs}ms</span>}
+                      {d.latencyMs !== null && <span className="text-zinc-500 text-2xs flex-none">{d.latencyMs}ms</span>}
                     </div>
                   ))}
                 </div>
@@ -761,8 +761,8 @@ export function OrchestratorCanvas({
       <div className="flex-none p-3 sm:p-4 bg-zinc-900/40 border-t border-zinc-800">
         <div className="max-w-4xl mx-auto w-full space-y-2">
           {/* Quick Context Stash Tags */}
-          <div className="flex items-center space-x-1.5 overflow-x-auto text-[10px] font-mono text-zinc-400 py-0.5">
-            <span className="text-zinc-500 text-[9px] uppercase tracking-wider flex-none">Quick Mentions:</span>
+          <div className="flex items-center space-x-1.5 overflow-x-auto text-2xs font-mono text-zinc-400 py-0.5">
+            <span className="text-zinc-500 text-2xs uppercase tracking-wider flex-none">Quick Mentions:</span>
             {["@scout", "@cro", "@debater", "@outbox", "@lead"].map((agTag, idx) => (
               <button
                 key={idx}

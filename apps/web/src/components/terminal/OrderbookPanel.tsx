@@ -71,11 +71,11 @@ export function OrderbookPanel({ symbol }: OrderbookPanelProps) {
   }, [symbol]);
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950 text-zinc-200 font-mono text-[11px]">
+    <div className="flex flex-col h-full bg-zinc-950 text-zinc-200 font-mono text-2xs">
       <div className="px-3 py-1.5 border-b border-white/5 bg-zinc-900/60 flex items-center justify-between flex-none">
         <div className="flex items-center space-x-1.5">
           <BookOpen className="w-3.5 h-3.5 text-cyan-400" aria-hidden="true" />
-          <span className="font-bold text-zinc-100 uppercase tracking-wider text-[11px]">
+          <span className="font-bold text-zinc-100 uppercase tracking-wider text-2xs">
             {symbol.replace(".BINANCE", "")}
           </span>
         </div>

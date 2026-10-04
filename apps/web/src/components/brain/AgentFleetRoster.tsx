@@ -138,7 +138,7 @@ export function AgentFleetRoster({
           <span className="uppercase tracking-wider">Agent Fleet Topology</span>
         </div>
         <div
-          className={`flex items-center space-x-1 px-1.5 py-0.5 rounded border text-[10px] font-mono ${
+          className={`flex items-center space-x-1 px-1.5 py-0.5 rounded border text-2xs font-mono ${
             onlineCount > 0 ? "bg-emerald-950/50 border-emerald-800/50 text-emerald-400" : "bg-zinc-900 border-zinc-800 text-zinc-400"
           }`}
           title="Agents that reported ONLINE on the heartbeat stream"
@@ -151,13 +151,13 @@ export function AgentFleetRoster({
       {/* Trigger Governor Control */}
       <div className="p-2.5 border-b border-zinc-800 bg-zinc-900/20 flex-none">
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1">
+          <span className="text-2xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1">
             <Sliders className="w-3 h-3 text-zinc-500" />
             <span>Debate Trigger Governor:</span>
           </span>
         </div>
 
-        <div className="grid grid-cols-3 gap-1 text-[9.5px] font-mono">
+        <div className="grid grid-cols-3 gap-1 text-2xs font-mono">
           <button
             onClick={() => onTriggerModeChange("high-edge")}
             className={`px-1 py-1 rounded border transition-colors text-center whitespace-nowrap overflow-hidden text-ellipsis ${
@@ -220,25 +220,25 @@ export function AgentFleetRoster({
                     <div className="font-bold text-xs text-zinc-200 leading-none flex items-center space-x-1.5">
                       <span>{agent.name}</span>
                       {isSelected && (
-                        <span className="px-1 py-0.2 bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-[8.5px] rounded font-mono font-bold">
+                        <span className="px-1 py-0.2 bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-2xs rounded font-mono font-bold">
                           SELECTED
                         </span>
                       )}
                     </div>
-                    <div className="text-[10px] text-zinc-400 font-mono mt-0.5">{agent.tagline}</div>
+                    <div className="text-2xs text-zinc-400 font-mono mt-0.5">{agent.tagline}</div>
                   </div>
                 </div>
 
-                <span className={`px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold ${agent.statusColor}`}>
+                <span className={`px-1.5 py-0.5 rounded border text-2xs font-mono font-bold ${agent.statusColor}`}>
                   {agent.status}
                 </span>
               </div>
 
-              <p className="text-[11px] text-zinc-400 leading-relaxed mb-2">
+              <p className="text-2xs text-zinc-400 leading-relaxed mb-2">
                 {agent.desc}
               </p>
 
-              <div className="flex items-center justify-between pt-1.5 border-t border-zinc-800/60 text-[10px] font-mono">
+              <div className="flex items-center justify-between pt-1.5 border-t border-zinc-800/60 text-2xs font-mono">
                 <span className="text-zinc-500">Permission:</span>
                 <span className={`px-1.5 py-0.2 rounded border font-semibold ${agent.autonomyColor}`}>
                   {agent.autonomy}
@@ -250,7 +250,7 @@ export function AgentFleetRoster({
       </div>
 
       {/* Bottom Fleet Performance Stats */}
-      <div className="flex-none p-2.5 bg-zinc-900/40 border-t border-zinc-800 font-mono text-[11px] text-zinc-500">
+      <div className="flex-none p-2.5 bg-zinc-900/40 border-t border-zinc-800 font-mono text-2xs text-zinc-500">
         <span className="flex items-center space-x-1">
           <TrendingUp className="w-3 h-3 text-zinc-500" aria-hidden="true" />
           <span>Win rate, calibration and model routes: Mission Control → Autonomy &amp; Evals</span>

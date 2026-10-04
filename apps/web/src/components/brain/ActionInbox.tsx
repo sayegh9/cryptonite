@@ -299,7 +299,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
             <button
               onClick={handleClearCompleted}
               title="Clear all completed and rejected proposals"
-              className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-[10px] font-mono text-zinc-400 hover:text-cyan-300 transition-colors flex items-center space-x-1"
+              className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-2xs font-mono text-zinc-400 hover:text-cyan-300 transition-colors flex items-center space-x-1"
             >
               <Archive className="w-3 h-3" />
               <span>Clear History</span>
@@ -319,7 +319,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
       </div>
 
       {/* Filter Tabs Bar */}
-      <div className="flex-none px-3 py-1.5 bg-zinc-900/40 border-b border-zinc-800/80 flex items-center justify-between text-[11px] font-mono">
+      <div className="flex-none px-3 py-1.5 bg-zinc-900/40 border-b border-zinc-800/80 flex items-center justify-between text-2xs font-mono">
         <div className="flex items-center space-x-1">
           <button
             onClick={() => setActiveTab("pending")}
@@ -331,7 +331,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
           >
             <span>Pending</span>
             {pendingCount > 0 && (
-              <span className="px-1 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[9px]">
+              <span className="px-1 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-2xs">
                 {pendingCount}
               </span>
             )}
@@ -347,7 +347,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
           >
             <span>Staged</span>
             {completedCount > 0 && (
-              <span className="px-1 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[9px]">
+              <span className="px-1 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-2xs">
                 {completedCount}
               </span>
             )}
@@ -363,7 +363,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
           >
             <span>Rejected</span>
             {rejectedCount > 0 && (
-              <span className="px-1 py-0.2 rounded-full bg-zinc-700 text-zinc-300 text-[9px]">
+              <span className="px-1 py-0.2 rounded-full bg-zinc-700 text-zinc-300 text-2xs">
                 {rejectedCount}
               </span>
             )}
@@ -380,7 +380,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
           >
             <span>No trade</span>
             {noTradeCount > 0 && (
-              <span className="px-1 py-0.2 rounded-full bg-sky-500/20 text-sky-300 text-[9px]">
+              <span className="px-1 py-0.2 rounded-full bg-sky-500/20 text-sky-300 text-2xs">
                 {noTradeCount}
               </span>
             )}
@@ -395,17 +395,17 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
             }`}
           >
             <span>All</span>
-            <span className="text-zinc-500 text-[9px]">({totalCount})</span>
+            <span className="text-zinc-500 text-2xs">({totalCount})</span>
           </button>
         </div>
 
-        <span className="text-[10px] text-zinc-500 font-mono">
+        <span className="text-2xs text-zinc-500 font-mono">
           {filteredDebates.length} {filteredDebates.length === 1 ? "item" : "items"}
         </span>
       </div>
 
       {syncError && (
-        <div role="alert" className="flex-none px-3 py-1.5 bg-rose-950/40 border-b border-rose-900/60 text-[11px] font-mono text-rose-300" data-testid="inbox-sync-error">
+        <div role="alert" className="flex-none px-3 py-1.5 bg-rose-950/40 border-b border-rose-900/60 text-2xs font-mono text-rose-300" data-testid="inbox-sync-error">
           {syncError} · showing only what this browser already knew
         </div>
       )}
@@ -421,7 +421,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                   <CheckCircle2 className="w-4 h-4" />
                 </div>
                 <div className="font-bold text-xs text-zinc-200">Inbox Zero (All Clear)</div>
-                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                <p className="text-2xs text-zinc-400 leading-relaxed">
                   No active trade proposals awaiting operator approval. When new signals or debate consensus trigger, actionable cards appear here.
                 </p>
                 {onTriggerDebate && (
@@ -438,7 +438,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
               {/* Annotated Sample Preview Card (Guide) */}
               <div className="p-3.5 rounded-lg border-2 border-dashed border-cyan-900/40 bg-zinc-900/30 space-y-3 relative">
-                <div className="flex items-center justify-between text-[10px] font-mono text-cyan-400 font-bold uppercase tracking-wider">
+                <div className="flex items-center justify-between text-2xs font-mono text-cyan-400 font-bold uppercase tracking-wider">
                   <span>Sample Action Card (Interactive Guide)</span>
                   <span className="px-1.5 py-0.5 rounded bg-cyan-950 border border-cyan-800 text-cyan-300">
                     Preview
@@ -446,7 +446,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                 </div>
 
                 <div className="space-y-1">
-                  <div className="flex items-center space-x-1 text-[9px] font-mono text-zinc-500 uppercase tracking-wider">
+                  <div className="flex items-center space-x-1 text-2xs font-mono text-zinc-500 uppercase tracking-wider">
                     <span className="text-cyan-400 font-bold">1. Verdict & Conviction:</span>
                   </div>
                   <div className="p-2 bg-zinc-900 border border-zinc-800 rounded flex items-center justify-between">
@@ -454,23 +454,23 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                       <span className="w-2 h-2 rounded-full bg-zinc-500" />
                       <span className="font-bold text-xs text-zinc-300 font-mono">&lt;symbol&gt; · &lt;side&gt;</span>
                     </div>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-700">
+                    <span className="text-2xs font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-700">
                       &lt;verdict · conviction&gt;
                     </span>
                   </div>
                 </div>
 
                 <div className="space-y-1">
-                  <div className="flex items-center space-x-1 text-[9px] font-mono text-zinc-500 uppercase tracking-wider">
+                  <div className="flex items-center space-x-1 text-2xs font-mono text-zinc-500 uppercase tracking-wider">
                     <span className="text-purple-400 font-bold">2. Executive Thesis:</span>
                   </div>
-                  <div className="p-2 bg-zinc-900/70 border border-zinc-800 rounded text-[11px] text-zinc-400 space-y-1">
+                  <div className="p-2 bg-zinc-900/70 border border-zinc-800 rounded text-2xs text-zinc-400 space-y-1">
                     <div>The portfolio manager's reasoning from the debate, and the full transcript below it.</div>
                   </div>
                 </div>
 
                 <div className="space-y-1 pt-1 border-t border-zinc-800">
-                  <div className="flex items-center space-x-1 text-[9px] font-mono text-zinc-500 uppercase tracking-wider">
+                  <div className="flex items-center space-x-1 text-2xs font-mono text-zinc-500 uppercase tracking-wider">
                     <span className="text-emerald-400 font-bold">3. 1-Click Governance Controls:</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 pt-1 font-mono text-xs">
@@ -492,7 +492,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                 <Archive className="w-4 h-4" />
               </div>
               <div className="font-bold text-xs text-zinc-300">No {activeTab} proposals</div>
-              <p className="text-[11px] text-zinc-500">
+              <p className="text-2xs text-zinc-500">
                 No items found in this category. Use the tabs above to switch views.
               </p>
             </div>
@@ -546,7 +546,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                       </span>
                     </div>
                     {run.timestamp && (
-                      <span className="text-[9px] text-zinc-500 font-mono flex items-center mt-1 ml-4">
+                      <span className="text-2xs text-zinc-500 font-mono flex items-center mt-1 ml-4">
                         <Clock className="w-2.5 h-2.5 mr-1 flex-shrink-0" />
                         {new Date(run.timestamp).toLocaleString()}
                       </span>
@@ -556,7 +556,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                   <div className="flex items-center space-x-1.5 flex-shrink-0">
                     <span
 
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                      className={`px-1.5 py-0.5 rounded text-2xs font-mono font-bold border ${
                         isCompleted && !isRejected
                           ? "bg-emerald-950 text-emerald-400 border-emerald-800"
                           : isFailed
@@ -585,13 +585,13 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                 </div>
 
                 {/* Brief Thesis */}
-                <div className="p-2 bg-zinc-950/70 border border-zinc-800/80 rounded text-[11px] text-zinc-300 space-y-1 mb-2 font-sans">
+                <div className="p-2 bg-zinc-950/70 border border-zinc-800/80 rounded text-2xs text-zinc-300 space-y-1 mb-2 font-sans">
                   {run.decision ? (
                     <div>
                       <strong>Verdict:</strong> {run.decision}
                     </div>
                   ) : isFailed ? (
-                    <div className="text-rose-400 font-mono text-[10px]">
+                    <div className="text-rose-400 font-mono text-2xs">
                       <strong>Notice:</strong> Debate run failed or timed out during execution.
                     </div>
                   ) : (
@@ -601,7 +601,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
                 {/* Sizing: a % of the paper account's equity, sent as allocation_pct */}
                 {isActionable && (
-                  <div className="p-2 bg-zinc-950/50 border border-zinc-800/60 rounded space-y-1.5 mb-2 font-mono text-[11px]" data-testid="inbox-sizing">
+                  <div className="p-2 bg-zinc-950/50 border border-zinc-800/60 rounded space-y-1.5 mb-2 font-mono text-2xs" data-testid="inbox-sizing">
                     <div className="flex items-center justify-between text-zinc-400">
                       <label htmlFor={`size-${run.runId}`} className="flex items-center space-x-1">
                         <Sliders className="w-3 h-3 text-cyan-400" aria-hidden="true" />
@@ -630,7 +630,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                       aria-valuetext={`${currentPct}% of equity`}
                       className="w-full accent-cyan-400 h-1 bg-zinc-800 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
                     />
-                    <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                    <div className="flex items-center justify-between text-2xs text-zinc-500">
                       <span>1%</span>
                       <span>
                         {proposedPct[run.runId] != null
@@ -641,7 +641,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                       </span>
                       <span>25% max</span>
                     </div>
-                    <p className="text-[10px] text-zinc-500">Final size may be reduced to the mandate's room.</p>
+                    <p className="text-2xs text-zinc-500">Final size may be reduced to the mandate's room.</p>
                     <ApprovalRiskContext
                       symbol={symbolDisplay === "UNKNOWN" ? null : symbolDisplay}
                       side={sideOf(decisions[run.runId]?.recommendation ?? run.decision)}
@@ -693,7 +693,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                       </button>
                     </div>
                     {actionError[run.runId] && (
-                      <p role="alert" className="text-[11px] text-rose-400 font-mono" data-testid="inbox-action-error">
+                      <p role="alert" className="text-2xs text-rose-400 font-mono" data-testid="inbox-action-error">
                         {actionError[run.runId]}
                       </p>
                     )}
@@ -704,7 +704,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                 <div className="pt-1.5 border-t border-zinc-800/60 flex items-center justify-between">
                   <button
                     onClick={() => setExpandedRunId(isExpanded ? null : run.runId)}
-                    className="text-[10px] font-mono text-zinc-400 hover:text-cyan-400 flex items-center space-x-1 transition-colors"
+                    className="text-2xs font-mono text-zinc-400 hover:text-cyan-400 flex items-center space-x-1 transition-colors"
                   >
                     <span>
                       {isExpanded ? "Hide Debate Log" : "Audit Full Transcript"} (
@@ -715,7 +715,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                 </div>
 
                 {isExpanded && (
-                  <div className="mt-2 p-2 bg-zinc-950 rounded border border-zinc-800 space-y-2 max-h-48 overflow-y-auto text-[10px] font-mono">
+                  <div className="mt-2 p-2 bg-zinc-950 rounded border border-zinc-800 space-y-2 max-h-48 overflow-y-auto text-2xs font-mono">
                     {run.turns?.map((turn, tIdx) => (
                       <div
                         key={tIdx}

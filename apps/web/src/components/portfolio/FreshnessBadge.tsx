@@ -27,7 +27,7 @@ export function FreshnessBadge() {
     : ["bg-amber-400", `Polling · ${age}s ago`];
 
   return (
-    <span className="flex items-center gap-1.5 text-[10px] font-normal normal-case tracking-normal text-zinc-500" role="status">
+    <span className="flex items-center gap-1.5 text-2xs font-normal normal-case tracking-normal text-zinc-500" role="status">
       <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
       {label}
       {degraded && !stale && <span className="text-amber-400/80" title="Some endpoints failed on the last refresh; showing last known data">· partial</span>}

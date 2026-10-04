@@ -48,14 +48,14 @@ export function AgentChatPanel({
         <div className="flex items-center gap-2">
           <BrainCircuit className="h-5 w-5 text-cyan-400" />
           <h2 className="font-mono text-sm font-bold uppercase tracking-wider text-zinc-100">Brain</h2>
-          <span className="hidden font-mono text-[10px] text-zinc-500 sm:inline">one conversation · paper</span>
+          <span className="hidden font-mono text-2xs text-zinc-500 sm:inline">one conversation · paper</span>
         </div>
         <div className="flex items-center gap-1">
           <button
             type="button"
             disabled={streaming}
             onClick={newConversation}
-            className="flex items-center gap-1 rounded px-2 py-1 font-mono text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-40"
+            className="flex items-center gap-1 rounded px-2 py-1 font-mono text-2xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-40"
           >
             <Plus className="h-3 w-3" /> New
           </button>
@@ -77,7 +77,7 @@ export function AgentChatPanel({
       </header>
 
       {activeBacktestId && (
-        <div className="flex flex-none items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2 font-mono text-[10px] text-zinc-400">
+        <div className="flex flex-none items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2 font-mono text-2xs text-zinc-400">
           <span className="truncate">Active backtest {activeBacktestId}</span>
           <button
             type="button"

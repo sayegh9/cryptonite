@@ -98,8 +98,8 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
   const shown = [...approvals.map((a) => decided[a.id] ?? a), ...Object.values(decided).filter((d) => !approvals.some((a) => a.id === d.id))];
 
   return (
-    <section aria-label="Pending approvals" className="rounded border border-zinc-800 bg-zinc-950 p-3 font-mono text-[11px]">
-      <h3 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-zinc-400">Approval queue</h3>
+    <section aria-label="Pending approvals" className="rounded border border-zinc-800 bg-zinc-950 p-3 font-mono text-2xs">
+      <h3 className="mb-2 text-2xs font-bold uppercase tracking-wider text-zinc-400">Approval queue</h3>
       <p aria-live="polite" className="sr-only" data-testid="approval-announcer">
         {announcement}
       </p>
@@ -116,7 +116,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
               className={`rounded border p-2 ${add ? "border-amber-700 bg-amber-950/20" : "border-emerald-800 bg-emerald-950/20"}`}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className={`text-[10px] font-bold ${add ? "text-amber-300" : "text-emerald-300"}`}>
+                <span className={`text-2xs font-bold ${add ? "text-amber-300" : "text-emerald-300"}`}>
                   {add ? "ADDS RISK" : "REDUCES RISK"} · {a.mandate} · L{a.level}
                 </span>
                 {pending && (
@@ -126,7 +126,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                 )}
               </div>
               <p className="mt-1 text-zinc-100">{a.summary}</p>
-              <p className="text-[10px] text-zinc-500">
+              <p className="text-2xs text-zinc-500">
                 At timeout: {a.timeout_policy === "DENY" ? "no (nothing happens)" : "proceeds"}
                 {a.trace_id && (
                   <>
@@ -145,7 +145,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                     disabled={busy === a.id || s === 0}
                     onClick={() => decide(a, "APPROVE")}
                     aria-label={`Approve: ${a.summary}`}
-                    className={`flex-1 rounded border px-2 py-1 text-[11px] font-bold disabled:opacity-50 ${
+                    className={`flex-1 rounded border px-2 py-1 text-2xs font-bold disabled:opacity-50 ${
                       add ? "border-amber-600 bg-amber-600/20 text-amber-100" : "border-emerald-600 bg-emerald-600/20 text-emerald-100"
                     }`}
                   >
@@ -156,13 +156,13 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                     disabled={busy === a.id || s === 0}
                     onClick={() => decide(a, "VETO")}
                     aria-label={`Veto: ${a.summary}`}
-                    className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] font-bold text-zinc-300 disabled:opacity-50"
+                    className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-2xs font-bold text-zinc-300 disabled:opacity-50"
                   >
                     Veto
                   </button>
                 </div>
               ) : (
-                <p role="status" className="mt-2 text-[10px] font-bold text-zinc-300">
+                <p role="status" className="mt-2 text-2xs font-bold text-zinc-300">
                   {DONE_TEXT[a.status] ?? a.status}
                   {a.status === "APPROVED" && a.command_id ? ` · ${a.command_id.slice(0, 8)}` : ""}
                 </p>

@@ -50,10 +50,10 @@ export function EnforcedLimitsCard() {
           <ShieldAlert className="w-4 h-4 text-amber-500" aria-hidden="true" />
           <span>Enforced limits</span>
         </h2>
-        <span className="text-[11px] font-mono text-zinc-500">read-only</span>
+        <span className="text-2xs font-mono text-zinc-500">read-only</span>
       </div>
 
-      <h3 className="text-[11px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-2">Paper engine (dispatcher)</h3>
+      <h3 className="text-2xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-2">Paper engine (dispatcher)</h3>
       {why ? (
         <p className="text-xs font-mono text-zinc-400 mb-4" role="status" data-testid="enforced-limits-unknown">{why}</p>
       ) : (
@@ -68,9 +68,9 @@ export function EnforcedLimitsCard() {
           ))}
         </dl>
       )}
-      {!why && <p className="text-[11px] font-mono text-zinc-500 mb-4">Published by the orchestrator{asOf ? ` at ${new Date(asOf).toLocaleString()}` : ""}.</p>}
+      {!why && <p className="text-2xs font-mono text-zinc-500 mb-4">Published by the orchestrator{asOf ? ` at ${new Date(asOf).toLocaleString()}` : ""}.</p>}
 
-      <h3 className="text-[11px] font-mono font-bold uppercase tracking-wider text-zinc-400 mb-2">Mandates</h3>
+      <h3 className="text-2xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-2">Mandates</h3>
       {mandateError ? (
         <p className="text-xs font-mono text-zinc-400">unknown (mandates unavailable: {mandateError})</p>
       ) : mandates === null ? (
@@ -104,7 +104,7 @@ export function EnforcedLimitsCard() {
         </div>
       )}
 
-      <p className="mt-4 text-[11px] text-zinc-500">
+      <p className="mt-4 text-2xs text-zinc-500">
         Limits are not configurable here; edit the mandate (Mission Control → Mandates).
       </p>
     </section>

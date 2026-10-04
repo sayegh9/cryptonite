@@ -110,12 +110,12 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
             <span className="text-zinc-400 hidden sm:inline">Neural Operations</span>
           </div>
 
-          <div className="flex items-center space-x-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-[10px] font-mono text-emerald-400 flex-none">
+          <div className="flex items-center space-x-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-2xs font-mono text-emerald-400 flex-none">
             <ShieldCheck className="w-3 h-3 text-emerald-400 flex-none" />
             <span className="font-bold">SIMULATION MODE (RISK-FREE)</span>
           </div>
 
-          <div role="group" aria-label="AI Brain view" className="flex items-center rounded border border-zinc-800 bg-zinc-900 p-0.5 text-[11px] font-mono flex-none">
+          <div role="group" aria-label="AI Brain view" className="flex items-center rounded border border-zinc-800 bg-zinc-900 p-0.5 text-2xs font-mono flex-none">
             {([
               { id: "brain", label: "Brain", Icon: MessagesSquare },
               { id: "debates", label: "Debates", Icon: GitBranch },
@@ -142,7 +142,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           {/* Toggle Left Rail: Fleet Roster */}
           <button
             onClick={() => toggleFleet(!showFleet)}
-            className={`px-2 py-1 rounded border text-[11px] font-mono transition-colors flex items-center space-x-1 ${
+            className={`px-2 py-1 rounded border text-2xs font-mono transition-colors flex items-center space-x-1 ${
               showFleet
                 ? "bg-cyan-950/60 border-cyan-800/80 text-cyan-300 font-bold"
                 : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
@@ -156,7 +156,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           {/* Toggle Right Rail: Action Inbox */}
           <button
             onClick={() => toggleInbox(!showInbox)}
-            className={`px-2 py-1 rounded border text-[11px] font-mono transition-colors flex items-center space-x-1 ${
+            className={`px-2 py-1 rounded border text-2xs font-mono transition-colors flex items-center space-x-1 ${
               showInbox
                 ? "bg-emerald-950/60 border-emerald-800/80 text-emerald-300 font-bold"
                 : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
@@ -166,7 +166,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
             <Inbox className="w-3 h-3" />
             <span className="hidden md:inline">Inbox</span>
             {activeDebatesCount > 0 && (
-              <span className="ml-1 px-1 py-0.2 bg-emerald-500 text-zinc-950 rounded-full text-[9px] font-black">
+              <span className="ml-1 px-1 py-0.2 bg-emerald-500 text-zinc-950 rounded-full text-2xs font-black">
                 {activeDebatesCount}
               </span>
             )}
@@ -175,7 +175,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           {/* Trigger Debate Action Button */}
           <button
             onClick={() => handleTriggerLiveDebate(selectedSymbol)}
-            className="flex items-center space-x-1.5 px-2.5 py-1 bg-purple-950/80 hover:bg-purple-900 border border-purple-800 rounded text-[11px] font-mono font-bold text-purple-300 transition-colors"
+            className="flex items-center space-x-1.5 px-2.5 py-1 bg-purple-950/80 hover:bg-purple-900 border border-purple-800 rounded text-2xs font-mono font-bold text-purple-300 transition-colors"
             title="Dispatch an adversarial debate on active symbol"
           >
             <Zap className="w-3 h-3 text-purple-400 flex-none" />
@@ -185,7 +185,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           {/* How It Works Button */}
           <button
             onClick={() => setIsTourOpen(true)}
-            className="flex items-center space-x-1 px-2 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white rounded text-[11px] font-mono transition-colors"
+            className="flex items-center space-x-1 px-2 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white rounded text-2xs font-mono transition-colors"
           >
             <HelpCircle className="w-3.5 h-3.5 text-cyan-400 flex-none" />
             <span className="hidden sm:inline">❓ How It Works</span>

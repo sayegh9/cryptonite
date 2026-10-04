@@ -136,7 +136,7 @@ export function CommandPalette() {
 
         {searchResults.length > 0 && (
           <>
-            <CommandGroup heading="Markets" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[10px] tracking-wider">
+            <CommandGroup heading="Markets" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
               {searchResults.map((result) => (
                 <CommandItem
                   key={result.symbol}
@@ -151,7 +151,7 @@ export function CommandPalette() {
                       {result.base} / USDT — Binance
                     </span>
                   </div>
-                  <span className="font-mono text-[11px] text-zinc-400">Binance</span>
+                  <span className="font-mono text-2xs text-zinc-400">Binance</span>
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -159,7 +159,7 @@ export function CommandPalette() {
           </>
         )}
 
-        <CommandGroup heading="AI Agents & Debates" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[10px] tracking-wider">
+        <CommandGroup heading="AI Agents & Debates" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
           <CommandItem
             onSelect={() => {
               fetch("/agent-api/debates/trigger", {
@@ -187,7 +187,7 @@ export function CommandPalette() {
               <BrainCircuit className="mr-2 h-4 w-4 text-purple-400" />
               <span className="font-semibold">Trigger New Consensus Debate (BTCUSDT)</span>
             </div>
-            <CommandShortcut className="font-mono text-[10px] text-zinc-500">⌘D</CommandShortcut>
+            <CommandShortcut className="font-mono text-2xs text-zinc-500">⌘D</CommandShortcut>
           </CommandItem>
 
           <CommandItem
@@ -211,7 +211,7 @@ export function CommandPalette() {
               <Sparkles className="mr-2 h-4 w-4 text-cyan-400" />
               <span>Launch AI Copilot Assistant</span>
             </div>
-            <span className="text-[10px] font-mono text-zinc-500">Copilot</span>
+            <span className="text-2xs font-mono text-zinc-500">Copilot</span>
           </CommandItem>
         </CommandGroup>
 
@@ -220,7 +220,7 @@ export function CommandPalette() {
         {/* Every workspace and sub-view, grouped like the header (R6.2) */}
         {PALETTE_GROUPS.map((group) => (
           <React.Fragment key={group.label}>
-            <CommandGroup heading={group.label} className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[11px] tracking-wider">
+            <CommandGroup heading={group.label} className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
               {group.entries.map((entry) => {
                 const Icon = entry.icon;
                 return (
@@ -242,7 +242,7 @@ export function CommandPalette() {
           </React.Fragment>
         ))}
 
-        <CommandGroup heading="Risk & Controls" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[10px] tracking-wider">
+        <CommandGroup heading="Risk & Controls" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
           <CommandItem
             onSelect={() => {
               onClose();
@@ -254,14 +254,14 @@ export function CommandPalette() {
               <ShieldAlert className="mr-2 h-4 w-4 text-rose-500" />
               <span className="font-bold">EMERGENCY KILL SWITCH — Flatten All Positions</span>
             </div>
-            <span className="px-1.5 py-0.5 rounded bg-rose-950/60 border border-rose-800/50 text-[10px] font-mono text-rose-400 font-bold">
+            <span className="px-1.5 py-0.5 rounded bg-rose-950/60 border border-rose-800/50 text-2xs font-mono text-rose-400 font-bold">
               DANGER
             </span>
           </CommandItem>
         </CommandGroup>
       </CommandList>
 
-      <div className="h-8 border-t border-white/5 bg-zinc-900/50 px-4 flex items-center justify-between text-[11px] text-zinc-500 font-mono">
+      <div className="h-8 border-t border-white/5 bg-zinc-900/50 px-4 flex items-center justify-between text-2xs text-zinc-500 font-mono">
         <span>Navigate: ↑ ↓ | Select: ↵</span>
         <span>Cryptonite Institutional OS</span>
       </div>

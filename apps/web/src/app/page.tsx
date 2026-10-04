@@ -290,7 +290,7 @@ function Workstation() {
       <header className="h-12 flex-none bg-zinc-950 border-b border-white/5 flex items-center justify-between px-4 z-20">
         <div className="flex items-center h-full">
           <div className="flex items-center space-x-2 mr-8">
-            <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-[10px] text-zinc-950">
+            <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-2xs text-zinc-950">
               C
             </div>
             <span className="font-bold text-sm tracking-widest text-zinc-100">
@@ -306,7 +306,7 @@ function Workstation() {
                 aria-label={group.label}
                 className={`flex items-center h-full gap-4 ${gi > 0 ? "ml-4 pl-4 border-l border-zinc-800" : ""}`}
               >
-                <span className="text-[10px] uppercase tracking-widest text-zinc-500 select-none" aria-hidden="true">{group.label}</span>
+                <span className="text-2xs uppercase tracking-widest text-zinc-500 select-none" aria-hidden="true">{group.label}</span>
                 {group.items.map((tab) => {
                   const active = workspaceMode === tab.mode && (tab.view ? urlView === tab.view : !(tab.mode === "terminal" && urlView === "scanner"));
                   return (
@@ -331,7 +331,7 @@ function Workstation() {
         </div>
 
         <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-1.5 bg-emerald-950/30 border border-emerald-900/50 px-2 py-1 rounded text-[10px] text-emerald-400 font-mono">
+          <div className="flex items-center space-x-1.5 bg-emerald-950/30 border border-emerald-900/50 px-2 py-1 rounded text-2xs text-emerald-400 font-mono">
             <ShieldCheck className="w-3 h-3" />
             <span className="font-bold tracking-wide">ZERO TRADING AUTHORITY (READ ONLY)</span>
           </div>
@@ -467,7 +467,7 @@ function Workstation() {
       )}
 
       {/* Bottom Global Footer & Attribution */}
-      <footer className="h-7 flex-none bg-zinc-950 border-t border-zinc-900 px-4 flex items-center justify-between text-[11px] text-zinc-500 z-20 font-mono">
+      <footer className="h-7 flex-none bg-zinc-950 border-t border-zinc-900 px-4 flex items-center justify-between text-2xs text-zinc-500 z-20 font-mono">
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-1.5">
             <Radio className={`w-3 h-3 ${streamOpen ? "text-emerald-400 animate-pulse" : "text-amber-400"}`} aria-hidden="true" />
@@ -477,7 +477,7 @@ function Workstation() {
           </div>
         </div>
 
-        <div className="flex items-center space-x-3 text-[10px]">
+        <div className="flex items-center space-x-3 text-2xs">
           <span>Cryptonite v0.2.0</span>
           <span>•</span>
           <span className="text-zinc-400">PostgreSQL / Parquet / Redis 7</span>

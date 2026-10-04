@@ -126,7 +126,7 @@ export function ReconciliationLedger() {
         </div>
         <div className="flex items-center space-x-3">
           {recon?.latest_run && (
-            <div className="text-[10px] font-mono text-zinc-500 flex items-center space-x-1">
+            <div className="text-2xs font-mono text-zinc-500 flex items-center space-x-1">
               <Clock className="w-3.5 h-3.5" />
               <span>
                 Audited {new Date(recon.latest_run.completed_at || recon.latest_run.started_at).toLocaleTimeString()}
@@ -207,14 +207,14 @@ export function ReconciliationLedger() {
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-extrabold text-sm tracking-wide text-zinc-100">{b.asset}</span>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 bg-zinc-900 border border-white/5 text-zinc-400 rounded">
+                  <span className="text-2xs font-mono px-1.5 py-0.5 bg-zinc-900 border border-white/5 text-zinc-400 rounded">
                     {b.account_id.length > 14 ? b.account_id.slice(0, 12) + "..." : b.account_id}
                   </span>
                 </div>
                 <div className="text-lg font-mono font-bold text-cyan-400">
                   {b.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}
                 </div>
-                <div className="flex justify-between text-[10px] font-mono text-zinc-500 mt-1">
+                <div className="flex justify-between text-2xs font-mono text-zinc-500 mt-1">
                   <span>Free: {b.free.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
                   <span>Locked: {b.locked.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
                 </div>
@@ -230,7 +230,7 @@ export function ReconciliationLedger() {
           Recent Orders ({orders.length})
         </h3>
         <div className="overflow-x-auto max-h-72 overflow-y-auto rounded border border-white/5">
-          <table className="w-full text-left text-[11px] font-mono">
+          <table className="w-full text-left text-2xs font-mono">
             <thead className="bg-zinc-900/50 border-b border-white/5 text-zinc-400 uppercase tracking-wider sticky top-0">
               <tr>
                 <th className="py-2.5 px-4 font-semibold">Time</th>
@@ -269,7 +269,7 @@ export function ReconciliationLedger() {
                       </td>
                       <td className="py-2 px-3">
                         <span
-                          className={`inline-flex items-center space-x-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          className={`inline-flex items-center space-x-0.5 px-1.5 py-0.5 rounded text-2xs font-bold ${
                             isBuy ? "bg-emerald-950/60 text-emerald-400" : "bg-red-950/60 text-red-400"
                           }`}
                         >
@@ -286,7 +286,7 @@ export function ReconciliationLedger() {
                         {o.filled_qty ?? "0"}
                       </td>
                       <td className="py-2 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${statusColor}`}>
+                        <span className={`px-2 py-0.5 rounded text-2xs font-bold ${statusColor}`}>
                           {o.status}
                         </span>
                       </td>

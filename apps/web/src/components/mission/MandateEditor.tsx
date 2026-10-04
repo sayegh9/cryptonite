@@ -121,9 +121,9 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
 
   const input = "w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100";
   return (
-    <section aria-label="Mandate editor" className="rounded border border-zinc-800 bg-zinc-950 p-3 font-mono text-[11px] text-zinc-300">
+    <section aria-label="Mandate editor" className="rounded border border-zinc-800 bg-zinc-950 p-3 font-mono text-2xs text-zinc-300">
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <label htmlFor="mandate-select" className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+        <label htmlFor="mandate-select" className="text-2xs font-bold uppercase tracking-wider text-zinc-400">
           Mandate
         </label>
         <select
@@ -206,7 +206,7 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
           <button
             type="submit"
             disabled={busy || (needsTotp && totp.length !== 6)}
-            className="rounded bg-cyan-600 px-3 py-1.5 text-[11px] font-bold text-zinc-950 disabled:opacity-50"
+            className="rounded bg-cyan-600 px-3 py-1.5 text-2xs font-bold text-zinc-950 disabled:opacity-50"
           >
             {current ? "Save mandate" : "Create mandate (starts at L1)"}
           </button>
@@ -223,7 +223,7 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
                   setError(err?.message || "Demotion failed");
                 }
               }}
-              className="rounded border border-zinc-700 px-3 py-1.5 text-[11px] font-bold text-zinc-300"
+              className="rounded border border-zinc-700 px-3 py-1.5 text-2xs font-bold text-zinc-300"
             >
               Demote one level
             </button>

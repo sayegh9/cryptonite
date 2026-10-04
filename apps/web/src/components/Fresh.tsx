@@ -59,7 +59,7 @@ export function Fresh<T>({
       {state === "live" ? (
         quietWhenLive ? null : <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-label="live" />
       ) : (
-        <span className={`rounded border px-1 text-[10px] leading-tight ${BADGE[state]}`} title={`Observed ${ageLabel(asOf, now)}`}>
+        <span className={`rounded border px-1 text-2xs leading-tight ${BADGE[state]}`} title={`Observed ${ageLabel(asOf, now)}`}>
           {state}
         </span>
       )}

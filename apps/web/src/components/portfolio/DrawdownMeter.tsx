@@ -48,14 +48,14 @@ export function DrawdownMeter() {
         <h2 id="drawdown-title" className="flex items-center gap-2 text-zinc-400 text-xs font-bold uppercase tracking-wider">
           <Icon className={`w-4 h-4 ${tone.text}`} /> Session Drawdown
         </h2>
-        <span className="text-[11px] text-zinc-500" data-testid="drawdown-limit">
+        <span className="text-2xs text-zinc-500" data-testid="drawdown-limit">
           {limit !== null ? `Hard limit ${fmtPct(limit, 0)} from peak` : "Hard limit —"}
         </span>
       </div>
 
       <div className="flex items-baseline justify-between mb-1.5 tabular-nums">
         <span className={`text-2xl font-black ${tone.text}`}>{fmtPct(latched && limit !== null ? Math.max(dd, limit) : dd, 2)}</span>
-        <span className="text-[11px] text-zinc-500">
+        <span className="text-2xs text-zinc-500">
           {latched ? "Budget exhausted" : buffer !== null ? `${fmtUsd(buffer)} to latch` : limit === null ? "Distance to latch —" : "Awaiting equity"}
         </span>
       </div>
@@ -74,7 +74,7 @@ export function DrawdownMeter() {
         {limit !== null && <span className="absolute inset-y-0 left-[80%] w-px bg-zinc-950/80" aria-hidden />}
       </div>
       {limit !== null && (
-        <div className="relative mt-1 h-3 text-[10px] text-zinc-500 tabular-nums" aria-hidden>
+        <div className="relative mt-1 h-3 text-2xs text-zinc-500 tabular-nums" aria-hidden>
           <span className="absolute left-0">0%</span>
           <span className="absolute left-1/2 -translate-x-1/2">{fmtPct(limit / 2)}</span>
           <span className="absolute left-[80%] -translate-x-1/2">{fmtPct(limit * 0.8)}</span>
@@ -83,8 +83,8 @@ export function DrawdownMeter() {
       )}
 
       <div role="status" aria-live="polite" className="mt-2">
-        <div className={`text-[11px] font-bold ${level === "calm" ? "text-zinc-300" : tone.text}`}>{COPY[level].title}</div>
-        <div className="text-[11px] text-zinc-500 leading-snug">
+        <div className={`text-2xs font-bold ${level === "calm" ? "text-zinc-300" : tone.text}`}>{COPY[level].title}</div>
+        <div className="text-2xs text-zinc-500 leading-snug">
           {COPY[level].body}
           {hwm ? ` Peak ${fmtCompactUsd(hwm)}.` : ""}
         </div>

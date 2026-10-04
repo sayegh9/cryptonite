@@ -143,10 +143,10 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
         </button>
       </div>
 
-      <p className="text-[11px] font-mono font-bold text-zinc-300">{instrumentId}</p>
+      <p className="text-2xs font-mono font-bold text-zinc-300">{instrumentId}</p>
 
-      {error && <div className="bg-rose-950/40 border border-rose-900/50 text-rose-400 text-[11px] font-mono p-2 rounded" role="alert">{error}</div>}
-      {notice && <div className="bg-emerald-950/40 border border-emerald-900/50 text-emerald-400 text-[11px] font-mono p-2 rounded" role="status">{notice}</div>}
+      {error && <div className="bg-rose-950/40 border border-rose-900/50 text-rose-400 text-2xs font-mono p-2 rounded" role="alert">{error}</div>}
+      {notice && <div className="bg-emerald-950/40 border border-emerald-900/50 text-emerald-400 text-2xs font-mono p-2 rounded" role="status">{notice}</div>}
 
       <div className="flex space-x-2">
         {(["BUY", "SELL"] as const).map((s) => (
@@ -173,7 +173,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
       </div>
 
       <label className="block">
-        <span className="block text-[10px] font-bold font-mono text-zinc-400 mb-1 uppercase tracking-wider">Quantity</span>
+        <span className="block text-2xs font-bold font-mono text-zinc-400 mb-1 uppercase tracking-wider">Quantity</span>
         <input
           type="number" step="0.0001" min="0.0001" value={quantity} required
           onChange={(e) => setQuantity(e.target.value)}
@@ -183,7 +183,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
 
       {orderType === "LIMIT" && (
         <label className="block">
-          <span className="block text-[10px] font-bold font-mono text-zinc-400 mb-1 uppercase tracking-wider">Limit Price</span>
+          <span className="block text-2xs font-bold font-mono text-zinc-400 mb-1 uppercase tracking-wider">Limit Price</span>
           <input
             type="number" step="0.01" min="0.01" value={price} required
             onChange={(e) => setPrice(e.target.value)}
@@ -196,7 +196,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
         <div className="space-y-3 border-t border-white/5 pt-3">
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label htmlFor="perp-leverage" className="text-[10px] font-bold font-mono text-zinc-400 uppercase tracking-wider">Leverage</label>
+              <label htmlFor="perp-leverage" className="text-2xs font-bold font-mono text-zinc-400 uppercase tracking-wider">Leverage</label>
               <span className="text-sm font-mono font-bold text-cyan-300">{leverage}x</span>
             </div>
             <input
@@ -209,7 +209,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
               {LEVERAGE_CHIPS.map((l) => (
                 <button
                   key={l} type="button" onClick={() => setLeverage(l)} aria-pressed={leverage === l}
-                  className={`flex-1 py-0.5 text-[11px] font-mono rounded border ${
+                  className={`flex-1 py-0.5 text-2xs font-mono rounded border ${
                     leverage === l ? "border-cyan-500 text-cyan-300 bg-cyan-950/40" : "border-white/5 text-zinc-500 hover:text-zinc-300"
                   }`}
                 >
@@ -231,11 +231,11 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
                 </button>
               ))}
             </div>
-            {position && <p className="text-[10px] text-zinc-500 mt-1">Margin mode is locked while a position is open.</p>}
+            {position && <p className="text-2xs text-zinc-500 mt-1">Margin mode is locked while a position is open.</p>}
           </div>
 
           <div>
-            <label className="flex items-center gap-2 text-[11px] font-mono text-zinc-300">
+            <label className="flex items-center gap-2 text-2xs font-mono text-zinc-300">
               <input
                 type="checkbox" checked={reduceOnly} onChange={(e) => setReduceOnly(e.target.checked)}
                 aria-describedby={reduceOnlyHelpId} className="accent-cyan-500"
@@ -243,12 +243,12 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
               Reduce-Only
               <Info className="w-3 h-3 text-zinc-500" aria-hidden />
             </label>
-            <p id={reduceOnlyHelpId} className={`text-[10px] mt-1 ${reduceOnlyError ? "text-rose-400" : "text-zinc-500"}`}>
+            <p id={reduceOnlyHelpId} className={`text-2xs mt-1 ${reduceOnlyError ? "text-rose-400" : "text-zinc-500"}`}>
               {reduceOnlyError || "Only shrinks the open position; never opens or flips it."}
             </p>
           </div>
 
-          <dl className="grid grid-cols-2 gap-y-1 text-[11px] font-mono bg-zinc-900/60 rounded p-2" aria-label="Pre-trade estimate">
+          <dl className="grid grid-cols-2 gap-y-1 text-2xs font-mono bg-zinc-900/60 rounded p-2" aria-label="Pre-trade estimate">
             <dt className="text-zinc-500">Order notional</dt>
             <dd className="text-right text-zinc-200">{fmt(notional)} USDT</dd>
             <dt className="text-zinc-500">Initial margin</dt>
@@ -259,7 +259,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
               {!reduceOnly && effectiveMode === "CROSS" && projectedLiq !== null ? " (est.)" : ""}
             </dd>
           </dl>
-          {!mark && <p className="text-[10px] text-zinc-500">Waiting for the mark price feed; estimates need a mark.</p>}
+          {!mark && <p className="text-2xs text-zinc-500">Waiting for the mark price feed; estimates need a mark.</p>}
         </div>
       )}
 
