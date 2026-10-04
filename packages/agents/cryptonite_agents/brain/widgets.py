@@ -34,7 +34,9 @@ class OrderProposal(BaseModel):
 
     instrument_id: str = Field(min_length=3, max_length=64)
     side: Literal["BUY", "SELL"]
-    quantity: float = Field(gt=0)
+    # Optional and display-free: an approved order is sized from allocation_pct (a share of the mandate's
+    # budget) at the live price, capped at the room left under the mandate's position limit
+    quantity: float | None = Field(default=None, gt=0)
     order_type: Literal["MARKET", "LIMIT"] = "MARKET"
     limit_price: float | None = Field(default=None, gt=0)
     allocation_pct: float = Field(ge=MIN_ALLOCATION_PCT, le=MAX_ALLOCATION_PCT)
@@ -132,9 +134,8 @@ def describe_widget(widget: dict[str, Any]) -> str:
     """A one-line transcript form, so later turns (and summaries) remember what was shown."""
     kind = widget.get("kind")
     if kind == "order_card":
-        return (f"[order card {widget.get('id')}: {widget.get('side')} {widget.get('quantity')} "
-                f"{widget.get('instrument_id')} {widget.get('order_type')} "
-                f"({widget.get('allocation_pct')}% of equity), status {widget.get('status')}"
+        return (f"[order card {widget.get('id')}: {widget.get('side')} {widget.get('instrument_id')} "
+                f"{widget.get('order_type')} ({widget.get('allocation_pct')}% of the mandate), status {widget.get('status')}"
                 + (f", paper command {widget['command_id']}" if widget.get("command_id") else "") + "]")
     if kind == "price_chart":
         return f"[price chart {widget.get('symbol')} {widget.get('timeframe')}]"

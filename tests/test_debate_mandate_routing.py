@@ -107,6 +107,24 @@ async def hold(h, m, qty="0.1"):
            VALUES ($1, 'PAPER-ACCOUNT-001', $2, $3, 'LONG', 50000, $4, 50000, 'OPEN')""", uuid.uuid4().hex, m.instance_id, BTC, float(qty))
 
 
+async def test_an_entry_only_asks_for_the_room_left_under_the_position_limit(h, routing):
+    """The mandate's limit is 25% of $10,000. Holding $2,300 leaves 2%: the operator is asked for 2%,
+    not the debate's 6%. Holding $2,475 leaves 0.25%: nothing to ask, no trade, no approval."""
+    m = await h.mandate(level=1)
+    await hold(h, m, "0.046")  # $2,300 at 50,000
+    run_id = uuid.uuid4()
+    async with h.pool.acquire() as conn:
+        assert (await routing.route_entry(conn, run_id, BTC, "Overweight", 0.7, 6.0))[0] == "PENDING_APPROVAL"
+    a = await h.pool.fetchrow("SELECT payload, summary FROM ai_approvals WHERE source_ref = $1", str(run_id))
+    assert json.loads(a["payload"])["allocation_pct"] == 2.0 and "2% of mandate ($200)" in a["summary"]
+
+    await hold(h, m, "0.0035")  # +$175: $2,475, 0.25% left
+    run_id = uuid.uuid4()
+    async with h.pool.acquire() as conn:
+        assert (await routing.route_entry(conn, run_id, BTC, "Overweight", 0.7, 6.0))[0] == "NO_TRADE"
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals WHERE source_ref = $1", str(run_id)) == 0
+
+
 async def test_selling_the_mandates_position_is_risk_reducing(h, routing):
     m = await h.mandate(level=2)
     async with h.pool.acquire() as conn:

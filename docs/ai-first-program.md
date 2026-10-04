@@ -62,8 +62,9 @@ The bake-offs behind these choices (triage, summarize, tagging, embeddings) are 
 ## 3. Mandates, autonomy and approvals (Phase 5, [ADR 0004](adr/0004-mandates-and-autonomy.md))
 
 - **No AI order executes without an ACTIVE mandate** that allows its instrument. Mandates trade under
-  their own instance `AI_MANDATE_<id>`; orders are sized as a percentage of the mandate budget, then
-  pass the mandate check, then `GuardedOrderDispatcher`.
+  their own instance `AI_MANDATE_<id>`; entries are sized as a percentage of the mandate budget, capped
+  at the room left under the position limit (what the mandate already holds counts), then pass the
+  mandate check, then `GuardedOrderDispatcher`.
 - **Hard stops:** mandate equity against its high-water mark. At the stop, the mandate is HALTED at L1
   and its own positions closed; at half the stop it drops one level. A 20% account backstop latches the
   PAPER kill switch and halts every mandate.

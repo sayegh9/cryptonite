@@ -6,12 +6,14 @@ the daily breaker and the perp guards stay exactly as they are (§10 invariant 2
 additive).
 
 ``check_mandate`` is pure: the caller supplies the mandate, the order and the mandate's current
-exposure. REDUCE_RISK is always allowed for what the mandate itself holds, even when it is halted
+exposure. ``max_entry_quantity`` is for the caller that derives an entry's quantity from its
+allocation: it sizes the entry down to the room left under the position limit and the budget, using the
+same worst-case notional the check uses, so a correctly sized entry never fails as a breach. REDUCE_RISK is always allowed for what the mandate itself holds, even when it is halted
 (§10 invariant 3).
 """
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
@@ -26,6 +28,7 @@ from cryptonite_schemas.mandate import (
 
 # Market buys are valued like the dispatcher reserves them: ask + 2% collar + 0.5% slippage
 MARKET_BUFFER = Decimal("0.025")
+QUANTITY_STEP = Decimal("0.00000001")  # finer than any exchange lot size
 # The dispatcher resizes by conviction (OVERWEIGHT x1.5); the mandate check prices that in up front
 CONVICTION_MULTIPLIER = {"OVERWEIGHT": Decimal("1.5"), "UNDERWEIGHT": Decimal("0.5")}
 
@@ -72,6 +75,27 @@ def order_notional(order: MandateOrder) -> Decimal | None:
     qty = order.quantity * CONVICTION_MULTIPLIER.get((order.conviction_level or "").upper(), Decimal("1"))
     buffer = MARKET_BUFFER if order.order_type.upper() == "MARKET" else Decimal("0")
     return qty * order.ref_price * (Decimal("1") + buffer)
+
+
+def entry_room_usd(mandate: Mandate, exposure: MandateExposure) -> Decimal:
+    """USD a new entry may still add: the room under the instrument's position limit and under the
+    budget, whichever is smaller (0 when either is used up)."""
+    position_room = mandate.capital_budget_usd * mandate.max_position_pct / Decimal("100") - exposure.instrument_usd
+    budget_room = mandate.capital_budget_usd - exposure.gross_usd
+    return max(Decimal("0"), min(position_room, budget_room))
+
+
+def max_entry_quantity(mandate: Mandate, exposure: MandateExposure, ref_price: Decimal, *,
+                       order_type: str = "MARKET", conviction_level: str | None = None) -> Decimal:
+    """The largest quantity whose worst-case notional (``order_notional``: market buffer and conviction
+    resize included) still fits in ``entry_room_usd``, so an entry sized to it passes the
+    position-limit and budget checks."""
+    if ref_price is None or ref_price <= 0:
+        return Decimal("0")
+    per_unit = order_notional(MandateOrder("X", "BUY", Decimal("1"), ref_price, order_type=order_type,
+                                           conviction_level=conviction_level))
+    # rounded down: a quotient rounded up in its last digit must not put the entry a hair over the room
+    return (entry_room_usd(mandate, exposure) / per_unit).quantize(QUANTITY_STEP, rounding=ROUND_DOWN)
 
 
 def check_mandate(

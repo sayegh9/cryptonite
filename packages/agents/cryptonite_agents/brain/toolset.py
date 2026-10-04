@@ -46,7 +46,6 @@ def explain_backtest(backtest_id: str = "latest") -> str:
 def propose_order(
     instrument_id: Annotated[str, Field(min_length=3, max_length=64)],
     side: Literal["BUY", "SELL"],
-    quantity: Annotated[float, Field(gt=0)],
     allocation_pct: Annotated[float, Field(ge=MIN_ALLOCATION_PCT, le=MAX_ALLOCATION_PCT)],
     order_type: Literal["MARKET", "LIMIT"] = "MARKET",
     limit_price: Annotated[float | None, Field(gt=0)] = None,
@@ -55,11 +54,12 @@ def propose_order(
     rationale: Annotated[str, Field(max_length=2000)] = "",
 ) -> str:
     """Propose a PAPER order to the operator as an order card. You cannot place orders: the operator
-    approves or rejects the card. instrument_id like 'BTCUSDT.BINANCE'; side BUY or SELL; quantity in
-    base units; allocation_pct is the share of paper equity (1 to 25); order_type MARKET or LIMIT
+    approves or rejects the card. instrument_id like 'BTCUSDT.BINANCE'; side BUY or SELL;
+    allocation_pct is the share of the mandate's budget (1 to 25): the approved order is sized from it at
+    the live price and capped at the room left under the mandate's position limit; order_type MARKET or LIMIT
     (LIMIT needs limit_price); give a short rationale with the stop and the invalidation."""
     proposal = OrderProposal(
-        instrument_id=instrument_id, side=side, quantity=quantity, allocation_pct=allocation_pct,
+        instrument_id=instrument_id, side=side, allocation_pct=allocation_pct,
         order_type=order_type, limit_price=limit_price, stop_loss=stop_loss, take_profit=take_profit,
         rationale=rationale,
     )

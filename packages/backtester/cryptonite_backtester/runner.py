@@ -19,7 +19,7 @@ from cryptonite_backtester.cadence import (
     validate_bar_cadence,
 )
 from cryptonite_backtester.execution_profiles import resolve_execution_profile
-from cryptonite_backtester.metrics import calculate_performance_metrics
+from cryptonite_backtester.metrics import account_equity_series, calculate_performance_metrics
 from cryptonite_backtester.storage import BacktestArtifactStore
 from cryptonite_schemas.identifiers import to_nautilus_bar_type
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
@@ -50,6 +50,7 @@ logger = logging.getLogger("cryptonite.backtester.runner")
 
 
 SANDBOX_ENV_FLAG = "CRYPTONITE_STRATEGY_SANDBOX"
+QUOTE_CURRENCY = "USDT"  # the simulated cash account is funded and valued in USDT
 _NON_PARAMETERS = {"self", "instrument_id", "bar_type", "evaluation_start_ns", "kwargs"}
 
 
@@ -283,7 +284,7 @@ class BacktestRunner:
         venue_cfg, profile_meta = resolve_execution_profile(
             profile_name=request.execution_profile,
             venue_name="BINANCE",
-            starting_balance=f"{request.initial_balance:.2f} USDT",
+            starting_balance=f"{request.initial_balance:.2f} {QUOTE_CURRENCY}",
             random_seed=request.random_seed,
         )
 
@@ -376,11 +377,12 @@ class BacktestRunner:
         # 10. Extract Equity Curve series (isolated strictly to evaluation period)
         equity_series: list[tuple[int, float]] = []
         if acc_report is not None and len(acc_report) > 0:
-            for dt, row in acc_report.iterrows():
-                ts_ns = int(dt.timestamp() * 1e9)
-                if ts_ns >= request.evaluation_start_ns:
-                    total_val = float(row["total"])
-                    equity_series.append((ts_ns, total_val))
+            # one row per currency per account update: value the base asset, never add it as equity
+            balances = [(int(dt.timestamp() * 1e9), str(row.get("currency", QUOTE_CURRENCY)), float(row["total"]))
+                        for dt, row in acc_report.iterrows()]
+            fills = [(int(o.ts_last), float(o.avg_px)) for o in orders if o.avg_px and float(o.filled_qty) > 0]
+            equity_series = account_equity_series(balances, fills, quote_currency=QUOTE_CURRENCY,
+                                                  start_ns=request.evaluation_start_ns)
 
         if not equity_series:
             equity_series = [

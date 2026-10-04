@@ -22,6 +22,9 @@ MAX_PERP_LEVERAGE_CAP = 5  # O1: perps only after L3, capped at 5x
 DEFAULT_VETO_WINDOW_S = 600  # §4.5: L2 veto window, 10 minutes
 DEFAULT_APPROVAL_TTL_S = 900  # L1 approvals expire after 15 minutes (timeout = no for new risk)
 DEFAULT_REDUCE_VETO_S = 300  # a model-proposed exit at L1 waits 5 minutes for a veto, then proceeds
+# Smallest entry worth placing, as % of the mandate budget. An entry is sized down to the room left under
+# the position limit and the budget; below this the order is not placed (a refusal, not a breach).
+MIN_MANDATE_ENTRY_PCT = Decimal("1")
 
 MANDATE_INSTANCE_PREFIX = "AI_MANDATE_"
 LEGACY_AI_INSTANCE = "AI_DEBATE_WORKER"  # pre-mandate AI instance; its positions still get AI exits
@@ -73,6 +76,7 @@ class MandateReject(StrEnum):
     LEVERAGE_EXCEEDED = "MANDATE_LEVERAGE_EXCEEDED"
     BUDGET_EXCEEDED = "MANDATE_BUDGET_EXCEEDED"
     POSITION_PCT_EXCEEDED = "MANDATE_POSITION_PCT_EXCEEDED"
+    POSITION_LIMIT_REACHED = "MANDATE_POSITION_LIMIT_REACHED"  # no room left for a new entry: not placed
     INSTRUMENT_CONFLICT = "MANDATE_INSTRUMENT_CONFLICT"  # someone else holds the instrument
     POSITION_NOT_OWNED = "MANDATE_POSITION_NOT_OWNED"  # a reduce larger than the mandate's own position
     APPROVAL_REQUIRED = "MANDATE_APPROVAL_REQUIRED"  # ADD_RISK below L3 without a valid approval
@@ -83,7 +87,9 @@ class MandateReject(StrEnum):
 # Rejections that mean the AI tried to act outside its limits (§4.5: any breach demotes one level).
 # Missing approval, a halted mandate, a missing price, an instrument someone else holds and a reduce
 # larger than the mandate's (possibly just-changed) holding are refusals, not breaches: they can
-# follow from the operator's own trades or timing, not from the AI overstepping.
+# follow from the operator's own trades or timing, not from the AI overstepping. So is an entry with no
+# room left under the position limit: the system sizes entries to the room, so reaching the limit is
+# not the AI overstepping.
 BREACH_CODES = frozenset({
     MandateReject.INSTRUMENT_NOT_ALLOWED, MandateReject.PERPS_NOT_ALLOWED, MandateReject.LEVERAGE_EXCEEDED,
     MandateReject.BUDGET_EXCEEDED, MandateReject.POSITION_PCT_EXCEEDED,

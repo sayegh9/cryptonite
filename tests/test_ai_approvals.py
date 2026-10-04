@@ -337,6 +337,28 @@ async def test_brain_card_approval_records_an_approval_inside_the_mandate(h, bra
     assert row["status"] == "COMPLETED", row["error_message"]
 
 
+async def test_brain_card_gets_only_the_room_left_under_the_position_limit(h, brain_worker):
+    """The card asks for 5%; the mandate (limit 25% of $10,000) already holds $2,300, so 2% is queued.
+    At the limit the approval is refused with a clear reason and the card stays pending."""
+    await h.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
+    m = await h.mandate(level=1, instruments=("BTCUSDT.BINANCE",), name=f"r-{uuid.uuid4().hex[:4]}")
+    pos = """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side, entry_price, quantity,
+                 current_price, status) VALUES ($1, 'PAPER-ACCOUNT-001', $2, $3, 'LONG', 50000, $4, 50000, 'OPEN')"""
+    await h.pool.execute(pos, uuid.uuid4().hex, m.instance_id, SPOT, 0.046)  # $2,300
+    path = f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/call-1/approve"
+    async with h.client() as c:
+        res = await c.post(path, headers=h.headers)
+        assert res.status_code == 200, res.text
+        cmd = await h.pool.fetchrow("SELECT payload FROM execution_commands WHERE command_id = $1", uuid.UUID(res.json()["command_id"]))
+        assert json.loads(cmd["payload"])["allocation_pct"] == 2.0
+
+        brain_worker.update(status="PENDING_APPROVAL", command_id=None)
+        await h.pool.execute(pos, uuid.uuid4().hex, m.instance_id, SPOT, 0.004)  # $2,500: at the limit
+        full = await c.post(f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/call-1/approve", headers=h.headers)
+    assert full.status_code == 409 and "MANDATE_POSITION_LIMIT_REACHED" in full.json()["detail"]
+    assert brain_worker["status"] == "PENDING_APPROVAL"
+
+
 async def test_brain_card_needs_the_exit_monitor(h, brain_worker):
     await h.redis.delete("exit_monitor:heartbeat")
     await h.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")

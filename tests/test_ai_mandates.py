@@ -22,11 +22,14 @@ from cryptonite_execution.mandates import (
     MandateOrder,
     action_class,
     check_mandate,
+    entry_room_usd,
+    max_entry_quantity,
     order_notional,
 )
 from cryptonite_execution.risk import GuardedOrderDispatcher, OrderIntent
 from cryptonite_orchestrator.server import SimpleQuoteCache, command_poller
 from cryptonite_schemas.mandate import (
+    BREACH_CODES,
     ActionClass,
     AutonomyLevel,
     Mandate,
@@ -119,6 +122,38 @@ def test_market_orders_and_conviction_are_priced_worst_case():
     assert order_notional(buy("0.01", conviction_level="OVERWEIGHT")) == D("750")
     assert order_notional(buy(price=None)) is None
     assert check_mandate(mandate(), buy(price=None), MandateExposure(), approval_ok=True) is MandateReject.NO_REFERENCE_PRICE
+
+
+def test_entry_room_counts_what_the_mandate_already_holds():
+    m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
+    assert entry_room_usd(m, MandateExposure()) == D("1000")
+    assert entry_room_usd(m, MandateExposure(instrument_usd=D("800"), gross_usd=D("800"))) == D("200")
+    assert entry_room_usd(m, MandateExposure(instrument_usd=D("0"), gross_usd=D("9900"))) == D("100")  # budget binds
+    assert entry_room_usd(m, MandateExposure(instrument_usd=D("1200"), gross_usd=D("1200"))) == D("0")
+
+
+@settings(max_examples=400, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(
+    held=st.decimals(min_value=0, max_value=3000, places=2),
+    other=st.decimals(min_value=0, max_value=9000, places=2),
+    price=st.decimals(min_value=1, max_value=200000, places=2),
+    pct=st.sampled_from([D("5"), D("10"), D("25")]),
+    order_type=st.sampled_from(["MARKET", "LIMIT"]),
+    conviction=st.sampled_from([None, "OVERWEIGHT", "UNDERWEIGHT"]),
+)
+def test_an_entry_sized_to_the_room_is_never_a_breach(held, other, price, pct, order_type, conviction):
+    """The incident of 2026-10-04: approved entries on top of an existing position were refused as
+    breaches. An entry sized with max_entry_quantity passes the limit checks; a hair more does not."""
+    m = mandate(capital_budget_usd=D("10000"), max_position_pct=pct)
+    exposure = MandateExposure(gross_usd=held + other, instrument_usd=held)
+    qty = max_entry_quantity(m, exposure, price, order_type=order_type, conviction_level=conviction)
+    if qty <= 0:
+        return
+    order = buy(str(qty), str(price), order_type=order_type, conviction_level=conviction)
+    assert check_mandate(m, order, exposure, approval_ok=True) is None
+    over = buy(str(qty * D("1.001")), str(price), order_type=order_type, conviction_level=conviction)
+    assert check_mandate(m, over, exposure, approval_ok=True) in (MandateReject.POSITION_PCT_EXCEEDED,
+                                                                  MandateReject.BUDGET_EXCEEDED)
 
 
 def test_someone_else_on_the_instrument_is_a_conflict():
@@ -411,6 +446,39 @@ async def test_l3_mandate_trades_without_approval_but_inside_its_budget():
     assert conn.outcome() == ("REJECTED", "MANDATE_BUDGET_EXCEEDED")
     assert engine.dispatcher.open_orders == {}
     assert conn.events == ["BREACH", "DEMOTED"]  # §4.5: a breach demotes one level (A5.5)
+
+
+async def test_approved_entry_on_top_of_a_position_is_sized_to_the_room_not_breached():
+    """2026-10-04: the mandate held 8% of its budget in BTC (limit 10%); an approved 5% entry was sized at
+    the full 5% and refused as MANDATE_POSITION_PCT_EXCEEDED, recording a BREACH. It is now sized down
+    to the 2% that is left and placed."""
+    m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
+    held = [{"instance_id": mandate_instance_id(m.id), "instrument_id": SPOT, "side": "LONG",
+             "quantity": D("0.016"), "current_price": D("50000")}]  # ~$800
+    approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED"}
+    payload = {"instrument_id": "BTCUSDT", "side": "BUY", "allocation_pct": 5, "mandate_id": str(m.id),
+               "approval_id": str(uuid.uuid4())}
+    conn, engine = await run_ai_command(payload, mandate_row=mandate_row(m), positions=held, approval=approval)
+    assert conn.outcome() == ("COMPLETED", None)
+    assert conn.events == []  # no BREACH, no demotion
+    qty = engine.dispatcher.get_position_qty(SPOT)
+    room = D("1000") - D("0.016") * D("50010")  # valued at the ask, like the mandate check
+    assert D("0") < qty * D("50010") * D("1.025") <= room
+    assert qty * D("50010") > room * D("0.95")  # it uses the room, minus the 1% sizing margin and the buffer
+
+
+async def test_entry_with_no_room_left_is_refused_without_a_breach():
+    m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
+    held = [{"instance_id": mandate_instance_id(m.id), "instrument_id": SPOT, "side": "LONG",
+             "quantity": D("0.0196"), "current_price": D("50000")}]  # ~$980: $20 left, under the 1% minimum
+    approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED"}
+    payload = {"instrument_id": "BTCUSDT", "side": "BUY", "allocation_pct": 5, "mandate_id": str(m.id),
+               "approval_id": str(uuid.uuid4())}
+    conn, engine = await run_ai_command(payload, mandate_row=mandate_row(m), positions=held, approval=approval)
+    status, reason = conn.outcome()
+    assert status == "REJECTED" and reason.startswith("MANDATE_POSITION_LIMIT_REACHED")
+    assert conn.events == [] and engine.dispatcher.open_orders == {}
+    assert MandateReject.POSITION_LIMIT_REACHED not in BREACH_CODES
 
 
 async def test_mandate_cannot_take_an_instrument_someone_else_holds():

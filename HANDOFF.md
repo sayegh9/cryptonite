@@ -25,9 +25,18 @@ The throwaway-DB test command (Phase 0 section below) needs the Redis password i
 - L2 candidacy of `BTC-ETH spot L1`: earliest 2026-10-31, needs 30 closed trades
   (`scripts/gate_status.py`).
 
+**Fixed 2026-10-04 (branch `fix/mandate-headroom-sizing`), deploy before approving more entries:**
+- **Approved entries were refused as mandate breaches.** The operator approved two debate entries on Telegram and one Brain card on the web (all BTC buys). The `BTC-ETH spot L1` mandate already held about 8% of its budget in BTC with a 10% limit, and an entry was sized at its full allocation (5%) without counting the existing position, so the mandate check refused each one as `MANDATE_POSITION_PCT_EXCEEDED` and recorded a `BREACH` (3 events, 11:01, 11:31, 11:51 UTC). Now the orchestrator sizes an entry down to the room left under the position limit and the budget (`max_entry_quantity`, same worst-case notional as the check, 1% margin); with less than 1% of the budget left it refuses with `MANDATE_POSITION_LIMIT_REACHED`, which is not a breach. The debate router asks only for the room that is left (no approval at all when there is none), and a Brain card approval at the limit gets a 409 with the reason.
+- **The 3 recorded breaches stay** (audit rows). They fail the L2 gate's "0 breaches" check and Gate 5 until the operator decides otherwise.
+- **Order cards** no longer show the model's quantity (a card read "BUY 0.06 BTC" next to "5% of mandate"); the size shown is the allocation that is approved. `propose_order` no longer takes a quantity.
+- **Backtest equity:** the spot account report has one row per currency; every row's total was used as equity, so runs ended on the BTC row and showed -100% return and 100% drawdown. Equity is now USDT plus the base asset at the last fill price. The two old `ema-cross` runs keep their stored (wrong) metrics until re-run.
+- Deploy: rebuild and restart `orchestrator`, `debate_worker` (and `learner`, same image), `api` and `agent_worker`.
+
+**Live checks done by the operator (2026-10-04):** Telegram approve works (3 approvals), and an L1 approval expired as *no* (07:01 UTC).
+
 **Waiting on the operator:**
-- Telegram live checks: foreign chat ignored; approve / veto / expire; kill-switch Critical alert on
-  Telegram and ntfy (steps under Phase 5 below).
+- Telegram live checks still open: foreign chat ignored; veto; kill-switch Critical alert on Telegram and
+  ntfy (steps under Phase 5 below).
 - Merges: #6, #5 into phase0; #4 into `main`.
 - Sudo items: `sudo apt install python3.12-dev` (Triton compiles during training); the Ollama v0.35.1
   install (`~/Downloads/ollama-v0.35.1/README-resume.txt`; also unblocks deploying the distilled triage model, A7.4); optional Tailscale; optional NVIDIA Container

@@ -28,7 +28,8 @@ import httpx
 from cryptonite_api.routes.agents import sign_request
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
-from cryptonite_execution.mandate_store import resolve_mandate_for
+from cryptonite_execution.mandate_store import entry_room_pct, resolve_mandate_for
+from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -191,8 +192,17 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         raise HTTPException(status_code=409, detail=f"{why}: approve this card inside an ACTIVE mandate that allows "
                             f"{card['instrument_id']} (Mission Control → Mandates)")
 
-    budget = mandate.capital_budget_usd * Decimal(str(card["allocation_pct"])) / 100
-    summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {card['allocation_pct']}% of mandate "
+    allocation = Decimal(str(card["allocation_pct"]))
+    if card["side"] == "BUY":  # an entry only gets the room the mandate has left under its position limit
+        async with pool.acquire() as conn:
+            room = await entry_room_pct(conn, mandate, card["instrument_id"])
+        if room < MIN_MANDATE_ENTRY_PCT:
+            raise HTTPException(status_code=409, detail=(
+                f"MANDATE_POSITION_LIMIT_REACHED: mandate {mandate.name} already holds its limit of "
+                f"{mandate.max_position_pct}% in {card['instrument_id']}; nothing was queued"))
+        allocation = min(allocation, room.quantize(Decimal("0.01")))
+    budget = mandate.capital_budget_usd * allocation / 100
+    summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {allocation:g}% of mandate "
                f"{mandate.name} (${budget:,.0f})")
     if card.get("status") == "PENDING_APPROVAL":  # claim it first: a concurrent reject can no longer win
         claimed = await _worker_note(sid, {
@@ -206,7 +216,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         "instrument_id": card["instrument_id"], "side": card["side"], "order_type": card["order_type"],
         # sized from the allocation the operator approved, as a share of the mandate's budget
         # (the mandate check and the dispatcher's 1-25% clamp still apply)
-        "allocation_pct": card["allocation_pct"],
+        "allocation_pct": float(allocation),
         "source": "brain_order_card", "brain_session_id": str(sid), "brain_card_id": widget_id,
         "trace_id": card.get("trace_id"), "proposed_stop_loss": card.get("stop_loss"),
         "proposed_take_profit": card.get("take_profit"), "protection": protection,

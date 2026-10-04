@@ -163,7 +163,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   return (
     <section
       data-testid="brain-widget-order-card"
-      aria-label={`Order proposal: ${widget.side} ${widget.quantity} ${widget.instrument_id}`}
+      aria-label={`Order proposal: ${widget.side} ${widget.allocation_pct}% of mandate ${widget.instrument_id}`}
       className="mt-2 rounded-lg border border-amber-700/60 bg-amber-950/10 p-3 font-mono text-[11px] text-zinc-300"
     >
       <header className="mb-2 flex items-center justify-between gap-2">
@@ -190,9 +190,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
 
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className={`text-sm font-black ${buy ? "text-emerald-400" : "text-rose-400"}`}>{widget.side}</span>
-        <span className="text-sm text-zinc-100">
-          {widget.quantity} {widget.instrument_id}
-        </span>
+        <span className="text-sm text-zinc-100">{widget.instrument_id}</span>
         <span className="text-zinc-400">
           {widget.order_type}
           {widget.order_type === "LIMIT" && widget.limit_price ? ` @ ${fmt(widget.limit_price)}` : ""}
@@ -200,8 +198,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       </div>
       <dl className="mt-1 grid grid-cols-3 gap-2 text-[10px]">
         <div>
-          <dt className="text-zinc-500">Allocation</dt>
-          <dd className="text-zinc-100">{widget.allocation_pct}% of mandate</dd>
+          <dt className="text-zinc-500">Size</dt>
+          <dd className="text-zinc-100" title="Sized at approval from the live price; capped at the room left under the mandate's position limit">
+            {widget.allocation_pct}% of mandate
+          </dd>
         </div>
         <div>
           <dt className="text-zinc-500">Proposed stop</dt>

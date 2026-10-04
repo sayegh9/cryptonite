@@ -30,7 +30,7 @@ from cryptonite_agents.brain import (
     memory,
 )
 from cryptonite_agents.brain.toolset import propose_order, show_price_chart
-from cryptonite_agents.brain.widgets import widget_for_tool
+from cryptonite_agents.brain.widgets import describe_widget, widget_for_tool
 from cryptonite_agents.evals import runner as eval_runner
 from cryptonite_agents.evals.runner import load_set
 from cryptonite_agents.gateway import (
@@ -57,7 +57,7 @@ if AGENT_WORKER_DIR not in sys.path:
 
 PLANNER, SUMMARIZER, FALLBACK = "test:brain", "test:summarize", "test:fallback"
 
-GOOD_ORDER = {"instrument_id": "BTCUSDT.BINANCE", "side": "BUY", "quantity": 0.01, "allocation_pct": 5,
+GOOD_ORDER = {"instrument_id": "BTCUSDT.BINANCE", "side": "BUY", "allocation_pct": 5,
               "order_type": "MARKET", "stop_loss": 58000, "rationale": "4H reclaim; invalid below 58k"}
 
 
@@ -254,6 +254,10 @@ def test_order_card_widget_enforces_the_allocation_band_and_limit_price():
     assert widget_for_tool("propose_order", {**GOOD_ORDER, "order_type": "LIMIT"}, call_id="c4") is None
     assert widget_for_tool("propose_order", {**GOOD_ORDER, "instrument_id": "ethusdt"},
                            call_id="c5")["instrument_id"] == "ETHUSDT.BINANCE"
+    # sessions saved before the quantity was dropped still render; the size is always the allocation
+    old = widget_for_tool("propose_order", {**GOOD_ORDER, "quantity": 0.06}, call_id="c6", status="DENIED")
+    assert old["allocation_pct"] == 5 and old["quantity"] == 0.06
+    assert "% of the mandate" in describe_widget(old) and "0.06" not in describe_widget(old)
 
 
 def test_tearsheet_and_debate_widgets():
