@@ -25,13 +25,44 @@ export function AgentChatPanel({
   const streaming = useBrainStore((s) => s.streaming);
   const panelRef = useRef<HTMLDivElement>(null);
 
+  // Esc closes; Tab stays inside the drawer while it is open; focus returns to the opener on close (R6.6)
   useEffect(() => {
     if (!isOpen) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusables = () =>
+      Array.from(
+        panelRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((el) => el.offsetParent !== null);
+    const first = setTimeout(() => {
+      const box = panelRef.current?.querySelector<HTMLElement>("textarea, input");
+      (box ?? focusables()[0] ?? panelRef.current)?.focus();
+    }, 0);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !useBrainStore.getState().traceDrawerId) onClose();
+      if (e.key === "Escape" && !useBrainStore.getState().traceDrawerId) {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab" || useBrainStore.getState().traceDrawerId) return;
+      const els = focusables();
+      if (els.length === 0) return;
+      const active = document.activeElement;
+      const inside = panelRef.current?.contains(active);
+      if (e.shiftKey && (active === els[0] || !inside)) {
+        e.preventDefault();
+        els[els.length - 1].focus();
+      } else if (!e.shiftKey && (active === els[els.length - 1] || !inside)) {
+        e.preventDefault();
+        els[0].focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(first);
+      window.removeEventListener("keydown", onKey);
+      if (opener?.isConnected) opener.focus();
+    };
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
@@ -41,6 +72,8 @@ export function AgentChatPanel({
       ref={panelRef}
       role="dialog"
       aria-label="Brain copilot"
+      aria-modal="true"
+      tabIndex={-1}
       data-testid="brain-copilot"
       className="fixed inset-y-0 right-0 z-50 flex w-full max-w-lg flex-col border-l border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/80"
     >

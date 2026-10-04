@@ -135,7 +135,7 @@ export const AlertsPanel: React.FC = () => {
             <button
               type="submit"
               disabled={creating}
-              className="w-full py-1.5 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white rounded text-xs font-bold transition-colors"
+              className="w-full py-1.5 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-zinc-950 rounded text-xs font-bold transition-colors"
             >
               {creating ? "CREATING..." : "CREATE ALERT"}
             </button>

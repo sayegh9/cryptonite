@@ -181,6 +181,10 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     const approveBtn = page.getByTestId("approve-debate-btn");
     await expect(approveBtn).toBeEnabled();
     await approveBtn.click();
+    // Confirm step (R6.6): nothing is sent until the operator confirms
+    expect(approveBody).toBeNull();
+    await expect(page.getByTestId("confirm-debate-btn")).toHaveText("Confirm approve at 2%");
+    await page.getByTestId("confirm-debate-btn").click();
 
     await expect.poll(() => approveBody).not.toBeNull();
     expect(approveBody).toEqual({ allocation_pct: 2 });
@@ -222,6 +226,7 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
     await expect(page.locator("text=PENDING_APPROVAL")).toBeVisible({ timeout: 5000 });
     await page.getByTestId("approve-debate-btn").click();
+    await page.getByTestId("confirm-debate-btn").click();
 
     await expect(page.getByTestId("inbox-action-error")).toContainText("Session expired, sign in again");
     expect(approveCalled).toBe(false);

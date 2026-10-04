@@ -219,7 +219,7 @@ export function BrainConversation({ compact = false }: { compact?: boolean }) {
             <button
               type="submit"
               disabled={!draft.trim()}
-              className="flex items-center gap-1 rounded-lg bg-cyan-600 px-3 py-2 text-2xs font-bold text-white hover:bg-cyan-500 disabled:opacity-40"
+              className="flex items-center gap-1 rounded-lg bg-cyan-600 px-3 py-2 text-2xs font-bold text-zinc-950 hover:bg-cyan-500 disabled:opacity-40"
               aria-label="Send to the Brain"
             >
               <Send className="h-3 w-3" /> Send

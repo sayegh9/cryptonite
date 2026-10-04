@@ -88,7 +88,7 @@ export function StrategyInstancesPanel() {
           </button>
           <button
             onClick={() => setShowDeployModal(true)}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-2xs font-bold rounded transition-colors uppercase tracking-wider"
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-zinc-950 text-2xs font-bold rounded transition-colors uppercase tracking-wider"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Deploy New</span>
@@ -203,7 +203,7 @@ export function StrategyInstancesPanel() {
                                 })
                               );
                             }}
-                            className="p-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors inline-flex mr-1"
+                            className="p-1.5 bg-cyan-600 hover:bg-cyan-500 text-zinc-950 rounded transition-colors inline-flex mr-1"
                             title="Analyze Paper vs Backtest Delta"
                           >
                             <BrainCircuit className="w-3.5 h-3.5" />

@@ -209,9 +209,18 @@ test.describe("Mission Control", () => {
     // under 60 s: announced to screen readers
     await expect(page.getByTestId("approval-announcer")).toContainText("reduce-risk approval");
 
+    // R6.6: every decision has a confirm step; Esc backs out without deciding
     await page.getByRole("button", { name: "Approve: BUY ETHUSDT 6% of mandate ($600)" }).click();
+    await expect(page.getByRole("button", { name: "Confirm approve: BUY ETHUSDT 6% of mandate ($600)" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Confirm approve: BUY ETHUSDT 6% of mandate ($600)" })).toHaveCount(0);
+    expect(calls.decisions).toEqual([]);
+    await page.getByRole("button", { name: "Approve: BUY ETHUSDT 6% of mandate ($600)" }).focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter"); // the confirm button has focus
     await expect(rows.nth(0).getByRole("status")).toContainText("Approved · command queued · cmd-9f8e");
     await page.getByRole("button", { name: "Veto: Close BTCUSDT (exit debate)" }).click();
+    await page.getByRole("button", { name: "Confirm veto: Close BTCUSDT (exit debate)" }).click();
     await expect(page.getByTestId("approval-row").filter({ hasText: "Close BTCUSDT" }).getByRole("status")).toHaveText("Vetoed");
 
     expect(calls.decisions).toEqual([

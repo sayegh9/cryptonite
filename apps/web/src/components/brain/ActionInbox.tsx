@@ -57,6 +57,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
   // The run's portfolio decision (decision_price, recommendation, …) for the approval context
   const [decisions, setDecisions] = useState<Record<string, Record<string, unknown> | null>>({});
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<{ runId: string; action: "approve" | "reject" } | null>(null);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [pendingRunId, setPendingRunId] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -310,6 +311,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
             <button
               onClick={handleClearAll}
               title="Purge all inbox items"
+              aria-label="Clear all inbox items"
               className="p-1 rounded bg-zinc-900 hover:bg-rose-950/60 border border-zinc-800 hover:border-rose-800 text-zinc-400 hover:text-rose-300 transition-colors"
             >
               <Trash2 className="w-3 h-3" />
@@ -577,6 +579,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                     <button
                       onClick={() => handleDismiss(run.runId)}
                       title="Dismiss proposal"
+                      aria-label={`Dismiss ${symbolDisplay} proposal from this inbox`}
                       className="p-1 text-zinc-500 hover:text-rose-400 transition-colors rounded hover:bg-zinc-800"
                     >
                       <Trash2 className="w-3 h-3" />
@@ -672,26 +675,64 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                       <MessageSquare className="w-3.5 h-3.5" />
                       <span>Ask Copilot</span>
                     </button>
+                    {confirming?.runId === run.runId ? (
+                      // Confirm step (R6.6): keyboard reachable, Esc or Cancel backs out
+                      <div
+                        className="grid grid-cols-2 gap-2"
+                        role="group"
+                        aria-label={confirming.action === "approve" ? "Confirm approval" : "Confirm rejection"}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") setConfirming(null);
+                        }}
+                      >
+                        <button
+                          type="button"
+                          autoFocus
+                          data-testid="confirm-debate-btn"
+                          disabled={processingId === run.runId || (confirming.action === "approve" && !equity.usable)}
+                          onClick={() => {
+                            const action = confirming.action;
+                            setConfirming(null);
+                            void (action === "approve" ? handleApprove(run.runId) : handleReject(run.runId));
+                          }}
+                          className={`py-1.5 font-bold rounded flex items-center justify-center transition-colors disabled:opacity-50 ${
+                            confirming.action === "approve" ? "bg-emerald-500 text-zinc-950" : "bg-zinc-600 text-zinc-50"
+                          }`}
+                        >
+                          {confirming.action === "approve" ? `Confirm approve at ${currentPct}%` : "Confirm reject"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirming(null)}
+                          className="py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
                     <div className="grid grid-cols-2 gap-2">
                       <button
+                        type="button"
                         data-testid="approve-debate-btn"
-                        onClick={() => handleApprove(run.runId)}
+                        onClick={() => setConfirming({ runId: run.runId, action: "approve" })}
                         disabled={processingId === run.runId || !equity.usable}
                         title={equity.usable ? undefined : "Equity unavailable: cannot size this order"}
                         className="py-1.5 bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-bold rounded flex items-center justify-center space-x-1 transition-colors disabled:opacity-50"
                       >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
                         <span>Approve & Stage</span>
                       </button>
                       <button
-                        onClick={() => handleReject(run.runId)}
+                        type="button"
+                        onClick={() => setConfirming({ runId: run.runId, action: "reject" })}
                         disabled={processingId === run.runId}
                         className="py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded flex items-center justify-center space-x-1 transition-colors disabled:opacity-50"
                       >
-                        <XCircle className="w-3.5 h-3.5" />
+                        <XCircle className="w-3.5 h-3.5" aria-hidden="true" />
                         <span>Reject</span>
                       </button>
                     </div>
+                    )}
                     {actionError[run.runId] && (
                       <p role="alert" className="text-2xs text-rose-400 font-mono" data-testid="inbox-action-error">
                         {actionError[run.runId]}

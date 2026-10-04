@@ -789,7 +789,7 @@ export function TradingViewChart({
                   />
                   <Button 
                     size="sm" variant="secondary" 
-                    className="bg-cyan-600 hover:bg-cyan-500 text-white border-0"
+                    className="bg-cyan-600 hover:bg-cyan-500 text-zinc-950 border-0"
                     onClick={() => {
                       setIndicators([...indicators, {
                         id: crypto.randomUUID(),

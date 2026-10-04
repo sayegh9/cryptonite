@@ -204,6 +204,7 @@ export const SettingsPanel: React.FC = () => {
                 <div className="space-y-2">
                   <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Model</label>
                   <select
+                    aria-label="Model"
                     value={editModel}
                     onChange={(e) => setEditModel(e.target.value)}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-md p-2 text-sm text-white"
@@ -219,6 +220,7 @@ export const SettingsPanel: React.FC = () => {
                   </label>
                   <input
                     type="range"
+                    aria-label="Temperature"
                     min="0"
                     max="1"
                     step="0.1"
@@ -234,6 +236,7 @@ export const SettingsPanel: React.FC = () => {
                   System Instructions
                 </label>
                 <textarea
+                  aria-label="System prompt"
                   value={editPrompt}
                   onChange={(e) => setEditPrompt(e.target.value)}
                   className="flex-1 w-full bg-zinc-900 border border-zinc-800 rounded-md p-3 text-sm text-zinc-300 font-mono resize-none focus:border-cyan-500 focus:outline-none"
@@ -242,7 +245,7 @@ export const SettingsPanel: React.FC = () => {
               </div>
 
               <div className="flex justify-end pt-2">
-                <Button onClick={handleSaveAgent} className="bg-cyan-600 hover:bg-cyan-500 text-white gap-2">
+                <Button onClick={handleSaveAgent} className="bg-cyan-600 hover:bg-cyan-500 text-zinc-950 gap-2">
                   <Save className="w-4 h-4" />
                   Save Configuration
                 </Button>

@@ -277,6 +277,7 @@ export const ResearchLab: React.FC = () => {
             </div>
             <select
               value={selectedSlug}
+              aria-label="Target strategy"
               onChange={(e) => handleStrategyChange(e.target.value)}
               className="w-full bg-zinc-900 border border-white/5 rounded px-3 py-2 text-zinc-200 text-xs focus:border-cyan-500 focus:outline-none transition-colors"
             >
@@ -344,6 +345,7 @@ export const ResearchLab: React.FC = () => {
               {instruments.length > 0 ? (
                 <select
                   value={instrumentId}
+                  aria-label="Instrument"
                   onChange={(e) => setInstrumentId(e.target.value)}
                   className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
                 >
@@ -357,6 +359,7 @@ export const ResearchLab: React.FC = () => {
                 <input
                   type="text"
                   value={instrumentId}
+                  aria-label="Instrument"
                   onChange={(e) => setInstrumentId(e.target.value)}
                   placeholder="e.g. BTCUSDT.BINANCE"
                   className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
@@ -367,6 +370,7 @@ export const ResearchLab: React.FC = () => {
               <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Timeframe</label>
               <select
                 value={timeframe}
+                aria-label="Timeframe"
                 onChange={(e) => setTimeframe(e.target.value)}
                 className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
               >
@@ -383,6 +387,7 @@ export const ResearchLab: React.FC = () => {
               <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Lookback Window</label>
               <select
                 value={lookbackDays}
+                aria-label="Lookback window"
                 onChange={(e) => setLookbackDays(Number(e.target.value))}
                 className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
               >
@@ -421,6 +426,7 @@ export const ResearchLab: React.FC = () => {
                     </div>
                     <input
                       type={schema.type === "integer" || schema.type === "number" ? "number" : "text"}
+                      aria-label={schema.title || k}
                       step={schema.type === "integer" ? "1" : "0.01"}
                       min={schema.minimum}
                       max={schema.maximum}
@@ -492,7 +498,7 @@ export const ResearchLab: React.FC = () => {
           <button
             onClick={handleRunBacktest}
             disabled={running}
-            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-500 font-bold text-xs text-white transition-colors"
+            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-500 font-bold text-xs text-zinc-950 transition-colors"
           >
             {running ? (
               <>

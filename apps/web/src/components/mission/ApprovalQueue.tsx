@@ -52,6 +52,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
   const mandates = useMandateStore((s) => s.mandates);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{ id: string; decision: "APPROVE" | "VETO" } | null>(null);
   const [announcement, setAnnouncement] = useState("");
   // decisions made here stay visible after the refresh drops them from the pending list
   const [decided, setDecided] = useState<Record<string, Approval>>({});
@@ -138,12 +139,47 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                 )}
               </p>
               {pending && a.command_type === "SUBMIT_ORDER" && <ApprovalRiskContext {...contextOf(a, mandates)} />}
-              {pending ? (
+              {pending && confirm?.id === a.id ? (
+                // Confirm step (R6.6): keyboard reachable, Esc or Cancel backs out
+                <div
+                  className="mt-2 flex gap-2"
+                  role="group"
+                  aria-label={`Confirm ${confirm.decision === "APPROVE" ? "approval" : "veto"}`}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setConfirm(null);
+                  }}
+                >
+                  <button
+                    type="button"
+                    autoFocus
+                    disabled={busy === a.id || s === 0}
+                    onClick={() => {
+                      setConfirm(null);
+                      void decide(a, confirm.decision);
+                    }}
+                    aria-label={`Confirm ${confirm.decision === "APPROVE" ? "approve" : "veto"}: ${a.summary}`}
+                    className={`flex-1 rounded border px-2 py-1 text-2xs font-bold disabled:opacity-50 ${
+                      confirm.decision === "APPROVE"
+                        ? add ? "border-amber-500 bg-amber-600/40 text-amber-50" : "border-emerald-500 bg-emerald-600/40 text-emerald-50"
+                        : "border-zinc-500 bg-zinc-800 text-zinc-100"
+                    }`}
+                  >
+                    Confirm {confirm.decision === "APPROVE" ? "approve" : "veto"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirm(null)}
+                    className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-2xs font-bold text-zinc-300"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : pending ? (
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
                     disabled={busy === a.id || s === 0}
-                    onClick={() => decide(a, "APPROVE")}
+                    onClick={() => setConfirm({ id: a.id, decision: "APPROVE" })}
                     aria-label={`Approve: ${a.summary}`}
                     className={`flex-1 rounded border px-2 py-1 text-2xs font-bold disabled:opacity-50 ${
                       add ? "border-amber-600 bg-amber-600/20 text-amber-100" : "border-emerald-600 bg-emerald-600/20 text-emerald-100"
@@ -154,7 +190,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                   <button
                     type="button"
                     disabled={busy === a.id || s === 0}
-                    onClick={() => decide(a, "VETO")}
+                    onClick={() => setConfirm({ id: a.id, decision: "VETO" })}
                     aria-label={`Veto: ${a.summary}`}
                     className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-2xs font-bold text-zinc-300 disabled:opacity-50"
                   >

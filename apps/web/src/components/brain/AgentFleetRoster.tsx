@@ -195,13 +195,23 @@ export function AgentFleetRoster({
       </div>
 
       {/* Agents Roster List */}
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 space-y-2 overscroll-contain">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 space-y-2 overscroll-contain" tabIndex={0} role="region" aria-label="Agents">
         {agents.map((agent) => {
           const Icon = agent.icon;
           const isSelected = selectedAgentId === agent.id;
           return (
             <div
               key={agent.id}
+              role="button"
+              tabIndex={0}
+              aria-pressed={isSelected}
+              aria-label={`Chat with ${agent.name}`}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === " ") && onSelectAgent) {
+                  e.preventDefault();
+                  onSelectAgent(agent.id);
+                }
+              }}
               onClick={() => {
                 if (onSelectAgent) onSelectAgent(agent.id);
               }}

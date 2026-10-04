@@ -170,7 +170,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
 
           <button
             onClick={onCreateClick}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/20 focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm bg-cyan-600 hover:bg-cyan-500 text-zinc-950 shadow-cyan-500/20 focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none"
           >
             <span>Create Scanner</span>
           </button>
@@ -181,7 +181,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
             className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none ${
               running
                 ? "bg-zinc-800 text-zinc-500 cursor-not-allowed"
-                : "bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/20"
+                : "bg-cyan-600 hover:bg-cyan-500 text-zinc-950 shadow-cyan-500/20"
             }`}
           >
             <Play className="w-3.5 h-3.5 fill-current" />

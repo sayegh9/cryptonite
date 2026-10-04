@@ -179,7 +179,7 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
             <button
               type="submit"
               disabled={deploying}
-              className="flex-1 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold uppercase tracking-wider rounded transition-colors"
+              className="flex-1 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-zinc-950 text-xs font-bold uppercase tracking-wider rounded transition-colors"
             >
               {deploying ? "Dispatching..." : "Deploy Strategy"}
             </button>

@@ -170,7 +170,7 @@ export function ScannerBuilder({ onCreated }: { onCreated: () => void }) {
         <button
           type="submit"
           disabled={loading || rules.length === 0}
-          className="w-full mt-2 flex items-center justify-center space-x-2 bg-cyan-600 hover:bg-cyan-500 text-white py-2.5 rounded font-bold uppercase transition-colors text-sm"
+          className="w-full mt-2 flex items-center justify-center space-x-2 bg-cyan-600 hover:bg-cyan-500 text-zinc-950 py-2.5 rounded font-bold uppercase transition-colors text-sm"
         >
           <Save className="w-4 h-4" />
           <span>{loading ? "SAVING..." : "SAVE SCANNER SPEC"}</span>

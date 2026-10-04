@@ -100,7 +100,7 @@ export function KillSwitchPanel({
           <span className="text-2xs font-mono text-zinc-500">
             GEN: {status?.latch_generation}
           </span>
-          <button onClick={loadStatus} className="p-1 hover:text-cyan-400 text-zinc-500 transition-colors">
+          <button type="button" onClick={loadStatus} aria-label="Refresh kill switch status" title="Refresh kill switch status" className="p-1 hover:text-cyan-400 text-zinc-500 transition-colors">
             <RefreshCcw className="w-3.5 h-3.5" />
           </button>
         </div>

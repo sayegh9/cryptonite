@@ -61,12 +61,12 @@ export function DrawdownMeter() {
       </div>
 
       <div
-        role="meter"
-        aria-label="Daily drawdown used"
-        aria-valuemin={0}
+        role={limit !== null ? "meter" : "img"}
+        aria-label={limit !== null ? "Daily drawdown used" : `Daily drawdown ${fmtPct(dd, 2)}; daily limit unknown`}
+        aria-valuemin={limit !== null ? 0 : undefined}
         aria-valuemax={limit !== null ? limit * 100 : undefined}
         aria-valuenow={limit !== null ? Number((Math.min(dd, limit) * 100).toFixed(2)) : undefined}
-        aria-valuetext={limit !== null ? `${fmtPct(dd, 2)} of ${fmtPct(limit, 0)} daily limit` : `${fmtPct(dd, 2)}; daily limit unknown`}
+        aria-valuetext={limit !== null ? `${fmtPct(dd, 2)} of ${fmtPct(limit, 0)} daily limit` : undefined}
         className="relative h-2 rounded-full bg-zinc-800 overflow-hidden"
       >
         <div className={`h-full rounded-full ${tone.bar} transition-[width] duration-700`} style={{ width: `${(latched ? 1 : used ?? 0) * 100}%` }} />
