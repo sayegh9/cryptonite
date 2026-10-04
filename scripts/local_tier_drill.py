@@ -5,7 +5,7 @@ gateway sees the local tier. Stop and start Ollama on the host while it runs.
 Run from the repo root (the test image mounts the repo; 172.17.0.1 is the docker bridge Ollama binds to):
 
     docker compose -f infra/docker-compose.yml run --rm --no-deps \\
-        -e OLLAMA_BASE_URL=http://172.17.0.1:11434/v1 -e REDIS_URL=redis://redis:6379/0 \\
+        -e OLLAMA_BASE_URL=http://172.17.0.1:11434/v1 -e REDIS_URL="redis://:$REDIS_PASSWORD@redis:6379/0" \\
         test uv run python scripts/local_tier_drill.py --seconds 180
 
     # on the host, while it runs:
@@ -37,7 +37,7 @@ PROMPT = "Answer with one word, bullish or bearish: 'BTC breaks out to a new all
 
 async def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--model", default="ollama:qwen3.5:4b")
+    p.add_argument("--model", default="ollama:gemma4:12b-it-qat")
     p.add_argument("--fallback", default="google:gemini-2.5-flash-lite")
     p.add_argument("--seconds", type=float, default=180)
     p.add_argument("--interval", type=float, default=5)

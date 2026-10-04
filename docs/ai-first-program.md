@@ -92,7 +92,10 @@ The bake-offs behind these choices (triage, summarize, tagging, embeddings) are 
   `scripts/distill_triage_train.py` trains a QLoRA adapter for Gemma 4 12B on the host GPU, and
   `scripts/distill_triage_eval.py` certifies it against the base model on held-out data. Training runs
   outside Docker in `~/cryptonite-train` (no NVIDIA container runtime on this host). A student only
-  replaces the base model if it is certified.
+  replaces the base model if it is certified. `scripts/distill_triage_export.py` merges a certified adapter and imports it into
+  Ollama. Status (2026-10-04): the first triage student is certified (100% on both holdouts against the
+  base's 98.6% / 96.2%), but Ollama 0.33.2 cannot import Gemma 4 12B's unified architecture, so
+  production still runs base Gemma 4 until the Ollama upgrade.
 
 ## 5. Market context
 

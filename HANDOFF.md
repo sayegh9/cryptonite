@@ -17,6 +17,8 @@ Flash-Lite / Flash), `embed` on `ollama:embeddinggemma`, everything else on Gemi
 `gemma4:12b-it-qat`, `qwen3.5:9b` (bake-off runner-up), `embeddinggemma`; `qwen3.5:4b` was deleted.
 
 **Gates last run (2026-10-04):** pytest 804 passed / 0 failed on the throwaway DB; Playwright 26/26.
+The throwaway-DB test command (Phase 0 section below) needs the Redis password in the shell first:
+`REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' .env | cut -d= -f2-)`. Run Playwright with the live API stopped.
 
 **Waiting on time, not work:**
 - Gate 5: 14 days of L1 paper trading with 0 breaches and working approvals (earliest about 2026-10-15).
@@ -133,6 +135,17 @@ The news tool uses FinBERT, which is fast and free for 12 headlines per call. Cr
 - **A7.2:** verdict calibration (ECE in pp) feeds the L3 gate (None below 20 labelled decisions, so it fails closed); there is a reliability chart in Autonomy & Evals.
 - **A7.3:** the L2 candidacy is the `BTC-ETH spot L1` mandate at L1 since 2026-10-01 09:15 (earliest L2 2026-10-31; it needs 30 closed trades). Check it with `scripts/gate_status.py`.
 - **A7.4:** distillation tooling (data builder, Unsloth QLoRA trainer, certification eval), trained on the host GPU in `~/cryptonite-train`. The trace inputs of distillable roles are now logged (migration 029).
+  - **Run 2026-10-04:** QLoRA r=16 on `google/gemma-4-12B-it` (4-bit), 900 balanced examples (lake history older than 14 days + synthetic, holdouts excluded: 0 exact overlaps), 2 epochs, lr 2e-4, 29 min on the RTX 3080 Ti, train loss 0.104.
+  - **Certification (greedy, production TRIAGE prompt, `scripts/distill_triage_eval.py`): CERTIFIED.**
+
+    | Holdout | Base agreement (excl. stale) | Student agreement (excl. stale) | Student strict JSON |
+    |---|---|---|---|
+    | `holdout_lake` (80 real cases, last 14 days) | 98.75% (98.6%) | **100% (100%)** | 100% (base 0%) |
+    | `triage_v3` (60 synthetic) | 83.3% (96.2%) | **100% (100%)** | 100% (base 0%) |
+
+    The student also gets the stale-data rule right (8/8 on each set), which every model in the bake-off failed. Caveat: `triage_v3` comes from the same generator as the synthetic training half (different seed), so the real-history holdout is the stronger evidence.
+  - Unconstrained, the base answers in `key: value` lines rather than JSON; the eval scores the decision either way (production decodes under Ollama's JSON schema) and reports strict JSON separately.
+  - **Deployment:** Ollama 0.33 cannot load this LoRA as an `ADAPTER` for Gemma 4, so `scripts/distill_triage_export.py` merges it into 16-bit weights and imports them with `ollama create -q q4_K_M`. The 12 GB GPU holds one 7 GB model, so the student must also serve `summarize` to replace base Gemma; it is re-certified through Ollama (both eval sets) before any route changes.
 
 **Operations notes.**
 - **Migrate before deploying:** the new orchestrator and API read tables from migrations 027–031.
@@ -169,7 +182,7 @@ Branch `feat/ai-first-phase5` → PR to `feat/ai-first-phase0` (not `main`). Dec
 1. **Migrations on a throwaway DB first**, then the dev DB:
    ```
    docker exec infra-postgres-1 psql -U cryptonite -d cryptonite -c "DROP DATABASE IF EXISTS cryptonite_ci" -c "CREATE DATABASE cryptonite_ci"
-   docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL=redis://redis:6379/15 test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
+   docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/15" test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
    ```
    Expected: everything passes except the two known ones (`test_instruments_endpoint`, `test_duckdb_query_p95_latency`). Then `alembic -c infra/migrations/alembic.ini upgrade head` on the dev DB (024 → 026).
 2. **Web gates:** in `apps/web`: `pnpm install && pnpm typecheck && pnpm lint && pnpm build && npx playwright install chromium && npx playwright test` (25 specs).
@@ -278,7 +291,7 @@ Plan: [docs/ai-first-blueprint.md](docs/ai-first-blueprint.md) (approved; goal �
 **Important for anyone running tests:** the compose `test` service points at the **dev DB**, and `test_alembic_roundtrip_downgrade_and_upgrade` downgrades that DB to `base`, wiping operator users and reference data. Run the full suite against a throwaway DB instead:
 ```
 docker exec infra-postgres-1 psql -U cryptonite -d cryptonite -c "CREATE DATABASE cryptonite_ci"
-docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL=redis://redis:6379/15 test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
+docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/15" test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
 ```
 
 - **Running stack:** the orchestrator and derivatives_feed containers still run the code from before A0.4 until they are restarted (`docker compose -f infra/docker-compose.yml restart orchestrator derivatives_feed`). On restart, working orders from before are reconciled to CANCELED.
