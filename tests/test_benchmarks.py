@@ -89,6 +89,7 @@ def benchmark_lake(tmp_path_factory):
     return engine
 
 
+@pytest.mark.performance  # wall-clock: run with `-m performance` on a quiet machine (LE-9)
 def test_duckdb_query_p95_latency(benchmark_lake: AnalyticsQueryEngine):
     """Verify DuckDB analytical bar query p95 latency is < 50ms."""
     engine = benchmark_lake

@@ -32,6 +32,7 @@ class CallRecord:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     output: Any = None
     error: str | None = None
+    input: str | None = None  # prompt, kept only for distillable roles (A7.4)
 
     @property
     def provider(self) -> str:
@@ -59,12 +60,12 @@ async def write_call(pool, rec: CallRecord) -> bool:
                     """
                     INSERT INTO ai_decision_traces (
                         id, parent_id, role, model, session_id, mandate_id, status,
-                        tool_calls, output, error, cost_usd, latency_ms
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12)
+                        tool_calls, output, error, cost_usd, latency_ms, input
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13)
                     """,
                     rec.trace_id, rec.parent_trace_id, rec.role, rec.model, rec.session_id, rec.mandate_id, rec.status,
                     json.dumps(rec.tool_calls, default=str), json.dumps(_jsonable(rec.output), default=str),
-                    rec.error, rec.cost_usd, rec.latency_ms,
+                    rec.error, rec.cost_usd, rec.latency_ms, rec.input,
                 )
         return True
     except Exception as e:

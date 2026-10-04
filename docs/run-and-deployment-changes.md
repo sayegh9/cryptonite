@@ -182,3 +182,48 @@ docker compose -f infra/docker-compose.yml stop
 - **WebSocket Host Resolution**: Refactored `apps/web/src/lib/ws.ts` to derive host from `window.location.hostname`, enabling remote devices to stream market feeds from `ws://192.168.1.203:8000/ws/stream`.
 - **Compiled PDF Manual**: Produced a 17-page illustrated manual saved at `docs/Cryptonite_User_Manual.pdf`.
 
+
+---
+
+## 8. Update Log: October 2026 (Linux workstation, AI-First Phases 5–7)
+
+The stack moved from the Mac to the Linux workstation (HP Z840, NVIDIA GPU). Full status is in
+[HANDOFF.md](../HANDOFF.md); the architecture is in [ai-first-program.md](ai-first-program.md).
+
+### 8.1. Configuration
+- **`.env` location:** the root `.env`; `infra/.env` is a git-ignored symlink to `../.env`, because Compose
+  interpolates `${...}` from the compose file's directory.
+- **Redis password:** `redis-server --requirepass ${REDIS_PASSWORD}` with an authenticated healthcheck;
+  all client URLs carry the password. Host tools: `redis-cli -a "$REDIS_PASSWORD"` (read it from `.env`,
+  never paste it into chats or logs).
+- **Local model tier:** Ollama as a host systemd service on the docker bridge only; see
+  [runbooks/local_ai_tier.md](runbooks/local_ai_tier.md).
+- **Profiles:** `executor` now needs `--profile binance_demo` (it crash-looped without a PEM key);
+  `exit_monitor` is `--profile monitoring`, `notifier` is `--profile notifier`, `research_worker` is
+  `--profile research`.
+
+### 8.2. Images (LE-7)
+Every Python image runs `uv sync --frozen --no-dev --all-packages` into `/app/.venv` with uv 0.12.17 and a
+shared BuildKit cache (`id=cryptonite-uv`, `UV_LOCK_TIMEOUT=3600`), so deployed versions match the lockfile.
+Build `api` first when building many images in parallel; the shared cache lock serialises the rest.
+
+### 8.3. Migrations
+Run them through the `test` image (the `api` image has no Alembic):
+
+```bash
+docker compose -f infra/docker-compose.yml run --rm test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
+```
+
+Head is `031`. Migrate before deploying new images: the orchestrator and API read tables from 027–031.
+
+### 8.4. Tests
+Never against the dev DB: use a throwaway `cryptonite_ci` database (command in HANDOFF.md). Run the
+Playwright suite with the live API stopped; one flicker test fails only when the real API answers.
+Last gates: pytest 804 passed (0 failed), Playwright 26/26.
+
+### 8.5. Data
+- History: `scripts/backfill_history.py` (catalog + lake, gaps only); 120 days of BTC/ETH 1m and 1h.
+- `scan_runs` had grown to 21 GB (one sha256 per lake file per run); the scanner now stores one digest per
+  date partition and the table was compacted to about 250 MB.
+- macOS copied `._*` AppleDouble files into `data/`; DuckDB crashes on them. Delete them after any copy
+  from a Mac: `find data -name '._*' -delete`.

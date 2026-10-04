@@ -1,0 +1,7 @@
+# Pinned, CPU-only (A6.3). Kept out of uv.lock on purpose: torch is ~200 MB and only this service needs it.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.1+cpu
+transformers==5.18.0
+safetensors==0.8.0
+fastapi==0.142.2
+uvicorn==0.54.0

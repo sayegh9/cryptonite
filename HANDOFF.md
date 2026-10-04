@@ -1,6 +1,39 @@
 # HANDOFF
 
-## ▶ Resume here: moving to the Linux workstation (2026-09-30)
+## ▶ Resume here (2026-10-04, Linux workstation)
+
+**Where things are.** The stack runs on the Linux workstation (the Mac move below is done). Work is on
+`feat/ai-first-phase6`, which holds Phases 6–7 and backlog LE-1…LE-10 and includes the ingest fix.
+Alembic head is `031`. What the system now is: [docs/ai-first-program.md](docs/ai-first-program.md).
+Local model operations: [docs/runbooks/local_ai_tier.md](docs/runbooks/local_ai_tier.md).
+
+**Pull requests** (`main` merges stay with the operator):
+- `sayegh9/cryptonite#6` `feat/ai-first-phase6` → `feat/ai-first-phase0`: Phases 6–7, LE-1…LE-10, the `scan_runs` fix.
+- `sayegh9/cryptonite#5` `fix/ingest-recovery-open-kline` → `feat/ai-first-phase0`: already contained in #6.
+- `sayegh9/cryptonite#4` `feat/ai-first-phase0` → `main`: Phase 5 (and, once #6 merges, Phases 6–7).
+
+**Production AI routes:** `triage` and `summarize` on `ollama:gemma4:12b-it-qat` (DEGRADE fallback
+Flash-Lite / Flash), `embed` on `ollama:embeddinggemma`, everything else on Gemini. Models on disk:
+`gemma4:12b-it-qat`, `qwen3.5:9b` (bake-off runner-up), `embeddinggemma`; `qwen3.5:4b` was deleted.
+
+**Gates last run (2026-10-04):** pytest 804 passed / 0 failed on the throwaway DB; Playwright 26/26.
+The throwaway-DB test command (Phase 0 section below) needs the Redis password in the shell first:
+`REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' .env | cut -d= -f2-)`. Run Playwright with the live API stopped.
+
+**Waiting on time, not work:**
+- Gate 5: 14 days of L1 paper trading with 0 breaches and working approvals (earliest about 2026-10-15).
+- L2 candidacy of `BTC-ETH spot L1`: earliest 2026-10-31, needs 30 closed trades
+  (`scripts/gate_status.py`).
+
+**Waiting on the operator:**
+- Telegram live checks: foreign chat ignored; approve / veto / expire; kill-switch Critical alert on
+  Telegram and ntfy (steps under Phase 5 below).
+- Merges: #6, #5 into phase0; #4 into `main`.
+- Sudo items: `sudo apt install python3.12-dev` (Triton compiles during training); the Ollama v0.35.1
+  install (`~/Downloads/ollama-v0.35.1/README-resume.txt`; also unblocks deploying the distilled triage model, A7.4); optional Tailscale; optional NVIDIA Container
+  Toolkit (only if training should move into Docker).
+
+## Moving to the Linux workstation (2026-09-30, done 2026-10-01; kept for reference)
 
 **Git is the source of truth.** Every branch is pushed; nothing lives only on the MacBook. On the workstation, **clone fresh**; don't copy the Mac folder: `node_modules`, `.next` and the venvs are macOS builds.
 
@@ -27,6 +60,103 @@
 - Branch `claude/elated-shirley-5a992d` (one ingest commit from an earlier session, never merged) is now pushed; decide whether to merge or drop it.
 
 > **Deferred backlog (LE-1 … LE-10)**, agreed for later: see [AUDIT_STATUS.md](AUDIT_STATUS.md#deferred-backlog-marked-for-later-2026-09-29).
+
+## AI-First Program — Phases 6–7 (workstation, 2026-10-03 … 10-04): local tier and learning
+
+Branch `feat/ai-first-phase6` (from `feat/ai-first-phase0`, includes the ingest fix of PR #5).
+
+**Workstation setup (done by the operator, needs sudo):**
+- One Ollama: the snap install was removed. The systemd service runs `/usr/local/bin/ollama` **0.33.2**.
+- `/etc/systemd/system/ollama.service.d/cryptonite.conf`: `OLLAMA_HOST=172.17.0.1:11434` (docker bridge only), `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_CONTEXT_LENGTH=8192`, `After=docker.service`.
+- Verified: reachable from containers on `infra_default` and `infra_agents_net`; refused on loopback and the LAN address (invariant 8).
+- On the host, the CLI needs `OLLAMA_HOST=172.17.0.1:11434 ollama ...`.
+- Upgrade to v0.35.1 is **paused**: GitHub downloads crawled. The partial file and resume/install steps are in `~/Downloads/ollama-v0.35.1/README-resume.txt`. Not blocking: every model below runs on 0.33.2.
+
+**Models pulled** (operator-approved): `qwen3.5:9b` 6.6 GB, `gemma4:12b-it-qat` 7.2 GB, `embeddinggemma` 0.62 GB (768-d). `qwen3.5:4b` (3.4 GB) was pulled for the bake-off and deleted on 2026-10-04 (weakest and slowest). Sentiment weights (CryptoBERT, FinBERT) are in `~/models/hf`, outside the repo; FinBERT ships only as a pickle `.bin` with no stated license.
+
+**A6.1 (done):**
+- `gateway/local_tier.py`: health probe of Ollama `/api/tags`, published to Redis `local_tier:health`.
+- Fast fallback for DEGRADE routes whose local primary is down or not pulled. FAIL_CLOSED, protected and pinned models never switch.
+- `/ai/status` gains a `local_tier` field and banner.
+- Compose: `OLLAMA_BASE_URL` plus host-gateway on api, agent_worker, debate_worker and research_worker.
+- Fix: Ollama ignored `thinking_budget=0`, so Qwen3.5 reasoned before every triage answer. Now `reasoning_effort: "none"` (19 s → 0.7 s for a one-word answer).
+- **Drill** (`scripts/local_tier_drill.py`, 2026-10-03, primary `qwen3.5:4b`, fallback Flash-Lite):
+  - Healthy: 120/120 local, ~110–135 ms.
+  - `systemctl stop ollama`: `tier=DOWN`, every call answered by Flash-Lite in 0.6–1.7 s, no timeout stalls, health published as down (probe error only).
+  - `systemctl start ollama`: back to local on the next call (~10 s; first call 5.6 s while the model reloads).
+
+**A6.2 bake-off (first pass, not a certification):** existing triage cases `v1` + `v2` (10 cases) × 3 repeats.
+
+| Model | Agreement v1 / v2 | Structured valid | p50 latency | Cost |
+|---|---|---|---|---|
+| `google:gemini-2.5-flash-lite` (current) | 100% / 80% | 100% | ~0.8 s | $0.0018 total |
+| `ollama:gemma4:12b-it-qat` | 100% / 86.7% | 100% | 0.96–1.5 s | 0 |
+| `ollama:qwen3.5:9b` | 100% / 86.7% | 100% | ~1.5 s | 0 |
+| `ollama:qwen3.5:4b` | 100% / 86.7% | 100% | ~4 s | 0 |
+
+All four models miss `triage-8` (an EMA cross with reward-to-risk 2.46, labelled not worth a debate; the label is arguable). **Next:** a larger labelled triage set plus `tagging` and `summarize` eval kinds before certifying a winner and routing production traffic locally.
+
+**A6.2 bake-off v2 (2026-10-03).**
+
+New eval sets:
+- `triage_v3`: 60 cases, 30 clean / 30 rejects across the 4 hard rules. Generated by `scripts/build_triage_eval_set.py` with the production `build_brief`; labels are recomputed from the rendered text with 0 mismatches.
+- `summarize_v1`: 24 cases, the exact `brain.memory.compact` prompt, generated by `scripts/build_summary_eval_set.py`. Scored on keeping every order card's size, status and command id, the operator's limit and the symbols; at most 220 words; no headings.
+
+Runs were 2 repeats each. Flash-Lite cost $0.013 for everything.
+
+| Model | Triage (all) | Triage excl. stale | R:R<1.5 | Both TFs against | Chop | Stale | Summarize | p50 triage / summarize |
+|---|---|---|---|---|---|---|---|---|
+| `gemini-2.5-flash-lite` (current) | 75.8% | 82.7% | 16/16 | 5/14 | 9/14 | 5/16 | 62.5% | 0.8 s / 0.9 s |
+| **`gemma4:12b-it-qat`** | **81.7%** | 90.4% | 16/16 | **12/14** | **13/14** | 4/16 | **100%** | 1.5 s / 2.9 s |
+| `qwen3.5:9b` | 80.0% | **91.3%** | 16/16 | 9/14 | 12/14 | 1/16 | 83.3% | 1.5 s / 2.9 s |
+| `qwen3.5:4b` | 70.8% | 78.8% | 16/16 | 4/14 | 8/14 | 3/16 | 75.0% | 4.5 s / 7.1 s |
+
+- **Stale:** every model fails the stale rule; it needs "older than 2 bars of 15m" arithmetic. Production never sends stale candidates to triage: `services/debate_worker/gate.py` rejects them first (`STALE_CANDIDATE`, same 2-bar threshold). So "excl. stale" is the production-relevant triage score.
+- **Flash-Lite summaries:** they drop order sizes and command ids, and in one case attached an old command id to a different, pending card (a misattribution).
+- **Recommendation:** Gemma 4 12B for `triage` and `summarize`, with Flash-Lite as the DEGRADE fallback. It is best or tied on every production-relevant column and the only model with perfect summaries. Its latency is fine for both roles. **Operator decision 2026-10-04: switched.** `triage` and `summarize` run on Gemma 4 12B with DEGRADE fallbacks (`ai_model_routes`). Note that `qwen3.5:4b` is both the weakest and the slowest model here.
+- **Tagging:** not evaluated yet; the role arrives with the A6.3 sentiment service.
+- **Real-history triage cases:** `--source lake` exists but needs the LE-1 backfill. The lake currently has about 9.5k of the expected 23k 1m bars over 16 days, so the strict resampler rejects most windows.
+
+**A6.3 sentiment (2026-10-04).** `services/sentiment` (CryptoBERT + FinBERT, CPU, internal network only, no secrets; weights in `~/models/hf`, mounted read-only) and the `get_news_sentiment` tool for the debate's Sentiment & News Analyst. Before this, the analyst had **no news source at all**. Tagging eval (`scripts/eval_sentiment.py`; 180 balanced financial-news items + 36 hand-labelled crypto items, macro-F1):
+
+| Tagger | News | Crypto | Latency |
+|---|---|---|---|
+| FinBERT (service) | 0.727 | 0.80 | 26 ms |
+| CryptoBERT (service) | 0.311 | 0.53 | 24 ms |
+| `gemma4:12b-it-qat` | 0.761 (3 invalid) | 0.97 (2 invalid) | 0.64 s |
+| `gemini-2.5-flash-lite` | **0.828** | **1.00** | 0.77 s |
+
+The news tool uses FinBERT, which is fast and free for 12 headlines per call. CryptoBERT is not used. The `tagging` route stays on Flash-Lite.
+
+**A6.4 embeddings.** Google retired `text-embedding-004` (404), so production reflection embeds and semantic lesson lookup had silently failed. The fix: local `ollama:embeddinggemma` (768-d, matches the column) with model-tagged vectors (migration 027), retrieval that only compares same-model vectors, and `scripts/reembed_reflections.py`, which switches all rows and the route in one transaction. Recall eval (`scripts/eval_embeddings.py`): embeddinggemma hit@1 1.0 and recall@3 1.0, the same as `gemini-embedding-001` (3072-d).
+
+**Phase 7.**
+- **A7.1:** migration 028 `ai_decision_outcomes`; the learner service (one instance) labels 1h/4h/24h/72h returns plus MFE/MAE from the lake and writes reflections from the 24h outcome. The old reflection engine was never started. Lessons are ranked by outcome.
+- **A7.2:** verdict calibration (ECE in pp) feeds the L3 gate (None below 20 labelled decisions, so it fails closed); there is a reliability chart in Autonomy & Evals.
+- **A7.3:** the L2 candidacy is the `BTC-ETH spot L1` mandate at L1 since 2026-10-01 09:15 (earliest L2 2026-10-31; it needs 30 closed trades). Check it with `scripts/gate_status.py`.
+- **A7.4:** distillation tooling (data builder, Unsloth QLoRA trainer, certification eval), trained on the host GPU in `~/cryptonite-train`. The trace inputs of distillable roles are now logged (migration 029).
+  - **Run 2026-10-04:** QLoRA r=16 on `google/gemma-4-12B-it` (4-bit), 900 balanced examples (lake history older than 14 days + synthetic, holdouts excluded: 0 exact overlaps), 2 epochs, lr 2e-4, 29 min on the RTX 3080 Ti, train loss 0.104.
+  - **Certification (greedy, production TRIAGE prompt, `scripts/distill_triage_eval.py`): CERTIFIED.**
+
+    | Holdout | Base agreement (excl. stale) | Student agreement (excl. stale) | Student strict JSON |
+    |---|---|---|---|
+    | `holdout_lake` (80 real cases, last 14 days) | 98.75% (98.6%) | **100% (100%)** | 100% (base 0%) |
+    | `triage_v3` (60 synthetic) | 83.3% (96.2%) | **100% (100%)** | 100% (base 0%) |
+
+    The student also gets the stale-data rule right (8/8 on each set), which every model in the bake-off failed. Caveat: `triage_v3` comes from the same generator as the synthetic training half (different seed), so the real-history holdout is the stronger evidence.
+  - Unconstrained, the base answers in `key: value` lines rather than JSON; the eval scores the decision either way (production decodes under Ollama's JSON schema) and reports strict JSON separately.
+  - **Deployment:** Ollama 0.33 cannot load this LoRA as an `ADAPTER` for Gemma 4, so `scripts/distill_triage_export.py` merges it into 16-bit weights and imports them with `ollama create -q q4_K_M`. The 12 GB GPU holds one 7 GB model, so the student must also serve `summarize` to replace base Gemma; it is re-certified through Ollama (both eval sets) before any route changes.
+  - **Deployment blocked (2026-10-04):** the merge works, but Ollama 0.33.2 refuses to import the merged weights: `unsupported architecture "Gemma4UnifiedForConditionalGeneration"` (the HF 12B checkpoint is the unified audio/vision variant; Ollama only serves it from its own registry build). **Production keeps base `gemma4:12b-it-qat`.** Next try after the Ollama v0.35.1 upgrade: re-run `scripts/distill_triage_export.py` (about 20 min, needs about 48 GB free disk while importing), then run `python -m cryptonite_agents.evals run --set triage_lake_v1` / `triage_v3` / `summarize_v1` against the imported model before routing. A llama.cpp GGUF export would need `build-essential` and `cmake` (sudo) and its own Gemma 4 support check.
+  - A failed import leaves its uploaded weights as an orphan blob in `/usr/share/ollama/.ollama/models/blobs` (23.9 GB here). Ollama 0.33's startup prune does **not** remove it; delete it by hand once no manifest references it (done 2026-10-04).
+  - The real-history holdout is now a permanent eval set: `triage_lake_v1` (80 cases, 40 worth a debate).
+
+**Operations notes.**
+- **Migrate before deploying:** the new orchestrator and API read tables from migrations 027–031.
+- **Redis password:** Redis requires `REDIS_PASSWORD` (from `.env`), so host tools need `redis-cli -a`.
+- **Backtester role:** the backtester connects as `cryptonite_backtester` (migration 030).
+- **Scanner storage:** `scan_runs` stores one digest per date partition, after it had grown to 21 GB.
+
+**Build (LE-7, fixed):** images install from the lockfile (`uv sync --frozen`), so deployed versions match the tests; details in [docs/run-and-deployment-changes.md](docs/run-and-deployment-changes.md#8-update-log-october-2026-linux-workstation-ai-first-phases-57).
 
 ## AI-First Program — Phase 5 (cloud session, 2026-09-30): mandates, autonomy, approvals, Telegram
 
@@ -55,7 +185,7 @@ Branch `feat/ai-first-phase5` → PR to `feat/ai-first-phase0` (not `main`). Dec
 1. **Migrations on a throwaway DB first**, then the dev DB:
    ```
    docker exec infra-postgres-1 psql -U cryptonite -d cryptonite -c "DROP DATABASE IF EXISTS cryptonite_ci" -c "CREATE DATABASE cryptonite_ci"
-   docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL=redis://redis:6379/15 test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
+   docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/15" test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
    ```
    Expected: everything passes except the two known ones (`test_instruments_endpoint`, `test_duckdb_query_p95_latency`). Then `alembic -c infra/migrations/alembic.ini upgrade head` on the dev DB (024 → 026).
 2. **Web gates:** in `apps/web`: `pnpm install && pnpm typecheck && pnpm lint && pnpm build && npx playwright install chromium && npx playwright test` (25 specs).
@@ -164,7 +294,7 @@ Plan: [docs/ai-first-blueprint.md](docs/ai-first-blueprint.md) (approved; goal �
 **Important for anyone running tests:** the compose `test` service points at the **dev DB**, and `test_alembic_roundtrip_downgrade_and_upgrade` downgrades that DB to `base`, wiping operator users and reference data. Run the full suite against a throwaway DB instead:
 ```
 docker exec infra-postgres-1 psql -U cryptonite -d cryptonite -c "CREATE DATABASE cryptonite_ci"
-docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL=redis://redis:6379/15 test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
+docker compose -f infra/docker-compose.yml run --rm -e DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite_ci -e REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/15" test sh -c "uv run python -m alembic -c infra/migrations/alembic.ini upgrade head && uv run pytest tests -q"
 ```
 
 - **Running stack:** the orchestrator and derivatives_feed containers still run the code from before A0.4 until they are restarted (`docker compose -f infra/docker-compose.yml restart orchestrator derivatives_feed`). On restart, working orders from before are reconciled to CANCELED.

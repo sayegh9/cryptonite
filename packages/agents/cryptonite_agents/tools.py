@@ -313,12 +313,15 @@ def compare_live_vs_backtest(instrument_id: str, backtest_id: str) -> str:
 # --- Gateway tool registry (AI-first blueprint A1.5) ---------------------------------------------
 # Every tool an agent may call, with the risk it can create. None of these changes exposure:
 # stage_debate_proposal only queues a debate whose decision still needs operator approval.
-from cryptonite_agents.gateway import RiskClass, tool as _register  # noqa: E402
+from cryptonite_agents.gateway import RiskClass  # noqa: E402
+from cryptonite_agents.gateway import tool as _register  # noqa: E402
+from cryptonite_agents.news import get_news_sentiment  # noqa: E402
 
 QUERY_POSTGRES = _register(RiskClass.READ)(query_postgres_readonly)
 QUERY_PARQUET = _register(RiskClass.READ)(query_parquet_duckdb)
 SCANNER_CONTEXT = _register(RiskClass.READ)(get_scanner_context)
 LIVE_MARKET_DATA = _register(RiskClass.READ)(get_live_market_data)
+NEWS_SENTIMENT = _register(RiskClass.READ)(get_news_sentiment)  # A6.3: headlines + local FinBERT tags
 READ_TEARSHEET = _register(RiskClass.READ)(read_nautilus_tearsheet)
 EXECUTION_ANALYSIS = _register(RiskClass.READ)(run_execution_analysis)
 STAGE_DEBATE_PROPOSAL = _register(RiskClass.READ, side_effects=True)(stage_debate_proposal)

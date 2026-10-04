@@ -79,6 +79,8 @@ DEFAULT_ROUTES: dict[str, RoleRoute] = {
         # Learning and housekeeping
         RoleRoute("reflection", FLASH, priority=_O),
         RoleRoute("summarize", FLASH_LITE, FLASH, _DEGRADE, _O, thinking_budget=0),
+        # Sentiment tags for headlines/posts (A6.3); the local sentiment service is the primary tagger
+        RoleRoute("tagging", FLASH_LITE, FLASH, _DEGRADE, _O, max_output_tokens=128, thinking_budget=0),
         RoleRoute("embed", EMBED, fallback_policy=_DEGRADE, priority=_D),
     ]
 }

@@ -17,6 +17,8 @@ import uuid
 from decimal import Decimal
 from typing import Any, Literal
 
+from cryptonite_agents.gateway.local_tier import HEALTH_KEY as LOCAL_TIER_HEALTH
+from cryptonite_agents.gateway.local_tier import read_published as read_local_tier
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution.approvals import (
     APPROVAL_COLUMNS,
@@ -31,6 +33,7 @@ from cryptonite_execution.autonomy import (
     transition,
 )
 from cryptonite_execution.autonomy_metrics import gate_report, propose_if_ready, report_view
+from cryptonite_execution.calibration import reliability, verdict_points
 from cryptonite_execution.mandate_store import (
     MANDATE_COLUMNS,
     apply_transition,
@@ -454,10 +457,12 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
     r = _redis(request)
     exit_up = notifier_up = False
     budget_alert = False
+    local_tier = None
     if r is not None:
         try:
             exit_up = bool(await r.get(EXIT_MONITOR_HEARTBEAT))
             notifier_up = bool(await r.get(NOTIFIER_HEARTBEAT))
+            local_tier = read_local_tier(await r.get(LOCAL_TIER_HEALTH))
             budget_alert = bool(await r.get(f"llm_budget_alert:{datetime.datetime.now(datetime.UTC).date().isoformat()}"))
         except Exception:
             pass
@@ -476,6 +481,8 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         degraded.append("Notifier down: no Telegram approvals or Critical alerts")
     if budget_alert:
         degraded.append("LLM spend passed 70% of the daily cap: optional AI work degrades first")
+    if local_tier and not local_tier.get("healthy"):
+        degraded.append("Local model tier down: local roles fall back to the cloud model; trade decisions fail closed")
     return {
         "kill_switch": {"latched": bool(ks and ks["is_latched"]), "reason": ks["reason"] if ks else None,
                         "latched_by": ks["latched_by"] if ks else None},
@@ -484,6 +491,9 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         "account": {"equity": _dec(backstop["equity"]), "hwm": _dec(backstop["hwm"]), "drawdown_pct": _dec(backstop["drawdown_pct"]),
                     "backstop_pct": "20"} if backstop else None,
         "exit_monitor_up": exit_up, "notifier_up": notifier_up, "budget_alert": budget_alert, "degraded": degraded,
+        # None until a gateway has probed the local tier (no role routed to it yet)
+        "local_tier": {"healthy": bool(local_tier.get("healthy")), "models": local_tier.get("models", []),
+                       "error": local_tier.get("error"), "checked_at": local_tier.get("checked_at")} if local_tier else None,
     }
 
 
@@ -592,7 +602,12 @@ async def eval_results(request: Request, auth: dict = Depends(require_operator))
         rows = await conn.fetch(
             """SELECT DISTINCT ON (set_version, model) id, set_version, model, metrics, passed, created_at
                FROM ai_eval_runs ORDER BY set_version, model, created_at DESC""")
+        verdict = reliability(await verdict_points(conn))
     return {"runs": [{"id": str(r["id"]), "set_version": r["set_version"], "model": r["model"], "passed": r["passed"],
                       "metrics": json.loads(r["metrics"]) if isinstance(r["metrics"], str) else r["metrics"],
                       "created_at": r["created_at"].isoformat()} for r in rows],
-            "calibration": None, "calibration_note": "Calibration is measured from A7.2 (outcome labels); until then the L3 gate fails closed."}
+            "calibration": {"debate.verdict": verdict},
+            "calibration_note": (f"Verdict conviction vs 24h outcome over {verdict['n']} labelled decisions: "
+                                 f"expected calibration error {verdict['ece_pp']} pp." if verdict["ece_pp"] is not None else
+                                 f"{verdict['n']} labelled decisions so far; calibration is reported from "
+                                 f"{verdict['min_samples']} on (until then the L3 gate fails closed).")}

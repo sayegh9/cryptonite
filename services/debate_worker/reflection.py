@@ -1,17 +1,24 @@
-import asyncio
-import logging
-import duckdb
-import json
-import os
-import asyncpg
-from decimal import Decimal
-from typing import Optional
+"""Reflections from real outcomes (AI-first blueprint A7.1, replacing the F10 heuristic).
 
+A decision gets one reflection once its 24h outcome is labelled (``outcomes.label_pending``): the
+signed outcome (BUY profits from a rise; SELL/HOLD, i.e. exit or stay out, from a fall), its alpha
+against BTC over the same window (for BTC itself, the outcome), and a short lesson written by the
+reviewer persona. The lesson is embedded and tagged with its embedding model (A6.4).
+"""
+
+import datetime
+import logging
+
+import asyncpg
 from cryptonite_agents.gateway import Gateway
 from cryptonite_agents.persona import Persona
+from outcomes import signed_outcome
 
 logger = logging.getLogger(__name__)
-NAUTILUS_CATALOG_PATH = os.getenv("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog")
+
+REFLECTION_HORIZON = "24h"
+BENCHMARK = "BTCUSDT"
+BATCH = 5
 
 REVIEWER = Persona(
     "Quantitative Reviewer", "reflection",
@@ -22,129 +29,73 @@ REVIEWER = Persona(
     "the Portfolio Manager's prompt in the future.",
 )
 
+
+def benchmark_return(query_engine, start: datetime.datetime, horizon: datetime.timedelta) -> float | None:
+    """BTC's return over [start, start + horizon] from the 1m lake, or None without data."""
+    start_ns = int(start.timestamp() * 1_000_000_000)
+    end_ns = int((start + horizon).timestamp() * 1_000_000_000)
+    bars = query_engine.query_bars_df(symbol=BENCHMARK, timeframe="1m", start_ns=start_ns - 300 * 10**9, end_ns=end_ns)
+    if bars.is_empty():
+        return None
+    bars = bars.sort("ts_event_ns")
+    before = bars.filter(bars["ts_event_ns"] <= start_ns)
+    if before.is_empty():
+        return None
+    first, last = float(before["close"][-1]), float(bars["close"][-1])
+    return last / first - 1 if first else None
+
+
 class ReflectionEngine:
-    def __init__(self, pg_pool: asyncpg.Pool, gateway: Gateway | None = None):
+    def __init__(self, pg_pool: asyncpg.Pool, query_engine, gateway: Gateway | None = None):
         self.pg_pool = pg_pool
+        self.query_engine = query_engine
         self.gateway = gateway or Gateway()
-        # Connect to DuckDB for benchmark data (read-only)
-        self.duck = duckdb.connect(database=':memory:')
 
-    def _get_benchmark_return(self, instrument_id: str, start_ts: str, end_ts: str) -> float:
-        """Query DuckDB Parquet lake to get benchmark return over the trade's lifespan."""
-        try:
-            # Construct a safe glob path for the catalog
-            # Assuming partition format: /app/data/nautilus_catalog/bars/BTCUSDT.BINANCE-1m/*.parquet
-            benchmark_symbol = "BTCUSDT.BINANCE" if "USDT" in instrument_id else "ETHUSDT.BINANCE"
-            path = f"{NAUTILUS_CATALOG_PATH}/bars/{benchmark_symbol}-1m/*.parquet"
-            
-            # This is a naive query assuming 'close' and 'ts_init' exist in the parquet schema.
-            # In production, this matches the exact schema emitted by nautilus_trader.
-            query = f"""
-                SELECT 
-                    (SELECT close FROM read_parquet('{path}') WHERE ts_init >= '{start_ts}' ORDER BY ts_init ASC LIMIT 1) as start_price,
-                    (SELECT close FROM read_parquet('{path}') WHERE ts_init <= '{end_ts}' ORDER BY ts_init DESC LIMIT 1) as end_price
-            """
-            result = self.duck.execute(query).fetchone()
-            if result and result[0] and result[1]:
-                start_price, end_price = result[0], result[1]
-                return (end_price - start_price) / start_price
-            return 0.0
-        except Exception as e:
-            logger.warning(f"DuckDB benchmark query failed: {e}. Defaulting to 0.0")
-            return 0.0
-
-    async def run_reflection_loop(self):
-        """Continuously polls for closed decisions to generate reflections."""
-        logger.info("Starting Reflection Engine Loop...")
-        while True:
-            try:
-                await self.process_pending_reflections()
-            except Exception as e:
-                logger.error(f"Reflection loop error: {e}")
-            await asyncio.sleep(60) # Run every minute
-
-    async def process_pending_reflections(self):
+    async def process_pending_reflections(self) -> int:
         async with self.pg_pool.acquire() as conn:
-            # Find completed debate_runs that don't have a reflection yet, but the position is closed.
-            # We mock the 'position closed' logic for this implementation by selecting runs older than 1 hour
-            # that don't exist in the reflections table.
-            query = """
-                SELECT dr.id as run_id, dr.instrument_id, pd.recommendation, pd.reasoning, dr.created_at, dr.completed_at
-                FROM debate_runs dr
-                JOIN portfolio_decisions pd ON dr.id = pd.run_id
-                LEFT JOIN reflections r ON dr.id = r.run_id
-                WHERE dr.status = 'COMPLETED' 
-                  AND r.id IS NULL
-                  AND dr.completed_at < now() - interval '1 hour'
-                LIMIT 10
-            """
-            pending = await conn.fetch(query)
-            
-            for row in pending:
-                run_id = row['run_id']
-                instrument_id = row['instrument_id']
-                
-                # Query actual realized PnL from closed paper positions
-                pnl_row = await conn.fetchrow(
-                    """
-                    SELECT COALESCE(SUM(realized_pnl), 0) as total_pnl,
-                           COALESCE(AVG(entry_price), 0) as avg_entry
-                    FROM paper_positions
-                    WHERE instrument_id = $1
-                      AND status = 'CLOSED'
-                      AND closed_at >= $2
-                      AND closed_at <= $3
-                    """,
-                    instrument_id,
-                    row['created_at'],
-                    row['completed_at']
-                )
-
-                if pnl_row and pnl_row['avg_entry'] and float(pnl_row['avg_entry']) > 0:
-                    actual_outcome_pnl = float(pnl_row['total_pnl']) / float(pnl_row['avg_entry'])
-                else:
-                    # No matching closed positions found — skip reflection for this run
-                    logger.info(f"No closed positions found for {instrument_id} in debate window. Skipping reflection.")
+            pending = await conn.fetch(
+                """SELECT pd.run_id, pd.instrument_id, pd.recommendation, pd.reasoning, pd.created_at,
+                          o.return_pct, o.mfe, o.mae
+                   FROM portfolio_decisions pd
+                   JOIN ai_decision_outcomes o ON o.decision_id = pd.id AND o.horizon = $1
+                   LEFT JOIN reflections r ON r.run_id = pd.run_id
+                   WHERE r.id IS NULL
+                   ORDER BY pd.created_at
+                   LIMIT $2""", REFLECTION_HORIZON, BATCH)
+        written = 0
+        for row in pending:
+            outcome = signed_outcome(row["recommendation"], float(row["return_pct"]))
+            if row["instrument_id"].startswith(BENCHMARK):
+                alpha = outcome
+            else:
+                bench = benchmark_return(self.query_engine, row["created_at"], datetime.timedelta(hours=24))
+                if bench is None:
                     continue
-                
-                # Fetch benchmark return from DuckDB
-                benchmark_return = self._get_benchmark_return(
-                    instrument_id, 
-                    str(row['created_at']), 
-                    str(row['completed_at'])
-                )
-                
-                alpha = actual_outcome_pnl - benchmark_return
-                
-                # Generate Lesson via Agent
-                reflection_prompt = (
-                    f"Trade for {instrument_id}:\n"
-                    f"Recommendation: {row['recommendation']}\n"
-                    f"Original Reasoning: {row['reasoning']}\n"
-                    f"Actual PnL: {actual_outcome_pnl*100:.2f}%\n"
-                    f"Benchmark Return: {benchmark_return*100:.2f}%\n"
-                    f"Alpha: {alpha*100:.2f}%\n\n"
-                    "What is the key lesson learned here?"
-                )
-                
-                lesson = (await REVIEWER.run(self.gateway, reflection_prompt)).output
-
-                # Generate Embedding for the lesson
-                try:
-                    (embedding_vector,) = await self.gateway.embed([lesson])
-                    embedding_str = f"[{','.join(map(str, embedding_vector))}]"
-                except Exception as e:
-                    logger.error(f"Failed to generate embedding: {e}")
-                    embedding_str = None
-
-                outcome_tag = "WIN" if actual_outcome_pnl > 0 else "LOSS" if actual_outcome_pnl < 0 else "FLAT"
-
-                # Save to Postgres
+                alpha = outcome - signed_outcome(row["recommendation"], bench)
+            prompt = (
+                f"Decision for {row['instrument_id']}: {row['recommendation']}\n"
+                f"Original reasoning: {row['reasoning']}\n"
+                f"Asset move over the next 24h: {float(row['return_pct']) * 100:+.2f}% "
+                f"(best {float(row['mfe']) * 100:+.2f}%, worst {float(row['mae']) * 100:+.2f}%)\n"
+                f"Outcome for this decision: {outcome * 100:+.2f}%; alpha vs BTC: {alpha * 100:+.2f}%\n\n"
+                "What is the key lesson learned here?"
+            )
+            lesson = str((await REVIEWER.run(self.gateway, prompt)).output)
+            embedding_str = embedding_model = None
+            try:
+                (vector,), embedding_model = await self.gateway.embed_tagged([lesson], kind="document")
+                embedding_str = f"[{','.join(map(str, vector))}]"
+            except Exception as e:  # stored without a vector: retrieval falls back to recency for it
+                logger.warning("Lesson embedding failed: %s", e)
+                embedding_model = None
+            tag = "WIN" if outcome > 0 else "LOSS" if outcome < 0 else "FLAT"
+            async with self.pg_pool.acquire() as conn:
                 await conn.execute(
-                    """
-                    INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding, instrument_type, outcome)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """,
-                    run_id, actual_outcome_pnl, alpha, lesson, embedding_str, instrument_id, outcome_tag
-                )
-                logger.info(f"Generated reflection for run {run_id}: Alpha {alpha*100:.2f}%")
+                    """INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding,
+                                                embedding_model, instrument_type, timeframe, outcome)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    row["run_id"], round(outcome, 6), round(alpha, 6), lesson, embedding_str, embedding_model,
+                    row["instrument_id"], REFLECTION_HORIZON, tag)
+            written += 1
+            logger.info("Reflection for run %s: outcome %+.2f%%, alpha %+.2f%%", row["run_id"], outcome * 100, alpha * 100)
+        return written

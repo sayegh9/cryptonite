@@ -1,47 +1,29 @@
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    build-essential \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+# LE-7: every Python service installs the uv.lock environment the tests run against (no unpinned
+# installs), from a BuildKit cache shared by all images so rebuilds do not re-download.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_LOCK_TIMEOUT=3600 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /bin/
+RUN --mount=type=cache,target=/root/.cache/pip pip install uv==0.12.17
 
-# Copy workspace project definitions
-COPY pyproject.toml uv.lock .python-version ./
-COPY packages/ packages/
-COPY services/ services/
+COPY pyproject.toml uv.lock README.md ./
+COPY packages ./packages
+COPY services ./services
 
-# Sync workspace dependencies
-RUN uv sync --frozen --no-dev || uv sync --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv,id=cryptonite-uv,sharing=locked \
+    uv sync --frozen --no-dev --all-packages
 
-FROM python:3.12-slim AS runner
-
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
-RUN useradd -m -u 1001 cryptonite && \
-    mkdir -p /app/data && \
-    chmod -R 777 /app/data && \
-    chown -R cryptonite:cryptonite /app
-
-COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /bin/
-COPY --from=builder /app /app
-
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1001 cryptonite && mkdir -p /app/data && chmod -R 777 /app/data && chown -R cryptonite:cryptonite /app
 USER cryptonite
 
 EXPOSE 8080
-
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONUNBUFFERED=1
-
 CMD ["python", "-m", "cryptonite_ingest.server"]

@@ -29,6 +29,12 @@ async def test_health_and_ready_endpoints(api_client):
 
 @pytest.mark.asyncio
 async def test_instruments_endpoint(api_client):
+    # Self-contained (LE-9): a fresh test DB has no reference data until ingest syncs instruments
+    await app.state.pool.execute(
+        """INSERT INTO instruments (instrument_id, raw_symbol, base_currency, quote_currency, price_precision,
+                                    size_precision, price_increment, size_increment)
+           VALUES ('BTCUSDT.BINANCE', 'BTCUSDT', 'BTC', 'USDT', 2, 5, 0.01, 0.00001)
+           ON CONFLICT DO NOTHING""")
     resp = await api_client.get("/api/v1/instruments")
     assert resp.status_code == 200
     instruments = resp.json()

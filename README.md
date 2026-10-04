@@ -4,6 +4,17 @@ Cryptonite is an institutional-grade, low-latency cryptocurrency algorithmic tra
 
 It is a self-hosted cryptocurrency intelligence and algorithmic trading platform designed for auditable research, deterministic risk controls, and automated execution with NautilusTrader.
 
+## Current state (2026-10-04)
+
+The **AI-First program** (Phases 0–7) is built on branch `feat/ai-first-phase6`: one AI gateway with a
+local model tier (Gemma 4 12B on Ollama for triage and summaries), trading **mandates** with autonomy
+levels and Telegram approvals, a news-sentiment service, an outcome-labelling learner, and a strategy
+research loop. What runs and how: [docs/ai-first-program.md](docs/ai-first-program.md). Current status and
+open items: [HANDOFF.md](HANDOFF.md).
+
+**No AI order executes without an active mandate**, and every order still passes `GuardedOrderDispatcher`
+(1–25% equity clamp).
+
 ## Platform Screenshots
 
 | Trading Terminal | AI Copilot |
@@ -48,7 +59,7 @@ flowchart TB
         RedisAgents[(Redis 7 - Agent Memory)]
     end
 
-    subgraph AIOperations ["AI Operations Layer (Google Antigravity & Gemini)"]
+    subgraph AIOperations ["AI Operations Layer (AI gateway: Gemini + local Ollama)"]
         AgentWorker["cryptonite_agent_worker (Port 8085)<br/>1-on-1 Interactive AI Copilot"]
         DebateWorker["cryptonite_debate_worker<br/>Autonomous Adversarial Debate Fleet"]
         AgentWorker --> PostgresRO[(Postgres Read-Only Replica<br/>cryptonite_agent_ro)]
@@ -86,27 +97,41 @@ cryptonite/
 │   ├── execution/       # Order State Machine and Risk Constraints
 │   ├── backtester/      # Nautilus Backtesting Engine wrapper
 │   ├── strategies/      # Base implementations of Quantitative Strategies
-│   └── agents/          # Antigravity SDK & Gemini Agent Multi-Agent Fleet
+│   └── agents/          # AI gateway (Pydantic AI; Gemini + local Ollama), tools, debate fleet, evals
 └── services/
     ├── api/             # FastAPI Gateway, REST, WebSocket & Background Alerts
     ├── ingest/          # Binance WebSocket stream, REST recovery recorder, and On-Chain RPC
     ├── scanner/         # Polars Vectorized Screening Engine & Exit Surveillance
-    ├── debate_worker/   # AI Adversarial Debate Engine (TradingAgents integration)
-    ├── agent_worker/    # 1-on-1 Interactive AI Copilot Fleet (Google Antigravity SDK)
+    ├── debate_worker/   # Pre-debate gate, triage, debate engine; also runs the learner
+    ├── agent_worker/    # Brain copilot and chat personas (through the AI gateway)
+    ├── orchestrator/    # Paper engine, mandate risk monitor, approval sweeper, autonomy gates
+    ├── notifier/        # Telegram approvals (TOTP) and ntfy Critical alerts
+    ├── sentiment/       # FinBERT news sentiment on CPU (internal network only)
     └── outbox/          # Transactional Outbox Poller & Binance Execution Bridge
 ```
 
 ## Quick Start
+
+Secrets live in a git-ignored `.env` at the repo root (`infra/.env` is a symlink to it, so Compose reads
+it). Redis requires `REDIS_PASSWORD` from that file.
+
 ```bash
-# 1. Start local PostgreSQL & infrastructure
+# 1. Start Postgres and Redis
 docker compose -f infra/docker-compose.yml up -d postgres redis
 
-# 2. Run migrations
-uv run alembic -c infra/migrations/alembic.ini upgrade head
+# 2. Run migrations (through the test image, which has Alembic)
+docker compose -f infra/docker-compose.yml run --rm test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
 
-# 3. Run test suite
-uv run pytest
+# 3. Start the stack (add --profile monitoring for the exit monitor, --profile notifier for Telegram)
+docker compose -f infra/docker-compose.yml --profile monitoring up -d
+
+# 4. Web
+cd apps/web && pnpm install && pnpm dev   # http://localhost:3000
 ```
+
+Run the test suite against a throwaway database, never the dev DB (one test downgrades the schema to
+`base`); the exact command is in [HANDOFF.md](HANDOFF.md). The local model tier (Ollama on the host) is
+described in [docs/runbooks/local_ai_tier.md](docs/runbooks/local_ai_tier.md).
 
 ## Institutional Web Terminal UI & Workstation
 Cryptonite features a high-density, Bloomberg-style trading workstation:
@@ -122,7 +147,7 @@ Cryptonite separates AI operations into two distinct, specialized operational la
    - **Analyst Fleet:** Market, Sentiment, and On-Chain agents autonomously gather real-time data and generate intelligence dossiers.
    - **Adversarial Debate:** A Bull Researcher and a Bear Researcher aggressively debate the dossier to expose weaknesses in the trade thesis.
    - **Portfolio & Risk Managers:** A Portfolio Manager proxy sets an initial allocation, followed by a 3-persona Risk Debate (Aggressive, Conservative, Neutral). The Chief Risk Officer synthesizes the final conviction level (e.g. `OVERWEIGHT` / `HOLD`).
-   - **Self-Improving Reflection Engine:** Completed trades are joined with DuckDB time-series data to calculate *Alpha* vs BTC/ETH benchmarks. Lessons learned are embedded into PostgreSQL with `pgvector` (`vector(768)`) and dynamically retrieved during future debate rounds based on market regime and asset class.
+   - **Learning loop:** the learner labels every debate decision at 1h/4h/24h/72h from the analytics lake, writes a reflection from the 24h outcome with alpha against BTC, and embeds it locally (`embeddinggemma`, `vector(768)`, model recorded per row). Future debates recall the same-model lessons ranked by outcome. Verdict confidence is calibrated (ECE) and feeds the autonomy gate.
    - **Safety First:** AI agents operate through an Anti-Corruption Layer with strictly read-only, anonymized database access, hard limits on concentration (25.0%), and hardware-level kill-switches.
 
 ## Perpetual Futures (Paper Trading)
@@ -174,7 +199,7 @@ sequenceDiagram
   - Added `stage_debate_proposal` tool allowing read-only agent sessions (`cryptonite_agent_ro`) to safely stage proposals via the API gateway.
 
 ### Previous Updates (v0.3.0)
-- **End-to-End AI Execution Pipeline**: Connected the AI Debate Engine directly to the `cryptonite_executor` via the transactional outbox (`execution_commands`). Autonomous mode now fully executes orders without operator intervention within strict risk bounds.
+- **End-to-End AI Execution Pipeline**: Connected the AI Debate Engine directly to the `cryptonite_executor` via the transactional outbox (`execution_commands`). Autonomous mode now fully executes orders without operator intervention within strict risk bounds. *(Superseded: autonomous mode was frozen in Phase 0 and replaced by mandates and autonomy levels in Phase 5.)*
 - **Interactive Execution Staging & Safety**: Added the Execution Staging Canvas featuring 2-second hold-to-approve mechanics, parameter overrides, and live price drift monitoring.
 - **Modular Bloomberg-Style Terminal & Orderbook L2**: Added 3-column layout controls, dynamic depth bars, and 8-direction floating Copilot with zero hydration mismatches.
 - **Reflection Engine & Vector Recall**: Added pgvector 768-dimensional embeddings for historical trade reflections, enabling continuous self-improvement across changing volatility regimes.

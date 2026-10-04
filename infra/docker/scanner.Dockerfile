@@ -2,22 +2,24 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# LE-7: every Python service installs the uv.lock environment the tests run against (no unpinned
+# installs), from a BuildKit cache shared by all images so rebuilds do not re-download.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    UV_SYSTEM_PYTHON=1
+    UV_LINK_MODE=copy \
+    UV_LOCK_TIMEOUT=3600 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
 
-RUN pip install --no-cache-dir uv
+RUN --mount=type=cache,target=/root/.cache/pip pip install uv==0.12.17
 
-COPY pyproject.toml README.md ./
-COPY packages/schemas ./packages/schemas
-COPY packages/storage ./packages/storage
-COPY packages/scanner ./packages/scanner
-COPY services/ingest ./services/ingest
-COPY services/outbox ./services/outbox
-COPY services/scanner ./services/scanner
-COPY services/api ./services/api
+COPY pyproject.toml uv.lock README.md ./
+COPY packages ./packages
+COPY services ./services
 
-RUN uv pip install --system -e ./packages/schemas -e ./packages/storage -e ./packages/scanner -e ./services/scanner
+RUN --mount=type=cache,target=/root/.cache/uv,id=cryptonite-uv,sharing=locked \
+    uv sync --frozen --no-dev --all-packages
 
 USER 1000:1000
 
