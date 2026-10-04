@@ -11,6 +11,7 @@ from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_hum
 from cryptonite_execution.approvals import ApprovalConflict, decide_approval, record_operator_approval
 from cryptonite_execution.mandate_store import resolve_mandate_for
 from cryptonite_schemas.mandate import ActionClass
+from cryptonite_api.similar import similar_or_none
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
@@ -376,6 +377,9 @@ async def get_debate_decision(run_id: str, request: Request, _auth=Depends(requi
             
     # Convert asyncpg Record to JSON-safe dict (Decimal -> float)
     result = {k: (float(v) if hasattr(v, 'as_tuple') else str(v) if hasattr(v, 'hex') else v) for k, v in dict(decision).items()}
+    similar = await similar_or_none(pool, decision["instrument_id"], decision["recommendation"], exclude_run_id=run_uuid)
+    if similar is not None:
+        result["similar_decisions"] = similar
     return result
 
 @router.get("/debates")
