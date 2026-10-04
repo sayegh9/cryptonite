@@ -60,3 +60,8 @@ scratch/
 
 # Migration bundle for the workstation move: holds secrets and a DB dump, never commit
 safe_move/
+
+# Unsloth writes compiled kernels to the working directory when training (A7.4)
+unsloth_compiled_cache/
+graphify-out/20[0-9][0-9]-*/
+graphify-out/.graphify_labels.json.sig
