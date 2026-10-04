@@ -283,6 +283,43 @@ async def compare_backtest_runs(
     return {"runs": runs_comparison}
 
 
+_BAR_STEP_S = {"MINUTE": 60, "HOUR": 3_600, "DAY": 86_400}
+
+
+def contiguous_history(intervals: list[tuple[int, int]], step_ns: int) -> tuple[int, int] | None:
+    """(start, end) of the run of catalog intervals that ends at the newest bar, joining intervals whose
+    gap is at most one bar step. File-level only: gaps inside a file are the backtest cadence check's job."""
+    merged: tuple[int, int] | None = None
+    for start, end in sorted(intervals, reverse=True):
+        if merged is None:
+            merged = (start, end)
+        elif merged[0] - end <= step_ns:
+            merged = (min(start, merged[0]), merged[1])
+        else:
+            break
+    return merged
+
+
+@router.get("/coverage", dependencies=AUTHED_READ)
+async def catalog_coverage(bar_type: str = Query(..., min_length=1, max_length=128)) -> dict[str, Any]:
+    """Contiguous Nautilus catalog history of a bar type (R5.0: the research loop refuses a spec that
+    needs more history than this before it spends anything)."""
+    from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
+
+    parts = bar_type.rsplit("-", 4)  # <instrument>-<n>-<UNIT>-LAST-EXTERNAL
+    if len(parts) != 5 or not parts[1].isdigit() or parts[2] not in _BAR_STEP_S:
+        raise HTTPException(status_code=400, detail=f"Unsupported bar_type '{bar_type}'.")
+    step_ns = int(parts[1]) * _BAR_STEP_S[parts[2]] * 1_000_000_000
+    mgr = NautilusCatalogManager(os.environ.get("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog"))
+    try:
+        intervals = [(int(s), int(e)) for s, e in mgr.get_intervals(identifier=bar_type)]
+    except Exception:  # no data for this bar type yet
+        intervals = []
+    merged = contiguous_history(intervals, step_ns)
+    return {"bar_type": bar_type, "start_ns": merged[0] if merged else None, "end_ns": merged[1] if merged else None,
+            "days": round((merged[1] - merged[0]) / 86_400e9, 2) if merged else 0.0}
+
+
 @router.get("/{run_id}", dependencies=AUTHED_READ)
 async def get_backtest_run(
     run_id: UUID,

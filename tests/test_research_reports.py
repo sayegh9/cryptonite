@@ -58,3 +58,45 @@ async def test_reports_are_stored_once_and_listed_newest_first(db_url, operator_
             await conn.close()
     finally:
         await pool.close()
+
+
+async def test_validation_fields_are_stored_and_trials_are_counted(db_url, operator_auth):
+    """Phase 5: folds, dsr, holdout and robustness (migration 032) round-trip; earlier trials on the same
+    instrument/timeframe are counted for the DSR; a report from before Phase 5 still stores (NULLs)."""
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    app.state.pool = pool
+    try:
+        validated = report("PROMOTE", 1.4)
+        validated.update(folds=[{"window": [1, 2, 3], "sharpe_ratio": 1.1}] * 4, dsr=0.97,
+                         holdout={"sharpe_ratio": 0.9, "total_return": 0.02},
+                         robustness={"worst_retention": 0.8, "fragile": False})
+        full = {**validated, "instrument_id": "SOLUSDT.BINANCE", "timeframe": "1h", "trials": [{}] * 12}
+        legacy = report("REJECT", -0.1)
+        other_tf = {**legacy, "id": str(uuid.uuid4()), "instrument_id": "SOLUSDT.BINANCE", "timeframe": "4h",
+                    "trials": [{}] * 5}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.post("/api/v1/research/reports", json={**validated, "report": full})).status_code == 201
+            assert (await client.post("/api/v1/research/reports", json=body(legacy))).status_code == 201
+            assert (await client.post("/api/v1/research/reports", json={**other_tf, "report": other_tf})).status_code == 201
+            bad = await client.post("/api/v1/research/reports", json={**body(report("REJECT", 0)), "dsr": 1.5})
+            assert bad.status_code == 422
+            listed = {r["id"]: r for r in (await client.get("/api/v1/research/reports")).json()["reports"]}
+            trials = (await client.get("/api/v1/research/trials",
+                                       params={"instrument_id": "SOLUSDT.BINANCE", "timeframe": "1h"})).json()
+        v = listed[validated["id"]]
+        assert v["dsr"] == 0.97 and len(v["folds"]) == 4 and v["holdout"]["total_return"] == 0.02
+        assert v["robustness"]["fragile"] is False
+        assert [listed[legacy["id"]][k] for k in ("folds", "dsr", "holdout", "robustness")] == [None] * 4
+        assert trials["trials"] == 12  # the 4h report and the reports without an instrument do not count
+    finally:
+        await pool.close()
+
+
+def test_contiguous_history_stops_at_the_newest_gap():
+    from cryptonite_api.routes.backtests import contiguous_history
+
+    step = 60
+    files = [(0, 1_000), (1_060, 2_000), (5_000, 6_000), (6_060, 9_000)]  # a gap between 2_000 and 5_000
+    assert contiguous_history(files, step) == (5_000, 9_000)
+    assert contiguous_history(files[:2], step) == (0, 2_000)
+    assert contiguous_history([], step) is None
