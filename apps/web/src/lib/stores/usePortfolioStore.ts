@@ -118,6 +118,9 @@ interface PortfolioState {
   lastRestOkAt: number | null;
   /** When `account` was last confirmed by REST or a snapshot (null = never this session). */
   accountAt: number | null;
+  /** When positions / the kill switch were last confirmed (null = never this session: unknown) */
+  positionsAt: number | null;
+  killSwitchAt: number | null;
   restDegraded: boolean; // at least one endpoint failed on the last poll; last-known data is shown
   equityHwm: { day: string; value: number } | null; // intraday high-water mark (persisted)
   ledger: LedgerPrefs;
@@ -216,6 +219,8 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
   lastSnapshotAt: null,
   lastRestOkAt: null,
   accountAt: null,
+  positionsAt: null,
+  killSwitchAt: null,
   restDegraded: false,
   equityHwm: null,
   ledger: { tab: 'orders', range: 'all', symbol: '', origin: '', side: '', pageSize: 25 },
@@ -275,6 +280,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
         for (const p of s.positions) if (p.status === 'OPEN' && !restIds.has(p.position_id)) next.unshift(p);
       }
       patch.positions = reconcileList(s.positions, next, (p) => p.position_id);
+      patch.positionsAt = Date.now();
     }
 
     if (Array.isArray(r.orders)) patch.orders = reconcileList(s.orders, r.orders as PaperOrder[], (o) => o.client_order_id);
@@ -291,6 +297,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
     }
     if (isRecord(r.killSwitch) && typeof r.killSwitch.is_latched === 'boolean') {
       patch.killSwitch = reuse(s.killSwitch, r.killSwitch as unknown as KillSwitchState);
+      patch.killSwitchAt = Date.now();
     }
     patch.equityHwm = nextHwm(s.equityHwm, patch.account ?? s.account);
     return patch;
@@ -318,6 +325,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
 
     const patch: Partial<PortfolioState> = {
       lastSnapshotAt: Date.now(),
+      positionsAt: Date.now(),
       positions: reconcileList(s.positions, [...added, ...next], (p) => p.position_id),
     };
     if (isRecord(msg.account)) {

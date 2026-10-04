@@ -24,9 +24,11 @@ function MetricCards() {
   const account = usePortfolioStore((s) => s.account);
   const positions = usePortfolioStore((s) => s.positions);
   const latched = usePortfolioStore((s) => s.killSwitch.is_latched);
+  const positionsKnown = usePortfolioStore((s) => s.positionsAt !== null);
+  const killSwitchKnown = usePortfolioStore((s) => s.killSwitchAt !== null);
   const open = positions.filter((p) => p.status === "OPEN");
   const longs = open.filter((p) => p.side !== "SHORT").length;
-  const daily = Number(account?.daily_realized_pnl ?? 0);
+  const daily = account ? Number(account.daily_realized_pnl) : null;
   const upnl = open.reduce((a, p) => a + p.unrealized_pnl, 0);
 
   return (
@@ -45,23 +47,31 @@ function MetricCards() {
 
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
         <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Daily Realized PnL</div>
-        <div className={`text-lg font-black mt-1 tabular-nums ${daily >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtSignedUsd(daily)}</div>
+        <div className={`text-lg font-black mt-1 tabular-nums ${daily === null ? "text-zinc-500" : daily >= 0 ? "text-emerald-400" : "text-red-400"}`}>{daily === null ? "—" : fmtSignedUsd(daily)}</div>
         <div className="text-2xs text-zinc-400 mt-0.5">UTC Trading Day</div>
       </div>
 
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
         <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Open Positions</div>
-        <div className="text-lg font-black text-zinc-200 mt-1">{open.length} Active</div>
+        <div className="text-lg font-black text-zinc-200 mt-1">{positionsKnown ? `${open.length} Active` : "—"}</div>
         <div className="text-2xs text-zinc-400 mt-0.5 tabular-nums">
-          <span className="text-emerald-400">{longs}L</span> / <span className="text-red-400">{open.length - longs}S</span>
-          <span className={upnl >= 0 ? "text-emerald-400/80" : "text-red-400/80"}> · {fmtSignedUsd(upnl)} unrealized</span>
+          {positionsKnown ? (
+            <>
+              <span className="text-emerald-400">{longs}L</span> / <span className="text-red-400">{open.length - longs}S</span>
+              <span className={upnl >= 0 ? "text-emerald-400/80" : "text-red-400/80"}> · {fmtSignedUsd(upnl)} unrealized</span>
+            </>
+          ) : (
+            "positions unavailable"
+          )}
         </div>
       </div>
 
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
         <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Execution Guard</div>
         <div className="text-lg font-black mt-1 flex items-center space-x-1.5">
-          {latched ? (
+          {!killSwitchKnown ? (
+            <span className="text-zinc-400">UNKNOWN</span>
+          ) : latched ? (
             <span className="text-red-400 flex items-center space-x-1">
               <ShieldAlert className="w-4 h-4" />
               <span>LATCHED</span>
@@ -74,7 +84,7 @@ function MetricCards() {
           )}
         </div>
         <div className="text-2xs text-zinc-400 mt-0.5">
-          {account?.daily_loss_latched ? "Daily Drawdown Tripped" : "Collars & Freshness OK"}
+          {!account ? "Account status unavailable" : account.daily_loss_latched ? "Daily Drawdown Tripped" : "Daily loss latch not tripped"}
         </div>
       </div>
     </div>

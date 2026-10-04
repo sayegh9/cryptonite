@@ -36,6 +36,7 @@ export function DrawdownMeter() {
   const limit = limits.status === "ok" ? pctFraction(limits.data.paper?.max_daily_loss_pct) : null;
 
   const dd = drawdownFrom(hwm, equity);
+  const ddKnown = hwm !== null && equity !== null;
   const used = limit !== null ? Math.min(dd / limit, 1) : null;
   const level: Level = latched ? "latched" : used === null ? "unknown" : used >= 0.8 ? "danger" : used >= 0.5 ? "caution" : "calm";
   const tone = TONE[level];
@@ -54,7 +55,7 @@ export function DrawdownMeter() {
       </div>
 
       <div className="flex items-baseline justify-between mb-1.5 tabular-nums">
-        <span className={`text-2xl font-black ${tone.text}`}>{fmtPct(latched && limit !== null ? Math.max(dd, limit) : dd, 2)}</span>
+        <span className={`text-2xl font-black ${tone.text}`}>{ddKnown ? fmtPct(latched && limit !== null ? Math.max(dd, limit) : dd, 2) : "—"}</span>
         <span className="text-2xs text-zinc-500">
           {latched ? "Budget exhausted" : buffer !== null ? `${fmtUsd(buffer)} to latch` : limit === null ? "Distance to latch —" : "Awaiting equity"}
         </span>

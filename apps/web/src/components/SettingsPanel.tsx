@@ -78,7 +78,7 @@ export const SettingsPanel: React.FC = () => {
     setSelectedAgent(name);
     const cfg = data[name] || {};
     setEditModel(cfg.model_name || "gemini-1.5-pro");
-    setEditTemp(cfg.temperature || 0.7);
+    setEditTemp(cfg.temperature ?? 0.7);
     setEditPrompt(cfg.system_instructions || "");
   };
 
@@ -193,7 +193,14 @@ export const SettingsPanel: React.FC = () => {
               ))}
             </div>
             
-            {/* Editor */}
+            {/* Editor: only for a configuration that actually loaded (no default values shown as settings) */}
+            {!selectedAgent || !agents[selectedAgent] ? (
+              <div className="flex-1 p-6 text-sm text-zinc-400" role="status" data-testid="agent-config-unavailable">
+                {Object.keys(agents).length === 0
+                  ? "Agent configurations unavailable (not loaded). Sign in as operator or check the API."
+                  : "Select an agent to edit its configuration."}
+              </div>
+            ) : (
             <div className="flex-1 p-6 flex flex-col gap-6 overflow-y-auto">
               <div>
                 <h2 className="text-xl font-bold capitalize text-white mb-1">{selectedAgent} Agent</h2>
@@ -251,6 +258,7 @@ export const SettingsPanel: React.FC = () => {
                 </Button>
               </div>
             </div>
+            )}
           </div>
         )}
 
