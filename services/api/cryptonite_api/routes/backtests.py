@@ -32,7 +32,7 @@ class CreateBacktestRequest(BaseModel):
     warmup_start_ns: int
     evaluation_start_ns: int
     evaluation_end_ns: int
-    execution_profile: str = "optimistic"
+    execution_profile: str = "conservative"  # fees + slippage, as the paper engine; "optimistic" has no costs
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, dependencies=OPERATOR_WRITE)

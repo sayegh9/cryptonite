@@ -93,7 +93,7 @@ class BacktestRunRequest(BaseModel):
     warmup_start_ns: int
     evaluation_start_ns: int
     evaluation_end_ns: int
-    execution_profile: str = "optimistic"
+    execution_profile: str = "conservative"  # fees + slippage; "optimistic" has no costs, not for decisions
     initial_balance: float = 10000.0
     random_seed: int = 42
     attempt_id: str | UUID | None = None
