@@ -84,7 +84,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
     setStatusMessage("Enqueuing scan job...");
 
     try {
-      const reqId = "req-" + Math.random().toString(36).substring(2, 10);
+      const reqId = `req-${crypto.randomUUID()}`;
       const job: ScanJob = await fetchApi(`/scanners/${selectedSpec.id}/run`, {
         method: "POST",
         headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "" },
@@ -124,7 +124,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-zinc-950 border-t border-white/5">
+    <div id="scanner-studio" className="flex flex-col h-full w-full bg-zinc-950 border-t border-white/5">
       {/* Studio Header / Controls */}
       <div className="flex flex-wrap items-center justify-between p-3 bg-zinc-950 border-b border-white/5 gap-2">
         <div className="flex items-center space-x-3">
@@ -149,7 +149,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
           </select>
 
           {selectedSpec && (
-            <span className="text-[11px] text-zinc-500 max-w-md truncate hidden lg:inline">
+            <span className="text-2xs text-zinc-500 max-w-md truncate hidden lg:inline">
               {selectedSpec.description}
             </span>
           )}
@@ -158,7 +158,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
         {/* Action Buttons */}
         <div className="flex items-center space-x-2">
           {statusMessage && (
-            <span className="text-[11px] font-mono text-zinc-400 mr-2 flex items-center space-x-1">
+            <span className="text-2xs font-mono text-zinc-400 mr-2 flex items-center space-x-1">
               {running ? (
                 <RotateCcw className="w-3 h-3 animate-spin text-cyan-400" />
               ) : (
@@ -170,7 +170,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
 
           <button
             onClick={onCreateClick}
-            className="flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/20 focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm bg-cyan-600 hover:bg-cyan-500 text-zinc-950 shadow-cyan-500/20 focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none"
           >
             <span>Create Scanner</span>
           </button>
@@ -181,7 +181,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
             className={`flex items-center space-x-1.5 px-3 py-1.5 rounded text-xs font-bold transition-all shadow-sm focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none ${
               running
                 ? "bg-zinc-800 text-zinc-500 cursor-not-allowed"
-                : "bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/20"
+                : "bg-cyan-600 hover:bg-cyan-500 text-zinc-950 shadow-cyan-500/20"
             }`}
           >
             <Play className="w-3.5 h-3.5 fill-current" />
@@ -195,10 +195,10 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
         {/* Rules & Universe Inspection Pane */}
         <div className="p-4 bg-zinc-950 overflow-y-auto space-y-4 font-mono text-xs">
           <div className="flex items-center justify-between text-zinc-400 border-b border-white/5 pb-2">
-            <span className="font-semibold text-[11px] uppercase tracking-wider text-zinc-300">
+            <span className="font-semibold text-2xs uppercase tracking-wider text-zinc-300">
               Active Spec Rules
             </span>
-            <span className="text-[10px] text-zinc-500">
+            <span className="text-2xs text-zinc-500">
               Hash: {selectedSpec?.active_version?.spec_hash?.slice(0, 8)}...
             </span>
           </div>
@@ -206,15 +206,15 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
           {selectedSpec?.active_version && (
             <div className="space-y-2">
               <div>
-                <span className="text-zinc-500 text-[10px] uppercase">Universe:</span>
+                <span className="text-zinc-500 text-2xs uppercase">Universe:</span>
                 <div className="flex flex-wrap gap-1 mt-0.5">
                   {selectedSpec.active_version.universe.instrument_ids.map((id) => (
-                    <span key={id} className="px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded text-[10px] text-cyan-400">
+                    <span key={id} className="px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded text-2xs text-cyan-400">
                       {id.split(".")[0]}
                     </span>
                   ))}
                   {selectedSpec.active_version.universe.timeframes.map((tf) => (
-                    <span key={tf} className="px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded text-[10px] text-zinc-400">
+                    <span key={tf} className="px-1.5 py-0.5 bg-zinc-900 border border-zinc-800 rounded text-2xs text-zinc-400">
                       {tf}
                     </span>
                   ))}
@@ -222,20 +222,20 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
               </div>
 
               <div>
-                <span className="text-zinc-500 text-[10px] uppercase">Rule Groups:</span>
+                <span className="text-zinc-500 text-2xs uppercase">Rule Groups:</span>
                 <div className="space-y-1.5 mt-1">
                   {(Array.isArray(selectedSpec.active_version.rules)
                     ? selectedSpec.active_version.rules
                     : []
                   ).map((rg: any, idx: number) => (
                     <div key={idx} className="p-2 bg-zinc-900/70 border border-zinc-800 rounded">
-                      <div className="flex items-center justify-between text-[10px] font-bold text-zinc-300 mb-1">
+                      <div className="flex items-center justify-between text-2xs font-bold text-zinc-300 mb-1">
                         <span className="uppercase text-cyan-300">{rg.category}</span>
                         <span className="text-zinc-500">{rg.logic}</span>
                       </div>
                       <div className="space-y-0.5">
                         {(rg.conditions || []).map((c: any, cIdx: number) => (
-                          <div key={cIdx} className="text-[11px] text-zinc-400">
+                          <div key={cIdx} className="text-2xs text-zinc-400">
                             {c.field} <span className="text-amber-400 font-bold">{c.operator}</span> {c.value}
                           </div>
                         ))}
@@ -257,7 +257,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
                 Signal Candidates ({candidates.length})
               </span>
             </div>
-            <span className="text-[10px] text-zinc-500 font-mono">
+            <span className="text-2xs text-zinc-500 font-mono">
               Zero-Trading Authority: Analytical Signals Only
             </span>
           </div>
@@ -290,10 +290,10 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
                         <span className="font-mono font-bold text-xs text-zinc-100">
                           {rawSym}
                         </span>
-                        <span className="px-1.5 py-0.2 text-[10px] font-mono bg-zinc-800 text-cyan-400 rounded">
+                        <span className="px-1.5 py-0.2 text-2xs font-mono bg-zinc-800 text-cyan-400 rounded">
                           {cand.timeframe}
                         </span>
-                        <span className="text-[10px] font-mono text-zinc-500 flex items-center space-x-1">
+                        <span className="text-2xs font-mono text-zinc-500 flex items-center space-x-1">
                           <Clock className="w-2.5 h-2.5" />
                           <span>{dateStr}</span>
                         </span>
@@ -303,7 +303,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
                         {(cand.matched_rules || []).map((r, i) => (
                           <span
                             key={i}
-                            className="px-1.5 py-0.5 text-[9px] font-mono bg-emerald-950/60 text-emerald-400 border border-emerald-800/40 rounded"
+                            className="px-1.5 py-0.5 text-2xs font-mono bg-emerald-950/60 text-emerald-400 border border-emerald-800/40 rounded"
                           >
                             {r}
                           </span>
@@ -314,19 +314,19 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
                     {/* Metrics and Risk Levels */}
                     <div className="flex items-center space-x-4 font-mono text-xs">
                       <div className="flex flex-col items-end">
-                        <span className="text-[10px] text-zinc-500">Entry</span>
+                        <span className="text-2xs text-zinc-500">Entry</span>
                         <span className="font-semibold text-zinc-200">
                           ${Number(cand.suggested_entry).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </div>
                       <div className="flex flex-col items-end">
-                        <span className="text-[10px] text-red-400/80">Stop</span>
+                        <span className="text-2xs text-red-400/80">Stop</span>
                         <span className="font-semibold text-red-400">
                           ${Number(cand.suggested_stop).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </div>
                       <div className="flex flex-col items-end">
-                        <span className="text-[10px] text-emerald-400/80">Target</span>
+                        <span className="text-2xs text-emerald-400/80">Target</span>
                         <span className="font-semibold text-emerald-400">
                           ${Number(cand.suggested_target).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
@@ -339,7 +339,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
                         className="p-1.5 bg-zinc-900 hover:bg-cyan-500/20 hover:text-cyan-400 text-zinc-400 border border-zinc-800 rounded transition-all flex items-center space-x-1"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
-                        <span className="text-[10px] font-sans">Chart</span>
+                        <span className="text-2xs font-sans">Chart</span>
                       </button>
                     </div>
                   </div>

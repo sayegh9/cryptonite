@@ -1,11 +1,14 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { Suspense, useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
+import { buildQuery, DEFAULT_WORKSPACE, NAV_GROUPS, parseView, parseWorkspace, type WorkspaceMode } from "@/lib/navigation";
+import { type MissionView, useMandateStore } from "@/lib/stores/useMandateStore";
 import { MultiChartGrid } from "@/components/MultiChartGrid";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 import { ScannerStudio } from "@/components/ScannerStudio";
 import { KillSwitchPanel } from "@/components/operator/KillSwitchPanel";
-import { RiskLimitsEditor } from "@/components/operator/RiskLimitsEditor";
+import { EnforcedLimitsCard } from "@/components/operator/EnforcedLimitsCard";
 import { StrategyInstancesPanel } from "@/components/operator/StrategyInstancesPanel";
 import { ReconciliationLedger } from "@/components/operator/ReconciliationLedger";
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
@@ -33,15 +36,63 @@ import { getStreamClient } from "@/lib/ws";
 import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
 import {
-  Activity,
-  Zap,
   ShieldCheck,
   Radio,
   BrainCircuit,
 } from "lucide-react";
 
+// useSearchParams in a prerendered page must sit under a Suspense boundary (or `pnpm build` fails)
 export default function TerminalPage() {
-  const [workspaceMode, setWorkspaceMode] = useState<"terminal" | "research" | "portfolio" | "operator" | "markets" | "alerts" | "settings" | "debates" | "mission">("terminal");
+  return (
+    <Suspense fallback={null}>
+      <Workstation />
+    </Suspense>
+  );
+}
+
+function Workstation() {
+  // R6.1: the URL is the source of truth for the workspace and its sub-view (?ws=…&view=…)
+  const searchParams = useSearchParams();
+  const workspaceMode: WorkspaceMode = parseWorkspace(searchParams.get("ws")) ?? DEFAULT_WORKSPACE;
+  const urlView = parseView(workspaceMode, searchParams.get("view"));
+  const navigate = useCallback((mode: WorkspaceMode, view?: string | null) => {
+    // Workspaces with sub-views always carry one, so Back restores the exact view
+    if (!view && mode === "debates") view = useBrainStore.getState().workspaceView === "debates" ? "debates" : "home";
+    if (!view && mode === "mission") view = useMandateStore.getState().view;
+    const query = buildQuery(mode, view);
+    if (query !== window.location.search) window.history.pushState(null, "", query);
+  }, []);
+  const setWorkspaceMode = useCallback((mode: WorkspaceMode) => navigate(mode), [navigate]);
+
+  // URL view -> stores (also after their persisted state rehydrates, so a stored view never overrides the URL)
+  const urlViewRef = useRef({ mode: workspaceMode, view: urlView });
+  urlViewRef.current = { mode: workspaceMode, view: urlView };
+  useEffect(() => {
+    const apply = () => {
+      const { mode, view } = urlViewRef.current;
+      if (!view) return;
+      // A set before rehydration would persist the defaults over the stored session; wait for it
+      if (mode === "debates" && useBrainStore.persist.hasHydrated()) {
+        useBrainStore.getState().setWorkspaceView(view === "home" ? "brain" : "debates");
+      }
+      if (mode === "mission" && useMandateStore.persist.hasHydrated()) useMandateStore.getState().setView(view as MissionView);
+    };
+    apply();
+    const unsubBrain = useBrainStore.persist.onFinishHydration(apply);
+    const unsubMission = useMandateStore.persist.onFinishHydration(apply);
+    return () => {
+      unsubBrain();
+      unsubMission();
+    };
+  }, [workspaceMode, urlView]);
+
+  // Terminal "Scanner" view: bring the scanner panel into view
+  useEffect(() => {
+    if (workspaceMode !== "terminal" || urlView !== "scanner") return;
+    const t = setTimeout(() => document.getElementById("scanner-studio")?.scrollIntoView({ block: "nearest" }), 50);
+    return () => clearTimeout(t);
+  }, [workspaceMode, urlView]);
+
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
   const [operatorAuthenticated, setOperatorAuthenticated] = useState(false);
   const [showScannerBuilder, setShowScannerBuilder] = useState(false);
@@ -52,6 +103,7 @@ export default function TerminalPage() {
     candleTime: number;
   } | null>(null);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [streamOpen, setStreamOpen] = useState<boolean>(false);
   const [profileSymbol, setProfileSymbol] = useState<string | null>(null);
 
   // Brain: restore the session and route cryptonite:brain-ask / cryptonite:brain-open-trace.
@@ -59,9 +111,9 @@ export default function TerminalPage() {
   const workspaceModeRef = useRef(workspaceMode);
   workspaceModeRef.current = workspaceMode;
   const onBrainAsk = useCallback(() => {
-    if (workspaceModeRef.current === "debates") useBrainStore.getState().setWorkspaceView("brain");
+    if (workspaceModeRef.current === "debates") navigate("debates", "home");
     else setIsAgentChatOpen(true);
-  }, []);
+  }, [navigate]);
   useBrainSetup(onBrainAsk);
 
   useDebateStream(wsConnected ? getStreamClient() : null);
@@ -116,12 +168,16 @@ export default function TerminalPage() {
       }
     });
 
+    // Stream consumers attach after a short grace period even without an ack (they need the
+    // client object, not a live socket); the footer shows the socket's real state.
     const timer = setTimeout(() => {
       setWsConnected(true);
     }, 1500);
+    const poll = setInterval(() => setStreamOpen(client.isOpen()), 1000);
 
     return () => {
       clearTimeout(timer);
+      clearInterval(poll);
       unsubscribe();
     };
   }, []);
@@ -150,8 +206,9 @@ export default function TerminalPage() {
       }
     };
     const switchWsHandler = (e: CustomEvent) => {
-      if (e.detail?.mode) {
-        setWorkspaceMode(e.detail.mode as any);
+      const mode = parseWorkspace(e.detail?.mode);
+      if (mode) {
+        navigate(mode, typeof e.detail?.view === "string" ? e.detail.view : null);
       }
     };
     // Legacy "open copilot" callers ({ prompt, autoSend }) now talk to the Brain
@@ -162,17 +219,8 @@ export default function TerminalPage() {
     const debateTriggerHandler = async (e: CustomEvent) => {
       const sym = e.detail?.symbol || selectedSymbol;
       const customThesis = e.detail?.customThesis;
-      const addTurn = useDebateStore.getState().addTurn;
       try {
-        addTurn({
-          runId: "pending-" + Date.now(),
-          role: "System",
-          content: customThesis ? `Initiating debate for ${sym} with thesis: ${customThesis}` : `Initiating multi-agent consensus debate for ${sym}...`,
-          timestamp: Date.now(),
-        });
-        toast.success(`AI Debate Initiated: ${sym}`, {
-          description: "TradingAgents intelligence gathering started in background.",
-        });
+        // No local placeholder run: the inbox shows the debate once the worker reports it
         const res = await fetch("/agent-api/debates/trigger", {
           method: "POST",
           credentials: "include",
@@ -186,6 +234,9 @@ export default function TerminalPage() {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.detail || err.message || "Failed to queue debate");
         }
+        toast.success(`Debate queued: ${sym}`, {
+          description: customThesis ? `Thesis: ${customThesis}` : "Its card appears in the AI Brain inbox when the worker reports it.",
+        });
       } catch (err: any) {
         toast.error(`Debate trigger error: ${err.message}`);
       }
@@ -204,7 +255,7 @@ export default function TerminalPage() {
       window.removeEventListener("cryptonite:open-copilot" as any, copilotHandler);
       window.removeEventListener("cryptonite:trigger-debate" as any, debateTriggerHandler);
     };
-  }, [selectedSymbol]);
+  }, [selectedSymbol, navigate, setWorkspaceMode]);
 
   // Update subscriptions when selectedSymbol changes
   useEffect(() => {
@@ -239,7 +290,7 @@ export default function TerminalPage() {
       <header className="h-12 flex-none bg-zinc-950 border-b border-white/5 flex items-center justify-between px-4 z-20">
         <div className="flex items-center h-full">
           <div className="flex items-center space-x-2 mr-8">
-            <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-[10px] text-zinc-950">
+            <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-2xs text-zinc-950">
               C
             </div>
             <span className="font-bold text-sm tracking-widest text-zinc-100">
@@ -247,35 +298,40 @@ export default function TerminalPage() {
             </span>
           </div>
 
-          <div className="flex items-center space-x-6 h-full font-mono text-xs font-semibold">
-            {[
-              { id: "terminal", label: "Terminal" },
-              { id: "markets", label: "Markets" },
-              { id: "research", label: "Research Lab" },
-              { id: "alerts", label: "Alerts" },
-              { id: "portfolio", label: "Portfolio" },
-              { id: "debates", label: "AI Brain" },
-              { id: "mission", label: "Mission Control" },
-              { id: "operator", label: "Operator" },
-              { id: "settings", label: "Settings" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setWorkspaceMode(tab.id as any)}
-                className={`h-full flex items-center border-b-2 px-1 transition-colors ${
-                  workspaceMode === tab.id
-                    ? "border-cyan-500 text-cyan-400"
-                    : "border-transparent text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
-                }`}
+          <nav aria-label="Workspaces" className="flex items-center h-full font-mono text-xs font-semibold overflow-x-auto">
+            {NAV_GROUPS.map((group, gi) => (
+              <div
+                key={group.id}
+                role="group"
+                aria-label={group.label}
+                className={`flex items-center h-full gap-4 ${gi > 0 ? "ml-4 pl-4 border-l border-zinc-800" : ""}`}
               >
-                {tab.label}
-              </button>
+                <span className="text-2xs uppercase tracking-widest text-zinc-500 select-none" aria-hidden="true">{group.label}</span>
+                {group.items.map((tab) => {
+                  const active = workspaceMode === tab.mode && (tab.view ? urlView === tab.view : !(tab.mode === "terminal" && urlView === "scanner"));
+                  return (
+                    <button
+                      key={`${tab.mode}-${tab.view ?? ""}`}
+                      type="button"
+                      onClick={() => navigate(tab.mode, tab.view)}
+                      aria-current={active ? "page" : undefined}
+                      className={`h-full flex items-center border-b-2 px-1 whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${
+                        active
+                          ? "border-cyan-500 text-cyan-400"
+                          : "border-transparent text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
             ))}
-          </div>
+          </nav>
         </div>
 
         <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-1.5 bg-emerald-950/30 border border-emerald-900/50 px-2 py-1 rounded text-[10px] text-emerald-400 font-mono">
+          <div className="flex items-center space-x-1.5 bg-emerald-950/30 border border-emerald-900/50 px-2 py-1 rounded text-2xs text-emerald-400 font-mono">
             <ShieldCheck className="w-3 h-3" />
             <span className="font-bold tracking-wide">ZERO TRADING AUTHORITY (READ ONLY)</span>
           </div>
@@ -393,7 +449,7 @@ export default function TerminalPage() {
                 <div className="lg:col-span-4 space-y-6">
                   <KillSwitchPanel />
                   <KillSwitchPanel environment="DEMO" accountId="DEMO-ACCOUNT-001" />
-                  <RiskLimitsEditor />
+                  <EnforcedLimitsCard />
                 </div>
                 {/* Right Column (65%) */}
                 <div className="lg:col-span-8 space-y-6">
@@ -411,28 +467,17 @@ export default function TerminalPage() {
       )}
 
       {/* Bottom Global Footer & Attribution */}
-      <footer className="h-7 flex-none bg-zinc-950 border-t border-zinc-900 px-4 flex items-center justify-between text-[11px] text-zinc-500 z-20 font-mono">
+      <footer className="h-7 flex-none bg-zinc-950 border-t border-zinc-900 px-4 flex items-center justify-between text-2xs text-zinc-500 z-20 font-mono">
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-1.5">
-            <Radio className={`w-3 h-3 ${wsConnected ? "text-emerald-400 animate-pulse" : "text-amber-400"}`} />
-            <span className={wsConnected ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"}>
-              {wsConnected ? "STREAM ONLINE" : "CONNECTING..."}
+            <Radio className={`w-3 h-3 ${streamOpen ? "text-emerald-400 animate-pulse" : "text-amber-400"}`} aria-hidden="true" />
+            <span className={streamOpen ? "text-emerald-400 font-semibold" : "text-amber-400 font-semibold"} role="status">
+              {streamOpen ? "STREAM ONLINE" : "STREAM OFFLINE · reconnecting"}
             </span>
-          </div>
-
-          <div className="flex items-center space-x-3 hidden sm:flex border-l border-zinc-800 pl-4">
-            <div className="flex items-center space-x-1">
-              <Activity className="w-3 h-3 text-zinc-600" />
-              <span>DuckDB p95: <span className="text-zinc-300">12ms</span></span>
-            </div>
-            <div className="flex items-center space-x-1">
-              <Zap className="w-3 h-3 text-zinc-600" />
-              <span>Polars p95: <span className="text-zinc-300">8ms</span></span>
-            </div>
           </div>
         </div>
 
-        <div className="flex items-center space-x-3 text-[10px]">
+        <div className="flex items-center space-x-3 text-2xs">
           <span>Cryptonite v0.2.0</span>
           <span>•</span>
           <span className="text-zinc-400">PostgreSQL / Parquet / Redis 7</span>
@@ -446,8 +491,7 @@ export default function TerminalPage() {
         activeBacktestId={activeBacktestRun?.id || null}
         onExpand={() => {
           setIsAgentChatOpen(false);
-          useBrainStore.getState().setWorkspaceView("brain");
-          setWorkspaceMode("debates");
+          navigate("debates", "home");
         }}
       />
 

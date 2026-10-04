@@ -20,7 +20,7 @@ export const MonthlyHeatmap: React.FC<Props> = ({ monthlyReturns }) => {
   }
 
   return (
-    <div className="w-full bg-zinc-950 border border-zinc-900 rounded overflow-x-auto font-mono text-[11px]">
+    <div className="w-full bg-zinc-950 border border-zinc-900 rounded overflow-x-auto font-mono text-2xs">
       <table className="w-full text-center border-collapse">
         <thead>
           <tr className="border-b border-zinc-800/80 bg-zinc-900/50 text-zinc-400">

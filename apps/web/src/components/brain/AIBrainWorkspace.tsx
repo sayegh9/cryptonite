@@ -8,6 +8,7 @@ import { AIBrainTourModal } from "./AIBrainTourModal";
 import { useDebateStore } from "@/lib/stores/useDebateStore";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { BrainHome } from "./BrainHome";
+import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import {
   BrainCircuit,
   HelpCircle,
@@ -30,14 +31,12 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
   const [selectedAgentId, setSelectedAgentId] = useState<string>("orchestrator");
   const [isTourOpen, setIsTourOpen] = useState(false);
   const view = useBrainStore((s) => s.workspaceView);
-  const setView = useBrainStore((s) => s.setWorkspaceView);
 
   // Responsive panel visibility with local persistence
   const [showFleet, setShowFleet] = useState<boolean>(true);
   const [showInbox, setShowInbox] = useState<boolean>(true);
 
   const activeDebates = useDebateStore((state) => state.activeDebates);
-  const addDebateRun = useDebateStore((state) => state.addDebateRun);
   const activeDebatesCount = Object.keys(activeDebates).length;
 
   // Restore panel preferences & auto-open tour for first-time user
@@ -72,58 +71,11 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
     } catch {}
   };
 
-  const handleRunDemoDebate = () => {
-    const demoRunId = "demo-" + Date.now();
-    const sym = selectedSymbol || "BTCUSDT";
-
-    addDebateRun({
-      runId: demoRunId,
-      instrumentId: sym,
-      status: "PENDING_APPROVAL",
-      decision: `OVERWEIGHT (84% Conviction) • Long Setup with $25,000 max size • Stop at -1.6%`,
-      turns: [
-        {
-          runId: demoRunId,
-          role: "Market Scout",
-          content: `Pulled L2 orderbook depth for ${sym}. Detected significant institutional bid wall of 420 BTC ($28.5M) at swing support. Funding rate is neutral-positive (0.008% / 8h).`,
-          timestamp: Date.now() - 3000,
-        },
-        {
-          runId: demoRunId,
-          role: "Bull Debater",
-          content: `Strong bullish momentum breakout detected on 15m/1h timeframes. Volume delta is +2.4x standard deviation. Target upside resistance: +3.2%.`,
-          timestamp: Date.now() - 2000,
-        },
-        {
-          runId: demoRunId,
-          role: "Bear Debater",
-          content: `Caution: 4H RSI is near overbought (68.4). Watch for a potential liquidity sweep before continuation. Invalidation tight stop is mandatory.`,
-          timestamp: Date.now() - 1000,
-        },
-        {
-          runId: demoRunId,
-          role: "Risk Guardian (CRO)",
-          content: `Calculated position sizing bounds. Recommended max allocation: $25,000 USD. Stop-loss placed at -1.6% below swing support. Max drawdown: $400.`,
-          timestamp: Date.now(),
-        },
-      ],
-    });
-
-    // Automatically open inbox if hidden so user sees the decision card
-    if (!showInbox) toggleInbox(true);
-
-    toast.success(`Demo Debate Generated: ${sym}`, {
-      description: "Action Card staged in Action Inbox for review and approval.",
-    });
-  };
-
+  // Queues a real debate; nothing is added to the inbox until the worker reports the run
   const handleTriggerLiveDebate = async (symbol: string) => {
     const sym = symbol || selectedSymbol || "BTCUSDT";
-    // Optimistically generate debate in state for instantaneous operator feedback
-    handleRunDemoDebate();
-
     try {
-      await fetch("/agent-api/debates/trigger", {
+      const res = await fetch("/agent-api/debates/trigger", {
         method: "POST",
         credentials: "include",
         headers: {
@@ -132,8 +84,17 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
         },
         body: JSON.stringify({ symbol: sym, timeframe: "1m" }),
       });
-    } catch {
-      // Ignore background network error in demo / standalone mode
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const detail = typeof body.detail === "string" ? body.detail : typeof body.error === "string" ? body.error : "";
+        throw new Error(res.status === 401 || res.status === 403 ? "Session expired, sign in again" : detail || `HTTP ${res.status}`);
+      }
+      if (!showInbox) toggleInbox(true);
+      toast.success(`Debate queued: ${sym}`, {
+        description: "Its card appears in the Action Inbox when the debate worker reports it.",
+      });
+    } catch (err) {
+      toast.error(`Debate not queued: ${sym}`, { description: err instanceof Error ? err.message : "Network error" });
     }
   };
 
@@ -149,12 +110,12 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
             <span className="text-zinc-400 hidden sm:inline">Neural Operations</span>
           </div>
 
-          <div className="flex items-center space-x-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-[10px] font-mono text-emerald-400 flex-none">
+          <div className="flex items-center space-x-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-2xs font-mono text-emerald-400 flex-none">
             <ShieldCheck className="w-3 h-3 text-emerald-400 flex-none" />
             <span className="font-bold">SIMULATION MODE (RISK-FREE)</span>
           </div>
 
-          <div role="group" aria-label="AI Brain view" className="flex items-center rounded border border-zinc-800 bg-zinc-900 p-0.5 text-[11px] font-mono flex-none">
+          <div role="group" aria-label="AI Brain view" className="flex items-center rounded border border-zinc-800 bg-zinc-900 p-0.5 text-2xs font-mono flex-none">
             {([
               { id: "brain", label: "Brain", Icon: MessagesSquare },
               { id: "debates", label: "Debates", Icon: GitBranch },
@@ -162,7 +123,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
               <button
                 key={id}
                 type="button"
-                onClick={() => setView(id)}
+                onClick={() => dispatchSwitchWorkspace({ mode: "debates", view: id === "brain" ? "home" : "debates" })}
                 aria-pressed={view === id}
                 className={`flex items-center gap-1 rounded px-2 py-0.5 transition-colors ${
                   view === id ? "bg-cyan-950/80 text-cyan-300 font-bold" : "text-zinc-400 hover:text-zinc-200"
@@ -181,7 +142,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           {/* Toggle Left Rail: Fleet Roster */}
           <button
             onClick={() => toggleFleet(!showFleet)}
-            className={`px-2 py-1 rounded border text-[11px] font-mono transition-colors flex items-center space-x-1 ${
+            className={`px-2 py-1 rounded border text-2xs font-mono transition-colors flex items-center space-x-1 ${
               showFleet
                 ? "bg-cyan-950/60 border-cyan-800/80 text-cyan-300 font-bold"
                 : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
@@ -195,7 +156,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           {/* Toggle Right Rail: Action Inbox */}
           <button
             onClick={() => toggleInbox(!showInbox)}
-            className={`px-2 py-1 rounded border text-[11px] font-mono transition-colors flex items-center space-x-1 ${
+            className={`px-2 py-1 rounded border text-2xs font-mono transition-colors flex items-center space-x-1 ${
               showInbox
                 ? "bg-emerald-950/60 border-emerald-800/80 text-emerald-300 font-bold"
                 : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
@@ -205,7 +166,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
             <Inbox className="w-3 h-3" />
             <span className="hidden md:inline">Inbox</span>
             {activeDebatesCount > 0 && (
-              <span className="ml-1 px-1 py-0.2 bg-emerald-500 text-zinc-950 rounded-full text-[9px] font-black">
+              <span className="ml-1 px-1 py-0.2 bg-emerald-500 text-zinc-950 rounded-full text-2xs font-black">
                 {activeDebatesCount}
               </span>
             )}
@@ -214,7 +175,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           {/* Trigger Debate Action Button */}
           <button
             onClick={() => handleTriggerLiveDebate(selectedSymbol)}
-            className="flex items-center space-x-1.5 px-2.5 py-1 bg-purple-950/80 hover:bg-purple-900 border border-purple-800 rounded text-[11px] font-mono font-bold text-purple-300 transition-colors"
+            className="flex items-center space-x-1.5 px-2.5 py-1 bg-purple-950/80 hover:bg-purple-900 border border-purple-800 rounded text-2xs font-mono font-bold text-purple-300 transition-colors"
             title="Dispatch an adversarial debate on active symbol"
           >
             <Zap className="w-3 h-3 text-purple-400 flex-none" />
@@ -224,7 +185,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           {/* How It Works Button */}
           <button
             onClick={() => setIsTourOpen(true)}
-            className="flex items-center space-x-1 px-2 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white rounded text-[11px] font-mono transition-colors"
+            className="flex items-center space-x-1 px-2 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white rounded text-2xs font-mono transition-colors"
           >
             <HelpCircle className="w-3.5 h-3.5 text-cyan-400 flex-none" />
             <span className="hidden sm:inline">❓ How It Works</span>
@@ -268,7 +229,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
         {/* Zone 3: Action & Decision Inbox (Right Rail) */}
         {showInbox && (
           <aside className="w-72 xl:w-80 flex-none h-full border-l border-zinc-800 bg-zinc-950 flex flex-col min-h-0 min-w-0 z-10 transition-all">
-            <ActionInbox onRunDemoDebate={handleRunDemoDebate} />
+            <ActionInbox onTriggerDebate={() => handleTriggerLiveDebate(selectedSymbol)} symbol={selectedSymbol || "BTCUSDT"} />
           </aside>
         )}
       </div>
@@ -277,7 +238,8 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
       <AIBrainTourModal
         isOpen={isTourOpen}
         onClose={() => setIsTourOpen(false)}
-        onRunDemo={handleRunDemoDebate}
+        onRunDebate={() => handleTriggerLiveDebate(selectedSymbol)}
+        symbol={selectedSymbol || "BTCUSDT"}
       />
     </div>
   );

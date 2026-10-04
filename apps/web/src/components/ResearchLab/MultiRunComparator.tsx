@@ -1,7 +1,19 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { RefreshCw, CheckSquare, Square, ArrowRight } from "lucide-react";
+import { RefreshCw, CheckSquare, Square, ArrowRight, AlertTriangle } from "lucide-react";
+import { fmtSignedPct, metricNum, metricsVersion, versionsOf, type VersionedMetrics } from "@/lib/backtestMetrics";
+
+const VersionBadge = ({ metrics }: { metrics?: VersionedMetrics | null }) => {
+  const v = metricsVersion(metrics);
+  return v === null ? (
+    <span className="px-1.5 py-0.5 rounded border border-amber-700 bg-amber-950/50 text-amber-300 text-2xs font-bold" title="Computed before mark-to-market equity">
+      legacy metrics
+    </span>
+  ) : (
+    <span className="text-2xs text-zinc-500">v{v}</span>
+  );
+};
 
 interface RunItem {
   id: string;
@@ -11,7 +23,7 @@ interface RunItem {
   timeframe: string;
   status: string;
   parameters: Record<string, any>;
-  metrics?: {
+  metrics?: VersionedMetrics & {
     total_return?: number;
     cagr?: number | null;
     sharpe_ratio?: number | null;
@@ -88,13 +100,13 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950 border border-zinc-900 rounded font-mono text-[11px] p-3 space-y-4">
+    <div className="flex flex-col h-full bg-zinc-950 border border-zinc-900 rounded font-mono text-2xs p-3 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
         <div>
           <h3 className="font-bold text-zinc-100 text-xs">SCENARIO & RUN COMPARATOR</h3>
-          <p className="text-[10px] text-zinc-500">
-            Compare performance metrics across Baseline, Adverse Slippage, and Conservative profiles.
+          <p className="text-2xs text-zinc-500">
+            Compare performance metrics across Conservative, Adverse Slippage and Optimistic (no costs) profiles.
           </p>
         </div>
         <button
@@ -116,6 +128,7 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
               <th className="py-2 px-3">Strategy</th>
               <th className="py-2 px-3">Profile</th>
               <th className="py-2 px-3">Status</th>
+              <th className="py-2 px-3">Metrics</th>
               <th className="py-2 px-3 text-right">Total Return</th>
               <th className="py-2 px-3 text-center">Action</th>
             </tr>
@@ -123,7 +136,7 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
           <tbody className="divide-y divide-zinc-800">
             {runs.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-4 text-center text-zinc-500">No runs found.</td>
+                <td colSpan={8} className="py-4 text-center text-zinc-500">No runs found.</td>
               </tr>
             ) : (
               runs.map((r) => {
@@ -139,10 +152,11 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
                     <td className="py-2 px-3 font-bold text-zinc-200">{r.strategy_slug}</td>
                     <td className="py-2 px-3 text-cyan-400">{r.execution_profile}</td>
                     <td className="py-2 px-3">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${r.status === 'COMPLETED' ? 'bg-emerald-950 text-emerald-400' : 'bg-zinc-800 text-zinc-400'}`}>
+                      <span className={`px-2 py-0.5 rounded text-2xs font-bold ${r.status === 'COMPLETED' ? 'bg-emerald-950 text-emerald-400' : 'bg-zinc-800 text-zinc-400'}`}>
                         {r.status}
                       </span>
                     </td>
+                    <td className="py-2 px-3"><VersionBadge metrics={r.metrics} /></td>
                     <td className="py-2 px-3 text-right">
                       {r.metrics?.total_return !== undefined ? (
                         <span className={r.metrics.total_return >= 0 ? "text-emerald-400" : "text-rose-400"}>
@@ -153,7 +167,7 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
                     <td className="py-2 px-3 text-center">
                       <button
                         onClick={() => onSelectRun(r.id)}
-                        className="text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded transition-colors"
+                        className="text-2xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded transition-colors"
                       >
                         Inspect
                       </button>
@@ -175,6 +189,16 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
             Select at least one completed backtest above to inspect metrics.
           </div>
         ) : (
+          <>
+          {versionsOf(comparisonData).length > 1 && (
+            <div role="status" data-testid="mixed-metrics-warning" className="flex items-start gap-2 m-2 px-3 py-2 rounded border border-amber-800/60 bg-amber-950/30 text-amber-300">
+              <AlertTriangle className="w-3.5 h-3.5 flex-none mt-0.5" aria-hidden="true" />
+              <span>
+                Mixed metric versions ({versionsOf(comparisonData).join(", ")}): legacy runs measure equity only at fills, so
+                their drawdown can look smaller and their Sharpe larger. Compare with care, or re-run the legacy runs.
+              </span>
+            </div>
+          )}
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-zinc-800 bg-zinc-900/60 text-zinc-400">
@@ -182,10 +206,10 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
                 {comparisonData.map((r) => (
                   <th key={r.id} className="py-2 px-3 text-center border-l border-zinc-900">
                     <div className="font-bold text-zinc-200">{r.strategy_slug}</div>
-                    <div className="text-[10px] uppercase text-cyan-400 font-semibold">{r.execution_profile}</div>
+                    <div className="text-2xs uppercase text-cyan-400 font-semibold">{r.execution_profile}</div>
                     <button
                       onClick={() => onSelectRun(r.id)}
-                      className="mt-1 inline-flex items-center space-x-1 text-[9px] text-zinc-400 hover:text-cyan-300"
+                      className="mt-1 inline-flex items-center space-x-1 text-2xs text-zinc-400 hover:text-cyan-300"
                     >
                       <span>Inspect</span>
                       <ArrowRight className="w-2.5 h-2.5" />
@@ -319,8 +343,52 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
                   </td>
                 ))}
               </tr>
+
+              {/* Fees and turnover (metrics v2) */}
+              <tr className="border-t border-zinc-900/60 hover:bg-zinc-900/20">
+                <td className="py-1.5 px-3 text-zinc-400">Fees Paid</td>
+                {comparisonData.map((r) => {
+                  const v = metricNum(r.metrics?.fees_paid);
+                  return <td key={r.id} className="py-1.5 px-3 text-center border-l border-zinc-900">{v === null ? "—" : `$${v.toFixed(2)}`}</td>;
+                })}
+              </tr>
+              <tr className="hover:bg-zinc-900/20">
+                <td className="py-1.5 px-3 text-zinc-400">Turnover</td>
+                {comparisonData.map((r) => {
+                  const v = metricNum(r.metrics?.turnover);
+                  return <td key={r.id} className="py-1.5 px-3 text-center border-l border-zinc-900">{v === null ? "—" : `${v.toFixed(2)}×`}</td>;
+                })}
+              </tr>
+
+              {/* Benchmark (buy & hold over the same window) */}
+              <tr className="hover:bg-zinc-900/20">
+                <td className="py-1.5 px-3 text-zinc-400">Buy &amp; Hold Return</td>
+                {comparisonData.map((r) => (
+                  <td key={r.id} className="py-1.5 px-3 text-center border-l border-zinc-900">
+                    {fmtSignedPct(metricNum(r.metrics?.benchmark?.total_return))}
+                  </td>
+                ))}
+              </tr>
+              <tr className="hover:bg-zinc-900/20">
+                <td className="py-1.5 px-3 text-zinc-400">Alpha vs Hold</td>
+                {comparisonData.map((r) => {
+                  const v = metricNum(r.metrics?.benchmark?.alpha_vs_hold);
+                  return (
+                    <td key={r.id} className={`py-1.5 px-3 text-center border-l border-zinc-900 font-semibold ${v === null ? "" : v >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                      {fmtSignedPct(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+              <tr className="hover:bg-zinc-900/20">
+                <td className="py-1.5 px-3 text-zinc-400">Metrics Version</td>
+                {comparisonData.map((r) => (
+                  <td key={r.id} className="py-1.5 px-3 text-center border-l border-zinc-900"><VersionBadge metrics={r.metrics} /></td>
+                ))}
+              </tr>
             </tbody>
           </table>
+          </>
         )}
       </div>
     </div>

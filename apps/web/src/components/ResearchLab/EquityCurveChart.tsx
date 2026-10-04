@@ -198,7 +198,7 @@ export const EquityCurveChart: React.FC<Props> = ({
 
   return (
     <div className="relative w-full h-full flex flex-col bg-zinc-950">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-zinc-900/60 border-b border-zinc-800/80 text-[11px] font-mono text-zinc-400">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-zinc-900/60 border-b border-zinc-800/80 text-2xs font-mono text-zinc-400">
         <div className="flex items-center space-x-3">
           <span className="font-semibold text-zinc-200">EQUITY & DRAWDOWN CURVE</span>
           <span className="flex items-center space-x-1">
@@ -211,7 +211,7 @@ export const EquityCurveChart: React.FC<Props> = ({
           </span>
         </div>
         {selectedTrade && (
-          <div className="text-cyan-400 bg-cyan-950/60 border border-cyan-800/50 px-2 py-0.5 rounded text-[10px]">
+          <div className="text-cyan-400 bg-cyan-950/60 border border-cyan-800/50 px-2 py-0.5 rounded text-2xs">
             Viewing Trade: {selectedTrade.side} ({selectedTrade.realized_pnl >= 0 ? "+" : ""}{selectedTrade.realized_pnl.toFixed(2)} USDT)
           </div>
         )}

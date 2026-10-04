@@ -14,6 +14,10 @@ import {
 
 export type TriggerMode = "high-edge" | "on-demand" | "continuous";
 
+/** Shown until the agent's HEARTBEAT arrives on the stream: its state is unknown, not "online". */
+const NO_HEARTBEAT = "NO HEARTBEAT";
+const NO_HEARTBEAT_COLOR = "text-zinc-400 bg-zinc-900 border-zinc-800";
+
 interface AgentFleetRosterProps {
   selectedAgentId?: string;
   onSelectAgent?: (agentId: string) => void;
@@ -64,7 +68,7 @@ export function AgentFleetRoster({
       icon: BrainCircuit,
       color: "text-cyan-400",
       bgBorder: "border-cyan-500/30 bg-cyan-950/20",
-      ...getAgentStatus("orchestrator", "ONLINE", "text-emerald-400 bg-emerald-950/50 border-emerald-800/60"),
+      ...getAgentStatus("orchestrator", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
       tagline: telemetry["orchestrator"]?.msg || "Single point of contact",
       desc: "Understands natural language commands, dispatches specialist agents, and synthesizes action briefs.",
       autonomy: "Advisory & Dispatcher",
@@ -77,7 +81,7 @@ export function AgentFleetRoster({
       icon: Search,
       color: "text-blue-400",
       bgBorder: "border-blue-500/30 bg-blue-950/20",
-      ...getAgentStatus("scout", "STANDBY", "text-zinc-400 bg-zinc-900 border-zinc-800"),
+      ...getAgentStatus("scout", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
       tagline: telemetry["scout"]?.msg || "Real-time parsing of L1/L2 and funding.",
       desc: "Connects to WebSocket feeds to monitor order book imbalances, liquidations, and funding rate divergence.",
       autonomy: "Read-Only",
@@ -90,7 +94,7 @@ export function AgentFleetRoster({
       icon: Sparkles,
       color: "text-purple-400",
       bgBorder: "border-purple-500/30 bg-purple-950/20",
-      ...getAgentStatus("debater", "STANDBY", "text-zinc-400 bg-zinc-900 border-zinc-800"),
+      ...getAgentStatus("debater", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
       tagline: telemetry["debater"]?.msg || "Multi-agent consensus mechanism.",
       desc: "Two specialized models argue opposite sides of every trade proposal. A manager model judges the winner.",
       autonomy: "Read-Only",
@@ -103,7 +107,7 @@ export function AgentFleetRoster({
       icon: ShieldCheck,
       color: "text-amber-400",
       bgBorder: "border-amber-500/30 bg-amber-950/20",
-      ...getAgentStatus("cro", "STANDBY", "text-zinc-400 bg-zinc-900 border-zinc-800"),
+      ...getAgentStatus("cro", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
       tagline: telemetry["cro"]?.msg || "Enforces capital constraints.",
       desc: "Hard-vetos any trade that breaches VaR limits, concentration bounds, or drawdown circuits.",
       autonomy: "Veto Power",
@@ -116,13 +120,14 @@ export function AgentFleetRoster({
       icon: Zap,
       color: "text-emerald-400",
       bgBorder: "border-emerald-500/30 bg-emerald-950/20",
-      ...getAgentStatus("outbox", "STANDBY", "text-zinc-400 bg-zinc-900 border-zinc-800"),
+      ...getAgentStatus("outbox", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
       tagline: telemetry["outbox"]?.msg || "Rust/Cython integration layer.",
       desc: "Translates AI JSON decisions into FIX/REST orders. Manages partial fills, TWAP, and latency.",
       autonomy: "Execution",
       autonomyColor: "text-emerald-400 border-emerald-800/40 bg-emerald-950/30",
     },
   ];
+  const onlineCount = agents.filter((a) => a.status === "ONLINE").length;
 
   return (
     <div className="flex flex-col h-full w-full min-h-0 bg-zinc-950 overflow-hidden">
@@ -132,22 +137,27 @@ export function AgentFleetRoster({
           <Cpu className="w-3.5 h-3.5 text-cyan-400" />
           <span className="uppercase tracking-wider">Agent Fleet Topology</span>
         </div>
-        <div className="flex items-center space-x-1 px-1.5 py-0.5 bg-emerald-950/50 border border-emerald-800/50 rounded text-[10px] font-mono text-emerald-400">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          <span>5 ONLINE</span>
+        <div
+          className={`flex items-center space-x-1 px-1.5 py-0.5 rounded border text-2xs font-mono ${
+            onlineCount > 0 ? "bg-emerald-950/50 border-emerald-800/50 text-emerald-400" : "bg-zinc-900 border-zinc-800 text-zinc-400"
+          }`}
+          title="Agents that reported ONLINE on the heartbeat stream"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${onlineCount > 0 ? "bg-emerald-400" : "bg-zinc-500"}`} />
+          <span>{onlineCount}/{agents.length} reporting</span>
         </div>
       </div>
 
       {/* Trigger Governor Control */}
       <div className="p-2.5 border-b border-zinc-800 bg-zinc-900/20 flex-none">
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1">
+          <span className="text-2xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1">
             <Sliders className="w-3 h-3 text-zinc-500" />
             <span>Debate Trigger Governor:</span>
           </span>
         </div>
 
-        <div className="grid grid-cols-3 gap-1 text-[9.5px] font-mono">
+        <div className="grid grid-cols-3 gap-1 text-2xs font-mono">
           <button
             onClick={() => onTriggerModeChange("high-edge")}
             className={`px-1 py-1 rounded border transition-colors text-center whitespace-nowrap overflow-hidden text-ellipsis ${
@@ -185,13 +195,23 @@ export function AgentFleetRoster({
       </div>
 
       {/* Agents Roster List */}
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 space-y-2 overscroll-contain">
+      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-2 space-y-2 overscroll-contain" tabIndex={0} role="region" aria-label="Agents">
         {agents.map((agent) => {
           const Icon = agent.icon;
           const isSelected = selectedAgentId === agent.id;
           return (
             <div
               key={agent.id}
+              role="button"
+              tabIndex={0}
+              aria-pressed={isSelected}
+              aria-label={`Chat with ${agent.name}`}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === " ") && onSelectAgent) {
+                  e.preventDefault();
+                  onSelectAgent(agent.id);
+                }
+              }}
               onClick={() => {
                 if (onSelectAgent) onSelectAgent(agent.id);
               }}
@@ -210,25 +230,25 @@ export function AgentFleetRoster({
                     <div className="font-bold text-xs text-zinc-200 leading-none flex items-center space-x-1.5">
                       <span>{agent.name}</span>
                       {isSelected && (
-                        <span className="px-1 py-0.2 bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-[8.5px] rounded font-mono font-bold">
+                        <span className="px-1 py-0.2 bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-2xs rounded font-mono font-bold">
                           SELECTED
                         </span>
                       )}
                     </div>
-                    <div className="text-[10px] text-zinc-400 font-mono mt-0.5">{agent.tagline}</div>
+                    <div className="text-2xs text-zinc-400 font-mono mt-0.5">{agent.tagline}</div>
                   </div>
                 </div>
 
-                <span className={`px-1.5 py-0.5 rounded border text-[9px] font-mono font-bold ${agent.statusColor}`}>
+                <span className={`px-1.5 py-0.5 rounded border text-2xs font-mono font-bold ${agent.statusColor}`}>
                   {agent.status}
                 </span>
               </div>
 
-              <p className="text-[11px] text-zinc-400 leading-relaxed mb-2">
+              <p className="text-2xs text-zinc-400 leading-relaxed mb-2">
                 {agent.desc}
               </p>
 
-              <div className="flex items-center justify-between pt-1.5 border-t border-zinc-800/60 text-[10px] font-mono">
+              <div className="flex items-center justify-between pt-1.5 border-t border-zinc-800/60 text-2xs font-mono">
                 <span className="text-zinc-500">Permission:</span>
                 <span className={`px-1.5 py-0.2 rounded border font-semibold ${agent.autonomyColor}`}>
                   {agent.autonomy}
@@ -240,18 +260,11 @@ export function AgentFleetRoster({
       </div>
 
       {/* Bottom Fleet Performance Stats */}
-      <div className="flex-none p-2.5 bg-zinc-900/40 border-t border-zinc-800 font-mono text-[10px]">
-        <div className="flex items-center justify-between text-zinc-400 mb-1">
-          <span className="flex items-center space-x-1">
-            <TrendingUp className="w-3 h-3 text-emerald-400" />
-            <span>Reflection Win-Rate:</span>
-          </span>
-          <span className="text-emerald-400 font-bold">74.2% Alpha</span>
-        </div>
-        <div className="flex items-center justify-between text-zinc-500">
-          <span>Engine: Gemini 2.5 Flash</span>
-          <span>Latency p95: 380ms</span>
-        </div>
+      <div className="flex-none p-2.5 bg-zinc-900/40 border-t border-zinc-800 font-mono text-2xs text-zinc-500">
+        <span className="flex items-center space-x-1">
+          <TrendingUp className="w-3 h-3 text-zinc-500" aria-hidden="true" />
+          <span>Win rate, calibration and model routes: Mission Control → Autonomy &amp; Evals</span>
+        </span>
       </div>
     </div>
   );

@@ -52,14 +52,14 @@ export function ManualTradeModal({ onClose, onOrderSubmitted }: { onClose: () =>
 
         <form onSubmit={handleSubmit} className="p-5">
           {error && (
-            <div className="mb-4 bg-rose-950/40 border border-rose-900/50 text-rose-400 text-[11px] font-mono p-3 rounded">
+            <div className="mb-4 bg-rose-950/40 border border-rose-900/50 text-rose-400 text-2xs font-mono p-3 rounded">
               {error}
             </div>
           )}
 
           <div className="space-y-4">
             <div>
-              <label className="block text-[10px] font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Instrument</label>
+              <label className="block text-2xs font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Instrument</label>
               <input
                 type="text"
                 value={instrumentId}
@@ -114,7 +114,7 @@ export function ManualTradeModal({ onClose, onOrderSubmitted }: { onClose: () =>
             </div>
 
             <div>
-              <label className="block text-[10px] font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Quantity</label>
+              <label className="block text-2xs font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Quantity</label>
               <input
                 type="number"
                 step="0.0001"
@@ -128,7 +128,7 @@ export function ManualTradeModal({ onClose, onOrderSubmitted }: { onClose: () =>
 
             {orderType === "LIMIT" && (
               <div>
-                <label className="block text-[10px] font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Limit Price</label>
+                <label className="block text-2xs font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Limit Price</label>
                 <input
                   type="number"
                   step="0.01"

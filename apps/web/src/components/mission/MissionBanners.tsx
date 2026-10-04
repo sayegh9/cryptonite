@@ -12,7 +12,7 @@ export function MissionBanners({ status }: { status: AiStatus | null }) {
         <div
           role="alert"
           data-testid="mission-halted-banner"
-          className="flex items-start gap-2 rounded border border-red-700 bg-red-950/40 px-3 py-2 text-[11px] text-red-200"
+          className="flex items-start gap-2 rounded border border-red-700 bg-red-950/40 px-3 py-2 text-2xs text-red-200"
         >
           <OctagonAlert className="mt-0.5 h-3.5 w-3.5 flex-none text-red-400" />
           <div>
@@ -33,7 +33,7 @@ export function MissionBanners({ status }: { status: AiStatus | null }) {
         <div
           role="alert"
           data-testid="mission-degraded-banner"
-          className="flex items-start gap-2 rounded border border-amber-700 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200"
+          className="flex items-start gap-2 rounded border border-amber-700 bg-amber-950/30 px-3 py-2 text-2xs text-amber-200"
         >
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-none text-amber-400" />
           <div>

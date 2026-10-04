@@ -90,11 +90,11 @@ export const DebateTranscriptViewer: React.FC<Props> = ({ runId, symbol }) => {
           {isLive && (
             <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-rose-500/10 border border-rose-500/20 flex-none">
               <div className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
-              <span className="text-[9px] font-bold tracking-wider text-rose-400">LIVE</span>
+              <span className="text-2xs font-bold tracking-wider text-rose-400">LIVE</span>
             </div>
           )}
         </div>
-        <span className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded flex-none ${
+        <span className={`px-2 py-0.5 text-2xs font-mono font-bold rounded flex-none ${
             run.status === 'COMPLETED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
             run.status === 'PENDING_APPROVAL' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse' :
             'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
@@ -115,7 +115,7 @@ export const DebateTranscriptViewer: React.FC<Props> = ({ runId, symbol }) => {
           const { color, Icon } = getRoleInfo(turn.role);
           return (
             <div key={idx} className={`p-3 rounded border ${color} min-w-0 max-w-full overflow-hidden shadow-sm`}>
-              <div className="flex items-center gap-2 font-bold mb-2 uppercase tracking-wide opacity-90 text-[11px]">
+              <div className="flex items-center gap-2 font-bold mb-2 uppercase tracking-wide opacity-90 text-2xs">
                 <Icon size={14} aria-hidden="true" className="flex-none" />
                 <span className="truncate">{turn.role}</span>
               </div>
@@ -125,32 +125,32 @@ export const DebateTranscriptViewer: React.FC<Props> = ({ runId, symbol }) => {
                   components={{
                     table: ({ node, ...props }) => (
                       <div className="overflow-x-auto my-2 max-w-full rounded border border-white/10 bg-zinc-950/80 scrollbar-thin">
-                        <table className="min-w-full border-collapse text-[11px] font-mono" {...props} />
+                        <table className="min-w-full border-collapse text-2xs font-mono" {...props} />
                       </div>
                     ),
                     thead: ({ node, ...props }) => (
                       <thead className="bg-zinc-900 border-b border-white/10 text-zinc-200" {...props} />
                     ),
                     th: ({ node, ...props }) => (
-                      <th className="px-2.5 py-1.5 text-left font-bold text-[10px] tracking-wider uppercase border-r border-white/5 whitespace-nowrap" {...props} />
+                      <th className="px-2.5 py-1.5 text-left font-bold text-2xs tracking-wider uppercase border-r border-white/5 whitespace-nowrap" {...props} />
                     ),
                     td: ({ node, ...props }) => (
-                      <td className="px-2.5 py-1 text-[11px] text-zinc-300 border-b border-white/5 border-r border-white/5 align-top whitespace-normal break-words max-w-[200px]" {...props} />
+                      <td className="px-2.5 py-1 text-2xs text-zinc-300 border-b border-white/5 border-r border-white/5 align-top whitespace-normal break-words max-w-[200px]" {...props} />
                     ),
                     pre: ({ node, ...props }) => (
                       <div className="overflow-x-auto max-w-full my-2">
-                        <pre className="p-2 rounded bg-black/60 font-mono text-[10px] text-zinc-200 border border-white/10" {...props} />
+                        <pre className="p-2 rounded bg-black/60 font-mono text-2xs text-zinc-200 border border-white/10" {...props} />
                       </div>
                     ),
                     code: ({ node, className, children, ...props }: any) => {
                       return (
-                        <code className={`font-mono text-[10px] px-1 py-0.5 rounded bg-zinc-900/80 text-cyan-300 border border-white/10 ${className || ''}`} {...props}>
+                        <code className={`font-mono text-2xs px-1 py-0.5 rounded bg-zinc-900/80 text-cyan-300 border border-white/10 ${className || ''}`} {...props}>
                           {children}
                         </code>
                       );
                     },
                     p: ({ node, ...props }) => (
-                      <p className="mb-1.5 leading-relaxed break-words text-[11px]" {...props} />
+                      <p className="mb-1.5 leading-relaxed break-words text-2xs" {...props} />
                     ),
                   }}
                 >

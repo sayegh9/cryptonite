@@ -1,38 +1,12 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import {
-  BrainCircuit,
-  Send,
-  Sparkles,
-  Loader2,
-  Trash2,
-  TrendingUp,
-  ShieldAlert,
-  Search,
-  Zap,
-  Tag,
-  ArrowRight,
-  CheckCircle2,
-  ShieldCheck,
-  Cpu,
-  Layers,
-  Sliders,
-} from "lucide-react";
+import { BrainCircuit, Send, Loader2, Trash2, Zap, Tag } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { fetchApi } from "@/lib/api";
-import { toast } from "sonner";
-
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  agentId: string;
-  agentName: string;
-  content: string;
-  dispatches?: { agent: string; latencyMs: number; status: string }[];
-  timestamp: number;
-}
+import { AGENT_CONFIGS, newId, parseTargetSymbol as parseSymbol, starterChips, type Dispatch, type Message } from "./canvas/agents";
+import { InlineActionCard } from "./canvas/InlineActionCard";
 
 interface OrchestratorCanvasProps {
   selectedAgentId?: string;
@@ -42,150 +16,6 @@ interface OrchestratorCanvasProps {
   onTriggerDebate?: (symbol: string) => void;
 }
 
-const AGENT_CONFIGS: Record<
-  string,
-  {
-    id: string;
-    name: string;
-    shortName: string;
-    roleTitle: string;
-    icon: any;
-    color: string;
-    bgBorder: string;
-    badgeColor: string;
-    endpoint: string;
-    placeholder: string;
-    description: string;
-  }
-> = {
-  orchestrator: {
-    id: "orchestrator",
-    name: "Lead Orchestrator",
-    shortName: "Lead Copilot",
-    roleTitle: "Chief AI Copilot & Dispatcher",
-    icon: BrainCircuit,
-    color: "text-cyan-400",
-    bgBorder: "border-cyan-500/30 bg-cyan-950/20",
-    badgeColor: "bg-cyan-950/80 border-cyan-700/60 text-cyan-300",
-    endpoint: "/agent-api/chat",
-    placeholder: "Ask the Lead Orchestrator to coordinate fleet, synthesize multi-asset briefs, or audit trades...",
-    description: "Understands natural language, coordinates specialist fleet, and synthesizes action briefs.",
-  },
-  scout: {
-    id: "scout",
-    name: "Market Data Scout",
-    shortName: "Market Scout",
-    roleTitle: "Technical & Orderbook Analyst",
-    icon: Search,
-    color: "text-blue-400",
-    bgBorder: "border-blue-500/30 bg-blue-950/20",
-    badgeColor: "bg-blue-950/80 border-blue-700/60 text-blue-300",
-    endpoint: "/agent-api/chat",
-    placeholder: "Ask Market Data Scout about multi-timeframe technical structure, orderbook depth, funding rate...",
-    description: "Gathers live L2 orderbook depth, funding rate spreads, and Polars technical indicators.",
-  },
-  debater: {
-    id: "debater",
-    name: "Bull / Bear Debaters",
-    shortName: "Bull/Bear Arena",
-    roleTitle: "Adversarial Setup Stress-Testing",
-    icon: Zap,
-    color: "text-purple-400",
-    bgBorder: "border-purple-500/30 bg-purple-950/20",
-    badgeColor: "bg-purple-950/80 border-purple-700/60 text-purple-300",
-    endpoint: "/agent-api/strategist",
-    placeholder: "Prompt Bull/Bear Debaters to challenge trade setups, expose traps, and stress-test conviction...",
-    description: "Autonomous LLMs debating opposing theses to expose traps and validate trade conviction.",
-  },
-  cro: {
-    id: "cro",
-    name: "Risk Guardian (CRO)",
-    shortName: "Risk (CRO)",
-    roleTitle: "Chief Risk & Margin Officer",
-    icon: ShieldAlert,
-    color: "text-amber-400",
-    bgBorder: "border-amber-500/30 bg-amber-950/20",
-    badgeColor: "bg-amber-950/80 border-amber-700/60 text-amber-300",
-    endpoint: "/agent-api/cro",
-    placeholder: "Ask Chief Risk Officer about position sizing, 25% max concentration, drawdown stress-tests...",
-    description: "Enforces max 25% concentration limit, computes stop-loss levels, and guards margin bounds.",
-  },
-  outbox: {
-    id: "outbox",
-    name: "Execution Outbox Relay",
-    shortName: "Execution Outbox",
-    roleTitle: "Nautilus Execution Bridge",
-    icon: CheckCircle2,
-    color: "text-emerald-400",
-    bgBorder: "border-emerald-500/30 bg-emerald-950/20",
-    badgeColor: "bg-emerald-950/80 border-emerald-700/60 text-emerald-300",
-    endpoint: "/agent-api/chat",
-    placeholder: "Ask Execution Relay about order staging, execution latency, Nautilus routing parameters...",
-    description: "Stages approved proposals into PostgreSQL transactional outbox for live/testnet execution.",
-  },
-};
-
-function InlineActionCard({ codeStr, onTriggerDebate }: { codeStr: string, onTriggerDebate?: (symbol: string) => void }) {
-  const [size, setSize] = useState<number>(2500); // Default placeholder
-  const totalEquity = 100000; // Mock total equity for UI preview, in real app fetched from store
-
-  return (
-    <div className="my-4 p-4 rounded-xl border border-cyan-500/30 bg-cyan-950/20 font-sans shadow-lg">
-      <div className="flex items-center justify-between mb-3 border-b border-cyan-800/50 pb-2">
-        <div className="font-bold text-cyan-300 flex items-center gap-2">
-          <Sparkles className="w-4 h-4" /> Strategy Manifest
-        </div>
-      </div>
-      <pre className="text-[10px] text-zinc-300 bg-zinc-900/80 p-3 rounded-lg overflow-x-auto mb-4 border border-zinc-800">
-        <code>{codeStr}</code>
-      </pre>
-
-      {/* Interactive Sizing Slider */}
-      <div className="p-3 bg-zinc-950/50 border border-zinc-800/60 rounded-lg space-y-2 mb-4 font-mono text-[10px]">
-        <div className="flex items-center justify-between text-zinc-400">
-          <span className="flex items-center space-x-1">
-            <Sliders className="w-3 h-3 text-cyan-400" />
-            <span>Allocation Sizing (Max 25%):</span>
-          </span>
-          <span className="text-cyan-300 font-bold">${size.toLocaleString()} USD</span>
-        </div>
-        <input
-          type="range"
-          min={totalEquity * 0.01}
-          max={totalEquity * 0.25}
-          step={totalEquity * 0.01}
-          value={size}
-          onChange={(e) => setSize(Number(e.target.value))}
-          className="w-full accent-cyan-400 h-1.5 bg-zinc-800 rounded-full cursor-pointer appearance-none"
-        />
-        <div className="flex items-center justify-between text-[9px] text-zinc-500">
-          <span>Min: ${(totalEquity * 0.01).toLocaleString()}</span>
-          <span>Max: ${(totalEquity * 0.25).toLocaleString()}</span>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2 mt-2">
-        <button onClick={() => {
-          window.dispatchEvent(new CustomEvent("cryptonite:load-strategy", {
-            detail: { name: "Generated", code: codeStr }
-          }));
-          toast.success("Strategy pushed to Research Lab");
-        }} className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/40 text-blue-300 border border-blue-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
-          <BrainCircuit className="w-3.5 h-3.5" /> Backtest in Lab
-        </button>
-        <button onClick={() => {
-          if (onTriggerDebate) onTriggerDebate("BTCUSDT");
-          toast.success("Debate triggered on strategy");
-        }} className="px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
-          <Zap className="w-3.5 h-3.5" /> Trigger Debate
-        </button>
-        <button onClick={() => toast.success("Staged to Action Inbox")} className="px-3 py-1.5 bg-cyan-600/20 hover:bg-cyan-600/40 text-cyan-300 border border-cyan-500/50 rounded flex items-center gap-1.5 text-xs font-semibold transition-colors">
-          <ArrowRight className="w-3.5 h-3.5" /> Stage to Inbox
-        </button>
-      </div>
-    </div>
-  );
-}
 
 export function OrchestratorCanvas({
   selectedAgentId = "orchestrator",
@@ -197,7 +27,7 @@ export function OrchestratorCanvas({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [liveTelemetry, setLiveTelemetry] = useState<{ agent: string; latencyMs: number; status: string }[]>([]);
+  const [liveTelemetry, setLiveTelemetry] = useState<Dispatch[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const currentAgent = AGENT_CONFIGS[selectedAgentId] || AGENT_CONFIGS.orchestrator;
@@ -219,7 +49,7 @@ export function OrchestratorCanvas({
           setLiveTelemetry((prev) => {
             const existing = prev.find((t) => t.agent === data.agentId);
             if (existing && existing.status === data.msg) return prev; // Avoid duplicates
-            return [...prev, { agent: data.agentId, latencyMs: 15, status: data.msg }].slice(-5);
+            return [...prev, { agent: data.agentId, latencyMs: null, status: data.msg }].slice(-5);
           });
         }
       });
@@ -227,273 +57,34 @@ export function OrchestratorCanvas({
     return () => unsub?.();
   }, []);
 
-  // Extract symbol from user text, or default to activeSymbol
-  const parseTargetSymbol = (text: string): string => {
-    const match = text.match(/\b(BTC|ETH|SOL|XRP|BNB|DOGE|ADA|AVAX|SUI|LINK|DOT|NEAR|MATIC|ATOM|APT|OP|ARB|UNI)\b/i);
-    if (match) return match[1].toUpperCase() + "USDT";
-    return activeSymbol || "BTCUSDT";
-  };
 
-  // Generate dynamic, context-aware financial synthesis when offline or mock fallback is needed
-  const generateDynamicSynthesis = (agentId: string, promptText: string, sym: string): string => {
-    const symBase = sym.replace("USDT", "").replace(".BINANCE", "");
-
-    if (agentId === "scout") {
-      return `### 🔍 Market Data Scout: Technical Structure for **${symBase}/USDT**
-
-**1. Multi-Timeframe Structure Analysis:**
-- **15m Microstructure:** Price oscillating inside an ascending volume channel. 15m RSI at **54.2** (Neutral-Bullish). Cumulative Volume Delta (CVD) shows persistent spot buyer absorption.
-- **1H Intermediate Flow:** Local consolidation above key exponential moving averages (20 EMA > 50 EMA). Orderbook depth indicates bid wall clustering **+2.4x** stronger than ask depth.
-- **4H Structural Bias:** Higher-low market structure intact. Breaking above the 4H supply cluster opens upside expansion toward the next structural resistance band.
-- **1D Macro Trend:** Long-term regime is expanding with 1D RSI sitting at **58.6**. Weekly trendline support remains firmly defended.
-
-**2. Key Liquidity & Pivot Levels:**
-- **Immediate Resistance (R1):** \`+2.85%\` above spot (Liquidity Pool & Ask Imbalance)
-- **Major Resistance (R2):** \`+5.40%\` (Macro Supply Zone)
-- **Dynamic Support (S1):** \`-1.45%\` (15m/1H VWAP Confluence)
-- **Structural Invalidation (S2):** \`-3.10%\` (4H Swing Low)
-
-**3. Orderbook & Microstructure Telemetry:**
-- **L2 Bid/Ask Ratio:** **1.82:1** (Heavy institutional limit bids queued below spot).
-- **Funding Rate Spread:** **+0.0072% / 8h** (Healthy, non-overheated long positioning).
-- **Open Interest (OI) Delta:** **+$14.2M (+3.1%)** over the last 4 hours, indicating fresh capital expansion.`;
-    }
-
-    if (agentId === "cro") {
-      return `### 🛡️ Risk Guardian (CRO): Risk Audit for **${symBase}/USDT**
-
-**1. Capital Preservation & Portfolio Bounds:**
-- **Portfolio Sizing Cap:** Max allocation capped at **$25,000 USD** to strictly maintain the **< 25% single-asset concentration ceiling**.
-- **Recommended Capital at Risk:** **$400 - $600 USD** (0.75% to 1.0% of total portfolio equity).
-
-**2. Stop-Loss & Invalidation Parameters:**
-- **Strict Invalidation Level:** **-1.65%** below current entry support.
-- **Max Calculated Drawdown:** **$412.50 USD** under adverse market slip.
-- **Margin Utilization:** **18.4%** (Well within the safe < 40% threshold).
-
-**3. Stress-Test Scenarios:**
-- **-5% Market Flash Dip:** Total portfolio impact limited to **-0.41%** equity drawdown due to strict stop triggers.
-- **-10% Sector-Wide Liquidation Cascade:** Stop-loss guarantees capital preservation with zero liquidation risk.
-
-*Verdict: Setup approved from a risk governance perspective. Check the Action Inbox to review or modify sizing.*`;
-    }
-
-    if (agentId === "debater") {
-      return `### ⚔️ Adversarial Consensus Debate on **${symBase}/USDT**
-
-**🟢 Bull Debater (Long Thesis):**
-- *Momentum & Liquidity:* Strong spot bid absorption at dynamic support with expanding CVD.
-- *Order Flow:* Funding rates remain balanced with no extreme long crowdedness.
-- *Target Objective:* First upside target at **+3.4%**, secondary expansion to **+6.2%**.
-
-**🔴 Bear Debater (Counter-Thesis & Traps):**
-- *Liquidity Sweep Risk:* 4H resistance has rejected price twice in recent sessions. Watch for an initial fakeout sweep of swing highs before sustained continuation.
-- *Volume Divergence:* Ensure 15m volume confirms the breakout before committing maximum size.
-
-**⚖️ Synthesized Verdict:**
-- **Directional Bias:** **BULLISH CONVICTION (78%)**
-- **Recommended Strategy:** Scale in with a 50% initial tranche, adding the remaining 50% upon confirmed 1H candle close above resistance.
-- **Stop Invalidation:** Strict exit at **-1.55%** below dynamic support.`;
-    }
-
-    if (agentId === "outbox") {
-      return `### ⚡ Execution Outbox Relay: Routing Telemetry for **${symBase}/USDT**
-
-**1. Order Routing Parameters:**
-- **Execution Target:** \`PAPER-SIMULATOR-001\` (Nautilus Trader v2.0rc4 Core)
-- **Order Type:** \`LIMIT_MAKER\` (Post-Only to capture maker rebates and prevent slippage).
-- **Execution Latency p95:** **14ms** via Async Redis Streams & C++ Nautilus kernel.
-
-**2. Transactional Outbox State:**
-- **State Machine:** \`STAGED\` ➔ \`PENDING_OPERATOR_APPROVAL\` ➔ \`DISPATCHED\`
-- **Database Consistency:** Guaranteed atomic ACID commits to PostgreSQL with 0 double-dispatch risk.
-
-*To stage an execution to the Transactional Outbox, click 'Approve & Stage' in the Action Inbox on the right.*`;
-    }
-
-    // Default: Lead Orchestrator
-    return `### 🧠 Orchestrator Synthesis for **${symBase}/USDT**
-
-**1. Market Structure & Technical Alignment (via Market Scout):**
-- Price action across **15m, 1H, 4H, and 1D** displays structured accumulation.
-- Orderbook depth reveals substantial limit support clustered at key swing lows with **+1.9x bid imbalance**.
-
-**2. Consensus Evaluation (via Bull/Bear Debaters):**
-- **Bull Thesis:** Higher-low momentum continuation supported by positive volume delta and healthy funding rates.
-- **Bear Counter:** Potential liquidity test of local support before continuation. Mandatory stop required at **-1.6%**.
-
-**3. Risk & Governance Assessment (via Risk Guardian CRO):**
-- **Recommended Max Size:** **$20,000 - $25,000 USD** (Adheres strictly to the 25% concentration ceiling).
-- **Risk/Reward Profile:** **2.4:1 R:R** with upside expansion target at **+3.8%**.
-
-*All telemetry verified. You can explore deeper with individual specialists or stage execution in the Action Inbox.*`;
-  };
-
-  // Dynamic starter chips per agent
-  const getStarterChips = () => {
-    const sym = activeSymbol || "BTCUSDT";
-    switch (selectedAgentId) {
-      case "scout":
-        return [
-          {
-            icon: Search,
-            color: "text-blue-400 border-blue-500/30 hover:border-blue-500 bg-blue-950/20",
-            title: `Analyze ${sym} Multi-Timeframe Structure`,
-            prompt: `Analyze the technical market structure of ${sym} across 15m, 1h, 4h, and 1D timeframes.`,
-          },
-          {
-            icon: Layers,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: `Check ${sym} Orderbook Depth`,
-            prompt: `Examine L2 orderbook depth, bid/ask imbalances, and institutional liquidity walls for ${sym}.`,
-          },
-          {
-            icon: TrendingUp,
-            color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500 bg-emerald-950/20",
-            title: "Scan Volume Delta & RSI",
-            prompt: `Scan top crypto pairs for RSI divergence, funding rate anomalies, and volume surges.`,
-          },
-          {
-            icon: Tag,
-            color: "text-purple-400 border-purple-500/30 hover:border-purple-500 bg-purple-950/20",
-            title: `Calculate ${sym} Pivot Levels`,
-            prompt: `Calculate key support, resistance, and Fibonacci pivot levels for ${sym}.`,
-          },
-        ];
-      case "cro":
-        return [
-          {
-            icon: ShieldAlert,
-            color: "text-amber-400 border-amber-500/30 hover:border-amber-500 bg-amber-950/20",
-            title: `Audit Margin for ${sym}`,
-            prompt: `Audit portfolio margin utilization, leverage bounds, and 25% max concentration for a ${sym} trade.`,
-          },
-          {
-            icon: ShieldCheck,
-            color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500 bg-emerald-950/20",
-            title: "Compute Risk-Adjusted Sizing",
-            prompt: "Calculate optimal position size for a 1.5% stop-loss risking no more than 1% of total equity.",
-          },
-          {
-            icon: TrendingUp,
-            color: "text-rose-400 border-rose-500/30 hover:border-rose-500 bg-rose-950/20",
-            title: "Stress-Test -10% Market Shock",
-            prompt: "Stress-test our current open portfolio positions against a sudden -10% market-wide flash crash.",
-          },
-          {
-            icon: BrainCircuit,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: "Review Risk Limits Policy",
-            prompt: "Review daily loss limits, kill-switch thresholds, and drawdowns.",
-          },
-        ];
-      case "debater":
-        return [
-          {
-            icon: Zap,
-            color: "text-purple-400 border-purple-500/30 hover:border-purple-500 bg-purple-950/20",
-            title: `Run ${sym} Consensus Debate`,
-            prompt: `Debate the current momentum breakout and orderbook liquidity for ${sym}.`,
-          },
-          {
-            icon: ShieldAlert,
-            color: "text-amber-400 border-amber-500/30 hover:border-amber-500 bg-amber-950/20",
-            title: `Expose ${sym} Liquidity Traps`,
-            prompt: `Identify potential bear traps, liquidity sweeps, and invalidation risks for ${sym}.`,
-          },
-          {
-            icon: TrendingUp,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: `Stress-test Long Thesis for ${sym}`,
-            prompt: `Aggressively debate the bullish thesis for ${sym} against macro headwinds.`,
-          },
-          {
-            icon: CheckCircle2,
-            color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500 bg-emerald-950/20",
-            title: "Synthesize Trade Conviction",
-            prompt: `Synthesize the multi-agent consensus and compute the conviction percentage for ${sym}.`,
-          },
-        ];
-      case "outbox":
-        return [
-          {
-            icon: CheckCircle2,
-            color: "text-emerald-400 border-emerald-500/30 hover:border-emerald-500 bg-emerald-950/20",
-            title: `Stage ${sym} Order to Outbox`,
-            prompt: `Stage a limit buy order for ${sym} with a 5 bps slippage bound into the Transactional Outbox.`,
-          },
-          {
-            icon: Cpu,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: "Verify Nautilus Engine Latency",
-            prompt: "Check Nautilus Trader order routing latency and paper engine heartbeat status.",
-          },
-          {
-            icon: Layers,
-            color: "text-blue-400 border-blue-500/30 hover:border-blue-500 bg-blue-950/20",
-            title: "Audit Reconciliation Ledger",
-            prompt: "Inspect the PostgreSQL Transactional Outbox state machine for any pending or orphaned orders.",
-          },
-          {
-            icon: ShieldCheck,
-            color: "text-purple-400 border-purple-500/30 hover:border-purple-500 bg-purple-950/20",
-            title: "Explain Outbox State Machine",
-            prompt: "Explain how the PostgreSQL Transactional Outbox guarantees zero double-executions.",
-          },
-        ];
-      default: // orchestrator
-        return [
-          {
-            icon: Zap,
-            color: "text-cyan-400 border-cyan-500/30 hover:border-cyan-500 bg-cyan-950/20",
-            title: `Run ${sym.replace("USDT", "") || "BTC"} Consensus Debate`,
-            prompt: `Debate the current momentum breakout and orderbook liquidity for ${sym}.`,
-          },
-          {
-            icon: ShieldAlert,
-            color: "text-amber-400 border-amber-500/30 hover:border-amber-500 bg-amber-950/20",
-            title: "Audit Capital & Risk",
-            prompt: "Audit active exposures, margin utilization, and verify we comply with the 25% max concentration rule.",
-          },
-          {
-            icon: Search,
-            color: "text-blue-400 border-blue-500/30 hover:border-blue-500 bg-blue-950/20",
-            title: "Scan Momentum Breakouts",
-            prompt: "Scan top crypto instruments across 15m and 1h for volume spikes, RSI divergence, and orderbook bid walls.",
-          },
-          {
-            icon: TrendingUp,
-            color: "text-purple-400 border-purple-500/30 hover:border-purple-500 bg-purple-950/20",
-            title: "Explain Strategy Alpha",
-            prompt: "Summarize the key alpha drivers and slippage risks of our active quantitative momentum strategies.",
-          },
-        ];
-    }
-  };
-
-  const handleSend = async (customPrompt?: string) => {
+  const handleSend = async (customPrompt?: string, retryOf?: string) => {
     const textToSend = customPrompt || input;
     if (!textToSend.trim() || loading) return;
 
-    const targetSym = parseTargetSymbol(textToSend);
+    const targetSym = parseSymbol(textToSend, activeSymbol);
 
-    const userMsg: Message = {
-      id: "user-" + Date.now(),
-      role: "user",
-      agentId: selectedAgentId,
-      agentName: "Operator",
-      content: textToSend,
-      timestamp: Date.now(),
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
+    if (retryOf) {
+      // Retry replaces its error notice; the operator's message is already on the canvas
+      setMessages((prev) => prev.filter((m) => m.id !== retryOf));
+    } else {
+      const userMsg: Message = {
+        id: newId("user"),
+        role: "user",
+        agentId: selectedAgentId,
+        agentName: "Operator",
+        content: textToSend,
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+    }
     if (!customPrompt) setInput("");
     setLoading(true);
     setLiveTelemetry([]); // Clear trace for new request
 
     try {
-      // If user asks to debate, trigger background debate event
-      if (textToSend.toLowerCase().includes("debate") && onTriggerDebate) {
+      // If user asks to debate, trigger background debate event (not again on retry)
+      if (!retryOf && textToSend.toLowerCase().includes("debate") && onTriggerDebate) {
         onTriggerDebate(targetSym);
       }
 
@@ -515,21 +106,17 @@ export function OrchestratorCanvas({
           symbol: targetSym,
           timeframe: activeTimeframe,
         }),
-      }).catch(() => null);
+      });
 
-      let responseText = "";
-      if (res && (res.response || res.message)) {
-        responseText = res.response || res.message;
-      } else {
-        // Fallback to rich dynamic synthesis tailored to the agent, symbol, and prompt
-        responseText = generateDynamicSynthesis(selectedAgentId, textToSend, targetSym);
-      }
+      const responseText = typeof res?.response === "string" && res.response ? res.response
+        : typeof res?.message === "string" && res.message ? res.message : "";
+      if (!responseText) throw Object.assign(new Error("empty response"), { status: "empty response" });
 
       // Capture current liveTelemetry before it gets cleared or updated by next turn
       const capturedTelemetry = [...liveTelemetry];
 
       const assistantMsg: Message = {
-        id: "asst-" + Date.now(),
+        id: newId("asst"),
         role: "assistant",
         agentId: selectedAgentId,
         agentName: currentAgent.name,
@@ -540,7 +127,18 @@ export function OrchestratorCanvas({
 
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err: any) {
-      toast.error(`Agent error: ${err.message || "Failed to fetch response"}`);
+      // Never invent an answer: the canvas shows that the agent did not respond, with a Retry
+      const status = err?.status ?? (err instanceof TypeError ? "network error" : err?.message || "unknown error");
+      const errorMsg: Message = {
+        id: newId("sys"),
+        role: "system",
+        agentId: selectedAgentId,
+        agentName: currentAgent.name,
+        content: `agent unavailable: ${status}`,
+        retryPrompt: textToSend,
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setLoading(false);
     }
@@ -578,7 +176,7 @@ export function OrchestratorCanvas({
             </div>
             <div className="hidden md:block">
               <div className="font-bold text-xs text-zinc-100 leading-none">{currentAgent.name} Canvas</div>
-              <div className="text-[9.5px] text-zinc-400 font-mono mt-0.5">{currentAgent.roleTitle}</div>
+              <div className="text-2xs text-zinc-400 font-mono mt-0.5">{currentAgent.roleTitle}</div>
             </div>
           </div>
 
@@ -591,7 +189,7 @@ export function OrchestratorCanvas({
                 <button
                   key={ag.id}
                   onClick={() => onSelectAgent && onSelectAgent(ag.id)}
-                  className={`px-2 py-1 rounded text-[10px] font-mono transition-all flex items-center space-x-1 ${
+                  className={`px-2 py-1 rounded text-2xs font-mono transition-all flex items-center space-x-1 ${
                     isAgSelected
                       ? `${ag.badgeColor} font-bold shadow-sm`
                       : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
@@ -608,14 +206,14 @@ export function OrchestratorCanvas({
 
         {/* Right Info & Actions */}
         <div className="flex items-center space-x-2 flex-none">
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-cyan-300 border border-zinc-700 hidden lg:inline">
+          <span className="text-2xs font-mono px-2 py-0.5 rounded bg-zinc-800 text-cyan-300 border border-zinc-700 hidden lg:inline">
             Symbol Context: {activeSymbol} ({activeTimeframe})
           </span>
 
           {messages.length > 0 && (
             <button
               onClick={() => setMessages([])}
-              className="flex items-center space-x-1 text-[10px] font-mono text-zinc-500 hover:text-zinc-300 px-2 py-0.5 rounded hover:bg-zinc-900 transition-colors"
+              className="flex items-center space-x-1 text-2xs font-mono text-zinc-500 hover:text-zinc-300 px-2 py-0.5 rounded hover:bg-zinc-900 transition-colors"
               title="Clear canvas history"
             >
               <Trash2 className="w-3 h-3" />
@@ -645,7 +243,7 @@ export function OrchestratorCanvas({
 
               {/* 1-Touch Starter Prompt Chips tailored to Active Agent */}
               <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2 text-left pt-2">
-                {getStarterChips().map((chip, i) => {
+                {starterChips(selectedAgentId, activeSymbol || "BTCUSDT").map((chip, i) => {
                   const Icon = chip.icon;
                   return (
                     <button
@@ -656,7 +254,7 @@ export function OrchestratorCanvas({
                       <Icon className="w-4 h-4 flex-none mt-0.5" />
                       <div className="min-w-0 flex-1">
                         <div className="font-bold text-zinc-200 truncate">{chip.title}</div>
-                        <div className="text-[10px] text-zinc-400 line-clamp-1 mt-0.5">
+                        <div className="text-2xs text-zinc-400 line-clamp-1 mt-0.5">
                           {chip.prompt}
                         </div>
                       </div>
@@ -669,6 +267,31 @@ export function OrchestratorCanvas({
             messages.map((msg) => {
               const msgAgentConfig = AGENT_CONFIGS[msg.agentId] || AGENT_CONFIGS.orchestrator;
               const MsgIcon = msgAgentConfig.icon;
+              if (msg.role === "system") {
+                return (
+                  <div
+                    key={msg.id}
+                    role="alert"
+                    data-testid="canvas-agent-error"
+                    className="flex items-center justify-between gap-3 rounded-lg border border-rose-900/60 bg-rose-950/30 px-3 py-2 font-mono text-2xs text-rose-300"
+                  >
+                    <span>
+                      <span className="text-zinc-500">{msg.agentName} · {new Date(msg.timestamp).toLocaleTimeString()} · </span>
+                      {msg.content}
+                    </span>
+                    {msg.retryPrompt && (
+                      <button
+                        type="button"
+                        onClick={() => handleSend(msg.retryPrompt, msg.id)}
+                        disabled={loading}
+                        className="flex-none rounded border border-rose-800 px-2 py-0.5 text-rose-200 hover:bg-rose-900/40 disabled:opacity-50"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                );
+              }
               return (
                 <div
                   key={msg.id}
@@ -676,7 +299,7 @@ export function OrchestratorCanvas({
                     msg.role === "user" ? "items-end" : "items-start"
                   }`}
                 >
-                  <div className="flex items-center space-x-1.5 text-[10px] font-mono text-zinc-500 px-1">
+                  <div className="flex items-center space-x-1.5 text-2xs font-mono text-zinc-500 px-1">
                     {msg.role === "assistant" && (
                       <span className={`flex items-center space-x-1 font-semibold ${msgAgentConfig.color}`}>
                         <MsgIcon className="w-3 h-3" />
@@ -697,8 +320,8 @@ export function OrchestratorCanvas({
                   >
                     {/* Visual Micro-Dispatch Trace if assistant */}
                     {msg.dispatches && msg.dispatches.length > 0 && (
-                      <div className="mb-2 p-2.5 bg-zinc-950/90 border border-zinc-800/80 rounded-xl font-mono text-[10px] space-y-1">
-                        <div className="text-zinc-500 uppercase tracking-wider text-[9px] font-bold">
+                      <div className="mb-2 p-2.5 bg-zinc-950/90 border border-zinc-800/80 rounded-xl font-mono text-2xs space-y-1">
+                        <div className="text-zinc-500 uppercase tracking-wider text-2xs font-bold">
                           Specialist Execution Trace:
                         </div>
                         {msg.dispatches.map((d, idx) => (
@@ -708,7 +331,7 @@ export function OrchestratorCanvas({
                               <span className="text-zinc-300 font-semibold">{d.agent}:</span>
                               <span className="truncate">{d.status}</span>
                             </span>
-                            <span className="text-zinc-500 text-[9px] flex-none">{d.latencyMs}ms</span>
+                            {d.latencyMs !== null && <span className="text-zinc-500 text-2xs flex-none">{d.latencyMs}ms</span>}
                           </div>
                         ))}
                       </div>
@@ -726,17 +349,17 @@ export function OrchestratorCanvas({
                               
                               // Check if this looks like a strategy manifest JSON block
                               if (match && match[1].includes('json') && (codeStr.includes('allocation_usd') || codeStr.includes('instrument_id') || codeStr.includes('max_position_notional_usd'))) {
-                                return <InlineActionCard codeStr={codeStr} onTriggerDebate={onTriggerDebate} />;
+                                return <InlineActionCard codeStr={codeStr} onTriggerDebate={onTriggerDebate} fallbackSymbol={activeSymbol || "BTCUSDT"} />;
                               }
                               
                               const isInline = !match && !codeStr.includes('\n');
                               
                               return !isInline ? (
-                                <pre className="bg-zinc-900/80 p-3 rounded-lg overflow-x-auto border border-zinc-800 my-2 text-[11px]">
+                                <pre className="bg-zinc-900/80 p-3 rounded-lg overflow-x-auto border border-zinc-800 my-2 text-2xs">
                                   <code className={className} {...rest}>{children}</code>
                                 </pre>
                               ) : (
-                                <code className="bg-zinc-800/80 text-cyan-200 px-1.5 py-0.5 rounded text-[11px]" {...rest}>{children}</code>
+                                <code className="bg-zinc-800/80 text-cyan-200 px-1.5 py-0.5 rounded text-2xs" {...rest}>{children}</code>
                               );
                             }
                           }}
@@ -760,14 +383,14 @@ export function OrchestratorCanvas({
                 <Loader2 className={`w-4 h-4 ${currentAgent.color} animate-spin mt-0.5 flex-none`} />
                 <div className="space-y-0.5">
                   <div className="text-zinc-300">{currentAgent.name} processing query...</div>
-                  <div className="text-[10px] text-zinc-500">Executing background diagnostics...</div>
+                  <div className="text-2xs text-zinc-500">Executing background diagnostics...</div>
                 </div>
               </div>
               
               {/* Live Telemetry Display while loading */}
               {liveTelemetry.length > 0 && (
-                <div className="p-2.5 bg-zinc-950/90 border border-zinc-800/80 rounded-xl font-mono text-[10px] space-y-1">
-                  <div className="text-zinc-500 uppercase tracking-wider text-[9px] font-bold">
+                <div className="p-2.5 bg-zinc-950/90 border border-zinc-800/80 rounded-xl font-mono text-2xs space-y-1">
+                  <div className="text-zinc-500 uppercase tracking-wider text-2xs font-bold">
                     Live Specialist Telemetry:
                   </div>
                   {liveTelemetry.map((d, idx) => (
@@ -777,7 +400,7 @@ export function OrchestratorCanvas({
                         <span className="text-zinc-300 font-semibold">{d.agent}:</span>
                         <span className="truncate">{d.status}</span>
                       </span>
-                      <span className="text-zinc-500 text-[9px] flex-none">{d.latencyMs}ms</span>
+                      {d.latencyMs !== null && <span className="text-zinc-500 text-2xs flex-none">{d.latencyMs}ms</span>}
                     </div>
                   ))}
                 </div>
@@ -791,8 +414,8 @@ export function OrchestratorCanvas({
       <div className="flex-none p-3 sm:p-4 bg-zinc-900/40 border-t border-zinc-800">
         <div className="max-w-4xl mx-auto w-full space-y-2">
           {/* Quick Context Stash Tags */}
-          <div className="flex items-center space-x-1.5 overflow-x-auto text-[10px] font-mono text-zinc-400 py-0.5">
-            <span className="text-zinc-500 text-[9px] uppercase tracking-wider flex-none">Quick Mentions:</span>
+          <div className="flex items-center space-x-1.5 overflow-x-auto text-2xs font-mono text-zinc-400 py-0.5">
+            <span className="text-zinc-500 text-2xs uppercase tracking-wider flex-none">Quick Mentions:</span>
             {["@scout", "@cro", "@debater", "@outbox", "@lead"].map((agTag, idx) => (
               <button
                 key={idx}

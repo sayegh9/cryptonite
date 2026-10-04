@@ -24,7 +24,7 @@ interface Column<T> {
 }
 
 const sideTag = (side: string) => (
-  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${side === "BUY" ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"}`}>{side}</span>
+  <span className={`px-1.5 py-0.5 rounded text-2xs font-bold ${side === "BUY" ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"}`}>{side}</span>
 );
 const ts = (iso: string) => {
   const t = Date.parse(iso);
@@ -41,7 +41,7 @@ const ORDER_COLUMNS: Column<PaperOrder>[] = [
   { key: "qty", header: "Qty", align: "right", sort: (o) => Number(o.quantity), csv: (o) => o.quantity, cell: (o) => fmtQty(Number(o.quantity)) },
   { key: "price", header: "Limit", align: "right", sort: (o) => Number(o.price ?? 0), csv: (o) => o.price ?? "MKT", cell: (o) => (o.price ? fmtPrice(Number(o.price)) : "MKT") },
   { key: "filled", header: "Filled", align: "right", sort: (o) => Number(o.filled_qty), csv: (o) => o.filled_qty, cell: (o) => fmtQty(Number(o.filled_qty)) },
-  { key: "status", header: "Status", sort: (o) => o.status, csv: (o) => o.status, cell: (o) => <span className="px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-300">{o.status}</span> },
+  { key: "status", header: "Status", sort: (o) => o.status, csv: (o) => o.status, cell: (o) => <span className="px-1.5 py-0.5 rounded text-2xs bg-zinc-800 text-zinc-300">{o.status}</span> },
 ];
 
 const TRADE_COLUMNS: Column<PaperTrade>[] = [
@@ -57,7 +57,7 @@ const TRADE_COLUMNS: Column<PaperTrade>[] = [
 ];
 
 const selectCls =
-  "bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50";
+  "bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-2xs text-zinc-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50";
 
 function LedgerTable<T>({
   rows, columns, rowKey, action, emptyText, pageSize, csvName,
@@ -97,7 +97,7 @@ function LedgerTable<T>({
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
-              <tr className="text-zinc-500 border-b border-zinc-800 text-[10px] uppercase tracking-wider">
+              <tr className="text-zinc-500 border-b border-zinc-800 text-2xs uppercase tracking-wider">
                 {columns.map((c) => {
                   const active = sort.key === c.key;
                   return (
@@ -129,7 +129,7 @@ function LedgerTable<T>({
           </table>
         </div>
       )}
-      <div className="flex items-center justify-between pt-2 mt-2 border-t border-zinc-800/60 text-[10px] text-zinc-500">
+      <div className="flex items-center justify-between pt-2 mt-2 border-t border-zinc-800/60 text-2xs text-zinc-500">
         <button
           type="button"
           onClick={exportCsv}
@@ -225,13 +225,13 @@ export function ExecutionLedger() {
             <button
               type="button"
               onClick={() => setLedger({ range: "all", symbol: "", origin: "", side: "" })}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-white"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded text-2xs text-zinc-400 hover:text-white"
               title="Clear filters"
             >
               <FilterX className="w-3 h-3" /> Reset
             </button>
           )}
-          <span className="text-[10px] text-zinc-500 tabular-nums">
+          <span className="text-2xs text-zinc-500 tabular-nums">
             {prefs.tab === "orders" ? filteredOrders.length : filteredTrades.length} Records
           </span>
         </div>
@@ -251,7 +251,7 @@ export function ExecutionLedger() {
                 <button
                   onClick={() => cancel(o.client_order_id)}
                   disabled={cancelling === o.client_order_id}
-                  className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded text-[10px] disabled:opacity-50"
+                  className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded text-2xs disabled:opacity-50"
                 >
                   Cancel
                 </button>

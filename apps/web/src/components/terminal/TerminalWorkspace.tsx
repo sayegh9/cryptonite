@@ -129,9 +129,9 @@ export function TerminalWorkspace({
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0 bg-zinc-950">
       {/* Workspace Quick-Toggles Bar */}
-      <div className="h-8 bg-zinc-950 border-b border-white/5 px-3 flex items-center justify-between text-[11px] font-mono select-none flex-none">
+      <div className="h-8 bg-zinc-950 border-b border-white/5 px-3 flex items-center justify-between text-2xs font-mono select-none flex-none">
         <div className="flex items-center space-x-2">
-          <span className="text-zinc-500 uppercase tracking-wider text-[10px] flex items-center space-x-1">
+          <span className="text-zinc-500 uppercase tracking-wider text-2xs flex items-center space-x-1">
             <SlidersHorizontal className="w-3 h-3 text-zinc-400" />
             <span>Panels:</span>
           </span>
@@ -199,7 +199,7 @@ export function TerminalWorkspace({
           </button>
         </div>
 
-        <div className="flex items-center space-x-3 text-zinc-500 text-[10px]">
+        <div className="flex items-center space-x-3 text-zinc-500 text-2xs">
           <span>
             Layout:{" "}
             <span className="text-zinc-300 font-bold">
@@ -224,9 +224,9 @@ export function TerminalWorkspace({
                 <CustomResizeHandle />
                 <Panel defaultSize={22} minSize={12} className="flex flex-col min-h-0 min-w-0 border-l border-white/5 bg-zinc-950">
                   <div className="h-7 bg-zinc-900/80 border-b border-white/5 px-3 flex items-center justify-between flex-none select-none">
-                    <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-[10px] font-bold uppercase tracking-wider">
+                    <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-2xs font-bold uppercase tracking-wider">
                       <BookOpen className="w-3 h-3 text-cyan-400" />
-                      <span>Orderbook L2</span>
+                      <span>Last Price</span>
                     </div>
                     <button
                       onClick={() => toggleOrderbook(false)}
@@ -250,7 +250,7 @@ export function TerminalWorkspace({
                 <CustomResizeHandle />
                 <Panel defaultSize={25} minSize={15} className="flex flex-col min-h-0 min-w-0 border-l border-white/5 bg-zinc-950/50">
                   <div className="h-7 bg-zinc-900/80 border-b border-white/5 px-3 flex items-center justify-between flex-none select-none">
-                    <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-[10px] font-bold uppercase tracking-wider">
+                    <div className="flex items-center space-x-1.5 text-zinc-300 font-mono text-2xs font-bold uppercase tracking-wider">
                       <BrainCircuit className="w-3 h-3 text-purple-400" />
                       <span>AI Consensus Debate</span>
                     </div>
@@ -270,7 +270,7 @@ export function TerminalWorkspace({
                           <BrainCircuit className="w-6 h-6 text-purple-400" />
                         </div>
                         <p className="font-semibold text-zinc-200 mb-1">No Active Debate for {selectedSymbol}</p>
-                        <p className="text-[11px] text-zinc-400 max-w-xs mb-4 leading-relaxed">
+                        <p className="text-2xs text-zinc-400 max-w-xs mb-4 leading-relaxed">
                           TradingAgents will convene Market, Sentiment, and Risk officers to debate long vs. short conviction.
                         </p>
                         <button
@@ -293,7 +293,7 @@ export function TerminalWorkspace({
                 <CustomResizeHandle />
                 <Panel defaultSize={30} minSize={20} className="flex flex-col min-h-0 min-w-0 border-l border-white/5 bg-zinc-950">
                   <div className="h-7 bg-zinc-900/80 border-b border-rose-900/30 px-3 flex items-center justify-between flex-none select-none">
-                    <div className="flex items-center space-x-1.5 text-rose-400 font-mono text-[10px] font-bold uppercase tracking-wider">
+                    <div className="flex items-center space-x-1.5 text-rose-400 font-mono text-2xs font-bold uppercase tracking-wider">
                       <ShieldAlert className="w-3 h-3" />
                       <span>Operator Control</span>
                     </div>
@@ -334,7 +334,7 @@ export function TerminalWorkspace({
             className="absolute top-0 right-4 -translate-y-full bg-zinc-900 border-x border-t border-white/5 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1 rounded-t-md transition-colors z-10 flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-cyan-500/50 outline-none select-none"
             aria-label={isBlotterCollapsed ? "Expand blotter" : "Collapse blotter"}
           >
-            <span className="font-mono text-[10px] uppercase font-bold tracking-wider">Blotter</span>
+            <span className="font-mono text-2xs uppercase font-bold tracking-wider">Blotter</span>
             {isBlotterCollapsed ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           </button>
           

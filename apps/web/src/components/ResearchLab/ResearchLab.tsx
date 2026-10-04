@@ -32,7 +32,8 @@ export const ResearchLab: React.FC = () => {
   const selectedSlug = useBacktestStore((state) => state.selectedSlug);
   const setSelectedSlug = useBacktestStore((state) => state.setSelectedSlug);
   const [parameters, setParameters] = useState<Record<string, any>>({});
-  const [executionProfile, setExecutionProfile] = useState<string>("optimistic");
+  // Conservative (fees + slippage, like the paper engine) by default; optimistic is costless (R2.1)
+  const [executionProfile, setExecutionProfile] = useState<string>("conservative");
   const [timeframe, setTimeframe] = useState<string>("1m");
   const [instrumentId, setInstrumentId] = useState<string>("BTCUSDT.BINANCE");
 
@@ -246,13 +247,13 @@ export const ResearchLab: React.FC = () => {
   return (
     <div className="flex h-full w-full bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
       {/* Left Sidebar: Strategy & Execution Profile Configuration Form */}
-      <aside className="w-80 flex-none h-full border-r border-white/5 bg-zinc-950 flex flex-col min-h-0 font-mono text-[11px]">
+      <aside className="w-80 flex-none h-full border-r border-white/5 bg-zinc-950 flex flex-col min-h-0 font-mono text-2xs">
         <div className="p-4 border-b border-white/5 bg-zinc-950 flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <Sliders className="w-4 h-4 text-cyan-400" />
             <span className="font-bold text-xs text-zinc-200 uppercase tracking-wider">Research Lab</span>
           </div>
-          <span className="text-[10px] bg-cyan-950/30 text-cyan-400 border border-cyan-900/50 px-1.5 py-0.5 rounded font-semibold">
+          <span className="text-2xs bg-cyan-950/30 text-cyan-400 border border-cyan-900/50 px-1.5 py-0.5 rounded font-semibold">
             Nautilus rc4
           </span>
         </div>
@@ -261,13 +262,13 @@ export const ResearchLab: React.FC = () => {
           {/* Strategy Selection */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-[10px] text-zinc-400 uppercase tracking-wider font-bold">
+              <label className="text-2xs text-zinc-400 uppercase tracking-wider font-bold">
                 Target Strategy
               </label>
               <button
                 type="button"
                 onClick={() => setIsManagerOpen(true)}
-                className="text-[10px] text-cyan-400 hover:text-cyan-300 font-mono flex items-center space-x-1 bg-cyan-950/30 hover:bg-cyan-900/40 border border-cyan-800/40 px-1.5 py-0.5 rounded transition-colors"
+                className="text-2xs text-cyan-400 hover:text-cyan-300 font-mono flex items-center space-x-1 bg-cyan-950/30 hover:bg-cyan-900/40 border border-cyan-800/40 px-1.5 py-0.5 rounded transition-colors"
                 title="Manage, inspect and delete registered strategies"
               >
                 <Layers className="w-3 h-3" />
@@ -276,6 +277,7 @@ export const ResearchLab: React.FC = () => {
             </div>
             <select
               value={selectedSlug}
+              aria-label="Target strategy"
               onChange={(e) => handleStrategyChange(e.target.value)}
               className="w-full bg-zinc-900 border border-white/5 rounded px-3 py-2 text-zinc-200 text-xs focus:border-cyan-500 focus:outline-none transition-colors"
             >
@@ -286,7 +288,7 @@ export const ResearchLab: React.FC = () => {
               ))}
             </select>
             {currentStrategy?.description && (
-              <p className="text-[10px] text-zinc-500 mt-1.5 leading-relaxed">
+              <p className="text-2xs text-zinc-500 mt-1.5 leading-relaxed">
                 {currentStrategy.description}
               </p>
             )}
@@ -294,16 +296,16 @@ export const ResearchLab: React.FC = () => {
 
           {/* Execution Profile */}
           <div>
-            <label className="block text-[10px] text-zinc-400 uppercase tracking-wider mb-2 font-bold">
+            <label className="block text-2xs text-zinc-400 uppercase tracking-wider mb-2 font-bold">
               Execution Profile
             </label>
             <div className="space-y-2">
               {[
                 {
-                  id: "optimistic",
-                  label: "Baseline (Optimistic)",
-                  desc: "Zero slippage, zero fees, DefaultFillModel",
-                  color: "border-emerald-800 text-emerald-400",
+                  id: "conservative",
+                  label: "Conservative Institutional",
+                  desc: "80% limit fills, 50% slip, 5/10 bps fees",
+                  color: "border-purple-800 text-purple-400",
                 },
                 {
                   id: "adverse_slippage",
@@ -312,16 +314,17 @@ export const ResearchLab: React.FC = () => {
                   color: "border-amber-800 text-amber-400",
                 },
                 {
-                  id: "conservative",
-                  label: "Conservative Institutional",
-                  desc: "80% limit fills, 50% slip, 5/10 bps fees",
-                  color: "border-purple-800 text-purple-400",
+                  id: "optimistic",
+                  label: "Optimistic: no costs – not for decisions",
+                  desc: "Zero slippage, zero fees, DefaultFillModel",
+                  color: "border-rose-800 text-rose-400",
                 },
               ].map((p) => (
                 <button
                   key={p.id}
                   type="button"
                   onClick={() => setExecutionProfile(p.id)}
+                  aria-pressed={executionProfile === p.id}
                   className={`w-full text-left p-2.5 rounded border transition-colors ${
                     executionProfile === p.id
                       ? `bg-cyan-950/20 border-cyan-500/50 text-zinc-100 ring-1 ring-cyan-500/20`
@@ -329,7 +332,7 @@ export const ResearchLab: React.FC = () => {
                   }`}
                 >
                   <div className="font-semibold text-xs text-zinc-200">{p.label}</div>
-                  <div className="text-[10px] text-zinc-500 mt-1">{p.desc}</div>
+                  <div className="text-2xs text-zinc-500 mt-1">{p.desc}</div>
                 </button>
               ))}
             </div>
@@ -338,10 +341,11 @@ export const ResearchLab: React.FC = () => {
           {/* Settings Grid */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] text-zinc-400 uppercase mb-2 font-bold">Instrument</label>
+              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Instrument</label>
               {instruments.length > 0 ? (
                 <select
                   value={instrumentId}
+                  aria-label="Instrument"
                   onChange={(e) => setInstrumentId(e.target.value)}
                   className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
                 >
@@ -355,6 +359,7 @@ export const ResearchLab: React.FC = () => {
                 <input
                   type="text"
                   value={instrumentId}
+                  aria-label="Instrument"
                   onChange={(e) => setInstrumentId(e.target.value)}
                   placeholder="e.g. BTCUSDT.BINANCE"
                   className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
@@ -362,9 +367,10 @@ export const ResearchLab: React.FC = () => {
               )}
             </div>
             <div>
-              <label className="block text-[10px] text-zinc-400 uppercase mb-2 font-bold">Timeframe</label>
+              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Timeframe</label>
               <select
                 value={timeframe}
+                aria-label="Timeframe"
                 onChange={(e) => setTimeframe(e.target.value)}
                 className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
               >
@@ -378,9 +384,10 @@ export const ResearchLab: React.FC = () => {
               </select>
             </div>
             <div className="col-span-2">
-              <label className="block text-[10px] text-zinc-400 uppercase mb-2 font-bold">Lookback Window</label>
+              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Lookback Window</label>
               <select
                 value={lookbackDays}
+                aria-label="Lookback window"
                 onChange={(e) => setLookbackDays(Number(e.target.value))}
                 className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
               >
@@ -395,12 +402,12 @@ export const ResearchLab: React.FC = () => {
 
           {/* Dynamic Strategy Parameters */}
           <div>
-            <label className="block text-[10px] text-zinc-400 uppercase tracking-wider mb-2 font-bold flex items-center justify-between">
+            <label className="block text-2xs text-zinc-400 uppercase tracking-wider mb-2 font-bold flex items-center justify-between">
               <span>Strategy Parameters</span>
-              <span className="text-[9px] text-zinc-500">v{currentStrategy?.version_num || 1}</span>
+              <span className="text-2xs text-zinc-500">v{currentStrategy?.version_num || 1}</span>
             </label>
             {!currentStrategy?.parameter_schema || Object.keys(currentStrategy.parameter_schema).length === 0 ? (
-              <div className="text-[10px] text-zinc-500 bg-zinc-900/50 p-3 rounded border border-white/5 text-center italic">
+              <div className="text-2xs text-zinc-500 bg-zinc-900/50 p-3 rounded border border-white/5 text-center italic">
                 No tunable parameters configured.<br/>Executing with strategy defaults.
               </div>
             ) : (
@@ -412,13 +419,14 @@ export const ResearchLab: React.FC = () => {
                         {schema.title || k}
                       </div>
                       {schema.description && (
-                        <div className="text-[9px] text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity absolute bg-black border border-white/10 p-1.5 rounded z-10 -ml-1 mt-1 max-w-[200px]">
+                        <div className="text-2xs text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity absolute bg-black border border-white/10 p-1.5 rounded z-10 -ml-1 mt-1 max-w-[200px]">
                           {schema.description}
                         </div>
                       )}
                     </div>
                     <input
                       type={schema.type === "integer" || schema.type === "number" ? "number" : "text"}
+                      aria-label={schema.title || k}
                       step={schema.type === "integer" ? "1" : "0.01"}
                       min={schema.minimum}
                       max={schema.maximum}
@@ -444,7 +452,7 @@ export const ResearchLab: React.FC = () => {
           {/* Run Error Message */}
           {runError && (
             <div className="p-3 rounded bg-rose-950/30 border border-rose-900/50 flex flex-col space-y-2">
-              <div className="text-rose-400 text-[10px] leading-relaxed flex items-start space-x-2">
+              <div className="text-rose-400 text-2xs leading-relaxed flex items-start space-x-2">
                 <AlertTriangle className="w-3.5 h-3.5 flex-none mt-0.5" />
                 <span>{runError}</span>
               </div>
@@ -490,7 +498,7 @@ export const ResearchLab: React.FC = () => {
           <button
             onClick={handleRunBacktest}
             disabled={running}
-            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-500 font-bold text-xs text-white transition-colors"
+            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-500 font-bold text-xs text-zinc-950 transition-colors"
           >
             {running ? (
               <>
@@ -538,12 +546,12 @@ export const ResearchLab: React.FC = () => {
 
           {/* Active Run Status & Manifest Trigger */}
           {activeRun && (
-            <div className="flex items-center space-x-3 text-[11px]">
+            <div className="flex items-center space-x-3 text-2xs">
               <span className="text-zinc-400">
                 Run: <strong className="text-zinc-200">{activeRun.id.slice(0, 8)}</strong>
               </span>
               <span
-                className={`px-1.5 py-0.5 rounded font-bold uppercase text-[10px] ${
+                className={`px-1.5 py-0.5 rounded font-bold uppercase text-2xs ${
                   activeRun.status === "COMPLETED"
                     ? "bg-emerald-950/40 text-emerald-400 border border-emerald-900/50"
                     : activeRun.status === "FAILED"

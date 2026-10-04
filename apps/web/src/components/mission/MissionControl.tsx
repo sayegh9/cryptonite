@@ -11,6 +11,8 @@ import { AutonomyEvals } from "./AutonomyEvals";
 import { MandateCard } from "./MandateCard";
 import { MandateEditor } from "./MandateEditor";
 import { MissionBanners } from "./MissionBanners";
+import { MissionHealth } from "./MissionHealth";
+import { dispatchSwitchWorkspace } from "@/lib/navigation";
 
 const VIEWS: { id: MissionView; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -25,7 +27,7 @@ let hydrated = false;
  * states, one PAPER kill switch; plus the Mandate editor and Autonomy & Evals views.
  */
 export function MissionControl({ isActive }: { isActive: boolean }) {
-  const { view, setView, mandates, approvals, status, loaded, error, refresh, selectedMandateId, selectMandate } = useMandateStore();
+  const { view, mandates, approvals, status, loaded, error, refresh, selectedMandateId, selectMandate } = useMandateStore();
 
   useEffect(() => {
     if (!hydrated) {
@@ -56,13 +58,13 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
           <Gauge className="h-4 w-4 text-cyan-400" /> Mission Control · PAPER
         </h2>
         <div className="flex items-center gap-3">
-          <div role="tablist" aria-label="Mission Control views" className="flex gap-1 font-mono text-[11px]">
+          <div role="tablist" aria-label="Mission Control views" className="flex gap-1 font-mono text-2xs">
             {VIEWS.map((v) => (
               <button
                 key={v.id}
                 role="tab"
                 aria-selected={view === v.id}
-                onClick={() => setView(v.id)}
+                onClick={() => dispatchSwitchWorkspace({ mode: "mission", view: v.id })}
                 className={`rounded px-2 py-1 font-bold ${view === v.id ? "bg-cyan-900/50 text-cyan-300" : "text-zinc-400 hover:text-zinc-200"}`}
               >
                 {v.label}
@@ -77,17 +79,18 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
 
       <MissionBanners status={status} />
       {error && (
-        <p role="alert" className="mt-2 font-mono text-[11px] text-zinc-400">
+        <p role="alert" className="mt-2 font-mono text-2xs text-zinc-400">
           {error}
         </p>
       )}
 
       <div className="mt-3 min-h-0 flex-1">
+        {view === "overview" && <MissionHealth status={status} />}
         {view === "overview" && (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-12">
             <div className="space-y-3 xl:col-span-7">
               {loaded && mandates.length === 0 && (
-                <p className="rounded border border-zinc-800 p-3 font-mono text-[11px] text-zinc-500">
+                <p className="rounded border border-zinc-800 p-3 font-mono text-2xs text-zinc-500">
                   No mandates. The AI cannot place any order until you create one (Mandate editor); every mandate starts at L1 Copilot.
                 </p>
               )}
@@ -97,8 +100,8 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
                 ))}
               </div>
               {status?.account && (
-                <p className="font-mono text-[10px] text-zinc-500" data-testid="account-backstop">
-                  Account drawdown {Number(status.account.drawdown_pct ?? 0).toFixed(2)}% of the {status.account.backstop_pct}% backstop
+                <p className="font-mono text-2xs text-zinc-500" data-testid="account-backstop">
+                  Account drawdown {status.account.drawdown_pct == null ? "—" : `${Number(status.account.drawdown_pct).toFixed(2)}%`} of the {status.account.backstop_pct}% backstop
                   (latches everything).
                 </p>
               )}

@@ -78,7 +78,7 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
           <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
             Multi-Chart Terminal
           </span>
-          <span className="text-[11px] text-zinc-500 font-mono">
+          <span className="text-2xs text-zinc-500 font-mono">
             Active: {charts.find((c) => c.id === focusedId)?.symbol} ({charts.find((c) => c.id === focusedId)?.timeframe})
           </span>
         </div>
@@ -93,7 +93,7 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
             }`}
           >
             <Square className="w-3.5 h-3.5" />
-            <span className="text-[10px]">1x1</span>
+            <span className="text-2xs">1x1</span>
           </button>
           <button
             onClick={() => setLayout("1x2")}
@@ -103,7 +103,7 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
             }`}
           >
             <Columns className="w-3.5 h-3.5" />
-            <span className="text-[10px]">1x2</span>
+            <span className="text-2xs">1x2</span>
           </button>
           <button
             onClick={() => setLayout("2x2")}
@@ -113,7 +113,7 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
             }`}
           >
             <LayoutGrid className="w-3.5 h-3.5" />
-            <span className="text-[10px]">2x2</span>
+            <span className="text-2xs">2x2</span>
           </button>
         </div>
       </div>

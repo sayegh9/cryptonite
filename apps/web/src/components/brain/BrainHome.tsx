@@ -15,7 +15,7 @@ export function BrainHome({ active = true }: { active?: boolean }) {
   return (
     <div className="flex h-full min-h-0 w-full" data-testid="brain-home">
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex h-8 flex-none items-center justify-between border-b border-zinc-800 px-3 font-mono text-[10px] text-zinc-500">
+        <div className="flex h-8 flex-none items-center justify-between border-b border-zinc-800 px-3 font-mono text-2xs text-zinc-500">
           <span>Conversation · paper only · orders need your approval</span>
           <div className="flex items-center gap-2">
             <button

@@ -57,14 +57,14 @@ export default function ReliabilityChart({ role, data }: { role: string; data: R
             ))}
           </svg>
           {active && (
-            <div role="tooltip" className="pointer-events-none absolute rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] text-zinc-200"
+            <div role="tooltip" className="pointer-events-none absolute rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-2xs text-zinc-200"
                  style={{ left: sx(active.mean_confidence!) + 10, top: sy(active.hit_rate!) - 10 }}>
               stated {pct(active.mean_confidence)} · right {pct(active.hit_rate)} · n {active.n}
             </div>
           )}
         </div>
       )}
-      <table className="w-full text-left text-[10px]" aria-label={`Reliability table for ${role}`}>
+      <table className="w-full text-left text-2xs" aria-label={`Reliability table for ${role}`}>
         <thead className="text-zinc-500">
           <tr><th>Confidence</th><th>Stated</th><th>Right</th><th>n</th></tr>
         </thead>

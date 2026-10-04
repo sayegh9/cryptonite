@@ -22,7 +22,7 @@ const num = (v: unknown) => (v === null || v === undefined || v === "" ? null : 
 function RailSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-zinc-800 p-3">
-      <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+      <h3 className="mb-2 flex items-center gap-1.5 text-2xs font-bold uppercase tracking-wider text-zinc-400">
         {icon}
         {title}
       </h3>
@@ -74,9 +74,9 @@ export function BrainContextRail() {
   const used = spend && spend.cap > 0 ? Math.min(100, (spend.spent / spend.cap) * 100) : null;
 
   return (
-    <aside aria-label="Brain context" className="flex h-full min-h-0 flex-col overflow-y-auto bg-zinc-950 font-mono text-[11px] text-zinc-300">
+    <aside aria-label="Brain context" className="flex h-full min-h-0 flex-col overflow-y-auto bg-zinc-950 font-mono text-2xs text-zinc-300">
       <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Context</span>
+        <span className="text-2xs font-bold uppercase tracking-wider text-zinc-500">Context</span>
         <button type="button" onClick={() => void refresh()} className="text-zinc-500 hover:text-zinc-200" aria-label="Refresh context">
           <RefreshCw className="h-3 w-3" />
         </button>

@@ -102,8 +102,6 @@ export interface LedgerPrefs {
 }
 
 export const PRIMARY_ACCOUNT_ID = 'PAPER-ACCOUNT-001';
-/** Phase-1 risk engine default (`RiskEngine.max_daily_loss_pct`); the API does not expose the live value. */
-export const DAILY_DRAWDOWN_LIMIT = 0.05;
 /** A WS snapshot younger than this is fresher than any REST row for live (mark-dependent) fields. */
 const SNAPSHOT_FRESH_MS = 5000;
 
@@ -118,6 +116,11 @@ interface PortfolioState {
   loaded: boolean; // first REST round-trip has completed
   lastSnapshotAt: number | null;
   lastRestOkAt: number | null;
+  /** When `account` was last confirmed by REST or a snapshot (null = never this session). */
+  accountAt: number | null;
+  /** When positions / the kill switch were last confirmed (null = never this session: unknown) */
+  positionsAt: number | null;
+  killSwitchAt: number | null;
   restDegraded: boolean; // at least one endpoint failed on the last poll; last-known data is shown
   equityHwm: { day: string; value: number } | null; // intraday high-water mark (persisted)
   ledger: LedgerPrefs;
@@ -215,6 +218,9 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
   loaded: false,
   lastSnapshotAt: null,
   lastRestOkAt: null,
+  accountAt: null,
+  positionsAt: null,
+  killSwitchAt: null,
   restDegraded: false,
   equityHwm: null,
   ledger: { tab: 'orders', range: 'all', symbol: '', origin: '', side: '', pageSize: 25 },
@@ -246,6 +252,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
           for (const k of LIVE_ACCOUNT_FIELDS) (next as unknown as Record<string, unknown>)[k] = s.account[k];
         }
         patch.account = reuse(s.account ?? undefined, next);
+        patch.accountAt = Date.now();
       }
     }
 
@@ -273,6 +280,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
         for (const p of s.positions) if (p.status === 'OPEN' && !restIds.has(p.position_id)) next.unshift(p);
       }
       patch.positions = reconcileList(s.positions, next, (p) => p.position_id);
+      patch.positionsAt = Date.now();
     }
 
     if (Array.isArray(r.orders)) patch.orders = reconcileList(s.orders, r.orders as PaperOrder[], (o) => o.client_order_id);
@@ -289,6 +297,7 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
     }
     if (isRecord(r.killSwitch) && typeof r.killSwitch.is_latched === 'boolean') {
       patch.killSwitch = reuse(s.killSwitch, r.killSwitch as unknown as KillSwitchState);
+      patch.killSwitchAt = Date.now();
     }
     patch.equityHwm = nextHwm(s.equityHwm, patch.account ?? s.account);
     return patch;
@@ -316,11 +325,13 @@ export const usePortfolioStore = create<PortfolioState>()(persist((set) => ({
 
     const patch: Partial<PortfolioState> = {
       lastSnapshotAt: Date.now(),
+      positionsAt: Date.now(),
       positions: reconcileList(s.positions, [...added, ...next], (p) => p.position_id),
     };
     if (isRecord(msg.account)) {
       const merged = coerceAccount({ ...(s.account ?? { account_id: PRIMARY_ACCOUNT_ID }), ...msg.account });
       patch.account = reuse(s.account ?? undefined, merged);
+      patch.accountAt = Date.now();
       patch.equityHwm = nextHwm(s.equityHwm, patch.account);
     }
     return patch;

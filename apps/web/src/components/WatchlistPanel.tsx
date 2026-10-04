@@ -1,17 +1,22 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getStreamClient } from "@/lib/ws";
 import { Search, TrendingUp, TrendingDown } from "lucide-react";
+import { Fresh } from "@/components/Fresh";
+import { isKnownNumber, UNKNOWN_TEXT } from "@/lib/freshness";
 
 interface TickerItem {
   symbol: string;
   name: string;
-  price: number;
-  change24h: number;
-  high24h: number;
-  low24h: number;
-  volume: number;
+  /** null until a price arrives from /market/prices or the kline stream */
+  price: number | null;
+  change24h: number | null;
+  high24h: number | null;
+  low24h: number | null;
+  volume: number | null;
+  /** When `price` was observed (epoch ms); null = never */
+  asOf: number | null;
 }
 
 interface Props {
@@ -19,62 +24,56 @@ interface Props {
   onSelectSymbol: (symbol: string) => void;
 }
 
+/** A price older than this is "delayed"; 3× older is "stale". The REST poll runs every 15 s. */
+const PRICE_MAX_AGE_MS = 20_000;
+const POLL_MS = 15_000;
+
+const seed = (symbol: string, name: string): TickerItem => ({
+  symbol, name, price: null, change24h: null, high24h: null, low24h: null, volume: null, asOf: null,
+});
+
+// Symbols only: prices are unknown until the API or the stream reports them
 const DEFAULT_TICKERS: TickerItem[] = [
-  {
-    symbol: "BTCUSDT",
-    name: "Bitcoin / Tether",
-    price: 64250.0,
-    change24h: 1.84,
-    high24h: 65100.0,
-    low24h: 63800.0,
-    volume: 12450.2,
-  },
-  {
-    symbol: "ETHUSDT",
-    name: "Ethereum / Tether",
-    price: 3480.5,
-    change24h: -0.92,
-    high24h: 3550.0,
-    low24h: 3420.0,
-    volume: 48920.8,
-  },
-  {
-    symbol: "SOLUSDT",
-    name: "Solana / Tether",
-    price: 142.2,
-    change24h: 3.45,
-    high24h: 146.0,
-    low24h: 137.5,
-    volume: 98120.0,
-  },
-  {
-    symbol: "BNBUSDT",
-    name: "BNB / Tether",
-    price: 580.1,
-    change24h: 0.15,
-    high24h: 588.0,
-    low24h: 574.0,
-    volume: 8230.4,
-  },
+  seed("BTCUSDT", "Bitcoin / Tether"),
+  seed("ETHUSDT", "Ethereum / Tether"),
+  seed("SOLUSDT", "Solana / Tether"),
+  seed("BNBUSDT", "BNB / Tether"),
 ];
+
+/** Only symbols and names persist; prices saved by older builds are discarded. */
+function loadSaved(): TickerItem[] | null {
+  try {
+    const raw = localStorage.getItem("watchlist_tickers");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const rows = parsed
+      .filter((t) => t && typeof t.symbol === "string")
+      .map((t) => seed(t.symbol, typeof t.name === "string" ? t.name : t.symbol));
+    return rows.length ? rows : null;
+  } catch {
+    return null;
+  }
+}
 
 export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol }) => {
   const [tickers, setTickers] = useState<TickerItem[]>(DEFAULT_TICKERS);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [priceError, setPriceError] = useState<string | null>(null);
+  const tickersRef = useRef(tickers);
+  tickersRef.current = tickers;
 
   useEffect(() => {
-    const saved = localStorage.getItem("watchlist_tickers");
-    if (saved) {
-      try {
-        setTickers(JSON.parse(saved));
-      } catch {}
-    }
+    const saved = loadSaved();
+    if (saved) setTickers(saved);
     setIsLoaded(true);
   }, []);
 
   useEffect(() => {
     if (!isLoaded) return;
-    localStorage.setItem("watchlist_tickers", JSON.stringify(tickers));
+    try {
+      localStorage.setItem("watchlist_tickers", JSON.stringify(tickers.map(({ symbol, name }) => ({ symbol, name }))));
+    } catch {}
     const client = getStreamClient();
     client.updateSubscriptions(
       ["open_kline", "closed_bar_committed", "signal_candidate"],
@@ -83,6 +82,52 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
   }, [tickers, isLoaded]);
   const [search, setSearch] = useState("");
   const [availableInstruments, setAvailableInstruments] = useState<any[]>([]);
+
+  // Real 24h stats from the API; a failure is shown, and rows keep their last observed value + age
+  const hydrateStats = useCallback(async () => {
+    const watchlistSymbols = tickersRef.current.map((t) => t.symbol).join(",");
+    if (!watchlistSymbols) return;
+    try {
+      const res = await fetch(`/api/v1/market/prices?symbols=${encodeURIComponent(watchlistSymbols)}`);
+      if (!res.ok) {
+        setPriceError(`prices unavailable: ${res.status}`);
+        return;
+      }
+      const stats: Array<{
+        symbol: string;
+        last_price: number | string | null;
+        price_change_pct: number | string | null;
+        high_24h: number | string | null;
+        low_24h: number | string | null;
+        volume: number | string | null;
+      }> = await res.json();
+      if (!Array.isArray(stats)) {
+        setPriceError("prices unavailable: unexpected response");
+        return;
+      }
+      setPriceError(null);
+      const at = Date.now();
+      const num = (v: unknown) => (v === null || v === undefined || v === "" ? null : Number(v));
+      setTickers((prev) =>
+        prev.map((t) => {
+          const s = stats.find((r) => r.symbol === t.symbol);
+          const price = s ? num(s.last_price) : null;
+          if (!s || !isKnownNumber(price)) return t;
+          return {
+            ...t,
+            price,
+            change24h: num(s.price_change_pct),
+            high24h: num(s.high_24h),
+            low24h: num(s.low_24h),
+            volume: num(s.volume),
+            asOf: at,
+          };
+        })
+      );
+    } catch {
+      setPriceError("prices unavailable: network error");
+    }
+  }, []);
 
   useEffect(() => {
     // Fetch available instruments
@@ -93,60 +138,28 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
       })
       .catch((err) => console.error("Failed to load instruments", err));
 
-    // Hydrate real 24h stats from Binance
-    const hydrateStats = async () => {
-      const watchlistSymbols = tickers.map((t) => t.symbol).join(",");
-      if (!watchlistSymbols) return;
-      try {
-        const res = await fetch(`/api/v1/market/prices?symbols=${watchlistSymbols}`);
-        if (!res.ok) return;
-        const stats: Array<{
-          symbol: string;
-          last_price: number;
-          price_change_pct: number;
-          high_24h: number;
-          low_24h: number;
-          volume: number;
-          quote_volume: number;
-        }> = await res.json();
-        setTickers((prev) =>
-          prev.map((t) => {
-            const s = stats.find((r) => r.symbol === t.symbol);
-            if (!s) return t;
-            return {
-              ...t,
-              price: s.last_price,
-              change24h: s.price_change_pct,
-              high24h: s.high_24h,
-              low24h: s.low_24h,
-              volume: s.volume,
-            };
-          })
-        );
-      } catch {
-        // Silently ignore — live WS stream will hydrate price as bars arrive
-      }
-    };
-    hydrateStats();
-    const interval = setInterval(hydrateStats, 15000);
+    void hydrateStats();
+    const interval = setInterval(hydrateStats, POLL_MS);
 
-    // Listen to live WebSocket stream to update prices in realtime
+    // Live WebSocket stream updates the price (and its observation time)
     const client = getStreamClient();
     const unsubscribe = client.subscribe((msg: any) => {
-      if (msg.type === "open_kline") {
+      if (msg.type === "open_kline" && typeof msg.instrument_id === "string") {
         const rawSym = msg.instrument_id.split(".")[0];
+        const close = Number(msg.close);
+        if (!isKnownNumber(close)) return;
         setTickers((prev) =>
           prev.map((t) => {
-            if (t.symbol === rawSym) {
-              const newPrice = Number(msg.close);
-              return {
-                ...t,
-                price: newPrice,
-                high24h: Math.max(t.high24h, Number(msg.high)),
-                low24h: Math.min(t.low24h, Number(msg.low)),
-              };
-            }
-            return t;
+            if (t.symbol !== rawSym) return t;
+            const high = Number(msg.high);
+            const low = Number(msg.low);
+            return {
+              ...t,
+              price: close,
+              high24h: t.high24h !== null && isKnownNumber(high) ? Math.max(t.high24h, high) : t.high24h,
+              low24h: t.low24h !== null && isKnownNumber(low) ? Math.min(t.low24h, low) : t.low24h,
+              asOf: Date.now(),
+            };
           })
         );
       }
@@ -156,7 +169,15 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
       clearInterval(interval);
       unsubscribe();
     };
-  }, [isLoaded]);
+  }, [isLoaded, hydrateStats]);
+
+  const addTicker = (symbol: string, name: string) => {
+    setTickers((prev) => (prev.some((t) => t.symbol === symbol) ? prev : [...prev, seed(symbol, name)]));
+    setSearch("");
+    onSelectSymbol(symbol);
+    // Price stays unknown until the next poll or stream tick reports it
+    setTimeout(() => void hydrateStats(), 0);
+  };
 
   const filtered = tickers.filter(
     (t) =>
@@ -178,10 +199,11 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
       {/* Search Header */}
       <div className="p-3 border-b border-white/5 bg-zinc-950">
         <div className="relative flex items-center">
-          <Search className="w-3.5 h-3.5 absolute left-3 text-zinc-500" />
+          <Search className="w-3.5 h-3.5 absolute left-3 text-zinc-500" aria-hidden="true" />
           <input
             type="text"
             placeholder="Search markets..."
+            aria-label="Search markets"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full bg-zinc-900 border border-white/5 rounded pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/20 transition-all font-mono"
@@ -189,57 +211,40 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
         </div>
       </div>
 
+      {priceError && (
+        <div role="status" className="px-3 py-1.5 border-b border-rose-900/50 bg-rose-950/30 text-2xs font-mono text-rose-300" data-testid="watchlist-error">
+          {priceError}
+        </div>
+      )}
+
       {/* Watchlist Items */}
       <div className="flex-1 overflow-y-auto relative">
         {search.trim().length > 0 && searchResults.length > 0 && (
           <div className="bg-zinc-900 border-b border-white/5 py-2">
-            <div className="px-4 text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1">
+            <div className="px-4 text-2xs font-bold text-zinc-500 uppercase tracking-wider mb-1">
               Add new asset
             </div>
             {searchResults.map((inst) => (
-              <div
+              <button
+                type="button"
                 key={inst.instrument_id}
-                onClick={async () => {
-                  let initialPrice = 0;
-                  try {
-                    const barsRes = await fetch(`/api/v1/bars?symbol=${inst.symbol}&timeframe=1m&limit=1`);
-                    const barsData = await barsRes.json();
-                    if (barsData && barsData.length > 0) {
-                      initialPrice = Number(barsData[0].close) || 0;
-                    }
-                  } catch {}
-                  
-                  const newTicker: TickerItem = {
-                    symbol: inst.symbol,
-                    name: `${inst.base_currency} / ${inst.quote_currency}`,
-                    price: initialPrice,
-                    change24h: 0,
-                    high24h: 0,
-                    low24h: 0,
-                    volume: 0,
-                  };
-                  setTickers((prev) => {
-                    if (prev.some(t => t.symbol === inst.symbol)) return prev;
-                    return [...prev, newTicker];
-                  });
-                  setSearch("");
-                  onSelectSymbol(inst.symbol);
-                }}
-                className="flex items-center justify-between px-4 py-2 cursor-pointer hover:bg-zinc-800 transition-colors"
+                onClick={() => addTicker(inst.symbol, `${inst.base_currency} / ${inst.quote_currency}`)}
+                className="w-full flex items-center justify-between px-4 py-2 cursor-pointer hover:bg-zinc-800 transition-colors text-left"
               >
                 <div className="flex flex-col">
                   <span className="font-mono text-xs font-bold text-zinc-200">{inst.symbol}</span>
-                  <span className="text-[10px] text-zinc-500">{inst.base_currency} / {inst.quote_currency}</span>
+                  <span className="text-2xs text-zinc-500">{inst.base_currency} / {inst.quote_currency}</span>
                 </div>
-                <div className="text-cyan-500 text-xs font-bold">+</div>
-              </div>
+                <div className="text-cyan-500 text-xs font-bold" aria-hidden="true">+</div>
+              </button>
             ))}
           </div>
         )}
 
         {filtered.map((item) => {
           const isSelected = selectedSymbol.toUpperCase().replace(".BINANCE", "") === item.symbol;
-          const isUp = item.change24h >= 0;
+          const change = item.change24h;
+          const isUp = change !== null && change >= 0;
 
           return (
             <div
@@ -251,8 +256,10 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
                   : "hover:bg-zinc-900/60"
               }`}
             >
-              <div 
-                className="flex flex-col hover:bg-zinc-800/50 rounded px-1 -mx-1 transition-colors"
+              <button
+                type="button"
+                className="flex flex-col hover:bg-zinc-800/50 rounded px-1 -mx-1 transition-colors text-left"
+                title={`Open ${item.symbol} profile`}
                 onClick={(e) => {
                   e.stopPropagation();
                   window.dispatchEvent(new CustomEvent("cryptonite:open-profile", { detail: { symbol: item.symbol } }));
@@ -261,35 +268,48 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
                 <span className="font-mono text-xs font-bold text-zinc-200">
                   {item.symbol}
                 </span>
-                <span className="text-[10px] text-zinc-500 truncate max-w-[110px]">
+                <span className="text-2xs text-zinc-500 truncate max-w-[110px]">
                   {item.name}
                 </span>
-              </div>
+              </button>
 
               <div className="flex items-center gap-3">
                 <button
+                  type="button"
+                  aria-label={`Remove ${item.symbol} from watchlist`}
                   onClick={(e) => {
                     e.stopPropagation();
                     setTickers(prev => prev.filter(t => t.symbol !== item.symbol));
                   }}
-                  className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs px-1"
+                  className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-zinc-500 hover:text-red-400 text-xs px-1"
                 >
                   ×
                 </button>
                 <div className="flex flex-col items-end">
-                <span className="font-mono text-xs font-semibold text-zinc-100">
-                  ${item.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <span className="font-mono text-xs font-semibold text-zinc-100 tabular-nums" data-testid={`watchlist-price-${item.symbol}`}>
+                  <Fresh
+                    value={item.price}
+                    asOf={item.asOf}
+                    maxAgeMs={PRICE_MAX_AGE_MS}
+                    format={(p) => `$${p.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  />
                 </span>
                 <div
-                  className={`flex items-center space-x-0.5 text-[10px] font-mono font-medium ${
-                    isUp ? "text-emerald-400" : "text-red-400"
+                  className={`flex items-center space-x-0.5 text-2xs font-mono font-medium tabular-nums ${
+                    change === null ? "text-zinc-500" : isUp ? "text-emerald-400" : "text-red-400"
                   }`}
                 >
-                  {isUp ? <TrendingUp className="w-2.5 h-2.5" /> : <TrendingDown className="w-2.5 h-2.5" />}
-                  <span>
-                    {isUp ? "+" : ""}
-                    {item.change24h.toFixed(2)}%
-                  </span>
+                  {change === null ? (
+                    <span>{UNKNOWN_TEXT}</span>
+                  ) : (
+                    <>
+                      {isUp ? <TrendingUp className="w-2.5 h-2.5" aria-hidden="true" /> : <TrendingDown className="w-2.5 h-2.5" aria-hidden="true" />}
+                      <span>
+                        {isUp ? "+" : ""}
+                        {change.toFixed(2)}%
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
               </div>
@@ -307,11 +327,11 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
                 if (!newSym.endsWith("USDT") && !newSym.endsWith("BTC") && !newSym.endsWith("FDUSD")) {
                   newSym = `${newSym}USDT`;
                 }
-                
+
                 try {
                   btn.disabled = true;
                   btn.innerHTML = `Onboarding ${newSym}...`;
-                  
+
                   const res = await fetch("/api/v1/instruments/onboard", {
                     method: "POST",
                     credentials: "include",
@@ -321,43 +341,18 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
                     },
                     body: JSON.stringify({ symbol: newSym }),
                   });
-                  
+
                   if (!res.ok) throw new Error("Failed to onboard");
-                  
-                  // Wait a brief moment for the backend background task to create the initial catalog entry
-                  await new Promise(r => setTimeout(r, 1500));
-                  
-                  let initialPrice = 0;
-                  try {
-                    const barsRes = await fetch(`/api/v1/bars?symbol=${newSym}&timeframe=1m&limit=1`);
-                    const barsData = await barsRes.json();
-                    if (barsData && barsData.length > 0) {
-                      initialPrice = Number(barsData[0].close) || 0;
-                    }
-                  } catch {}
-                  
-                  const newTicker: TickerItem = {
-                    symbol: newSym,
-                    name: `${newSym} Market`,
-                    price: initialPrice,
-                    change24h: 0,
-                    high24h: 0,
-                    low24h: 0,
-                    volume: 0,
-                  };
-                  setTickers((prev) => {
-                    if (prev.some(t => t.symbol === newSym)) return prev;
-                    return [...prev, newTicker];
-                  });
-                  setSearch("");
-                  onSelectSymbol(newSym);
-                  
+
+                  addTicker(newSym, `${newSym} Market`);
+
                   // Re-fetch available instruments to update the local cache
                   fetch("/api/v1/instruments")
                     .then((res) => res.json())
                     .then((data) => {
                       if (Array.isArray(data)) setAvailableInstruments(data);
-                    });
+                    })
+                    .catch(() => {});
                 } catch (err) {
                   console.error(err);
                   btn.innerHTML = `Failed! Try again`;

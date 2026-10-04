@@ -78,7 +78,7 @@ export const SettingsPanel: React.FC = () => {
     setSelectedAgent(name);
     const cfg = data[name] || {};
     setEditModel(cfg.model_name || "gemini-1.5-pro");
-    setEditTemp(cfg.temperature || 0.7);
+    setEditTemp(cfg.temperature ?? 0.7);
     setEditPrompt(cfg.system_instructions || "");
   };
 
@@ -193,7 +193,14 @@ export const SettingsPanel: React.FC = () => {
               ))}
             </div>
             
-            {/* Editor */}
+            {/* Editor: only for a configuration that actually loaded (no default values shown as settings) */}
+            {!selectedAgent || !agents[selectedAgent] ? (
+              <div className="flex-1 p-6 text-sm text-zinc-400" role="status" data-testid="agent-config-unavailable">
+                {Object.keys(agents).length === 0
+                  ? "Agent configurations unavailable (not loaded). Sign in as operator or check the API."
+                  : "Select an agent to edit its configuration."}
+              </div>
+            ) : (
             <div className="flex-1 p-6 flex flex-col gap-6 overflow-y-auto">
               <div>
                 <h2 className="text-xl font-bold capitalize text-white mb-1">{selectedAgent} Agent</h2>
@@ -204,6 +211,7 @@ export const SettingsPanel: React.FC = () => {
                 <div className="space-y-2">
                   <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Model</label>
                   <select
+                    aria-label="Model"
                     value={editModel}
                     onChange={(e) => setEditModel(e.target.value)}
                     className="w-full bg-zinc-900 border border-zinc-800 rounded-md p-2 text-sm text-white"
@@ -219,6 +227,7 @@ export const SettingsPanel: React.FC = () => {
                   </label>
                   <input
                     type="range"
+                    aria-label="Temperature"
                     min="0"
                     max="1"
                     step="0.1"
@@ -234,6 +243,7 @@ export const SettingsPanel: React.FC = () => {
                   System Instructions
                 </label>
                 <textarea
+                  aria-label="System prompt"
                   value={editPrompt}
                   onChange={(e) => setEditPrompt(e.target.value)}
                   className="flex-1 w-full bg-zinc-900 border border-zinc-800 rounded-md p-3 text-sm text-zinc-300 font-mono resize-none focus:border-cyan-500 focus:outline-none"
@@ -242,12 +252,13 @@ export const SettingsPanel: React.FC = () => {
               </div>
 
               <div className="flex justify-end pt-2">
-                <Button onClick={handleSaveAgent} className="bg-cyan-600 hover:bg-cyan-500 text-white gap-2">
+                <Button onClick={handleSaveAgent} className="bg-cyan-600 hover:bg-cyan-500 text-zinc-950 gap-2">
                   <Save className="w-4 h-4" />
                   Save Configuration
                 </Button>
               </div>
             </div>
+            )}
           </div>
         )}
 

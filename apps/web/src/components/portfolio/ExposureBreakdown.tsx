@@ -42,7 +42,7 @@ export function ExposureBreakdown() {
         <h2 id="exposure-title" className="flex items-center gap-2 text-zinc-400 text-xs font-bold uppercase tracking-wider">
           <PieChart className="w-4 h-4 text-violet-400" /> Capital Exposure
         </h2>
-        <div className="flex rounded border border-zinc-700 overflow-hidden text-[10px]" role="group" aria-label="Group exposure by">
+        <div className="flex rounded border border-zinc-700 overflow-hidden text-2xs" role="group" aria-label="Group exposure by">
           {(["asset", "strategy"] as const).map((k) => (
             <button
               key={k}
@@ -87,15 +87,15 @@ export function ExposureBreakdown() {
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-3 mb-2 tabular-nums">
               <div>
-                <div className="text-[9px] uppercase tracking-wider text-zinc-500">Gross</div>
+                <div className="text-2xs uppercase tracking-wider text-zinc-500">Gross</div>
                 <div className="text-sm font-black text-white">{fmtCompactUsd(gross)}</div>
               </div>
               <div>
-                <div className="text-[9px] uppercase tracking-wider text-zinc-500">Net</div>
+                <div className="text-2xs uppercase tracking-wider text-zinc-500">Net</div>
                 <div className={`text-sm font-black ${net >= 0 ? "text-emerald-400" : "text-red-400"}`}>{net >= 0 ? "" : "-"}{fmtCompactUsd(Math.abs(net))}</div>
               </div>
               <div>
-                <div className="text-[9px] uppercase tracking-wider text-zinc-500">Gross Lev.</div>
+                <div className="text-2xs uppercase tracking-wider text-zinc-500">Gross Lev.</div>
                 <div className="text-sm font-black text-zinc-200">{equity > 0 ? `${(gross / equity).toFixed(2)}x` : "—"}</div>
               </div>
             </div>
@@ -104,10 +104,10 @@ export function ExposureBreakdown() {
                 const share = equity > 0 ? s.gross / equity : 0;
                 const flag = by === "asset" && share >= CONCENTRATION_CAP ? "text-red-400" : by === "asset" && share >= 0.2 ? "text-amber-400" : "text-zinc-400";
                 return (
-                  <li key={s.key} className="flex items-center gap-2 text-[10px] tabular-nums">
+                  <li key={s.key} className="flex items-center gap-2 text-2xs tabular-nums">
                     <span className="h-2 w-2 rounded-sm shrink-0" style={{ background: s.color }} aria-hidden />
                     <span className="truncate text-zinc-200 font-bold">{s.key}</span>
-                    {s.net < 0 && <span className="text-red-300 text-[9px]">net short</span>}
+                    {s.net < 0 && <span className="text-red-300 text-2xs">net short</span>}
                     <span className="ml-auto text-zinc-500">{fmtCompactUsd(s.gross)}</span>
                     <span className={`w-12 text-right font-bold ${flag}`} title={by === "asset" ? "Share of equity; 25% single-asset cap" : "Share of equity"}>
                       {fmtPct(share)}
@@ -119,7 +119,7 @@ export function ExposureBreakdown() {
           </div>
         </div>
       )}
-      <p className="mt-2 text-[10px] text-zinc-500">Max 25% Single-Asset Concentration · % of equity</p>
+      <p className="mt-2 text-2xs text-zinc-500">Max 25% Single-Asset Concentration · % of equity</p>
     </section>
   );
 }
