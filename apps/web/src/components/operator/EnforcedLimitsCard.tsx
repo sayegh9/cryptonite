@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { Fresh } from "@/components/Fresh";
 import { LIMITS_MAX_AGE_MS, useEnforcedLimits, type EnforcedPaperLimits } from "@/lib/limits";
+import { RiskLimitsForm } from "./RiskLimitsForm";
 import { listMandates } from "@/lib/mission/client";
 import type { Mandate } from "@/lib/mission/types";
 
@@ -11,14 +12,15 @@ const ROWS: { key: keyof EnforcedPaperLimits; label: string; unit: string }[] = 
   { key: "max_daily_loss_pct", label: "Max daily loss", unit: "% of equity" },
   { key: "min_order_equity_pct", label: "Min order size", unit: "% of equity" },
   { key: "max_order_equity_pct", label: "Max order size", unit: "% of equity" },
+  { key: "cross_mandate_exposure_pct", label: "Cross-mandate BTC exposure (beta-weighted)", unit: "% of equity" },
   { key: "account_backstop_drawdown_pct", label: "Account backstop drawdown", unit: "%" },
   { key: "taker_fee_bps", label: "Paper taker fee", unit: "bps" },
 ];
 
 /**
- * Read-only view of the limits the running system enforces (R1.8). Paper limits come from the
- * orchestrator's published dispatcher settings, mandate limits from /ai/mandates. Nothing here is
- * a UI constant, and nothing here can be edited: limits change only by editing a mandate.
+ * The limits the running system enforces (R1.8). Paper limits come from the orchestrator's published
+ * dispatcher settings, mandate limits from /ai/mandates; nothing here is a UI constant. The paper limits
+ * can be tightened below the code defaults (F7, `RiskLimitsForm`); loosening asks for TOTP.
  */
 export function EnforcedLimitsCard() {
   const limits = useEnforcedLimits();
@@ -50,7 +52,7 @@ export function EnforcedLimitsCard() {
           <ShieldAlert className="w-4 h-4 text-amber-500" aria-hidden="true" />
           <span>Enforced limits</span>
         </h2>
-        <span className="text-2xs font-mono text-zinc-500">read-only</span>
+        <span className="text-2xs font-mono text-zinc-500">tighten-only</span>
       </div>
 
       <h3 className="text-2xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-2">Paper engine (dispatcher)</h3>
@@ -69,6 +71,11 @@ export function EnforcedLimitsCard() {
         </dl>
       )}
       {!why && <p className="text-2xs font-mono text-zinc-500 mb-4">Published by the orchestrator{asOf ? ` at ${new Date(asOf).toLocaleString()}` : ""}.</p>}
+
+      <h3 className="text-2xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-2">Configure (tighten only)</h3>
+      <div className="mb-4">
+        <RiskLimitsForm />
+      </div>
 
       <h3 className="text-2xs font-mono font-bold uppercase tracking-wider text-zinc-400 mb-2">Mandates</h3>
       {mandateError ? (
@@ -105,7 +112,7 @@ export function EnforcedLimitsCard() {
       )}
 
       <p className="mt-4 text-2xs text-zinc-500">
-        Limits are not configurable here; edit the mandate (Mission Control → Mandates).
+        Per-mandate limits are edited on the mandate (Mission Control → Mandates).
       </p>
     </section>
   );
