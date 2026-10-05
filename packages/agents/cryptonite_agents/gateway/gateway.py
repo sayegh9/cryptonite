@@ -118,21 +118,23 @@ class Gateway:
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch("SELECT * FROM ai_model_routes")
+                if self._allow_paid_shadow_arg is None:  # same connection: no extra acquire on the call path
+                    self._allow_paid_shadow = await self._read_allow_paid(conn)
             routes = dict(self._defaults)
             for row in rows:
                 routes[row["role"]] = route_from_row(dict(row), self._defaults.get(row["role"]))
             self._routes = routes
         except Exception as e:
             logger.warning("Could not load ai_model_routes, using defaults: %s", e)
-        if self._allow_paid_shadow_arg is None:
-            try:
-                async with self.pool.acquire() as conn:
-                    raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = 'AI_SHADOW_ALLOW_PAID'")
-                self._allow_paid_shadow = _truthy(raw)
-            except Exception as e:  # unknown means no paid shadows
-                self._allow_paid_shadow = False
-                logger.debug("Could not read AI_SHADOW_ALLOW_PAID: %s", e)
         self._routes_loaded_at = time.monotonic()
+
+    @staticmethod
+    async def _read_allow_paid(conn) -> bool:
+        try:
+            return _truthy(await conn.fetchval("SELECT value FROM system_settings WHERE key = 'AI_SHADOW_ALLOW_PAID'"))
+        except Exception as e:  # unknown means no paid shadows
+            logger.debug("Could not read AI_SHADOW_ALLOW_PAID: %s", e)
+            return False
 
     # ------------------------------------------------------------------ shadow mode (F2)
 
