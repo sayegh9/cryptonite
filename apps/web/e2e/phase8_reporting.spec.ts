@@ -141,7 +141,7 @@ function backtestRun(regimeBreakdown: unknown) {
       metrics: {
         total_return: 0.0452, cagr: null, sharpe_ratio: 2.14, sortino_ratio: 3.05, max_drawdown: 0.012, profit_factor: 2.45,
         win_rate: 0.667, total_trades: 6, winning_trades: 4, losing_trades: 2, avg_trade_pnl: 75.33, max_consecutive_losses: 1,
-        metrics_version: 2, benchmark: null, fees_paid: 12.5, turnover: 3.4,
+        metrics_version: 3, benchmark: null, fees_paid: 12.5, turnover: 3.4,
         ...(regimeBreakdown === undefined ? {} : { regime_breakdown: regimeBreakdown }),
       },
       downsampled_equity: [], monthly_returns: {}, catalog_manifest: [], artifact_manifest: {},
