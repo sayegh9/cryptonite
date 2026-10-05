@@ -226,7 +226,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
             role_name = persona.name
             await emit_heartbeat(redis_client, role_name, "PROCESSING", f"Analyzing {instrument_id}...")
             try:
-                result = await persona.run(gateway, prompt_text)
+                # parent = the setup's decision_trace_id: telemetry only (links traces and F2 shadows to outcomes)
+                result = await persona.run(gateway, prompt_text, parent_trace_id=uuid.UUID(trace_id))
                 txt = turn_text(result.output)
                 async with pg_pool.acquire() as c:
                     await c.execute("INSERT INTO debate_turns (run_id, agent_role, content) VALUES ($1, $2, $3)", run_id, role_name, txt)
