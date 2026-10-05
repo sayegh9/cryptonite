@@ -111,8 +111,9 @@ def validate_change(current: RiskLimitValues, requested: RiskLimitValues) -> Cha
             if new <= 0:
                 errors[name] = "must be greater than 0"
                 continue
-        before = getattr(effective(current), name)
-        after = getattr(effective(requested), name)
+        old = getattr(current, name)
+        before = min(default, old) if old is not None else default
+        after = new if new is not None else default
         if after > before:
             loosened.append(name)
         elif after < before:

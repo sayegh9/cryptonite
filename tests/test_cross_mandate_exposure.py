@@ -159,7 +159,7 @@ def quote(inst: str, bid: str, ask: str) -> QuoteTick:
 
 
 def two_asset_engine():
-    d, cache = make_fresh_dispatcher(starting_cash=D("100000"))
+    d, cache = make_fresh_dispatcher(starting_cash=D("80000"))  # + 0.4 BTC at 50,000 = equity 100,000
     quotes = {BTC: quote(BTC, "50000.00", "50010.00"), ETH: quote(ETH, "2500.00", "2501.00")}
     cache.quote.side_effect = lambda inst: quotes.get(str(inst))
     d.positions[BTC] = D("0.4")  # mandate A's coins
@@ -261,7 +261,7 @@ async def test_two_mandates_cannot_together_exceed_the_btc_cap(db):
            VALUES ('PAPER', $1, 10, 'op', 'test the cap')""", ACCOUNT)
     await risk_overrides.refresh_risk_limits(engine, db, env="PAPER")
     assert risk_overrides.STATE.cross_cap_pct == D("10")
-    status, reason = await drain(db, engine, quotes, await queue(db, b, {**eth_entry, "quantity": "0.5"}))
+    status, reason = await drain(db, engine, quotes, await queue(db, b, {**eth_entry, "quantity": "0.1"}))
     assert status == "REJECTED" and reason.startswith("CROSS_MANDATE_EXPOSURE")
     status, reason = await drain(db, engine, quotes, await queue(db, a, {"instrument_id": "BTCUSDT", "side": "SELL", "quantity": "0.1"}))
     assert (status, reason) == ("COMPLETED", None)

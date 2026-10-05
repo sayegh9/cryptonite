@@ -302,7 +302,7 @@ async def update_risk_limits(
             check = validate_change(current, requested)
             if not check.ok:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=422,
                     detail=[{"loc": ["body", name], "msg": f"{name}: {msg}", "type": "risk_limit"}
                             for name, msg in check.errors.items()],
                 )
