@@ -269,6 +269,14 @@ class IngestRecorder:
                 for tf in self.timeframes:
                     meta = self._symbol_metadata.get(s, {})
                     bar_type = to_nautilus_bar_type(to_spot_instrument_id(s), tf)
+                    try:  # empty files from a killed writer hide their interval from gap recovery
+                        await self.recovery_manager.heal_empty_files(
+                            symbol=s, timeframe=tf, bar_type=bar_type,
+                            price_precision=meta.get("price_precision", 2),
+                            size_precision=meta.get("size_precision", 6),
+                        )
+                    except Exception as e:  # never block start-up; recovery below still runs
+                        logger.error("Empty-file healing failed for %s %s: %s", s, tf, e)
                     await self.recovery_manager.recover_gaps_for_stream(
                         symbol=s,
                         timeframe=tf,

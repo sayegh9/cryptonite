@@ -69,6 +69,9 @@ async def backfill(rest: BinanceRestClient, coordinator: TwoStoreCoordinator, ca
                    symbol: str, timeframe: str, days: int, precisions: dict[str, int]) -> int:
     inst_id = to_spot_instrument_id(symbol)
     bar_type = to_nautilus_bar_type(inst_id, timeframe)
+    # an empty file from a killed writer claims its interval; move it aside so the gap shows
+    if quarantined := catalog.quarantine_empty_bar_files(str(bar_type)):
+        logger.warning("%s %s: quarantined %d empty catalog file(s): %s", symbol, timeframe, len(quarantined), quarantined)
     step = TF_MS[timeframe]
     end_ms = (int(time.time() * 1000) - LIVE_MARGIN_MS) // step * step
     start_ms = end_ms - days * 86_400_000

@@ -5,7 +5,7 @@ import logging
 import time
 
 import asyncpg
-from cryptonite_schemas.bar import EnrichedBar
+from cryptonite_schemas.bar import EnrichedBar, bar_to_nautilus
 from cryptonite_storage.coordinator import TwoStoreCoordinator
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from nautilus_trader.model import Bar, BarType
@@ -48,6 +48,48 @@ class GapRecoveryManager:
             timeframe,
         )
         return int(val) if val is not None else None
+
+    async def heal_empty_files(
+        self,
+        symbol: str,
+        timeframe: str,
+        bar_type: BarType,
+        price_precision: int,
+        size_precision: int,
+    ) -> int:
+        """Quarantine empty catalog files of this stream and refill their bars from REST.
+
+        An empty file left by a killed writer claims its interval, so neither gap recovery (which
+        starts at the checkpoint) nor a backfill sees the hole. The refill goes to the catalog only
+        (the analytics lake was not the store that broke) and bypasses the checkpoint guard, which
+        would skip bars older than the live checkpoint. Run before the live stream writes.
+        """
+        intervals = self.nautilus.quarantine_empty_bar_files(str(bar_type))
+        if not intervals:
+            return 0
+        logger.warning("Quarantined %d empty catalog file(s) for %s: %s", len(intervals), bar_type, intervals)
+        healed = 0
+        step_ms = int(timeframe[:-1]) * {"m": 60_000, "h": 3_600_000, "d": 86_400_000}[timeframe[-1]]
+        for start_ns, end_ns in intervals:
+            # a bar's ts_event is its close; Binance selects klines by open time, one step earlier
+            raw = await self.rest.fetch_klines(
+                symbol=symbol, interval=timeframe,
+                start_time_ms=start_ns // 1_000_000 - step_ms, end_time_ms=end_ns // 1_000_000, limit=1000,
+            )
+            raw = [k for k in raw if k.is_closed]
+            arrival_ns = time.time_ns()
+            bars = sorted(
+                (EnrichedBar.from_binance_raw(raw=k, instrument_id=f"{symbol}.BINANCE", bar_type=str(bar_type),
+                                              price_precision=price_precision, size_precision=size_precision,
+                                              received_at_ns=arrival_ns) for k in raw),
+                key=lambda b: b.ts_event_ns,
+            )
+            bars = [b for b in bars if start_ns <= b.ts_event_ns <= end_ns]
+            if bars:
+                self.nautilus.write_bars([bar_to_nautilus(b, bar_type) for b in bars])
+                healed += len(bars)
+        logger.warning("Refilled %d bar(s) for %s from REST", healed, bar_type)
+        return healed
 
     async def recover_gaps_for_stream(
         self,
