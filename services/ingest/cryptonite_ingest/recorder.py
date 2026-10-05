@@ -99,6 +99,11 @@ class IngestRecorder:
         )
 
         # Sync symbol metadata and write instruments to Nautilus catalog
+        try:  # empty instrument files from a killed writer; sync_instruments below writes fresh ones
+            if moved := self.nautilus_manager.quarantine_empty_instrument_files():
+                logger.warning("Quarantined %d empty instrument file(s): %s", len(moved), moved)
+        except Exception as e:  # never block start-up
+            logger.error("Empty instrument file check failed: %s", e)
         await self.sync_instruments()
 
         # Reconcile any uncommitted batches from previous crashes
