@@ -1,6 +1,12 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
+  // Set per test: the compare endpoint also returns a legacy run (no metrics_version)
+  let compareWithLegacy = false;
+  test.afterEach(() => {
+    compareWithLegacy = false;
+  });
+
   test.beforeEach(async ({ page }) => {
     // 1. Mock market bars API for terminal
     await page.route("**/api/v1/bars*", async (route) => {
@@ -103,6 +109,10 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
           losing_trades: 2,
           avg_trade_pnl: 75.33,
           max_consecutive_losses: 1,
+          metrics_version: 2,
+          benchmark: { total_return: 0.0312, sharpe_ratio: 1.1, max_drawdown: 0.025, alpha_vs_hold: 0.014 },
+          fees_paid: 12.5,
+          turnover: 3.4,
         },
         downsampled_equity: [
           { time: 1725700600, value: 10000.0, drawdown: 0.0 },
@@ -164,8 +174,23 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
                   losing_trades: 2,
                   avg_trade_pnl: 75.33,
                   max_consecutive_losses: 1,
+                  metrics_version: 2,
+                  benchmark: { total_return: 0.0312, sharpe_ratio: 1.1, max_drawdown: 0.025, alpha_vs_hold: 0.014 },
+                  fees_paid: 12.5,
+                  turnover: 3.4,
                 },
               },
+              ...(compareWithLegacy
+                ? [{
+                    id: "legacy-run-0001",
+                    strategy_slug: "ema-cross",
+                    execution_profile: "optimistic",
+                    timeframe: "1m",
+                    status: "COMPLETED",
+                    parameters: {},
+                    metrics: { total_return: 0.08, sharpe_ratio: 3.1, max_drawdown: 0.004, win_rate: 0.7, total_trades: 10, winning_trades: 7, losing_trades: 3, avg_trade_pnl: 80, max_consecutive_losses: 1 },
+                  }]
+                : []),
             ],
           }),
         });
@@ -237,6 +262,10 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("RSI Period", { exact: true })).toBeVisible();
     await expect(page.getByText("Oversold Threshold", { exact: true })).toBeVisible();
 
+    // Default profile is conservative (R2.1); optimistic is labelled as costless
+    await expect(page.getByRole("button", { name: /Conservative Institutional/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByText("Optimistic: no costs – not for decisions")).toBeVisible();
+
     // 3. Switch execution profiles
     const adverseBtn = page.getByText("Adverse Slippage (Stress)");
     await adverseBtn.click();
@@ -256,6 +285,14 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("2.14")).toBeVisible(); // Sharpe Ratio
     await expect(page.getByText("1.20%")).toBeVisible(); // Max Drawdown
     await expect(page.getByText("66.7%")).toBeVisible(); // Win Rate
+
+    // Metrics v2: benchmark, fees, turnover; no legacy badge
+    await expect(page.getByTestId("metrics-version")).toContainText("metrics v2");
+    await expect(page.getByTestId("metrics-version")).not.toContainText("legacy metrics");
+    await expect(page.getByTestId("benchmark-block")).toContainText("+3.12%");
+    await expect(page.getByTestId("metric-alpha")).toHaveText("+1.40%");
+    await expect(page.getByTestId("metric-fees")).toHaveText("$12.50");
+    await expect(page.getByTestId("metric-turnover")).toHaveText("3.40×");
 
     // Verify Timing Contract Disclosure banner is present
     await expect(page.getByText("Execution Timing Contract:")).toBeVisible();
@@ -290,5 +327,20 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     // Close manifest modal
     await page.getByRole("button", { name: "Close" }).click();
     await expect(page.getByText("REPRODUCIBILITY & DATA INTEGRITY MANIFEST")).not.toBeVisible();
+  });
+
+  test("comparator warns (without blocking) when metric versions are mixed", async ({ page }) => {
+    compareWithLegacy = true;
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByRole("button", { name: "History & Compare" }).click();
+
+    const warning = page.getByTestId("mixed-metrics-warning");
+    await expect(warning).toBeVisible({ timeout: 10000 });
+    await expect(warning).toContainText("legacy, v2");
+    // Both runs are still compared side by side
+    await expect(page.getByText("legacy metrics").first()).toBeVisible();
+    await expect(page.getByText("Alpha vs Hold")).toBeVisible();
+    await expect(page.getByText("+1.40%")).toBeVisible();
   });
 });

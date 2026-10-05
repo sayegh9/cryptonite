@@ -11,10 +11,10 @@ function Step({ icon, title, meta, children }: { icon: React.ReactNode; title: s
     <li className="relative border-l border-zinc-800 pb-4 pl-5 last:pb-0">
       <span className="absolute -left-[7px] top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-zinc-950">{icon}</span>
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] font-bold text-zinc-200">{title}</span>
-        {meta && <span className="text-[10px] text-zinc-500">{meta}</span>}
+        <span className="text-2xs font-bold text-zinc-200">{title}</span>
+        {meta && <span className="text-2xs text-zinc-500">{meta}</span>}
       </div>
-      {children && <div className="mt-1 text-[10px] text-zinc-400">{children}</div>}
+      {children && <div className="mt-1 text-2xs text-zinc-400">{children}</div>}
     </li>
   );
 }
@@ -88,14 +88,14 @@ export function DecisionTraceDrawer() {
           </button>
         </header>
         <div className="flex-1 overflow-y-auto p-4">
-          <p className="mb-3 break-all text-[10px] text-zinc-500">#{traceId}</p>
+          <p className="mb-3 break-all text-2xs text-zinc-500">#{traceId}</p>
           {!data && !error && (
-            <p role="status" className="flex items-center gap-1 text-[11px] text-zinc-400">
+            <p role="status" className="flex items-center gap-1 text-2xs text-zinc-400">
               <Loader2 className="h-3 w-3 animate-spin" /> Loading trace…
             </p>
           )}
           {error && (
-            <p role="alert" className="text-[11px] text-rose-400">
+            <p role="alert" className="text-2xs text-rose-400">
               Trace unavailable: {error}
             </p>
           )}
@@ -113,7 +113,7 @@ export function DecisionTraceDrawer() {
                   meta={`${c.risk ?? ""} ${c.status === "DENIED" ? "held for approval" : c.status}`.trim()}
                 >
                   {c.args && Object.keys(c.args).length > 0 && (
-                    <pre className="whitespace-pre-wrap break-all text-[10px] text-zinc-500">{JSON.stringify(c.args)}</pre>
+                    <pre className="whitespace-pre-wrap break-all text-2xs text-zinc-500">{JSON.stringify(c.args)}</pre>
                   )}
                 </Step>
               ))}

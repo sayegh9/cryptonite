@@ -136,6 +136,8 @@ async function mockBackend(page: Page, opts: { status?: unknown; mandates?: unkn
             { name: "max_drawdown_pct", required: "<= 10%", actual: "6.2", passed: true },
             { name: "mandate_breaches", required: "0", actual: "0", passed: true },
             { name: "sortino_vs_btc_hold", required: "> BTC hold (after fees)", actual: "1.80 vs 0.90", passed: true },
+            { name: "expectancy_lower_bound", required: "> 0", actual: "0.12%", passed: false, informational: true, interval: ["-0.05%", "0.29%"] },
+            { name: "sortino_diff_lower_bound", required: "> 0", actual: "0.90", passed: true, informational: true, interval: ["0.10", "1.70"] },
           ],
           metrics: {},
         },
@@ -207,9 +209,19 @@ test.describe("Mission Control", () => {
     // under 60 s: announced to screen readers
     await expect(page.getByTestId("approval-announcer")).toContainText("reduce-risk approval");
 
+    // R6.6: every decision has a confirm step; Esc backs out without deciding
     await page.getByRole("button", { name: "Approve: BUY ETHUSDT 6% of mandate ($600)" }).click();
+    await expect(page.getByRole("button", { name: "Confirm approve: BUY ETHUSDT 6% of mandate ($600)" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Confirm approve: BUY ETHUSDT 6% of mandate ($600)" })).toHaveCount(0);
+    expect(calls.decisions).toEqual([]);
+    await page.getByRole("button", { name: "Approve: BUY ETHUSDT 6% of mandate ($600)" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("button", { name: "Confirm approve: BUY ETHUSDT 6% of mandate ($600)" })).toBeFocused();
+    await page.keyboard.press("Enter"); // the confirm button has focus
     await expect(rows.nth(0).getByRole("status")).toContainText("Approved · command queued · cmd-9f8e");
     await page.getByRole("button", { name: "Veto: Close BTCUSDT (exit debate)" }).click();
+    await page.getByRole("button", { name: "Confirm veto: Close BTCUSDT (exit debate)" }).click();
     await expect(page.getByTestId("approval-row").filter({ hasText: "Close BTCUSDT" }).getByRole("status")).toHaveText("Vetoed");
 
     expect(calls.decisions).toEqual([
@@ -217,6 +229,42 @@ test.describe("Mission Control", () => {
       { id: "bbbbbbbb-0000-4000-8000-000000000002", decision: "VETO", csrf: "csrf-test" },
     ]);
     expect(reactErrors).toEqual([]);
+  });
+
+  test("approval shows quote, slippage, mandate room, worst-case loss and past decisions (R6.4)", async ({ page }) => {
+    const a = {
+      ...approval("cccccccc-0000-4000-8000-000000000003", "ADD_RISK", "BUY ETHUSDT 6% of mandate ($600)", 500),
+      payload: { instrument_id: "ETHUSDT.BINANCE", symbol: "ETHUSDT", side: "BUY", quantity: 0.2, price: 3000, allocation_pct: 6, stop_loss_pct: 5 },
+      similar_decisions: [
+        { created_at: "2026-09-28T10:00:00Z", recommendation: "BUY", return_pct: 0.012 },
+        { created_at: "2026-09-20T10:00:00Z", recommendation: "BUY", return_pct: -0.008 },
+      ],
+    };
+    await page.route("**/api/v1/market/prices*", (route) => route.fulfill({ json: [{ symbol: "ETHUSDT", last_price: 3006 }] }));
+    await mockBackend(page, { approvals: [a] });
+    await openMissionControl(page);
+
+    const ctx = page.getByTestId("approval-row").first().getByTestId("approval-context");
+    await expect(ctx.getByTestId("approval-quote")).toContainText("$3,006");
+    await expect(ctx.getByTestId("approval-slippage")).toHaveText("+20.0 bps against");
+    await expect(ctx.getByTestId("approval-room")).toHaveText("$8,800"); // 10,000 budget − 1,200 exposure
+    await expect(ctx.getByTestId("approval-worst-loss")).toHaveText("-$30"); // 0.2 × 3000 × 5%
+    await expect(ctx.getByTestId("approval-resize-note")).toContainText("May be resized");
+    await expect(ctx.getByTestId("approval-similar")).toContainText("+1.20%");
+    await expect(ctx.getByTestId("approval-similar")).toContainText("-0.80%");
+  });
+
+  test("approval context shows unknowns when the quote and history are unavailable", async ({ page }) => {
+    await page.route("**/api/v1/market/prices*", (route) => route.fulfill({ status: 500, json: {} }));
+    await mockBackend(page, {
+      approvals: [{ ...approval("dddddddd-0000-4000-8000-000000000004", "ADD_RISK", "BUY BTCUSDT", 500), payload: { symbol: "BTCUSDT", side: "BUY", quantity: 0.01, price: 60000 } }],
+    });
+    await openMissionControl(page);
+    const ctx = page.getByTestId("approval-context");
+    await expect(ctx.getByTestId("approval-quote")).toHaveText("unavailable");
+    await expect(ctx.getByTestId("approval-slippage")).toHaveText("—");
+    await expect(ctx.getByTestId("approval-worst-loss")).toContainText("no stop in proposal");
+    await expect(ctx.getByTestId("approval-similar")).toHaveCount(0);
   });
 
   test("halted mandate: banner, reason, and a resume that needs TOTP", async ({ page }) => {
@@ -275,7 +323,29 @@ test.describe("Mission Control", () => {
     await expect(banner).toContainText("PAPER kill switch latched");
     await expect(banner).toContainText("Exit monitor down");
     await expect(banner).toContainText("Notifier down");
+
+    // R6.3 health tiles: reported heartbeats are up/down, unreported ones are unknown, never "up"
+    await expect(page.getByTestId("health-exit-monitor")).toHaveAttribute("data-health", "down");
+    await expect(page.getByTestId("health-notifier")).toHaveAttribute("data-health", "down");
+    await expect(page.getByTestId("health-learner")).toHaveAttribute("data-health", "unknown");
+    await expect(page.getByTestId("health-learner")).toContainText("not reported");
+    await expect(page.getByTestId("health-sentiment")).toHaveAttribute("data-health", "unknown");
+    await expect(page.getByTestId("health-local-tier")).toContainText("not probed yet");
+    await expect(page.getByTestId("health-ai-spend")).toContainText("unavailable");
     expect(reactErrors).toEqual([]);
+  });
+
+  test("health shows AI spend vs budget and fresh heartbeats", async ({ page }) => {
+    await page.route("**/agent-api/brain/spend", (route) => route.fulfill({ json: { spent_usd: "3.10", cap_usd: "25.00" } }));
+    await mockBackend(page, {
+      status: { ...OK_STATUS, learner_up: true, sentiment_last_ok: Math.floor(Date.now() / 1000) - 60, local_tier: { healthy: true, models: ["qwen"], error: null, checked_at: null } },
+    });
+    await openMissionControl(page);
+    await expect(page.getByTestId("health-ai-spend")).toContainText("$3.10 / $25.00");
+    await expect(page.getByTestId("health-exit-monitor")).toHaveAttribute("data-health", "up");
+    await expect(page.getByTestId("health-learner")).toHaveAttribute("data-health", "up");
+    await expect(page.getByTestId("health-sentiment")).toHaveAttribute("data-health", "up");
+    await expect(page.getByTestId("health-local-tier")).toHaveAttribute("data-health", "up");
   });
 
   test("mandate editor asks for TOTP only when a change adds risk", async ({ page }) => {
@@ -319,6 +389,13 @@ test.describe("Mission Control", () => {
     await expect(page.getByTestId("autonomy-requested")).toHaveText("L2");
     await expect(page.getByTestId("gate-check")).toHaveCount(5);
     await expect(page.getByRole("table", { name: "Promotion gate checklist" })).toContainText("1.80 vs 0.90");
+    // R4.4: informational checks are marked, show their interval, and do not fail the gate
+    const info = page.getByTestId("gate-check-info");
+    await expect(info).toHaveCount(2);
+    await expect(info.first()).toContainText("informational");
+    await expect(info.first()).toContainText("90% CI [-0.05%, 0.29%]");
+    await expect(info.first()).toContainText("below (not blocking)");
+    await expect(page.getByText("PASSED", { exact: true })).toBeVisible();
     await expect(page.getByTestId("calibration-note")).toContainText("A7.2");
 
     const confirm = page.getByRole("form", { name: "Confirm promotion" });

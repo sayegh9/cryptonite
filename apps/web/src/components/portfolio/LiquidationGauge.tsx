@@ -19,8 +19,8 @@ interface LiquidationGaugeProps {
 
 /** Horizontal Danger -> Safe track; the marker sits at the current distance to liquidation. */
 export const LiquidationGauge = React.memo(function LiquidationGauge({ distance, liquidationPrice, isPerp }: LiquidationGaugeProps) {
-  if (!isPerp) return <span className="text-[10px] text-zinc-600">Spot · no liquidation</span>;
-  if (distance === null) return <span className="text-[10px] text-zinc-500">Liq. price pending</span>;
+  if (!isPerp) return <span className="text-2xs text-zinc-600">Spot · no liquidation</span>;
+  if (distance === null) return <span className="text-2xs text-zinc-500">Liq. price pending</span>;
 
   const pos = Math.min(distance / SAFE_AT, 1) * 100;
   const tone = liqTone(distance);
@@ -41,7 +41,7 @@ export const LiquidationGauge = React.memo(function LiquidationGauge({ distance,
           style={{ left: `calc(${pos}% - 1px)` }}
         />
       </div>
-      <div className="mt-1 flex justify-between text-[10px] leading-none">
+      <div className="mt-1 flex justify-between text-2xs leading-none">
         <span className={`font-bold ${tone.text}`}>{fmtPct(distance)}</span>
         <span className="text-zinc-500">{tone.label}</span>
       </div>

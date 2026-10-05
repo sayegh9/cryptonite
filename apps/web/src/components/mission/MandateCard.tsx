@@ -12,7 +12,7 @@ function Meter({ label, value, max, text, tone }: { label: string; value: number
   const pct = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
   return (
     <div>
-      <div className="flex justify-between text-[10px] text-zinc-500">
+      <div className="flex justify-between text-2xs text-zinc-500">
         <span>{label}</span>
         <span className="text-zinc-300">{text}</span>
       </div>
@@ -68,18 +68,18 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
     <article
       data-testid="mandate-card"
       aria-label={`Mandate ${m.name}`}
-      className={`rounded border bg-zinc-950 p-3 font-mono text-[11px] ${halted ? "border-red-800" : "border-zinc-800"}`}
+      className={`rounded border bg-zinc-950 p-3 font-mono text-2xs ${halted ? "border-red-800" : "border-zinc-800"}`}
     >
       <header className="mb-2 flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate text-xs font-bold text-zinc-100">{m.name}</h3>
-          <p className="truncate text-[10px] text-zinc-500">{m.instruments.join(", ")}</p>
+          <p className="truncate text-2xs text-zinc-500">{m.instruments.join(", ")}</p>
         </div>
         <div className="flex flex-none items-center gap-1.5">
-          <span className="rounded border border-cyan-800 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300" data-testid="mandate-level">
+          <span className="rounded border border-cyan-800 px-1.5 py-0.5 text-2xs font-bold text-cyan-300" data-testid="mandate-level">
             {m.level_name}
           </span>
-          <span className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${STATUS_STYLE[m.status] || ""}`} data-testid="mandate-status">
+          <span className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${STATUS_STYLE[m.status] || ""}`} data-testid="mandate-status">
             {m.status}
           </span>
         </div>
@@ -108,7 +108,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
         />
       </div>
 
-      <dl className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
+      <dl className="mt-2 grid grid-cols-3 gap-2 text-2xs">
         <div>
           <dt className="text-zinc-500">Equity</dt>
           <dd className="text-zinc-100">{usd(m.equity)}</dd>
@@ -125,7 +125,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
         </div>
       </dl>
       {m.pending_proposal && (
-        <p className="mt-2 text-[10px] text-cyan-300">Promotion to L{m.pending_proposal.to_level} proposed: confirm in Autonomy &amp; Evals.</p>
+        <p className="mt-2 text-2xs text-cyan-300">Promotion to L{m.pending_proposal.to_level} proposed: confirm in Autonomy &amp; Evals.</p>
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
@@ -134,7 +134,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
             type="button"
             disabled={busy}
             onClick={() => run(() => pauseMandate(m.id), "paused", `${m.name} paused`)}
-            className="rounded border border-zinc-700 px-2 py-1 text-[10px] font-bold text-zinc-300 hover:bg-zinc-900"
+            className="rounded border border-zinc-700 px-2 py-1 text-2xs font-bold text-zinc-300 hover:bg-zinc-900"
           >
             Pause (reduce-only)
           </button>
@@ -143,7 +143,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
           <button
             type="button"
             onClick={() => setResuming(true)}
-            className="rounded border border-amber-700 bg-amber-900/20 px-2 py-1 text-[10px] font-bold text-amber-200"
+            className="rounded border border-amber-700 bg-amber-900/20 px-2 py-1 text-2xs font-bold text-amber-200"
           >
             Resume… 🔐
           </button>
@@ -157,7 +157,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
               void run(() => resumeMandate(m.id, totp), "resumed", `${m.name} resumed at ${m.level_name}`);
             }}
           >
-            <label className="text-[10px] text-zinc-400" htmlFor={`totp-${m.id}`}>
+            <label className="text-2xs text-zinc-400" htmlFor={`totp-${m.id}`}>
               TOTP
             </label>
             <input
@@ -170,7 +170,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
               onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
               className="w-20 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-zinc-100"
             />
-            <button type="submit" disabled={busy || totp.length !== 6} className="rounded bg-amber-600 px-2 py-0.5 text-[10px] font-bold text-zinc-950 disabled:opacity-50">
+            <button type="submit" disabled={busy || totp.length !== 6} className="rounded bg-amber-600 px-2 py-0.5 text-2xs font-bold text-zinc-950 disabled:opacity-50">
               Resume
             </button>
           </form>

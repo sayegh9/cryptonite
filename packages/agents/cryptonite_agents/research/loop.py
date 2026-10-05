@@ -1,11 +1,15 @@
 """Closed strategy research loop (AI-first blueprint Phase 4, A4.1–A4.5).
 
-idea -> draft (Flash, structured) -> save via API (validated there) -> baseline backtest
-     -> optimize numeric parameters on the in-sample window (Optuna; the model never guesses numbers)
-     -> re-run the best parameters out of sample -> overfitting guard -> Pro review (survivors only)
-     -> ResearchReport (JSON artifact)
+history guard -> idea -> draft (Flash, structured) -> save via API (validated there) -> baseline backtest
+     -> optimize numeric parameters on 4 anchored walk-forward folds of the in-sample window (Optuna;
+        objective mean fold Sharpe - 0.5 std; the model never guesses numbers)
+     -> re-run the best parameters on the whole in-sample window and out of sample -> overfitting guard
+     -> Deflated Sharpe Ratio over every trial tested on the instrument/timeframe -> robustness (+-10%)
+     -> Pro review (survivors only) -> holdout, scored once, for PROMOTE only
+     -> ResearchReport (JSON artifact + research_reports row)
 
-Every backtest runs in the backtester's sandbox; the loop only talks to the API.
+Every backtest runs in the backtester's sandbox; the loop only talks to the API. The final holdout
+window is never seen by optimization, the out-of-sample check or the review (remediation Phase 5).
 """
 
 import json
@@ -22,14 +26,26 @@ import optuna
 from cryptonite_agents.gateway import BudgetExceeded, Gateway, GatewayError
 from cryptonite_agents.persona import Persona
 from cryptonite_agents.research.client import ResearchApiClient, ResearchApiError
+from cryptonite_agents.research.validation import (
+    DAY_NS,
+    InsufficientHistory,
+    anchored_folds,
+    check_history,
+    deflated_sharpe_ratio,
+    fold_objective,
+    perturbations,
+)
 from cryptonite_schemas.research import StrategyDraft, StrategyReview
 
 logger = logging.getLogger("cryptonite.agents.research")
 
 REPORTS_DIR = Path(os.getenv("RESEARCH_REPORTS_PATH", "/app/data/research_reports"))
 MAX_DRAFT_ATTEMPTS = 3
-MIN_TRADES = 10
+MIN_TRADES = 30  # per full window (the in-sample folds together need their share of it)
 OOS_SHARPE_RETENTION = 0.5  # out-of-sample Sharpe must keep at least half of the in-sample Sharpe
+DSR_MIN = 0.95  # Deflated Sharpe Ratio below this: the best trial is what that many tries give by chance
+ROBUSTNESS_MIN_RETENTION = 0.5  # a +-10% parameter move keeping less than half the Sharpe is fragile
+TRIALS_LOOKBACK_DAYS = 90  # earlier research on the same instrument/timeframe counts toward the DSR trials
 
 DRAFTER = Persona(
     "Strategy Drafter", "strategy.draft",
@@ -83,6 +99,7 @@ class ResearchSpec:
     out_of_sample: tuple[int, int, int]
     n_trials: int = 12
     seed: int = 7
+    holdout: tuple[int, int, int] | None = None  # final window, scored once for PROMOTE candidates only
 
 
 @dataclass
@@ -100,16 +117,36 @@ class ResearchReport:
     overfitting_flags: list[str] = field(default_factory=list)
     review: dict[str, Any] | None = None
     trials: list[dict[str, Any]] = field(default_factory=list)
+    instrument_id: str | None = None
+    timeframe: str | None = None
+    folds: list[dict[str, Any]] = field(default_factory=list)  # best parameters on each walk-forward fold
+    dsr: float | None = None
+    trials_tested: int = 0  # trials behind the DSR: this report's plus earlier ones on the instrument/timeframe
+    robustness: dict[str, Any] = field(default_factory=dict)
+    holdout: dict[str, Any] = field(default_factory=dict)
     cost_usd: float = 0.0
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
-def _score(metrics: dict[str, Any]) -> float:
-    """In-sample objective: Sharpe, with too few trades scored as a failure."""
-    sharpe = metrics.get("sharpe_ratio")
-    if sharpe is None or (isinstance(sharpe, float) and math.isnan(sharpe)):
-        return -10.0
-    return float(sharpe) if (metrics.get("total_trades") or 0) >= MIN_TRADES else -10.0 + (metrics.get("total_trades") or 0) / 100
+
+def _fold_score(folds: list[dict[str, Any]]) -> tuple[float, float | None]:
+    """(objective, mean fold Sharpe) of one trial; a missing Sharpe or too few trades scores a failure."""
+    sharpes = [f.get("sharpe_ratio") for f in folds]
+    if any(s is None or (isinstance(s, float) and math.isnan(s)) for s in sharpes):
+        return -10.0, None
+    values = [float(s) for s in sharpes]
+    trades = sum(f.get("total_trades") or 0 for f in folds)
+    if trades < MIN_TRADES * len(folds) / (len(folds) + 1):  # the folds cover 4/5 of the window
+        return -10.0 + trades / 100, sum(values) / len(values)
+    return fold_objective(values), sum(values) / len(values)
+
+
+def holdout_failure(holdout: dict[str, Any]) -> str | None:
+    if (holdout.get("total_return") or 0.0) <= 0:
+        return "holdout return is not positive"
+    if (holdout.get("sharpe_ratio") or 0.0) <= 0:
+        return "holdout Sharpe is not positive"
+    return None
 
 
 def overfitting_flags(in_sample: dict[str, Any], out_of_sample: dict[str, Any]) -> list[str]:
@@ -151,9 +188,13 @@ class ResearchLoop:
             return draft, saved
         return None
 
-    async def _optimize(self, spec: ResearchSpec, draft: StrategyDraft, slug: str, report: ResearchReport) -> tuple[dict[str, Any], dict[str, Any]]:
+    async def _optimize(self, spec: ResearchSpec, draft: StrategyDraft, slug: str,
+                        report: ResearchReport) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Optuna over 4 anchored walk-forward folds of the in-sample window (R5.1); the best parameters
+        are then run once on the whole in-sample window."""
+        folds = anchored_folds(spec.in_sample)
         study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=spec.seed))
-        best: tuple[float, dict[str, Any], dict[str, Any]] | None = None
+        best: tuple[float, dict[str, Any], list[dict[str, Any]]] | None = None
         trials = spec.n_trials if draft.parameter_space else 1
         for _ in range(trials):
             trial = study.ask()
@@ -163,21 +204,68 @@ class ResearchLoop:
                 for p in draft.parameter_space if p.high > p.low
             }
             try:
-                metrics = await self.client.backtest(slug, spec.instrument_id, spec.bar_type, spec.timeframe, params, spec.in_sample)
-                value = _score(metrics)
+                fold_metrics = [await self.client.backtest(slug, spec.instrument_id, spec.bar_type, spec.timeframe,
+                                                           params, window) for window in folds]
+                value, sharpe = _fold_score(fold_metrics)
             except ResearchApiError as e:  # an invalid parameter combination is a bad trial, not a crash
-                metrics, value = {"error": str(e)}, -100.0
+                fold_metrics, value, sharpe = [{"error": str(e)}], -100.0, None
             study.tell(trial, value)
-            report.trials.append({"parameters": params, "score": value, "run_id": metrics.get("run_id")})
-            if "error" not in metrics and (best is None or value > best[0]):
-                best = (value, params, metrics)
+            report.trials.append({"parameters": params, "score": value, "sharpe": sharpe,
+                                  "fold_sharpes": [m.get("sharpe_ratio") for m in fold_metrics],
+                                  "run_ids": [m.get("run_id") for m in fold_metrics]})
+            if not any("error" in m for m in fold_metrics) and (best is None or value > best[0]):
+                best = (value, params, fold_metrics)
         if best is None:
             raise ResearchApiError("no in-sample backtest completed")
-        return best[1], best[2]
+        report.folds = [{"window": list(w), **m} for w, m in zip(folds, best[2], strict=True)]
+        full = await self.client.backtest(slug, spec.instrument_id, spec.bar_type, spec.timeframe, best[1], spec.in_sample)
+        return best[1], full
+
+    async def _history_guard(self, spec: ResearchSpec) -> None:
+        """R5.0: refuse before spending anything when the windows need more history than the catalog has."""
+        try:
+            coverage = await self.client.coverage(spec.bar_type)
+        except ResearchApiError as e:  # coverage unknown: the backtests still check their own cadence
+            logger.warning("History coverage unknown for %s: %s", spec.bar_type, e)
+            return
+        check_history([spec.in_sample, spec.out_of_sample, *([spec.holdout] if spec.holdout else [])], coverage)
+
+    async def _deflated_sharpe(self, spec: ResearchSpec, report: ResearchReport) -> None:
+        """R5.2/R5.4: DSR of the selected trial over every trial tested on this instrument/timeframe."""
+        try:
+            earlier = await self.client.trials_tested(spec.instrument_id, spec.timeframe, TRIALS_LOOKBACK_DAYS)
+        except ResearchApiError as e:
+            logger.warning("Earlier trial count unavailable (%s); the DSR counts this report's trials only", e)
+            earlier = 0
+        report.trials_tested = earlier + len(report.trials)
+        best = max(report.trials, key=lambda t: t["score"]).get("sharpe")
+        sharpes = [t["sharpe"] for t in report.trials if t.get("sharpe") is not None]
+        n_obs = int(sum(w[2] - w[1] for w in anchored_folds(spec.in_sample)) // DAY_NS)  # days the folds score
+        if best is not None:
+            report.dsr = deflated_sharpe_ratio(best, sharpes, report.trials_tested, n_obs)
+
+    async def _robustness(self, spec: ResearchSpec, draft: StrategyDraft, slug: str, report: ResearchReport) -> None:
+        """R5.5: each best parameter +-10%, whole in-sample window; fragile when the Sharpe halves."""
+        base = report.in_sample.get("sharpe_ratio")
+        results = []
+        for name, factor, params in perturbations(report.best_parameters, draft.parameter_space):
+            row = {"parameter": name, "factor": round(factor, 2), "value": params[name]}
+            try:
+                m = await self.client.backtest(slug, spec.instrument_id, spec.bar_type, spec.timeframe, params, spec.in_sample)
+                results.append({**row, "sharpe_ratio": m.get("sharpe_ratio")})
+            except ResearchApiError as e:
+                results.append({**row, "error": str(e)})
+        ratios = [(r.get("sharpe_ratio") or 0.0) / base for r in results if base and base > 0 and "error" not in r]
+        worst = min(ratios) if ratios else None
+        report.robustness = {"base_sharpe": base, "results": results,
+                             "worst_retention": round(worst, 4) if worst is not None else None,
+                             "fragile": worst is not None and worst < ROBUSTNESS_MIN_RETENTION}
 
     async def run(self, spec: ResearchSpec) -> ResearchReport:
-        report = ResearchReport(id=str(uuid.uuid4()), idea=spec.idea, status="FAILED", reason="")
+        report = ResearchReport(id=str(uuid.uuid4()), idea=spec.idea, status="FAILED", reason="",
+                                instrument_id=spec.instrument_id, timeframe=spec.timeframe)
         try:
+            await self._history_guard(spec)
             drafted = await self._draft(spec, report)
             if drafted is None:
                 report.reason = f"no valid draft after {MAX_DRAFT_ATTEMPTS} attempts"
@@ -194,10 +282,29 @@ class ResearchLoop:
                 report.status, report.reason = "REJECT", "overfitting guard: " + "; ".join(report.overfitting_flags)
                 return await self._save(report)
 
+            await self._deflated_sharpe(spec, report)
+            if report.dsr is not None and report.dsr < DSR_MIN:
+                report.status = "REJECT"
+                report.reason = (f"deflated Sharpe ratio {report.dsr:.2f} < {DSR_MIN} over {report.trials_tested} "
+                                 "trials: the best result is what that many tries give by chance")
+                return await self._save(report)
+
+            await self._robustness(spec, draft, saved["slug"], report)
+
             review = await REVIEWER.run(self.gateway, self._review_prompt(draft, report))
             report.cost_usd += float(review.cost_usd)
             report.review = review.output.model_dump()
             report.status, report.reason = review.output.verdict, review.output.summary
+
+            if report.status == "PROMOTE" and spec.holdout:  # scored once, never fed back into anything
+                report.holdout = await self.client.backtest(
+                    saved["slug"], spec.instrument_id, spec.bar_type, spec.timeframe, report.best_parameters, spec.holdout
+                )
+                failure = holdout_failure(report.holdout)
+                if failure:
+                    report.status, report.reason = "REJECT", f"holdout: {failure} (review: {report.reason})"
+        except InsufficientHistory as e:
+            report.status, report.reason = "FAILED", str(e)
         except (GatewayError, BudgetExceeded, ResearchApiError) as e:
             report.status, report.reason = "FAILED", str(e)
         return await self._save(report)
@@ -209,7 +316,10 @@ class ResearchLoop:
         return (f"Strategy: {draft.name}\n{draft.description}\n\nCode:\n{draft.python_code}\n\n"
                 f"Best parameters (in-sample optimized): {json.dumps(report.best_parameters)}\n"
                 f"In-sample: {json.dumps(fmt(report.in_sample))}\nOut-of-sample: {json.dumps(fmt(report.out_of_sample))}\n"
-                f"Trials run: {len(report.trials)}")
+                f"Walk-forward fold Sharpes: {[f.get('sharpe_ratio') for f in report.folds]}\n"
+                f"Trials run: {len(report.trials)} (deflated Sharpe ratio {report.dsr} over {report.trials_tested} trials)\n"
+                f"Robustness, each parameter +-10%: worst Sharpe retention {report.robustness.get('worst_retention')}"
+                f"{' (FRAGILE)' if report.robustness.get('fragile') else ''}")
 
     async def _save(self, report: ResearchReport) -> ResearchReport:
         try:

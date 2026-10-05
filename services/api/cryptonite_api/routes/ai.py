@@ -20,6 +20,7 @@ from typing import Any, Literal
 from cryptonite_agents.gateway.local_tier import HEALTH_KEY as LOCAL_TIER_HEALTH
 from cryptonite_agents.gateway.local_tier import read_published as read_local_tier
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
+from cryptonite_api.similar import similar_or_none
 from cryptonite_execution.approvals import (
     APPROVAL_COLUMNS,
     ApprovalConflict,
@@ -60,6 +61,8 @@ router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
 
 EXIT_MONITOR_HEARTBEAT = "exit_monitor:heartbeat"
 NOTIFIER_HEARTBEAT = "notifier:heartbeat"
+LEARNER_HEARTBEAT = "learner:heartbeat"
+SENTIMENT_LAST_OK = "sentiment:last_ok"  # unix seconds of the last answered news-sentiment call
 TOTP_RE = re.compile(r"^\d{6}$")
 
 
@@ -398,7 +401,14 @@ async def list_approvals(request: Request, status: Literal["pending", "recent"] 
         rows = await conn.fetch(
             f"SELECT {cols}, m.name AS mandate_name FROM ai_approvals a JOIN ai_mandates m ON m.id = a.mandate_id "
             f"WHERE {where} ORDER BY a.expires_at ASC LIMIT 200")
-    return {"now": now.isoformat(), "approvals": [approval_view(as_dict(r), now, r["mandate_name"]) for r in rows]}
+    views = [approval_view(as_dict(r), now, r["mandate_name"]) for r in rows]
+    if status == "pending":  # R6.4: past decisions on the same instrument and side, next to each pending approval
+        for v in views:
+            p = v["payload"] if isinstance(v["payload"], dict) else {}
+            similar = await similar_or_none(request.app.state.pool, p.get("instrument_id"), p.get("side"))
+            if similar is not None:
+                v["similar_decisions"] = similar
+    return {"now": now.isoformat(), "approvals": views}
 
 
 async def _decide(request: Request, approval_id: uuid.UUID, approve: bool, via: str, by: str) -> dict[str, Any]:
@@ -456,6 +466,8 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
     """What Mission Control's banners show: kill switch, halted mandates, stop protection, notifier, spend."""
     r = _redis(request)
     exit_up = notifier_up = False
+    learner_up: bool | None = None
+    sentiment_last_ok: int | None = None
     budget_alert = False
     local_tier = None
     if r is not None:
@@ -463,6 +475,9 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
             exit_up = bool(await r.get(EXIT_MONITOR_HEARTBEAT))
             notifier_up = bool(await r.get(NOTIFIER_HEARTBEAT))
             local_tier = read_local_tier(await r.get(LOCAL_TIER_HEALTH))
+            learner_up = bool(await r.get(LEARNER_HEARTBEAT))
+            raw_sentiment = await r.get(SENTIMENT_LAST_OK)
+            sentiment_last_ok = int(float(raw_sentiment)) if raw_sentiment else None
             budget_alert = bool(await r.get(f"llm_budget_alert:{datetime.datetime.now(datetime.UTC).date().isoformat()}"))
         except Exception:
             pass
@@ -491,6 +506,8 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         "account": {"equity": _dec(backstop["equity"]), "hwm": _dec(backstop["hwm"]), "drawdown_pct": _dec(backstop["drawdown_pct"]),
                     "backstop_pct": "20"} if backstop else None,
         "exit_monitor_up": exit_up, "notifier_up": notifier_up, "budget_alert": budget_alert, "degraded": degraded,
+        # None when Redis could not be read (unknown, not down)
+        "learner_up": learner_up, "sentiment_last_ok": sentiment_last_ok,
         # None until a gateway has probed the local tier (no role routed to it yet)
         "local_tier": {"healthy": bool(local_tier.get("healthy")), "models": local_tier.get("models", []),
                        "error": local_tier.get("error"), "checked_at": local_tier.get("checked_at")} if local_tier else None,

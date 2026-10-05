@@ -68,7 +68,7 @@ export const TradesTable: React.FC<Props> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950 border border-zinc-900 rounded font-mono text-[11px]">
+    <div className="flex flex-col h-full bg-zinc-950 border border-zinc-900 rounded font-mono text-2xs">
       {/* Table Header Controls */}
       <div className="flex items-center justify-between px-3 py-2 bg-zinc-900/50 border-b border-zinc-800">
         <div className="flex items-center space-x-2">
@@ -139,7 +139,7 @@ export const TradesTable: React.FC<Props> = ({
                     </td>
                     <td className="py-1.5 px-2">
                       <span
-                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        className={`px-1.5 py-0.5 rounded text-2xs font-bold ${
                           isLong
                             ? "bg-emerald-950/80 text-emerald-400 border border-emerald-800/40"
                             : "bg-rose-950/80 text-rose-400 border border-rose-800/40"

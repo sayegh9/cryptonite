@@ -3,7 +3,7 @@
 Provides audited endpoints for:
 1. Emergency kill-switch tripping.
 2. Step-up authenticated kill-switch resetting.
-3. Step-up authenticated risk limits and guardrails modification.
+3. The risk limits the paper orchestrator enforces (read-only; edits answer 501).
 4. Strict CSRF header verification on all mutating requests.
 """
 
@@ -18,6 +18,10 @@ from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.routes.auth import get_auth_manager, require_operator, require_csrf
 
 router = APIRouter(prefix="/api/v1/control", tags=["control"])
+
+# Published by the orchestrator from its GuardedOrderDispatcher (ops_monitor, R1.8); expires if it stops
+EFFECTIVE_LIMITS_KEY = "risk:effective_limits"
+RISK_LIMITS_NOT_CONFIGURABLE = "Limits are not configurable here; edit the mandate"
 
 
 class TripKillSwitchRequest(BaseModel):
@@ -235,7 +239,7 @@ async def update_risk_limits(
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
     x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
 ):
-    """Update risk limits and guardrails requiring step-up password verification."""
+    """Limits are not editable here: 501 after auth, CSRF and step-up (edit the mandate instead)."""
     verify_csrf(auth, x_csrf_token)
     username = auth["username"]
     client_ip = request.client.host if request.client else None
@@ -254,20 +258,30 @@ async def update_risk_limits(
             detail="Step-up authentication failed: Invalid password",
         )
 
-    # Audit log the limit modification
-    limits_payload = {
-        "max_daily_loss_pct": req.max_daily_loss_pct,
-        "max_order_notional_usd": req.max_order_notional_usd,
-        "max_position_notional_usd": req.max_position_notional_usd,
-    }
-    await auth_mgr.log_audit_event(
-        username=username,
-        action="RISK_LIMITS_UPDATE",
-        ip_address=client_ip,
-        details=limits_payload,
-    )
+    # Nothing reads limits from here: the dispatcher's limits are fixed and per-mandate limits live on the
+    # mandate. Answer honestly instead of reporting a change that never happens (R1.8, N9).
+    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=RISK_LIMITS_NOT_CONFIGURABLE)
 
-    return {"success": True, "updated_limits": limits_payload, "updated_by": username}
+
+@router.get("/enforced-limits")
+async def get_enforced_limits(request: Request, auth: dict = Depends(require_operator)):
+    """The limits the paper orchestrator actually enforces, as it last published them; ``paper: null``
+    when unknown (orchestrator not running, or not published yet)."""
+    hub = getattr(request.app.state, "stream_hub", None)
+    redis = getattr(hub, "redis", None)
+    raw = None
+    if redis is not None:
+        try:
+            raw = await redis.get(EFFECTIVE_LIMITS_KEY)
+        except Exception:
+            raw = None
+    try:
+        data = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("paper"), dict):
+        return {"as_of": None, "paper": None}
+    return {"as_of": data.get("as_of"), "paper": {k: str(v) for k, v in data["paper"].items()}}
 
 
 @router.get("/balances")

@@ -193,10 +193,14 @@ Tests run against a throwaway database (one test downgrades the schema); the com
 | [docs/USER_MANUAL.md](docs/USER_MANUAL.md) | Using the workstation, including Mission Control and Telegram approvals |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contracts, schemas, Redis channels, frontend stores |
 | [docs/adr/](docs/adr/) | Decisions: provider layer, cost controls, research loop, mandates, local tier |
-| [docs/runbooks/](docs/runbooks/) | Kill switch, token rotation, DB bootstrap, local AI tier |
+| [docs/runbooks/](docs/runbooks/) | Kill switch, token rotation, DB bootstrap, local AI tier, [backups](docs/runbooks/backup.md) |
+| [docs/remediation-plan.md](docs/remediation-plan.md) | Review findings (2026-10-04) and the plan fixing them |
 | [docs/perpetuals-architecture.md](docs/perpetuals-architecture.md) | Perpetual futures paper trading |
 | [HANDOFF.md](HANDOFF.md) · [AUDIT_STATUS.md](AUDIT_STATUS.md) | Current status, open items, backlog |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Release notes from before the AI-First program |
+
+`docs/USER_MANUAL.md` is the current manual. `docs/Cryptonite_User_Manual.{html,pdf}`, `docs/user_manual.html`
+and `docs/PROJECT_DOCUMENTATION.md` are older snapshots kept for reference; they predate the AI-First program.
 
 ## Status
 

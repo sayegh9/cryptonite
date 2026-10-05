@@ -107,12 +107,14 @@ async def _snapshot(conn, mandate_id, v: dict, last, now: datetime.datetime, ben
         )
 
 
-async def alert(conn, redis, kind: str, message: str, detail: dict[str, Any]) -> None:
-    """A Critical alert: channel:system_alerts now, and the notifier outbox (Telegram + ntfy) when present."""
+async def alert(conn, redis, kind: str, message: str, detail: dict[str, Any], *, tier: str = "CRITICAL",
+                dedupe_key: str | None = None) -> None:
+    """An alert (Critical unless ``tier`` says otherwise): channel:system_alerts now, and the notifier
+    outbox (Telegram + ntfy) when present."""
     if redis is not None:
         try:
             await redis.publish(SYSTEM_ALERTS_CHANNEL, json.dumps(
-                {"type": "system_alert", "v": 1, "kind": kind, "severity": "CRITICAL", "message": message, **detail},
+                {"type": "system_alert", "v": 1, "kind": kind, "severity": tier, "message": message, **detail},
                 default=str))
         except Exception as e:
             logger.error("Could not publish %s alert: %s", kind, e)
@@ -120,9 +122,9 @@ async def alert(conn, redis, kind: str, message: str, detail: dict[str, Any]) ->
         async with conn.transaction():
             await conn.execute(
                 """INSERT INTO notifications_outbox (tier, kind, title, body, payload, dedupe_key)
-                   VALUES ('CRITICAL', $1, $2, $3, $4::jsonb, $5) ON CONFLICT (dedupe_key) DO NOTHING""",
+                   VALUES ($6, $1, $2, $3, $4::jsonb, $5) ON CONFLICT (dedupe_key) DO NOTHING""",
                 kind, message, json.dumps(detail, default=str), json.dumps(detail, default=str),
-                f"{kind}:{detail.get('mandate_id', 'account')}:{detail.get('episode', '')}",
+                dedupe_key or f"{kind}:{detail.get('mandate_id', 'account')}:{detail.get('episode', '')}", tier,
             )
     except Exception as e:  # no outbox table yet (before migration 026) or DB hiccup: the channel alert went out
         logger.debug("notifications_outbox unavailable: %s", e)

@@ -10,7 +10,7 @@ import { LiquidationGauge } from "./LiquidationGauge";
 import { FreshnessBadge } from "./FreshnessBadge";
 
 const actionBtn =
-  "inline-flex items-center gap-1 px-1.5 py-1 rounded border text-[10px] font-bold transition-colors outline-none focus-visible:ring-2 disabled:opacity-40 disabled:cursor-not-allowed";
+  "inline-flex items-center gap-1 px-1.5 py-1 rounded border text-2xs font-bold transition-colors outline-none focus-visible:ring-2 disabled:opacity-40 disabled:cursor-not-allowed";
 
 interface RowProps {
   pos: PaperPosition;
@@ -47,14 +47,14 @@ const PositionRow = React.memo(function PositionRow({ pos, latched, onSelect }: 
     <tr className="group hover:bg-zinc-800/30 cursor-pointer" onClick={() => onSelect(pos.position_id)}>
       <td className="py-2 pr-2">
         <div className="font-bold text-white">{pos.instrument_id}</div>
-        <div className="mt-0.5 flex items-center gap-1 text-[9px] uppercase tracking-wider">
+        <div className="mt-0.5 flex items-center gap-1 text-2xs uppercase tracking-wider">
           <span className={perp ? "text-violet-300" : "text-zinc-500"}>{perp ? "Perp" : "Spot"}</span>
           {perp && pos.leverage ? <span className="text-zinc-500">· {pos.leverage}x {pos.margin_mode ?? "CROSS"}</span> : null}
         </div>
       </td>
       <td className="pr-2">
         <span
-          className={`inline-block min-w-[44px] text-center px-1.5 py-0.5 rounded text-[10px] font-black tracking-wider border ${
+          className={`inline-block min-w-[44px] text-center px-1.5 py-0.5 rounded text-2xs font-black tracking-wider border ${
             isShort ? "bg-red-500/15 text-red-300 border-red-500/40" : "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
           }`}
         >
@@ -62,7 +62,7 @@ const PositionRow = React.memo(function PositionRow({ pos, latched, onSelect }: 
         </span>
       </td>
       <td className="pr-2">
-        <span className="px-1.5 py-0.5 rounded text-[10px] border bg-indigo-500/15 text-indigo-300 border-indigo-500/30" title={pos.instance_id}>
+        <span className="px-1.5 py-0.5 rounded text-2xs border bg-indigo-500/15 text-indigo-300 border-indigo-500/30" title={pos.instance_id}>
           {pos.instance_id.length > 15 ? `${pos.instance_id.substring(0, 15)}…` : pos.instance_id}
         </span>
       </td>
@@ -71,7 +71,7 @@ const PositionRow = React.memo(function PositionRow({ pos, latched, onSelect }: 
       <td className="pr-2 text-right tabular-nums">{fmtPrice(mark)}</td>
       <td className={`pr-2 text-right tabular-nums ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
         <span className="font-black text-[13px]">{fmtSignedUsd(pnl)}</span>
-        <span className="block text-[10px] opacity-75">{`${roe >= 0 ? "+" : ""}${(roe * 100).toFixed(2)}%`}</span>
+        <span className="block text-2xs opacity-75">{`${roe >= 0 ? "+" : ""}${(roe * 100).toFixed(2)}%`}</span>
       </td>
       <td className="pr-2">
         <LiquidationGauge isPerp={perp} distance={perp ? liqDistanceOf(pos, mark) : null} liquidationPrice={pos.liquidation_price} />
@@ -140,7 +140,7 @@ export function ActivePositionsTable({ onSelect }: { onSelect: (positionId: stri
           <Layers className="w-4 h-4 text-cyan-400" />
           <span id="active-positions-title">Active Positions</span>
           {open.length > 0 && (
-            <span className={`normal-case tracking-normal text-[11px] font-black tabular-nums ${totalPnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+            <span className={`normal-case tracking-normal text-2xs font-black tabular-nums ${totalPnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
               {fmtSignedUsd(totalPnl)} uPnL
             </span>
           )}
@@ -157,7 +157,7 @@ export function ActivePositionsTable({ onSelect }: { onSelect: (positionId: stri
         ) : (
           <table className="w-full text-left">
             <thead>
-              <tr className="text-zinc-500 border-b border-zinc-800 text-[10px] uppercase tracking-wider">
+              <tr className="text-zinc-500 border-b border-zinc-800 text-2xs uppercase tracking-wider">
                 <th className="py-1 font-bold">Instrument</th>
                 <th className="font-bold">Side</th>
                 <th className="font-bold">Origin</th>

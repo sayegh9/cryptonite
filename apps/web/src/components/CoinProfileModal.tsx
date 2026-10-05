@@ -110,14 +110,14 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
             <>
               {/* Price Row */}
               <div className="flex flex-col space-y-1">
-                <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">Live Price</span>
+                <span className="text-2xs text-zinc-500 uppercase tracking-widest font-mono">Live Price</span>
                 <div className="flex items-end space-x-3">
                   <span className="text-2xl font-bold font-mono">
-                    ${profile.last_price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 }) || "0.00"}
+                    {profile.last_price != null ? `$${profile.last_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}` : "—"}
                   </span>
                   <div className={`flex items-center space-x-1 text-sm font-mono pb-1 ${isUp ? "text-emerald-400" : "text-red-400"}`}>
-                    <span>{isUp ? "▲" : "▼"}</span>
-                    <span>{Math.abs(profile.change_24h_pct || 0).toFixed(2)}%</span>
+                    <span>{profile.change_24h_pct == null ? "" : isUp ? "▲" : "▼"}</span>
+                    <span>{profile.change_24h_pct != null ? `${Math.abs(profile.change_24h_pct).toFixed(2)}%` : "—"}</span>
                   </div>
                 </div>
               </div>
@@ -125,22 +125,22 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
               {/* 24h Stats */}
               <div className="grid grid-cols-3 gap-2 border-t border-b border-white/5 py-4">
                 <div className="flex flex-col space-y-1">
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">24h High</span>
-                  <span className="text-xs font-mono">${profile.high_24h?.toLocaleString() || "-"}</span>
+                  <span className="text-2xs text-zinc-500 uppercase tracking-widest font-mono">24h High</span>
+                  <span className="text-xs font-mono">{profile.high_24h != null ? `$${profile.high_24h.toLocaleString()}` : "—"}</span>
                 </div>
                 <div className="flex flex-col space-y-1">
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">24h Low</span>
-                  <span className="text-xs font-mono">${profile.low_24h?.toLocaleString() || "-"}</span>
+                  <span className="text-2xs text-zinc-500 uppercase tracking-widest font-mono">24h Low</span>
+                  <span className="text-xs font-mono">{profile.low_24h != null ? `$${profile.low_24h.toLocaleString()}` : "—"}</span>
                 </div>
                 <div className="flex flex-col space-y-1">
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">24h Vol</span>
-                  <span className="text-xs font-mono">${((profile.volume_24h_quote || 0) / 1000000).toFixed(1)}M</span>
+                  <span className="text-2xs text-zinc-500 uppercase tracking-widest font-mono">24h Vol</span>
+                  <span className="text-xs font-mono">{profile.volume_24h_quote != null ? `$${(profile.volume_24h_quote / 1000000).toFixed(1)}M` : "—"}</span>
                 </div>
               </div>
 
               {/* Market Stats */}
               <div className="space-y-3">
-                <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">Market Stats</span>
+                <span className="text-2xs text-zinc-500 uppercase tracking-widest font-mono">Market Stats</span>
                 <div className="grid grid-cols-2 gap-y-3 gap-x-4 text-xs font-mono">
                   <div className="flex flex-col">
                     <span className="text-zinc-500">Market Cap</span>
@@ -157,7 +157,7 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
                   <div className="flex flex-col">
                     <span className="text-zinc-500">ATH</span>
                     <span>{profile.ath_usd ? `$${profile.ath_usd.toLocaleString()}` : "-"}</span>
-                    {profile.ath_date && <span className="text-[9px] text-zinc-600">{new Date(profile.ath_date).toLocaleDateString()}</span>}
+                    {profile.ath_date && <span className="text-2xs text-zinc-600">{new Date(profile.ath_date).toLocaleDateString()}</span>}
                   </div>
                 </div>
               </div>
@@ -166,7 +166,7 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
               {profile.categories && profile.categories.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {profile.categories.map((c, i) => (
-                    <span key={i} className="px-2 py-0.5 bg-zinc-900 border border-white/10 rounded text-[10px] text-zinc-300">
+                    <span key={i} className="px-2 py-0.5 bg-zinc-900 border border-white/10 rounded text-2xs text-zinc-300">
                       {c}
                     </span>
                   ))}
@@ -176,14 +176,14 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
               {/* Description */}
               {profile.description && (
                 <div className="space-y-1 border-t border-white/5 pt-4">
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">About</span>
+                  <span className="text-2xs text-zinc-500 uppercase tracking-widest font-mono">About</span>
                   <p 
                     className={`text-xs text-zinc-400 leading-relaxed cursor-pointer ${descExpanded ? "" : "line-clamp-4"}`}
                     onClick={() => setDescExpanded(!descExpanded)}
                     dangerouslySetInnerHTML={{ __html: profile.description }}
                   />
                   {!descExpanded && (
-                    <button onClick={() => setDescExpanded(true)} className="text-[10px] text-cyan-500 hover:text-cyan-400">
+                    <button onClick={() => setDescExpanded(true)} className="text-2xs text-cyan-500 hover:text-cyan-400">
                       Read more
                     </button>
                   )}
@@ -193,7 +193,7 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
               {/* Links */}
               {profile.links && (Object.values(profile.links).some(l => l)) && (
                 <div className="space-y-2 border-t border-white/5 pt-4">
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">Links</span>
+                  <span className="text-2xs text-zinc-500 uppercase tracking-widest font-mono">Links</span>
                   <div className="flex flex-wrap gap-3 text-xs">
                     {profile.links.homepage && (
                       <a href={profile.links.homepage} target="_blank" rel="noreferrer" className="flex items-center space-x-1 text-cyan-500 hover:text-cyan-400">

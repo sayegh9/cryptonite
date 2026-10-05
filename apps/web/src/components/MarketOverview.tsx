@@ -82,7 +82,7 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
       
       {/* Section 1: Top Movers */}
       <div className="space-y-3 shrink-0">
-        <h2 className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">Top Movers</h2>
+        <h2 className="font-mono text-2xs uppercase tracking-widest text-zinc-500">Top Movers</h2>
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <h3 className="text-xs font-bold text-emerald-500 mb-2">Gainers</h3>
@@ -121,7 +121,7 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
 
       {/* Section 2: Volume Leaders */}
       <div className="space-y-3 shrink-0">
-        <h2 className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">Volume Leaders</h2>
+        <h2 className="font-mono text-2xs uppercase tracking-widest text-zinc-500">Volume Leaders</h2>
         <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-zinc-800">
           {topVolume.map((t) => (
             <div
@@ -131,7 +131,7 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
             >
               <div className="flex items-center justify-between">
                 <span className="font-mono text-xs font-bold">{t.symbol.replace("USDT", "")}</span>
-                <span className={`text-[10px] font-mono ${t.change_pct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                <span className={`text-2xs font-mono ${t.change_pct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                   {t.change_pct > 0 ? "+" : ""}{t.change_pct.toFixed(1)}%
                 </span>
               </div>
@@ -143,7 +143,7 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
 
       {/* Section 3: Market Heatmap */}
       <div className="flex-1 flex flex-col space-y-3 min-h-[300px]">
-        <h2 className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">Market Heatmap — USDT Pairs</h2>
+        <h2 className="font-mono text-2xs uppercase tracking-widest text-zinc-500">Market Heatmap — USDT Pairs</h2>
         <div className="flex-1 grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-1">
           {tickers.map((t) => (
             <div
@@ -152,7 +152,7 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
               className={`${getHeatmapColor(t.change_pct)} p-2 flex flex-col justify-center items-center cursor-pointer hover:brightness-110 transition-all rounded-sm`}
             >
               <span className="font-mono text-xs font-bold truncate w-full text-center">{t.symbol.replace("USDT", "")}</span>
-              <span className="font-mono text-[10px] opacity-90">
+              <span className="font-mono text-2xs opacity-90">
                 {t.change_pct > 0 ? "+" : ""}{t.change_pct.toFixed(2)}%
               </span>
             </div>

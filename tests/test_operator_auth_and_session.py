@@ -265,7 +265,7 @@ async def test_auth_routes_e2e():
             assert cmd_row is not None
             assert cmd_row["command_type"] == "KILL_SWITCH_RESET_REQUEST"
 
-            # 6. Control Plane: Risk Limits Update
+            # 6. Control Plane: Risk Limits Update (refused: not configurable here)
             limits_resp = client.post(
                 "/api/v1/control/risk-limits",
                 json={
@@ -276,8 +276,9 @@ async def test_auth_routes_e2e():
                 },
                 headers={"X-CSRF-Token": csrf_token},
             )
-            assert limits_resp.status_code == 200
-            assert limits_resp.json()["updated_limits"]["max_daily_loss_pct"] == 2.5
+            # Limits are not configurable here (R1.8): an honest 501 after auth, CSRF and step-up
+            assert limits_resp.status_code == 501
+            assert limits_resp.json()["detail"] == "Limits are not configurable here; edit the mandate"
 
             # 7. Logout
             logout_resp = client.post("/api/v1/auth/logout")

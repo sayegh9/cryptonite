@@ -1,4 +1,5 @@
 /** Mission Control contracts (blueprint §4.4–§4.6, §7.1): the shapes /api/v1/ai/* returns. */
+import type { SimilarDecision } from "@/components/ApprovalRiskContext";
 
 export type MandateStatus = "ACTIVE" | "HALTED" | "PAUSED" | "ARCHIVED";
 export type ActionClass = "ADD_RISK" | "REDUCE_RISK";
@@ -56,6 +57,10 @@ export interface Approval {
   decided_via: string | null;
   command_id: string | null;
   trace_id: string | null;
+  /** The command the approval would queue (instrument_id, side, quantity, price, allocation_pct, …) */
+  payload?: Record<string, unknown> | null;
+  /** Up to 3 past decisions on the same instrument and side (read-only; omitted when unavailable) */
+  similar_decisions?: SimilarDecision[] | null;
 }
 
 export interface AiStatus {
@@ -66,6 +71,12 @@ export interface AiStatus {
   notifier_up: boolean;
   budget_alert: boolean;
   degraded: string[];
+  /** null until a gateway has probed the local model tier */
+  local_tier?: { healthy: boolean; models: string[]; error: string | null; checked_at: string | null } | null;
+  /** Not yet reported by /ai/status (R6.3/R7.5): absent = unknown */
+  learner_up?: boolean | null;
+  /** Unix seconds of the debate worker's last successful get_news_sentiment (`sentiment:last_ok`, N19) */
+  sentiment_last_ok?: number | string | null;
 }
 
 export interface GateCheck {
@@ -73,6 +84,10 @@ export interface GateCheck {
   required: string;
   actual: string;
   passed: boolean;
+  /** Reported but not required: the gate's `passed` ignores it (R4.7, D6). Missing = required. */
+  informational?: boolean;
+  /** 90% interval [lo, hi] of the measured value, as strings (R4.2). */
+  interval?: [string, string] | null;
 }
 
 export interface AutonomyView {

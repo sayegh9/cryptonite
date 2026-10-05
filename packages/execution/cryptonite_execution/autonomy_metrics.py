@@ -9,6 +9,12 @@ Everything is measured since the mandate reached its current level (``level_sinc
 - veto rate: vetoed / decided ADD_RISK approvals created at L2;
 - calibration (A7.2): expected calibration error of the mandate's verdict conviction against 24h
   outcomes (``calibration.py``); ``None`` below the minimum sample, so the L3 gate fails closed.
+- informational (R4.2/R4.3): per-trade returns after fees (spot round trips at average cost from
+  ``paper_trades``, closed perp positions from ``paper_positions``), the paired daily returns behind
+  the Sortino check, and the ECE interval; they feed the interval checks, never ``passed``.
+- honest paper (A0.4, R4.6): derived from what the database records (every fill of the mandate's
+  instance in the window charged a commission), otherwise "not measured". It is never derived as a
+  failing value before D6.
 
 ``propose_if_ready`` records a system promotion proposal when the gate passes (never a promotion).
 """
@@ -28,8 +34,29 @@ from cryptonite_execution.autonomy import (
     period_returns,
     sortino,
 )
-from cryptonite_execution.calibration import calibration_error_pp
+from cryptonite_execution.calibration import calibration_error_pp, calibration_interval_pp
 from cryptonite_execution.mandate_store import record_event
+from cryptonite_execution.stats import wilson_interval
+
+
+def spot_trade_returns(fills: list[dict[str, Any]]) -> list[float]:
+    """Round-trip returns after fees from time-ordered spot fills (instrument_id, side, price, quantity,
+    commission in quote). Average cost per instrument; a SELL closes at most what was bought in the
+    window (holdings from before it are not counted)."""
+    held: dict[str, tuple[float, float]] = {}  # instrument -> (qty, cost incl. buy fees)
+    out: list[float] = []
+    for f in fills:
+        inst, qty, px, fee = f["instrument_id"], float(f["quantity"]), float(f["price"]), float(f["commission"] or 0)
+        q0, c0 = held.get(inst, (0.0, 0.0))
+        if f["side"] == "BUY":
+            held[inst] = (q0 + qty, c0 + qty * px + fee)
+        elif q0 > 0 and qty > 0:
+            matched = min(qty, q0)
+            cost = c0 * matched / q0
+            proceeds = matched * px - fee * matched / qty
+            out.append(proceeds / cost - 1 if cost > 0 else 0.0)
+            held[inst] = (q0 - matched, c0 - cost)
+    return out
 
 
 async def gate_metrics(conn, mandate: Mandate, now: datetime.datetime | None = None) -> GateMetrics:
@@ -52,6 +79,26 @@ async def gate_metrics(conn, mandate: Mandate, now: datetime.datetime | None = N
            WHERE mandate_id = $1 AND ts >= $2 ORDER BY ts::date, ts DESC""", mandate.id, since)
     eq = [float(r["equity"]) for r in daily]
     bench = [float(r["benchmark_price"]) for r in daily if r["benchmark_price"] is not None]
+    fills = await conn.fetch(
+        """SELECT instrument_id, side, price, quantity, commission FROM paper_trades
+           WHERE instance_id = $1 AND executed_at >= $2 AND instrument_id NOT LIKE '%-PERP.%'
+           ORDER BY executed_at, trade_id""", mandate.instance_id, since)
+    perp = await conn.fetch(
+        """SELECT realized_pnl, entry_price, quantity FROM paper_positions
+           WHERE instance_id = $1 AND status = 'CLOSED' AND closed_at >= $2 AND instrument_id LIKE '%-PERP.%'""",
+        mandate.instance_id, since)
+    trade_returns = spot_trade_returns([dict(r) for r in fills]) + [
+        float(r["realized_pnl"]) / (float(r["entry_price"]) * float(r["quantity"]))
+        for r in perp if r["realized_pnl"] is not None and r["entry_price"] and r["quantity"]]
+    fee_check = await conn.fetchrow(
+        """SELECT count(*) AS n, count(*) FILTER (WHERE commission IS NULL OR commission <= 0) AS free
+           FROM paper_trades WHERE instance_id = $1 AND executed_at >= $2""", mandate.instance_id, since)
+    if fee_check["n"] and not fee_check["free"]:
+        honest, honest_detail = True, f"{fee_check['n']} fills, all with fees"
+    elif fee_check["n"]:  # reported, not failed, until D6 (R4.6)
+        honest, honest_detail = None, f"{fee_check['free']} of {fee_check['n']} fills without fees"
+    else:
+        honest, honest_detail = None, "no fills yet"
     decided = await conn.fetchrow(
         """SELECT count(*) FILTER (WHERE status = 'VETOED') AS vetoed,
                   count(*) FILTER (WHERE status IN ('APPROVED', 'VETOED', 'EXPIRED_PROCEEDED')) AS decided
@@ -63,8 +110,12 @@ async def gate_metrics(conn, mandate: Mandate, now: datetime.datetime | None = N
         max_drawdown_pct=Decimal(str(max_dd)) if max_dd is not None else None, breaches=int(breaches or 0),
         sortino=sortino(period_returns(eq)),
         benchmark_sortino=sortino(period_returns(bench)) if len(bench) == len(eq) else None,
-        honest_paper=True, calibration_error_pp=await calibration_error_pp(conn, mandate.id, since),
+        honest_paper=honest, honest_paper_detail=honest_detail,
+        calibration_error_pp=await calibration_error_pp(conn, mandate.id, since),
         veto_rate_pct=veto_rate,
+        trade_returns=tuple(trade_returns), daily_returns=tuple(period_returns(eq)),
+        benchmark_returns=tuple(period_returns(bench)) if len(bench) == len(eq) else (),
+        calibration_interval_pp=await calibration_interval_pp(conn, mandate.id, since),
     )
 
 
@@ -106,7 +157,13 @@ def _num(x: float | None) -> float | str | None:
 
 
 def report_view(report: GateReport, metrics: GateMetrics) -> dict[str, Any]:
+    n = len(metrics.trade_returns)
+    wins = sum(1 for r in metrics.trade_returns if r > 0)
+    win_ci = wilson_interval(wins, n)
     return {**report.as_dict(), "metrics": {
+        "win_rate": round(wins / n, 4) if n else None,
+        "win_rate_interval": [f"{win_ci[0]:.4f}", f"{win_ci[1]:.4f}"] if win_ci else None,
+        "honest_paper": metrics.honest_paper, "honest_paper_detail": metrics.honest_paper_detail,
         "days_at_level": round(metrics.days_at_level, 2), "closed_trades": metrics.closed_trades,
         "max_drawdown_pct": str(metrics.max_drawdown_pct) if metrics.max_drawdown_pct is not None else None,
         "breaches": metrics.breaches, "sortino": _num(metrics.sortino), "benchmark_sortino": _num(metrics.benchmark_sortino),

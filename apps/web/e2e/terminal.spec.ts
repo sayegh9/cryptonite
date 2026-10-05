@@ -152,7 +152,7 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
   });
 
   test("loads terminal dashboard with visible TradingView attribution", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?ws=terminal");
 
     // Verify Title and Header Branding
     await expect(page.getByText("CRYPTONITE", { exact: true })).toBeVisible();
@@ -173,7 +173,7 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
   });
 
   test("switches multi-chart grid layouts between 1x1, 1x2, and 2x2", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?ws=terminal");
 
     // Click 1x1 layout button
     await page.click("button:has-text('1x1')");
@@ -187,7 +187,7 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
   });
 
   test("runs scanner and triggers View on Chart navigation", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?ws=terminal");
 
     // Verify Scanner Studio is visible
     await expect(page.locator("text=Polars Scanner Studio")).toBeVisible();

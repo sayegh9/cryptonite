@@ -1,7 +1,7 @@
 """Research CLI.
 
     python -m cryptonite_agents.research run --idea "..." --instrument BTCUSDT.BINANCE --timeframe 1h
-        [--is-days 90] [--oos-days 30] [--trials 12]
+        [--is-days 90] [--oos-days 30] [--holdout-days 30] [--trials 12]
     python -m cryptonite_agents.research enqueue --idea "..." --instrument ... --timeframe ...
     python -m cryptonite_agents.research worker        # works off research:queue
     python -m cryptonite_agents.research digest [--hours 24]
@@ -19,11 +19,11 @@ import sys
 from dataclasses import asdict
 
 import redis.asyncio as aioredis
-from redis.exceptions import RedisError
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_agents.research.client import ResearchApiClient
 from cryptonite_agents.research.loop import ResearchLoop
 from cryptonite_agents.research.queue import enqueue, publish_digest, spec_from, work_once
+from redis.exceptions import RedisError
 
 
 async def _gateway(redis) -> Gateway:
@@ -47,6 +47,7 @@ async def main(argv: list[str]) -> int:
         p.add_argument("--timeframe", required=True)
         p.add_argument("--is-days", type=int, default=90)
         p.add_argument("--oos-days", type=int, default=30)
+        p.add_argument("--holdout-days", type=int, default=30, help="final window, scored once for PROMOTE (0: none)")
         p.add_argument("--trials", type=int, default=12)
     sub.add_parser("worker")
     d = sub.add_parser("digest")
@@ -62,13 +63,15 @@ async def main(argv: list[str]) -> int:
             return 0
         if args.cmd == "enqueue":
             pos = await enqueue(redis, args.idea, args.instrument, args.timeframe,
-                                is_days=args.is_days, oos_days=args.oos_days, n_trials=args.trials)
+                                is_days=args.is_days, oos_days=args.oos_days, holdout_days=args.holdout_days,
+                                n_trials=args.trials)
             print(f"queued at position {pos}")
             return 0
         loop = ResearchLoop(await _gateway(redis), ResearchApiClient())
         if args.cmd == "run":
             item = {"idea": args.idea, "instrument_id": args.instrument, "timeframe": args.timeframe,
-                    "is_days": args.is_days, "oos_days": args.oos_days, "n_trials": args.trials}
+                    "is_days": args.is_days, "oos_days": args.oos_days, "holdout_days": args.holdout_days,
+                    "n_trials": args.trials}
             print(json.dumps(asdict(await loop.run(spec_from(item))), indent=2, default=str))
             return 0
         while True:  # worker: a Redis blip must not kill it

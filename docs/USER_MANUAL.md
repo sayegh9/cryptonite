@@ -289,7 +289,7 @@ Cryptonite can be accessed and operated from secondary devices (laptops, iPads, 
    ```
 3. **Log In**: Enter operator credentials (`admin` / `admin123` / TOTP: `000000`).
 4. **Live Streaming**: The Next.js frontend automatically resolves the host and opens a WebSocket stream to `ws://192.168.1.203:8000/ws/stream`.
-5. **PDF User Manual**: You can download or view the compiled 17-page illustrated manual at `docs/Cryptonite_User_Manual.pdf`.
+5. **PDF User Manual**: `docs/Cryptonite_User_Manual.pdf` is an older illustrated snapshot that predates the AI-First program; this page is the current manual.
 
 ---
 

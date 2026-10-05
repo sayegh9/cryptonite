@@ -1,3 +1,5 @@
+import type { VersionedMetrics } from "@/lib/backtestMetrics";
+
 export interface Bar {
   time: number; // Unix timestamp in seconds (for Lightweight Charts)
   open: number;
@@ -115,7 +117,7 @@ export interface Strategy {
   parameter_schema: Record<string, any>;
 }
 
-export interface BacktestMetrics {
+export interface BacktestMetrics extends VersionedMetrics {
   total_return: number;
   cagr?: number | null;
   sharpe_ratio?: number | null;

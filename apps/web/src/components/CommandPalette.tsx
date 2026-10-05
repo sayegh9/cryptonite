@@ -24,7 +24,34 @@ import {
   ShieldAlert,
   Bell,
   Settings,
+  Gauge,
 } from "lucide-react";
+import { dispatchSwitchWorkspace, NAV_GROUPS, VIEWS, type WorkspaceMode } from "@/lib/navigation";
+
+const MODE_ICON: Record<WorkspaceMode, React.ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" }>> = {
+  terminal: Terminal,
+  markets: TrendingUp,
+  portfolio: Briefcase,
+  research: FlaskConical,
+  debates: BrainCircuit,
+  mission: Gauge,
+  operator: Activity,
+  alerts: Bell,
+  settings: Settings,
+};
+
+/** Header groups expanded with every sub-view (Brain Home/Debates, Mission tabs, Scanner). */
+const PALETTE_GROUPS = NAV_GROUPS.map((g) => ({
+  label: g.label,
+  entries: g.items.flatMap((item) => {
+    const icon = item.view === "scanner" ? Search : MODE_ICON[item.mode];
+    const subViews = item.view ? [] : VIEWS[item.mode]?.filter((v) => v.id !== "scanner") ?? [];
+    return [
+      { mode: item.mode, view: item.view, label: item.label, icon },
+      ...subViews.map((v) => ({ mode: item.mode, view: v.id, label: `${item.label} → ${v.label}`, icon })),
+    ];
+  }),
+}));
 
 interface MarketSearchResult {
   symbol: string;
@@ -86,9 +113,9 @@ export function CommandPalette() {
     window.dispatchEvent(new CustomEvent("cryptonite:select-symbol", { detail: { symbol } }));
   }, [onClose]);
 
-  const switchWorkspace = React.useCallback((mode: string) => {
+  const switchWorkspace = React.useCallback((mode: WorkspaceMode, view?: string) => {
     onClose();
-    window.dispatchEvent(new CustomEvent("cryptonite:switch-workspace", { detail: { mode } }));
+    dispatchSwitchWorkspace({ mode, view });
   }, [onClose]);
 
   return (
@@ -109,7 +136,7 @@ export function CommandPalette() {
 
         {searchResults.length > 0 && (
           <>
-            <CommandGroup heading="Markets" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[10px] tracking-wider">
+            <CommandGroup heading="Markets" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
               {searchResults.map((result) => (
                 <CommandItem
                   key={result.symbol}
@@ -124,7 +151,7 @@ export function CommandPalette() {
                       {result.base} / USDT — Binance
                     </span>
                   </div>
-                  <span className="font-mono text-[11px] text-zinc-400">Binance</span>
+                  <span className="font-mono text-2xs text-zinc-400">Binance</span>
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -132,7 +159,7 @@ export function CommandPalette() {
           </>
         )}
 
-        <CommandGroup heading="AI Agents & Debates" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[10px] tracking-wider">
+        <CommandGroup heading="AI Agents & Debates" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
           <CommandItem
             onSelect={() => {
               fetch("/agent-api/debates/trigger", {
@@ -160,7 +187,7 @@ export function CommandPalette() {
               <BrainCircuit className="mr-2 h-4 w-4 text-purple-400" />
               <span className="font-semibold">Trigger New Consensus Debate (BTCUSDT)</span>
             </div>
-            <CommandShortcut className="font-mono text-[10px] text-zinc-500">⌘D</CommandShortcut>
+            <CommandShortcut className="font-mono text-2xs text-zinc-500">⌘D</CommandShortcut>
           </CommandItem>
 
           <CommandItem
@@ -184,93 +211,38 @@ export function CommandPalette() {
               <Sparkles className="mr-2 h-4 w-4 text-cyan-400" />
               <span>Launch AI Copilot Assistant</span>
             </div>
-            <span className="text-[10px] font-mono text-zinc-500">Copilot</span>
+            <span className="text-2xs font-mono text-zinc-500">Copilot</span>
           </CommandItem>
         </CommandGroup>
 
         <CommandSeparator className="my-1 border-white/5" />
 
-        <CommandGroup heading="Workspaces" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[10px] tracking-wider">
-          <CommandItem
-            onSelect={() => switchWorkspace("terminal")}
-            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
-          >
-            <div className="flex items-center space-x-2.5">
-              <Terminal className="mr-2 h-4 w-4 text-cyan-400" />
-              <span>Trading Terminal (3-Column Workspace)</span>
-            </div>
-          </CommandItem>
+        {/* Every workspace and sub-view, grouped like the header (R6.2) */}
+        {PALETTE_GROUPS.map((group) => (
+          <React.Fragment key={group.label}>
+            <CommandGroup heading={group.label} className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
+              {group.entries.map((entry) => {
+                const Icon = entry.icon;
+                return (
+                  <CommandItem
+                    key={`${entry.mode}-${entry.view ?? ""}`}
+                    value={`${group.label} ${entry.label}`}
+                    onSelect={() => switchWorkspace(entry.mode, entry.view)}
+                    className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
+                  >
+                    <div className="flex items-center space-x-2.5">
+                      <Icon className="mr-2 h-4 w-4 text-cyan-400" aria-hidden="true" />
+                      <span>{entry.label}</span>
+                    </div>
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+            <CommandSeparator className="my-1 border-white/5" />
+          </React.Fragment>
+        ))}
 
-          <CommandItem
-            onSelect={() => switchWorkspace("research")}
-            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
-          >
-            <div className="flex items-center space-x-2.5">
-              <FlaskConical className="mr-2 h-4 w-4 text-emerald-400" />
-              <span>Research Lab (Nautilus Backtester)</span>
-            </div>
-          </CommandItem>
-
-          <CommandItem
-            onSelect={() => switchWorkspace("portfolio")}
-            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
-          >
-            <div className="flex items-center space-x-2.5">
-              <Briefcase className="mr-2 h-4 w-4 text-amber-400" />
-              <span>Portfolio & Position Sizing Blotter</span>
-            </div>
-          </CommandItem>
-
-          <CommandItem
-            onSelect={() => switchWorkspace("alerts")}
-            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
-          >
-            <div className="flex items-center space-x-2.5">
-              <Bell className="mr-2 h-4 w-4 text-cyan-400" />
-              <span>Background Price & Indicator Alerts</span>
-            </div>
-          </CommandItem>
-
-          <CommandItem
-            onSelect={() => switchWorkspace("operator")}
-            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
-          >
-            <div className="flex items-center space-x-2.5">
-              <Activity className="mr-2 h-4 w-4 text-zinc-300" />
-              <span>Operator Governance & Strategy Instances</span>
-            </div>
-          </CommandItem>
-        </CommandGroup>
-
-        <CommandSeparator className="my-1 border-white/5" />
-
-        <CommandGroup heading="Actions" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[10px] tracking-wider">
-          <CommandItem
-            onSelect={() => {
-              switchWorkspace("terminal");
-            }}
-            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
-          >
-            <div className="flex items-center space-x-2.5">
-              <Search className="mr-2 h-4 w-4 text-cyan-400" />
-              <span>Focus Vectorized Polars Scanner</span>
-            </div>
-          </CommandItem>
-
-          <CommandItem
-            onSelect={() => switchWorkspace("settings")}
-            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
-          >
-            <div className="flex items-center space-x-2.5">
-              <Settings className="mr-2 h-4 w-4 text-zinc-400" />
-              <span>System & Risk Configuration Settings</span>
-            </div>
-          </CommandItem>
-        </CommandGroup>
-
-        <CommandSeparator className="my-1 border-white/5" />
-
-        <CommandGroup heading="Risk & Controls" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-[10px] tracking-wider">
+        <CommandGroup heading="Risk & Controls" className="text-zinc-500 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
           <CommandItem
             onSelect={() => {
               onClose();
@@ -282,14 +254,14 @@ export function CommandPalette() {
               <ShieldAlert className="mr-2 h-4 w-4 text-rose-500" />
               <span className="font-bold">EMERGENCY KILL SWITCH — Flatten All Positions</span>
             </div>
-            <span className="px-1.5 py-0.5 rounded bg-rose-950/60 border border-rose-800/50 text-[10px] font-mono text-rose-400 font-bold">
+            <span className="px-1.5 py-0.5 rounded bg-rose-950/60 border border-rose-800/50 text-2xs font-mono text-rose-400 font-bold">
               DANGER
             </span>
           </CommandItem>
         </CommandGroup>
       </CommandList>
 
-      <div className="h-8 border-t border-white/5 bg-zinc-900/50 px-4 flex items-center justify-between text-[11px] text-zinc-500 font-mono">
+      <div className="h-8 border-t border-white/5 bg-zinc-900/50 px-4 flex items-center justify-between text-2xs text-zinc-500 font-mono">
         <span>Navigate: ↑ ↓ | Select: ↵</span>
         <span>Cryptonite Institutional OS</span>
       </div>

@@ -82,14 +82,14 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
 
         <form onSubmit={handleSubmit} className="p-5 overflow-y-auto max-h-[80vh]">
           {error && (
-            <div className="mb-4 bg-rose-950/40 border border-rose-900/50 text-rose-400 text-[11px] font-mono p-3 rounded">
+            <div className="mb-4 bg-rose-950/40 border border-rose-900/50 text-rose-400 text-2xs font-mono p-3 rounded">
               {error}
             </div>
           )}
 
           <div className="space-y-4">
             <div>
-              <label className="block text-[10px] font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Strategy Protocol</label>
+              <label className="block text-2xs font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Strategy Protocol</label>
               <select
                 value={selectedSlug}
                 onChange={(e) => handleSelectStrategy(e.target.value)}
@@ -105,7 +105,7 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-[10px] font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Instrument</label>
+                <label className="block text-2xs font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Instrument</label>
                 <input
                   type="text"
                   value={instrumentId}
@@ -115,7 +115,7 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Timeframe</label>
+                <label className="block text-2xs font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Timeframe</label>
                 <select
                   value={timeframe}
                   onChange={(e) => setTimeframe(e.target.value)}
@@ -128,7 +128,7 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
                 </select>
               </div>
               <div>
-                <label className="block text-[10px] font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Allocation (USD)</label>
+                <label className="block text-2xs font-bold font-mono text-zinc-400 mb-1.5 uppercase tracking-wider">Allocation (USD)</label>
                 <input
                   type="number"
                   step="100"
@@ -143,11 +143,11 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
 
             {selectedStrategy && selectedStrategy.parameter_schema && Object.keys(selectedStrategy.parameter_schema).length > 0 && (
               <div className="pt-4 mt-2 border-t border-white/5">
-                <h4 className="text-[10px] font-bold text-zinc-400 mb-3 uppercase tracking-wider">Parameters</h4>
+                <h4 className="text-2xs font-bold text-zinc-400 mb-3 uppercase tracking-wider">Parameters</h4>
                 <div className="space-y-3">
                   {Object.entries(selectedStrategy.parameter_schema).map(([key, schema]: [string, any]) => (
                     <div key={key}>
-                      <label className="flex items-center justify-between text-[10px] uppercase font-bold mb-1">
+                      <label className="flex items-center justify-between text-2xs uppercase font-bold mb-1">
                         <span className="font-mono text-cyan-400">{key}</span>
                         <span className="text-zinc-500 tracking-wider">{schema.title}</span>
                       </label>
@@ -179,7 +179,7 @@ export function DeployStrategyModal({ onClose, onDeployed }: { onClose: () => vo
             <button
               type="submit"
               disabled={deploying}
-              className="flex-1 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold uppercase tracking-wider rounded transition-colors"
+              className="flex-1 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-zinc-950 text-xs font-bold uppercase tracking-wider rounded transition-colors"
             >
               {deploying ? "Dispatching..." : "Deploy Strategy"}
             </button>

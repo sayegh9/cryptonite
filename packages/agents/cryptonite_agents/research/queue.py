@@ -23,6 +23,7 @@ DIGEST_CHANNEL = "channel:system_alerts"
 TIMEFRAME_BAR = {"1m": "1-MINUTE", "5m": "5-MINUTE", "15m": "15-MINUTE", "30m": "30-MINUTE",
                  "1h": "1-HOUR", "4h": "4-HOUR", "1d": "1-DAY"}
 DAY_NS = 86_400 * 10**9
+HOLDOUT_DAYS = 30
 
 
 def bar_type_for(instrument_id: str, timeframe: str) -> str:
@@ -30,10 +31,15 @@ def bar_type_for(instrument_id: str, timeframe: str) -> str:
 
 
 def spec_from(item: dict[str, Any], now_ns: int | None = None) -> ResearchSpec:
-    """Build in-sample / out-of-sample windows ending now: [warmup | in-sample | out-of-sample]."""
+    """Build the windows ending now: [warmup | in-sample | out-of-sample | holdout]. The holdout (default
+    30 days, ``holdout_days: 0`` for none) is the most recent data and is scored once, for PROMOTE only.
+    The loop refuses the spec when the catalog's history is shorter than all of it (R5.0)."""
     now_ns = now_ns or time.time_ns()
     oos_days, is_days, warmup_days = item.get("oos_days", 30), item.get("is_days", 90), item.get("warmup_days", 10)
-    oos_start = now_ns - oos_days * DAY_NS
+    holdout_days = item.get("holdout_days", HOLDOUT_DAYS)
+    holdout_start = now_ns - holdout_days * DAY_NS
+    oos_end = holdout_start - 1 if holdout_days else now_ns
+    oos_start = holdout_start - oos_days * DAY_NS
     is_start = oos_start - is_days * DAY_NS
     return ResearchSpec(
         idea=item["idea"],
@@ -41,8 +47,9 @@ def spec_from(item: dict[str, Any], now_ns: int | None = None) -> ResearchSpec:
         bar_type=bar_type_for(item["instrument_id"], item["timeframe"]),
         timeframe=item["timeframe"],
         in_sample=(is_start - warmup_days * DAY_NS, is_start, oos_start - 1),
-        out_of_sample=(oos_start - warmup_days * DAY_NS, oos_start, now_ns),
+        out_of_sample=(oos_start - warmup_days * DAY_NS, oos_start, oos_end),
         n_trials=int(item.get("n_trials", 12)),
+        holdout=(holdout_start - warmup_days * DAY_NS, holdout_start, now_ns) if holdout_days else None,
     )
 
 

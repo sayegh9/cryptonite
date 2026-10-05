@@ -43,7 +43,7 @@ export default function OperatorDashboard() {
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-2xl font-bold text-zinc-100 tracking-wide flex items-center space-x-3">
           <span>Dashboard Overview</span>
-          <span className={`text-[10px] px-2 py-1 rounded font-mono font-bold uppercase tracking-widest ${executionMode === 'LIVE_TESTNET' ? 'bg-rose-950 text-rose-400 border border-rose-800 animate-pulse' : 'bg-emerald-950 text-emerald-400 border border-emerald-800'}`}>
+          <span className={`text-2xs px-2 py-1 rounded font-mono font-bold uppercase tracking-widest ${executionMode === 'LIVE_TESTNET' ? 'bg-rose-950 text-rose-400 border border-rose-800 animate-pulse' : 'bg-emerald-950 text-emerald-400 border border-emerald-800'}`}>
             {executionMode === 'LIVE_TESTNET' ? 'LIVE (TESTNET)' : 'MOCK ENGINE'}
           </span>
         </h1>
@@ -70,19 +70,19 @@ export default function OperatorDashboard() {
             </h3>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
               <div className="bg-zinc-950 p-2.5 rounded border border-zinc-800/80">
-                <span className="text-zinc-500 block text-[10px]">ENVIRONMENT</span>
+                <span className="text-zinc-500 block text-2xs">ENVIRONMENT</span>
                 <span className="text-emerald-400 font-bold">BINANCE DEMO</span>
               </div>
               <div className="bg-zinc-950 p-2.5 rounded border border-zinc-800/80">
-                <span className="text-zinc-500 block text-[10px]">LOGICAL ACCOUNT</span>
+                <span className="text-zinc-500 block text-2xs">LOGICAL ACCOUNT</span>
                 <span className="text-zinc-200 font-bold">DEMO-ACCOUNT-001</span>
               </div>
               <div className="bg-zinc-950 p-2.5 rounded border border-zinc-800/80">
-                <span className="text-zinc-500 block text-[10px]">ADVISORY LOCK</span>
-                <span className="text-cyan-400 font-bold">ACTIVE (PG 16)</span>
+                <span className="text-zinc-500 block text-2xs">ADVISORY LOCK</span>
+                <span className="text-zinc-300 font-bold">PG 16 (status not reported)</span>
               </div>
               <div className="bg-zinc-950 p-2.5 rounded border border-zinc-800/80">
-                <span className="text-zinc-500 block text-[10px]">SESSION STORAGE</span>
+                <span className="text-zinc-500 block text-2xs">SESSION STORAGE</span>
                 <span className="text-emerald-400 font-bold">REDIS 7 (HTTPONLY)</span>
               </div>
             </div>

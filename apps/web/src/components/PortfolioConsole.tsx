@@ -24,44 +24,54 @@ function MetricCards() {
   const account = usePortfolioStore((s) => s.account);
   const positions = usePortfolioStore((s) => s.positions);
   const latched = usePortfolioStore((s) => s.killSwitch.is_latched);
+  const positionsKnown = usePortfolioStore((s) => s.positionsAt !== null);
+  const killSwitchKnown = usePortfolioStore((s) => s.killSwitchAt !== null);
   const open = positions.filter((p) => p.status === "OPEN");
   const longs = open.filter((p) => p.side !== "SHORT").length;
-  const daily = Number(account?.daily_realized_pnl ?? 0);
+  const daily = account ? Number(account.daily_realized_pnl) : null;
   const upnl = open.reduce((a, p) => a + p.unrealized_pnl, 0);
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
-        <div className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Total Net Equity</div>
+        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Total Net Equity</div>
         <div className="text-lg font-black text-white mt-1 tabular-nums">{account ? fmtUsd(account.total_equity) : "—"}</div>
-        <div className="text-[10px] text-zinc-400 mt-0.5">Base: {account?.currency || "USDT"}</div>
+        <div className="text-2xs text-zinc-400 mt-0.5">Base: {account?.currency || "USDT"}</div>
       </div>
 
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
-        <div className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Available Cash</div>
+        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Available Cash</div>
         <div className="text-lg font-black text-cyan-400 mt-1 tabular-nums">{account ? fmtUsd(account.cash_balance) : "—"}</div>
-        <div className="text-[10px] text-zinc-400 mt-0.5">Spot Cash Invariant</div>
+        <div className="text-2xs text-zinc-400 mt-0.5">Spot Cash Invariant</div>
       </div>
 
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
-        <div className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Daily Realized PnL</div>
-        <div className={`text-lg font-black mt-1 tabular-nums ${daily >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtSignedUsd(daily)}</div>
-        <div className="text-[10px] text-zinc-400 mt-0.5">UTC Trading Day</div>
+        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Daily Realized PnL</div>
+        <div className={`text-lg font-black mt-1 tabular-nums ${daily === null ? "text-zinc-500" : daily >= 0 ? "text-emerald-400" : "text-red-400"}`}>{daily === null ? "—" : fmtSignedUsd(daily)}</div>
+        <div className="text-2xs text-zinc-400 mt-0.5">UTC Trading Day</div>
       </div>
 
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
-        <div className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Open Positions</div>
-        <div className="text-lg font-black text-zinc-200 mt-1">{open.length} Active</div>
-        <div className="text-[10px] text-zinc-400 mt-0.5 tabular-nums">
-          <span className="text-emerald-400">{longs}L</span> / <span className="text-red-400">{open.length - longs}S</span>
-          <span className={upnl >= 0 ? "text-emerald-400/80" : "text-red-400/80"}> · {fmtSignedUsd(upnl)} unrealized</span>
+        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Open Positions</div>
+        <div className="text-lg font-black text-zinc-200 mt-1">{positionsKnown ? `${open.length} Active` : "—"}</div>
+        <div className="text-2xs text-zinc-400 mt-0.5 tabular-nums">
+          {positionsKnown ? (
+            <>
+              <span className="text-emerald-400">{longs}L</span> / <span className="text-red-400">{open.length - longs}S</span>
+              <span className={upnl >= 0 ? "text-emerald-400/80" : "text-red-400/80"}> · {fmtSignedUsd(upnl)} unrealized</span>
+            </>
+          ) : (
+            "positions unavailable"
+          )}
         </div>
       </div>
 
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
-        <div className="text-zinc-500 text-[10px] uppercase font-bold tracking-wider">Execution Guard</div>
+        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Execution Guard</div>
         <div className="text-lg font-black mt-1 flex items-center space-x-1.5">
-          {latched ? (
+          {!killSwitchKnown ? (
+            <span className="text-zinc-400">UNKNOWN</span>
+          ) : latched ? (
             <span className="text-red-400 flex items-center space-x-1">
               <ShieldAlert className="w-4 h-4" />
               <span>LATCHED</span>
@@ -73,8 +83,8 @@ function MetricCards() {
             </span>
           )}
         </div>
-        <div className="text-[10px] text-zinc-400 mt-0.5">
-          {account?.daily_loss_latched ? "Daily Drawdown Tripped" : "Collars & Freshness OK"}
+        <div className="text-2xs text-zinc-400 mt-0.5">
+          {!account ? "Account status unavailable" : account.daily_loss_latched ? "Daily Drawdown Tripped" : "Daily loss latch not tripped"}
         </div>
       </div>
     </div>
@@ -190,7 +200,7 @@ export function PortfolioConsole() {
         <div>
           <h1 className="text-xl font-black tracking-wider text-white flex items-center space-x-2">
             <span>PORTFOLIO & PAPER EXECUTION CONSOLE</span>
-            <span className="px-2 py-0.5 rounded text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800">
+            <span className="px-2 py-0.5 rounded text-2xs bg-cyan-950 text-cyan-400 border border-cyan-800">
               M4 SIMULATOR
             </span>
           </h1>
@@ -421,24 +431,24 @@ export function PortfolioConsole() {
               {selectedPosition.side} • {fmtQty(selectedPosition.quantity)}
               {selectedPosition.leverage ? ` • ${selectedPosition.leverage}x ${selectedPosition.margin_mode ?? "CROSS"}` : ""}
             </div>
-            {selectedPosition.status !== "OPEN" && <div className="mt-1 text-[10px] text-zinc-500 uppercase">Closed</div>}
+            {selectedPosition.status !== "OPEN" && <div className="mt-1 text-2xs text-zinc-500 uppercase">Closed</div>}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Entry Price</div>
+              <div className="text-2xs text-zinc-500 uppercase tracking-wider mb-1">Entry Price</div>
               <div className="font-mono font-bold">{fmtPrice(selectedPosition.entry_price)}</div>
             </div>
             <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Mark Price</div>
+              <div className="text-2xs text-zinc-500 uppercase tracking-wider mb-1">Mark Price</div>
               <div className="font-mono font-bold text-cyan-400">{fmtPrice(selectedPosition.current_price || selectedPosition.entry_price)}</div>
             </div>
             <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Unrealized</div>
+              <div className="text-2xs text-zinc-500 uppercase tracking-wider mb-1">Unrealized</div>
               <div className={`font-mono font-bold ${selectedPosition.unrealized_pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtSignedUsd(selectedPosition.unrealized_pnl)}</div>
             </div>
             <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Liquidation</div>
+              <div className="text-2xs text-zinc-500 uppercase tracking-wider mb-1">Liquidation</div>
               <div className="font-mono font-bold text-amber-300">
                 {selectedPosition.liquidation_price ? fmtPrice(selectedPosition.liquidation_price) : "—"}
               </div>
@@ -485,13 +495,13 @@ export function PortfolioConsole() {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Status</div>
+              <div className="text-2xs text-zinc-500 uppercase tracking-wider mb-1">Status</div>
               <div className={`font-mono font-bold ${selectedStrategy.status === "RUNNING" ? "text-emerald-400" : "text-yellow-400"}`}>
                 {selectedStrategy.status}
               </div>
             </div>
             <div className="p-3 bg-zinc-900 rounded border border-zinc-800">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Allocation</div>
+              <div className="text-2xs text-zinc-500 uppercase tracking-wider mb-1">Allocation</div>
               <div className="font-mono font-bold text-cyan-400">{fmtUsd(Number(selectedStrategy.allocation_usd))}</div>
             </div>
           </div>
@@ -500,7 +510,7 @@ export function PortfolioConsole() {
             <div className="text-zinc-500 text-xs font-bold uppercase tracking-wider mb-2">Resolved Parameters</div>
             <div className="bg-zinc-900 rounded border border-zinc-800 p-3 overflow-x-auto">
               {selectedStrategy.resolved_parameters ? (
-                <pre className="text-[10px] text-zinc-400 font-mono">
+                <pre className="text-2xs text-zinc-400 font-mono">
                   {JSON.stringify(
                     typeof selectedStrategy.resolved_parameters === "string"
                       ? JSON.parse(selectedStrategy.resolved_parameters)
