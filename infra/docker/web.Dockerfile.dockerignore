@@ -1,0 +1,8 @@
+# Build context is the repo root (like every image); keep host build output and deps out of it.
+**/node_modules
+**/.next
+apps/web/test-results
+apps/web/playwright-report
+apps/web/e2e
+.git
+data
