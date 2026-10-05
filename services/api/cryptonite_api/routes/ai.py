@@ -34,7 +34,12 @@ from cryptonite_execution.autonomy import (
     transition,
 )
 from cryptonite_execution.autonomy_metrics import gate_report, propose_if_ready, report_view
-from cryptonite_execution.calibration import outcomes_by_regime, regime_outcome_rows, reliability, verdict_points
+from cryptonite_execution.calibration import (
+    outcomes_by_regime,
+    regime_outcome_rows,
+    reliability,
+    verdict_points,
+)
 from cryptonite_execution.mandate_store import (
     MANDATE_COLUMNS,
     apply_transition,
