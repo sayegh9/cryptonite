@@ -27,9 +27,13 @@ services:
     image: redis:7-alpine
     container_name: cryptonite_redis
     # LE-4: password from .env (REDIS_PASSWORD); every client URL below carries it
+    # Repairs an AOF damaged by a host crash before starting (infra/redis/redis-selfheal.sh)
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-selfheal.sh"]
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-redis_dev_pass}"]
+    restart: unless-stopped
     volumes:
       - redis_data:/data
+      - ./redis/redis-selfheal.sh:/usr/local/bin/redis-selfheal.sh:ro
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -45,6 +49,7 @@ services:
           - redis-agents
 
   ingest:
+    restart: unless-stopped  # come back after a host reboot like every other long-running service
     build:
       context: ..
       dockerfile: infra/docker/ingest.Dockerfile
@@ -344,6 +349,7 @@ services:
       - "127.0.0.1:8085:8085"
     restart: unless-stopped
   debate_worker:
+    restart: unless-stopped  # come back after a host reboot like every other long-running service
     build:
       context: ..
       dockerfile: infra/docker/debate_worker.Dockerfile
@@ -400,6 +406,7 @@ services:
       - ../packages/agents:/app/packages/agents
 
   exit_monitor:
+    restart: unless-stopped  # come back after a host reboot like every other long-running service
     build:
       context: ..
       dockerfile: infra/docker/scanner.Dockerfile
