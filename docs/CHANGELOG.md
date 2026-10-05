@@ -4,6 +4,7 @@ Release notes from before the AI-First program. Phases 0–7 of that program are
 
 ## Unreleased — review-plan
 - **B2 (F-C2, F-M6), tests first:** `tests/test_verdict_normalization.py` pins one verdict vocabulary (Buy/Overweight/STRONG_BUY/LONG → BUY, Sell/Underweight → SELL, Hold → HOLD, any case) through scoring, signed outcome, regime tables, routing and migration 037; the debate write-path test now expects `recommendation = BUY` with `conviction_level = Overweight`. Fails until the fix lands.
+- **B2 migration 037:** `portfolio_decisions` gains nullable `conviction_level` (the CRO's original wording, backfilled from every row's old `recommendation`); `recommendation` is normalized to BUY/SELL/HOLD (case-insensitive; STRONG_SELL/SHORT → SELL too) and constrained by `chk_portfolio_decisions_recommendation`. The upgrade aborts, listing the values, if any stored value has no mapping. No grant changes (table-level grants cover the column). Downgrade restores the original spelling. Deploy together with the debate worker's write-time fix, or the old worker's `Overweight` inserts fail the CHECK.
 
 ## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
 - **Database-Backed Action & Decision Inbox**: Refactored the Action Inbox to hydrate directly from PostgreSQL (`GET /api/v1/agents/debates`), with automatic client-side cache reconciliation that purges local browser storage when database records are cleared. Added formatted timestamps and strict chronological sorting.
