@@ -51,7 +51,7 @@ def test_effective_limits_come_from_the_dispatcher():
     assert ops_monitor.effective_limits(engine.dispatcher, now) == {
         "as_of": "2026-10-05T01:00:00Z",
         "paper": {"max_daily_loss_pct": "5", "min_order_equity_pct": "1", "max_order_equity_pct": "25",
-                  "taker_fee_bps": "10", "account_backstop_drawdown_pct": "20"},
+                  "taker_fee_bps": "10", "account_backstop_drawdown_pct": "20", "cross_mandate_exposure_pct": "25"},
     }
     d = SimpleNamespace(max_daily_loss_pct=Decimal("0.035"), min_order_equity_pct=Decimal("0.01"),
                         max_position_concentration_pct=Decimal("0.2"), taker_fee=Decimal("0.00075"))
@@ -118,19 +118,15 @@ def test_enforced_limits_need_an_operator(api):
     assert client.get("/api/v1/control/enforced-limits").status_code == 401
 
 
-BODY = {"step_up_password": "right", "max_daily_loss_pct": 2.5, "max_order_notional_usd": 1000.0,
-        "max_position_notional_usd": 5000.0}
-
-
-def test_risk_limits_answer_501_after_auth_csrf_and_step_up(api):
+def test_risk_limits_edit_needs_csrf_and_valid_values(api):
+    """F7 replaced the R1.8 501: the route keeps its auth and CSRF; refused values change nothing
+    (the full flow on a real DB is in test_risk_limits_f7.py)."""
     app, client = api
-    assert client.post("/api/v1/control/risk-limits", json=BODY).status_code == 403  # no CSRF
-    bad = client.post("/api/v1/control/risk-limits", json={**BODY, "step_up_password": "wrong"}, headers={"X-CSRF-Token": CSRF})
-    assert bad.status_code == 401
-    res = client.post("/api/v1/control/risk-limits", json=BODY, headers={"X-CSRF-Token": CSRF})
-    assert res.status_code == 501
-    assert res.json() == {"detail": "Limits are not configurable here; edit the mandate"}
-    assert all(e["action"] != "RISK_LIMITS_UPDATE" for e in app.state.auth_manager.audit)  # no fake change logged
+    body = {"max_daily_loss_pct": "2.5", "reason": "tighten for the review"}
+    assert client.post("/api/v1/control/risk-limits", json=body).status_code == 403  # no CSRF
+    client.cookies.clear()
+    assert client.post("/api/v1/control/risk-limits", json=body, headers={"X-CSRF-Token": CSRF}).status_code == 401
+    assert all(e["action"] != "RISK_LIMITS_UPDATE" for e in app.state.auth_manager.audit)
 
 
 # --- R7.5: heartbeat alerts -------------------------------------------------------------------------

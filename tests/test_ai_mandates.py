@@ -151,7 +151,11 @@ def test_an_entry_sized_to_the_room_is_never_a_breach(held, other, price, pct, o
         return
     order = buy(str(qty), str(price), order_type=order_type, conviction_level=conviction)
     assert check_mandate(m, order, exposure, approval_ok=True) is None
-    over = buy(str(qty * D("1.001")), str(price), order_type=order_type, conviction_level=conviction)
+    # "a hair more": 0.1%, or two quantity steps when rounding the quantity down to the step already
+    # left more than 0.1% of slack (tiny rooms, e.g. $0.02 left at 2,111.71 -> 0.00000923)
+    from cryptonite_execution.mandates import QUANTITY_STEP
+    over_qty = max(qty * D("1.001"), qty + 2 * QUANTITY_STEP)
+    over = buy(str(over_qty), str(price), order_type=order_type, conviction_level=conviction)
     assert check_mandate(m, over, exposure, approval_ok=True) in (MandateReject.POSITION_PCT_EXCEEDED,
                                                                   MandateReject.BUDGET_EXCEEDED)
 
@@ -365,8 +369,10 @@ def mandate_row(m: Mandate) -> dict:
 
 
 async def run_ai_command(payload, *, mandate_row=None, target="AI_DEBATE_WORKER", requester="operator:u1",
-                         cmd_type="SUBMIT_ORDER", mandate_id=None, positions=(), approval=None):
+                         cmd_type="SUBMIT_ORDER", mandate_id=None, positions=(), approval=None, dispatcher_position=None):
     d, _ = make_fresh_dispatcher()
+    if dispatcher_position is not None:
+        d.positions[SPOT] = dispatcher_position
     engine = make_engine(d)
     engine.bridge = MagicMock()
     quotes = SimpleQuoteCache()

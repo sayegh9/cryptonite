@@ -20,11 +20,13 @@ from cryptonite_execution.mandate_store import apply_transition, record_event
 from cryptonite_execution.mandates import (
     MandateExposure,
     MandateOrder,
+    action_class,
     check_mandate,
     same_instrument,
 )
 from cryptonite_schemas.mandate import (
     BREACH_CODES,
+    ActionClass,
     ApprovalStatus,
     AutonomyLevel,
     Mandate,
@@ -181,6 +183,13 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     ok = await approval_granted(conn, row, payload, mandate)
     reject = check_mandate(mandate, order, exposure, approval_ok=ok)
+    if reject is None and action_class(order) is ActionClass.ADD_RISK:
+        # F4: an extra refusal on top of the mandate check (never a breach); exits are never refused
+        from cryptonite_orchestrator.cross_mandate import cross_mandate_reject
+        cross = await cross_mandate_reject(conn, engine, mandate, order, ref_prices)
+        if cross is not None:
+            logger.warning("AI order %s refused by the cross-mandate exposure check: %s", _row_get(row, "command_id"), cross)
+            return cross
     if reject is None and not await ensure_mandate_instance(conn, mandate, getattr(engine, "account_id", "PAPER-ACCOUNT-001")):
         reject = MandateReject.INSTANCE_UNAVAILABLE
     if reject is not None:

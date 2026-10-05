@@ -4,6 +4,9 @@
   (read from its attributes, never from constants elsewhere) plus the account backstop, published at
   start-up and every ``OPS_EVERY_S``. The API's ``GET /control/enforced-limits`` serves it; the key
   expires when the orchestrator stops publishing, so a dead orchestrator reads as "unknown".
+  Before each publish the operator's tighten-only overrides (F7, ``risk_overrides``) are re-read and
+  applied, so the published values are the applied ones, including the F4 cross-mandate cap
+  (``cross_mandate_exposure_pct``). The 30-day betas the F4 check uses are refreshed hourly here too.
 - Heartbeat alerts: learner, exit monitor, local model tier and ``sentiment:last_ok`` are checked on
   the same timer; a heartbeat that goes down raises one alert through the existing alert path
   (``channel:system_alerts`` + ``notifications_outbox``, where it queues while the opt-in notifier is
@@ -21,6 +24,7 @@ from typing import Any
 
 from cryptonite_schemas.mandate import ACCOUNT_BACKSTOP_DRAWDOWN_PCT
 
+from cryptonite_orchestrator import risk_overrides
 from cryptonite_orchestrator.mandate_monitor import alert
 
 logger = logging.getLogger("cryptonite.orchestrator.ops_monitor")
@@ -42,9 +46,13 @@ def _plain(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
-def effective_limits(dispatcher, now: datetime.datetime | None = None) -> dict[str, Any]:
-    """The contract of ``GET /api/v1/control/enforced-limits`` from the dispatcher's own attributes."""
+def effective_limits(dispatcher, now: datetime.datetime | None = None,
+                     cross_mandate_exposure_pct: Decimal | None = None) -> dict[str, Any]:
+    """The contract of ``GET /api/v1/control/enforced-limits`` from the dispatcher's own attributes
+    (and the F4 cap this process applies)."""
     now = now or datetime.datetime.now(datetime.UTC)
+    if cross_mandate_exposure_pct is None:
+        cross_mandate_exposure_pct = risk_overrides.STATE.cross_cap_pct
     pct = Decimal("100")
     return {
         "as_of": now.isoformat().replace("+00:00", "Z"),
@@ -54,6 +62,7 @@ def effective_limits(dispatcher, now: datetime.datetime | None = None) -> dict[s
             "max_order_equity_pct": _plain(Decimal(str(dispatcher.max_position_concentration_pct)) * pct),
             "taker_fee_bps": _plain(Decimal(str(dispatcher.taker_fee)) * Decimal("10000")),
             "account_backstop_drawdown_pct": _plain(Decimal(str(ACCOUNT_BACKSTOP_DRAWDOWN_PCT))),
+            "cross_mandate_exposure_pct": _plain(Decimal(str(cross_mandate_exposure_pct))),
         },
     }
 
@@ -142,9 +151,17 @@ async def check_heartbeats(pool, redis, watch: HeartbeatWatch, now_s: float | No
 
 
 async def ops_monitor(engine, pool, redis, interval_s: float = OPS_EVERY_S) -> None:
-    """Start-up publish, then every ``interval_s``: effective limits and heartbeat alerts."""
+    """Start-up publish, then every ``interval_s``: risk-limit overrides (F7) and betas (F4, hourly),
+    effective limits and heartbeat alerts."""
     watch = HeartbeatWatch()
     while True:
+        await risk_overrides.refresh_risk_limits(engine, pool)  # logs and keeps what is applied on failure
+        try:
+            await risk_overrides.refresh_betas(pool)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Beta refresh failed: %s", e)
         try:
             await publish_effective_limits(engine, redis)
         except asyncio.CancelledError:

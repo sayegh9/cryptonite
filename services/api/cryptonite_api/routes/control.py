@@ -3,16 +3,28 @@
 Provides audited endpoints for:
 1. Emergency kill-switch tripping.
 2. Step-up authenticated kill-switch resetting.
-3. The risk limits the paper orchestrator enforces (read-only; edits answer 501).
+3. The risk limits the paper orchestrator enforces, and the operator's tighten-only overrides (F7):
+   tightening is direct, loosening needs the operator's TOTP, nothing goes past the code defaults.
 4. Strict CSRF header verification on all mutating requests.
 """
 
 import json
 import time
 import uuid
+from decimal import Decimal
 
 from cryptonite_api.auth import OperatorAuthManager
+from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import get_auth_manager, require_operator
+from cryptonite_execution.risk_limits import (
+    DEFAULTS,
+    LIMIT_NAMES,
+    MIN_ORDER_EQUITY_PCT,
+    NOT_CONFIGURABLE,
+    RiskLimitValues,
+    effective,
+    validate_change,
+)
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -20,7 +32,7 @@ router = APIRouter(prefix="/api/v1/control", tags=["control"])
 
 # Published by the orchestrator from its GuardedOrderDispatcher (ops_monitor, R1.8); expires if it stops
 EFFECTIVE_LIMITS_KEY = "risk:effective_limits"
-RISK_LIMITS_NOT_CONFIGURABLE = "Limits are not configurable here; edit the mandate"
+RISK_LIMITS_APPLY_S = 60  # the orchestrator re-reads overrides every minute (ops_monitor)
 
 
 class TripKillSwitchRequest(BaseModel):
@@ -37,10 +49,15 @@ class ResetKillSwitchRequest(BaseModel):
 
 
 class UpdateRiskLimitsRequest(BaseModel):
-    step_up_password: str = Field(..., min_length=1, description="Operator password for step-up authentication")
-    max_daily_loss_pct: float = Field(..., gt=0.0, le=10.0)
-    max_order_notional_usd: float = Field(..., gt=0.0, le=100000.0)
-    max_position_notional_usd: float = Field(..., gt=0.0, le=250000.0)
+    """The full desired override set, in percent; null = no override (the code default applies)."""
+
+    environment: str = Field(default="PAPER", pattern=r"^(PAPER|DEMO|LIVE)$")
+    account_id: str = Field(default="PAPER-ACCOUNT-001", min_length=1, max_length=64)
+    max_daily_loss_pct: Decimal | None = Field(default=None, max_digits=8, decimal_places=4)
+    max_order_equity_pct: Decimal | None = Field(default=None, max_digits=8, decimal_places=4)
+    cross_mandate_exposure_pct: Decimal | None = Field(default=None, max_digits=8, decimal_places=4)
+    reason: str = Field(..., min_length=5, max_length=300, description="Audited reason for the change")
+    totp_code: str | None = Field(default=None, description="Operator TOTP; required only to loosen a limit")
 
 
 def verify_csrf(session: dict, x_csrf_token: str | None) -> None:
@@ -230,6 +247,35 @@ async def reset_kill_switch(
     }
 
 
+def _risk_limits_view(env: str, account_id: str, row) -> dict:
+    overrides = RiskLimitValues.from_row(row)
+    return {
+        "environment": env,
+        "account_id": account_id,
+        "defaults": DEFAULTS.as_dict(),
+        "overrides": overrides.as_dict(),
+        "effective": effective(overrides).as_dict(),
+        "min_order_equity_pct": format(MIN_ORDER_EQUITY_PCT, "f"),
+        "not_configurable": {k: format(v, "f") for k, v in NOT_CONFIGURABLE.items()},
+        "updated_by": row["updated_by"] if row else None,
+        "updated_at": row["updated_at"].isoformat() if row and row["updated_at"] else None,
+        "reason": row["reason"] if row else None,
+    }
+
+
+_OVERRIDE_SQL = """SELECT max_daily_loss_pct, max_order_equity_pct, cross_mandate_exposure_pct, updated_by, updated_at, reason
+                   FROM risk_limit_overrides WHERE environment = $1 AND account_id = $2"""
+
+
+@router.get("/risk-limits")
+async def get_risk_limits(request: Request, environment: str = "PAPER", account_id: str = "PAPER-ACCOUNT-001",
+                          auth: dict = Depends(require_operator)):
+    """Stored overrides, the code defaults (= ceilings) and the limits that apply (F7)."""
+    async with request.app.state.pool.acquire() as conn:
+        row = await conn.fetchrow(_OVERRIDE_SQL, environment, account_id)
+    return _risk_limits_view(environment, account_id, row)
+
+
 @router.post("/risk-limits")
 async def update_risk_limits(
     req: UpdateRiskLimitsRequest,
@@ -238,28 +284,66 @@ async def update_risk_limits(
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
     x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ):
-    """Limits are not editable here: 501 after auth, CSRF and step-up (edit the mandate instead)."""
+    """Store the operator's override set (F7). Rules (``cryptonite_execution.risk_limits``): no value above
+    its code default; tightening needs no TOTP; loosening (a higher value, or removing an override) needs
+    the operator's TOTP. Refusals answer 422 with one error per field and change nothing."""
     verify_csrf(auth, x_csrf_token)
-    username = auth["username"]
+    username = auth.get("username") or f"machine:{auth.get('role', 'operator')}"
     client_ip = request.client.host if request.client else None
+    requested = RiskLimitValues(**{name: getattr(req, name) for name in LIMIT_NAMES})
 
-    # Step-up password verification
-    is_valid_pw = await auth_mgr.verify_operator_step_up(username, req.step_up_password)
-    if not is_valid_pw:
-        await auth_mgr.log_audit_event(
-            username=username,
-            action="RISK_LIMITS_UPDATE_FAILED_AUTH",
-            ip_address=client_ip,
-            details={"reason": "Incorrect step-up password attempt"},
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Step-up authentication failed: Invalid password",
-        )
+    async with request.app.state.pool.acquire() as conn:
+        async with conn.transaction():
+            # Serialise concurrent edits of one account: the TOTP decision is made against the stored row
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('risk_limit_overrides:' || $1 || ':' || $2))",
+                               req.environment, req.account_id)
+            row = await conn.fetchrow(_OVERRIDE_SQL + " FOR UPDATE", req.environment, req.account_id)
+            current = RiskLimitValues.from_row(row)
+            check = validate_change(current, requested)
+            if not check.ok:
+                raise HTTPException(
+                    status_code=422,
+                    detail=[{"loc": ["body", name], "msg": f"{name}: {msg}", "type": "risk_limit"}
+                            for name, msg in check.errors.items()],
+                )
+            if check.needs_totp:
+                try:
+                    await require_totp(request, auth, req.totp_code)
+                except HTTPException as e:
+                    await auth_mgr.log_audit_event(
+                        username=username, action="RISK_LIMITS_UPDATE_FAILED_AUTH", ip_address=client_ip,
+                        details={"environment": req.environment, "account_id": req.account_id,
+                                 "loosened": list(check.loosened), "status": e.status_code})
+                    if e.status_code == status.HTTP_401_UNAUTHORIZED:
+                        raise HTTPException(status_code=401, detail=(
+                            "TOTP_REQUIRED: loosening " + ", ".join(check.loosened) + " needs your current TOTP code"))
+                    raise
+            saved = await conn.fetchrow(
+                """INSERT INTO risk_limit_overrides (environment, account_id, max_daily_loss_pct, max_order_equity_pct,
+                       cross_mandate_exposure_pct, updated_by, updated_at, reason)
+                   VALUES ($1, $2, $3, $4, $5, $6, now(), $7)
+                   ON CONFLICT (environment, account_id) DO UPDATE SET
+                       max_daily_loss_pct = EXCLUDED.max_daily_loss_pct,
+                       max_order_equity_pct = EXCLUDED.max_order_equity_pct,
+                       cross_mandate_exposure_pct = EXCLUDED.cross_mandate_exposure_pct,
+                       updated_by = EXCLUDED.updated_by, updated_at = now(), reason = EXCLUDED.reason
+                   RETURNING max_daily_loss_pct, max_order_equity_pct, cross_mandate_exposure_pct, updated_by, updated_at, reason""",
+                req.environment, req.account_id, requested.max_daily_loss_pct, requested.max_order_equity_pct,
+                requested.cross_mandate_exposure_pct, username, req.reason)
 
-    # Nothing reads limits from here: the dispatcher's limits are fixed and per-mandate limits live on the
-    # mandate. Answer honestly instead of reporting a change that never happens (R1.8, N9).
-    raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=RISK_LIMITS_NOT_CONFIGURABLE)
+    await auth_mgr.log_audit_event(
+        username=username, action="RISK_LIMITS_UPDATE", ip_address=client_ip,
+        details={"environment": req.environment, "account_id": req.account_id, "reason": req.reason,
+                 "before": current.as_dict(), "after": requested.as_dict(),
+                 "tightened": list(check.tightened), "loosened": list(check.loosened),
+                 "totp_verified": check.needs_totp})
+    return {
+        "success": True,
+        **_risk_limits_view(req.environment, req.account_id, saved),
+        "tightened": list(check.tightened),
+        "loosened": list(check.loosened),
+        "applies_within_s": RISK_LIMITS_APPLY_S,
+    }
 
 
 @router.get("/enforced-limits")

@@ -264,10 +264,12 @@ services:
       - DATABASE_URL=postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       - ASYNC_DATABASE_URL=postgresql+asyncpg://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      - ANALYTICS_LAKE_PATH=/app/data/analytics_lake  # F4 betas (1h bars); without it beta falls back to 1.0
     volumes:
       - ../services/orchestrator:/app/services/orchestrator
       - ../packages/execution:/app/packages/execution
       - ../packages/strategies:/app/packages/strategies
+      - ../data/analytics_lake:/app/data/analytics_lake:ro
     restart: unless-stopped
 
   # Binance Demo venue executor: opt-in (`--profile binance_demo`). The paper stack does not use it, and it
