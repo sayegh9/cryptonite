@@ -1,18 +1,29 @@
-import uuid
-import logging
-import hmac
 import hashlib
-import time
+import hmac
 import json
-import secrets
-import httpx
+import logging
 import os
-from cryptonite_api.routes.auth import OPERATOR_WRITE, require_auth, require_human_operator, require_operator, require_csrf
-from cryptonite_execution.approvals import ApprovalConflict, decide_approval, record_operator_approval
+import secrets
+import time
+import uuid
+
+import httpx
+from cryptonite_api.routes.auth import (
+    OPERATOR_WRITE,
+    require_auth,
+    require_csrf,
+    require_human_operator,
+    require_operator,
+)
+from cryptonite_api.similar import similar_or_none
+from cryptonite_execution.approvals import (
+    ApprovalConflict,
+    decide_approval,
+    record_operator_approval,
+)
 from cryptonite_execution.mandate_store import resolve_mandate_for
 from cryptonite_schemas.mandate import ActionClass
-from cryptonite_api.similar import similar_or_none
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -55,7 +66,7 @@ def sign_request(method: str, path: str, body: bytes) -> dict:
     nonce = secrets.token_hex(8)
     body_digest = hashlib.sha256(body).hexdigest()
     
-    msg = f"{method}:{path}:{body_digest}:{timestamp}:{nonce}".encode("utf-8")
+    msg = f"{method}:{path}:{body_digest}:{timestamp}:{nonce}".encode()
     signature = hmac.new(INTERNAL_HMAC_SECRET.encode("utf-8"), msg, hashlib.sha256).hexdigest()
     
     return {

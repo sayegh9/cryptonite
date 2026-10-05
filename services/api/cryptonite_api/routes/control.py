@@ -10,12 +10,11 @@ Provides audited endpoints for:
 import json
 import time
 import uuid
-from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field
 
 from cryptonite_api.auth import OperatorAuthManager
-from cryptonite_api.routes.auth import get_auth_manager, require_operator, require_csrf
+from cryptonite_api.routes.auth import get_auth_manager, require_operator
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1/control", tags=["control"])
 
@@ -44,7 +43,7 @@ class UpdateRiskLimitsRequest(BaseModel):
     max_position_notional_usd: float = Field(..., gt=0.0, le=250000.0)
 
 
-def verify_csrf(session: dict, x_csrf_token: Optional[str]) -> None:
+def verify_csrf(session: dict, x_csrf_token: str | None) -> None:
     """Enforce CSRF token match between header and authenticated session."""
     if not x_csrf_token or x_csrf_token != session.get("csrf_token"):
         raise HTTPException(
@@ -95,7 +94,7 @@ async def trip_kill_switch(
     request: Request,
     auth: dict = Depends(require_operator),
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
-    x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ):
     """Manually trip the emergency kill switch with full audit logging via SECURITY DEFINER function."""
     verify_csrf(auth, x_csrf_token)
@@ -136,7 +135,7 @@ async def reset_kill_switch(
     request: Request,
     auth: dict = Depends(require_operator),
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
-    x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ):
     """Request reset of the emergency kill switch requiring step-up password authentication.
     
@@ -237,7 +236,7 @@ async def update_risk_limits(
     request: Request,
     auth: dict = Depends(require_operator),
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
-    x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ):
     """Limits are not editable here: 501 after auth, CSRF and step-up (edit the mandate instead)."""
     verify_csrf(auth, x_csrf_token)

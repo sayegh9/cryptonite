@@ -2,10 +2,12 @@ import asyncio
 import json
 import logging
 import os
-import uuid
 import time
+import uuid
+
 import asyncpg
 import redis.asyncio as redis
+from cryptonite_agents import news
 from cryptonite_agents.debate_fleet import (
     AGGRESSIVE_RISK,
     BEAR,
@@ -22,7 +24,6 @@ from cryptonite_agents.debate_fleet import (
     SENTIMENT_ANALYST,
     research_manager,
 )
-from cryptonite_agents import news
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate
 from mandate_routing import route_entry, route_exit
@@ -121,11 +122,16 @@ async def init_redis_group(redis_client: redis.Redis):
 
 async def emit_heartbeat(redis_client, role_name: str, status: str, msg: str = ""):
     role_lower = role_name.lower()
-    if "analyst" in role_lower: agent_id = "scout"
-    elif "bull" in role_lower or "bear" in role_lower: agent_id = "debater"
-    elif "risk" in role_lower or "cro" in role_lower: agent_id = "cro"
-    elif "manager" in role_lower or "orchestrator" in role_lower: agent_id = "orchestrator"
-    else: agent_id = "scout"
+    if "analyst" in role_lower:
+        agent_id = "scout"
+    elif "bull" in role_lower or "bear" in role_lower:
+        agent_id = "debater"
+    elif "risk" in role_lower or "cro" in role_lower:
+        agent_id = "cro"
+    elif "manager" in role_lower or "orchestrator" in role_lower:
+        agent_id = "orchestrator"
+    else:
+        agent_id = "scout"
     
     await redis_client.publish("channel:agent_heartbeat", json.dumps({
         "type": "HEARTBEAT",
@@ -435,7 +441,7 @@ async def main():
     await init_redis_group(redis_client)
     try:
         await redis_client.xgroup_create("stream:exit_debate_queue", DEBATE_WORKER_GROUP, id="0", mkstream=True)
-    except Exception as e:
+    except Exception:
         pass
     
     while True:

@@ -1,19 +1,17 @@
 """Tests for Operator Authentication, Argon2id, AES-256-GCM TOTP, replay prevention, and sessions."""
 
-import os
 import uuid
+
 import asyncpg
 import pyotp
 import pytest
 import redis.asyncio as aioredis
+from connections import DB_URL, REDIS_URL
 from cryptography.exceptions import InvalidTag
-from fastapi import HTTPException
-from fastapi.testclient import TestClient
-
 from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.main import create_app
-from connections import DB_URL, REDIS_URL
-
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 
 @pytest.mark.asyncio

@@ -23,7 +23,6 @@ from cryptonite_scanner.indicators import (
     calc_volume_ratio,
 )
 
-
 # --- independent reference implementations (plain Python loops) ---------------------------------
 
 def ref_rsi(closes: list[float], period: int) -> list[float | None]:
