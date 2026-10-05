@@ -2,6 +2,9 @@
 
 Release notes from before the AI-First program. Phases 0–7 of that program are described in [ai-first-program.md](ai-first-program.md) and logged in [HANDOFF.md](../HANDOFF.md).
 
+## Unreleased — review-plan
+- **B2 (F-C2, F-M6), tests first:** `tests/test_verdict_normalization.py` pins one verdict vocabulary (Buy/Overweight/STRONG_BUY/LONG → BUY, Sell/Underweight → SELL, Hold → HOLD, any case) through scoring, signed outcome, regime tables, routing and migration 037; the debate write-path test now expects `recommendation = BUY` with `conviction_level = Overweight`. Fails until the fix lands.
+
 ## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
 - **Database-Backed Action & Decision Inbox**: Refactored the Action Inbox to hydrate directly from PostgreSQL (`GET /api/v1/agents/debates`), with automatic client-side cache reconciliation that purges local browser storage when database records are cleared. Added formatted timestamps and strict chronological sorting.
 - **Docked Operator Control Sidebar**: Added direct access to the Execution Kill-Switch panel from the main Trading Terminal via the right-sidebar toolbar (red Shield toggle), allowing traders to manage risk and trip emergency stops without leaving active charts.
