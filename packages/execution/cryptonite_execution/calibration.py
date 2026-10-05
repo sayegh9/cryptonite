@@ -11,6 +11,10 @@ number, so the L3 gate keeps failing closed.
 Reported alongside, for information only (R4.3, D6): a 90% bootstrap interval of the ECE and the
 reliability table on equal-count bins (fixed-width bins can leave one bin with most of the points).
 The 20-decision minimum is policy and unchanged.
+
+Also for information only (F5): an isotonic (pool-adjacent-violators) map from stated conviction to
+hit rate, fitted once there are ``MIN_ISOTONIC_POINTS`` labelled decisions. It is shown next to the
+raw conviction and never used for sizing, routing or a gate.
 """
 
 import random
@@ -23,6 +27,7 @@ HORIZON = "24h"
 NEUTRAL_BAND = 0.002  # |24h return| <= 0.2%: too small to call right or wrong
 ECE_BOOT = 1000
 ECE_SEED = 20261005
+MIN_ISOTONIC_POINTS = 200  # F5: the isotonic map is fitted from 200 labelled (WIN/LOSS) decisions on
 
 Score = Literal["WIN", "LOSS", "NEUTRAL"]
 
@@ -86,10 +91,65 @@ def equal_count_bins(points: list[tuple[float, bool]], bins: int = BINS) -> list
     return rows
 
 
+def pav(ys: list[float], weights: list[float] | None = None) -> list[float]:
+    """Pool-adjacent-violators: the non-decreasing sequence closest to ``ys`` in weighted least squares
+    (``ys`` already ordered by x). Returns one fitted value per input."""
+    ws = weights or [1.0] * len(ys)
+    blocks: list[list[float]] = []  # [weighted sum, weight, count]
+    for y, w in zip(ys, ws, strict=True):
+        blocks.append([y * w, w, 1])
+        while len(blocks) > 1 and blocks[-2][0] / blocks[-2][1] > blocks[-1][0] / blocks[-1][1]:
+            s, w2, c = blocks.pop()
+            blocks[-1][0] += s
+            blocks[-1][1] += w2
+            blocks[-1][2] += c
+    out: list[float] = []
+    for s, w, c in blocks:
+        out.extend([s / w] * int(c))
+    return out
+
+
+def isotonic_fit(points: list[tuple[float, bool]]) -> list[list[float]]:
+    """Isotonic map from stated confidence to hit rate (F5): PAV on the points pooled per distinct
+    confidence. Returns the step function as [[x, y], ...] (each step's first and last x)."""
+    pooled: dict[float, list[float]] = {}
+    for conf, right in points:
+        c = min(max(float(conf), 0.0), 1.0)
+        acc = pooled.setdefault(c, [0.0, 0.0])
+        acc[0] += 1.0 if right else 0.0
+        acc[1] += 1.0
+    xs = sorted(pooled)
+    fitted = pav([pooled[x][0] / pooled[x][1] for x in xs], [pooled[x][1] for x in xs])
+    steps: list[list[float]] = []
+    for i, (x, y) in enumerate(zip(xs, fitted, strict=True)):
+        first = i == 0 or fitted[i - 1] != y
+        last = i == len(xs) - 1 or fitted[i + 1] != y
+        if first or last:
+            steps.append([round(x, 4), round(y, 4)])
+    return steps
+
+
+def isotonic_report(points: list[tuple[float, bool]]) -> dict[str, Any]:
+    """``{fitted, n, min_points, points}``: the isotonic calibration map, fitted only from
+    ``MIN_ISOTONIC_POINTS`` labelled (WIN/LOSS) decisions on. Informational: never used for sizing,
+    routing or a gate."""
+    n = len(points)
+    if n < MIN_ISOTONIC_POINTS:
+        return {"fitted": False, "n": n, "min_points": MIN_ISOTONIC_POINTS, "points": []}
+    return {"fitted": True, "n": n, "min_points": MIN_ISOTONIC_POINTS, "points": isotonic_fit(points)}
+
+
+def _isotonic_or_unavailable(points: list[tuple[float, bool]]) -> dict[str, Any]:
+    try:
+        return isotonic_report(points)
+    except Exception:  # reporting only: the reliability report (and the gate reading its ECE) stands without it
+        return {"fitted": False, "n": len(points), "min_points": MIN_ISOTONIC_POINTS, "points": []}
+
+
 def reliability(points: list[tuple[float, bool]], bins: int = BINS) -> dict[str, Any]:
     """``points`` are (stated confidence 0-1, was right). Returns per-bin mean confidence / hit rate and
-    the ECE in percentage points (None below ``MIN_SAMPLES``), plus the informational ECE interval and
-    equal-count bins."""
+    the ECE in percentage points (None below ``MIN_SAMPLES``), plus the informational ECE interval,
+    equal-count bins and the isotonic calibration map (F5)."""
     rows, gap_sum = [], 0.0
     for i, b in enumerate(_fixed_buckets(points, bins)):
         if not b:
@@ -104,7 +164,8 @@ def reliability(points: list[tuple[float, bool]], bins: int = BINS) -> dict[str,
     ece = round(gap_sum / n * 100, 2) if n >= MIN_SAMPLES else None
     ci = ece_interval_pp(points, bins)
     return {"n": n, "min_samples": MIN_SAMPLES, "ece_pp": ece, "bins": rows,
-            "ece_interval_pp": list(ci) if ci else None, "equal_count_bins": equal_count_bins(points, bins)}
+            "ece_interval_pp": list(ci) if ci else None, "equal_count_bins": equal_count_bins(points, bins),
+            "isotonic": _isotonic_or_unavailable(points)}
 
 
 async def verdict_points(conn, mandate_id: Any = None, since: Any = None) -> list[tuple[float, bool]]:
@@ -131,3 +192,38 @@ async def calibration_interval_pp(conn, mandate_id: Any, since: Any) -> tuple[De
     """Informational 90% interval of the mandate's ECE (R4.3); None below the minimum sample."""
     ci = ece_interval_pp(await verdict_points(conn, mandate_id, since))
     return (Decimal(str(ci[0])), Decimal(str(ci[1]))) if ci else None
+
+
+REGIME_ORDER = ("TREND_UP", "TREND_DOWN", "CHOP", "HIGH_VOL", "UNKNOWN")
+
+
+def outcomes_by_regime(rows: list[tuple[str | None, str, float]]) -> list[dict[str, Any]]:
+    """F1 (reporting only): ``rows`` are (regime at decision time or None, recommendation, asset return
+    after the horizon). Per regime: n, WIN / LOSS / NEUTRAL counts (``score_decision``) and the mean
+    signed return (BUY gains on a rise; SELL / HOLD on a fall). Untagged decisions are ``UNKNOWN``."""
+    acc: dict[str, dict[str, Any]] = {}
+    for regime, rec, ret in rows:
+        key = regime or "UNKNOWN"
+        a = acc.setdefault(key, {"regime": key, "n": 0, "wins": 0, "losses": 0, "neutral": 0, "_sum": 0.0})
+        score = score_decision(rec, ret)
+        a["n"] += 1
+        a["wins" if score == "WIN" else "losses" if score == "LOSS" else "neutral"] += 1
+        a["_sum"] += ret if rec.upper() == "BUY" else -ret
+    out = []
+    for key in sorted(acc, key=lambda k: REGIME_ORDER.index(k) if k in REGIME_ORDER else len(REGIME_ORDER)):
+        a = acc[key]
+        a["mean_signed_return"] = round(a.pop("_sum") / a["n"], 8)
+        out.append(a)
+    return out
+
+
+async def regime_outcome_rows(conn, horizon: str = HORIZON, mandate_id: Any = None) -> list[tuple[str | None, str, float]]:
+    """(regime, recommendation, return) of every decision labelled at ``horizon``, optionally of one mandate."""
+    rows = await conn.fetch(
+        """SELECT o.regime, pd.recommendation, o.return_pct
+           FROM portfolio_decisions pd
+           JOIN ai_decision_outcomes o ON o.decision_id = pd.id AND o.horizon = $1
+           LEFT JOIN debate_runs dr ON dr.id = pd.run_id
+           WHERE ($2::uuid IS NULL OR dr.mandate_id = $2::uuid)""",
+        horizon, mandate_id)
+    return [(r["regime"], r["recommendation"], float(r["return_pct"])) for r in rows]
