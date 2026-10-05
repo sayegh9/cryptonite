@@ -1,5 +1,6 @@
 import { liquidationDistance, perpSymbol } from '@/lib/perp/margin';
 import type { PaperPosition } from '@/lib/stores/usePortfolioStore';
+import { fmtQuantity, isZeroQuantity } from '@/lib/format';
 
 const DAY_MS = 86_400_000;
 const QUOTE_SUFFIXES = ['USDT', 'USDC', 'FDUSD', 'BUSD'];
@@ -14,6 +15,8 @@ export function baseAsset(instrumentId: string): string {
 }
 
 export const markOf = (p: PaperPosition) => p.current_price || p.entry_price;
+/** An OPEN row that actually holds something: FLAT and zero-quantity rows (e.g. a netted perp at "0E-18") are hidden (G4). */
+export const isHeldPosition = (p: PaperPosition) => p.status === 'OPEN' && p.side !== 'FLAT' && !isZeroQuantity(p.quantity);
 export const notionalOf = (p: PaperPosition) => Math.abs(p.quantity * markOf(p));
 
 /** Fraction of mark between mark and liquidation price; null when not applicable. */
@@ -120,4 +123,5 @@ export function fmtPrice(v: number): string {
   const digits = Math.abs(v) >= 1000 ? 2 : Math.abs(v) >= 1 ? 4 : 6;
   return `$${v.toLocaleString('en-US', { minimumFractionDigits: Math.min(digits, 2), maximumFractionDigits: digits })}`;
 }
-export const fmtQty = (v: number) => Number(v).toLocaleString('en-US', { maximumFractionDigits: 6 });
+/** Quantity without a known step size: significant-digit fallback of the shared formatter (G4). */
+export const fmtQty = (v: number | string) => fmtQuantity(v);

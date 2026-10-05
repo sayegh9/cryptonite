@@ -9,13 +9,20 @@ import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { listMandates } from "@/lib/mission/client";
 import { MANDATE_UPDATED_EVENT } from "@/lib/mission/events";
 import type { Mandate } from "@/lib/mission/types";
+import { fmtQuantity, isZeroQuantity } from "@/lib/format";
+import { fetchSizeSteps } from "@/lib/sizeSteps";
 
 interface RailPosition {
   instrument_id: string;
   side?: string;
   quantity?: string | number;
   unrealized_pnl?: string | number;
+  status?: string;
 }
+
+/** G4: closed rows and FLAT/zero-quantity rows (perp netting leaves "0E-18") are not positions */
+const isHeld = (p: RailPosition, step?: string) =>
+  p.status !== "CLOSED" && p.side !== "FLAT" && !isZeroQuantity(p.quantity ?? 0, step);
 
 const num = (v: unknown) => (v === null || v === undefined || v === "" ? null : Number(v));
 
@@ -37,12 +44,14 @@ export function BrainContextRail() {
   const [spend, setSpend] = useState<{ spent: number; cap: number } | null>(null);
   const [sessions, setSessions] = useState<BrainSessionSummary[]>([]);
   const [mandates, setMandates] = useState<Mandate[] | null>(null);
+  const [steps, setSteps] = useState<Record<string, string>>({});
   const sessionId = useBrainStore((s) => s.sessionId);
   const streaming = useBrainStore((s) => s.streaming);
 
   const refresh = useCallback(async () => {
     try {
-      const rows = await fetchApi("/paper/positions");
+      const [rows, sizeSteps] = await Promise.all([fetchApi("/paper/positions"), fetchSizeSteps()]);
+      setSteps(sizeSteps);
       setPositions(Array.isArray(rows) ? rows : []);
       setPositionsError(null);
     } catch (e: any) {
@@ -71,6 +80,7 @@ export function BrainContextRail() {
     if (!streaming) void refresh();
   }, [streaming, refresh]);
 
+  const held = positions?.filter((p) => isHeld(p, steps[p.instrument_id])) ?? null;
   const used = spend && spend.cap > 0 ? Math.min(100, (spend.spent / spend.cap) * 100) : null;
 
   return (
@@ -84,16 +94,16 @@ export function BrainContextRail() {
 
       <RailSection icon={<Landmark className="h-3 w-3 text-cyan-400" />} title="Paper positions">
         {positionsError && <p className="text-zinc-500">{positionsError}</p>}
-        {positions && positions.length === 0 && <p className="text-zinc-500">Flat. No open positions.</p>}
-        {positions && positions.length > 0 && (
+        {held && held.length === 0 && <p className="text-zinc-500">Flat. No open positions.</p>}
+        {held && held.length > 0 && (
           <ul className="space-y-1" data-testid="brain-rail-positions">
-            {positions.slice(0, 8).map((p, i) => {
+            {held.slice(0, 8).map((p, i) => {
               const pnl = num(p.unrealized_pnl);
               return (
                 <li key={`${p.instrument_id}-${i}`} className="flex justify-between gap-2">
                   <span className="truncate">
                     <span className={p.side === "SHORT" || p.side === "SELL" ? "text-rose-400" : "text-emerald-400"}>{p.side ?? ""}</span>{" "}
-                    {p.quantity} {p.instrument_id}
+                    <span data-testid="brain-rail-qty">{fmtQuantity(p.quantity, steps[p.instrument_id])}</span> {p.instrument_id}
                   </span>
                   {pnl !== null && <span className={pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>{pnl.toFixed(2)}</span>}
                 </li>
