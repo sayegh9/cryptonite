@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { AgentFleetRoster, TriggerMode } from "./AgentFleetRoster";
+import { AgentFleetRoster } from "./AgentFleetRoster";
 import { OrchestratorCanvas } from "./OrchestratorCanvas";
 import { ActionInbox } from "./ActionInbox";
 import { AIBrainTourModal } from "./AIBrainTourModal";
@@ -27,7 +27,6 @@ interface AIBrainWorkspaceProps {
 }
 
 export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWorkspaceProps) {
-  const [triggerMode, setTriggerMode] = useState<TriggerMode>("high-edge");
   const [selectedAgentId, setSelectedAgentId] = useState<string>("orchestrator");
   const [isTourOpen, setIsTourOpen] = useState(false);
   const view = useBrainStore((s) => s.workspaceView);
@@ -208,8 +207,6 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
             <AgentFleetRoster
               selectedAgentId={selectedAgentId}
               onSelectAgent={setSelectedAgentId}
-              triggerMode={triggerMode}
-              onTriggerModeChange={setTriggerMode}
               activeDebateCount={activeDebatesCount}
             />
           </aside>
