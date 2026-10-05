@@ -462,3 +462,36 @@ async def test_retry_after_a_failed_accept_places_the_working_order_again():
         await command_poller(pool_for(conn), engine, quotes)
     assert len(engine.dispatcher.open_orders) == 1
     assert engine.dispatcher.reserved_cash > 0
+
+
+# --- R7.3: real top-of-book sizes reach the matcher ----------------------------------------------
+
+
+async def test_resting_market_order_larger_than_the_ask_size_pays_impact():
+    engine = spot_engine()
+    await run_commands(engine, [order("M-2", "BUY", "MARKET", "0.02")], SimpleQuoteCache())
+    # ask shows 0.01: the order is 2x the size, one extra multiple = 5 bps above the ask
+    await match_resting_orders(pool_for(AsyncMock()), engine, SPOT, 50000.0, 50010.0, "3.0", "0.01")
+    assert D(engine.bridge.enqueue_event.call_args.args[0]["price"]) == D("50035.00500000")
+
+
+async def test_quote_without_sizes_keeps_the_touch():
+    engine = spot_engine()
+    await run_commands(engine, [order("M-3", "BUY", "MARKET", "0.02")], SimpleQuoteCache())
+    await match_resting_orders(pool_for(AsyncMock()), engine, SPOT, 50000.0, 50010.0)
+    assert D(engine.bridge.enqueue_event.call_args.args[0]["price"]) == D("50010")
+
+
+async def test_command_poller_uses_sizes_only_when_the_feed_sent_them():
+    with_sizes, defaults = SimpleQuoteCache(), SimpleQuoteCache()
+    with_sizes.set_quote(SPOT, 50000.0, 50010.0, 3.0, 0.01, sizes_known=True)
+    defaults.set_quote(SPOT, 50000.0, 50010.0)  # 1.0 placeholders, not real sizes
+    assert with_sizes.quote(SPOT).sizes_known is True and defaults.quote(SPOT).sizes_known is False
+
+    engine = spot_engine()
+    await run_commands(engine, [order("L-3", "BUY", "LIMIT", "0.02", "50100")], with_sizes)
+    assert D(engine.bridge.enqueue_event.call_args.args[0]["price"]) == D("50035.00500000")
+
+    engine = spot_engine()
+    await run_commands(engine, [order("L-4", "BUY", "LIMIT", "0.02", "50100")], defaults)
+    assert D(engine.bridge.enqueue_event.call_args.args[0]["price"]) == D("50010")

@@ -77,15 +77,18 @@ class SimpleQuote:
         self.bid_size = Decimal(str(bid_size))
         self.ask_size = Decimal(str(ask_size))
         self.ts_init = ts_init or time.time_ns()
+        self.sizes_known = False  # True when the feed sent real top-of-book sizes (not the 1.0 default)
 
 
 class SimpleQuoteCache:
     def __init__(self):
         self._quotes: dict[str, SimpleQuote] = {}
 
-    def set_quote(self, instrument_id: str, bid: float, ask: float, bid_size: float = 1.0, ask_size: float = 1.0, ts_init: int | None = None):
+    def set_quote(self, instrument_id: str, bid: float, ask: float, bid_size: float = 1.0, ask_size: float = 1.0, ts_init: int | None = None,
+                  sizes_known: bool = False):
         canonical = to_canonical_instrument(instrument_id)
         q = SimpleQuote(canonical, bid, ask, bid_size, ask_size, ts_init)
+        q.sizes_known = sizes_known
         self._quotes[canonical] = q
         self._quotes[canonical.replace(".BINANCE", "")] = q
 
@@ -236,11 +239,18 @@ def cancel_entries_if_latched(dispatcher) -> list[str]:
     return to_cancel
 
 
-async def match_resting_orders(pool, engine, instrument_id: str, bid: float, ask: float) -> None:
-    """Fill the working orders on ``instrument_id`` that this quote reaches."""
+def _size(v: Any) -> Decimal | None:
+    return Decimal(str(v)) if v is not None else None
+
+
+async def match_resting_orders(pool, engine, instrument_id: str, bid: float, ask: float,
+                               bid_size: Any = None, ask_size: Any = None) -> None:
+    """Fill the working orders on ``instrument_id`` that this quote reaches (R7.3: real top-of-book
+    sizes, when the feed sends them, let large taker fills pay price impact)."""
     d = engine.dispatcher
     cancelled = cancel_entries_if_latched(d)
-    fills = match_working_orders(d.open_orders, instrument_id, Decimal(str(bid)), Decimal(str(ask)))
+    fills = match_working_orders(d.open_orders, instrument_id, Decimal(str(bid)), Decimal(str(ask)),
+                                 _size(bid_size), _size(ask_size))
     if not fills and not cancelled:
         return
     async with pool.acquire() as conn:
@@ -372,6 +382,7 @@ async def consume_market_data(redis, engine, quote_cache, pool=None):
                     float(data.get("bid_size", 1.0)),
                     float(data.get("ask_size", 1.0)),
                     int(data.get("arrival_ns", time.time_ns())),
+                    sizes_known="bid_size" in data and "ask_size" in data,
                 )
         logger.info("Pre-seeded quote cache with %d entries", len(latest_quotes) if latest_quotes else 0)
     except Exception as e:
@@ -419,6 +430,7 @@ async def consume_market_data(redis, engine, quote_cache, pool=None):
                             float(data.get("bid_size", 1.0)),
                             float(data.get("ask_size", 1.0)),
                             int(data.get("arrival_ns", time.time_ns())),
+                            sizes_known="bid_size" in data and "ask_size" in data,
                         )
                         arrival_ns = int(data.get("arrival_ns", time.time_ns()))
                         if pool is not None and engine.dispatcher.open_orders and time.time_ns() - arrival_ns <= MAX_MATCH_QUOTE_AGE_NS:
@@ -426,6 +438,7 @@ async def consume_market_data(redis, engine, quote_cache, pool=None):
                                 await match_resting_orders(
                                     pool, engine, to_canonical_instrument(data["instrument_id"]),
                                     float(data["bid_price"]), float(data["ask_price"]),
+                                    data.get("bid_size"), data.get("ask_size"),
                                 )
                             except Exception as e:
                                 logger.error("Paper order matching failed for %s: %s", data["instrument_id"], e)
@@ -1012,6 +1025,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                         fill = match_order(
                                             client_oid, order_info,
                                             Decimal(str(quote.bid_price)), Decimal(str(quote.ask_price)),
+                                            *((quote.bid_size, quote.ask_size) if getattr(quote, "sizes_known", False) else (None, None)),
                                         )
                                     if fill:
                                         await apply_paper_fill(conn, engine, fill, instance_id, order_type, price_dec)
