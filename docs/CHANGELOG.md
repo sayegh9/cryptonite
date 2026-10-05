@@ -4,6 +4,7 @@ Release notes from before the AI-First program. Phases 0–7 of that program are
 
 ## Unreleased — review-plan
 - **C1 (F-H4) CI that gates merges**: `.github/workflows/ci.yml` runs `ruff` (changed Python files, blocking; whole tree informational until C2), `web` (`pnpm typecheck`, `pnpm lint`), `pytest` (Postgres 16 + pgvector and Redis 7 service containers, throwaway DB `cryptonite_ci`, roles from `init-roles.sh`, Alembic upgrade from empty) and `e2e-smoke` (`pnpm e2e:smoke`, a Playwright subset against a built web with the API stubbed).
+- **A5 (F-M2) Safe launcher, now tracked**: `scripts/launcher/cryptonite-up.sh` no longer runs `alembic upgrade head` (it warns when the schema is behind head) and starts the stack with `up -d --no-recreate --no-deps` on an explicit service list minus `HELD_SERVICES` (orchestrator, scanner, debate_worker, learner); held containers are only `start`ed if stopped, never recreated.
 
 ## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
 - **Database-Backed Action & Decision Inbox**: Refactored the Action Inbox to hydrate directly from PostgreSQL (`GET /api/v1/agents/debates`), with automatic client-side cache reconciliation that purges local browser storage when database records are cleared. Added formatted timestamps and strict chronological sorting.
