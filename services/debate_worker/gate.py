@@ -67,6 +67,13 @@ def decision_trace_id(payload: dict[str, Any]) -> str:
         return str(uuid.uuid4())
 
 
+def _trace_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(payload["decision_trace_id"])) if payload.get("decision_trace_id") else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def pre_debate_gate(pg_pool, redis, payload: dict[str, Any], gateway: Gateway | None,
                           brief: str | None, now_s: float | None = None,
                           brief_data: dict[str, Any] | None = None) -> GateDecision:
@@ -134,7 +141,8 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     if gateway is None:
         return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key)
     try:
-        result = await TRIAGE.run(gateway, brief)
+        # The setup's decision_trace_id as the trace parent links triage (and its F2 shadow) to outcomes
+        result = await TRIAGE.run(gateway, brief, parent_trace_id=_trace_uuid(payload))
     except Exception as e:  # gateway, budget or anything else: no triage, no paid debate; retry next candidate
         logger.warning("Triage unavailable for %s: %s", instrument_id, e)
         await redis.delete(cooldown_key)

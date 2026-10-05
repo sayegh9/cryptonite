@@ -46,6 +46,10 @@ class RoleRoute:
     daily_cap_usd: Decimal | None = None
     certified_primary: bool = False  # set once an eval run certifies primary_model for this role
     timeout_s: float = 90.0  # per model request; a hung call must not stall the worker
+    # F2 shadow mode: a candidate model answers a sample of this role's live calls after the primary
+    # returned; its answer is only logged (``ai_shadow_results``), never acted on
+    shadow_model: str | None = None
+    shadow_sample_rate: float = 0.0
 
 
 _O, _I, _D, _C = BudgetPriority.OPTIONAL, BudgetPriority.INTERACTIVE, BudgetPriority.DEBATE, BudgetPriority.CRITICAL
@@ -108,8 +112,11 @@ def route_from_row(row: dict[str, Any], base: RoleRoute | None) -> RoleRoute:
         "thinking_budget": row.get("thinking_budget"),
         "daily_cap_usd": Decimal(str(row["daily_cap_usd"])) if row.get("daily_cap_usd") is not None else None,
         "certified_primary": row.get("certified_primary"),
+        "shadow_model": normalize_model_id(row["shadow_model"]) if row.get("shadow_model") else None,
+        "shadow_sample_rate": _sample_rate(row.get("shadow_sample_rate")),
     }
     changes = {k: v for k, v in fields.items() if v is not None}
+    # Protected roles may have a shadow: it is never acted on, so it cannot weaken the decision
     if base.role in PROTECTED_ROLES:
         ignored = {k for k in changes if k in ("fallback_model", "fallback_policy", "priority")}
         if changes.get("primary_model") and not row.get("certified_primary"):
@@ -118,3 +125,15 @@ def route_from_row(row: dict[str, Any], base: RoleRoute | None) -> RoleRoute:
             logger.warning("Ignoring %s for protected role %s", sorted(ignored), base.role)
         changes = {k: v for k, v in changes.items() if k not in ignored}
     return replace(base, **changes)
+
+
+def _sample_rate(value: Any) -> float | None:
+    """``shadow_sample_rate`` clamped to [0, 1] (the column has a CHECK; this guards older rows/tests)."""
+    if value is None:
+        return None
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        logger.warning("Unparseable shadow_sample_rate %r; shadow disabled", value)
+        return 0.0
+    return min(1.0, max(0.0, rate)) if rate == rate else 0.0  # NaN -> 0

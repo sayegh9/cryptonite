@@ -7,9 +7,13 @@
      FAIL_CLOSED roles (trade decisions) raise instead of silently using a weaker model
   4. every tool call passes the permission gate
   5. cost the call, count it against the budget, write ledger + decision trace
+  6. shadow mode (F2): a sampled call is replayed on the route's shadow model in the background,
+     logged to ``ai_shadow_results`` and never acted on (``shadow.py``)
 """
 
+import asyncio
 import logging
+import random
 import time
 import uuid
 from collections.abc import Sequence
@@ -18,6 +22,7 @@ from decimal import Decimal
 from typing import Any
 
 from cryptonite_agents.gateway import pricing
+from cryptonite_agents.gateway import shadow as sh
 from cryptonite_agents.gateway.budget import BudgetExceeded, BudgetGuard
 from cryptonite_agents.gateway.ledger import CallRecord, write_call
 from cryptonite_agents.gateway.local_tier import LocalTierHealth, is_local
@@ -84,6 +89,8 @@ class Gateway:
         budget: BudgetGuard | None = None,
         permission: PermissionGate | None = None,
         local_tier: LocalTierHealth | None = None,
+        allow_paid_shadow: bool | None = None,
+        shadow_rng: random.Random | None = None,
     ) -> None:
         self.pool = pool
         self.local_tier = local_tier or LocalTierHealth(redis=redis)
@@ -92,6 +99,12 @@ class Gateway:
         self._defaults = dict(routes or DEFAULT_ROUTES)
         self._routes = dict(self._defaults)
         self._routes_loaded_at = float("-inf")
+        # Paid shadow models need an explicit opt-in: this argument, else system_settings
+        # AI_SHADOW_ALLOW_PAID (read with the routes). Local (Ollama) shadows are free and always allowed.
+        self._allow_paid_shadow_arg = allow_paid_shadow
+        self._allow_paid_shadow = bool(allow_paid_shadow)
+        self._shadow_rng = shadow_rng or random.Random()
+        self._shadow_tasks: set[asyncio.Task] = set()
 
     async def route(self, role: str) -> RoleRoute:
         await self._load_routes()
@@ -105,6 +118,8 @@ class Gateway:
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch("SELECT * FROM ai_model_routes")
+                if self._allow_paid_shadow_arg is None:  # same connection: no extra acquire on the call path
+                    self._allow_paid_shadow = await self._read_allow_paid(conn)
             routes = dict(self._defaults)
             for row in rows:
                 routes[row["role"]] = route_from_row(dict(row), self._defaults.get(row["role"]))
@@ -112,6 +127,98 @@ class Gateway:
         except Exception as e:
             logger.warning("Could not load ai_model_routes, using defaults: %s", e)
         self._routes_loaded_at = time.monotonic()
+
+    @staticmethod
+    async def _read_allow_paid(conn) -> bool:
+        try:
+            return _truthy(await conn.fetchval("SELECT value FROM system_settings WHERE key = 'AI_SHADOW_ALLOW_PAID'"))
+        except Exception as e:  # unknown means no paid shadows
+            logger.debug("Could not read AI_SHADOW_ALLOW_PAID: %s", e)
+            return False
+
+    # ------------------------------------------------------------------ shadow mode (F2)
+
+    def _maybe_shadow(self, route: RoleRoute, *, prompt: str, instructions: str | None, output_type: Any,
+                      tools: Sequence[ToolSpec], temperature: float | None, message_history: Sequence[Any] | None,
+                      model_override: str | None, result: "GatewayResult",
+                      parent_trace_id: uuid.UUID | None) -> None:
+        """Sample this call for the route's shadow and schedule it. Synchronous and cheap: the primary's
+        caller gets its result without waiting for, or ever seeing, anything the shadow does."""
+        try:
+            if (not route.shadow_model or route.shadow_sample_rate <= 0 or model_override or self.pool is None
+                    or route.shadow_model == result.model):
+                return  # pinned calls (evals, operator overrides) and pool-less gateways are not shadowed
+            if self._shadow_rng.random() >= route.shadow_sample_rate:
+                return
+            rec = sh.ShadowRecord(
+                role=route.role, primary_model=result.model, shadow_model=route.shadow_model, status="SKIPPED",
+                primary_trace_id=result.trace_id, parent_trace_id=parent_trace_id,
+                primary_output=sh.jsonable(result.output), primary_latency_ms=result.latency_ms,
+                primary_cost_usd=result.cost_usd,
+            )
+            if len(self._shadow_tasks) >= sh.MAX_SHADOW_INFLIGHT:
+                rec.error = "SHADOW_CONCURRENCY_LIMIT"
+                coro = sh.write_shadow(self.pool, rec)
+            else:
+                coro = self._run_shadow(route, rec, prompt=prompt, instructions=instructions, output_type=output_type,
+                                        tools=sh.shadow_tools(tools), temperature=temperature,
+                                        message_history=list(message_history) if message_history else None)
+            task = asyncio.get_running_loop().create_task(coro)
+            self._shadow_tasks.add(task)
+            task.add_done_callback(self._shadow_tasks.discard)
+        except Exception as e:  # never let the shadow touch the primary path
+            logger.warning("Shadow scheduling failed for %s: %s", route.role, e)
+
+    async def _run_shadow(self, route: RoleRoute, rec: "sh.ShadowRecord", *, prompt: str, instructions: str | None,
+                          output_type: Any, tools: tuple[ToolSpec, ...], temperature: float | None,
+                          message_history: list[Any] | None) -> None:
+        model = rec.shadow_model
+        try:
+            if not pricing.is_free(model) and not self._allow_paid_shadow:
+                rec.error = "PAID_SHADOW_NOT_ALLOWED"
+                return
+            try:
+                await self.budget.check_shadow(route)
+            except BudgetExceeded as e:
+                rec.error = e.reason
+                return
+            if is_local(model) and await self.local_tier.is_down(model):
+                rec.error = "LOCAL_TIER_DOWN"
+                return
+            started = time.monotonic()
+            try:
+                res = await backend.run_model(
+                    model, prompt, instructions=instructions, output_type=output_type, tools=tools,
+                    tool_guard=sh.shadow_guard, max_output_tokens=route.max_output_tokens,
+                    thinking_budget=route.thinking_budget, temperature=temperature,
+                    message_history=message_history, timeout_s=route.timeout_s,
+                )
+            except backend.BackendError as e:
+                u = e.usage
+                rec.status, rec.error = "ERROR", str(e)
+                rec.input_tokens, rec.output_tokens = u.input_tokens, u.output_tokens
+                rec.cached_input_tokens, rec.thinking_tokens = u.cached_input_tokens, u.thinking_tokens
+            else:
+                rec.status, rec.shadow_output = "OK", sh.jsonable(res.output)
+                rec.input_tokens, rec.output_tokens = res.input_tokens, res.output_tokens
+                rec.cached_input_tokens, rec.thinking_tokens = res.cached_input_tokens, res.thinking_tokens
+                rec.key_field, rec.agrees = sh.agreement(route.role, rec.primary_output, rec.shadow_output)
+            rec.shadow_latency_ms = int((time.monotonic() - started) * 1000)
+            rec.shadow_cost_usd = pricing.cost_usd(model, rec.input_tokens, rec.output_tokens, rec.cached_input_tokens)
+        except Exception as e:  # anything else is the shadow's own error, logged on its row
+            rec.status, rec.error = "ERROR", f"{type(e).__name__}: {e}"
+        finally:
+            ok = await sh.write_shadow(self.pool, rec)
+            if rec.status != "SKIPPED":
+                try:
+                    await self.budget.record(sh.shadow_role(route.role), rec.shadow_cost_usd, persisted=ok)
+                except Exception as e:
+                    logger.warning("Shadow budget record failed for %s: %s", route.role, e)
+
+    async def drain_shadows(self, timeout_s: float | None = None) -> None:
+        """Wait for scheduled shadow calls (tests, graceful shutdown)."""
+        if self._shadow_tasks:
+            await asyncio.wait(set(self._shadow_tasks), timeout=timeout_s)
 
     def _guard(self, role: str, ctx: CallContext):
         """Per-call tool gate: the permission check, plus per-turn caps on tools that start paid work
@@ -222,11 +329,15 @@ class Gateway:
             )
             ok = await write_call(self.pool, rec)
             await self.budget.record(role, cost, persisted=ok)
-            return GatewayResult(
+            result = GatewayResult(
                 output=res.output, role=role, model=res.model, cost_usd=cost, input_tokens=res.input_tokens,
                 output_tokens=res.output_tokens, thinking_tokens=res.thinking_tokens, latency_ms=latency,
                 trace_id=rec.trace_id, fell_back=model != route.primary_model, tool_calls=res.tool_calls, messages=res.messages,
             )
+            self._maybe_shadow(route, prompt=prompt, instructions=instructions, output_type=output_type, tools=tools,
+                               temperature=temperature, message_history=message_history,
+                               model_override=model_override, result=result, parent_trace_id=parent_trace_id)
+            return result
 
         raise ModelUnavailable(role, last_error)
 
@@ -329,12 +440,17 @@ class Gateway:
                         ok = await write_call(self.pool, rec)
                         await self.budget.record(role, cost, persisted=ok)
                         finished = True
-                        yield GatewayStreamEvent("done", result=GatewayResult(
+                        result = GatewayResult(
                             output=res.output, role=role, model=res.model, cost_usd=cost,
                             input_tokens=res.input_tokens, output_tokens=res.output_tokens,
                             thinking_tokens=res.thinking_tokens, latency_ms=latency, trace_id=trace_id,
                             fell_back=model != route.primary_model, tool_calls=res.tool_calls, messages=res.messages,
-                        ))
+                        )
+                        self._maybe_shadow(route, prompt=prompt, instructions=instructions, output_type=output_type,
+                                           tools=tools, temperature=temperature, message_history=message_history,
+                                           model_override=model_override, result=result,
+                                           parent_trace_id=parent_trace_id)
+                        yield GatewayStreamEvent("done", result=result)
                         return
             except backend.BackendError as e:
                 latency = int((time.monotonic() - started) * 1000)
@@ -378,10 +494,17 @@ class Gateway:
 
 
 # --- Streaming (appended section, blueprint A3.3) ---
-import asyncio  # noqa: E402  (streaming section, appended)
 import contextlib  # noqa: E402
 from collections.abc import AsyncIterator  # noqa: E402,F401  (used in the stream annotation)
 from dataclasses import field  # noqa: E402
+
+
+def _truthy(raw: Any) -> bool:
+    """``system_settings.value`` as a flag: true / "true" / 1 / "1" / "yes" (JSON strings too)."""
+    if raw is None:
+        return False
+    text = str(raw).strip().strip('"').strip().lower()
+    return text in {"true", "1", "yes", "on"}
 
 
 @dataclass

@@ -6,8 +6,10 @@ import { KillSwitchPanel } from "@/components/operator/KillSwitchPanel";
 import { MANDATE_UPDATED_EVENT } from "@/lib/mission/events";
 import { useAutonomyStore } from "@/lib/stores/useAutonomyStore";
 import { type MissionView, useMandateStore } from "@/lib/stores/useMandateStore";
+import { useShadowStore } from "@/lib/stores/useShadowStore";
 import { ApprovalQueue } from "./ApprovalQueue";
 import { AutonomyEvals } from "./AutonomyEvals";
+import ShadowPanel from "./ShadowPanel";
 import { MandateCard } from "./MandateCard";
 import { MandateEditor } from "./MandateEditor";
 import { MissionBanners } from "./MissionBanners";
@@ -34,6 +36,7 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
       hydrated = true;
       void useMandateStore.persist.rehydrate();
       void useAutonomyStore.persist.rehydrate();
+      void useShadowStore.persist.rehydrate();
     }
   }, []);
 
@@ -115,7 +118,12 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
         {view === "mandates" && (
           <MandateEditor mandates={mandates} selectedId={selectedMandateId} onSelect={selectMandate} onSaved={reload} />
         )}
-        {view === "autonomy" && <AutonomyEvals mandates={mandates} />}
+        {view === "autonomy" && (
+          <div className="space-y-3">
+            <AutonomyEvals mandates={mandates} />
+            <ShadowPanel />
+          </div>
+        )}
       </div>
     </div>
   );

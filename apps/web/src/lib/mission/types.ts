@@ -148,6 +148,51 @@ export interface OutcomesByRegime {
   regimes: RegimeOutcome[];
 }
 
+/** F2 shadow mode: a route with a shadow model (read-only view of ai_model_routes as the gateway resolves it). */
+export interface ShadowRoute {
+  role: string;
+  primary_model: string;
+  fallback_model: string | null;
+  fallback_policy: string;
+  priority: string;
+  shadow_model: string;
+  shadow_sample_rate: number;
+  shadow_paid: boolean;
+  active: boolean;
+  updated_at: string | null;
+}
+
+export interface ShadowCounts { wins: number; losses: number; neutral: number }
+
+export interface ShadowStats {
+  role: string;
+  shadow_model?: string;
+  primary_models?: string[];
+  n: number;
+  ok: number;
+  errors: number;
+  skipped: number;
+  skip_reasons: Record<string, number>;
+  key_field: string | null;
+  agreement: { n: number; agree: number; rate: number | null };
+  latency_ms: { primary_p50: number | null; primary_p95: number | null; shadow_p50: number | null; shadow_p95: number | null };
+  cost_usd: { shadow: string };
+  outcomes:
+    | { horizon: string; labelled: number; primary?: ShadowCounts; shadow?: ShadowCounts; agreement_rate?: number | null;
+        debated?: ShadowCounts; shadow_would_skip?: ShadowCounts & { n: number } }
+    | null;
+}
+
+export interface ShadowReport {
+  available: boolean;
+  days: number;
+  role: string | null;
+  allow_paid: boolean;
+  routes: ShadowRoute[];
+  models: ShadowStats[];
+  roles: ShadowStats[];
+}
+
 export interface EvalRun {
   id: string;
   set_version: string;

@@ -41,8 +41,16 @@ UNKNOWN_PRICE = PRICES["google:gemini-3.1-pro-preview"]
 FREE = _p(0, 0, 0)
 
 
+FREE_PREFIXES = ("ollama:", "test:", "function:")
+
+
+def is_free(model_id: str) -> bool:
+    """Local (Ollama) and test models cost nothing per token."""
+    return model_id.startswith(FREE_PREFIXES)
+
+
 def price_for(model_id: str) -> Price:
-    if model_id.startswith(("ollama:", "test:", "function:")):
+    if is_free(model_id):
         return FREE
     price = PRICES.get(model_id)
     if price is None:

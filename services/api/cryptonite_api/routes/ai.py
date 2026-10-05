@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from cryptonite_agents.gateway.local_tier import HEALTH_KEY as LOCAL_TIER_HEALTH
 from cryptonite_agents.gateway.local_tier import read_published as read_local_tier
+from cryptonite_api import shadow as shadow_report
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.similar import similar_or_none
 from cryptonite_execution.approvals import (
@@ -57,7 +58,7 @@ from cryptonite_schemas.mandate import (
     MandateStatus,
     risk_adding_change,
 )
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger("cryptonite.api.ai")
@@ -651,3 +652,23 @@ async def outcomes_by_regime_view(request: Request, mandate_id: uuid.UUID | None
         logger.warning("Outcomes by regime unavailable: %s", e)
         return {"horizon": horizon, "mandate_id": str(mandate_id) if mandate_id else None, "available": False,
                 "regimes": []}
+
+
+@router.get("/shadow")
+async def shadow_view(request: Request, role: str | None = Query(None, max_length=64),
+                      days: int = Query(7, ge=1, le=90), auth: dict = Depends(require_operator)):
+    """F2 shadow mode, reporting only: the routes with a shadow model (read-only; routes are edited in
+    SQL, see migration 036) and, per role and per (role, shadow model), agreement with the primary on
+    the key field, p50/p95 latency, errors, skips, shadow cost and, once labelled, 24h outcomes.
+    ``available: false`` when the table is missing (API deployed before migration 036), never an error."""
+    role = role or None
+    try:
+        async with request.app.state.pool.acquire() as conn:
+            routes, allow_paid = await shadow_report.shadow_routes(conn)
+            rows = await shadow_report.shadow_rows(conn, days, role)
+        return {"available": True, "days": days, "role": role, "allow_paid": allow_paid, "routes": routes,
+                **shadow_report.report(rows)}
+    except Exception as e:
+        logger.warning("Shadow report unavailable: %s", e)
+        return {"available": False, "days": days, "role": role, "allow_paid": False, "routes": [], "models": [],
+                "roles": []}
