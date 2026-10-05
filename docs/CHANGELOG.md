@@ -2,6 +2,9 @@
 
 Release notes from before the AI-First program. Phases 0–7 of that program are described in [ai-first-program.md](ai-first-program.md) and logged in [HANDOFF.md](../HANDOFF.md).
 
+## Unreleased — review-plan
+- **A5 (F-M2) Safe launcher, now tracked**: `scripts/launcher/cryptonite-up.sh` no longer runs `alembic upgrade head` (it warns when the schema is behind head) and starts the stack with `up -d --no-recreate --no-deps` on an explicit service list minus `HELD_SERVICES` (orchestrator, scanner, debate_worker, learner); held containers are only `start`ed if stopped, never recreated.
+
 ## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
 - **Database-Backed Action & Decision Inbox**: Refactored the Action Inbox to hydrate directly from PostgreSQL (`GET /api/v1/agents/debates`), with automatic client-side cache reconciliation that purges local browser storage when database records are cleared. Added formatted timestamps and strict chronological sorting.
 - **Docked Operator Control Sidebar**: Added direct access to the Execution Kill-Switch panel from the main Trading Terminal via the right-sidebar toolbar (red Shield toggle), allowing traders to manage risk and trip emergency stops without leaving active charts.
