@@ -151,7 +151,11 @@ def test_an_entry_sized_to_the_room_is_never_a_breach(held, other, price, pct, o
         return
     order = buy(str(qty), str(price), order_type=order_type, conviction_level=conviction)
     assert check_mandate(m, order, exposure, approval_ok=True) is None
-    over = buy(str(qty * D("1.001")), str(price), order_type=order_type, conviction_level=conviction)
+    # "a hair more": 0.1%, or two quantity steps when rounding the quantity down to the step already
+    # left more than 0.1% of slack (tiny rooms, e.g. $0.02 left at 2,111.71 -> 0.00000923)
+    from cryptonite_execution.mandates import QUANTITY_STEP
+    over_qty = max(qty * D("1.001"), qty + 2 * QUANTITY_STEP)
+    over = buy(str(over_qty), str(price), order_type=order_type, conviction_level=conviction)
     assert check_mandate(m, over, exposure, approval_ok=True) in (MandateReject.POSITION_PCT_EXCEEDED,
                                                                   MandateReject.BUDGET_EXCEEDED)
 
