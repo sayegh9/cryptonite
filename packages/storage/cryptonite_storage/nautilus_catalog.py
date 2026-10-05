@@ -50,6 +50,30 @@ class NautilusCatalogManager:
                 pass
         return affected, hasher.hexdigest()
 
+    def quarantine_empty_instrument_files(self) -> list[str]:
+        """Move 0-byte instrument files out of the catalog; return their paths relative to it.
+
+        Same crash damage as for bars (see ``quarantine_empty_bar_files``); instrument definitions
+        are rewritten by ingest at every start, so nothing needs refilling.
+        """
+        root = self.catalog_path / "data" / "instruments"
+        if not root.is_dir():
+            return []
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        moved: list[str] = []
+        for f in sorted(root.rglob("*.parquet")):
+            try:
+                if f.stat().st_size != 0:
+                    continue
+            except FileNotFoundError:
+                continue
+            rel = f.relative_to(self.catalog_path)
+            target = self.catalog_path.parent / "catalog_quarantine" / "instruments" / f.parent.name
+            target.mkdir(parents=True, exist_ok=True)
+            f.rename(target / f"{f.name}.{stamp}")
+            moved.append(str(rel))
+        return moved
+
     def quarantine_empty_bar_files(self, identifier: str) -> list[tuple[int, int]]:
         """Move 0-byte bar files of one bar type out of the catalog; return their (start, end) ns.
 

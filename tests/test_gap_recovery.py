@@ -190,3 +190,18 @@ async def test_heal_empty_files_refills_the_bar_into_the_catalog_only(
     assert ts in got and len(got) == len(set(got)) == 3
     assert AnalyticsQueryEngine(temp_analytics_dir).count_bars("BTCUSDT", "1m") == 0  # lake untouched
     assert await mgr.heal_empty_files("BTCUSDT", "1m", bar_type, 2, 5) == 0  # idempotent
+
+
+def test_quarantine_moves_empty_instrument_files_and_keeps_good_ones(temp_nautilus_dir, sample_currency_pair):
+    nautilus_mgr = NautilusCatalogManager(temp_nautilus_dir / "cat")
+    nautilus_mgr.write_instruments([sample_currency_pair])
+    inst_dir = nautilus_mgr.catalog_path / "data" / "instruments" / "BTCUSDT.BINANCE"
+    good = sorted(inst_dir.glob("*.parquet"))
+    empty = inst_dir / "2026-10-05T12-55-45-832657679Z_2026-10-05T12-55-45-832657679Z.parquet"
+    empty.write_bytes(b"")
+
+    assert nautilus_mgr.quarantine_empty_instrument_files() == [str(empty.relative_to(nautilus_mgr.catalog_path))]
+    assert not empty.exists() and all(g.exists() for g in good)
+    assert [str(i.id) for i in nautilus_mgr.instruments()] == ["BTCUSDT.BINANCE"]
+    assert len(list((temp_nautilus_dir / "catalog_quarantine" / "instruments" / "BTCUSDT.BINANCE").iterdir())) == 1
+    assert nautilus_mgr.quarantine_empty_instrument_files() == []
