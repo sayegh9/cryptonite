@@ -3,6 +3,7 @@
 Release notes from before the AI-First program. Phases 0–7 of that program are described in [ai-first-program.md](ai-first-program.md) and logged in [HANDOFF.md](../HANDOFF.md).
 
 ## Unreleased — review-plan
+- **A5 (F-M2) Safe launcher, now tracked**: `scripts/launcher/cryptonite-up.sh` no longer runs `alembic upgrade head` (it warns when the schema is behind head) and starts the stack with `up -d --no-recreate --no-deps` on an explicit service list minus `HELD_SERVICES` (orchestrator, scanner, debate_worker, learner); held containers are only `start`ed if stopped, never recreated.
 - **A4 (F-M1, F-M10) Supervise the web UI and every service**: new compose service `web` (production `next start` from `infra/docker/web.Dockerfile`, `127.0.0.1:3000`, `restart: unless-stopped`); its server-side proxies take the API origin from `API_ORIGIN` (default `http://127.0.0.1:8000`, so host `pnpm dev/start` is unchanged). Every long-running service now has a healthcheck (existing `/health` endpoints, Redis heartbeat keys, a Redis ping, or a process check for the sandbox), and every container logs through an `x-logging` anchor (`json-file`, 5 x 50 MB).
 
 ## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
