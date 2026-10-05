@@ -71,9 +71,42 @@ async def work_once(redis, loop: ResearchLoop, block_s: int = 5) -> str | None:
     return report.id
 
 
+def _pct(v: Any) -> str:
+    try:
+        return "n/a" if v is None else f"{float(v) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _num(v: Any) -> str:
+    return "n/a" if v is None else str(v)
+
+
+def live_vs_backtest_lines(report: dict[str, Any] | None) -> list[str]:
+    """F3 digest section (reporting only): each running paper strategy instance, live since deploy
+    against the latest completed backtest of its strategy version (``GET /research/live-vs-backtest``)."""
+    if report is None or report.get("available") is False:
+        return ["Live vs backtest: not available."]
+    rows = report.get("instances") or []
+    if not rows:
+        return ["Live vs backtest: no running strategy instances with a completed backtest."]
+    lines = ["Live vs backtest (live since deploy vs latest completed backtest of the same version):"]
+    for r in rows:
+        lv, bt = r.get("live") or {}, r.get("backtest") or {}
+        lines.append(
+            f"- {r.get('instance_id')} {r.get('instrument_id')}: trades {_num(lv.get('trades'))} vs {_num(bt.get('trades'))}, "
+            f"win rate {_pct(lv.get('win_rate'))} vs {_pct(bt.get('win_rate'))}, "
+            f"mean return/trade {_pct(lv.get('mean_return_per_trade'))} vs {_pct(bt.get('mean_return_per_trade'))}, "
+            f"fees {_num(lv.get('fees'))} vs {_num(bt.get('fees'))}, "
+            f"slippage {_num(lv.get('slippage_bps'))} vs {_num(bt.get('slippage_bps'))} bps")
+    return lines
+
+
 def build_digest(reports_dir: Path = REPORTS_DIR, hours: int = 24, now: datetime | None = None,
-                 reports: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """``reports`` from the API's research_reports history (LE-6); without them, the JSON files."""
+                 reports: list[dict[str, Any]] | None = None,
+                 live_vs_backtest: dict[str, Any] | None = None) -> dict[str, Any]:
+    """``reports`` from the API's research_reports history (LE-6); without them, the JSON files.
+    ``live_vs_backtest`` (F3) adds a short section; None means it could not be fetched."""
     now = now or datetime.now(UTC)
     since = now - timedelta(hours=hours)
     if reports is None:
@@ -96,8 +129,11 @@ def build_digest(reports_dir: Path = REPORTS_DIR, hours: int = 24, now: datetime
             f"- [{r['status']}] {r.get('strategy_name') or r['idea'][:60]}: OOS Sharpe {oos.get('sharpe_ratio', 'n/a')}, "
             f"return {oos.get('total_return', 'n/a')}, trades {oos.get('total_trades', 'n/a')} — {r['reason'][:160]}"
         )
+    lvb = live_vs_backtest_lines(live_vs_backtest)
+    lines.extend(["", *lvb])
     return {"text": "\n".join(lines), "count": len(reports), "by_status": by_status,
-            "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in reports), 4)}
+            "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in reports), 4),
+            "live_vs_backtest": lvb}
 
 
 async def publish_digest(redis, reports_dir: Path = REPORTS_DIR, hours: int = 24, client=None) -> dict[str, Any]:
@@ -107,6 +143,12 @@ async def publish_digest(redis, reports_dir: Path = REPORTS_DIR, hours: int = 24
             reports = await client.list_reports(hours)
         except Exception as e:  # the API being down must not stop the digest: fall back to the files
             logging.getLogger("cryptonite.agents.research").warning("Digest falls back to report files: %s", e)
-    digest = build_digest(reports_dir, hours, reports=reports)
+    live_vs_backtest = None
+    if client is not None:
+        try:
+            live_vs_backtest = await client.live_vs_backtest()
+        except Exception as e:  # reporting only: the digest goes out without the section
+            logging.getLogger("cryptonite.agents.research").warning("Live-vs-backtest unavailable for the digest: %s", e)
+    digest = build_digest(reports_dir, hours, reports=reports, live_vs_backtest=live_vs_backtest)
     await redis.publish(DIGEST_CHANNEL, json.dumps({"type": "RESEARCH_DIGEST", "severity": "INFO", **digest}))
     return digest

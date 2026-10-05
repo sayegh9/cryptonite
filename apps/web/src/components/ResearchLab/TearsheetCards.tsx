@@ -3,7 +3,7 @@
 import React from "react";
 import { BacktestMetrics } from "@/lib/types";
 import { AlertCircle, TrendingUp, TrendingDown } from "lucide-react";
-import { fmtSignedPct, isLegacyMetrics, metricNum, metricsVersion } from "@/lib/backtestMetrics";
+import { REGIME_LABEL, fmtSignedPct, isLegacyMetrics, metricNum, metricsVersion, sortRegimes } from "@/lib/backtestMetrics";
 
 interface Props {
   metrics: BacktestMetrics;
@@ -20,6 +20,7 @@ export const TearsheetCards: React.FC<Props> = ({ metrics, executionProfile }) =
   const benchSharpe = metricNum(bench?.sharpe_ratio);
   const benchDd = metricNum(bench?.max_drawdown);
   const alpha = metricNum(bench?.alpha_vs_hold);
+  const regimes = sortRegimes(Object.entries(metrics.regime_breakdown ?? {}));
 
   return (
     <div className="flex flex-col space-y-3 w-full font-mono">
@@ -232,6 +233,42 @@ export const TearsheetCards: React.FC<Props> = ({ metrics, executionProfile }) =
               <dd className={`font-bold ${alpha === null ? "text-zinc-400" : alpha >= 0 ? "text-emerald-400" : "text-rose-400"}`} data-testid="metric-alpha">{fmtSignedPct(alpha)}</dd>
             </div>
           </dl>
+        )}
+      </div>
+
+      {/* F1: trades by market regime at entry (reporting only) */}
+      <div className="bg-zinc-900/60 border border-white/5 rounded p-3" data-testid="regime-breakdown">
+        <div className="text-2xs text-zinc-400 uppercase tracking-wider mb-2">Trades by market regime at entry (1h ATR% / ADX)</div>
+        {regimes.length === 0 ? (
+          <p className="text-2xs text-zinc-500">—</p>
+        ) : (
+          <table className="w-full text-left text-xs tabular-nums" aria-label="Trades by market regime">
+            <thead className="text-2xs text-zinc-500">
+              <tr>
+                <th className="py-1 font-normal">Regime</th>
+                <th className="py-1 font-normal">Trades</th>
+                <th className="py-1 font-normal">Win rate</th>
+                <th className="py-1 font-normal">Total PnL</th>
+              </tr>
+            </thead>
+            <tbody className="text-zinc-200">
+              {regimes.map(([regime, s]) => {
+                const trades = metricNum(s?.trades);
+                const winRate = metricNum(s?.win_rate);
+                const pnl = metricNum(s?.total_pnl);
+                return (
+                  <tr key={regime} className="border-t border-zinc-800" data-testid={`regime-row-${regime}`}>
+                    <td className="py-1">{REGIME_LABEL[regime] ?? regime}</td>
+                    <td className="py-1">{trades === null ? "—" : trades}</td>
+                    <td className="py-1">{winRate === null ? "—" : `${(winRate * 100).toFixed(1)}%`}</td>
+                    <td className={`py-1 ${pnl === null ? "" : pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                      {pnl === null ? "—" : `${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)}`}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         )}
       </div>
     </div>

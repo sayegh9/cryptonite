@@ -45,6 +45,10 @@ class ResearchApiClient:
     async def list_reports(self, hours: int = 24) -> list[dict[str, Any]]:
         return (await self._request("GET", "/research/reports", params={"hours": hours}))["reports"]
 
+    async def live_vs_backtest(self) -> dict[str, Any]:
+        """Running paper strategy instances against their latest completed backtest (F3, reporting only)."""
+        return await self._request("GET", "/research/live-vs-backtest")
+
     async def trials_tested(self, instrument_id: str, timeframe: str, days: int) -> int:
         """Parameter trials earlier research ran on this instrument/timeframe (feeds the DSR, R5.4)."""
         return int((await self._request("GET", "/research/trials", params={

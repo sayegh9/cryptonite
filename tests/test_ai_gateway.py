@@ -211,9 +211,11 @@ async def test_a_turn_can_stage_at_most_one_paid_debate():
     with override_model(PRIMARY, FunctionModel(two_calls)):
         res = await gateway().run("r", "go", tools=[spec])
         again = await gateway().run("r", "go", tools=[spec])  # a new turn gets a fresh allowance
-    assert staged == ["BTCUSDT.BINANCE", "BTCUSDT.BINANCE"]  # each turn: the first call runs, the second is denied
-    assert [c["status"] for c in res.tool_calls] == ["OK", "DENIED"]
-    assert [c["status"] for c in again.tool_calls] == ["OK", "DENIED"]
+    # Each turn: exactly one of the two calls runs and the other is denied. The two calls of one model
+    # response may run concurrently, so which instrument wins is not fixed; the cap is what matters.
+    assert len(staged) == 2 and set(staged) <= {"BTCUSDT.BINANCE", "ETHUSDT.BINANCE"}
+    assert sorted(c["status"] for c in res.tool_calls) == ["DENIED", "OK"]
+    assert sorted(c["status"] for c in again.tool_calls) == ["DENIED", "OK"]
 
 
 # --- Pricing ---------------------------------------------------------------------------------

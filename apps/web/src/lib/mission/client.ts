@@ -1,5 +1,5 @@
 import { fetchApi } from "@/lib/api";
-import type { AiStatus, Approval, AutonomyView, EvalRun, Mandate, Reliability } from "./types";
+import type { AiStatus, Approval, AutonomyView, EvalRun, Mandate, OutcomesByRegime, Reliability } from "./types";
 
 /** /api/v1/ai/* (the web reaches the backend only via /api/v1). Writes carry the CSRF token. */
 
@@ -18,6 +18,8 @@ export const fetchEvals = async (): Promise<{
   calibration_note: string;
   calibration: Record<string, Reliability> | null;
 }> => fetchApi("/ai/evals");
+export const fetchOutcomesByRegime = async (mandateId: string | null, horizon = "24h"): Promise<OutcomesByRegime> =>
+  fetchApi(`/ai/outcomes/by-regime?horizon=${encodeURIComponent(horizon)}${mandateId ? `&mandate_id=${encodeURIComponent(mandateId)}` : ""}`);
 
 export const decideApproval = (id: string, decision: "APPROVE" | "VETO") => write(`/ai/approvals/${id}/decision`, { decision });
 export const createMandate = (body: Record<string, unknown>): Promise<Mandate> => write("/ai/mandates", body);

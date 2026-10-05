@@ -160,6 +160,64 @@ def benchmark_metrics(
     }
 
 
+HOUR_NS = 3600 * 10**9
+UNKNOWN_REGIME = "UNKNOWN"
+
+
+def resample_ohlc_1h(ohlc: list[tuple[int, float, float, float, float]]) -> list[tuple[int, float, float, float, float]]:
+    """(ts_event, open, high, low, close) bars (ts_event = bar close, the Nautilus convention) to 1h
+    bars keyed by their close time: an hourly bar closing at H holds the bars with ts in (H - 1h, H].
+    Bars of 1h or longer stay one bar each (they cannot be split)."""
+    buckets: dict[int, list[float]] = {}
+    for ts, o, h, low, c in sorted(ohlc):
+        key = ((int(ts) - 1) // HOUR_NS + 1) * HOUR_NS
+        b = buckets.get(key)
+        if b is None:
+            buckets[key] = [o, h, low, c]
+        else:
+            b[1], b[2], b[3] = max(b[1], h), min(b[2], low), c
+    return [(k, *v) for k, v in sorted(buckets.items())]
+
+
+def regime_breakdown(
+    trades: list[dict[str, Any]],
+    ohlc: list[tuple[int, float, float, float, float]],
+) -> dict[str, dict[str, float | int]] | None:
+    """F1 (reporting only): trades, win rate and total PnL per market regime at each trade's entry.
+
+    The regime (``cryptonite_scanner.regime``) of the last completed 1h bar at or before the entry,
+    from the evaluation bars resampled to 1h; trades without one (too little history so far) are
+    ``UNKNOWN``. None when the classifier is unavailable or fails: never fails the backtest.
+    """
+    try:
+        import polars as pl
+        from cryptonite_scanner.regime import regime_series
+
+        hourly = resample_ohlc_1h(ohlc)
+        closes_at = [ts for ts, *_ in hourly]
+        tags = regime_series(pl.DataFrame(
+            {"ts_event_ns": closes_at, "high": [b[2] for b in hourly], "low": [b[3] for b in hourly],
+             "close": [b[4] for b in hourly]},
+            schema={"ts_event_ns": pl.Int64, "high": pl.Float64, "low": pl.Float64, "close": pl.Float64},
+        )) if hourly else []
+        out: dict[str, dict[str, float | int]] = {}
+        wins: dict[str, int] = {}
+        for t in trades:
+            i = bisect.bisect_right(closes_at, int(t.get("ts_opened_ns") or 0)) - 1
+            regime = (tags[i] if i >= 0 else None) or UNKNOWN_REGIME
+            row = out.setdefault(regime, {"trades": 0, "win_rate": 0.0, "total_pnl": 0.0})
+            pnl = float(t.get("pnl", 0.0))
+            row["trades"] += 1
+            row["total_pnl"] += pnl
+            wins[regime] = wins.get(regime, 0) + (1 if pnl > 0 else 0)
+        for regime, row in out.items():
+            row["win_rate"] = round(wins[regime] / row["trades"], 6)
+            row["total_pnl"] = round(row["total_pnl"], 8)
+        return out
+    except Exception:  # reporting only: the backtest result stands without it
+        return None
+
+
 def fees_and_turnover(
     orders: Iterable[tuple[float, float, list[tuple[float, str]]]],
     *,

@@ -15,11 +15,36 @@ export interface BenchmarkMetrics {
   alpha_vs_hold?: number | string | null;
 }
 
+/** Trades per market regime at entry (F1, reporting only). */
+export interface RegimeStats {
+  trades?: number | string | null;
+  win_rate?: number | string | null;
+  total_pnl?: number | string | null;
+}
+
 export interface VersionedMetrics {
   metrics_version?: number | string | null;
   benchmark?: BenchmarkMetrics | null;
   fees_paid?: number | string | null;
   turnover?: number | string | null;
+  /** Keyed by TREND_UP, TREND_DOWN, CHOP, HIGH_VOL, UNKNOWN; absent on runs from before F1. */
+  regime_breakdown?: Record<string, RegimeStats> | null;
+}
+
+/** Display order of market regimes (F1); unknown keys sort last. */
+export const REGIME_ORDER = ["TREND_UP", "TREND_DOWN", "CHOP", "HIGH_VOL", "UNKNOWN"];
+
+export const REGIME_LABEL: Record<string, string> = {
+  TREND_UP: "Trend up",
+  TREND_DOWN: "Trend down",
+  CHOP: "Chop",
+  HIGH_VOL: "High volatility",
+  UNKNOWN: "Unknown (too little history)",
+};
+
+export function sortRegimes<T>(entries: [string, T][]): [string, T][] {
+  const rank = (k: string) => (REGIME_ORDER.includes(k) ? REGIME_ORDER.indexOf(k) : REGIME_ORDER.length);
+  return [...entries].sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]));
 }
 
 /** The metrics version, or null for legacy runs (field missing). */

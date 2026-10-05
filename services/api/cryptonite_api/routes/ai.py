@@ -34,7 +34,12 @@ from cryptonite_execution.autonomy import (
     transition,
 )
 from cryptonite_execution.autonomy_metrics import gate_report, propose_if_ready, report_view
-from cryptonite_execution.calibration import reliability, verdict_points
+from cryptonite_execution.calibration import (
+    outcomes_by_regime,
+    regime_outcome_rows,
+    reliability,
+    verdict_points,
+)
 from cryptonite_execution.mandate_store import (
     MANDATE_COLUMNS,
     apply_transition,
@@ -628,3 +633,21 @@ async def eval_results(request: Request, auth: dict = Depends(require_operator))
                                  f"expected calibration error {verdict['ece_pp']} pp." if verdict["ece_pp"] is not None else
                                  f"{verdict['n']} labelled decisions so far; calibration is reported from "
                                  f"{verdict['min_samples']} on (until then the L3 gate fails closed).")}
+
+
+@router.get("/outcomes/by-regime")
+async def outcomes_by_regime_view(request: Request, mandate_id: uuid.UUID | None = None,
+                                  horizon: Literal["1h", "4h", "24h", "72h"] = "24h",
+                                  auth: dict = Depends(require_operator)):
+    """F1, reporting only: labelled decisions per market regime at decision time (migration 034), with
+    WIN / LOSS / NEUTRAL from ``score_decision`` and the mean signed return. ``available: false`` (and
+    no rows) when the regime column or the query is unavailable, never an error."""
+    try:
+        async with request.app.state.pool.acquire() as conn:
+            rows = await regime_outcome_rows(conn, horizon, mandate_id)
+        return {"horizon": horizon, "mandate_id": str(mandate_id) if mandate_id else None, "available": True,
+                "regimes": outcomes_by_regime(rows)}
+    except Exception as e:  # e.g. the API deployed before migration 034
+        logger.warning("Outcomes by regime unavailable: %s", e)
+        return {"horizon": horizon, "mandate_id": str(mandate_id) if mandate_id else None, "available": False,
+                "regimes": []}

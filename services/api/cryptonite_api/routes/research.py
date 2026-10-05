@@ -5,18 +5,25 @@ Brain and the UI. Re-posting the same report id is a no-op, so a retried worker 
 Remediation Phase 5 adds the validation results (``folds``, ``dsr``, ``holdout``, ``robustness``,
 migration 032) and ``GET /trials``, the number of parameter trials already tested on an
 instrument/timeframe, which the loop feeds into the Deflated Sharpe Ratio.
+Phase 8 (F3) adds ``GET /live-vs-backtest``: each running paper strategy instance against the latest
+completed backtest of its strategy version (reporting only, ``cryptonite_api.live_vs_backtest``).
 """
 
 import datetime
 import json
+import logging
+import os
+from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
+from cryptonite_api.live_vs_backtest import live_vs_backtest_report
 from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
+logger = logging.getLogger("cryptonite.api.research")
 
 
 class ReportIn(BaseModel):
@@ -91,3 +98,18 @@ async def trials_tested(request: Request, instrument_id: str = Query(min_length=
                WHERE report->>'instrument_id' = $1 AND report->>'timeframe' = $2
                  AND created_at >= now() - make_interval(days => $3)""", instrument_id, timeframe, days)
     return {"instrument_id": instrument_id, "timeframe": timeframe, "days": days, "trials": int(trials)}
+
+
+@router.get("/live-vs-backtest", dependencies=AUTHED_READ)
+async def live_vs_backtest(request: Request) -> dict[str, Any]:
+    """F3, reporting only. ``available: false`` with empty lists when the report cannot be built."""
+    from cryptonite_api.routes.backtests import DEFAULT_ARTIFACTS_PATH
+
+    base = Path(os.getenv("BACKTEST_ARTIFACTS_PATH", DEFAULT_ARTIFACTS_PATH))
+    try:
+        report = await live_vs_backtest_report(request.app.state.pool, base)
+    except Exception as e:
+        logger.warning("Live-vs-backtest report unavailable: %s", e)
+        return {"as_of": datetime.datetime.now(datetime.UTC).isoformat(), "available": False,
+                "instances": [], "without_backtest": []}
+    return {"as_of": datetime.datetime.now(datetime.UTC).isoformat(), "available": True, **report}

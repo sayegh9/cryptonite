@@ -7,6 +7,7 @@ import { confirmPromotion, declinePromotion, evaluateAutonomy } from "@/lib/miss
 import { dispatchMandateUpdated } from "@/lib/mission/events";
 import type { GateCheck, Mandate } from "@/lib/mission/types";
 import { useAutonomyStore } from "@/lib/stores/useAutonomyStore";
+import OutcomesByRegime from "./OutcomesByRegime";
 import ReliabilityChart from "./ReliabilityChart";
 
 const CHECK_LABEL: Record<string, string> = {
@@ -28,7 +29,7 @@ const intervalText = (iv: GateCheck["interval"]) =>
 
 /** Autonomy & Evals (§4.5, §7.1): earned vs requested level, the gate with live numbers, TOTP promotion. */
 export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
-  const { mandateId, setMandateId, view, evals, calibrationNote, calibration, error, load, setView, showEvents, setShowEvents } = useAutonomyStore();
+  const { mandateId, setMandateId, view, evals, calibrationNote, calibration, byRegime, error, load, setView, showEvents, setShowEvents } = useAutonomyStore();
   const [totp, setTotp] = useState("");
   const [busy, setBusy] = useState(false);
   const id = mandateId && mandates.some((m) => m.id === mandateId) ? mandateId : mandates[0]?.id ?? null;
@@ -200,6 +201,9 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
               <p className="text-zinc-500" data-testid="calibration-note">{calibrationNote ?? "Not measured yet."}</p>
               {calibration &&
                 Object.entries(calibration).map(([role, data]) => <ReliabilityChart key={role} role={role} data={data} />)}
+            </div>
+            <div className="rounded border border-zinc-800 bg-zinc-950 p-3">
+              <OutcomesByRegime data={byRegime} />
             </div>
             <div className="rounded border border-zinc-800 bg-zinc-950 p-3">
               <h3 className="mb-1 text-2xs font-bold uppercase tracking-wider text-zinc-400">Evals (latest per set and model)</h3>

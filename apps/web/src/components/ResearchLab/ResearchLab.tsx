@@ -13,6 +13,7 @@ import { TradesTable } from "./TradesTable";
 import { MultiRunComparator } from "./MultiRunComparator";
 import { ManifestModal } from "./ManifestModal";
 import { StrategyManagerModal } from "./StrategyManagerModal";
+import { LiveVsBacktestPanel } from "./LiveVsBacktestPanel";
 import {
   Play,
   Sliders,
@@ -23,6 +24,7 @@ import {
   ShieldCheck,
   AlertTriangle,
   RefreshCw,
+  Scale,
 } from "lucide-react";
 import { useBacktestStore } from "@/lib/stores/useBacktestStore";
 
@@ -44,7 +46,7 @@ export const ResearchLab: React.FC = () => {
   const [runError, setRunError] = useState<string | null>(null);
 
   // Active view tabs
-  const [activeTab, setActiveTab] = useState<"tearsheet" | "trades" | "heatmap" | "compare">("tearsheet");
+  const [activeTab, setActiveTab] = useState<"tearsheet" | "trades" | "heatmap" | "compare" | "live">("tearsheet");
   const [selectedTrade, setSelectedTrade] = useState<BacktestTrade | null>(null);
   const [isManifestOpen, setIsManifestOpen] = useState<boolean>(false);
   const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
@@ -525,6 +527,7 @@ export const ResearchLab: React.FC = () => {
               { id: "trades", label: "Trades Log", icon: Table },
               { id: "heatmap", label: "Monthly Returns", icon: Calendar },
               { id: "compare", label: "History & Compare", icon: Layers },
+              { id: "live", label: "Live vs Backtest", icon: Scale },
             ].map((tab) => {
               const Icon = tab.icon;
               return (
@@ -649,6 +652,8 @@ export const ResearchLab: React.FC = () => {
               )}
             </div>
           )}
+
+          {activeTab === "live" && <LiveVsBacktestPanel />}
 
           {activeTab === "compare" && (
             <div className="h-full">
