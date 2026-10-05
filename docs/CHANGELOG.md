@@ -3,6 +3,7 @@
 Release notes from before the AI-First program. Phases 0–7 of that program are described in [ai-first-program.md](ai-first-program.md) and logged in [HANDOFF.md](../HANDOFF.md).
 
 ## Unreleased — review-plan
+- **B1 (F-C1) Scanner bars aligned to the open**: `query_bars_df` returns `bar_open_ns = ts_event_ns − timeframe` (lake rows are stamped at the close) and picks duplicate rows deterministically; `resample_1m_bars` requires `bar_open_ns`, so 15m/1h windows no longer take the previous window's last minute; the scanner never emits a candidate before its bar closes; the API's onboarding/backfill stamp lake rows at the close like ingest; `scripts/repair_lake_open_stamped_rows.py` (dry run by default) repairs the rows already written.
 - **A5 (F-M2) Safe launcher, now tracked**: `scripts/launcher/cryptonite-up.sh` no longer runs `alembic upgrade head` (it warns when the schema is behind head) and starts the stack with `up -d --no-recreate --no-deps` on an explicit service list minus `HELD_SERVICES` (orchestrator, scanner, debate_worker, learner); held containers are only `start`ed if stopped, never recreated.
 
 ## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
