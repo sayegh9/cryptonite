@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pyarrow.parquet as pq
 import pytest
+from cryptonite_backtester.metrics import METRICS_VERSION
 from cryptonite_backtester.runner import BacktestRunner, BacktestRunRequest
 
 DAY = 86_400 * 10**9
@@ -171,13 +172,13 @@ def test_conservative_run_pays_taker_fees_on_every_fill_and_reports_v2_metrics(t
     assert len([o for o in orders if o["filled_qty"] > 0]) >= 100  # NETTING: one position id, many round trips
     assert res["fees_paid"] == pytest.approx(notional * 0.001, rel=1e-6)
     assert res["turnover"] == pytest.approx(notional / req.initial_balance, rel=1e-5)
-    assert res["metrics_version"] == 2
+    assert res["metrics_version"] == METRICS_VERSION
     assert set(res["benchmark"]) == {"total_return", "sharpe_ratio", "max_drawdown", "alpha_vs_hold"}
 
     manifest = json.loads((art / "manifest.json").read_text())
-    assert manifest["metrics_version"] == 2
+    assert manifest["metrics_version"] == METRICS_VERSION
     assert manifest["artifacts"]["metrics"]["fees_paid"] == res["fees_paid"]
-    assert res["artifact_manifest"]["metrics"]["metrics_version"] == 2
+    assert res["artifact_manifest"]["metrics"]["metrics_version"] == METRICS_VERSION
 
     # marked at every bar close of the window, not only at fills
     equity = pq.read_table(art / "equity_curve.parquet").to_pylist()
@@ -235,3 +236,70 @@ async def test_rerun_script_queues_a_copy_of_legacy_runs_only():
     finally:
         await tx.rollback()
         await conn.close()
+
+
+# --- metrics v3: profile fees are charged; trades are round trips -----------------------------------
+
+
+def test_round_trips_net_of_fees_and_crossing_zero():
+    from cryptonite_backtester.metrics import round_trips
+
+    t = round_trips([
+        (1, "BUY", 1.0, 100.0, 0.1), (2, "BUY", 1.0, 110.0, 0.11),   # avg cost 105
+        (3, "SELL", 2.0, 120.0, 0.24),                                 # closes: +30 gross
+        (4, "BUY", 0.5, 100.0, 0.05), (5, "SELL", 0.5, 90.0, 0.045),  # second trade: -5 gross
+        (6, "BUY", 1.0, 200.0, 0.2),                                   # still open at the end
+    ], instrument_id="BTCUSDT.BINANCE")
+    assert [x["ts_closed_ns"] for x in t] == [3, 5, 0]
+    assert t[0]["pnl"] == pytest.approx(30 - 0.45) and t[0]["entry_price"] == pytest.approx(105.0)
+    assert t[0]["exit_price"] == pytest.approx(120.0) and t[0]["quantity"] == pytest.approx(2.0)
+    assert t[1]["pnl"] == pytest.approx(-5 - 0.095)
+    assert t[2]["pnl"] == pytest.approx(-0.2) and t[2]["side"] == "LONG"
+    assert len({x["position_id"] for x in t}) == 3
+
+
+def test_round_trips_split_a_fill_that_flips_the_position():
+    from cryptonite_backtester.metrics import round_trips
+
+    t = round_trips([(1, "BUY", 1.0, 100.0, 0.0), (2, "SELL", 3.0, 110.0, 0.3), (3, "BUY", 2.0, 100.0, 0.0)],
+                    instrument_id="X")
+    assert [(x["side"], x["ts_opened_ns"], x["ts_closed_ns"]) for x in t] == [("LONG", 1, 2), ("SHORT", 2, 3)]
+    assert t[0]["pnl"] == pytest.approx(10 - 0.1)   # a third of the flipping fill's fee
+    assert t[1]["pnl"] == pytest.approx(20 - 0.2)
+
+
+def test_bps_fee_model_rates():
+    from types import SimpleNamespace
+
+    from cryptonite_backtester.execution_profiles import BpsFeeModel
+
+    m = BpsFeeModel(5.0, 10.0)
+    assert m.rate_for(SimpleNamespace(order_type="MARKET")) == pytest.approx(0.001)
+    assert m.rate_for(SimpleNamespace(order_type="LIMIT")) == pytest.approx(0.0005)
+    assert m.rate_for(SimpleNamespace(order_type="LIMIT", liquidity_side="TAKER")) == pytest.approx(0.001)
+    assert BpsFeeModel(0.0, 0.0).rate_for(SimpleNamespace(order_type="MARKET")) == 0.0
+
+
+@pytest.mark.parametrize("profile, rate", [("conservative", 0.001), ("optimistic", 0.0)])
+def test_profile_fees_apply_even_when_the_catalog_instrument_has_none(tmp_path, monkeypatch, profile, rate):
+    """The live catalog's instruments carry no fees; the profile's rate must still be charged."""
+    from nautilus_trader import model as nt_model
+
+    real = nt_model.CurrencyPair
+
+    def no_fees(*a, **k):
+        k["maker_fee"], k["taker_fee"] = Decimal("0"), Decimal("0")
+        return real(*a, **k)
+
+    monkeypatch.setattr(nt_model, "CurrencyPair", no_fees)
+    inst, bar_type, warm, start, end = _fee_catalog(tmp_path / "cat", n_bars=400)
+    monkeypatch.setattr(nt_model, "CurrencyPair", real)
+    res = BacktestRunner(tmp_path / "cat", tmp_path / "art").run(BacktestRunRequest(
+        run_id=f"nofee-{profile}", strategy_slug="ema-cross", strategy_version_id="00000000-0000-0000-0000-000000000001",
+        instrument_id=inst, bar_type=bar_type, timeframe="1m",
+        parameters={"fast_period": 3, "slow_period": 6, "trade_size": 0.01},
+        warmup_start_ns=warm, evaluation_start_ns=start, evaluation_end_ns=end, execution_profile=profile,
+    ))
+    assert res["fees_paid"] == pytest.approx(res["turnover"] * 10_000.0 * rate, rel=1e-6, abs=1e-9)
+    assert res["metrics_version"] == 3
+    assert res["total_trades"] > 5  # round trips, not one netting position

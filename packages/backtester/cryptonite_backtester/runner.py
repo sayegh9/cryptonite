@@ -46,6 +46,7 @@ from cryptonite_backtester.metrics import (
     calculate_performance_metrics,
     fees_and_turnover,
     marked_equity_series,
+    round_trips,
 )
 from cryptonite_backtester.storage import BacktestArtifactStore
 
@@ -416,22 +417,17 @@ class BacktestRunner:
         elif len(equity_series) == 1:
             equity_series.append((request.evaluation_end_ns, equity_series[0][1]))
 
-        # 11. Extract Trades List
-        trades_list: list[dict[str, Any]] = []
-        for pos in positions:
-            pnl_val = float(pos.realized_pnl)
-            trades_list.append({
-                "position_id": str(pos.id),
-                "instrument_id": str(pos.instrument_id),
-                "side": str(pos.side),
-                "ts_opened_ns": int(pos.ts_opened),
-                "ts_closed_ns": int(pos.ts_closed) if pos.ts_closed else 0,
-                "entry_price": float(pos.avg_px_open),
-                "exit_price": float(pos.avg_px_close) if pos.avg_px_close else 0.0,
-                "quantity": float(pos.quantity),
-                "pnl": pnl_val,
-                "realized_return": float(pos.realized_return),
-            })
+        # 11. Extract Trades List: round trips rebuilt from fills. Under NETTING every round trip shares
+        # one position id, so the position list held a single "trade" per run (metrics v3).
+        def quote_fee(o: Any) -> float:
+            px = float(o.avg_px or 0.0)
+            return sum(amount if currency == QUOTE_CURRENCY else amount * px for amount, currency in _commissions(o))
+
+        trades_list = round_trips(
+            ((int(o.ts_last), "BUY" if "BUY" in str(o.side).upper() else "SELL", float(o.filled_qty),
+              float(o.avg_px or 0.0), quote_fee(o)) for o in orders if float(o.filled_qty) > 0),
+            instrument_id=request.instrument_id,
+        )
 
         # 12. Calculate performance metrics
         perf_metrics = calculate_performance_metrics(

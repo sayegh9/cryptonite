@@ -2,13 +2,14 @@
 
 import React, { useState, useEffect } from "react";
 import { RefreshCw, CheckSquare, Square, ArrowRight, AlertTriangle } from "lucide-react";
-import { fmtSignedPct, metricNum, metricsVersion, versionsOf, type VersionedMetrics } from "@/lib/backtestMetrics";
+import { fmtSignedPct, isLegacyMetrics, metricNum, metricsVersion, versionsOf, type VersionedMetrics } from "@/lib/backtestMetrics";
 
 const VersionBadge = ({ metrics }: { metrics?: VersionedMetrics | null }) => {
   const v = metricsVersion(metrics);
-  return v === null ? (
-    <span className="px-1.5 py-0.5 rounded border border-amber-700 bg-amber-950/50 text-amber-300 text-2xs font-bold" title="Computed before mark-to-market equity">
-      legacy metrics
+  return isLegacyMetrics(metrics) ? (
+    <span className="px-1.5 py-0.5 rounded border border-amber-700 bg-amber-950/50 text-amber-300 text-2xs font-bold"
+      title={v === null ? "Computed before mark-to-market equity" : `Metrics v${v}: before profile fees and round-trip trades`}>
+      legacy metrics{v === null ? "" : ` (v${v})`}
     </span>
   ) : (
     <span className="text-2xs text-zinc-500">v{v}</span>
@@ -194,8 +195,9 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
             <div role="status" data-testid="mixed-metrics-warning" className="flex items-start gap-2 m-2 px-3 py-2 rounded border border-amber-800/60 bg-amber-950/30 text-amber-300">
               <AlertTriangle className="w-3.5 h-3.5 flex-none mt-0.5" aria-hidden="true" />
               <span>
-                Mixed metric versions ({versionsOf(comparisonData).join(", ")}): legacy runs measure equity only at fills, so
-                their drawdown can look smaller and their Sharpe larger. Compare with care, or re-run the legacy runs.
+                Mixed metric versions ({versionsOf(comparisonData).join(", ")}): runs before v2 measure equity only at fills
+                (drawdown looks smaller, Sharpe larger) and runs before v3 paid no fees and counted trades per netting
+                position. Compare with care, or re-run the legacy runs.
               </span>
             </div>
           )}
