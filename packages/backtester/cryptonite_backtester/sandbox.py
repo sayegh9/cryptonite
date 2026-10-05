@@ -44,7 +44,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -101,6 +101,17 @@ class Benchmark(BaseModel):
         return _finite(v)
 
 
+class RegimeStats(BaseModel):
+    trades: int = Field(ge=0, le=1_000_000)
+    win_rate: float = Field(ge=0, le=1)
+    total_pnl: float
+
+    @field_validator("total_pnl")
+    @classmethod
+    def _bounded(cls, v: float) -> float:
+        return _finite(v)
+
+
 class SandboxResult(BaseModel):
     """The only shape the worker accepts from the sandbox: bounded, finite numbers. Unknown keys are
     dropped; the catalog and artifact manifests are rebuilt by the worker."""
@@ -124,6 +135,8 @@ class SandboxResult(BaseModel):
     fees_paid: float | None = None
     turnover: float | None = None
     benchmark: Benchmark | None = None
+    # F1, reporting only: keyed by regime (TREND_UP, TREND_DOWN, CHOP, HIGH_VOL, UNKNOWN)
+    regime_breakdown: dict[Literal["TREND_UP", "TREND_DOWN", "CHOP", "HIGH_VOL", "UNKNOWN"], RegimeStats] | None = None
 
     @field_validator("total_return", "cagr", "sharpe_ratio", "sortino_ratio", "max_drawdown",
                      "profit_factor", "win_rate", "avg_trade_pnl", "fees_paid", "turnover")
@@ -216,7 +229,7 @@ def collect(jobs_dir: Path, job_id: str, request: BacktestRunRequest, store: Bac
             data = _read_under(done, job_id, "artifacts", _staging_name(request), name, limit=MAX_ARTIFACT_BYTES)
             (dst_dir / name).write_bytes(data)
             artifacts[name] = {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
-        metrics = {k: result[k] for k in ("metrics_version", "benchmark", "fees_paid", "turnover")}
+        metrics = {k: result[k] for k in ("metrics_version", "benchmark", "fees_paid", "turnover", "regime_breakdown")}
         if metrics["metrics_version"] is not None:
             artifacts["metrics"] = metrics
         manifest = json.dumps({

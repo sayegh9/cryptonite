@@ -15,12 +15,13 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1/backtests", tags=["backtests"])
 
-_V2_KEYS = ("metrics_version", "benchmark", "fees_paid", "turnover")
+_V2_KEYS = ("metrics_version", "benchmark", "fees_paid", "turnover", "regime_breakdown")
 
 
 def _v2_metrics(raw: Any) -> dict[str, Any]:
     """metrics_version, benchmark, fees_paid, turnover kept under the artifact manifest's ``metrics``
-    key (R2.2/R2.3). A run without them is legacy (fill-only equity): only ``metrics_version: None``."""
+    key (R2.2/R2.3), plus the per-regime trade breakdown (F1, reporting only; None when absent). A run
+    without them is legacy (fill-only equity): only ``metrics_version: None``."""
     extra = json.loads(raw) if isinstance(raw, str) else raw
     extra = extra if isinstance(extra, dict) else {}
     return {k: extra.get(k) for k in _V2_KEYS}

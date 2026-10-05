@@ -46,6 +46,7 @@ from cryptonite_backtester.metrics import (
     calculate_performance_metrics,
     fees_and_turnover,
     marked_equity_series,
+    regime_breakdown,
     round_trips,
 )
 from cryptonite_backtester.storage import BacktestArtifactStore
@@ -239,14 +240,19 @@ class BacktestRunner:
         for ts in sorted(list(all_ts)):
             yield ts
 
-    def query_catalog_closes(self, bar_type_str: str, start_ns: int, end_ns: int) -> list[tuple[int, float]]:
-        """(ts_event, close) of every bar in [start_ns, end_ns], one per timestamp, for mark-to-market."""
-        closes: dict[int, float] = {}
+    def query_catalog_ohlc(self, bar_type_str: str, start_ns: int, end_ns: int) -> list[tuple[int, float, float, float, float]]:
+        """(ts_event, open, high, low, close) of every bar in [start_ns, end_ns], one per timestamp: the
+        closes mark equity to market, the full bars feed the regime breakdown (F1)."""
+        bars: dict[int, tuple[float, float, float, float]] = {}
         for b in self.catalog_manager.query_bars(identifiers=[bar_type_str], start=start_ns, end=end_ns):
             ts = int(b.ts_event)
             if start_ns <= ts <= end_ns:
-                closes[ts] = float(b.close)
-        return sorted(closes.items())
+                bars[ts] = (float(b.open), float(b.high), float(b.low), float(b.close))
+        return [(ts, *v) for ts, v in sorted(bars.items())]
+
+    def query_catalog_closes(self, bar_type_str: str, start_ns: int, end_ns: int) -> list[tuple[int, float]]:
+        """(ts_event, close) of every bar in [start_ns, end_ns], one per timestamp, for mark-to-market."""
+        return [(ts, c) for ts, _, _, _, c in self.query_catalog_ohlc(bar_type_str, start_ns, end_ns)]
 
     def run(self, request: BacktestRunRequest) -> dict[str, Any]:
         """Execute backtest with BacktestNode and return the complete result record."""
@@ -396,7 +402,8 @@ class BacktestRunner:
 
         # 10. Extract Equity Curve series (isolated strictly to evaluation period), marked to market at
         # every bar close of the window (R2.2): holdings change only at fills, their value at every bar
-        closes = self.query_catalog_closes(request.bar_type, request.evaluation_start_ns, request.evaluation_end_ns)
+        ohlc = self.query_catalog_ohlc(request.bar_type, request.evaluation_start_ns, request.evaluation_end_ns)
+        closes = [(ts, c) for ts, _, _, _, c in ohlc]
         equity_series: list[tuple[int, float]] = []
         if acc_report is not None and len(acc_report) > 0:
             # one row per currency per account update: value the base asset, never add it as equity
@@ -445,6 +452,7 @@ class BacktestRunner:
             "benchmark": benchmark_metrics(closes, request.initial_balance, perf_metrics["total_return"]),
             "fees_paid": fees_paid,
             "turnover": turnover,
+            "regime_breakdown": regime_breakdown(trades_list, ohlc),  # F1, reporting only; None when unavailable
         }
 
         # 13. Build Arrow tables for artifacts
