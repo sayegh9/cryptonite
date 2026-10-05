@@ -10,6 +10,36 @@ from pydantic import BaseModel, Field
 
 MAX_ALLOCATION_PCT = 25.0  # mirrors the dispatcher's 25% equity clamp; the dispatcher still enforces it
 
+Direction = Literal["BUY", "SELL", "HOLD"]
+
+# One verdict vocabulary (review-plan B2, F-C2, F-M6): the PM / lite verdicts, the CRO's conviction
+# level and the routing words, upper-cased, to the direction they mean. Migration 037's ``VERDICTS``
+# backfilled ``portfolio_decisions.recommendation`` with this same mapping; keep the two in step.
+VERDICT_DIRECTIONS: dict[str, Direction] = {
+    "BUY": "BUY", "OVERWEIGHT": "BUY", "STRONG_BUY": "BUY", "LONG": "BUY",
+    "SELL": "SELL", "UNDERWEIGHT": "SELL", "STRONG_SELL": "SELL", "SHORT": "SELL",
+    "HOLD": "HOLD",
+}
+
+
+def normalize_verdict(value: str) -> Direction:
+    """A verdict in any case, surrounding whitespace ignored, as BUY / SELL / HOLD
+    (Buy / Overweight / STRONG_BUY / LONG -> BUY, Sell / Underweight / STRONG_SELL / SHORT -> SELL,
+    Hold -> HOLD). Anything else raises ``ValueError``: an unknown verdict is never guessed."""
+    direction = VERDICT_DIRECTIONS.get(value.strip().upper()) if isinstance(value, str) else None
+    if direction is None:
+        raise ValueError(f"unknown verdict {value!r}; expected one of {sorted(VERDICT_DIRECTIONS)}")
+    return direction
+
+
+def verdict_direction(value: object) -> Direction | None:
+    """``normalize_verdict`` for callers that treat an unknown verdict as "no direction" (no order
+    side, nothing to score) instead of an error."""
+    try:
+        return normalize_verdict(value)  # type: ignore[arg-type]
+    except ValueError:
+        return None
+
 
 class PortfolioDecision(BaseModel):
     """Research Manager (PM proxy) verdict after the bull/bear debate."""

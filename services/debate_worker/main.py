@@ -25,6 +25,7 @@ from cryptonite_agents.debate_fleet import (
     research_manager,
 )
 from cryptonite_agents.gateway import BudgetGuard, Gateway
+from cryptonite_schemas.debate import normalize_verdict
 from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate
 from mandate_routing import route_entry, route_exit
 
@@ -321,17 +322,22 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
             conviction_level = cro_decision.conviction_level
             reasoning += "\n\nRisk Adjustment: " + cro_decision.risk_reasoning
 
+        # One verdict vocabulary (B2): ``recommendation`` stores the direction (BUY / SELL / HOLD) that
+        # scoring, routing and the approve endpoint read; ``conviction_level`` keeps the CRO's own
+        # wording (Overweight, ...; the lite path's is its direction). Unknown wording fails the run.
+        recommendation = normalize_verdict(conviction_level)
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 # Save final decision
                 await conn.execute(
-                    """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning, decision_price)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                    run_id, instrument_id, conviction_level, conviction, allocation, reasoning, decision_price
+                    """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_level, conviction_score,
+                                                        allocation_pct, reasoning, decision_price)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                    run_id, instrument_id, recommendation, conviction_level, conviction, allocation, reasoning, decision_price
                 )
                 # Autonomous execution exists only inside a mandate, at its earned level (A5.7; there
                 # is no global execution mode any more): L1 approval, L2 veto window, L3 queued.
-                if str(conviction_level).upper() == "HOLD":
+                if recommendation == "HOLD":
                     final_status, mandate = 'NO_TRADE', None  # nothing to approve or execute
                 else:
                     final_status, mandate = await route_entry(

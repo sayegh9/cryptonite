@@ -266,3 +266,147 @@ def test_fm6_migration_037_backfills_verdicts_keeps_the_wording_and_constrains_n
         assert not asyncio.run(_has_conviction_level(url))
         _alembic(url, "upgrade", "head")
         assert asyncio.run(_has_conviction_level(url))
+
+
+# --- one mapping: the migration, the extra routing forms, the CRO shadow, the similar filter -----
+
+def _migration_037():
+    spec = importlib.util.spec_from_file_location(
+        "b2_migration_037", REPO / "infra" / "migrations" / "versions" / "037_verdict_normalization.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_fm6_migration_037_and_normalize_verdict_use_the_same_mapping():
+    from cryptonite_schemas.debate import VERDICT_DIRECTIONS
+
+    normalize_verdict = _normalize_verdict()
+    assert _migration_037().VERDICTS == VERDICT_DIRECTIONS
+    for spelling, direction in VERDICT_DIRECTIONS.items():
+        assert normalize_verdict(spelling) == direction
+        assert normalize_verdict(f"  {spelling.lower()}\t") == direction  # migration: upper(btrim(...))
+
+
+@pytest.mark.parametrize(("verdict", "side"), [("strong buy", "BUY"), ("Strong Sell", "SELL"), (" Overweight ", "BUY"),
+                                               ("short", "SELL"), ("", None), (None, None), ("MAYBE", None)])
+def test_fm6_routing_keeps_its_extra_forms_and_has_no_side_for_unknown_verdicts(routing, verdict, side):
+    assert routing.side_of(verdict) == side
+
+
+@pytest.mark.parametrize("unknown", [None, 7, "REDUCE"])
+def test_fm6_normalize_verdict_raises_on_non_verdicts_and_verdict_direction_returns_none(unknown):
+    from cryptonite_schemas.debate import verdict_direction
+
+    with pytest.raises(ValueError):
+        _normalize_verdict()(unknown)
+    assert verdict_direction(unknown) is None
+
+
+@pytest.mark.parametrize("verdict", ["SMALL_BUY", "Overweighted"])
+def test_fc2_scoring_refuses_an_unknown_verdict_instead_of_grading_it_as_a_short(verdict):
+    with pytest.raises(ValueError):
+        score_decision(verdict, 0.01)
+    with pytest.raises(ValueError):
+        outcomes.signed_outcome(verdict, 0.01)
+
+
+def test_fm6_shadow_scoring_keeps_exit_verdicts_as_a_separate_exit_mapping():
+    assert shadow.direction("REDUCE") == "SELL" and shadow.direction(" close ") == "SELL"
+    assert shadow.direction("MAYBE") is None and shadow.direction(None) is None
+
+
+@pytest.mark.parametrize(("primary", "candidate", "agrees"), [
+    ("Buy", "Overweight", True), ("Overweight", "BUY", True), ("Underweight", "Sell", True),
+    ("Hold", "hold", True), ("Buy", "Hold", False), ("Overweight", "Underweight", False)])
+def test_fm6_cro_shadow_agreement_compares_directions(primary, candidate, agrees):
+    from cryptonite_agents.gateway import shadow as gateway_shadow
+
+    assert gateway_shadow.agreement("debate.cro", {"conviction_level": primary}, {"conviction_level": candidate}) == (
+        "conviction_level", agrees)
+
+
+def test_fm6_exit_shadow_agreement_still_compares_the_wording():
+    from cryptonite_agents.gateway import shadow as gateway_shadow
+
+    assert gateway_shadow.agreement("exit.verdict", {"recommendation": "REDUCE"}, {"recommendation": "CLOSE"}) == (
+        "recommendation", False)
+
+
+class _FetchConn:
+    def __init__(self):
+        self.args = None
+
+    async def fetch(self, _sql, *args):
+        self.args = args
+        return []
+
+
+async def _similar_filter(recommendation):
+    conn = _FetchConn()
+    await similar.similar_decisions(conn, "BTCUSDT.BINANCE", recommendation)
+    return conn.args[2] if conn.args else "no query"
+
+
+@pytest.mark.parametrize(("verdict", "direction"), [("Overweight", "BUY"), ("buy", "BUY"), ("Underweight", "SELL"),
+                                                    ("HOLD", "HOLD")])
+def test_fc2_similar_decisions_filter_matches_every_spelling_of_the_direction(verdict, direction):
+    """Rows written before migration 037 (Overweight, Buy) match a BUY approval, and vice versa."""
+    from cryptonite_schemas.debate import VERDICT_DIRECTIONS
+
+    spellings = asyncio.run(_similar_filter(verdict))
+    assert set(spellings) == {k for k, v in VERDICT_DIRECTIONS.items() if v == direction}
+
+
+async def _orchestrate_sideless_order(recommendation: str):
+    """One MANUAL_ORDER without ``side`` through the orchestrator's command poller (mocked DB and
+    engine, as in tests/test_orchestrator_pipeline.py); returns (engine, executed SQL with args)."""
+    import json
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock
+
+    from cryptonite_execution.engine import PaperTradingEngine
+    from cryptonite_orchestrator.server import command_poller
+
+    row = {"command_id": uuid.uuid4(), "command_type": "MANUAL_ORDER", "target_instance_id": "MANUAL_TRADE",
+           "payload": json.dumps({"client_order_id": "MANUAL-B2", "instrument_id": "BTCUSDT.BINANCE",
+                                  "recommendation": recommendation, "order_type": "MARKET", "quantity": 0.01})}
+    calls = 0
+
+    async def fetchrow(*_):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return row
+        raise asyncio.CancelledError()
+
+    conn = AsyncMock()
+    conn.fetchrow = fetchrow
+    conn.execute = AsyncMock()
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__.return_value = conn
+    engine = MagicMock(spec=PaperTradingEngine)
+    engine.dispatcher = MagicMock()
+    with pytest.raises(asyncio.CancelledError):
+        await command_poller(pool, engine)
+    return engine, [c.args for c in conn.execute.call_args_list]
+
+
+@pytest.mark.parametrize(("verdict", "side"), [("Overweight", "BUY"), ("STRONG_BUY", "BUY"), ("long", "BUY"),
+                                               ("Underweight", "SELL")])
+def test_fm6_orchestrator_side_fallback_follows_the_verdict_direction(verdict, side):
+    engine, _ = asyncio.run(_orchestrate_sideless_order(verdict))
+    engine.dispatcher.dispatch.assert_called_once()
+    assert engine.dispatcher.dispatch.call_args[0][0].side == side
+
+
+@pytest.mark.parametrize("verdict", ["HOLD", "MAYBE", ""])
+def test_fm6_orchestrator_rejects_a_sideless_order_with_no_direction_instead_of_selling(verdict):
+    engine, executed = asyncio.run(_orchestrate_sideless_order(verdict))
+    engine.dispatcher.dispatch.assert_not_called()
+    assert any("status = 'REJECTED'" in args[0] and "NO_ORDER_SIDE" in str(args[2]) for args in executed)
+
+
+def test_fc2_similar_decisions_has_nothing_to_compare_for_an_unknown_verdict():
+    assert asyncio.run(_similar_filter("MAYBE")) == "no query"
+    assert asyncio.run(_similar_filter(None)) is None  # no recommendation: no direction filter

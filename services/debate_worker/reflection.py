@@ -45,6 +45,23 @@ def benchmark_return(query_engine, start: datetime.datetime, horizon: datetime.t
     return last / first - 1 if first else None
 
 
+def reflection_prompt(row, outcome: float, alpha: float) -> str:
+    """The reviewer's prompt for one labelled decision (also used by
+    ``scripts/regenerate_inverted_reflections.py``)."""
+    return (
+        f"Decision for {row['instrument_id']}: {row['recommendation']}\n"
+        f"Original reasoning: {row['reasoning']}\n"
+        f"Asset move over the next 24h: {float(row['return_pct']) * 100:+.2f}% "
+        f"(best {float(row['mfe']) * 100:+.2f}%, worst {float(row['mae']) * 100:+.2f}%)\n"
+        f"Outcome for this decision: {outcome * 100:+.2f}%; alpha vs BTC: {alpha * 100:+.2f}%\n\n"
+        "What is the key lesson learned here?"
+    )
+
+
+def outcome_tag(outcome: float) -> str:
+    return "WIN" if outcome > 0 else "LOSS" if outcome < 0 else "FLAT"
+
+
 class ReflectionEngine:
     def __init__(self, pg_pool: asyncpg.Pool, query_engine, gateway: Gateway | None = None):
         self.pg_pool = pg_pool
@@ -72,15 +89,7 @@ class ReflectionEngine:
                 if bench is None:
                     continue
                 alpha = outcome - signed_outcome(row["recommendation"], bench)
-            prompt = (
-                f"Decision for {row['instrument_id']}: {row['recommendation']}\n"
-                f"Original reasoning: {row['reasoning']}\n"
-                f"Asset move over the next 24h: {float(row['return_pct']) * 100:+.2f}% "
-                f"(best {float(row['mfe']) * 100:+.2f}%, worst {float(row['mae']) * 100:+.2f}%)\n"
-                f"Outcome for this decision: {outcome * 100:+.2f}%; alpha vs BTC: {alpha * 100:+.2f}%\n\n"
-                "What is the key lesson learned here?"
-            )
-            lesson = str((await REVIEWER.run(self.gateway, prompt)).output)
+            lesson = str((await REVIEWER.run(self.gateway, reflection_prompt(row, outcome, alpha))).output)
             embedding_str = embedding_model = None
             try:
                 (vector,), embedding_model = await self.gateway.embed_tagged([lesson], kind="document")
@@ -88,7 +97,7 @@ class ReflectionEngine:
             except Exception as e:  # stored without a vector: retrieval falls back to recency for it
                 logger.warning("Lesson embedding failed: %s", e)
                 embedding_model = None
-            tag = "WIN" if outcome > 0 else "LOSS" if outcome < 0 else "FLAT"
+            tag = outcome_tag(outcome)
             async with self.pg_pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding,

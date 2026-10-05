@@ -29,6 +29,7 @@ from cryptonite_orchestrator.mandate_gate import (
     is_ai_command,
     mandate_exposure,
 )
+from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, MandateReject, mandate_id_from_instance
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from cryptonite_orchestrator.ops_monitor import ops_monitor
@@ -873,11 +874,17 @@ async def command_poller(pool, engine, quote_cache=None):
                             inst_raw = payload.get("instrument_id") or payload.get("symbol", "BTCUSDT")
                             canonical_inst = to_canonical_instrument(inst_raw)
                             
-                            # Determine side
+                            # Determine side: an explicit side, else the recommendation's direction
+                            # (``normalize_verdict``, B2). HOLD or an unknown verdict is no order, never a SELL.
                             raw_side = payload.get("side")
                             if not raw_side:
-                                rec = payload.get("recommendation", "").upper()
-                                raw_side = "BUY" if rec in ("BUY", "OVERWEIGHT") else "SELL"
+                                raw_side = verdict_direction(payload.get("recommendation"))
+                                if raw_side not in ("BUY", "SELL"):
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"], f"NO_ORDER_SIDE: recommendation {payload.get('recommendation')!r}",
+                                    )
+                                    continue
                             side = raw_side.upper()
                             
                             # AI orders are checked against their mandate before the dispatcher (A5.1) and

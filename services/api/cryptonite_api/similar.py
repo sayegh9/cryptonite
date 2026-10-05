@@ -10,6 +10,7 @@ import uuid
 from typing import Any
 
 from cryptonite_execution.calibration import score_decision
+from cryptonite_schemas.debate import VERDICT_DIRECTIONS, normalize_verdict, verdict_direction
 
 logger = logging.getLogger("cryptonite.api.similar")
 
@@ -21,16 +22,23 @@ async def similar_decisions(conn, instrument_id: str | None, recommendation: str
                             exclude_run_id: uuid.UUID | None = None, limit: int = LIMIT) -> list[dict[str, Any]]:
     if not instrument_id:
         return []
+    spellings = None
+    if recommendation:
+        direction = verdict_direction(recommendation)
+        if direction is None:
+            return []  # no direction to compare with
+        # every spelling of that direction, so rows stored before migration 037 (Overweight, Buy) match too
+        spellings = [k for k, v in VERDICT_DIRECTIONS.items() if v == direction]
     rows = await conn.fetch(
         """SELECT pd.run_id, pd.created_at, pd.recommendation, o.return_pct
            FROM portfolio_decisions pd
            JOIN ai_decision_outcomes o ON o.decision_id = pd.id AND o.horizon = $1
            WHERE pd.instrument_id = $2
-             AND ($3::text IS NULL OR pd.recommendation = $3)
+             AND ($3::text[] IS NULL OR upper(btrim(pd.recommendation)) = ANY($3::text[]))
              AND ($4::uuid IS NULL OR pd.run_id IS DISTINCT FROM $4)
            ORDER BY pd.created_at DESC
            LIMIT $5""",
-        HORIZON, instrument_id, recommendation.upper() if recommendation else None, exclude_run_id, limit)
+        HORIZON, instrument_id, spellings, exclude_run_id, limit)
     return [{"run_id": str(r["run_id"]) if r["run_id"] else None, "created_at": r["created_at"].isoformat(),
              "recommendation": r["recommendation"],
              # signed like the learner's outcome: BUY gains when the asset rose, SELL/HOLD when it fell
@@ -40,8 +48,8 @@ async def similar_decisions(conn, instrument_id: str | None, recommendation: str
 
 
 def signed(recommendation: str, return_pct: float) -> float:
-    """Same convention as ``services/debate_worker/outcomes.signed_outcome``."""
-    return return_pct if recommendation.upper() == "BUY" else -return_pct
+    """Same convention as ``services/debate_worker/outcomes.signed_outcome`` (by direction: Overweight is a BUY)."""
+    return return_pct if normalize_verdict(recommendation) == "BUY" else -return_pct
 
 
 async def similar_or_none(pool, instrument_id: str | None, recommendation: str | None,

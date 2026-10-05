@@ -22,6 +22,7 @@ from cryptonite_execution.approvals import (
     record_operator_approval,
 )
 from cryptonite_execution.mandate_store import resolve_mandate_for
+from cryptonite_schemas.debate import VERDICT_DIRECTIONS
 from cryptonite_schemas.mandate import ActionClass
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -175,9 +176,10 @@ async def trigger_exit_debate(req: DebateTriggerRequest, request: Request, _op=D
         logger.error(f"Failed to queue exit debate for {inst_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to queue exit debate: {str(e)}")
 
-# Debate recommendations (PM + CRO vocabularies) that translate into an order side.
-_BUY_RECOMMENDATIONS = {"BUY", "OVERWEIGHT"}
-_SELL_RECOMMENDATIONS = {"SELL", "UNDERWEIGHT"}
+# Debate recommendations (PM + CRO vocabularies) that translate into an order side: the spellings of
+# ``normalize_verdict``'s mapping (B2), so the approve endpoint and routing cannot disagree.
+_BUY_RECOMMENDATIONS = frozenset(k for k, v in VERDICT_DIRECTIONS.items() if v == "BUY")
+_SELL_RECOMMENDATIONS = frozenset(k for k, v in VERDICT_DIRECTIONS.items() if v == "SELL")
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 
 
@@ -236,7 +238,7 @@ async def approve_debate(
 
         account = await conn.fetchrow("SELECT total_equity FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID)
 
-    recommendation = str(decision['recommendation'] or "").upper()
+    recommendation = str(decision['recommendation'] or "").strip().upper()
     if recommendation in _BUY_RECOMMENDATIONS:
         side = "BUY"
     elif recommendation in _SELL_RECOMMENDATIONS:
