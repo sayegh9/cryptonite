@@ -91,7 +91,7 @@ mandate check, the kill switch, TOTP approvals or the outbox.
 
 | Gate | Result |
 |---|---|
-| pytest, throwaway DB (`cryptonite_ci_final`) | see PR description (baseline before the work: 817 passed / 0 failed) |
+| pytest, throwaway DB (`cryptonite_ci_final`) | 927 passed / 0 failed, 14 deselected as usual (817 / 0 before the work) |
 | Migration roundtrip 001→033→base→033 (destructive marker) | passed |
 | Ruff | new files clean; changed files 52 findings vs 75 in the same files before |
 | `pnpm typecheck` / `lint` / `build` | clean |
