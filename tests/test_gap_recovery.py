@@ -129,3 +129,64 @@ async def test_recovery_never_commits_the_open_kline(
     )
     assert recovered == 2
     assert AnalyticsQueryEngine(temp_analytics_dir).count_bars("BTCUSDT", "1m") == 2
+
+
+# --- self-healing: empty files left by a killed writer --------------------------------------------
+
+
+def _write_one_file_per_bar(nautilus_mgr, bar_type, klines):
+    from cryptonite_schemas.bar import EnrichedBar, bar_to_nautilus
+
+    for k in klines:
+        b = EnrichedBar.from_binance_raw(raw=k, instrument_id="BTCUSDT.BINANCE", bar_type=str(bar_type),
+                                         price_precision=2, size_precision=5, received_at_ns=0)
+        nautilus_mgr.write_bars([bar_to_nautilus(b, bar_type)])
+
+
+def _truncate_file_for(nautilus_mgr, bar_type, ts_ns):
+    from cryptonite_storage.nautilus_catalog import _file_interval
+
+    for f in (nautilus_mgr.catalog_path / "data" / "bars" / str(bar_type)).glob("*.parquet"):
+        if _file_interval(f.name) == (ts_ns, ts_ns):
+            f.write_bytes(b"")
+            return f
+    raise AssertionError("no file for that bar")
+
+
+def test_quarantine_moves_empty_files_aside_and_exposes_their_gap(temp_nautilus_dir, sample_currency_pair, sample_raw_klines):
+    nautilus_mgr = NautilusCatalogManager(temp_nautilus_dir / "cat")
+    nautilus_mgr.write_instruments([sample_currency_pair])
+    bar_type = to_nautilus_bar_type("BTCUSDT.BINANCE", "1m")
+    _write_one_file_per_bar(nautilus_mgr, bar_type, sample_raw_klines[:3])
+    ts = sample_raw_klines[2].open_time_ms * 1_000_000  # a bar's ts_event is its close = next kline's open
+    broken = _truncate_file_for(nautilus_mgr, bar_type, ts)
+
+    assert nautilus_mgr.quarantine_empty_bar_files(str(bar_type)) == [(ts, ts)]
+    assert not broken.exists()
+    moved = list((temp_nautilus_dir / "catalog_quarantine" / str(bar_type)).iterdir())
+    assert len(moved) == 1 and moved[0].name.startswith(broken.name) and moved[0].stat().st_size == 0
+    assert all(not (s <= ts <= e) for s, e in nautilus_mgr.get_intervals("bars", str(bar_type)))
+    assert nautilus_mgr.quarantine_empty_bar_files(str(bar_type)) == []  # nothing left to move
+
+
+@pytest.mark.asyncio
+async def test_heal_empty_files_refills_the_bar_into_the_catalog_only(
+    temp_nautilus_dir, temp_analytics_dir, sample_currency_pair, sample_raw_klines
+):
+    nautilus_mgr = NautilusCatalogManager(temp_nautilus_dir / "cat")
+    nautilus_mgr.write_instruments([sample_currency_pair])
+    bar_type = to_nautilus_bar_type("BTCUSDT.BINANCE", "1m")
+    _write_one_file_per_bar(nautilus_mgr, bar_type, sample_raw_klines[:3])
+    ts = sample_raw_klines[2].open_time_ms * 1_000_000
+    _truncate_file_for(nautilus_mgr, bar_type, ts)
+
+    analytics_writer = AnalyticsLakeWriter(temp_analytics_dir)
+    coordinator = TwoStoreCoordinator(nautilus_manager=nautilus_mgr, analytics_writer=analytics_writer, pg_pool=None)
+    mgr = GapRecoveryManager(rest_client=MockRestClient(sample_raw_klines[:3]), coordinator=coordinator,  # type: ignore
+                             nautilus_manager=nautilus_mgr, pg_pool=None)
+
+    assert await mgr.heal_empty_files("BTCUSDT", "1m", bar_type, 2, 5) == 1
+    got = [int(b.ts_event) for b in nautilus_mgr.query_bars(identifiers=[str(bar_type)])]
+    assert ts in got and len(got) == len(set(got)) == 3
+    assert AnalyticsQueryEngine(temp_analytics_dir).count_bars("BTCUSDT", "1m") == 0  # lake untouched
+    assert await mgr.heal_empty_files("BTCUSDT", "1m", bar_type, 2, 5) == 0  # idempotent

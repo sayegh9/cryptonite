@@ -2,10 +2,12 @@
 
 import hashlib
 import os
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from nautilus_trader.model import Bar, CurrencyPair
+from nautilus_trader.model import Bar
 from nautilus_trader.persistence import ParquetDataCatalog
 
 
@@ -47,6 +49,33 @@ class NautilusCatalogManager:
             except OSError:
                 pass
         return affected, hasher.hexdigest()
+
+    def quarantine_empty_bar_files(self, identifier: str) -> list[tuple[int, int]]:
+        """Move 0-byte bar files of one bar type out of the catalog; return their (start, end) ns.
+
+        A writer killed mid-write leaves an empty Parquet file whose name still claims its interval,
+        so gap detection treats the interval as covered and every query through it fails. The file
+        goes to ``<catalog parent>/catalog_quarantine/<bar type>/`` (moved, never deleted); the
+        caller refills the returned intervals.
+        """
+        bar_dir = self.catalog_path / "data" / "bars" / identifier
+        if not bar_dir.is_dir():
+            return []
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        quarantine = self.catalog_path.parent / "catalog_quarantine" / identifier
+        intervals: list[tuple[int, int]] = []
+        for f in sorted(bar_dir.glob("*.parquet")):
+            try:
+                if f.stat().st_size != 0:
+                    continue
+            except FileNotFoundError:
+                continue
+            interval = _file_interval(f.name)
+            quarantine.mkdir(parents=True, exist_ok=True)
+            f.rename(quarantine / f"{f.name}.{stamp}")
+            if interval:
+                intervals.append(interval)
+        return intervals
 
     def query_bars(
         self, identifiers: list[str], start: int | None = None, end: int | None = None
@@ -107,3 +136,18 @@ class NautilusCatalogManager:
                 if fn.endswith(".parquet"):
                     files.add(os.path.join(root, fn))
         return files
+
+
+_FILE_TS = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{9})Z")
+
+
+def _file_interval(name: str) -> tuple[int, int] | None:
+    """(start_ns, end_ns) from a catalog file name like ``2026-10-05T04-06-00-000000000Z_...Z.parquet``."""
+    found = _FILE_TS.findall(name)
+    if len(found) != 2:
+        return None
+    out = []
+    for day, hh, mm, ss, nanos in found:
+        base = datetime.fromisoformat(f"{day}T{hh}:{mm}:{ss}+00:00")
+        out.append(int(base.timestamp()) * 1_000_000_000 + int(nanos))
+    return out[0], out[1]
