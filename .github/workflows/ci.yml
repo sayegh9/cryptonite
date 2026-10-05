@@ -1,0 +1,218 @@
+name: CI
+
+# C1 (F-H4): the checks a PR must pass before it can merge. security.yml (TruffleHog) runs separately.
+# Required checks (branch protection): ruff, web, pytest, e2e-smoke.
+
+on:
+  push:
+    branches: ["main", "review-plan"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RUFF_VERSION: "0.16.6"   # matches uv.lock
+  UV_VERSION: "0.12.17"    # matches infra/docker/*.Dockerfile
+  NODE_VERSION: "22"
+
+jobs:
+  ruff:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # diff against the PR base / the previous push
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      # Blocking: every Python file this change adds or modifies must be clean.
+      - name: Ruff on changed Python files
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base="$PR_BASE"
+          [ "$EVENT" = "pull_request" ] || base="$PUSH_BEFORE"
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="$(git rev-parse HEAD~1)"  # new branch or force push: check the last commit only
+          fi
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$base"...HEAD -- '*.py')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No changed Python files."
+            exit 0
+          fi
+          printf 'Checking %s changed file(s):\n' "${#files[@]}"; printf '  %s\n' "${files[@]}"
+          uvx "ruff@${RUFF_VERSION}" check --output-format=github "${files[@]}"
+
+      # Informational until C2 clears the existing findings; never fails the job.
+      - name: Ruff on the whole tree (informational)
+        run: |
+          {
+            echo "### Ruff, whole tree (informational until C2)"
+            echo '```'
+            uvx "ruff@${RUFF_VERSION}" check . --statistics --exit-zero
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/web/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          # Same superuser as the compose `postgres` service; a throwaway DB, never the dev DB `cryptonite`.
+          POSTGRES_USER: cryptonite
+          POSTGRES_PASSWORD: cryptonite_dev_pass
+          POSTGRES_DB: cryptonite_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cryptonite -d cryptonite_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      # Mirrors the compose `test` service, pointed at the service containers above.
+      CRYPTONITE_ENV: test
+      DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite_ci
+      ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite_ci
+      REDIS_URL: redis://localhost:6379/0
+      PYTHONDONTWRITEBYTECODE: "1"
+      UV_FROZEN: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python workspace
+        run: uv sync --frozen --extra dev --all-packages
+
+      # Roles must exist before the migrations grant to them (docs/runbooks/db_bootstrap.md);
+      # init-roles.sh creates them with the dev passwords the role tests log in with.
+      - name: Create database roles
+        env:
+          PGHOST: localhost
+          PGPASSWORD: cryptonite_dev_pass
+          POSTGRES_USER: cryptonite
+          POSTGRES_DB: cryptonite_ci
+        run: |
+          command -v psql >/dev/null || { sudo apt-get update -q && sudo apt-get install -yq postgresql-client; }
+          bash infra/docker/init-roles.sh
+
+      - name: Alembic upgrade from empty
+        run: uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
+
+      - name: pytest
+        run: uv run pytest tests -q -rfE --durations=25 --junitxml=pytest-results.xml
+
+      - name: Upload pytest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+          retention-days: 14
+
+  e2e-smoke:
+    name: e2e-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/web/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: pw-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - name: Install Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Chromium system deps
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Build web
+        run: pnpm build
+
+      # No backend runs here: the subset is pure-module specs plus page specs that stub every call
+      # they assert on (page.route) or render the backend-offline state. The list is `e2e:smoke`.
+      - name: Playwright smoke subset
+        run: pnpm e2e:smoke
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 14

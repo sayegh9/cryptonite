@@ -2,6 +2,9 @@
 
 Release notes from before the AI-First program. Phases 0–7 of that program are described in [ai-first-program.md](ai-first-program.md) and logged in [HANDOFF.md](../HANDOFF.md).
 
+## Unreleased — review-plan
+- **C1 (F-H4) CI that gates merges**: `.github/workflows/ci.yml` runs `ruff` (changed Python files, blocking; whole tree informational until C2), `web` (`pnpm typecheck`, `pnpm lint`), `pytest` (Postgres 16 + pgvector and Redis 7 service containers, throwaway DB `cryptonite_ci`, roles from `init-roles.sh`, Alembic upgrade from empty) and `e2e-smoke` (`pnpm e2e:smoke`, a Playwright subset against a built web with the API stubbed).
+
 ## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
 - **Database-Backed Action & Decision Inbox**: Refactored the Action Inbox to hydrate directly from PostgreSQL (`GET /api/v1/agents/debates`), with automatic client-side cache reconciliation that purges local browser storage when database records are cleared. Added formatted timestamps and strict chronological sorting.
 - **Docked Operator Control Sidebar**: Added direct access to the Execution Kill-Switch panel from the main Trading Terminal via the right-sidebar toolbar (red Shield toggle), allowing traders to manage risk and trip emergency stops without leaving active charts.
