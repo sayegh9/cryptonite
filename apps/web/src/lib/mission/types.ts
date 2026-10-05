@@ -112,11 +112,40 @@ export interface CalibrationBin {
   hit_rate: number | null;
 }
 
+/** Isotonic map stated confidence -> hit rate (F5): fitted from `min_points` labelled decisions on.
+ * Informational only: never used for sizing, routing or a gate. */
+export interface IsotonicFit {
+  fitted: boolean;
+  n: number;
+  min_points?: number;
+  /** Step function as [[x, y], ...] (each step's first and last x), sorted by x */
+  points: [number, number][];
+}
+
 export interface Reliability {
   n: number;
   min_samples: number;
   ece_pp: number | null;
   bins: CalibrationBin[];
+  /** F5; absent from servers before it */
+  isotonic?: IsotonicFit | null;
+}
+
+/** Labelled decisions per market regime at decision time (F1, reporting only). */
+export interface RegimeOutcome {
+  regime: string;
+  n: number;
+  wins: number;
+  losses: number;
+  neutral: number;
+  mean_signed_return: number | null;
+}
+
+export interface OutcomesByRegime {
+  horizon: string;
+  mandate_id: string | null;
+  available?: boolean;
+  regimes: RegimeOutcome[];
 }
 
 export interface EvalRun {

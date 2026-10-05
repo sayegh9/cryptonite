@@ -8,10 +8,23 @@ import type { Reliability } from "@/lib/mission/types";
  * (y), one dot per confidence bin, sized by sample count. The dashed diagonal is perfect calibration.
  * One series, so no legend box: the heading names it. Mark colour #0891b2 passes the dataviz palette
  * checks on the zinc-950 surface; all text stays in text tokens. A table view follows the plot.
+ * F5: once the server has fitted the isotonic map (>= 200 labels), it is drawn as a step line in a
+ * second, dashed amber series and named in the caption. Informational only.
  */
 const SIZE = 180;
 const PAD = 28;
 const MARK = "#0891b2";
+const FIT = "#d97706";
+
+/** Step path through the isotonic points: horizontal at each level, vertical at each jump. */
+const stepPoints = (pts: [number, number][]) => {
+  const out: string[] = [];
+  pts.forEach(([x, y], i) => {
+    if (i > 0) out.push(`${sx(x)},${sy(pts[i - 1][1])}`);
+    out.push(`${sx(x)},${sy(y)}`);
+  });
+  return out.join(" ");
+};
 
 const sx = (v: number) => PAD + v * (SIZE - 2 * PAD);
 const sy = (v: number) => SIZE - PAD - v * (SIZE - 2 * PAD);
@@ -25,12 +38,23 @@ export default function ReliabilityChart({ role, data }: { role: string; data: R
   const maxN = Math.max(1, ...points.map((p) => p.n));
   const radius = (n: number) => 4 + 4 * Math.sqrt(n / maxN); // >= 8px diameter
   const active = hover == null ? null : points.find((p) => p.i === hover) ?? null;
+  const fit = data.isotonic?.fitted && data.isotonic.points.length > 0 ? data.isotonic.points : null;
 
   return (
     <figure className="space-y-2" data-testid={`reliability-${role}`}>
       <figcaption className="text-zinc-400">
         <span className="font-semibold text-zinc-300">{role}</span>: confidence vs 24h hit rate ·{" "}
         {data.n} labelled · ECE {data.ece_pp == null ? `n/a (needs ${data.min_samples})` : `${data.ece_pp} pp`}
+        {data.isotonic && (
+          <span data-testid={`isotonic-${role}`}>
+            {" "}· isotonic fit{" "}
+            {fit ? (
+              <span style={{ color: FIT }}>shown dashed (informational)</span>
+            ) : (
+              `not fitted (needs ${data.isotonic.min_points ?? 200})`
+            )}
+          </span>
+        )}
       </figcaption>
       {points.length === 0 ? (
         <p className="text-zinc-500">No labelled decisions yet.</p>
@@ -46,6 +70,10 @@ export default function ReliabilityChart({ role, data }: { role: string; data: R
               </g>
             ))}
             <line x1={sx(0)} y1={sy(0)} x2={sx(1)} y2={sy(1)} stroke="#52525b" strokeWidth={1} strokeDasharray="3 3" />
+            {fit && (
+              <polyline data-testid={`isotonic-line-${role}`} fill="none" stroke={FIT} strokeWidth={2} strokeDasharray="5 3"
+                        points={stepPoints(fit)} />
+            )}
             <polyline fill="none" stroke={MARK} strokeWidth={2}
                       points={points.map((p) => `${sx(p.mean_confidence!)},${sy(p.hit_rate!)}`).join(" ")} />
             {points.map((p) => (

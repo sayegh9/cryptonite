@@ -9,6 +9,8 @@ import type { Approval, Mandate } from "@/lib/mission/types";
 import { ApprovalRiskContext, sideOf, type ApprovalRiskInput } from "@/components/ApprovalRiskContext";
 import { metricOrNull } from "@/lib/freshness";
 import { useMandateStore } from "@/lib/stores/useMandateStore";
+import { useAutonomyStore } from "@/lib/stores/useAutonomyStore";
+import { calibratedConviction } from "@/lib/mission/calibration";
 
 /** Risk context inputs from an approval's command payload and its mandate (unknown -> null). */
 function contextOf(a: Approval, mandates: Mandate[]): ApprovalRiskInput {
@@ -96,6 +98,9 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
     }
   };
 
+  // F5: the verdict's isotonic map, when Autonomy & Evals has loaded a fitted one (informational only)
+  const isotonic = useAutonomyStore((st) => st.calibration?.["debate.verdict"]?.isotonic ?? null);
+
   const shown = [...approvals.map((a) => decided[a.id] ?? a), ...Object.values(decided).filter((d) => !approvals.some((a) => a.id === d.id))];
 
   return (
@@ -127,6 +132,16 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                 )}
               </div>
               <p className="mt-1 text-zinc-100">{a.summary}</p>
+              {(() => {
+                const raw = metricOrNull((a.payload ?? {}).conviction_score);
+                const cal = raw === null ? null : calibratedConviction(isotonic, raw);
+                return cal === null ? null : (
+                  <p className="text-2xs text-zinc-400" data-testid="calibrated-conviction"
+                     title="Isotonic fit of past convictions against 24h outcomes. Informational: not used for sizing or approval.">
+                    conviction {Math.round(raw! * 100)}% · calibrated ≈ {Math.round(cal * 100)}% (informational)
+                  </p>
+                );
+              })()}
               <p className="text-2xs text-zinc-500">
                 At timeout: {a.timeout_policy === "DENY" ? "no (nothing happens)" : "proceeds"}
                 {a.trace_id && (
