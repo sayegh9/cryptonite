@@ -117,3 +117,21 @@ mandate check, the kill switch, TOTP approvals or the outbox.
 3. Hold until after the L2 review (~10-31): `scanner` (indicator conventions, brief data),
    `debate_worker` and `learner` (rule triage, two-analyst debate, prompts). A mixed deploy is safe:
    without `<brief_key>:data` the gate falls through to the model, and trace ids are nullable.
+
+## Follow-ups (2026-10-05, branch `remediation/followups`)
+
+- **Backtests were fee-free on every profile** (found while re-running D3): the venue used
+  `MakerTakerFeeModel`, which charges the instrument's fee fields, and the catalog's instruments carry
+  none. `BpsFeeModel` now charges the profile's own rates. Trade metrics also listed one NETTING
+  position per run ("1 trade"); trades are now round trips rebuilt from fills. `METRICS_VERSION` 3.
+- Effect on the default `ema-cross` (BTCUSDT 1m, last 90 days, real catalog): fee-free +0.16% with
+  "1 trade" → conservative **−44.4%**, 3,077 round trips, win rate 9.6%, fees $4,457 on $10,000
+  (turnover 446×); BTC buy-and-hold +36.5%. Every earlier backtest and research-loop score was
+  fee-free; re-run what matters (`scripts/rerun_backtests.py --since … --include-v2`).
+- D3: the two old `ema-cross` runs used a 2024 sample window no longer in the catalog (their plain
+  re-runs failed with "No bar data", as they should); `--recent-days/--profile` added to re-run on
+  current history.
+- Ruff: every Python file changed by the remediation is clean, except
+  `services/orchestrator/cryptonite_orchestrator/server.py` (left for the operator).
+- The trigger-governor buttons (state nothing read) are replaced by the actual rule.
+- Verification on the branch: pytest 932 passed / 0 failed; Playwright 66 passed / 0 failed.
