@@ -21,6 +21,7 @@ import { SettingsPanel } from "@/components/SettingsPanel";
 import { AIBrainWorkspace } from "@/components/brain/AIBrainWorkspace";
 import { DecisionTraceDrawer } from "@/components/brain/DecisionTraceDrawer";
 import { MissionControl } from "@/components/mission/MissionControl";
+import { ModeBanner } from "@/components/mission/ModeBanner";
 import { dispatchBrainAsk } from "@/lib/brain/events";
 import { useBrainSetup } from "@/lib/brain/useBrainSetup";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
@@ -36,7 +37,6 @@ import { getStreamClient } from "@/lib/ws";
 import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
 import {
-  ShieldCheck,
   Radio,
   BrainCircuit,
 } from "lucide-react";
@@ -288,8 +288,9 @@ function Workstation() {
     <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
       {/* Top Institutional Header */}
       <header className="h-12 flex-none bg-zinc-950 border-b border-white/5 flex items-center justify-between px-4 z-20">
-        <div className="flex items-center h-full">
-          <div className="flex items-center space-x-2 mr-8">
+        {/* min-w-0: the workspace nav scrolls before the mode banner is pushed off screen */}
+        <div className="flex items-center h-full min-w-0 flex-1">
+          <div className="flex flex-none items-center space-x-2 mr-8">
             <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-2xs text-zinc-950">
               C
             </div>
@@ -330,11 +331,8 @@ function Workstation() {
           </nav>
         </div>
 
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-1.5 bg-emerald-950/30 border border-emerald-900/50 px-2 py-1 rounded text-2xs text-emerald-400 font-mono">
-            <ShieldCheck className="w-3 h-3" />
-            <span className="font-bold tracking-wide">ZERO TRADING AUTHORITY (READ ONLY)</span>
-          </div>
+        <div className="flex flex-none items-center space-x-4 ml-4">
+          <ModeBanner poll className="max-w-sm 2xl:max-w-lg" />
           
           <button
             onClick={() => setIsAgentChatOpen(true)}

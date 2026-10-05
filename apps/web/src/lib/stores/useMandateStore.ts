@@ -22,6 +22,11 @@ interface MandateState {
   clockOffsetMs: number;
   loaded: boolean;
   error: string | null;
+  /** Outcome of the latest fetch of each source (null: not fetched yet), for the mode banner (G1) */
+  mandatesOk: boolean | null;
+  statusOk: boolean | null;
+  /** The latest refresh was refused (401/403) */
+  denied: boolean;
 
   setView: (view: MissionView) => void;
   selectMandate: (id: string | null) => void;
@@ -41,6 +46,9 @@ export const useMandateStore = create<MandateState>()(
       clockOffsetMs: 0,
       loaded: false,
       error: null,
+      mandatesOk: null,
+      statusOk: null,
+      denied: false,
 
       setView: (view) => set({ view }),
       selectMandate: (selectedMandateId) => set({ selectedMandateId }),
@@ -54,6 +62,9 @@ export const useMandateStore = create<MandateState>()(
           clockOffsetMs: a.status === "fulfilled" ? new Date(a.value.now).getTime() - Date.now() : prev.clockOffsetMs,
           status: s.status === "fulfilled" ? s.value : prev.status,
           loaded: true,
+          mandatesOk: m.status === "fulfilled",
+          statusOk: s.status === "fulfilled",
+          denied,
           error: denied
             ? "Sign in as operator to use Mission Control."
             : m.status === "rejected" && a.status === "rejected"
