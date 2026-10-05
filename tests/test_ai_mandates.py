@@ -365,8 +365,10 @@ def mandate_row(m: Mandate) -> dict:
 
 
 async def run_ai_command(payload, *, mandate_row=None, target="AI_DEBATE_WORKER", requester="operator:u1",
-                         cmd_type="SUBMIT_ORDER", mandate_id=None, positions=(), approval=None):
+                         cmd_type="SUBMIT_ORDER", mandate_id=None, positions=(), approval=None, dispatcher_position=None):
     d, _ = make_fresh_dispatcher()
+    if dispatcher_position is not None:
+        d.positions[SPOT] = dispatcher_position
     engine = make_engine(d)
     engine.bridge = MagicMock()
     quotes = SimpleQuoteCache()

@@ -56,6 +56,7 @@ PROTECTED_READS = [
     "/api/v1/signals",
     f"/api/v1/signals/{_ID}",
     "/api/v1/strategist/instructions",
+    "/api/v1/control/risk-limits",
 ]
 
 # Mutations outside the /auth router that enforce CSRF inline (control.verify_csrf) rather than via require_csrf.

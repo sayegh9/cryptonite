@@ -263,20 +263,32 @@ async def test_auth_routes_e2e():
             assert cmd_row is not None
             assert cmd_row["command_type"] == "KILL_SWITCH_RESET_REQUEST"
 
-            # 6. Control Plane: Risk Limits Update (refused: not configurable here)
+            # 6. Control Plane: Risk Limits (F7): tightening is stored without TOTP, loosening needs it,
+            # nothing goes past the code defaults
+            acct = f"PAPER-{uuid.uuid4().hex[:8]}"
             limits_resp = client.post(
                 "/api/v1/control/risk-limits",
-                json={
-                    "step_up_password": password,
-                    "max_daily_loss_pct": 2.5,
-                    "max_order_notional_usd": 15000.0,
-                    "max_position_notional_usd": 50000.0,
-                },
+                json={"environment": "PAPER", "account_id": acct, "max_daily_loss_pct": "2.5",
+                      "reason": "Tighten for the session test"},
                 headers={"X-CSRF-Token": csrf_token},
             )
-            # Limits are not configurable here (R1.8): an honest 501 after auth, CSRF and step-up
-            assert limits_resp.status_code == 501
-            assert limits_resp.json()["detail"] == "Limits are not configurable here; edit the mandate"
+            assert limits_resp.status_code == 200, limits_resp.text
+            assert limits_resp.json()["effective"]["max_daily_loss_pct"] == "2.5"
+            too_loose = client.post(
+                "/api/v1/control/risk-limits",
+                json={"environment": "PAPER", "account_id": acct, "max_daily_loss_pct": "10", "reason": "Past the invariant"},
+                headers={"X-CSRF-Token": csrf_token},
+            )
+            assert too_loose.status_code == 422
+            loosen = client.post(
+                "/api/v1/control/risk-limits",
+                json={"environment": "PAPER", "account_id": acct, "reason": "Back to the default"},
+                headers={"X-CSRF-Token": csrf_token},
+            )
+            assert loosen.status_code == 401  # removing the override loosens: TOTP required
+            assert await pool.fetchval(
+                "SELECT max_daily_loss_pct FROM risk_limit_overrides WHERE account_id = $1", acct) == 2.5
+            await pool.execute("DELETE FROM risk_limit_overrides WHERE account_id = $1", acct)
 
             # 7. Logout
             logout_resp = client.post("/api/v1/auth/logout")
