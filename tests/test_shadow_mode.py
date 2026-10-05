@@ -461,7 +461,14 @@ async def test_rows_land_in_ai_shadow_results_as_the_telemetry_role(db_url):
             await api.close()
         with pytest.raises(asyncpg.CheckViolationError):
             await admin.execute("UPDATE ai_model_routes SET shadow_sample_rate = 1.5 WHERE role = 'triage'")
+        # paid shadows: off unless system_settings says so (read with the routes)
+        assert g._allow_paid_shadow is False
+        await admin.execute("INSERT INTO system_settings (key, value) VALUES ('AI_SHADOW_ALLOW_PAID', 'true')")
+        fresh = Gateway(pool=pool, budget=BudgetGuard(pool=pool, refresh_s=0))
+        await fresh.route("triage")
+        assert fresh._allow_paid_shadow is True
     finally:
+        await admin.execute("DELETE FROM system_settings WHERE key = 'AI_SHADOW_ALLOW_PAID'")
         await admin.execute("DELETE FROM ai_model_routes")
         await admin.close()
         await pool.close()

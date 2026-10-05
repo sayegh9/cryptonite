@@ -47,6 +47,33 @@ guard ($25/day; exits are never blocked), a permission gate on tools (READ / RED
 - **Distillation logging:** the prompts of `triage`, `tagging` and `summarize` are stored in
   `ai_decision_traces.input` (migration 029), at most 20,000 characters.
 
+- **Shadow mode (F2, `shadow.py`, migration 036):** a route with `shadow_model` and
+  `shadow_sample_rate` > 0 replays that share of its calls on the shadow model *after* the primary
+  returned, as a background task. The shadow gets the same prompt, instructions, output contract and
+  history, but only READ tools without side effects (never `stage_debate_proposal`, never REDUCE/ADD
+  tools); its answer goes to `ai_shadow_results` and is never acted on. It cannot delay, change or fail
+  the primary. Protected roles may have a shadow. Pinned calls (evals, operator model overrides) and
+  gateways without a telemetry pool are not shadowed; at most 4 shadows run at once per process.
+  Budget: shadow calls are ledgered as `shadow:<role>` and count toward the daily cap; the guard skips
+  them first, from the 70% threshold on, and while spend is unknown. Local (Ollama) shadows are free;
+  paid shadows run only with `system_settings` `AI_SHADOW_ALLOW_PAID = true`. Structured roles record
+  agreement on the key field (`worth_debate`, `recommendation`, `conviction_level`).
+  `GET /api/v1/ai/shadow?role=&days=7` reports per role and per shadow model: agreement, p50/p95
+  latency, errors, skips, cost and, once the setup's decision is labelled (24h, linked through the
+  `decision_trace_id` the debate worker now passes as trace parent), outcomes scored with
+  `score_decision`. Mission Control → Autonomy & Evals shows it read-only. Routes are edited in SQL:
+
+  ```sql
+  INSERT INTO ai_model_routes (role, shadow_model, shadow_sample_rate) VALUES ('triage', 'ollama:qwen3.5:4b', 0.25)
+  ON CONFLICT (role) DO UPDATE SET shadow_model = EXCLUDED.shadow_model,
+      shadow_sample_rate = EXCLUDED.shadow_sample_rate, updated_at = now();
+  -- off: UPDATE ai_model_routes SET shadow_sample_rate = 0 WHERE role = 'triage';
+  -- paid shadows (JSONB value): INSERT INTO system_settings (key, value) VALUES ('AI_SHADOW_ALLOW_PAID', 'true')
+  --     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
+  ```
+
+  Gateways reload routes every 30 s, so no restart is needed.
+
 Production routes on the workstation:
 
 | Role | Primary | Fallback (DEGRADE) |
@@ -138,6 +165,7 @@ overfitting on out-of-sample before paying for a Pro review, and stores the repo
 | 029 | `ai_decision_traces.input` |
 | 030 | role `cryptonite_backtester` |
 | 031 | `research_reports` |
+| 036 | `ai_model_routes.shadow_model`, `ai_model_routes.shadow_sample_rate`, `ai_shadow_results` (F2) |
 
 ## 9. Redis keys the program added
 
