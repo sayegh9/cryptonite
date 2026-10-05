@@ -4,7 +4,7 @@ Spend comes from ``llm_cost_ledger`` (all services), refreshed every few seconds
 locally between refreshes. Spend whose ledger write failed stays counted in this process for the
 rest of the UTC day. As the day's spend approaches the cap, roles stop in priority order:
 
-  >= 70%  one alert per UTC day (shared across processes via Redis)
+  >= 70%  one alert per UTC day (shared across processes via Redis); shadow calls (F2) skipped first
   >= 80%  OPTIONAL roles refused (research, reflection, digests)
   >= 90%  INTERACTIVE roles refused too (operator chat)
   >= 100% everything refused except CRITICAL roles (exits / risk reduction never stop)
@@ -12,6 +12,10 @@ rest of the UTC day. As the day's spend approaches the cap, roles stop in priori
 Until the ledger has been read successfully today, spend is unknown: OPTIONAL and INTERACTIVE roles
 are refused (debates and exits still run, counted locally). A role's own ``daily_cap_usd`` refuses
 that role (unless CRITICAL) once reached.
+
+Shadow calls (F2, ``check_shadow``) are never needed for a decision: they are skipped from the 70%
+degrade threshold on, and whenever spend is unknown. Their cost is recorded like any other call
+(under the role ``shadow:<role>``), so they count toward the daily cap.
 """
 
 import datetime
@@ -28,6 +32,7 @@ logger = logging.getLogger("cryptonite.agents.gateway.budget")
 DEFAULT_DAILY_CAP_USD = Decimal("25.00")
 ALERT_CHANNEL = "channel:system_alerts"
 ALERT_AT, OPTIONAL_STOP_AT, INTERACTIVE_STOP_AT = Decimal("0.70"), Decimal("0.80"), Decimal("0.90")
+SHADOW_STOP_AT = ALERT_AT  # the degrade threshold: shadows are the first thing to go
 _NON_CORE = (BudgetPriority.OPTIONAL, BudgetPriority.INTERACTIVE)
 
 
@@ -140,6 +145,16 @@ class BudgetGuard:
             raise BudgetExceeded(route.role, "DAILY_BUDGET_RESERVED_FOR_CORE_ROLES")
         if route.daily_cap_usd is not None and self._by_role.get(route.role, Decimal("0")) >= route.daily_cap_usd:
             raise BudgetExceeded(route.role, "ROLE_DAILY_CAP_REACHED")
+
+    async def check_shadow(self, route: RoleRoute) -> None:
+        """Raise BudgetExceeded if a shadow call for ``route`` may not run now (F2). Stricter than
+        ``check``: no priority (not even CRITICAL) keeps a shadow running past the degrade threshold."""
+        await self._refresh()
+        if not self._known:
+            raise BudgetExceeded(route.role, "SHADOW_SPEND_UNKNOWN")
+        used = self._spent / self._cap if self._cap > 0 else Decimal("1")
+        if used >= SHADOW_STOP_AT:
+            raise BudgetExceeded(route.role, "SHADOW_BUDGET_DEGRADED")
 
     async def record(self, role: str, cost_usd: Decimal, persisted: bool = True) -> None:
         """Count a call's cost now. ``persisted=False`` (its ledger write failed) keeps it counted all day."""
