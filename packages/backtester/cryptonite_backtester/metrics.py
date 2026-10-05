@@ -8,7 +8,7 @@ from typing import Any
 
 # 2: equity marked at every bar close, Sharpe/Sortino on a full UTC daily grid, benchmark, fees and
 # turnover (remediation R2.2/R2.3). Results without ``metrics_version`` are legacy (fill-only equity).
-METRICS_VERSION = 2
+METRICS_VERSION = 3  # 3: profile fees actually charged; trades are round trips rebuilt from fills
 
 
 def account_equity_series(
@@ -345,3 +345,70 @@ def calculate_performance_metrics(
         "downsampled_equity": downsampled_equity,
         "monthly_returns": monthly_returns,
     }
+
+
+def round_trips(fills: Iterable[tuple[int, str, float, float, float]], instrument_id: str) -> list[dict[str, Any]]:
+    """Trades as round trips rebuilt from fills: a trade opens when the holding leaves zero and closes
+    when it returns to zero (a fill that crosses zero closes one trade and opens the next).
+
+    Under NETTING every round trip shares one Nautilus position id, so a list of positions shows one
+    "trade" per run; this is what the trade metrics (count, win rate, profit factor) need instead.
+    ``fills``: (ts_ns, side "BUY"/"SELL", quantity, price, fee in the quote currency), in any order.
+    P&L is net of every fee paid on the trade's fills (average-cost basis). A trade still open at the
+    end is returned with ``ts_closed_ns`` 0 and the P&L realised so far.
+    """
+    trades: list[dict[str, Any]] = []
+    pos = cost = realized = fees = entered_qty = entered_notional = exited_qty = exited_notional = 0.0
+    opened = 0
+    eps = 1e-12
+
+    def close(ts: int) -> None:
+        nonlocal pos, cost, realized, fees, entered_qty, entered_notional, exited_qty, exited_notional
+        pnl = realized - fees
+        trades.append({
+            "position_id": f"{instrument_id}-RT{len(trades) + 1}", "instrument_id": instrument_id,
+            "side": "LONG" if entered_side > 0 else "SHORT", "ts_opened_ns": opened, "ts_closed_ns": ts,
+            "entry_price": entered_notional / entered_qty if entered_qty else 0.0,
+            "exit_price": exited_notional / exited_qty if exited_qty else 0.0,
+            "quantity": entered_qty, "pnl": pnl,
+            "realized_return": pnl / entered_notional if entered_notional else 0.0,
+        })
+        pos = cost = realized = fees = entered_qty = entered_notional = exited_qty = exited_notional = 0.0
+
+    entered_side = 0.0
+    for ts, side, qty, px, fee in sorted(fills, key=lambda f: f[0]):
+        signed = qty if side.upper() == "BUY" else -qty
+        while abs(signed) > eps:
+            if abs(pos) <= eps:  # a new trade
+                opened, entered_side = ts, (1.0 if signed > 0 else -1.0)
+            if signed * pos >= 0:  # opening or adding
+                q = abs(signed)
+                cost += q * px
+                pos += signed
+                entered_qty += q
+                entered_notional += q * px
+                fees += fee * (q / qty)
+                signed = 0.0
+            else:  # reducing, possibly through zero
+                q = min(abs(signed), abs(pos))
+                avg = cost / abs(pos)
+                realized += q * (px - avg) * (1 if pos > 0 else -1)
+                cost -= q * avg
+                pos += q if signed > 0 else -q
+                exited_qty += q
+                exited_notional += q * px
+                fees += fee * (q / qty)
+                signed += -q if signed > 0 else q
+                if abs(pos) <= eps:
+                    close(ts)
+    if abs(pos) > eps:
+        pnl = realized - fees
+        trades.append({
+            "position_id": f"{instrument_id}-RT{len(trades) + 1}", "instrument_id": instrument_id,
+            "side": "LONG" if entered_side > 0 else "SHORT", "ts_opened_ns": opened, "ts_closed_ns": 0,
+            "entry_price": entered_notional / entered_qty if entered_qty else 0.0,
+            "exit_price": exited_notional / exited_qty if exited_qty else 0.0,
+            "quantity": entered_qty, "pnl": pnl,
+            "realized_return": pnl / entered_notional if entered_notional else 0.0,
+        })
+    return trades

@@ -1,14 +1,15 @@
 """Execution profiles and venue resolution for Nautilus backtesting."""
 
 from typing import Any
+
 from nautilus_trader.backtest import BacktestVenueConfig
 from nautilus_trader.execution import (
     DefaultFillModel,
-    MakerTakerFeeModel,
+    FeeModel,
     OneTickSlippageFillModel,
     ProbabilisticFillModel,
 )
-from nautilus_trader.model import AccountType, BookType, OmsType
+from nautilus_trader.model import AccountType, BookType, Money, OmsType
 
 VALID_PROFILES = ("optimistic", "adverse_slippage", "conservative")
 
@@ -50,6 +51,34 @@ PROFILE_METADATA: dict[str, dict[str, Any]] = {
         "taker_fee_bps": 10.0,
     },
 }
+
+
+class BpsFeeModel(FeeModel):
+    """Commission at the profile's maker/taker rate in basis points of the fill's notional, in the
+    quote currency.
+
+    ``MakerTakerFeeModel`` charges the instrument's own fee fields, and the catalog's instruments carry
+    none (ingest writes them without fees), so every profile ran fee-free whatever its label said.
+    The rate is the profile's, not the instrument's, so ``optimistic`` stays at 0 by design.
+    Market orders pay the taker rate; a fill reported as maker liquidity, or a resting limit order,
+    pays the maker rate.
+    """
+
+    def __init__(self, maker_bps: float, taker_bps: float) -> None:
+        super().__init__()
+        self.maker_rate = float(maker_bps) / 10_000
+        self.taker_rate = float(taker_bps) / 10_000
+
+    def rate_for(self, order: Any) -> float:
+        liquidity = str(getattr(order, "liquidity_side", "") or "").upper()
+        if "MAKER" in liquidity:
+            return self.maker_rate
+        if "TAKER" in liquidity:
+            return self.taker_rate
+        return self.taker_rate if "MARKET" in str(getattr(order, "order_type", "")).upper() else self.maker_rate
+
+    def get_commission(self, order: Any, fill_qty: Any, fill_px: Any, instrument: Any, *_: Any) -> Money:
+        return Money(float(fill_qty) * float(fill_px) * self.rate_for(order), instrument.quote_currency)
 
 
 def resolve_execution_profile(
@@ -94,7 +123,7 @@ def resolve_execution_profile(
         book_type=BookType.L1_MBP,
         bar_adaptive_high_low_ordering=False,
         fill_model=fill_model,
-        fee_model=MakerTakerFeeModel(),
+        fee_model=BpsFeeModel(meta["maker_fee_bps"], meta["taker_fee_bps"]),
     )
 
     return venue_cfg, meta

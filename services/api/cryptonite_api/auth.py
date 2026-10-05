@@ -17,14 +17,14 @@ import secrets
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import argon2
 import asyncpg
 import pyotp
 import redis.asyncio as aioredis
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from fastapi import HTTPException, Request, Response, status
+from fastapi import HTTPException, status
 
 logger = logging.getLogger("cryptonite.api.auth")
 
@@ -78,7 +78,7 @@ class OperatorAuthManager:
         self,
         db_pool: asyncpg.Pool,
         redis_client: aioredis.Redis,
-        totp_aes_key: Optional[bytes] = None,
+        totp_aes_key: bytes | None = None,
         session_ttl_secs: int = 43200,  # 12 hours absolute
         idle_timeout_secs: int = 1800,  # 30 minutes idle
         max_login_attempts: int = 5,
@@ -108,7 +108,7 @@ class OperatorAuthManager:
 
     # --- TOTP AES-256-GCM Encryption ---
 
-    def encrypt_totp_secret(self, raw_secret: str) -> Tuple[bytes, bytes, bytes]:
+    def encrypt_totp_secret(self, raw_secret: str) -> tuple[bytes, bytes, bytes]:
         """Encrypt TOTP base32 secret using AES-256-GCM.
         
         Returns: (ciphertext, nonce, auth_tag)
@@ -145,9 +145,9 @@ class OperatorAuthManager:
         self,
         username: str,
         action: str,
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> uuid.UUID:
         """Persist authentication event to auth_audit_events table."""
         event_id = uuid.uuid4()
@@ -236,10 +236,10 @@ class OperatorAuthManager:
         self,
         username: str,
         password: str,
-        totp_code: Optional[str] = None,
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        totp_code: str | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
         """Verify username, Argon2id password, and TOTP code."""
         await self.check_login_throttling(username)
 
@@ -344,7 +344,7 @@ class OperatorAuthManager:
 
     # --- Session Management ---
 
-    async def create_session(self, user_id: uuid.UUID, username: str, **kwargs) -> Tuple[str, str]:
+    async def create_session(self, user_id: uuid.UUID, username: str, **kwargs) -> tuple[str, str]:
         """Create authenticated session and CSRF token in Redis.
         
         Returns (session_id, csrf_token).
@@ -368,7 +368,7 @@ class OperatorAuthManager:
         )
         return session_id, csrf_token
 
-    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+    async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Retrieve session data from Redis, enforcing absolute and idle timeouts."""
         raw = await self._redis.get(f"session:{session_id}")
         if not raw:
@@ -419,7 +419,7 @@ class OperatorAuthManager:
             return False
         return self.verify_password(row["password_hash"], step_up_password)
 
-    async def terminate_session(self, session_id: str, username: Optional[str] = None) -> None:
+    async def terminate_session(self, session_id: str, username: str | None = None) -> None:
         """Revoke session from Redis."""
         await self._redis.delete(f"session:{session_id}")
         if username:
@@ -434,7 +434,7 @@ class OperatorAuthManager:
         await self._redis.set(f"ws_ticket:{ticket}", ticket_payload, ex=60)
         return ticket
 
-    async def validate_and_consume_ws_ticket(self, ticket: str) -> Optional[Dict[str, Any]]:
+    async def validate_and_consume_ws_ticket(self, ticket: str) -> dict[str, Any] | None:
         """Validate and atomically consume single-use WebSocket ticket."""
         # Use GETDEL (or Lua) to atomically consume
         raw = await self._redis.getdel(f"ws_ticket:{ticket}")

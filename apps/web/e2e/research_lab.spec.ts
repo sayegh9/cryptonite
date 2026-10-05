@@ -109,7 +109,7 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
           losing_trades: 2,
           avg_trade_pnl: 75.33,
           max_consecutive_losses: 1,
-          metrics_version: 2,
+          metrics_version: 3,
           benchmark: { total_return: 0.0312, sharpe_ratio: 1.1, max_drawdown: 0.025, alpha_vs_hold: 0.014 },
           fees_paid: 12.5,
           turnover: 3.4,
@@ -174,7 +174,7 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
                   losing_trades: 2,
                   avg_trade_pnl: 75.33,
                   max_consecutive_losses: 1,
-                  metrics_version: 2,
+                  metrics_version: 3,
                   benchmark: { total_return: 0.0312, sharpe_ratio: 1.1, max_drawdown: 0.025, alpha_vs_hold: 0.014 },
                   fees_paid: 12.5,
                   turnover: 3.4,
@@ -286,8 +286,8 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("1.20%")).toBeVisible(); // Max Drawdown
     await expect(page.getByText("66.7%")).toBeVisible(); // Win Rate
 
-    // Metrics v2: benchmark, fees, turnover; no legacy badge
-    await expect(page.getByTestId("metrics-version")).toContainText("metrics v2");
+    // Current metrics (v3): benchmark, fees, turnover; no legacy badge
+    await expect(page.getByTestId("metrics-version")).toContainText("metrics v3");
     await expect(page.getByTestId("metrics-version")).not.toContainText("legacy metrics");
     await expect(page.getByTestId("benchmark-block")).toContainText("+3.12%");
     await expect(page.getByTestId("metric-alpha")).toHaveText("+1.40%");
@@ -337,7 +337,7 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
 
     const warning = page.getByTestId("mixed-metrics-warning");
     await expect(warning).toBeVisible({ timeout: 10000 });
-    await expect(warning).toContainText("legacy, v2");
+    await expect(warning).toContainText("legacy, v3");
     // Both runs are still compared side by side
     await expect(page.getByText("legacy metrics").first()).toBeVisible();
     await expect(page.getByText("Alpha vs Hold")).toBeVisible();

@@ -6,15 +6,18 @@ instrument, bar type, parameters, windows and execution profile; the backtest wo
 
     uv run python scripts/rerun_backtests.py --run-id <uuid> [--run-id <uuid> ...]
     uv run python scripts/rerun_backtests.py --since 2026-09-01 [--include-v2] [--dry-run]
+    uv run python scripts/rerun_backtests.py --run-id <uuid> --recent-days 90 [--warmup-days 10] [--profile conservative]
 
-By default only legacy runs (no ``metrics_version`` in their results) are selected.
+By default only legacy runs (no ``metrics_version`` in their results) are selected. ``--recent-days``
+replaces the original windows with the last N days (plus warm-up) when the original period is no
+longer in the catalog; ``--profile`` overrides the execution profile.
 """
 
 import argparse
 import asyncio
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -48,14 +51,29 @@ def _parse(argv: list[str] | None = None) -> argparse.Namespace:
                    help="re-run every completed run created at or after this date (UTC)")
     p.add_argument("--include-v2", action="store_true", help="also re-run runs that already have v2 metrics")
     p.add_argument("--dry-run", action="store_true", help="list the runs, queue nothing")
+    p.add_argument("--recent-days", type=int, help="evaluate the last N days instead of the original window")
+    p.add_argument("--warmup-days", type=int, default=10, help="warm-up before --recent-days (default 10)")
+    p.add_argument("--profile", choices=("optimistic", "adverse_slippage", "conservative"),
+                   help="execution profile for the new runs (default: the original run's)")
     args = p.parse_args(argv)
     if not args.run_id and args.since is None:
         p.error("give --run-id and/or --since")
     return args
 
 
+def recent_window(days: int, warmup_days: int, now: datetime | None = None) -> tuple[int, int, int]:
+    """(warmup_start_ns, evaluation_start_ns, evaluation_end_ns) ending at the last whole minute
+    before ``now`` minus 5 minutes, so the window stays clear of the bar still being recorded."""
+    end = (now or datetime.now(UTC)).replace(second=0, microsecond=0) - timedelta(minutes=5)
+    start = end - timedelta(days=days)
+    warmup = start - timedelta(days=warmup_days)
+    ns = lambda t: int(t.timestamp()) * 1_000_000_000  # noqa: E731
+    return ns(warmup), ns(start), ns(end)
+
+
 async def rerun(conn: asyncpg.Connection, run_ids: list[UUID], since: datetime | None, *,
-                include_v2: bool = False, dry_run: bool = False) -> list[tuple[UUID, UUID | None]]:
+                include_v2: bool = False, dry_run: bool = False, recent_days: int | None = None,
+                warmup_days: int = 10, profile: str | None = None) -> list[tuple[UUID, UUID | None]]:
     """(old run id, new run id or None on a dry run) for every selected run."""
     clauses, params = [], []
     if run_ids:
@@ -74,17 +92,22 @@ async def rerun(conn: asyncpg.Connection, run_ids: list[UUID], since: datetime |
             continue
         parameters = json.loads(r["parameters"]) if isinstance(r["parameters"], str) else r["parameters"]
         new_id = uuid4()
+        if recent_days:
+            warmup_ns, start_ns, end_ns = recent_window(recent_days, warmup_days)
+        else:
+            warmup_ns, start_ns, end_ns = r["warmup_start_ns"], r["evaluation_start_ns"], r["evaluation_end_ns"]
+        exec_profile = profile or r["execution_profile"]
         req = BacktestRunRequest(
             run_id=new_id, strategy_slug=r["strategy_slug"], strategy_version_id=r["strategy_version_id"],
             instrument_id=r["instrument_id"], bar_type=r["bar_type"], timeframe=r["timeframe"],
-            parameters=parameters, warmup_start_ns=r["warmup_start_ns"],
-            evaluation_start_ns=r["evaluation_start_ns"], evaluation_end_ns=r["evaluation_end_ns"],
-            execution_profile=r["execution_profile"],
+            parameters=parameters, warmup_start_ns=warmup_ns,
+            evaluation_start_ns=start_ns, evaluation_end_ns=end_ns,
+            execution_profile=exec_profile,
         )
-        _, meta = resolve_execution_profile(r["execution_profile"], starting_balance="10000.00 USDT", random_seed=42)
+        _, meta = resolve_execution_profile(exec_profile, starting_balance="10000.00 USDT", random_seed=42)
         await conn.execute(INSERT, new_id, r["strategy_version_id"], r["instrument_id"], r["bar_type"],
-                           r["timeframe"], json.dumps(parameters), r["warmup_start_ns"], r["evaluation_start_ns"],
-                           r["evaluation_end_ns"], r["execution_profile"], compute_run_config_hash(req, meta))
+                           r["timeframe"], json.dumps(parameters), warmup_ns, start_ns,
+                           end_ns, exec_profile, compute_run_config_hash(req, meta))
         queued.append((r["id"], new_id))
     return queued
 
@@ -93,7 +116,8 @@ async def main(argv: list[str] | None = None) -> None:
     args = _parse(argv)
     conn = await asyncpg.connect(os.environ["DATABASE_URL"])
     try:
-        done = await rerun(conn, args.run_id, args.since, include_v2=args.include_v2, dry_run=args.dry_run)
+        done = await rerun(conn, args.run_id, args.since, include_v2=args.include_v2, dry_run=args.dry_run,
+                           recent_days=args.recent_days, warmup_days=args.warmup_days, profile=args.profile)
     finally:
         await conn.close()
     for old, new in done:

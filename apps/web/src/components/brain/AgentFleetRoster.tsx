@@ -12,7 +12,6 @@ import {
   Sparkles,
 } from "lucide-react";
 
-export type TriggerMode = "high-edge" | "on-demand" | "continuous";
 
 /** Shown until the agent's HEARTBEAT arrives on the stream: its state is unknown, not "online". */
 const NO_HEARTBEAT = "NO HEARTBEAT";
@@ -21,16 +20,12 @@ const NO_HEARTBEAT_COLOR = "text-zinc-400 bg-zinc-900 border-zinc-800";
 interface AgentFleetRosterProps {
   selectedAgentId?: string;
   onSelectAgent?: (agentId: string) => void;
-  triggerMode: TriggerMode;
-  onTriggerModeChange: (mode: TriggerMode) => void;
   activeDebateCount?: number;
 }
 
 export function AgentFleetRoster({
   selectedAgentId = "orchestrator",
   onSelectAgent,
-  triggerMode,
-  onTriggerModeChange,
 }: AgentFleetRosterProps) {
 
   const [telemetry, setTelemetry] = useState<Record<string, { status: string, msg: string }>>({});
@@ -148,50 +143,16 @@ export function AgentFleetRoster({
         </div>
       </div>
 
-      {/* Trigger Governor Control */}
-      <div className="p-2.5 border-b border-zinc-800 bg-zinc-900/20 flex-none">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-2xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1">
-            <Sliders className="w-3 h-3 text-zinc-500" />
-            <span>Debate Trigger Governor:</span>
-          </span>
+      {/* How debates start (read-only: the pipeline has no trigger-mode setting) */}
+      <div className="p-2.5 border-b border-zinc-800 bg-zinc-900/20 flex-none" data-testid="debate-trigger-info">
+        <div className="text-2xs font-mono uppercase tracking-wider text-zinc-400 flex items-center space-x-1 mb-1">
+          <Sliders className="w-3 h-3 text-zinc-500" aria-hidden="true" />
+          <span>How debates start</span>
         </div>
-
-        <div className="grid grid-cols-3 gap-1 text-2xs font-mono">
-          <button
-            onClick={() => onTriggerModeChange("high-edge")}
-            className={`px-1 py-1 rounded border transition-colors text-center whitespace-nowrap overflow-hidden text-ellipsis ${
-              triggerMode === "high-edge"
-                ? "bg-cyan-950/80 border-cyan-600 text-cyan-300 font-bold"
-                : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
-            }`}
-            title="Only trigger debates on signals with Triage Score >= 80 (Filters 85% of noise)"
-          >
-            ⚡ High-Edge
-          </button>
-          <button
-            onClick={() => onTriggerModeChange("on-demand")}
-            className={`px-1 py-1 rounded border transition-colors text-center whitespace-nowrap overflow-hidden text-ellipsis ${
-              triggerMode === "on-demand"
-                ? "bg-purple-950/80 border-purple-600 text-purple-300 font-bold"
-                : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
-            }`}
-            title="Debates only fire when user manually clicks 'Trigger Debate'"
-          >
-            🛡️ On-Demand
-          </button>
-          <button
-            onClick={() => onTriggerModeChange("continuous")}
-            className={`px-1 py-1 rounded border transition-colors text-center whitespace-nowrap overflow-hidden text-ellipsis ${
-              triggerMode === "continuous"
-                ? "bg-amber-950/80 border-amber-600 text-amber-300 font-bold"
-                : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200"
-            }`}
-            title="Continuous Sentinel mode (All scanner signals trigger debates)"
-          >
-            🌐 Continuous
-          </button>
-        </div>
+        <p className="text-2xs text-zinc-400 leading-snug">
+          From scanner candidates that pass the pre-debate gate (kill switch, daily loss, headroom, freshness,
+          cooldown) and triage, or when you trigger one.
+        </p>
       </div>
 
       {/* Agents Roster List */}

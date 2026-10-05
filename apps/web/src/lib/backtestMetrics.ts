@@ -2,10 +2,11 @@ import { metricOrNull } from "@/lib/freshness";
 
 /**
  * Backtest metric versions (R2.2-R2.4). Version 2 marks equity to market at every bar close and
- * adds a buy-and-hold benchmark, fees and turnover. A run without `metrics_version` was computed
- * the old way (equity only at fills) and is "legacy": its drawdown can be understated.
+ * adds a buy-and-hold benchmark, fees and turnover. Version 3 actually charges the profile's fees
+ * (v2 runs were fee-free whatever the profile said) and counts trades as round trips. A run below
+ * the current version, or without `metrics_version`, is "legacy": re-run it for comparable numbers.
  */
-export const CURRENT_METRICS_VERSION = 2;
+export const CURRENT_METRICS_VERSION = 3;
 
 export interface BenchmarkMetrics {
   total_return?: number | string | null;
@@ -29,7 +30,10 @@ export function metricsVersion(m: VersionedMetrics | null | undefined): number |
   return Number.isFinite(n) ? n : null;
 }
 
-export const isLegacyMetrics = (m: VersionedMetrics | null | undefined) => metricsVersion(m) === null;
+export const isLegacyMetrics = (m: VersionedMetrics | null | undefined) => {
+  const v = metricsVersion(m);
+  return v === null || v < CURRENT_METRICS_VERSION;
+};
 
 /** Distinct versions among runs, "legacy" for runs without one; more than one = mixed. */
 export function versionsOf(runs: { metrics?: VersionedMetrics | null }[]): string[] {

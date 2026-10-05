@@ -3,7 +3,7 @@
 import React from "react";
 import { BacktestMetrics } from "@/lib/types";
 import { AlertCircle, TrendingUp, TrendingDown } from "lucide-react";
-import { fmtSignedPct, metricNum, metricsVersion } from "@/lib/backtestMetrics";
+import { fmtSignedPct, isLegacyMetrics, metricNum, metricsVersion } from "@/lib/backtestMetrics";
 
 interface Props {
   metrics: BacktestMetrics;
@@ -24,12 +24,14 @@ export const TearsheetCards: React.FC<Props> = ({ metrics, executionProfile }) =
   return (
     <div className="flex flex-col space-y-3 w-full font-mono">
       <div className="flex flex-wrap items-center gap-2 text-2xs" data-testid="metrics-version">
-        {version === null ? (
+        {isLegacyMetrics(metrics) ? (
           <span
             className="px-2 py-0.5 rounded border border-amber-700 bg-amber-950/50 text-amber-300 font-bold"
-            title="Computed before mark-to-market equity: drawdown can be understated and Sharpe overstated. Re-run to compare with current runs."
+            title={version === null
+              ? "Computed before mark-to-market equity: drawdown can be understated and Sharpe overstated. Re-run to compare with current runs."
+              : `Metrics v${version}: computed before the profile's fees were charged and before trades were counted as round trips. Re-run to compare with current runs.`}
           >
-            legacy metrics
+            legacy metrics{version === null ? "" : ` (v${version})`}
           </span>
         ) : (
           <span className="px-2 py-0.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-400">metrics v{version}</span>

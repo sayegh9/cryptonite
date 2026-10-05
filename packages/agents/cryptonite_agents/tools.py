@@ -3,7 +3,6 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List
 
 import duckdb
 from sqlalchemy import create_engine, text
@@ -207,8 +206,8 @@ def run_execution_analysis(snapshot_json: str) -> str:
     Executes the deterministic StrategistEngine on a JSON representation of a MultiTimeframeSnapshot.
     Use this to run the 5-rule hierarchical protocol and obtain a precise trading signal.
     """
-    from cryptonite_schemas.strategist import MultiTimeframeSnapshot
     from cryptonite_agents.strategist_engine import StrategistEngine
+    from cryptonite_schemas.strategist import MultiTimeframeSnapshot
     
     try:
         snapshot = MultiTimeframeSnapshot.model_validate_json(snapshot_json)
@@ -224,10 +223,10 @@ def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: st
     Use this when you have formulated a strategy that you believe should be executed.
     This routes the proposal through the Debate Pipeline and strict risk guardrails.
     """
-    import os
-    import urllib.request
-    import urllib.error
     import json
+    import os
+    import urllib.error
+    import urllib.request
     
     payload = {
         "symbol": instrument_id,
@@ -294,12 +293,12 @@ def compare_live_vs_backtest(instrument_id: str, backtest_id: str) -> str:
         
         try:
             live_data = json.loads(pg_fills)
-        except:
+        except Exception:  # not JSON: keep the tool's text
             live_data = pg_fills
             
         try:
             bt_data = json.loads(bt_tearsheet)
-        except:
+        except Exception:  # not JSON: keep the tool's text
             bt_data = bt_tearsheet
             
         result = {
