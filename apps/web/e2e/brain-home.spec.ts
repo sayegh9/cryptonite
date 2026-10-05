@@ -1,4 +1,5 @@
-import { test, expect, type Page, type Route } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
+import { test, expect } from "./fixtures/offline";
 
 /**
  * Brain Home (blueprint A3.3–A3.5) with a mocked SSE stream:
