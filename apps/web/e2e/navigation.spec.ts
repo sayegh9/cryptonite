@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures/offline";
 
 // R6.1-R6.3: every view has a URL, back/forward work, Mission Control is the landing view,
 // navigation is grouped and the command palette lists every view.
