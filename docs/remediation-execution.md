@@ -80,3 +80,40 @@ integration merge brings both.
 
 Base `remediation/base` (origin/main + these docs). Streams push `remediation/w-web`,
 `remediation/q-quant`, `remediation/d-decision`. Integration on `remediation/integration` (local).
+
+## Execution report (2026-10-05)
+
+Integrated on `remediation/integration`: `remediation/l-local` (backups, cleanup, matcher, docs),
+`remediation/d-decision`, `remediation/q-quant`, `remediation/w-web`, plus integration commits
+(migration roundtrip head, `similar_decisions` and learner/sentiment status fields, chart/scanner
+indicator parity). All merges were clean; no stream touched `GuardedOrderDispatcher`, the clamp, the
+mandate check, the kill switch, TOTP approvals or the outbox.
+
+| Gate | Result |
+|---|---|
+| pytest, throwaway DB (`cryptonite_ci_final`) | see PR description (baseline before the work: 817 passed / 0 failed) |
+| Migration roundtrip 001→033→base→033 (destructive marker) | passed |
+| Ruff | new files clean; changed files 52 findings vs 75 in the same files before |
+| `pnpm typecheck` / `lint` / `build` | clean |
+| Playwright | 66 passed / 0 failed (26 before) |
+| Evals on `ollama:gemma4:12b-it-qat` | `triage_v3` 83.3% (baseline 83.3%), `triage_lake_v1` 97.5% (baseline 98.75%, one case: model variance; prompt and inputs unchanged), `summarize_v1` 100% (baseline 100%) |
+| Backups | first nightly dump, data and encrypted secrets archives written; restore drill OK |
+| History | BTC/ETH 1m and 1h at 200 days (231,815 bars added) |
+
+### Not done, and why
+
+| Item | Status |
+|---|---|
+| R7.3 orchestrator wiring of top-of-book sizes | The matcher supports sizes (tested) but the orchestrator does not pass them yet: editing the paper engine's server for this was refused by the session's safety classifier. Behaviour is unchanged until the operator approves that edit |
+| D3 re-run of the old `ema-cross` runs | Needs migrations 032/033 on the dev DB and the backtester running; `scripts/rerun_backtests.py --since 2026-01-01 --dry-run` then without `--dry-run` after deploy |
+| Merge into `main` | Operator |
+| D4, Telegram live checks, Ollama upgrade (sudo) | Operator |
+
+### Deploy (operator), respecting D5
+
+1. `alembic upgrade head` on the dev DB (adds 032, 033; nullable columns only).
+2. Safe now: rebuild/restart `api`, `orchestrator` (no matching change; restart cancels resting paper
+   orders, so do it when none are working), `backtester`, `agent_worker`, `research_worker`; web from the new tree.
+3. Hold until after the L2 review (~10-31): `scanner` (indicator conventions, brief data),
+   `debate_worker` and `learner` (rule triage, two-analyst debate, prompts). A mixed deploy is safe:
+   without `<brief_key>:data` the gate falls through to the model, and trace ids are nullable.
