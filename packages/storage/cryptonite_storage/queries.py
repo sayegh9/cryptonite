@@ -1,9 +1,30 @@
 """DuckDB analytical query engine over the date-partitioned Analytics Lake."""
 
+import re
 from pathlib import Path
 
 import duckdb
 import polars as pl
+
+_UNIT_NS = {"m": 60 * 10**9, "h": 3600 * 10**9, "d": 86400 * 10**9, "w": 7 * 86400 * 10**9}
+# A live kline arrives a few hundred ms before its rounded close; one recorded more than this before
+# its close was still open when written.
+EARLY_RECEIPT_TOLERANCE_NS = 5 * 10**9
+
+
+def timeframe_ns(timeframe: str) -> int:
+    """Duration of a Binance-style timeframe (``1m``, ``15m``, ``1h``, ``4h``, ``1d``, ``1w``) in ns."""
+    m = re.fullmatch(r"(\d+)([mhdw])", timeframe.strip().lower())
+    if not m or int(m.group(1)) <= 0:
+        raise ValueError(f"Unsupported timeframe: {timeframe!r}")
+    return int(m.group(1)) * _UNIT_NS[m.group(2)]
+
+
+def open_stamped_receipt_lag_ns(tf_ns: int) -> int:
+    """``received_at_ns - ts_event_ns`` of a row the API's REST path stamped at the kline OPEN: it stored
+    ``ts_event_ns = open`` and ``received_at_ns = Binance close_time = open + duration - 1 ms`` (B1 / F-C1).
+    No ingest-written row has this exact lag (ingest takes ``received_at_ns`` from the wall clock)."""
+    return tf_ns - 1_000_000
 
 
 class AnalyticsQueryEngine:
@@ -41,7 +62,20 @@ class AnalyticsQueryEngine:
         start_ns: int | None = None,
         end_ns: int | None = None,
     ) -> pl.DataFrame:
-        """Query bars as a sorted Polars DataFrame with converted float indicators if needed."""
+        """Query bars as a Polars DataFrame sorted by time, one row per bar.
+
+        Lake rows are stamped at the bar CLOSE (``ts_event_ns = ts_init_ns = close``, see
+        ``EnrichedBar.from_binance_raw``); callers that need the close (outcomes, reflection, betas) keep
+        using ``ts_event_ns``. ``bar_open_ns = ts_event_ns - timeframe`` is the bar's OPEN, which is what
+        the resampler windows on (B1 / F-C1: it used to take the close as the open, shifting every
+        higher-timeframe bar by one minute).
+
+        Where several rows share a ``ts_init_ns``, the pick is deterministic: a row recorded after its
+        close wins over one recorded while still open, both win over a row the API's REST path stamped
+        at the OPEN (its ``received_at_ns`` is exactly ``ts_event_ns + timeframe - 1 ms``; repaired by
+        ``scripts/repair_lake_open_stamped_rows.py``), then the latest receipt, then batch and checksum.
+        """
+        tf_ns = timeframe_ns(timeframe)
         glob_path = self._get_glob_path(symbol, timeframe)
         where_clauses = []
         if start_ns is not None:
@@ -51,9 +85,16 @@ class AnalyticsQueryEngine:
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         query = f"""
-            SELECT DISTINCT ON (ts_init_ns) * FROM read_parquet('{glob_path}')
+            SELECT DISTINCT ON (ts_init_ns) *, ts_event_ns::BIGINT - {tf_ns} AS bar_open_ns
+            FROM read_parquet('{glob_path}')
             {where_sql}
-            ORDER BY ts_init_ns ASC, ts_event_ns DESC
+            ORDER BY ts_init_ns ASC,
+                CASE
+                    WHEN received_at_ns::BIGINT - ts_event_ns::BIGINT = {open_stamped_receipt_lag_ns(tf_ns)} THEN 2
+                    WHEN received_at_ns::BIGINT < ts_event_ns::BIGINT - {EARLY_RECEIPT_TOLERANCE_NS} THEN 1
+                    ELSE 0
+                END ASC,
+                ts_event_ns DESC, received_at_ns DESC, ingest_batch_id DESC, payload_checksum DESC
         """
         try:
             arrow_table = self._con.execute(query).to_arrow_table()

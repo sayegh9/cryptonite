@@ -17,6 +17,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
+import polars as pl
 import redis.asyncio as aioredis
 from cryptonite_scanner.brief import brief_data, build_brief
 from cryptonite_scanner.engine import ScannerEngine
@@ -38,6 +39,19 @@ SCAN_LOOKBACK_BARS = 300  # EMA-200 plus warm-up, in bars of the run's largest t
 DEFAULT_DB_URL = "postgresql://cryptonite_scanner:scanner_dev_pass@127.0.0.1:5432/cryptonite"
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 DEFAULT_LAKE_PATH = "data/analytics_lake"
+
+
+def drop_unclosed_candidates(candidates: list[Any], now_ns: int) -> list[Any]:
+    """Keep only candidates whose bar has closed (``interval_end_exclusive_ns <= now_ns``).
+
+    B1 / F-C1: a candidate must never exist before its bar closed. The resampler only emits windows whose
+    last minute is in the lake, but a minute recorded while its kline was still open (or a clock skew)
+    would otherwise let one through, so this is checked again right before the commit."""
+    early = [c for c in candidates if c.interval_end_exclusive_ns > now_ns]
+    for c in early:
+        logger.warning("Dropped candidate %s %s %s: its bar closes at %d, after now (%d)",
+                       c.id, c.instrument_id, c.timeframe, c.interval_end_exclusive_ns, now_ns)
+    return [c for c in candidates if c.interval_end_exclusive_ns <= now_ns] if early else candidates
 
 
 class ScannerWorker:
@@ -471,7 +485,10 @@ class ScannerWorker:
 
             # 2. Resample and evaluate for each timeframe
             for tf in source_timeframes:
-                resampled_df = resample_1m_bars(df_1m, tf)
+                # a bar still open at scan time is neither a signal nor brief context (B1 / F-C1)
+                resampled_df = resample_1m_bars(df_1m, tf).filter(
+                    pl.col("interval_end_exclusive_ns") <= time.time_ns()
+                )
                 if resampled_df.is_empty():
                     continue
                 frames_by_inst.setdefault(inst, {})[tf] = ScannerEngine.enrich_indicators(resampled_df)
@@ -487,6 +504,8 @@ class ScannerWorker:
                     price_precision=2,
                 )
                 all_candidates.extend(candidates)
+
+        all_candidates = drop_unclosed_candidates(all_candidates, time.time_ns())
 
         # 3. Commit run, candidates, checkpoints, and outbox in a single transaction
         async with self.pool.acquire() as conn:

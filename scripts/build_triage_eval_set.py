@@ -179,9 +179,12 @@ def main() -> None:
     pool: dict[bool, list[dict]] = {True: [], False: []}
     reasons: Counter = Counter()
     for symbol in ("BTCUSDT", "ETHUSDT"):
-        df = engine.query_bars_df(symbol=symbol, timeframe="1m").sort("ts_event_ns")
+        # bar_open_ns (= ts_event_ns - 1m) comes from query_bars_df; the resampler windows on it (B1 / F-C1:
+        # sets built before B1 took the close as the open, one minute early, and must be regenerated)
+        df = engine.query_bars_df(symbol=symbol, timeframe="1m")
         if df.is_empty():
             continue
+        df = df.sort("bar_open_ns")
         lo, hi = int(df["ts_event_ns"].min()) + HISTORY_DAYS * 86400 * 10**9, int(df["ts_event_ns"].max())
         # 1m bars are stamped at their close, so a 15m bar closes exactly on a 15m boundary
         closes = list(range(lo - lo % TF_NS["15m"] + TF_NS["15m"], hi + 1, TF_NS["15m"]))
