@@ -4,6 +4,7 @@ Release notes from before the AI-First program. Phases 0–7 of that program are
 
 ## Unreleased — review-plan
 - **A5 (F-M2) Safe launcher, now tracked**: `scripts/launcher/cryptonite-up.sh` no longer runs `alembic upgrade head` (it warns when the schema is behind head) and starts the stack with `up -d --no-recreate --no-deps` on an explicit service list minus `HELD_SERVICES` (orchestrator, scanner, debate_worker, learner); held containers are only `start`ed if stopped, never recreated.
+- **G4 Units and formatting (web)**: shared helpers in `apps/web/src/lib/format.ts`. Quantities are truncated toward zero (never overstated) to the instrument step size, else 4 significant digits; a held amount below one step shows as `<step`, never `0`; the execution ledger keeps 6 decimals, truncated. Zero-quantity rows (`0E-18`) are hidden in the Brain rail and Portfolio by one step-independent rule. Gate drawdown and veto rate in percent (`0.19%`); Sortino reads `n/a (0 closed trades)` instead of `inf`; the calibration chart is greyed out below max(20, `min_samples`) labelled decisions.
 
 ## Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture)
 - **Database-Backed Action & Decision Inbox**: Refactored the Action Inbox to hydrate directly from PostgreSQL (`GET /api/v1/agents/debates`), with automatic client-side cache reconciliation that purges local browser storage when database records are cleared. Added formatted timestamps and strict chronological sorting.

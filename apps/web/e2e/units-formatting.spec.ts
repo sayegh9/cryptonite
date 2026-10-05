@@ -23,6 +23,9 @@ const POSITIONS = [
     entry_price: 0, quantity: "0E-18", current_price: 3000, unrealized_pnl: "0", status: "OPEN", leverage: 2, margin_mode: "CROSS" },
   { position_id: "p3", account_id: "PAPER-ACCOUNT-001", instance_id: "AI_MANDATE_1", instrument_id: "SOLUSDT-PERP.BINANCE", side: "LONG",
     entry_price: 150, quantity: "0E-18", current_price: 151, unrealized_pnl: "0", status: "OPEN", leverage: 2, margin_mode: "CROSS" },
+  // dust below the 0.0001 step: still held, shown as "<0.0001" in the rail, never hidden or "0"
+  { position_id: "p5", account_id: "PAPER-ACCOUNT-001", instance_id: "AI_MANDATE_1", instrument_id: "ETHUSDT.BINANCE", side: "LONG",
+    entry_price: 3000, quantity: "0.00004", current_price: 3000, unrealized_pnl: "0", status: "OPEN" },
   { position_id: "p4", account_id: "PAPER-ACCOUNT-001", instance_id: "AI_MANDATE_1", instrument_id: "XRPUSDT.BINANCE", side: "LONG",
     entry_price: 0.5, quantity: "120", current_price: 0.5, unrealized_pnl: "0", status: "CLOSED" },
 ];
@@ -30,6 +33,8 @@ const POSITIONS = [
 const INSTRUMENTS = [
   { instrument_id: "BTCUSDT.BINANCE", symbol: "BTCUSDT", venue: "BINANCE", market_type: "SPOT", price_precision: 2, size_precision: 5,
     price_increment: "0.01", size_increment: "0.00001000", status: "TRADING", is_active: true },
+  { instrument_id: "ETHUSDT.BINANCE", symbol: "ETHUSDT", venue: "BINANCE", market_type: "SPOT", price_precision: 2, size_precision: 4,
+    price_increment: "0.01", size_increment: "0.0001", status: "TRADING", is_active: true },
 ];
 
 async function stubCommon(page: Page) {
@@ -57,9 +62,12 @@ test.describe("Units and formatting (G4)", () => {
     await page.route("**/agent-api/brain/sessions", (route) => route.fulfill({ json: { sessions: [] } }));
     await page.goto("/?ws=brain&view=home");
     const rail = page.getByTestId("brain-rail-positions");
-    await expect(rail.getByRole("listitem")).toHaveCount(1);
+    await expect(rail.getByRole("listitem")).toHaveCount(2);
     await expect(rail).toContainText("BTCUSDT.BINANCE");
-    await expect(rail.getByTestId("brain-rail-qty")).toHaveText("0.00940"); // step 0.00001
+    // truncated to the 0.00001 step (what the venue can close), never rounded up to 0.00940
+    await expect(rail.getByRole("listitem").filter({ hasText: "BTCUSDT" }).getByTestId("brain-rail-qty")).toHaveText("0.00939");
+    // dust below one step is still a position: shown as <step, not hidden and not "0"
+    await expect(rail.getByRole("listitem").filter({ hasText: "ETHUSDT.BINANCE" }).getByTestId("brain-rail-qty")).toHaveText("<0.0001");
     await expect(rail).not.toContainText("0E-18");
     await expect(rail).not.toContainText("0.009399821403393336");
     await expect(rail).not.toContainText("ETHUSDT-PERP");
@@ -79,10 +87,11 @@ test.describe("Units and formatting (G4)", () => {
     await page.goto("/?ws=portfolio");
     const table = page.getByRole("region", { name: "Active Positions" });
     await expect(table).toContainText("BTCUSDT.BINANCE");
-    await expect(table).toContainText("0.0094");
+    await expect(table).toContainText("0.009399"); // no step here: 4 significant digits, truncated
+    await expect(table).toContainText("ETHUSDT.BINANCE"); // dust is still held, as in the Brain rail
     await expect(table).not.toContainText("ETHUSDT-PERP");
     await expect(table).not.toContainText("SOLUSDT-PERP");
-    await expect(page.getByText("1 Active", { exact: true })).toBeVisible();
+    await expect(page.getByText("2 Active", { exact: true })).toBeVisible();
   });
 
   test("Autonomy gate: drawdown in %, Sortino n/a with 0 closed trades, calibration greyed below 20", async ({ page }) => {

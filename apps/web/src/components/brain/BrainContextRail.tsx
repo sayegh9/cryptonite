@@ -20,9 +20,12 @@ interface RailPosition {
   status?: string;
 }
 
-/** G4: closed rows and FLAT/zero-quantity rows (perp netting leaves "0E-18") are not positions */
-const isHeld = (p: RailPosition, step?: string) =>
-  p.status !== "CLOSED" && p.side !== "FLAT" && !isZeroQuantity(p.quantity ?? 0, step);
+/**
+ * G4: closed rows and zero-quantity rows (perp netting leaves "0E-18") are not positions. Same
+ * step-independent rule as Portfolio's isHeldPosition; the step size is only used for display, so dust
+ * shows as "<0.00001" instead of vanishing. A row without a quantity is shown, not hidden.
+ */
+const isHeld = (p: RailPosition) => p.status !== "CLOSED" && !isZeroQuantity(p.quantity);
 
 const num = (v: unknown) => (v === null || v === undefined || v === "" ? null : Number(v));
 
@@ -50,8 +53,9 @@ export function BrainContextRail() {
 
   const refresh = useCallback(async () => {
     try {
-      const [rows, sizeSteps] = await Promise.all([fetchApi("/paper/positions"), fetchSizeSteps()]);
-      setSteps(sizeSteps);
+      // Step sizes only refine the display: never block positions (or spend) on /instruments
+      void fetchSizeSteps().then(setSteps);
+      const rows = await fetchApi("/paper/positions");
       setPositions(Array.isArray(rows) ? rows : []);
       setPositionsError(null);
     } catch (e: any) {
@@ -80,7 +84,7 @@ export function BrainContextRail() {
     if (!streaming) void refresh();
   }, [streaming, refresh]);
 
-  const held = positions?.filter((p) => isHeld(p, steps[p.instrument_id])) ?? null;
+  const held = positions?.filter(isHeld) ?? null;
   const used = spend && spend.cap > 0 ? Math.min(100, (spend.spent / spend.cap) * 100) : null;
 
   return (

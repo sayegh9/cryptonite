@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Reliability } from "@/lib/mission/types";
-import { CALIBRATION_MIN_POINTS, calibrationReadable } from "@/lib/format";
+import { calibrationReadable, calibrationThreshold } from "@/lib/format";
 
 /**
  * Reliability chart (blueprint A7.2): stated confidence (x) against how often the decision was right
@@ -40,8 +40,8 @@ export default function ReliabilityChart({ role, data }: { role: string; data: R
   const radius = (n: number) => 4 + 4 * Math.sqrt(n / maxN); // >= 8px diameter
   const active = hover == null ? null : points.find((p) => p.i === hover) ?? null;
   const fit = data.isotonic?.fitted && data.isotonic.points.length > 0 ? data.isotonic.points : null;
-  // G4: below CALIBRATION_MIN_POINTS labelled decisions the curve is noise; grey it out and say so
-  const readable = calibrationReadable(data.n);
+  // G4: below max(20, min_samples) labelled decisions the curve is noise; grey it out and say so
+  const readable = calibrationReadable(data.n, data.min_samples);
   const noteId = `reliability-note-${role}`;
 
   return (
@@ -62,14 +62,14 @@ export default function ReliabilityChart({ role, data }: { role: string; data: R
       </figcaption>
       {!readable && points.length > 0 && (
         <p id={noteId} className="text-amber-300" data-testid={`reliability-insufficient-${role}`}>
-          Too few labelled decisions to read: {data.n} of {CALIBRATION_MIN_POINTS}. Shown greyed out; the curve is noise until then.
+          Too few labelled decisions to read: {data.n} of {calibrationThreshold(data.min_samples)}. Shown greyed out; the curve is noise until then.
         </p>
       )}
       {points.length === 0 ? (
         <p className="text-zinc-500">No labelled decisions yet.</p>
       ) : (
-        <div className={`relative w-fit ${readable ? "" : "opacity-40 grayscale"}`} aria-describedby={readable ? undefined : noteId}>
-          <svg width={SIZE} height={SIZE} role="img"
+        <div className={`relative w-fit ${readable ? "" : "opacity-40 grayscale"}`}>
+          <svg width={SIZE} height={SIZE} role="img" aria-describedby={readable ? undefined : noteId}
                aria-label={`${readable ? "" : "Not enough data: "}Reliability of ${role}: ${points.map((p) => `${pct(p.mean_confidence)} stated, ${pct(p.hit_rate)} right, n ${p.n}`).join("; ")}`}>
             {[0, 0.5, 1].map((t) => (
               <g key={t}>
