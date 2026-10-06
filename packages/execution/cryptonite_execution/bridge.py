@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
@@ -154,29 +154,39 @@ class IntegritySupervisor:
 
 
 async def recompute_total_equity(conn: asyncpg.Connection, account_id: str) -> None:
-    """total_equity = cash_balance + spot value + perp unrealized PnL, at the positions' current_price."""
-    equity_row = await conn.fetchrow(
-        """
-        SELECT COALESCE(SUM(CASE
-            WHEN instrument_id LIKE '%-PERP.%'
-            THEN (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * (current_price - entry_price)
-            ELSE quantity * current_price
-        END), 0) as pos_val
-        FROM paper_positions
-        WHERE account_id = $1 AND status = 'OPEN';
-        """,
-        account_id
-    )
-    open_val = Decimal(str(equity_row["pos_val"])) if equity_row else Decimal("0")
-    await conn.execute(
-        """
-        UPDATE paper_accounts
-        SET total_equity = cash_balance + $2,
-            updated_at = now()
-        WHERE account_id = $1;
-        """,
-        account_id, open_val
-    )
+    """total_equity = cash_balance + spot value + perp unrealized PnL, at the positions' current_price.
+
+    Locks the account row FOR UPDATE in a transaction before evaluating the positions SUM and updating
+    total_equity atomically, preventing race conditions where a concurrent bridge fill commits changed
+    quantity/cash between statements and projector overwrites correct equity with stale open_val.
+    """
+    tx = conn.transaction()
+    if asyncio.iscoroutine(tx):
+        tx = await tx
+    async with tx:
+        acc = await conn.fetchrow(
+            "SELECT account_id FROM paper_accounts WHERE account_id = $1 FOR UPDATE;",
+            account_id,
+        )
+        if acc is None:
+            return
+        await conn.execute(
+            """
+            UPDATE paper_accounts
+            SET total_equity = cash_balance + COALESCE((
+                SELECT SUM(CASE
+                    WHEN instrument_id LIKE '%-PERP.%'
+                    THEN (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * (current_price - entry_price)
+                    ELSE quantity * current_price
+                END)
+                FROM paper_positions
+                WHERE account_id = $1 AND status = 'OPEN'
+            ), 0),
+                updated_at = now()
+            WHERE account_id = $1;
+            """,
+            account_id,
+        )
 
 
 class EventBridgeWorker:
@@ -455,17 +465,6 @@ class EventBridgeWorker:
         """Book a funding payment: account cash/realized PnL, and the open position's realized PnL
         and (ISOLATED) margin + liquidation levels from the post-settlement snapshot."""
         account_id, cash_flow = str(evt["account_id"]), Decimal(str(evt["cash_flow"]))
-        await conn.execute(
-            """
-            UPDATE paper_accounts
-            SET cash_balance = cash_balance + $2,
-                realized_pnl = realized_pnl + $2,
-                daily_realized_pnl = daily_realized_pnl + $2,
-                updated_at = now()
-            WHERE account_id = $1;
-            """,
-            account_id, cash_flow,
-        )
         snap = evt.get("position") or {}
         liq, mm = snap.get("liquidation_price"), snap.get("maintenance_margin")
         await conn.execute(
@@ -481,6 +480,17 @@ class EventBridgeWorker:
             Decimal(str(snap["isolated_margin"])) if snap.get("isolated_margin") is not None else None,
             Decimal(str(liq)) if liq is not None else None,
             Decimal(str(mm)) if mm is not None else None,
+        )
+        await conn.execute(
+            """
+            UPDATE paper_accounts
+            SET cash_balance = cash_balance + $2,
+                realized_pnl = realized_pnl + $2,
+                daily_realized_pnl = daily_realized_pnl + $2,
+                updated_at = now()
+            WHERE account_id = $1;
+            """,
+            account_id, cash_flow,
         )
         await self._recompute_total_equity(conn, account_id)
 
@@ -627,11 +637,25 @@ class CoalescedMarkToMarketProjector:
 
     def _live_price(self, instrument_id: str) -> tuple[Decimal, int] | None:
         got = self.get_latest_price_fn(instrument_id)
+        if got is None:
+            return None
         price, ts_ns = got if isinstance(got, tuple) else (got, time.time_ns())
         if price is None:
             return None
-        price = Decimal(str(price))
-        return (price, int(ts_ns)) if price > 0 else None
+        try:
+            price = Decimal(str(price))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not price.is_finite() or price <= 0:
+            return None
+        now_ns = time.time_ns()
+        try:
+            ts_ns = int(ts_ns)
+        except (TypeError, ValueError):
+            return None
+        if ts_ns > now_ns + 1_000_000_000:
+            return None
+        return (price, ts_ns)
 
     async def project_once(self) -> int:
         """One mark-to-market pass; returns the number of position rows whose mark changed."""

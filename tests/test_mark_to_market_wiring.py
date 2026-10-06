@@ -19,6 +19,13 @@ from types import SimpleNamespace
 
 import asyncpg
 import pytest
+from cryptonite_execution.bridge import (
+    CoalescedMarkToMarketProjector,
+    EventBridge,
+    EventBridgeWorker,
+    recompute_total_equity,
+)
+from cryptonite_execution.kill_switch import LatchedKillSwitch
 from cryptonite_orchestrator import marks as orch_marks
 from cryptonite_orchestrator.mandate_gate import mandate_exposure
 from cryptonite_schemas.mandate import Mandate
@@ -209,3 +216,153 @@ async def test_enforced_mandate_check_prefers_the_live_reference_price(pool):
         without = await mandate_exposure(conn, engine, m, BTC, {})
     assert with_ref.instrument_usd == D("2400")  # the order's live reference price wins
     assert without.instrument_usd == D("2000")  # else the stored mark
+
+
+# --- concurrency regression & quote validation ---------------------------------------------------
+
+async def test_recompute_total_equity_is_atomic_and_locks_account_row(pool):
+    """Deterministic regression for the concurrent-fill race:
+    recompute_total_equity holds account FOR UPDATE in a transaction, preventing interleaved
+    bridge fill commits from having their updated equity overwritten by a stale position sum.
+    """
+    async with pool.acquire() as conn:
+        pid = await add_position(conn)  # 0.1 BTC @ 50,000 = $5,000 pos_val; cash = 95,000
+
+    # Connection 1 acquires the account row FOR UPDATE
+    async with pool.acquire() as conn1:
+        async with conn1.transaction():
+            await conn1.fetchval("SELECT account_id FROM paper_accounts WHERE account_id = $1 FOR UPDATE", ACCOUNT)
+
+            # Connection 2 attempts recompute_total_equity: must block waiting for conn1's lock
+            started = asyncio.Event()
+            done = asyncio.Event()
+
+            async def run_recompute():
+                async with pool.acquire() as conn2:
+                    started.set()
+                    await recompute_total_equity(conn2, ACCOUNT)
+                    done.set()
+
+            task = asyncio.create_task(run_recompute())
+            await started.wait()
+            await asyncio.sleep(0.1)
+            assert not done.is_set(), "recompute_total_equity must be blocked waiting for account lock"
+
+            # While holding the lock, simulate a fill that closes the position and sets cash = 100,000
+            await conn1.execute("UPDATE paper_positions SET status = 'CLOSED', quantity = 0 WHERE position_id = $1", pid)
+            await conn1.execute("UPDATE paper_accounts SET cash_balance = 100000 WHERE account_id = $1", ACCOUNT)
+
+        # conn1 commits here, releasing the account lock
+        await asyncio.wait_for(done.wait(), timeout=2.0)
+        await task
+
+    acc = await pool.fetchrow("SELECT cash_balance, total_equity FROM paper_accounts WHERE account_id = $1", ACCOUNT)
+    assert acc["cash_balance"] == D("100000")
+    # Crucial regression assertion: total_equity must be exactly $100,000, NOT $100,000 + stale $5,000 open_val!
+    assert acc["total_equity"] == D("100000")
+
+
+async def test_concurrent_bridge_fill_and_mark_projection_equity_race(pool):
+    """End-to-end race test: EventBridgeWorker commits an order fill closing a position concurrently
+    with CoalescedMarkToMarketProjector.project_once(); total_equity must never be corrupted with phantom equity.
+    """
+    async with pool.acquire() as conn:
+        pid = await add_position(conn, entry="50000", qty="0.1")  # pos_val = $5,000
+        acc_before = await conn.fetchrow("SELECT cash_balance, total_equity FROM paper_accounts WHERE account_id = $1", ACCOUNT)
+        assert acc_before["cash_balance"] == D("95000")
+        assert acc_before["total_equity"] == D("100000")
+
+    bridge = EventBridge(LatchedKillSwitch())
+    worker = EventBridgeWorker(bridge, pool, engine_run_id=f"RUN-{uuid.uuid4().hex[:8]}")
+
+    quotes = FakeQuoteCache()
+    quotes.set(BTC, 52000, 52001, time.time_ns())
+    projector = CoalescedMarkToMarketProjector(pool, lambda inst: orch_marks.live_mark_price(fake_engine(), quotes, inst))
+
+    # Fill event that closes the 0.1 BTC position at 52,000:
+    # trade proceeds: 0.1 * 52,000 - commission 1.00 = +5,199.00 -> cash = 95,000 + 5,199 = 100,199
+    fill_evt = {
+        "event_type": "ORDER_FILLED",
+        "event_id": uuid.uuid4(),
+        "native_event_id": str(uuid.uuid4()),
+        "client_order_id": f"ORD-{uuid.uuid4().hex[:8]}",
+        "event_version": 1,
+        "side": "SELL",
+        "price": "52000",
+        "quantity": "0.1",
+        "commission": "1",
+        "account_id": ACCOUNT,
+        "instance_id": "MANUAL_TRADE",
+        "instrument_id": BTC,
+        "occurred_at_ns": time.time_ns(),
+    }
+    bridge.queue.put_nowait(fill_evt)
+
+    # Run bridge fill and projector concurrently
+    await asyncio.gather(
+        worker.drain_and_commit_batch(),
+        projector.project_once(),
+    )
+
+    acc_after = await pool.fetchrow("SELECT cash_balance, total_equity FROM paper_accounts WHERE account_id = $1", ACCOUNT)
+    pos_after = await pool.fetchrow("SELECT status, quantity FROM paper_positions WHERE position_id = $1", pid)
+
+    assert pos_after["status"] == "CLOSED"
+    assert acc_after["cash_balance"] == D("100199")
+    # Total equity must match cash_balance exactly since positions are closed (no phantom $5,000 or $5,200)
+    assert acc_after["total_equity"] == D("100199")
+
+
+def test_nonfinite_and_future_quotes_rejected():
+    """Verify NaN, Infinity, negative/zero prices, and future timestamps are rejected across
+    orchestrator quote intake, schema parsing, and mark resolution.
+    """
+    from cryptonite_schemas.marks import LiveMark
+
+    now = time.time_ns()
+    engine = fake_engine()
+    quotes = FakeQuoteCache()
+
+    # 1. Nonfinite/negative/zero quotes in live_mark_price
+    for bad_px in ("nan", "inf", "-inf", "0", "-100"):
+        quotes.set(BTC, bad_px, bad_px, now)
+        assert orch_marks.live_mark_price(engine, quotes, BTC, now_ns=now) is None
+
+    # Future timestamp in live_mark_price (> 1s in the future)
+    quotes.set(BTC, 50000, 50001, now + 10_000_000_000)
+    assert orch_marks.live_mark_price(engine, quotes, BTC, now_ns=now) is None
+
+    # Perp nonfinite and future marks in live_mark_price
+    assert orch_marks.live_mark_price(fake_engine({PERP: D("nan")}), quotes, PERP, now_ns=now) is None
+    assert orch_marks.live_mark_price(fake_engine({PERP: D("inf")}), quotes, PERP, now_ns=now) is None
+    assert orch_marks.live_mark_price(fake_engine({PERP: D("-50")}), quotes, PERP, now_ns=now) is None
+
+    future_engine = fake_engine({PERP: D("50000")})
+    future_engine.dispatcher.mark_ts_ns[PERP] = now + 10_000_000_000
+    assert orch_marks.live_mark_price(future_engine, quotes, PERP, now_ns=now) is None
+
+    # 2. Schema parse_marks ignores nonfinite, zero, and bogus timestamps
+    bad_hash = {
+        b"BTCUSDT.BINANCE": b'{"price": "NaN", "quote_ts_ns": 1, "marked_at_ns": 1}',
+        b"ETHUSDT.BINANCE": b'{"price": "Infinity", "quote_ts_ns": 1, "marked_at_ns": 1}',
+        b"SOLUSDT.BINANCE": b'{"price": "-10", "quote_ts_ns": 1, "marked_at_ns": 1}',
+        b"ADAUSDT.BINANCE": b'{"price": "0", "quote_ts_ns": 1, "marked_at_ns": 1}',
+        b"XRPUSDT.BINANCE": b'{"price": "1.0", "quote_ts_ns": 0, "marked_at_ns": 1}',
+    }
+    assert parse_marks(bad_hash) == {}
+
+    # 3. resolve_mark rejects future quote timestamps as live
+    future_live = {BTC: LiveMark(D("50000"), now + 10_000_000_000, now)}
+    view = resolve_mark(BTC, D("48000"), future_live, now_ns=now)
+    assert view.source == "stored"
+    assert view.stale is True
+
+    # 4. Projector _live_price rejects nonfinite and future quotes
+    mock_pool = None
+    proj = CoalescedMarkToMarketProjector(mock_pool, lambda inst: D("nan"))
+    assert proj._live_price(BTC) is None
+    proj_inf = CoalescedMarkToMarketProjector(mock_pool, lambda inst: D("inf"))
+    assert proj_inf._live_price(BTC) is None
+    proj_fut = CoalescedMarkToMarketProjector(mock_pool, lambda inst: (D("50000"), now + 10_000_000_000))
+    assert proj_fut._live_price(BTC) is None
+

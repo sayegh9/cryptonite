@@ -69,9 +69,13 @@ def parse_marks(raw: dict[Any, Any] | None) -> dict[str, LiveMark]:
             key = k.decode() if isinstance(k, bytes) else str(k)
             data = json.loads(v.decode() if isinstance(v, bytes) else v)
             price = Decimal(str(data["price"]))
-            if price <= 0:
+            if not price.is_finite() or price <= 0:
                 continue
-            out[_canonical(key)] = LiveMark(price, int(data["quote_ts_ns"]), int(data["marked_at_ns"]))
+            quote_ts = int(data["quote_ts_ns"])
+            marked_at = int(data["marked_at_ns"])
+            if quote_ts <= 0 or marked_at <= 0:
+                continue
+            out[_canonical(key)] = LiveMark(price, quote_ts, marked_at)
         except (ValueError, KeyError, TypeError, InvalidOperation):
             continue
     return out
@@ -93,12 +97,19 @@ def resolve_mark(instrument_id: str, stored_price: Any, marks: dict[str, LiveMar
     """The live mark when its quote is fresh, else the stored price flagged stale."""
     now_ns = now_ns or time.time_ns()
     m = (marks or {}).get(_canonical(instrument_id))
-    if m is not None:
-        quote_age = max(0.0, (now_ns - m.quote_ts_ns) / 1e9)
-        if quote_age <= LIVE_MARK_MAX_AGE_S:
+    if m is not None and m.price.is_finite() and m.price > 0:
+        raw_age_s = (now_ns - m.quote_ts_ns) / 1e9
+        # Accept if not in the future (with 1.0s clock skew tolerance) and within freshness window
+        if -1.0 <= raw_age_s <= LIVE_MARK_MAX_AGE_S:
+            quote_age = max(0.0, raw_age_s)
             return MarkView(m.price, "live", False, quote_age)
-    stored = Decimal(str(stored_price if stored_price is not None else 0))
-    age = max(0.0, (now_ns - m.marked_at_ns) / 1e9) if m is not None else None
+    try:
+        stored = Decimal(str(stored_price if stored_price is not None else 0))
+        if not stored.is_finite() or stored < 0:
+            stored = Decimal("0")
+    except (InvalidOperation, TypeError, ValueError):
+        stored = Decimal("0")
+    age = max(0.0, (now_ns - m.marked_at_ns) / 1e9) if (m is not None and m.marked_at_ns > 0) else None
     return MarkView(stored, "stored", True, age)
 
 

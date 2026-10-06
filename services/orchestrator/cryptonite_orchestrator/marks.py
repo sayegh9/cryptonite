@@ -14,7 +14,7 @@ own live inputs and do not read these rows' marks first.
 import logging
 import os
 import time
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from cryptonite_execution.bridge import CoalescedMarkToMarketProjector
@@ -43,12 +43,32 @@ def live_mark_price(engine, quote_cache, instrument_id: str, now_ns: int | None 
         mark = d.mark_prices.get(instrument_id)
         if mark is None or d.is_mark_stale(instrument_id):
             return None
-        return Decimal(str(mark)), int(d.mark_ts_ns.get(instrument_id) or now_ns)
+        try:
+            px = Decimal(str(mark))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not px.is_finite() or px <= 0:
+            return None
+        ts = int(d.mark_ts_ns.get(instrument_id) or now_ns)
+        if ts > now_ns + 1_000_000_000:
+            return None
+        return px, ts
     quote = quote_cache.quote(instrument_id)
-    if quote is None or now_ns - int(quote.ts_init) > MAX_MARK_QUOTE_AGE_S * 1e9:
+    if quote is None:
         return None
-    bid = Decimal(str(quote.bid_price))
-    return (bid, int(quote.ts_init)) if bid > 0 else None
+    try:
+        ts = int(quote.ts_init)
+    except (TypeError, ValueError):
+        return None
+    if ts > now_ns + 1_000_000_000 or now_ns - ts > MAX_MARK_QUOTE_AGE_S * 1e9:
+        return None
+    try:
+        bid = Decimal(str(quote.bid_price))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not bid.is_finite() or bid <= 0:
+        return None
+    return (bid, ts)
 
 
 async def publish_marks(redis, marked: dict[str, tuple[Decimal, int]], now_ns: int | None = None) -> None:
