@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const CI = !!process.env.CI;
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30000,
@@ -8,9 +10,15 @@ export default defineConfig({
   },
   fullyParallel: false,
   workers: 1,
+  // In CI a committed test.only would silently shrink the gate; fail instead.
+  forbidOnly: CI,
+  retries: 0,
+  reporter: CI ? [["github"], ["list"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL: "http://127.0.0.1:3000",
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
+    video: "retain-on-failure",
   },
   projects: [
     {
@@ -21,7 +29,7 @@ export default defineConfig({
   webServer: {
     command: "pnpm start",
     url: "http://127.0.0.1:3000",
-    reuseExistingServer: true,
+    reuseExistingServer: !CI,
     timeout: 30000,
   },
 });
