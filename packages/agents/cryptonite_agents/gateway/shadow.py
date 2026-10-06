@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import Any
 
 from cryptonite_agents.gateway.registry import RiskClass, ToolSpec
+from cryptonite_schemas.debate import verdict_direction
 
 logger = logging.getLogger("cryptonite.agents.gateway.shadow")
 
@@ -77,6 +78,16 @@ def _norm(v: Any) -> Any:
     return v.strip().upper() if isinstance(v, str) else v
 
 
+def _same(key: str, primary: Any, shadow: Any) -> bool:
+    """The CRO's conviction level agrees on direction (B2): Buy and Overweight are both a BUY. Other
+    key fields, and a wording ``normalize_verdict`` does not know, compare as written."""
+    if key == "conviction_level":
+        p, s = verdict_direction(primary), verdict_direction(shadow)
+        if p is not None and s is not None:
+            return p == s
+    return _norm(primary) == _norm(shadow)
+
+
 def agreement(role: str, primary: Any, shadow: Any) -> tuple[str | None, bool | None]:
     """(key field, shadow agrees with the primary on it). ``None`` agreement when either side has no
     value for the field (free text, an error) — unknown is not disagreement."""
@@ -86,7 +97,7 @@ def agreement(role: str, primary: Any, shadow: Any) -> tuple[str | None, bool | 
         return key, None
     if primary.get(key) is None or shadow.get(key) is None:
         return key, None
-    return key, _norm(primary[key]) == _norm(shadow[key])
+    return key, _same(key, primary[key], shadow[key])
 
 
 @dataclass

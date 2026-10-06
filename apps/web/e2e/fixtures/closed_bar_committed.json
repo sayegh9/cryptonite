@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "producer": "cryptonite-ingest",
+  "event_type": "closed_bar_committed",
+  "venue": "BINANCE",
+  "market_type": "SPOT",
+  "symbol": "BTCUSDT",
+  "instrument_id": "BTCUSDT.BINANCE",
+  "timeframe": "1m",
+  "bar_type": "BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL",
+  "bar_open_ns": 1791104400000000000,
+  "bar_close_inclusive_ns": 1791104459999000000,
+  "interval_end_exclusive_ns": 1791104460000000000,
+  "last_bar_open_ns": 1791104400000000000,
+  "bar_count": 1,
+  "open": "100.00",
+  "high": "101.00",
+  "low": "99.00",
+  "close": "100.50",
+  "volume": "2.5"
+}

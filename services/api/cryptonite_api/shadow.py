@@ -21,15 +21,19 @@ from typing import Any
 from cryptonite_agents.gateway.pricing import is_free
 from cryptonite_agents.gateway.routes import DEFAULT_ROUTES, route_from_row
 from cryptonite_execution.calibration import HORIZON, score_decision
+from cryptonite_schemas.debate import verdict_direction
 
 VERDICT_KEYS = frozenset({"recommendation", "conviction_level"})
-_DIRECTION = {"BUY": "BUY", "OVERWEIGHT": "BUY", "HOLD": "HOLD", "UNDERWEIGHT": "SELL", "SELL": "SELL",
-              "REDUCE": "SELL", "CLOSE": "SELL"}
+# Exit verdicts (``ExitDecision``) are not entry verdicts: REDUCE and CLOSE score as an exit (SELL)
+_EXIT_DIRECTION = {"REDUCE": "SELL", "CLOSE": "SELL"}
 
 
 def direction(value: Any) -> str | None:
-    """A verdict (PM, lite, CRO or exit wording) as BUY / HOLD / SELL for ``score_decision``."""
-    return _DIRECTION.get(str(value).strip().upper()) if value is not None else None
+    """A verdict (PM, lite, CRO or exit wording) as BUY / HOLD / SELL for ``score_decision``: entry
+    verdicts through ``normalize_verdict``, exit verdicts through ``_EXIT_DIRECTION``."""
+    if value is None:
+        return None
+    return verdict_direction(str(value)) or _EXIT_DIRECTION.get(str(value).strip().upper())
 
 
 def _truthy(value: Any) -> bool | None:

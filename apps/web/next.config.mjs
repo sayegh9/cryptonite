@@ -1,3 +1,8 @@
+// Where the server-side proxies reach the API: the host port by default (pnpm dev/start on the host);
+// the compose `web` service sets API_ORIGIN=http://api:8000 at build and run time (rewrites are baked
+// into the build).
+const API_ORIGIN = process.env.API_ORIGIN || "http://127.0.0.1:8000";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -6,15 +11,15 @@ const nextConfig = {
     return [
       {
         source: "/api/bars",
-        destination: "http://127.0.0.1:8000/api/v1/bars",
+        destination: `${API_ORIGIN}/api/v1/bars`,
       },
       {
         source: "/api/signals",
-        destination: "http://127.0.0.1:8000/api/v1/signals",
+        destination: `${API_ORIGIN}/api/v1/signals`,
       },
       {
         source: "/api/:path*",
-        destination: "http://127.0.0.1:8000/api/:path*",
+        destination: `${API_ORIGIN}/api/:path*`,
       },
     ];
   },

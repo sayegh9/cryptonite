@@ -96,9 +96,10 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
       await expect(tourGuideHeader).not.toBeVisible();
     }
 
-    // 3. Verify AI Brain Header & Simulation Mode banner
+    // 3. Verify AI Brain Header & the computed mode banner (G1), not a hardcoded "RISK-FREE" label
     await expect(page.locator("text=AI Brain Hub")).toBeVisible();
-    await expect(page.locator("text=SIMULATION MODE (RISK-FREE)")).toBeVisible();
+    await expect(page.getByTestId("mode-banner").nth(1)).toContainText("PAPER ·");
+    await expect(page.getByText("RISK-FREE")).toHaveCount(0);
 
     // 4. Verify Zone 1: Agent Fleet Topology
     await expect(page.locator("text=Agent Fleet Topology")).toBeVisible();
