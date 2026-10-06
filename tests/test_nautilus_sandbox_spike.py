@@ -23,18 +23,19 @@ Validates the 5 critical architectural invariants required before full Milestone
    - Fails closed: trips latched kill switch, logs incident, forces 503 /ready, blocks automated restart.
 """
 
-from dataclasses import dataclass, field
-from decimal import Decimal
 import json
 import queue
 import threading
 import time
+import uuid
+from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
 import redis
-
+from connections import REDIS_URL, allow_live_redis_db, requires_dedicated_redis
 from nautilus_trader.adapters.sandbox import (
     SandboxExecutionClientConfig,
     SandboxExecutionClientFactory,
@@ -67,8 +68,6 @@ from nautilus_trader.model import (
 )
 from nautilus_trader.trading import Strategy, StrategyConfig
 
-from connections import REDIS_URL
-
 _REDIS = urlsplit(REDIS_URL)
 REDIS_HOST = _REDIS.hostname or "127.0.0.1"
 REDIS_PORT = _REDIS.port or 6379
@@ -81,7 +80,10 @@ REDIS_PASSWORD = _REDIS.password  # LE-4: Redis requires a password
 
 @pytest.fixture
 def redis_client():
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=False)
+    # Nautilus' Rust RedisCacheDatabase / message bus take no DB index, so these spikes need DB 0 and
+    # run only on a Redis of their own (requires_dedicated_redis; CI), never the live stack's.
+    with allow_live_redis_db():
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, db=0, decode_responses=False)
     r.ping()
     return r
 
@@ -114,6 +116,7 @@ def btc_currency_pair() -> CurrencyPair:
 # Test 1: Native Serialization Round-Trip
 # ---------------------------------------------------------------------------
 
+@requires_dedicated_redis
 def test_rc4_native_serialization_roundtrip(redis_client, btc_currency_pair):
     """Spike 1: Verify native 2.0.0rc4 serializers for CurrencyPair, QuoteTick, and Bar."""
     inst = btc_currency_pair
@@ -246,8 +249,8 @@ class CanonicalSpikeStrategy(Strategy):
         self.order_filled_events.append(event)
 
 
-import uuid
 
+@requires_dedicated_redis
 def test_canonical_topics_strategy_reception(redis_client, btc_currency_pair):
     """Spike 2: Verify canonical topics, Redis ingress, and order fill with commission."""
     inst = btc_currency_pair
