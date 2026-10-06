@@ -3,6 +3,7 @@
 - Mandates: create and loosen only with operator TOTP (they give the AI more room); tighten, pause and
   demote without it. Autonomy level and status never change through an edit, only through the
   autonomy endpoints (promotion needs a passing gate and TOTP) or the risk monitor (halts, demotions).
+  A mandate covers only instruments ingest feeds (D4): an un-fed one is a 422, an unknown universe a 503.
 - Approvals: the operator approves or vetoes a PENDING approval from the web (session + CSRF) or from
   Telegram through the notifier (HMAC-signed, single-use nonce; approving new risk needs TOTP there).
   Decisions are server-side and idempotent (``cryptonite_execution.approvals``).
@@ -22,6 +23,7 @@ from cryptonite_agents.gateway.local_tier import read_published as read_local_ti
 from cryptonite_api import shadow as shadow_report
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.similar import similar_or_none
+from cryptonite_api.universe import require_fed
 from cryptonite_execution.approvals import (
     APPROVAL_COLUMNS,
     ApprovalConflict,
@@ -280,6 +282,7 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
     """A new mandate always starts at L1 Copilot; creating one gives the AI room, so it needs TOTP."""
     if req.allow_perps:
         raise HTTPException(status_code=422, detail="MANDATE_PERPS_NOT_ALLOWED: perps can be enabled only after L3 (O1)")
+    await require_fed(request, req.instruments)  # D4: no mandate on an instrument ingest does not feed
     await require_totp(request, auth, req.totp_code)
     try:
         m = Mandate(id=uuid.uuid4(), **req.model_dump(exclude={"totp_code"}))
@@ -323,6 +326,8 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 new = Mandate(**{**old.model_dump(), **patch})
             except ValidationError as e:
                 raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
+            if added := sorted(set(new.instruments) - set(old.instruments)):
+                await require_fed(request, added)  # D4: an edit cannot add an un-fed instrument either
             if risk_adding_change(old, new):
                 await require_totp(request, auth, req.totp_code)
             await conn.execute(

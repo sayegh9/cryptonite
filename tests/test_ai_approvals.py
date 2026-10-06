@@ -295,7 +295,7 @@ def brain_worker(monkeypatch):
     import httpx
     from cryptonite_api.routes import brain as brain_routes
 
-    card = dict(BRAIN_CARD)
+    card = dict(BRAIN_CARD, trace_id=str(uuid.uuid4()))  # one Brain turn per test (D4: one order per decision)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
@@ -352,7 +352,7 @@ async def test_brain_card_gets_only_the_room_left_under_the_position_limit(h, br
         cmd = await h.pool.fetchrow("SELECT payload FROM execution_commands WHERE command_id = $1", uuid.UUID(res.json()["command_id"]))
         assert json.loads(cmd["payload"])["allocation_pct"] == 2.0
 
-        brain_worker.update(status="PENDING_APPROVAL", command_id=None)
+        brain_worker.update(status="PENDING_APPROVAL", command_id=None, trace_id=str(uuid.uuid4()))  # a new turn
         await h.pool.execute(pos, uuid.uuid4().hex, m.instance_id, SPOT, 0.004)  # $2,500: at the limit
         full = await c.post(f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/call-1/approve", headers=h.headers)
     assert full.status_code == 409 and "MANDATE_POSITION_LIMIT_REACHED" in full.json()["detail"]

@@ -5,8 +5,9 @@ import logging
 import uuid
 from typing import Any, Literal
 
-from cryptonite_api.routes.auth import require_operator, require_csrf
-from fastapi import APIRouter, HTTPException, Request, Depends
+from cryptonite_api.routes.auth import require_csrf, require_operator
+from cryptonite_api.universe import require_fed
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("cryptonite.api.paper")
@@ -187,6 +188,8 @@ async def get_commands(request: Request, limit: int = 50, auth: dict = Depends(r
 @router.post("/strategies/deploy")
 async def deploy_strategy(req: DeployStrategyRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
+    # D4: an instance on a symbol or timeframe ingest does not feed would sit RUNNING on no bars
+    await require_fed(request, [req.instrument_id], req.timeframe)
     instance_id = f"INST-{uuid.uuid4().hex[:8].upper()}"
     payload = {
         "instance_id": instance_id,
