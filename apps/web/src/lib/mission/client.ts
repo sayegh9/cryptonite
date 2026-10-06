@@ -1,4 +1,4 @@
-import { fetchApi } from "@/lib/api";
+import { fetchApi, type FetchApiOptions } from "@/lib/api";
 import type { AiStatus, Approval, AutonomyView, EvalRun, Mandate, OutcomesByRegime, Reliability, ShadowReport } from "./types";
 
 /** /api/v1/ai/* (the web reaches the backend only via /api/v1). Writes carry the CSRF token. */
@@ -9,9 +9,12 @@ function write(path: string, body: unknown, method = "POST") {
   return fetchApi(path, { method, headers: { "X-CSRF-Token": csrf() }, body: JSON.stringify(body ?? {}) });
 }
 
-export const listMandates = async (): Promise<Mandate[]> => (await fetchApi("/ai/mandates")).mandates ?? [];
-export const listApprovals = async (): Promise<{ now: string; approvals: Approval[] }> => fetchApi("/ai/approvals?status=pending");
-export const fetchAiStatus = async (): Promise<AiStatus> => fetchApi("/ai/status");
+type ReadOptions = Pick<FetchApiOptions, "signal" | "timeoutMs">;
+
+export const listMandates = async (init?: ReadOptions): Promise<Mandate[]> => (await fetchApi("/ai/mandates", init)).mandates ?? [];
+export const listApprovals = async (init?: ReadOptions): Promise<{ now: string; approvals: Approval[] }> =>
+  fetchApi("/ai/approvals?status=pending", init);
+export const fetchAiStatus = async (init?: ReadOptions): Promise<AiStatus> => fetchApi("/ai/status", init);
 export const fetchAutonomy = async (mandateId: string): Promise<AutonomyView> => fetchApi(`/ai/mandates/${mandateId}/autonomy`);
 export const fetchEvals = async (): Promise<{
   runs: EvalRun[];

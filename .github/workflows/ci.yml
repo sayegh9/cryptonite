@@ -222,7 +222,7 @@ jobs:
       # Raise SMOKE_MIN_TESTS when tests are added to the subset.
       - name: Guard the smoke subset size
         env:
-          SMOKE_MIN_TESTS: "26"
+          SMOKE_MIN_TESTS: "52"
         run: |
           total="$(pnpm --silent e2e:smoke --list | awk '/^Total: /{print $2}')"
           echo "Smoke subset: ${total:-0} tests (minimum ${SMOKE_MIN_TESTS})"
