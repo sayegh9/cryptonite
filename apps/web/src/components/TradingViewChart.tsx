@@ -26,6 +26,7 @@ import {
   DOWN_VOLUME,
   TIMEFRAMES,
   UP_VOLUME,
+  closedBarFromEvent,
   formatSeriesData,
   nextProvisional,
   seriesPoint,
@@ -90,6 +91,8 @@ export function TradingViewChart({
   const lastSequenceRef = useRef<number>(-1);
   // Current provisional candle (aggregated for higher timeframes)
   const provisionalCandleRef = useRef<ProvisionalBar | null>(null);
+  // The provisional candle just replaced by the next bar's first tick (its commit may still be in flight)
+  const previousProvisionalRef = useRef<ProvisionalBar | null>(null);
 
   const [triggeringDebate, setTriggeringDebate] = useState(false);
 
@@ -271,6 +274,7 @@ export function TradingViewChart({
     setLastTickAt(null);
     lastSequenceRef.current = -1;
     provisionalCandleRef.current = null;
+    previousProvisionalRef.current = null;
 
     const fetchHistorical = async () => {
       try {
@@ -365,7 +369,9 @@ export function TradingViewChart({
           setLastTickAt(Date.now());
         }
 
-        const prov = nextProvisional(provisionalCandleRef.current, msg, timeframe);
+        const prev = provisionalCandleRef.current;
+        const prov = nextProvisional(prev, msg, timeframe);
+        if (prev && prev.time !== prov.time) previousProvisionalRef.current = prev;
         provisionalCandleRef.current = prov;
         candleSeriesRef.current.update(seriesPoint(prov.time, prov, chartStyleRef.current));
         if (timeframe === "1m") {
@@ -380,13 +386,27 @@ export function TradingViewChart({
       // Durable closed bar: commit the provisional bar and recalculate indicators
       if (msg.type === "closed_bar_committed") {
         if (msg.instrument_id !== instId || msg.timeframe !== timeframe) return;
-        const openTimeSec = Math.floor(msg.bar_open_ns / 1_000_000_000);
-        const prov = provisionalCandleRef.current;
-        if (!prov || prov.time !== openTimeSec) return;
+        const bar = closedBarFromEvent(msg, provisionalCandleRef.current, previousProvisionalRef.current, timeframe);
+        if (!bar) return;
 
-        const bar = { time: openTimeSec, open: prov.open, high: prov.high, low: prov.low, close: prov.close, volume: prov.volume };
         const bars = rawBarsRef.current;
-        if (bars.length && bars[bars.length - 1].time === openTimeSec) bars[bars.length - 1] = bar;
+        const lastTime = bars.length ? bars[bars.length - 1].time : -Infinity;
+        if (bar.time < lastTime) return; // older than the history already drawn
+        // Draw the committed values; the provisional candle may already have moved on to the next bar
+        const historical = (provisionalCandleRef.current?.time ?? -Infinity) > bar.time;
+        try {
+          candleSeriesRef.current.update(seriesPoint(bar.time, bar, chartStyleRef.current), historical);
+          if (timeframe === "1m") {
+            volumeSeriesRef.current.update({
+              time: bar.time as unknown as Time,
+              value: bar.volume,
+              color: bar.close >= bar.open ? UP_VOLUME : DOWN_VOLUME,
+            }, historical);
+          }
+        } catch {
+          // a historical point the series never had: the indicators below still get the committed bar
+        }
+        if (bar.time === lastTime) bars[bars.length - 1] = bar;
         else {
           bars.push(bar);
           if (bars.length > 2000) bars.shift(); // prevent unbounded memory

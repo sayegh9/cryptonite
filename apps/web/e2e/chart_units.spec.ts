@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { bucketSecondsOf, formatSeriesData, nextProvisional, seriesPoint } from "../src/components/chart/bars";
+import { bucketSecondsOf, closedBarFromEvent, formatSeriesData, nextProvisional, seriesPoint } from "../src/components/chart/bars";
+import closedBarEvent from "./fixtures/closed_bar_committed.json";
 import { indicatorSeries, paneFor } from "../src/components/chart/indicators";
 
 // Pure unit tests (no page) for the modules split out of TradingViewChart (R6.7).
@@ -34,6 +35,42 @@ test.describe("chart modules", () => {
     expect(formatSeriesData(bars, "candlestick")).toEqual([{ time: 60, open: 1, high: 2, low: 0.5, close: 1.5 }]);
     expect(formatSeriesData(bars, "line")).toEqual([{ time: 60, value: 1.5 }]);
     expect(seriesPoint(60, { open: 1, high: 2, low: 0.5, close: 1.5 }, "area")).toEqual({ time: 60, value: 1.5 });
+  });
+
+  // closed_bar_committed as the coordinator emits it (tests/test_closed_bar_event.py pins the same JSON)
+  test("a committed minute replaces the provisional candle with the same open", () => {
+    const openSec = closedBarEvent.bar_open_ns / NS;
+    const prov = nextProvisional(null, tick(openSec, 100, 100.8, 99.2, 100.4, 2.4), "1m");
+    expect(closedBarFromEvent(closedBarEvent, prov, null, "1m")).toEqual({
+      time: openSec, open: 100, high: 101, low: 99, close: 100.5, volume: 2.5,
+    });
+  });
+
+  test("the commit still lands after the next minute's first tick", () => {
+    const openSec = closedBarEvent.bar_open_ns / NS;
+    const done = nextProvisional(null, tick(openSec, 100, 101, 99, 100.5, 2.5), "1m");
+    const next = nextProvisional(done, tick(openSec + 60, 100.5, 100.6, 100.4, 100.5, 0.1), "1m");
+    const { open, high, low, close, volume, ...noValues } = closedBarEvent; // an event without OHLCV
+    void [open, high, low, close, volume];
+    expect(closedBarFromEvent(noValues, next, done, "1m")).toEqual(done);
+    expect(closedBarFromEvent(noValues, next, null, "1m")).toBeNull();
+  });
+
+  test("a batch commits its last bar; old events fall back to the exclusive end", () => {
+    const end = closedBarEvent.bar_open_ns + 3 * 60 * NS;
+    const lastOpenSec = end / NS - 60;
+    const prov = nextProvisional(null, tick(lastOpenSec, 7, 8, 6, 7.5, 1), "1m");
+    const batch = { bar_open_ns: closedBarEvent.bar_open_ns, interval_end_exclusive_ns: end, last_bar_open_ns: end - 60 * NS };
+    expect(closedBarFromEvent(batch, prov, null, "1m")?.time).toBe(lastOpenSec);
+    expect(closedBarFromEvent({ bar_open_ns: 0, interval_end_exclusive_ns: end }, prov, null, "1m")?.time).toBe(lastOpenSec);
+  });
+
+  test("the pre-fix event (close as bar_open_ns, end one step late) never matched the candle", () => {
+    const openSec = closedBarEvent.bar_open_ns / NS;
+    const prov = nextProvisional(null, tick(openSec, 100, 101, 99, 100.5, 2.5), "1m");
+    const closeNs = closedBarEvent.interval_end_exclusive_ns;
+    expect(Math.floor(closeNs / NS)).not.toBe(prov.time); // what the old handler compared
+    expect(closedBarFromEvent({ bar_open_ns: closeNs, interval_end_exclusive_ns: closeNs + 60 * NS }, prov, null, "1m")).toBeNull();
   });
 
   test("indicators align to the newest bars and pick their pane", () => {
