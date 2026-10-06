@@ -13,7 +13,8 @@ A second, older writer left MUBARAK/WLD/XRP 1m rows whose ``ts_event_ns`` is the
 For every flagged row the corrected close is computed (open-stamped: ``+ timeframe``; ``:59.999``: ``+ 1 ms``)
 and the row is either rewritten at that close or quarantined:
 
-- ``duplicate``: an unflagged row of the same symbol/timeframe already has that close (ingest's copy wins);
+- ``duplicate``: a good row of the same symbol/timeframe (unflagged, not recorded while still open) already
+  has that close (ingest's copy wins);
 - ``unclosed``: the file was written before that close, or the row is the newest open-stamped row of its
   file (the API fetched up to "now" and kept the forming kline), so the bar may be partial;
 - ``unrecognized``: misaligned by something other than 1 ms; no safe correction;
@@ -41,9 +42,17 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from cryptonite_storage.queries import open_stamped_receipt_lag_ns, timeframe_ns
+from cryptonite_storage.queries import (
+    EARLY_RECEIPT_TOLERANCE_NS,
+    open_stamped_receipt_lag_ns,
+    timeframe_ns,
+)
 
 ROOT = "binance_klines_enriched"
+# Only timeframes whose closes fall on multiples of their duration since the Unix epoch, so ``ts % tf``
+# tests alignment. Binance 1w klines open on Monday (the epoch was a Thursday): every correct weekly row
+# would look misaligned. The lake holds only 1m and 1h today.
+REPAIRABLE_TIMEFRAMES = frozenset({"1m", "1h"})
 CLOSE_TIME_REMAINDER_NS = -1_000_000  # Binance close_time = next boundary - 1 ms
 REPAIRED_SUFFIX = "-b1repair"
 
@@ -101,16 +110,21 @@ def scan(lake: Path, symbols: set[str] | None = None) -> list[FileReport]:
     """Select the rows to repair. Reads only; changes nothing."""
     reports: list[FileReport] = []
     for (sym, tf), files in lake_files(lake, symbols).items():
-        try:
-            tf_ns = timeframe_ns(tf)
-        except ValueError:
+        if tf not in REPAIRABLE_TIMEFRAMES:
+            print(f"skipped {sym} {tf}: not a repairable timeframe {sorted(REPAIRABLE_TIMEFRAMES)}")
             continue
+        tf_ns = timeframe_ns(tf)
         tables = {f: pq.read_table(f, columns=["ts_event_ns", "received_at_ns"]) for f in files}
         flags = {f: flag_rows(t, tf_ns) for f, t in tables.items()}
+        # Closes already held by a good row: unflagged and recorded after (or just before) its close, the
+        # rows query_bars_df ranks first. A row recorded while its kline was still open does not count, so
+        # a REST copy colliding with it is rewritten and wins instead of being quarantined.
         clean_closes: set[int] = set()
         for f, t in tables.items():
             ev = t.column("ts_event_ns").to_pylist()
-            clean_closes.update(e for i, e in enumerate(ev) if i not in flags[f])
+            rcv = t.column("received_at_ns").to_pylist()
+            clean_closes.update(e for i, (e, r) in enumerate(zip(ev, rcv, strict=True))
+                                if i not in flags[f] and r >= e - EARLY_RECEIPT_TOLERANCE_NS)
         for f, flagged in flags.items():
             if not flagged:
                 continue

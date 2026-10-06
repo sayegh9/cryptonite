@@ -44,9 +44,10 @@ DEFAULT_LAKE_PATH = "data/analytics_lake"
 def drop_unclosed_candidates(candidates: list[Any], now_ns: int) -> list[Any]:
     """Keep only candidates whose bar has closed (``interval_end_exclusive_ns <= now_ns``).
 
-    B1 / F-C1: a candidate must never exist before its bar closed. The resampler only emits windows whose
-    last minute is in the lake, but a minute recorded while its kline was still open (or a clock skew)
-    would otherwise let one through, so this is checked again right before the commit."""
+    B1 / F-C1: a candidate must never exist before its bar closed. The resampled frames are already cut at
+    ``now`` before rule evaluation (a minute recorded while its kline was still open would otherwise make a
+    forming window look complete); this second check, right before the commit, only guards against a rule
+    path that bypasses that filter or the wall clock stepping back between the two."""
     early = [c for c in candidates if c.interval_end_exclusive_ns > now_ns]
     for c in early:
         logger.warning("Dropped candidate %s %s %s: its bar closes at %d, after now (%d)",

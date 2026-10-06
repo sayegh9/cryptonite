@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
-from cryptonite_storage.queries import AnalyticsQueryEngine
+from cryptonite_storage.queries import AnalyticsQueryEngine, timeframe_ns
 
 MIN_NS = 60 * 10**9
 T0_NS = 1_791_104_400 * 10**9  # 2026-10-04 09:00:00 UTC
@@ -132,3 +132,47 @@ def test_apply_quarantines_and_the_lake_reads_back_aligned(lake, monkeypatch):
     assert xrp["ts_event_ns"].cast(int).to_list() == [T0_NS + (i + 1) * MIN_NS for i in range(10)]
 
     assert mod.scan(lake) == []  # idempotent: nothing left to repair
+
+
+def test_a_row_recorded_while_open_is_no_clean_copy(tmp_path):
+    """The duplicate test follows query_bars_df's ranking: an ingest row recorded 30 s before its close
+    (a forming kline) does not make the API's closed REST copy a duplicate; that copy is rewritten and wins."""
+    root = tmp_path / "analytics_lake"
+    w = AnalyticsLakeWriter(root)
+    forming = ingest_bar("BTCUSDT", T0_NS, 100).model_copy(update={"received_at_ns": T0_NS + MIN_NS - 30 * 10**9})
+    w.write_batch([forming], symbol="BTCUSDT", batch_id="forming")
+    w.write_batch([old_api_bar("BTCUSDT", T0_NS + i * MIN_NS, 500 + i) for i in range(2)], symbol="BTCUSDT",
+                  batch_id="api")
+    mod = load_script()
+    (api,) = mod.scan(root)
+    assert api.decisions[0] == (T0_NS + MIN_NS, "rewrite")
+    assert dict(api.disposition) == {"rewrite": 1, "unclosed": 1}
+    mod.apply(api, root, tmp_path / "quarantine", "stamp")
+    df = AnalyticsQueryEngine(root).query_bars_df("BTCUSDT", "1m")
+    assert [(int(r["ts_event_ns"]), float(r["open"])) for r in df.to_dicts()] == [(T0_NS + MIN_NS, 500.0)]
+
+
+def test_weekly_and_other_timeframes_are_never_touched(tmp_path, capsys):
+    """Binance 1w klines open on Monday, so ``ts % 1w`` is never 0 for a correct weekly row: the repair
+    refuses every timeframe but 1m and 1h instead of quarantining good rows as misaligned."""
+    root = tmp_path / "analytics_lake"
+    monday_ns = 1_790_985_600 * 10**9  # 2026-10-05 00:00 UTC, a Monday
+    weekly = ingest_bar("BTCUSDT", monday_ns - 7 * 86400 * 10**9, 100).model_copy(
+        update={"ts_event_ns": monday_ns, "ts_init_ns": monday_ns, "received_at_ns": monday_ns + 10**9})
+    AnalyticsLakeWriter(root).write_batch([weekly], symbol="BTCUSDT", timeframe="1w", batch_id="weekly")
+    assert monday_ns % timeframe_ns("1w") != 0  # the hazard the allowlist exists for
+    assert load_script().scan(root) == []
+    assert "skipped BTCUSDT 1w" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("tf,ns", [("1m", MIN_NS), ("15m", 15 * MIN_NS), ("1h", 60 * MIN_NS),
+                                   ("1d", 1440 * MIN_NS), ("1w", 7 * 1440 * MIN_NS)])
+def test_timeframe_ns(tf, ns):
+    assert timeframe_ns(tf) == ns
+
+
+@pytest.mark.parametrize("tf", ["1M", "3M", "", "m", "0m", "1x"])
+def test_timeframe_ns_rejects_months_and_junk(tf):
+    """``1M`` is a calendar month on Binance; it must not be lowercased into one minute."""
+    with pytest.raises(ValueError):
+        timeframe_ns(tf)

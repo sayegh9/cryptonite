@@ -46,3 +46,21 @@ def test_frames_at_ends_on_the_sampled_close(tmp_path):
     assert last15["close"] == pytest.approx(close_at_end, rel=1e-12)  # decimal->float casts may differ by 1 ulp
     last1h = frames["1h"].tail(1).to_dicts()[0]
     assert last1h["interval_end_exclusive_ns"] == T0_NS + 61 * 3600 * 10**9
+
+
+def test_frames_at_refuses_a_sample_that_is_not_an_exact_15m_close(tmp_path):
+    """No slack: 30 s after a 15m close is not a 15m close (the old 60 s tolerance accepted it)."""
+    bars = []
+    for i in range(62 * 60):
+        open_ms = (T0_NS + i * MIN_NS) // 10**6
+        raw = RawBinanceKline(open_time_ms=open_ms, close_time_ms=open_ms + 59_999, open="100", high="101",
+                              low="99", close="100.5", volume="1", quote_volume="1", trades_count=1,
+                              taker_buy_base_volume="0", taker_buy_quote_volume="0")
+        bars.append(EnrichedBar.from_binance_raw(raw, "BTCUSDT.BINANCE", "BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL",
+                                                 2, 5, received_at_ns=open_ms * 10**6 + MIN_NS))
+    AnalyticsLakeWriter(tmp_path).write_batch(bars, symbol="BTCUSDT", batch_id="b1")
+    df = AnalyticsQueryEngine(tmp_path).query_bars_df("BTCUSDT", "1m").sort("bar_open_ns")
+    close_ns = T0_NS + 61 * 3600 * 10**9 + 45 * MIN_NS
+    builder = load_builder()
+    assert builder.frames_at(df, close_ns) is not None
+    assert builder.frames_at(df, close_ns + 30 * 10**9) is None

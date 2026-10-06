@@ -13,8 +13,13 @@ EARLY_RECEIPT_TOLERANCE_NS = 5 * 10**9
 
 
 def timeframe_ns(timeframe: str) -> int:
-    """Duration of a Binance-style timeframe (``1m``, ``15m``, ``1h``, ``4h``, ``1d``, ``1w``) in ns."""
-    m = re.fullmatch(r"(\d+)([mhdw])", timeframe.strip().lower())
+    """Duration of a Binance-style timeframe (``1m``, ``15m``, ``1h``, ``4h``, ``1d``, ``1w``) in ns.
+
+    Binance's ``1M`` is a calendar month, not a fixed duration, and must not be lowercased into minutes."""
+    tf = timeframe.strip()
+    if tf.endswith("M"):
+        raise ValueError(f"Unsupported timeframe: {timeframe!r} (calendar months have no fixed duration)")
+    m = re.fullmatch(r"(\d+)([mhdw])", tf.lower())
     if not m or int(m.group(1)) <= 0:
         raise ValueError(f"Unsupported timeframe: {timeframe!r}")
     return int(m.group(1)) * _UNIT_NS[m.group(2)]
