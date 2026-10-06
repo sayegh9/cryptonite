@@ -193,6 +193,17 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         raise HTTPException(status_code=409, detail=f"{why}: approve this card inside an ACTIVE mandate that allows "
                             f"{card['instrument_id']} (Mission Control → Mandates)")
 
+    # One Brain decision, one order (D4): the Brain can emit the same order as several cards in one turn
+    # (3 XRP cards of one trace were approved within 6 s); a twin of an approved card is refused, unclaimed
+    trace = card.get("trace_id")
+    trace_id = uuid.UUID(trace) if _is_uuid(trace) else None
+    source_ref = f"{sid}:{widget_id}"
+    if trace_id is not None:
+        async with pool.acquire() as conn:
+            twin = await _approved_twin(conn, trace_id, card, source_ref)
+        if twin is not None:
+            raise HTTPException(status_code=409, detail=_duplicate_detail(twin))
+
     allocation = Decimal(str(card["allocation_pct"]))
     if card["side"] == "BUY":  # an entry only gets the room the mandate has left under its position limit
         marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
@@ -227,17 +238,23 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         payload["price"] = card["limit_price"]
     payload["mandate_id"] = str(mandate.id)
     key = f"brain-card:{sid}:{widget_id}"
-    trace = card.get("trace_id")
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                if trace_id is not None:  # serialise the decision's cards; the twin check above can race
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"brain-decision:{trace_id}")
+                    if (twin := await _approved_twin(conn, trace_id, card, source_ref)) is not None:
+                        raise _DuplicateDecision(twin)
                 decision = await record_operator_approval(
                     conn, mandate, "SUBMIT_ORDER", payload, summary=f"Brain order card: {summary}", source="brain_card",
-                    source_ref=f"{sid}:{widget_id}", decided_by=f"operator:{op}", idempotency_key=key,
-                    trace_id=uuid.UUID(trace) if _is_uuid(trace) else None)
+                    source_ref=source_ref, decided_by=f"operator:{op}", idempotency_key=key, trace_id=trace_id)
         command_id = str(decision.command_id)
     except ApprovalConflict as e:
         raise HTTPException(status_code=409, detail=f"The approval is {e.status}")
+    except _DuplicateDecision as e:
+        await _worker_note(sid, {"operator_id": op, "widget_id": widget_id, "status": "REJECTED", "expect_status": "APPROVED",
+                                 "content": f"Order card {widget_id} not queued: {_duplicate_detail(e.twin)}"})
+        raise HTTPException(status_code=409, detail=_duplicate_detail(e.twin))
     except Exception:
         logger.exception("Could not queue order card %s", widget_id)
         await _worker_note(sid, {"operator_id": op, "widget_id": widget_id, "status": "FAILED",
@@ -255,6 +272,27 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     })
     return {"command_id": command_id, "status": "APPROVED", "protection": protection, "mandate_id": str(mandate.id),
             "approval_id": str(decision.approval_id)}
+
+
+class _DuplicateDecision(Exception):
+    def __init__(self, twin: Any) -> None:
+        super().__init__(str(twin["id"]))
+        self.twin = twin
+
+
+async def _approved_twin(conn, trace_id: uuid.UUID, card: dict[str, Any], source_ref: str) -> Any:
+    """Another card of the same Brain decision (trace), instrument and side that was already approved."""
+    return await conn.fetchrow(
+        """SELECT id, command_id, source_ref FROM ai_approvals
+           WHERE source = 'brain_card' AND trace_id = $1 AND status = 'APPROVED' AND source_ref <> $4
+             AND payload->>'instrument_id' = $2 AND payload->>'side' = $3
+           ORDER BY created_at LIMIT 1""",
+        trace_id, card["instrument_id"], card["side"], source_ref)
+
+
+def _duplicate_detail(twin: Any) -> str:
+    return (f"DUPLICATE_DECISION: this Brain decision already queued its order (approval {twin['id']}, "
+            f"command {twin['command_id']}); reject this card")
 
 
 def _is_uuid(value: Any) -> bool:

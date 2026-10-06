@@ -1,20 +1,19 @@
 """Test Paper Trading API Gateway endpoints, command submissions, lease fencing, and role permissions."""
 
 import uuid
-from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
+from connections import DB_URL as ADMIN_DB_URL
+from connections import role_db_url
 from cryptonite_api.main import create_app
-from cryptonite_execution.engine import PaperTradingEngine
-from cryptonite_executor.server import command_poller_loop
+from cryptonite_api.routes.auth import require_csrf, require_operator
+from cryptonite_schemas.universe import IngestUniverse
 from fastapi.testclient import TestClient
-from connections import DB_URL as ADMIN_DB_URL, role_db_url
 
 DB_URL = role_db_url("cryptonite_api", "api_dev_pass")
-
-from cryptonite_api.routes.auth import require_csrf, require_operator
 
 
 @pytest.fixture
@@ -24,6 +23,9 @@ def test_client():
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_pool.fetchrow = AsyncMock(return_value={"id": 1, "is_latched": False, "status": "PENDING", "command_id": uuid.uuid4(), "created_at": "2026-09-08T20:00:00Z"})
     app.state.pool = mock_pool
+    redis = MagicMock()  # D4: deploy checks the universe ingest publishes
+    redis.get = AsyncMock(return_value=IngestUniverse.build(["BTCUSDT", "ETHUSDT"], ["1m", "1h"]).model_dump_json())
+    app.state.stream_hub = SimpleNamespace(redis=redis)
     app.dependency_overrides[require_operator] = lambda: {"type": "session", "role": "operator"}
     app.dependency_overrides[require_csrf] = lambda: {"type": "session", "role": "operator"}
     return TestClient(app), mock_pool
