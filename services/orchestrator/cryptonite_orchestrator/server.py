@@ -6,22 +6,29 @@ import datetime
 import json
 import logging
 import os
+import time
 import uuid
 from decimal import Decimal
-import time
 from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
-
-from cryptonite_execution.engine import PaperTradingEngine
-from cryptonite_execution.matching import PaperFill, match_order, match_working_orders
-from cryptonite_execution.risk import OrderIntent
-from pydantic import ValidationError
-from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
+from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.mandate_store import load_mandate
 from cryptonite_execution.mandates import max_entry_quantity
+from cryptonite_execution.matching import PaperFill, match_order, match_working_orders
+from cryptonite_execution.risk import OrderIntent
+from cryptonite_schemas.debate import verdict_direction
+from cryptonite_schemas.mandate import (
+    MIN_MANDATE_ENTRY_PCT,
+    MandateReject,
+    mandate_id_from_instance,
+)
+from cryptonite_strategies.registry import STRATEGY_REGISTRY
+from nautilus_trader.model import Bar, BarType, Price, Quantity
+from pydantic import ValidationError
+
 from cryptonite_orchestrator.mandate_gate import (
     command_mandate_id,
     gate_ai_order,
@@ -29,12 +36,9 @@ from cryptonite_orchestrator.mandate_gate import (
     is_ai_command,
     mandate_exposure,
 )
-from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, MandateReject, mandate_id_from_instance
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from cryptonite_orchestrator.ops_monitor import ops_monitor
 from cryptonite_orchestrator.source_hash import instance_source_hash
-from nautilus_trader.model import Bar, BarType
-from nautilus_trader.model import Price, Quantity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("cryptonite.orchestrator")
@@ -875,11 +879,17 @@ async def command_poller(pool, engine, quote_cache=None):
                             inst_raw = payload.get("instrument_id") or payload.get("symbol", "BTCUSDT")
                             canonical_inst = to_canonical_instrument(inst_raw)
                             
-                            # Determine side
+                            # Determine side: an explicit side, else the recommendation's direction
+                            # (``normalize_verdict``, B2). HOLD or an unknown verdict is no order, never a SELL.
                             raw_side = payload.get("side")
                             if not raw_side:
-                                rec = payload.get("recommendation", "").upper()
-                                raw_side = "BUY" if rec in ("BUY", "OVERWEIGHT") else "SELL"
+                                raw_side = verdict_direction(payload.get("recommendation"))
+                                if raw_side not in ("BUY", "SELL"):
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"], f"NO_ORDER_SIDE: recommendation {payload.get('recommendation')!r}",
+                                    )
+                                    continue
                             side = raw_side.upper()
                             
                             # AI orders are checked against their mandate before the dispatcher (A5.1) and
@@ -1183,7 +1193,6 @@ async def main():
         while True:
             try:
                 rows = await pool.fetch("SELECT * FROM paper_strategy_instances WHERE status = 'RUNNING'")
-                current_ids = {r["instance_id"] for r in rows}
                 
                 # Load new ones
                 for row in rows:

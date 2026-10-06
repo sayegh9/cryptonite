@@ -14,7 +14,7 @@ import asyncpg
 import httpx
 import pyotp
 import redis.asyncio as aioredis
-from connections import REDIS_URL
+from connections import REDIS_URL, assert_isolated
 from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.main import create_app
 from cryptonite_api.routes.auth import COOKIE_NAME
@@ -69,6 +69,7 @@ class Harness:
 async def make_harness(db_url: str, *, heartbeat: bool = True) -> Harness:
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=6)
     redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    assert_isolated(redis)  # the heartbeat keys below must never reach the live stack's DB
     auth = OperatorAuthManager(db_pool=pool, redis_client=redis, totp_aes_key=os.urandom(32))
     async with pool.acquire() as conn:
         await seed_paper_account(conn)
@@ -100,6 +101,7 @@ async def publish_test_universe(redis, symbols=("BTCUSDT", "ETHUSDT"), timeframe
 
 
 async def close_harness(h: Harness) -> None:
+    assert_isolated(h.redis)
     await h.redis.delete("exit_monitor:heartbeat", "notifier:heartbeat", INGEST_UNIVERSE_KEY)
     await h.redis.aclose()
     await h.pool.close()

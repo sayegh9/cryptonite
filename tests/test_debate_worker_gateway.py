@@ -3,8 +3,8 @@ verdict fails the run closed instead of staging a HOLD decision. Throwaway DB at
 models are pydantic-ai FunctionModels."""
 
 import importlib.util
-import sys
 import json
+import sys
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -91,7 +91,8 @@ async def test_debate_stages_the_typed_verdict_for_approval(debate_main, pool):
     assert run["status"] == "PENDING_APPROVAL"
 
     decision = await pool.fetchrow("SELECT * FROM portfolio_decisions WHERE run_id = $1", run["id"])
-    assert decision["recommendation"] == "Overweight"  # CRO's conviction level
+    assert decision["recommendation"] == "BUY"  # B2: normalized at write time (F-C2, F-M6)
+    assert decision["conviction_level"] == "Overweight"  # the CRO's own wording, kept for sizing
     assert float(decision["allocation_pct"]) == 6.0  # CRO sizing overrides the PM's 8%
     assert float(decision["conviction_score"]) == pytest.approx(0.72)
     assert "trend" in decision["reasoning"] and "size down" in decision["reasoning"]

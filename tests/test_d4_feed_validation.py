@@ -281,7 +281,7 @@ async def test_a_debate_approved_twice_at_once_gives_one_order(h):
                          run_id, BTC)
     await h.pool.execute(
         """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning)
-           VALUES ($1, $2, 'Buy', 0.7, 5, 'r')""", run_id, BTC)
+           VALUES ($1, $2, 'BUY', 0.7, 5, 'r')""", run_id, BTC)
     await h.redis.set("market:24h:BTCUSDT", json.dumps({"last_price": 50000}), ex=60)
     async with h.client() as c:
         results = await asyncio.gather(*[c.post(f"/api/v1/agents/debates/{run_id}/approve", headers=h.headers) for _ in range(3)])
