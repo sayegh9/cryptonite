@@ -53,18 +53,15 @@ def resample_1m_bars(df_1m: pl.DataFrame, target_timeframe: str) -> pl.DataFrame
             }
         )
 
-    # 1. Ensure input columns are typed correctly
-    # Handle ts_event_ns from analytics lake if bar_open_ns is not yet set
-    exprs = []
+    # 1. Ensure input columns are typed correctly. The window key is the minute's OPEN. Lake rows are
+    # stamped at the close (ts_event_ns = ts_init_ns = close), so neither may stand in for it: taking
+    # them as the open shifted every window by one minute (B1 / F-C1). query_bars_df supplies bar_open_ns.
     if "bar_open_ns" not in df_1m.columns:
-        if "ts_init_ns" in df_1m.columns:
-            exprs.append(pl.col("ts_init_ns").cast(pl.Int64).alias("bar_open_ns"))
-        elif "ts_event_ns" in df_1m.columns:
-            exprs.append(pl.col("ts_event_ns").cast(pl.Int64).alias("bar_open_ns"))
-        else:
-            raise ValueError("Input DataFrame missing bar_open_ns, ts_init_ns, or ts_event_ns")
-    else:
-        exprs.append(pl.col("bar_open_ns").cast(pl.Int64))
+        raise ValueError(
+            "Input DataFrame missing bar_open_ns (lake ts_event_ns/ts_init_ns are the bar CLOSE; "
+            "use AnalyticsQueryEngine.query_bars_df, which returns bar_open_ns)"
+        )
+    exprs = [pl.col("bar_open_ns").cast(pl.Int64)]
 
     for col_name in ["open", "high", "low", "close", "volume"]:
         if col_name in df_1m.columns:
@@ -80,7 +77,8 @@ def resample_1m_bars(df_1m: pl.DataFrame, target_timeframe: str) -> pl.DataFrame
     else:
         exprs.append(pl.lit(0).cast(pl.Int64).alias("trades_count"))
 
-    clean_df = df_1m.select(exprs).sort("bar_open_ns").unique(subset=["bar_open_ns"])
+    # first("open") / last("close") below depend on row order, so keep the sort through the dedup
+    clean_df = df_1m.select(exprs).sort("bar_open_ns").unique(subset=["bar_open_ns"], keep="first", maintain_order=True)
 
     # If target is 1m, enrich with explicit timestamps and return
     if target_tf == "1m":

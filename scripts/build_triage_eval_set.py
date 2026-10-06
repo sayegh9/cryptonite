@@ -61,7 +61,9 @@ def frames_at(df_1m: pl.DataFrame, end_ns: int) -> dict[str, pl.DataFrame] | Non
             return None
         frames[tf] = ScannerEngine.enrich_indicators(res)
     last15 = frames["15m"].tail(1).to_dicts()[0]
-    if end_ns - last15["bar_close_inclusive_ns"] > 60 * 10**9:  # the sampled close must be a real 15m close
+    # the sampled close must be exactly the last 15m bar's close: no slack (a 60 s tolerance hid the
+    # one-minute shift of B1 / F-C1)
+    if last15["interval_end_exclusive_ns"] != end_ns:
         return None
     return frames
 
@@ -179,9 +181,12 @@ def main() -> None:
     pool: dict[bool, list[dict]] = {True: [], False: []}
     reasons: Counter = Counter()
     for symbol in ("BTCUSDT", "ETHUSDT"):
-        df = engine.query_bars_df(symbol=symbol, timeframe="1m").sort("ts_event_ns")
+        # bar_open_ns (= ts_event_ns - 1m) comes from query_bars_df; the resampler windows on it (B1 / F-C1:
+        # sets built before B1 took the close as the open, one minute early, and must be regenerated)
+        df = engine.query_bars_df(symbol=symbol, timeframe="1m")
         if df.is_empty():
             continue
+        df = df.sort("bar_open_ns")
         lo, hi = int(df["ts_event_ns"].min()) + HISTORY_DAYS * 86400 * 10**9, int(df["ts_event_ns"].max())
         # 1m bars are stamped at their close, so a 15m bar closes exactly on a 15m boundary
         closes = list(range(lo - lo % TF_NS["15m"] + TF_NS["15m"], hi + 1, TF_NS["15m"]))
