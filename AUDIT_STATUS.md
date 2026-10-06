@@ -1,5 +1,7 @@
 # AUDIT_STATUS
 
+> **C4 status refresh (2026-10-06):** the tables below are a historical snapshot (graph/stub scan 2026-09-23, deterministic audit 2026-09-24, backlog as of 2026-10-04) and are partly stale — the deferred backlog LE-1…LE-10 is complete, and the product-review run since 2026-10-05 changed CI, migrations (head `038`), and the branch state. For current landing/runtime/deploy status use [`docs/HANDOVER-2026-10-06.md`](docs/HANDOVER-2026-10-06.md) (§0 status matrix, §5 open PRs, §7 hold-release gates). Keep this document as the point-in-time audit record; the final C4 refresh lands after the open PRs merge.
+
 - Source: `graphify-out/GRAPH_REPORT.md` @ `51329c9`, stub-marker scan, gates run 2026-09-23
 - Gates: typecheck ✅ · lint ✅ · pytest ⛔ not run (no `google-antigravity` wheel for macOS x86_64) · e2e ☐ not run
 - Python "Complete" ratings are structural only until pytest runs

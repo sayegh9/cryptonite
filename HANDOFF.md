@@ -1,5 +1,9 @@
 # HANDOFF
 
+## ▶ Resume here (2026-10-06): read [docs/HANDOVER-2026-10-06.md](docs/HANDOVER-2026-10-06.md) first
+
+The product-review plan run (`docs/product-review-plan.md`) stopped on 2026-10-06. **C4 status refresh (2026-10-06):** the initial batch is now on **`main`** (PR #33, `9fbccde`); `review-plan` is fully merged into `main`. Four item PRs remain **open** on `review-plan` — #32 B3, #31 B4, #30 D1, #29 D4 — and are **not reviewed, not complete, not ship-ready**: lead preliminary review found a B3 account-equity race with fills, D1 retry-dedupe/freshness issues plus a migration `down_revision` fix (`036`→`038`), B4 lease-ownership/fencing gaps, and D4 conflicting on CHANGELOG only. Nothing from the run is deployed: deploy hold D5 is active and the dev DB is still at Alembic `036`. Hold-release gates (B5 + D2/D3/D5, fresh backup + verified restore drill, current-head CI, independent review) are listed in handover §7; the full status matrix is handover §0. The section below is the older 2026-10-04 state.
+
 ## ▶ Resume here (2026-10-04, Linux workstation)
 
 **Where things are.** The stack runs on the Linux workstation (the Mac move below is done). Work is on

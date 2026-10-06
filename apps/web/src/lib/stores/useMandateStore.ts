@@ -11,6 +11,13 @@ import type { AiStatus, Approval, Mandate } from "@/lib/mission/types";
  */
 export type MissionView = "overview" | "mandates" | "autonomy";
 
+/** A refresh that has not answered by then fails, so the banner says "unknown" instead of showing old data */
+export const REFRESH_TIMEOUT_MS = 8_000;
+
+// The one in-flight refresh, and the id of the latest one started: only that one may write the store
+let inflight: { id: number; startedAt: number; ctrl: AbortController; promise: Promise<void> } | null = null;
+let latestRefresh = 0;
+
 interface MandateState {
   view: MissionView;
   selectedMandateId: string | null;
@@ -22,10 +29,23 @@ interface MandateState {
   clockOffsetMs: number;
   loaded: boolean;
   error: string | null;
+  /** Outcome of the latest fetch of each source (null: not fetched yet), for the mode banner (G1) */
+  mandatesOk: boolean | null;
+  statusOk: boolean | null;
+  /** Date.now() of each source's last successful fetch: the banner treats old data as unknown */
+  mandatesAt: number | null;
+  statusAt: number | null;
+  /** The latest refresh was refused (401/403) */
+  denied: boolean;
 
   setView: (view: MissionView) => void;
   selectMandate: (id: string | null) => void;
-  refresh: () => Promise<void>;
+  /**
+   * Refetch mandates, approvals and status. Every caller (header poll, Mission Control poll, events)
+   * shares one in-flight refresh; `after` (a performance.now() time, e.g. an event's timeStamp) asks for
+   * data fetched after that moment, so an in-flight refresh that started earlier is superseded.
+   */
+  refresh: (opts?: { after?: number }) => Promise<void>;
   markDecided: (approvalId: string, status: Approval["status"]) => void;
 }
 
@@ -41,25 +61,50 @@ export const useMandateStore = create<MandateState>()(
       clockOffsetMs: 0,
       loaded: false,
       error: null,
+      mandatesOk: null,
+      statusOk: null,
+      mandatesAt: null,
+      statusAt: null,
+      denied: false,
 
       setView: (view) => set({ view }),
       selectMandate: (selectedMandateId) => set({ selectedMandateId }),
 
-      refresh: async () => {
-        const [m, a, s] = await Promise.allSettled([listMandates(), listApprovals(), fetchAiStatus()]);
-        const denied = [m, a, s].some((r) => r.status === "rejected" && [401, 403].includes((r.reason as any)?.status));
-        set((prev) => ({
-          mandates: m.status === "fulfilled" ? m.value : prev.mandates,
-          approvals: a.status === "fulfilled" ? a.value.approvals : prev.approvals,
-          clockOffsetMs: a.status === "fulfilled" ? new Date(a.value.now).getTime() - Date.now() : prev.clockOffsetMs,
-          status: s.status === "fulfilled" ? s.value : prev.status,
-          loaded: true,
+      refresh: ({ after } = {}) => {
+        if (inflight && (after === undefined || inflight.startedAt >= after)) return inflight.promise;
+        // Superseded: its answer may predate the change that asked for this refresh, so it must not land
+        inflight?.ctrl.abort();
+        const id = ++latestRefresh;
+        const ctrl = new AbortController();
+        const init = { signal: ctrl.signal, timeoutMs: REFRESH_TIMEOUT_MS };
+        const run = async () => {
+          const [m, a, s] = await Promise.allSettled([listMandates(init), listApprovals(init), fetchAiStatus(init)]);
+          if (id !== latestRefresh) return; // a newer refresh owns the store
+          const at = Date.now();
+          const denied = [m, a, s].some((r) => r.status === "rejected" && [401, 403].includes((r.reason as any)?.status));
+          set((prev) => ({
+            mandates: m.status === "fulfilled" ? m.value : prev.mandates,
+            approvals: a.status === "fulfilled" ? a.value.approvals : prev.approvals,
+            clockOffsetMs: a.status === "fulfilled" ? new Date(a.value.now).getTime() - at : prev.clockOffsetMs,
+            status: s.status === "fulfilled" ? s.value : prev.status,
+            loaded: true,
+            mandatesOk: m.status === "fulfilled",
+            statusOk: s.status === "fulfilled",
+            mandatesAt: m.status === "fulfilled" ? at : prev.mandatesAt,
+            statusAt: s.status === "fulfilled" ? at : prev.statusAt,
+            denied,
           error: denied
             ? "Sign in as operator to use Mission Control."
             : m.status === "rejected" && a.status === "rejected"
-              ? "Mission Control data unavailable."
-              : null,
-        }));
+                ? "Mission Control data unavailable."
+                : null,
+          }));
+        };
+        const promise = run().finally(() => {
+          if (inflight?.id === id) inflight = null;
+        });
+        inflight = { id, startedAt: performance.now(), ctrl, promise };
+        return promise;
       },
 
       markDecided: (approvalId, status) =>

@@ -130,10 +130,10 @@ PRESET_MACD_MOMENTUM = ScanSpecCreate(
 PRESET_SCALP_MULTI_TF = ScanSpecCreate(
     slug="scalp-multi-tf",
     name="Execution Strategist Multi-TF",
-    description="Captures 5m, 15m, 1H, 4H, and 1D bar close states for the Execution Strategist Engine.",
+    description="Captures 5m, 15m, 1H and 4H bar close states for the Execution Strategist Engine.",
     universe=UniverseConfig(
         instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
-        timeframes=["5m", "15m", "1h", "4h", "1d"],
+        timeframes=["5m", "15m", "1h", "4h"],  # no 1d (review-plan Q8, A1a M2: a 300-day lookback per event)
     ),
     rules=[
         RuleGroup(

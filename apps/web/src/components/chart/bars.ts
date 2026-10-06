@@ -71,6 +71,45 @@ export function nextProvisional(
   };
 }
 
+/** The fields of a `closed_bar_committed` event the chart uses (see packages/storage coordinator.py). */
+export interface ClosedBarEvent {
+  schema_version?: number;
+  bar_open_ns: number;
+  interval_end_exclusive_ns: number;
+  last_bar_open_ns?: number;
+  open?: unknown;
+  high?: unknown;
+  low?: unknown;
+  close?: unknown;
+  volume?: unknown;
+}
+
+/**
+ * The final bar a `closed_bar_committed` event commits, keyed by its OPEN (unix seconds), or null when
+ * the chart can't know it. A batch's last bar opens at `last_bar_open_ns`. The event's own OHLCV wins;
+ * without it, the provisional candle of that bar is used, whether it is still the current one or the one
+ * just before it (the next minute's first tick often arrives before the commit does).
+ *
+ * Events before schema_version 2 named bars by their close (bar_open_ns = first close, exclusive end one
+ * bar late) and carried no last_bar_open_ns: they are ignored, never guessed at, because any derived open
+ * lands on the forming bar and would commit a partial candle.
+ */
+export function closedBarFromEvent(
+  event: ClosedBarEvent,
+  provisional: ProvisionalBar | null,
+  previousProvisional: ProvisionalBar | null,
+): ProvisionalBar | null {
+  if ((event.schema_version ?? 1) < 2 || typeof event.last_bar_open_ns !== "number") return null;
+  const time = Math.floor(event.last_bar_open_ns / 1_000_000_000);
+  if ([event.open, event.high, event.low, event.close].every((v) => v !== undefined && v !== null && v !== "")) {
+    return { time, open: Number(event.open), high: Number(event.high), low: Number(event.low), close: Number(event.close), volume: Number(event.volume ?? 0) };
+  }
+  for (const p of [provisional, previousProvisional]) {
+    if (p && p.time === time) return { ...p };
+  }
+  return null;
+}
+
 /** One live point for the main series in the current style. */
 export function seriesPoint(time: number, bar: { open: number; high: number; low: number; close: number }, style: ChartStyle) {
   return isOhlcStyle(style)

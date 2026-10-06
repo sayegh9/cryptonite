@@ -157,7 +157,9 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
     // Verify Title and Header Branding
     await expect(page.getByText("CRYPTONITE", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Terminal" })).toBeVisible();
-    await expect(page.locator("text=ZERO TRADING AUTHORITY")).toBeVisible();
+    // G1: the mode banner is computed (backend not stubbed here, so it says unknown), never hardcoded
+    await expect(page.locator("header").getByTestId("mode-banner")).toContainText("PAPER ·");
+    await expect(page.getByText("ZERO TRADING AUTHORITY")).toHaveCount(0);
 
     // Verify Mandatory TradingView Attribution
     const attributionLinks = page.locator("a[href='https://www.tradingview.com/lightweight-charts/']");

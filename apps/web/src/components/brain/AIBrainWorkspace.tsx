@@ -8,11 +8,11 @@ import { AIBrainTourModal } from "./AIBrainTourModal";
 import { useDebateStore } from "@/lib/stores/useDebateStore";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { BrainHome } from "./BrainHome";
+import { ModeBanner } from "@/components/mission/ModeBanner";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import {
   BrainCircuit,
   HelpCircle,
-  ShieldCheck,
   Zap,
   Users,
   Inbox,
@@ -109,10 +109,7 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
             <span className="text-zinc-400 hidden sm:inline">Neural Operations</span>
           </div>
 
-          <div className="flex items-center space-x-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-2xs font-mono text-emerald-400 flex-none">
-            <ShieldCheck className="w-3 h-3 text-emerald-400 flex-none" />
-            <span className="font-bold">SIMULATION MODE (RISK-FREE)</span>
-          </div>
+          <ModeBanner compact className="hidden lg:flex flex-none" />
 
           <div role="group" aria-label="AI Brain view" className="flex items-center rounded border border-zinc-800 bg-zinc-900 p-0.5 text-2xs font-mono flex-none">
             {([

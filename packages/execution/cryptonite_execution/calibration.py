@@ -21,6 +21,8 @@ import random
 from decimal import Decimal
 from typing import Any, Literal
 
+from cryptonite_schemas.debate import normalize_verdict
+
 MIN_SAMPLES = 20
 BINS = 5
 HORIZON = "24h"
@@ -37,8 +39,10 @@ def score_decision(recommendation: str, return_pct: float, band: float = NEUTRAL
 
     BUY wins above +band and loses below -band; SELL (spot: exit) is the mirror; HOLD wins when the
     asset did not rise beyond +band and loses above it (a missed rise). Everything else is NEUTRAL.
+    Any spelling ``normalize_verdict`` knows is graded by its direction (B2: Overweight is a BUY);
+    an unknown verdict raises ``ValueError`` rather than being graded as a short.
     """
-    rec = recommendation.upper()
+    rec = normalize_verdict(recommendation)
     if rec == "HOLD":
         return "WIN" if return_pct <= band else "LOSS"
     signed = return_pct if rec == "BUY" else -return_pct
@@ -170,7 +174,8 @@ def reliability(points: list[tuple[float, bool]], bins: int = BINS) -> dict[str,
 
 async def verdict_points(conn, mandate_id: Any = None, since: Any = None) -> list[tuple[float, bool]]:
     """(conviction, right after 24h) for labelled verdicts, optionally of one mandate since a time.
-    NEUTRAL outcomes (a move inside the band) are left out of the reliability bins."""
+    NEUTRAL outcomes (a move inside the band) are left out of the reliability bins. Rows written before
+    migration 037 may carry the CRO's wording; ``score_decision`` grades them by direction."""
     rows = await conn.fetch(
         """SELECT pd.conviction_score, pd.recommendation, o.return_pct
            FROM portfolio_decisions pd
@@ -200,7 +205,8 @@ REGIME_ORDER = ("TREND_UP", "TREND_DOWN", "CHOP", "HIGH_VOL", "UNKNOWN")
 def outcomes_by_regime(rows: list[tuple[str | None, str, float]]) -> list[dict[str, Any]]:
     """F1 (reporting only): ``rows`` are (regime at decision time or None, recommendation, asset return
     after the horizon). Per regime: n, WIN / LOSS / NEUTRAL counts (``score_decision``) and the mean
-    signed return (BUY gains on a rise; SELL / HOLD on a fall). Untagged decisions are ``UNKNOWN``."""
+    signed return (BUY gains on a rise; SELL / HOLD on a fall). Untagged decisions are ``UNKNOWN``.
+    Verdicts are graded by direction (``normalize_verdict``), so BUY-like spellings pool as BUY."""
     acc: dict[str, dict[str, Any]] = {}
     for regime, rec, ret in rows:
         key = regime or "UNKNOWN"
@@ -208,7 +214,7 @@ def outcomes_by_regime(rows: list[tuple[str | None, str, float]]) -> list[dict[s
         score = score_decision(rec, ret)
         a["n"] += 1
         a["wins" if score == "WIN" else "losses" if score == "LOSS" else "neutral"] += 1
-        a["_sum"] += ret if rec.upper() == "BUY" else -ret
+        a["_sum"] += ret if normalize_verdict(rec) == "BUY" else -ret
     out = []
     for key in sorted(acc, key=lambda k: REGIME_ORDER.index(k) if k in REGIME_ORDER else len(REGIME_ORDER)):
         a = acc[key]
@@ -218,7 +224,8 @@ def outcomes_by_regime(rows: list[tuple[str | None, str, float]]) -> list[dict[s
 
 
 async def regime_outcome_rows(conn, horizon: str = HORIZON, mandate_id: Any = None) -> list[tuple[str | None, str, float]]:
-    """(regime, recommendation, return) of every decision labelled at ``horizon``, optionally of one mandate."""
+    """(regime, recommendation as BUY / SELL / HOLD, return) of every decision labelled at ``horizon``,
+    optionally of one mandate."""
     rows = await conn.fetch(
         """SELECT o.regime, pd.recommendation, o.return_pct
            FROM portfolio_decisions pd
@@ -226,4 +233,4 @@ async def regime_outcome_rows(conn, horizon: str = HORIZON, mandate_id: Any = No
            LEFT JOIN debate_runs dr ON dr.id = pd.run_id
            WHERE ($2::uuid IS NULL OR dr.mandate_id = $2::uuid)""",
         horizon, mandate_id)
-    return [(r["regime"], r["recommendation"], float(r["return_pct"])) for r in rows]
+    return [(r["regime"], normalize_verdict(r["recommendation"]), float(r["return_pct"])) for r in rows]
