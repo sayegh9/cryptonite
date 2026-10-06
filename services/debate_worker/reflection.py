@@ -12,6 +12,7 @@ import logging
 import asyncpg
 from cryptonite_agents.gateway import Gateway
 from cryptonite_agents.persona import Persona
+from cryptonite_schemas.debate import VERDICT_DIRECTIONS, VERDICT_WHITESPACE
 from outcomes import signed_outcome
 
 logger = logging.getLogger(__name__)
@@ -77,11 +78,17 @@ class ReflectionEngine:
                    JOIN ai_decision_outcomes o ON o.decision_id = pd.id AND o.horizon = $1
                    LEFT JOIN reflections r ON r.run_id = pd.run_id
                    WHERE r.id IS NULL
+                     -- a verdict with no direction can never be reflected on; it must not hold a batch slot
+                     AND upper(btrim(pd.recommendation, $3)) = ANY($4::text[])
                    ORDER BY pd.created_at
-                   LIMIT $2""", REFLECTION_HORIZON, BATCH)
+                   LIMIT $2""", REFLECTION_HORIZON, BATCH, VERDICT_WHITESPACE, list(VERDICT_DIRECTIONS))
         written = 0
         for row in pending:
-            outcome = signed_outcome(row["recommendation"], float(row["return_pct"]))
+            try:
+                outcome = signed_outcome(row["recommendation"], float(row["return_pct"]))
+            except ValueError as e:  # one unmappable verdict must not stop the rest of the batch
+                logger.warning("Reflection skipped for run %s: %s", row["run_id"], e)
+                continue
             if row["instrument_id"].startswith(BENCHMARK):
                 alpha = outcome
             else:

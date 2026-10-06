@@ -10,7 +10,12 @@ import uuid
 from typing import Any
 
 from cryptonite_execution.calibration import score_decision
-from cryptonite_schemas.debate import VERDICT_DIRECTIONS, normalize_verdict, verdict_direction
+from cryptonite_schemas.debate import (
+    VERDICT_DIRECTIONS,
+    VERDICT_WHITESPACE,
+    normalize_verdict,
+    verdict_direction,
+)
 
 logger = logging.getLogger("cryptonite.api.similar")
 
@@ -34,11 +39,11 @@ async def similar_decisions(conn, instrument_id: str | None, recommendation: str
            FROM portfolio_decisions pd
            JOIN ai_decision_outcomes o ON o.decision_id = pd.id AND o.horizon = $1
            WHERE pd.instrument_id = $2
-             AND ($3::text[] IS NULL OR upper(btrim(pd.recommendation)) = ANY($3::text[]))
+             AND ($3::text[] IS NULL OR upper(btrim(pd.recommendation, $6)) = ANY($3::text[]))
              AND ($4::uuid IS NULL OR pd.run_id IS DISTINCT FROM $4)
            ORDER BY pd.created_at DESC
            LIMIT $5""",
-        HORIZON, instrument_id, spellings, exclude_run_id, limit)
+        HORIZON, instrument_id, spellings, exclude_run_id, limit, VERDICT_WHITESPACE)
     return [{"run_id": str(r["run_id"]) if r["run_id"] else None, "created_at": r["created_at"].isoformat(),
              "recommendation": r["recommendation"],
              # signed like the learner's outcome: BUY gains when the asset rose, SELL/HOLD when it fell

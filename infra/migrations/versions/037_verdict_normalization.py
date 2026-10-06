@@ -6,10 +6,12 @@ Create Date: 2026-10-05 20:00:00.000000
 
 ``recommendation`` held the CRO's raw ``conviction_level`` (Buy, Overweight, Hold, ...) in mixed case, so
 scoring graded Overweight as a SELL-side miss. It now holds the direction only; the CRO's own wording moves
-to the new nullable ``conviction_level`` column, which the sizing multiplier keeps reading.
+to the new nullable ``conviction_level`` column (shown to the operator; kept for conviction sizing, which is not
+wired to debate orders yet).
 
 Backfill (every existing row): ``conviction_level`` = the original ``recommendation`` spelling, then
-``recommendation`` is normalized case-insensitively with the mapping of ``normalize_verdict()``:
+``recommendation`` is normalized case-insensitively, trimming spaces, tabs and line breaks (``WHITESPACE``),
+with the mapping of ``normalize_verdict()``:
 Buy / Overweight / STRONG_BUY / LONG -> BUY, Sell / Underweight / STRONG_SELL / SHORT -> SELL, Hold -> HOLD.
 Any other value aborts the migration with the list of offending values (nothing is guessed); the whole
 upgrade runs in one transaction, so an abort leaves the table untouched. ``chk_portfolio_decisions_recommendation``
@@ -37,6 +39,10 @@ VERDICTS = {
     "SELL": "SELL", "UNDERWEIGHT": "SELL", "STRONG_SELL": "SELL", "SHORT": "SELL",
     "HOLD": "HOLD",
 }
+# Keep in step with cryptonite_schemas.debate.VERDICT_WHITESPACE: the characters trimmed around a value.
+WHITESPACE = " \t\r\n"
+_TRIM_SET = "E'" + WHITESPACE.translate(str.maketrans({"\t": r"\t", "\r": r"\r", "\n": r"\n"})) + "'"
+_NORMALIZED = f"upper(btrim(recommendation, {_TRIM_SET}))"
 _KEYS = ", ".join(f"'{k}'" for k in VERDICTS)
 _CASE = " ".join(f"WHEN '{k}' THEN '{v}'" for k, v in VERDICTS.items())
 
@@ -50,7 +56,7 @@ def upgrade() -> None:
         SELECT string_agg(format('%L (%s rows)', recommendation, n), ', ' ORDER BY recommendation)
           INTO unmapped
           FROM (SELECT recommendation, count(*) AS n FROM portfolio_decisions
-                 WHERE upper(btrim(recommendation)) NOT IN ({_KEYS})
+                 WHERE {_NORMALIZED} NOT IN ({_KEYS})
                  GROUP BY recommendation) u;
         IF unmapped IS NOT NULL THEN
             RAISE EXCEPTION '037: portfolio_decisions.recommendation has values with no BUY/SELL/HOLD mapping: %', unmapped;
@@ -61,7 +67,7 @@ def upgrade() -> None:
     op.execute(f"""
     UPDATE portfolio_decisions
        SET conviction_level = recommendation,
-           recommendation = CASE upper(btrim(recommendation)) {_CASE} END
+           recommendation = CASE {_NORMALIZED} {_CASE} END
     """)
     op.execute(
         "ALTER TABLE portfolio_decisions ADD CONSTRAINT chk_portfolio_decisions_recommendation "

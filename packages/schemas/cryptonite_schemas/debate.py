@@ -20,13 +20,16 @@ VERDICT_DIRECTIONS: dict[str, Direction] = {
     "SELL": "SELL", "UNDERWEIGHT": "SELL", "STRONG_SELL": "SELL", "SHORT": "SELL",
     "HOLD": "HOLD",
 }
+# The surrounding characters a verdict may carry; migration 037 trims the same set
+# (``btrim(recommendation, E' \t\r\n')``), so the backfill and this function agree.
+VERDICT_WHITESPACE = " \t\r\n"
 
 
 def normalize_verdict(value: str) -> Direction:
-    """A verdict in any case, surrounding whitespace ignored, as BUY / SELL / HOLD
+    """A verdict in any case, surrounding spaces / tabs / line breaks ignored, as BUY / SELL / HOLD
     (Buy / Overweight / STRONG_BUY / LONG -> BUY, Sell / Underweight / STRONG_SELL / SHORT -> SELL,
     Hold -> HOLD). Anything else raises ``ValueError``: an unknown verdict is never guessed."""
-    direction = VERDICT_DIRECTIONS.get(value.strip().upper()) if isinstance(value, str) else None
+    direction = VERDICT_DIRECTIONS.get(value.strip(VERDICT_WHITESPACE).upper()) if isinstance(value, str) else None
     if direction is None:
         raise ValueError(f"unknown verdict {value!r}; expected one of {sorted(VERDICT_DIRECTIONS)}")
     return direction

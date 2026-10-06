@@ -58,10 +58,9 @@ def routing():
 
 
 def approve_side(recommendation: str) -> str | None:
-    """The order side ``POST /debates/{run_id}/approve`` derives (``routes/agents.py`` approve_debate).
-    If the fix replaces the two sets with a helper call, point this adapter at that helper."""
-    rec = str(recommendation or "").upper()
-    return "BUY" if rec in agents._BUY_RECOMMENDATIONS else "SELL" if rec in agents._SELL_RECOMMENDATIONS else None
+    """The order side ``POST /debates/{run_id}/approve`` derives (``routes/agents.py`` approve_debate,
+    through ``order_side``)."""
+    return agents.order_side(recommendation)
 
 
 # --- scoring (calibration.score_decision, F-C2) --------------------------------------------------
@@ -192,7 +191,10 @@ def test_fm6_every_consumer_agrees_with_normalize_verdict(routing, verdict):
 # Legacy spellings in the dev DB (HOLD 53, Hold 2, Buy 3, Overweight 4 on 2026-10-05) plus the other
 # literals and cases the CRO and routing allow.
 LEGACY_ROWS = ["HOLD", "Hold", "hold", "Buy", "BUY", "buy", "Overweight", "OVERWEIGHT", "Underweight",
-               "Sell", "SELL", "STRONG_BUY", "LONG"]
+               "Sell", "SELL", "STRONG_BUY", "LONG",
+               # padded with the characters normalize_verdict() trims: the backfill must trim the same set
+               " Overweight ", "\tHold\n", "Sell\r\n", "\n\tbuy \t"]
+TRIMMED = " \t\r\n"  # cryptonite_schemas.debate.VERDICT_WHITESPACE
 
 
 def _alembic(url: str, *args: str) -> None:
@@ -254,7 +256,7 @@ def test_fm6_migration_037_backfills_verdicts_keeps_the_wording_and_constrains_n
         rows = asyncio.run(_decisions(url))
         assert len(rows) == len(LEGACY_ROWS)
         for r in rows:
-            assert r["recommendation"] == DIRECTION[r["original"]], r["original"]
+            assert r["recommendation"] == DIRECTION[r["original"].strip(TRIMMED)], repr(r["original"])
             assert r["conviction_level"] == r["original"]  # the CRO's own wording survives for sizing
         assert {r["recommendation"] for r in rows} <= {"BUY", "SELL", "HOLD"}
 
@@ -278,14 +280,22 @@ def _migration_037():
     return module
 
 
-def test_fm6_migration_037_and_normalize_verdict_use_the_same_mapping():
-    from cryptonite_schemas.debate import VERDICT_DIRECTIONS
+def test_fm6_migration_037_and_normalize_verdict_use_the_same_mapping_and_trim_set():
+    from cryptonite_schemas.debate import VERDICT_DIRECTIONS, VERDICT_WHITESPACE
 
     normalize_verdict = _normalize_verdict()
-    assert _migration_037().VERDICTS == VERDICT_DIRECTIONS
+    migration = _migration_037()
+    assert migration.VERDICTS == VERDICT_DIRECTIONS
+    assert migration.WHITESPACE == VERDICT_WHITESPACE == TRIMMED
+    assert "btrim(recommendation, E' \\t\\r\\n')" in migration._NORMALIZED  # the SQL trims that same set
     for spelling, direction in VERDICT_DIRECTIONS.items():
         assert normalize_verdict(spelling) == direction
-        assert normalize_verdict(f"  {spelling.lower()}\t") == direction  # migration: upper(btrim(...))
+        for pad in (" ", "\t", "\r\n", " \t\n\r"):
+            assert normalize_verdict(f"{pad}{spelling.lower()}{pad}") == direction
+    # what neither side trims is not a verdict (the migration would abort on it)
+    for untrimmed in ("\u00a0BUY", "BUY\v", "B UY"):
+        with pytest.raises(ValueError):
+            normalize_verdict(untrimmed)
 
 
 @pytest.mark.parametrize(("verdict", "side"), [("strong buy", "BUY"), ("Strong Sell", "SELL"), (" Overweight ", "BUY"),
@@ -405,6 +415,35 @@ def test_fm6_orchestrator_rejects_a_sideless_order_with_no_direction_instead_of_
     engine, executed = asyncio.run(_orchestrate_sideless_order(verdict))
     engine.dispatcher.dispatch.assert_not_called()
     assert any("status = 'REJECTED'" in args[0] and "NO_ORDER_SIDE" in str(args[2]) for args in executed)
+
+
+def test_fm6_operator_debates_list_shows_the_direction_and_the_cros_wording():
+    import datetime
+    import uuid
+    from types import SimpleNamespace
+
+    now = datetime.datetime.now(datetime.UTC)
+    rows = [{"run_id": uuid.uuid4(), "instrument_id": "BTCUSDT.BINANCE", "status": "PENDING_APPROVAL", "created_at": now,
+             "recommendation": rec, "conviction_level": level, "conviction_score": 0.72, "allocation_pct": 6,
+             "reasoning": "trend"} for rec, level in [("BUY", "Overweight"), ("HOLD", "HOLD"), ("SELL", None)]]
+
+    class _Conn:
+        async def fetch(self, sql, *_):
+            assert "d.conviction_level" in sql
+            return rows
+
+    class _Acquire:
+        async def __aenter__(self):
+            return _Conn()
+
+        async def __aexit__(self, *_):
+            return False
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=SimpleNamespace(acquire=_Acquire))))
+    got = asyncio.run(agents.list_debates(request, limit=3, _auth=None))
+    assert [g["convictionLevel"] for g in got] == ["Overweight", "HOLD", None]
+    assert got[0]["decision"].startswith("BUY · Overweight (72.0% Conviction)")
+    assert got[1]["decision"].startswith("HOLD (") and got[2]["decision"].startswith("SELL (")
 
 
 def test_fc2_similar_decisions_has_nothing_to_compare_for_an_unknown_verdict():

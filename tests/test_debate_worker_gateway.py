@@ -3,8 +3,8 @@ verdict fails the run closed instead of staging a HOLD decision. Throwaway DB at
 models are pydantic-ai FunctionModels."""
 
 import importlib.util
-import sys
 import json
+import sys
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock

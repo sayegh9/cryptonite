@@ -10,6 +10,7 @@ import importlib.util
 import uuid
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import asyncpg
 import pytest
@@ -64,10 +65,16 @@ class _Out:
 
 
 class FakeGateway:
-    """Stands in for the gateway: records the pinned model, never calls one."""
+    """Stands in for the gateway: records the pinned models, never calls one."""
 
-    def __init__(self):
+    def __init__(self, embed_route="ollama:embeddinggemma"):
+        self.embed_route = embed_route
         self.models = []
+        self.embed_models = []
+
+    async def route(self, role):
+        assert role == "embed"
+        return SimpleNamespace(primary_model=self.embed_route)
 
     async def run(self, role, prompt, *, model_override=None, **_):
         self.models.append(model_override)
@@ -75,8 +82,9 @@ class FakeGateway:
         assert "alpha vs BTC: +0.41%" in prompt
         return _Out("Regenerated lesson: the bullish call was right.")
 
-    async def embed_tagged(self, texts, kind="document"):
-        return [[0.001] * 768 for _ in texts], "ollama:embeddinggemma"
+    async def embed_tagged(self, texts, kind="document", model_override=None):
+        self.embed_models.append(model_override)
+        return [[0.001] * 768 for _ in texts], model_override
 
 
 async def _seed(url):
@@ -105,31 +113,46 @@ async def _seed(url):
     return ids
 
 
-async def _run(script, url, apply: bool):
+async def _reflections(url):
     conn = await asyncpg.connect(url)
     try:
-        fixes, rows = await script.find_fixes(conn)
-        gateway = FakeGateway()
-        written = [await script.apply_fix(conn, gateway, f, rows[f.reflection_id], "ollama:gemma4:12b-it-qat")
-                   for f in fixes if apply and f.kind != "unexplained"]
-        stored = {r["id"]: r for r in await conn.fetch("SELECT * FROM reflections")}
-        return fixes, written, gateway.models, stored
+        return {r["id"]: r for r in await conn.fetch("SELECT * FROM reflections")}
     finally:
         await conn.close()
 
 
+def test_a_cloud_reviewer_model_is_refused_before_anything_is_read(script, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)  # it must not even need the database
+    with pytest.raises(SystemExit, match="local"):
+        asyncio.run(script.main(["--apply", "--model", "google:gemini-2.5-flash"]))
+
+
 @pytest.mark.integration
-def test_selects_only_the_inverted_reflection_regenerates_it_and_a_second_run_is_a_no_op(script):
+def test_main_dry_run_then_apply_fixes_only_the_inverted_reflection_and_a_second_run_is_a_no_op(script, monkeypatch, capsys):
     with migrated_database("cryptonite_ci_b2") as url:
+        monkeypatch.setenv("DATABASE_URL", url)
         ids = asyncio.run(_seed(url))
+        gateways = []
 
-        fixes, written, _, stored = asyncio.run(_run(script, url, apply=False))  # dry run writes nothing
-        assert {(f.reflection_id, f.kind) for f in fixes} == {(ids["inverted"], "inverted"),
-                                                             (ids["unexplained"], "unexplained")}
-        assert stored[ids["inverted"]]["lessons_learned"] == "old lesson" and written == []
+        def make_gateway(_pool, embed_route="ollama:embeddinggemma"):
+            gateways.append(FakeGateway(embed_route))
+            return gateways[-1]
 
-        _, written, models, stored = asyncio.run(_run(script, url, apply=True))
-        assert written == [True] and models == ["ollama:gemma4:12b-it-qat"]  # pinned to the local tier
+        assert asyncio.run(script.main([], make_gateway=make_gateway)) == 0  # dry run
+        out = capsys.readouterr().out
+        assert f"inverted    reflection {ids['inverted']}" in out and "1 to fix, 1 unexplained" in out
+        assert "dry run: nothing written" in out
+        assert gateways == [] and asyncio.run(_reflections(url))[ids["inverted"]]["lessons_learned"] == "old lesson"
+
+        # the embed route resolves to a cloud model: --apply refuses and writes nothing
+        with pytest.raises(SystemExit, match="embed route resolves to google:text-embedding-004"):
+            asyncio.run(script.main(["--apply"], make_gateway=lambda pool: make_gateway(pool, "google:text-embedding-004")))
+        assert gateways[-1].models == [] and asyncio.run(_reflections(url))[ids["inverted"]]["outcome"] == "LOSS"
+
+        assert asyncio.run(script.main(["--apply"], make_gateway=make_gateway)) == 1
+        assert gateways[-1].models == ["ollama:gemma4:12b-it-qat"]  # reviewer pinned to the local tier
+        assert gateways[-1].embed_models == ["ollama:embeddinggemma"]  # embedder pinned to the local route model
+        stored = asyncio.run(_reflections(url))
         fixed = stored[ids["inverted"]]
         assert (fixed["actual_outcome_pnl"], fixed["alpha_vs_benchmark"], fixed["outcome"]) == (
             Decimal("0.009850"), Decimal("0.004100"), "WIN")
@@ -137,5 +160,98 @@ def test_selects_only_the_inverted_reflection_regenerates_it_and_a_second_run_is
         for untouched in ("consistent", "hold", "unexplained"):
             assert stored[ids[untouched]]["lessons_learned"] == "old lesson"
 
-        fixes, written, models, _ = asyncio.run(_run(script, url, apply=True))  # idempotent
-        assert [f.kind for f in fixes] == ["unexplained"] and written == [] and models == []
+        n_gateways = len(gateways)
+        assert asyncio.run(script.main(["--apply"], make_gateway=make_gateway)) == 0  # idempotent
+        assert "0 to fix, 1 unexplained" in capsys.readouterr().out and len(gateways) == n_gateways
+
+
+# --- learner robustness: one unmappable verdict cannot stall the reflection batch -----------------
+
+class _LearnerGateway:
+    async def run(self, role, prompt, **_):
+        return _Out("lesson")
+
+    async def embed_tagged(self, texts, kind="document", model_override=None):
+        return [[0.001] * 768 for _ in texts], "ollama:embeddinggemma"
+
+
+class _Pool:
+    """A pool whose connection returns ``rows`` and records inserts."""
+
+    def __init__(self, rows):
+        self.rows, self.inserted = rows, []
+
+    def acquire(self):
+        pool = self
+
+        class _Ctx:
+            async def __aenter__(self):
+                return pool
+
+            async def __aexit__(self, *_):
+                return False
+
+        return _Ctx()
+
+    async def fetch(self, *_):
+        return self.rows
+
+    async def execute(self, _sql, *args):
+        self.inserted.append(args)
+
+
+def _pending(rec, ret):
+    return {"run_id": uuid.uuid4(), "instrument_id": "BTCUSDT.BINANCE", "recommendation": rec, "reasoning": "r",
+            "created_at": None, "return_pct": Decimal(str(ret)), "mfe": Decimal("0.01"), "mae": Decimal("-0.01")}
+
+
+def test_learner_logs_and_skips_an_unmappable_row_and_reflects_on_the_rest(script, caplog):
+    import reflection
+
+    bad, good = _pending("MAYBE", 0.01), _pending("Overweight", 0.01)
+    pool = _Pool([bad, good])
+    written = asyncio.run(reflection.ReflectionEngine(pool, None, _LearnerGateway()).process_pending_reflections())
+    assert written == 1 and [a[0] for a in pool.inserted] == [good["run_id"]]
+    assert pool.inserted[0][1] == pytest.approx(0.01) and pool.inserted[0][-1] == "WIN"  # Overweight is a BUY
+    assert f"Reflection skipped for run {bad['run_id']}" in caplog.text
+
+
+async def _seed_unmappable_then_good(url):
+    conn = await asyncpg.connect(url)
+    try:
+        # rows from before migration 037's CHECK could carry anything; mimic them
+        await conn.execute("ALTER TABLE portfolio_decisions DROP CONSTRAINT chk_portfolio_decisions_recommendation")
+        good = None
+        for i, rec in enumerate(["MAYBE"] * 6 + ["\tOverweight "]):
+            run = await conn.fetchval("INSERT INTO debate_runs (instrument_id, trigger_source, status) "
+                                      "VALUES ('BTCUSDT.BINANCE', 'test', 'COMPLETED') RETURNING id")
+            dec = await conn.fetchval(
+                "INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, "
+                "reasoning, created_at) VALUES ($1, 'BTCUSDT.BINANCE', $2, 0.7, 5, 'why', now() - make_interval(hours => $3)) "
+                "RETURNING id", run, rec, 100 - i)  # the unmappable rows are the oldest
+            await conn.execute("INSERT INTO ai_decision_outcomes (decision_id, horizon, return_pct, mfe, mae, bars) "
+                               "VALUES ($1, '24h', 0.01, 0.012, -0.004, 1440)", dec)
+            good = run
+        return good
+    finally:
+        await conn.close()
+
+
+async def _learn_once(url):
+    import reflection
+
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    try:
+        written = await reflection.ReflectionEngine(pool, None, _LearnerGateway()).process_pending_reflections()
+        return written, await pool.fetch("SELECT run_id, outcome FROM reflections")
+    finally:
+        await pool.close()
+
+
+@pytest.mark.integration
+def test_unmappable_rows_do_not_hold_the_learner_batch(script):
+    """More unmappable rows than a batch (5) ahead of a good one: the good one is still reflected on."""
+    with migrated_database("cryptonite_ci_b2") as url:
+        good = asyncio.run(_seed_unmappable_then_good(url))
+        written, rows = asyncio.run(_learn_once(url))
+        assert written == 1 and [(r["run_id"], r["outcome"]) for r in rows] == [(good, "WIN")]

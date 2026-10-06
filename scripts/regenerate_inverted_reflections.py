@@ -15,7 +15,8 @@ the corrected scoring (``outcomes.signed_outcome``, which reads the verdict thro
 Dry run by default (prints what it would change). ``--apply`` writes each fix with a guard on the old
 value, so a second run finds nothing to do (idempotent). The reviewer model must be local
 (``ollama:...``); it is pinned, so it never falls back to a paid cloud model. The lesson is embedded
-with the ``embed`` route's model, like every other reflection, so retrieval keeps comparing like with like.
+with the ``embed`` route's model, like every other reflection, so retrieval keeps comparing like with like;
+``--apply`` refuses to run when that route resolves to a cloud model.
 
     docker compose -f infra/docker-compose.yml run --rm --no-deps \\
         -e OLLAMA_BASE_URL=http://172.17.0.1:11434/v1 test \\
@@ -33,6 +34,8 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
+from cryptonite_agents.gateway import BudgetGuard, Gateway
+from cryptonite_agents.gateway.local_tier import is_local
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services" / "debate_worker"))
 from outcomes import signed_outcome  # noqa: E402
@@ -107,8 +110,9 @@ async def find_fixes(conn) -> tuple[list[Fix], dict[Any, Any]]:
     return fixes, {r["id"]: r for r in rows}
 
 
-async def apply_fix(conn, gateway, fix: Fix, row, model: str) -> bool:
-    """Write one fix; False when the row changed since it was read (another run fixed it)."""
+async def apply_fix(conn, gateway, fix: Fix, row, model: str, embed_model: str) -> bool:
+    """Write one fix; False when the row changed since it was read (another run fixed it). The reviewer
+    and the embedder are both pinned (``model`` / ``embed_model``), so neither can fall back to a cloud model."""
     if fix.kind == "retag":
         status = await conn.execute("UPDATE reflections SET outcome = $2 WHERE id = $1 AND actual_outcome_pnl = $3",
                                     fix.reflection_id, fix.tag, fix.old_pnl)
@@ -117,7 +121,7 @@ async def apply_fix(conn, gateway, fix: Fix, row, model: str) -> bool:
                                      config={"model_name": model})).output)
     embedding_str = embedding_model = None
     try:
-        (vector,), embedding_model = await gateway.embed_tagged([lesson], kind="document")
+        (vector,), embedding_model = await gateway.embed_tagged([lesson], kind="document", model_override=embed_model)
         embedding_str = f"[{','.join(map(str, vector))}]"
     except Exception as e:  # stored without a vector, like ReflectionEngine: retrieval falls back to recency
         print(f"  embedding failed, stored without a vector: {e}")
@@ -131,14 +135,16 @@ async def apply_fix(conn, gateway, fix: Fix, row, model: str) -> bool:
     return status.endswith(" 1")
 
 
-async def main() -> None:
+def _default_gateway(pool):
+    return Gateway(pool=pool, budget=BudgetGuard(pool=pool))
+
+
+async def main(argv: list[str] | None = None, make_gateway=_default_gateway) -> int:
+    """Returns the number of reflections written (0 on a dry run). ``make_gateway`` is for tests."""
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--apply", action="store_true", help="write the fixes (default: dry run)")
     p.add_argument("--model", default=DEFAULT_MODEL, help="local reviewer model (ollama:...)")
-    args = p.parse_args()
-
-    from cryptonite_agents.gateway import BudgetGuard, Gateway
-    from cryptonite_agents.gateway.local_tier import is_local
+    args = p.parse_args(argv)
 
     if not is_local(args.model):
         raise SystemExit(f"--model must be a local (ollama:) model, got {args.model}")
@@ -153,15 +159,21 @@ async def main() -> None:
         if not args.apply or not todo:
             if todo:
                 print("dry run: nothing written; re-run with --apply")
-            return
-        gateway = Gateway(pool=pool, budget=BudgetGuard(pool=pool))
+            return 0
+        gateway = make_gateway(pool)
+        # Lessons are embedded with the embed route's model so retrieval compares like with like; that
+        # model must be local too, or nothing is written.
+        embed_model = (await gateway.route("embed")).primary_model
+        if not is_local(embed_model):
+            raise SystemExit(f"the embed route resolves to {embed_model}, not a local (ollama:) model; nothing written")
         written = 0
         for f in todo:
             async with pool.acquire() as conn:
-                ok = await apply_fix(conn, gateway, f, rows[f.reflection_id], args.model)
+                ok = await apply_fix(conn, gateway, f, rows[f.reflection_id], args.model, embed_model)
             written += ok
             print(f"{'fixed' if ok else 'skipped (changed meanwhile)'}: {f.reflection_id}")
         print(f"{written} reflection(s) written")
+        return written
     finally:
         await pool.close()
 
