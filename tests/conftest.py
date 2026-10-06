@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from connections import REDIS_URL
+from connections import REDIS_URL, install_redis_db_guard, redis_report_line
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_schemas.identifiers import (
     to_nautilus_bar_type,
@@ -28,6 +28,11 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 os.environ.setdefault("CRYPTONITE_ENV", "test")
 # Code under test that reads REDIS_URL itself must land on the same isolated test DB (connections.py).
 os.environ["REDIS_URL"] = REDIS_URL
+install_redis_db_guard()  # any redis-py client on the live DBs 0/1 raises (connections.py)
+
+
+def pytest_report_header(config):
+    return redis_report_line()  # REDIS_URL is rewritten to the test DB: say so once per run
 
 
 @pytest.fixture(autouse=True)
