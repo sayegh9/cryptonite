@@ -37,7 +37,7 @@ from debate_queue import (
     ensure_groups,
     housekeeping,
 )
-from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate
+from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate, release_cooldown
 from mandate_routing import route_entry, route_exit
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
@@ -199,50 +199,68 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
 
     trace_id = decision_trace_id(payload)
     payload = {**payload, "decision_trace_id": trace_id}
+    # D1: the candidate id makes the run row durable dedupe (partial unique index, migration 039)
+    candidate_id = None
+    try:
+        candidate = json.loads(payload.get("candidate_payload") or "{}")
+        if isinstance(candidate, dict) and candidate.get("candidate_id"):
+            candidate_id = uuid.UUID(str(candidate["candidate_id"]))
+    except (TypeError, ValueError):
+        candidate_id = None
     logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source} (decision_trace_id={trace_id})")
     brief = await load_brief(redis_client, payload)
     gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
                                  brief_data=await load_brief_data(redis_client, payload))
     if not gate.allowed:
         return
-    acl = AntiCorruptionLayer(pg_pool)
-    context = await acl.get_instrument_context(instrument_id)
-    
-    sym = (instrument_id or "BTCUSDT").split(".")[0].upper()
-    decision_price = None
+
+    # D1: the run row is the first durable write of a run. Until it commits, any failure releases the
+    # cooldown and re-raises, so the PEL retry of the same message passes the gate again instead of
+    # hitting a cooldown (or dedupe) left behind by an attempt that never became durable.
     try:
-        cached_market = await redis_client.get(f"market:24h:{sym}")
-        if cached_market:
-            decision_price = float(json.loads(cached_market).get("last_price", 0))
-    except Exception:
-        pass
+        acl = AntiCorruptionLayer(pg_pool)
+        context = await acl.get_instrument_context(instrument_id)
 
-    if not decision_price:
+        sym = (instrument_id or "BTCUSDT").split(".")[0].upper()
+        decision_price = None
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=4.0) as http_client:
-                bn_r = await http_client.get("https://api.binance.com/api/v3/ticker/24hr", params={"symbol": sym})
-                if bn_r.status_code == 200:
-                    decision_price = float(bn_r.json().get("lastPrice", 0))
-        except Exception as e:
-            logger.warning(f"Could not fetch live price for {sym}: {e}")
+            cached_market = await redis_client.get(f"market:24h:{sym}")
+            if cached_market:
+                decision_price = float(json.loads(cached_market).get("last_price", 0))
+        except Exception:
+            pass
 
-    context["current_price"] = decision_price
-    
-    run_id = uuid.uuid4()
-    
-    async with pg_pool.acquire() as conn:
-        # Unique on stream_message_id (039): a concurrent redelivery cannot open a second run
-        created = await conn.fetchval(
-            """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, decision_trace_id, stream_message_id)
-               VALUES ($1, $2, 'RUNNING', $3, now(), $4, $5)
-               ON CONFLICT (stream_message_id) WHERE stream_message_id IS NOT NULL DO NOTHING RETURNING id""",
-            run_id, instrument_id, trigger_source, uuid.UUID(trace_id), message_ref
-        )
-    if created is None:
-        logger.warning(f"{message_ref} already has a run: not debated again")
+        if not decision_price:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=4.0) as http_client:
+                    bn_r = await http_client.get("https://api.binance.com/api/v3/ticker/24hr", params={"symbol": sym})
+                    if bn_r.status_code == 200:
+                        decision_price = float(bn_r.json().get("lastPrice", 0))
+            except Exception as e:
+                logger.warning(f"Could not fetch live price for {sym}: {e}")
+
+        context["current_price"] = decision_price
+
+        run_id = uuid.uuid4()
+
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at,
+                                            decision_trace_id, candidate_id, stream_message_id)
+                   VALUES ($1, $2, 'RUNNING', $3, now(), $4, $5, $6)""",
+                run_id, instrument_id, trigger_source, uuid.UUID(trace_id), candidate_id, message_ref,
+            )
+    except asyncpg.UniqueViolationError:
+        # D1 / B4: two deliveries raced past the gate; the winner owns the candidate/message. This one ends here —
+        # no model call and never a second durable decision.
+        logger.info(f"Duplicate debate run for candidate {candidate_id} / {message_ref}; dropping the redelivery")
         return
-
+    except BaseException:
+        # Covers CancelledError too (except Exception misses it). A hard crash still leaves the cooldown
+        # key behind, but its value is the candidate's own token, so the redelivery passes it anyway.
+        await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
+        raise
     try:
         logger.info(f"Phase 1: Gathering Intelligence for {instrument_id}...")
         context_text = f"{brief}\n\n" if brief else ""
@@ -389,8 +407,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
 
     except Exception as e:
         logger.error(f"Debate failed for {instrument_id}: {e} (decision_trace_id={trace_id})")
-        if gate.cooldown_key:  # a failed run must not block the setup for the cooldown window
-            await redis_client.delete(gate.cooldown_key)
+        await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)  # a failed run must not block the setup
         async with pg_pool.acquire() as conn:
             await conn.execute("UPDATE debate_runs SET status = 'FAILED', completed_at = now() WHERE id = $1", run_id)
 

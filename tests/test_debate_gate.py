@@ -2,12 +2,15 @@
 lite debate with escalation, NO_TRADE for HOLD, merged risk panel. Throwaway DB at Alembic head;
 models are FunctionModels (which also count the calls each role makes)."""
 
+import asyncio
 import importlib.util
 import json
 import sys
 import time
+import uuid
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import asyncpg
@@ -92,13 +95,24 @@ class Redis:
     async def delete(self, key):
         self.kv.pop(key, None)
 
+    async def eval(self, script, numkeys, *args):  # the one Lua script the gate runs: atomic compare-del
+        key, token = args[0], args[1]
+        if self.kv.get(key) == token:
+            del self.kv[key]
+            return 1
+        return 0
+
     expire = publish = AsyncMock()
 
 
-def scanner_payload(age_s: float = 60, timeframe: str = "1h", brief: bool = True) -> dict:
+def scanner_payload(age_s: float = 60, timeframe: str = "1h", brief: bool = True,
+                    candidate_id: str | None = None) -> dict:
     close_ns = int((time.time() - age_s) * 1e9)
+    candidate = {"timeframe": timeframe, "bar_close_inclusive_ns": close_ns}
+    if candidate_id:
+        candidate["candidate_id"] = candidate_id
     return {"instrument_id": INSTRUMENT, "trigger_source": "scanner", "brief_key": "brief:k" if brief else "",
-            "candidate_payload": json.dumps({"timeframe": timeframe, "bar_close_inclusive_ns": close_ns})}
+            "candidate_payload": json.dumps(candidate)}
 
 
 class Models:
@@ -173,6 +187,127 @@ async def test_cooldown_allows_one_debate_per_setup_window(gate, pool):
     first = await gate.pre_debate_gate(pool, redis, scanner_payload(), None, "MARKET BRIEF")
     second = await gate.pre_debate_gate(pool, redis, scanner_payload(), None, "MARKET BRIEF")
     assert (first.allowed, second.reason) == (True, "COOLDOWN")
+
+
+async def test_a_failure_before_the_durable_run_leaves_the_retry_passable(main, pool, monkeypatch):
+    """D1 review blocker 1: nothing durable exists before the debate_runs row, so a transient failure
+    there must not poison the same message's retry (a pre-run dedupe key did exactly that)."""
+    cid = str(uuid.uuid4())
+    payload = scanner_payload(candidate_id=cid)
+    models = Models()
+    redis = Redis("MARKET BRIEF BTCUSDT")
+    original = main.AntiCorruptionLayer.get_instrument_context
+    attempts = {"n": 0}
+
+    async def flaky(self, instrument_id):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("transient failure before the run row")
+        return await original(self, instrument_id)
+
+    monkeypatch.setattr(main.AntiCorruptionLayer, "get_instrument_context", flaky)
+    with override_model(FLASH_LITE, models.model()):
+        with pytest.raises(RuntimeError, match="transient"):
+            await main.process_debate_trigger(pool, redis, payload, Gateway())
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
+    assert not any(k.startswith("debate:cooldown:") for k in redis.kv)  # released for the retry
+
+    run_row = await run(main, pool, payload, models, redis)  # the same message, redelivered
+    assert (run_row["status"], str(run_row["candidate_id"])) == ("PENDING_APPROVAL", cid)
+
+
+async def test_a_cancelled_attempt_before_the_run_releases_its_window(main, pool, monkeypatch):
+    """D1 review: asyncio cancellation is not an Exception, so the pre-run cleanup must catch it too —
+    a cancelled attempt between gate and run INSERT releases the cooldown it holds, and the
+    redelivery passes the gate again."""
+    cid = str(uuid.uuid4())
+    payload = scanner_payload(candidate_id=cid)
+    models = Models()
+    redis = Redis("MARKET BRIEF BTCUSDT")
+    original = main.AntiCorruptionLayer.get_instrument_context
+    attempts = {"n": 0}
+
+    async def cancelled_once(self, instrument_id):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise asyncio.CancelledError()
+        return await original(self, instrument_id)
+
+    monkeypatch.setattr(main.AntiCorruptionLayer, "get_instrument_context", cancelled_once)
+    with override_model(FLASH_LITE, models.model()):
+        with pytest.raises(asyncio.CancelledError):
+            await main.process_debate_trigger(pool, redis, payload, Gateway())
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
+    assert not any(k.startswith("debate:cooldown:") for k in redis.kv)  # released despite the cancellation
+
+    run_row = await run(main, pool, payload, models, redis)
+    assert (run_row["status"], str(run_row["candidate_id"])) == ("PENDING_APPROVAL", cid)
+
+
+async def test_a_crashed_attempt_leaves_a_window_only_its_own_candidate_passes(gate, pool):
+    """D1 review: a hard crash after the gate but before the run row leaves the cooldown key behind (no
+    cleanup runs at all). Its value is the candidate's own token: the same candidate's redelivery still
+    passes (no durable row exists), while every other candidate waits out the window."""
+    redis = Redis()
+    cid = str(uuid.uuid4())
+    crashed = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=cid), None, "MARKET BRIEF")
+    assert crashed.allowed  # the process dies here: no run row, key still set
+    same = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=cid), None, "MARKET BRIEF")
+    other = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=str(uuid.uuid4())),
+                                       None, "MARKET BRIEF")
+    assert (same.allowed, other.reason) == (True, "COOLDOWN")
+    assert redis.kv.get(crashed.cooldown_key) == f"cid:{cid}"  # still holding the window it owns
+
+
+async def test_a_stale_owner_never_deletes_another_candidates_window(gate, pool):
+    """D1 review: release_cooldown is a single Lua compare-and-delete, so if the window changes hands
+    (TTL expiry, then the next candidate's SET) before the failing attempt releases it, the stale owner
+    cannot delete the new owner's window."""
+    redis = Redis()
+    cid1, cid2 = str(uuid.uuid4()), str(uuid.uuid4())
+    first = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=cid1), None, "MARKET BRIEF")
+    assert first.allowed
+    redis.kv[first.cooldown_key] = f"cid:{cid2}"  # the window expired and candidate 2 took it over
+    await gate.release_cooldown(redis, first.cooldown_key, first.cooldown_token)
+    assert redis.kv[first.cooldown_key] == f"cid:{cid2}"  # the new owner's window survives
+    second = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=cid2), None, "MARKET BRIEF")
+    blocked = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=str(uuid.uuid4())),
+                                         None, "MARKET BRIEF")
+    assert (second.allowed, blocked.reason) == (True, "COOLDOWN")
+
+
+async def test_a_second_delivery_after_the_durable_run_is_dropped(main, pool, gate):
+    """D1 review blocker 1: the outbox is at-least-once — a second XADD of the same candidate must never
+    create a second durable decision (the run row's candidate_id is the dedupe)."""
+    cid = str(uuid.uuid4())
+    payload = scanner_payload(candidate_id=cid)
+    models = Models()
+    first = await run(main, pool, payload, models)
+    assert (first["status"], str(first["candidate_id"])) == ("PENDING_APPROVAL", cid)
+    spend = Counter(models.calls)
+
+    decision = await gate.pre_debate_gate(pool, Redis(), payload, None, "MARKET BRIEF")
+    assert decision.reason == "DUPLICATE_CANDIDATE"
+    second = await run(main, pool, payload, models)
+    assert second["id"] == first["id"] and models.calls == spend
+    assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 1
+
+
+async def test_a_racing_delivery_that_passes_the_gate_cannot_create_a_second_run(main, pool, monkeypatch):
+    """D1: the partial unique index backstops two deliveries that race past the gate — the second insert
+    ends the message with no model call and no second durable decision."""
+    cid = str(uuid.uuid4())
+    payload = scanner_payload(candidate_id=cid)
+    models = Models()
+    first = await run(main, pool, payload, models)
+    spend = Counter(models.calls)
+    monkeypatch.setattr(main, "pre_debate_gate",
+                        AsyncMock(return_value=SimpleNamespace(allowed=True, cooldown_key=None, cooldown_token=None)))
+    await main.process_debate_trigger(pool, Redis("MARKET BRIEF BTCUSDT"), payload, Gateway())
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 1
+    assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 1
+    assert models.calls == spend
+    assert first["status"] == "PENDING_APPROVAL"
 
 
 async def test_daily_loss_latch_skips(gate, pool, db_url):

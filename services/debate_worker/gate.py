@@ -1,10 +1,15 @@
 """Pre-debate gate (AI-first blueprint §6, A2.1 + A2.3): spend nothing on debates that cannot matter.
 
 Automatic (scanner) triggers pass, in order, before any model is called:
+  0. one decision per candidate id    -> the scanner's enqueue is at least once (D1): a delivery whose
+     durable run (``debate_runs.candidate_id``) already exists is dropped; a retry before any run exists
+     passes again (nothing durable was written, so a transient failure cannot poison the retry)
   1. kill switch / daily-loss latch   -> a new entry could not be placed anyway
   2. position at the concentration cap -> a new entry could not be sized
   3. stale candidate                  -> the setup is old news
-  4. cooldown per instrument+timeframe -> one debate per setup window
+  4. cooldown per instrument+timeframe -> one debate per setup window. The key holds the candidate's own
+     token: a crash or cancellation after this point leaves a window the same candidate's redelivery
+     still passes (no durable row yet), while other candidates wait it out
   5. hard triage rules in code (R3.1, ``cryptonite_scanner.brief.hard_rejects`` on the scanner's
      structured brief): reward-to-risk < 1.5, the two highest timeframes both trending down, chop
      -> ``TRIAGE_RULE_<NAME>`` with no model call. Missing data never rejects: it falls through to 6.
@@ -33,6 +38,10 @@ MAX_POSITION_PCT = 25.0
 MIN_ENTRY_PCT = 1.0  # the dispatcher's floor: less than this headroom means no entry can be placed
 COOLDOWN_S = 30 * 60
 MIN_STALE_S = 15 * 60
+# D1: the scanner's debate outbox can publish a candidate twice (a crash between XADD and marking its row
+# published). Dedupe is the durable run row (debate_runs.candidate_id, partial unique index in migration
+# 039), not a key set before any work: a failure before the run leaves nothing behind, so a PEL retry
+# (F-H6) of the same message passes the gate again, while a delivery whose run exists is dropped.
 TIMEFRAME_S = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 
 
@@ -43,6 +52,28 @@ class GateDecision:
     triage: TriageDecision | None = None
     triage_trace_id: Any = None
     cooldown_key: str | None = None  # released by the caller if the debate it allowed fails
+    cooldown_token: str | None = None  # the caller's own token: release only while it still holds the key
+
+
+# Atomic compare-and-delete: read and delete in one script, so between the two no TTL expiry or other
+# candidate's SET can slip in and leave the stale owner deleting a window it no longer holds.
+_RELEASE_COOLDOWN_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
+async def release_cooldown(redis, key: str | None, token: str | None) -> None:
+    """Compare-and-delete the cooldown: only the attempt whose token still holds it may release it, so a
+    failing attempt never deletes a window that has since become another candidate's."""
+    if not key or token is None:
+        return
+    try:
+        await redis.eval(_RELEASE_COOLDOWN_LUA, 1, key, token)
+    except Exception:  # a failed release only costs the cooldown window, never the retry itself
+        logger.warning("Cooldown %s not released", key)
 
 
 async def _count(redis, reason: str) -> None:
@@ -106,7 +137,18 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     timeframe = candidate.get("timeframe", "?")
     now_s = now_s if now_s is not None else datetime.datetime.now(datetime.UTC).timestamp()
 
+    cid = None
+    if candidate.get("candidate_id"):
+        try:
+            cid = uuid.UUID(str(candidate["candidate_id"]))
+        except (TypeError, ValueError):
+            cid = None  # a malformed id matches nothing: it can never dedupe another candidate
+
     async with pg_pool.acquire() as conn:
+        if cid is not None and await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM debate_runs WHERE candidate_id = $1)", cid
+        ):
+            return GateDecision(False, "DUPLICATE_CANDIDATE")
         latched = await conn.fetchval(
             "SELECT is_latched FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = $1",
             PAPER_ACCOUNT_ID,
@@ -131,7 +173,15 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, "NO_BRIEF")
 
     cooldown_key = f"debate:cooldown:{instrument_id}:{timeframe}"
-    if not await redis.set(cooldown_key, "1", nx=True, ex=COOLDOWN_S):
+    # Candidate-aware: the value is the candidate's token, so a crash or cancellation after this point
+    # leaves a window that its OWN redelivery still passes (no durable row exists yet), while every other
+    # candidate waits it out. Unidentified payloads keep the legacy opaque value and the old semantics.
+    cooldown_token = f"cid:{cid}" if cid else "1"
+    held = await redis.get(cooldown_key)
+    if held is None:
+        if not await redis.set(cooldown_key, cooldown_token, nx=True, ex=COOLDOWN_S):
+            return GateDecision(False, "COOLDOWN")  # lost the set to a concurrent candidate
+    elif cid is None or held != cooldown_token:
         return GateDecision(False, "COOLDOWN")
 
     # Like a model rejection, a rule rejection keeps the cooldown: one decision per setup window
@@ -139,14 +189,14 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, rule)
 
     if gateway is None:
-        return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key)
+        return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key, cooldown_token=cooldown_token)
     try:
         # The setup's decision_trace_id as the trace parent links triage (and its F2 shadow) to outcomes
         result = await TRIAGE.run(gateway, brief, parent_trace_id=_trace_uuid(payload))
     except Exception as e:  # gateway, budget or anything else: no triage, no paid debate; retry next candidate
         logger.warning("Triage unavailable for %s: %s", instrument_id, e)
-        await redis.delete(cooldown_key)
+        await release_cooldown(redis, cooldown_key, cooldown_token)
         return GateDecision(False, "TRIAGE_UNAVAILABLE")
     if not result.output.worth_debate:
         return GateDecision(False, "TRIAGE_REJECTED", result.output, result.trace_id)
-    return GateDecision(True, "TRIAGE_ACCEPTED", result.output, result.trace_id, cooldown_key)
+    return GateDecision(True, "TRIAGE_ACCEPTED", result.output, result.trace_id, cooldown_key, cooldown_token)

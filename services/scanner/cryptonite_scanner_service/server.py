@@ -64,6 +64,7 @@ class ScannerHealthServer:
                     "processed_events": self.worker.processed_events_count,
                     "executed_runs": self.worker.executed_runs_count,
                     "detected_candidates": self.worker.detected_candidates_count,
+                    "queued_candidates": self.worker.queued_candidates_count,
                 })
             elif path == "/ready":
                 is_ready, details = await self._check_readiness()

@@ -33,6 +33,7 @@ router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 # Ensure HMAC secret exists
 INTERNAL_HMAC_SECRET = os.getenv("INTERNAL_HMAC_SECRET", "default_internal_secret")
+DEBATE_QUEUE_MAXLEN = 10_000  # same cap as the scanner's writer (D1 / F-H2): XADD trims the oldest entries
 
 class ChatRequest(BaseModel):
     message: str
@@ -135,7 +136,7 @@ async def trigger_debate(req: DebateTriggerRequest, request: Request):
     }
     
     try:
-        msg_id = await redis_client.xadd("stream:debate_queue", payload)
+        msg_id = await redis_client.xadd("stream:debate_queue", payload, maxlen=DEBATE_QUEUE_MAXLEN, approximate=True)
         logger.info(f"Queued on-demand debate for {inst_id} (msg ID: {msg_id})")
         return {"status": "queued", "id": str(msg_id), "instrument_id": inst_id, "payload": payload}
     except Exception as e:
@@ -169,7 +170,7 @@ async def trigger_exit_debate(req: DebateTriggerRequest, request: Request, _op=D
                 run_id, inst_id
             )
             
-        msg_id = await redis_client.xadd("stream:exit_debate_queue", payload)
+        msg_id = await redis_client.xadd("stream:exit_debate_queue", payload, maxlen=DEBATE_QUEUE_MAXLEN, approximate=True)
         logger.info(f"Queued exit debate for {inst_id} (msg ID: {msg_id})")
         return {"status": "queued", "id": str(msg_id), "run_id": str(run_id), "instrument_id": inst_id, "payload": payload}
     except Exception as e:
