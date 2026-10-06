@@ -30,6 +30,7 @@ from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, r
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
 from cryptonite_execution.mandate_store import entry_room_pct, resolve_mandate_for
 from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT
+from cryptonite_schemas.marks import read_marks
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -194,8 +195,9 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
 
     allocation = Decimal(str(card["allocation_pct"]))
     if card["side"] == "BUY":  # an entry only gets the room the mandate has left under its position limit
+        marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
         async with pool.acquire() as conn:
-            room = await entry_room_pct(conn, mandate, card["instrument_id"])
+            room = await entry_room_pct(conn, mandate, card["instrument_id"], marks)
         if room < MIN_MANDATE_ENTRY_PCT:
             raise HTTPException(status_code=409, detail=(
                 f"MANDATE_POSITION_LIMIT_REACHED: mandate {mandate.name} already holds its limit of "

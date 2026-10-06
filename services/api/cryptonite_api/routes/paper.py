@@ -5,8 +5,9 @@ import logging
 import uuid
 from typing import Any, Literal
 
-from cryptonite_api.routes.auth import require_operator, require_csrf
-from fastapi import APIRouter, HTTPException, Request, Depends
+from cryptonite_api.routes.auth import require_csrf, require_operator
+from cryptonite_schemas.marks import read_marks, resolve_mark, unrealized_pnl
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("cryptonite.api.paper")
@@ -111,7 +112,19 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
         )
     else:
         rows = await pool.fetch("SELECT * FROM paper_positions ORDER BY opened_at DESC;")
-    return [dict(r) for r in rows]
+    # B3 (F-H3): an open position shows its live mark and PnL, else its stored mark flagged stale
+    marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
+    out = []
+    for r in rows:
+        row = dict(r)
+        if row.get("status") == "OPEN":
+            view = resolve_mark(row["instrument_id"], row["current_price"], marks)
+            if view.source == "live":
+                row["current_price"] = view.price
+                row["unrealized_pnl"] = unrealized_pnl(row["side"], row["quantity"], row["entry_price"], view.price)
+            row.update(view.fields())
+        out.append(row)
+    return out
 
 
 @router.get("/orders")

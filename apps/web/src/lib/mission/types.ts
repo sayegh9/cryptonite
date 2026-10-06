@@ -11,6 +11,13 @@ export interface MandatePosition {
   quantity: string;
   entry_price: string;
   current_price: string;
+  /** B3: PnL at the live mark (or at the stored mark when mark_stale). */
+  unrealized_pnl?: string;
+  /** B3: "live" = the orchestrator's live quote; "stored" = the last mark written, flagged stale. */
+  mark_source?: "live" | "stored";
+  mark_stale?: boolean;
+  /** Seconds since the quote (live) or since the mark was last confirmed (stored); null = never marked. */
+  mark_age_s?: number | null;
 }
 
 export interface Mandate {
@@ -37,6 +44,9 @@ export interface Mandate {
   exposure_usd: string;
   budget_used_pct: string;
   positions: MandatePosition[];
+  /** B3: true when any position is valued at a stored (not live) mark; exposure is then approximate. */
+  marks_stale?: boolean;
+  marks_age_s?: number | null;
   pending_approvals: number;
   pending_proposal: { id: number; to_level: number; created_at: string } | null;
 }
