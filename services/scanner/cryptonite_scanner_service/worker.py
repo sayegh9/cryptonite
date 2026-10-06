@@ -3,6 +3,9 @@
 Consumes closed_bar_committed events from Redis Streams under the 'scanner-worker'
 consumer group, claims manual scan_jobs, computes Polars indicators over resampled 1m data,
 and persists scan_runs and idempotent signal_candidates before calling XACK.
+
+Every match is recorded; only a fresh one (bar closed within one bar of now) is queued for debate, via a
+scanner_debate_outbox row committed with the candidate and published at least once (D1 / F-H2).
 """
 
 import asyncio
@@ -27,7 +30,7 @@ from cryptonite_scanner.models import (
     RuleGroup,
     RuleOperator,
 )
-from cryptonite_scanner.resampler import TIMEFRAME_MINUTES, resample_1m_bars
+from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
 BRIEF_TTL_S = 2 * 3600
@@ -39,6 +42,44 @@ SCAN_LOOKBACK_BARS = 300  # EMA-200 plus warm-up, in bars of the run's largest t
 DEFAULT_DB_URL = "postgresql://cryptonite_scanner:scanner_dev_pass@127.0.0.1:5432/cryptonite"
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 DEFAULT_LAKE_PATH = "data/analytics_lake"
+
+# D1 / F-H2: the debate queue is fed through scanner_debate_outbox (written in the candidate's transaction)
+# and capped. Fresh-only enqueue makes ~100 entries a day, so 10,000 is weeks of history, never a backlog.
+DEBATE_QUEUE = "stream:debate_queue"
+DEBATE_QUEUE_MAXLEN = 10_000
+DEBATE_RELAY_INTERVAL_S = 5.0
+DEBATE_RELAY_LEASE_S = 60  # the committing scan publishes first; the relay takes a row only after this
+DEBATE_RELAY_MAX_ATTEMPTS = 10
+DEBATE_RELAY_BATCH = 50
+
+
+def is_fresh(c: Any, now_ns: int) -> bool:
+    """D1 / F-H2: a candidate is queued for debate only if its bar closed within one bar of now.
+
+    Older matches are still recorded in ``signal_candidates`` (research), but ``ScannerEngine.evaluate`` runs
+    over the whole lookback, so after a restart or backfill they are old news (82% of the 10-05 candidates
+    were STALE at the gate). An unknown timeframe is never queued."""
+    bar_ns = TIMEFRAME_MINUTES.get(c.timeframe, 0) * ONE_MINUTE_NS
+    age_ns = now_ns - c.interval_end_exclusive_ns
+    return bar_ns > 0 and 0 <= age_ns <= bar_ns
+
+
+def is_fresh_payload(payload: dict[str, Any], now_ns: int) -> bool:
+    """D1: the same one-bar window as ``is_fresh``, rechecked on the stored payload right before the queue
+    write — a relay after an outage must not push a setup whose window has passed (or one whose window
+    cannot be verified)."""
+    bar_ns = TIMEFRAME_MINUTES.get(payload.get("timeframe"), 0) * ONE_MINUTE_NS
+    age_ns = now_ns - int(payload.get("interval_end_exclusive_ns") or 0)
+    return bar_ns > 0 and 0 <= age_ns <= bar_ns
+
+
+def brief_key_for(instrument_id: str, timeframe: str, bar_close_inclusive_ns: int) -> str:
+    return f"brief:{instrument_id}:{timeframe}:{bar_close_inclusive_ns}"
+
+
+async def enqueue_debate(redis_client: Any, fields: dict[str, Any]) -> str:
+    """XADD one entry to the debate queue, trimming it to about DEBATE_QUEUE_MAXLEN (F-H2: was unbounded)."""
+    return await redis_client.xadd(DEBATE_QUEUE, fields, maxlen=DEBATE_QUEUE_MAXLEN, approximate=True)
 
 
 def drop_unclosed_candidates(candidates: list[Any], now_ns: int) -> list[Any]:
@@ -82,6 +123,7 @@ class ScannerWorker:
         self.processed_events_count = 0
         self.executed_runs_count = 0
         self.detected_candidates_count = 0
+        self.queued_candidates_count = 0  # published to the debate queue (fresh only, D1)
 
     async def start(self) -> None:
         """Initialize connections and start event / job consumption loops."""
@@ -110,6 +152,7 @@ class ScannerWorker:
         # Launch consumer loops
         self._tasks.append(asyncio.create_task(self._event_consumer_loop()))
         self._tasks.append(asyncio.create_task(self._job_consumer_loop()))
+        self._tasks.append(asyncio.create_task(self._debate_relay_loop()))
 
     def _partition_digests(self, inst_dir: Path, since_date: str) -> dict[str, str]:
         """sha256 per date partition (``date=YYYY-MM-DD``) from ``since_date`` on, over the sorted
@@ -156,7 +199,7 @@ class ScannerWorker:
             args = dict(candidate=candidate_payload, derivatives=derivatives or None,
                         last_bar_close_ns=c.bar_close_inclusive_ns, now=now)
             brief = build_brief(c.instrument_id, frames, **args)
-            key = f"brief:{c.instrument_id}:{c.timeframe}:{c.bar_close_inclusive_ns}"
+            key = brief_key_for(c.instrument_id, c.timeframe, c.bar_close_inclusive_ns)
             await self.redis.set(key, brief, ex=BRIEF_TTL_S)
             try:  # the structured twin lets the gate apply the hard triage rules in code (R3.1)
                 await self.redis.set(f"{key}:data", json.dumps(brief_data(c.instrument_id, frames, **args)), ex=BRIEF_TTL_S)
@@ -166,6 +209,122 @@ class ScannerWorker:
         except Exception as e:  # a missing brief degrades the debate context; it never blocks the scan
             logger.warning("Market brief failed for %s: %s", c.instrument_id, e)
             return None
+
+    async def _publish_debate_candidates(self, queued: list[tuple[Any, dict[str, Any], dict[str, Any]]]) -> None:
+        """Fast path, right after the commit: brief, XADD and mark each fresh candidate's outbox row. A row
+        this does not confirm stays PENDING and the relay loop retries it, so nothing is lost on a failure."""
+        for c, fields, frames in queued:
+            brief_key = None
+            if self.redis:
+                brief_key = await self._publish_brief(c, fields["candidate_payload"], frames)
+            await self._publish_outbox_row(c.id, fields, brief_key or "", attempt_count=1)
+
+    async def _publish_outbox_row(self, candidate_id: UUID, fields: dict[str, Any], brief_key: str,
+                                  attempt_count: int) -> bool:
+        """XADD one scanner_debate_outbox row to the debate queue and mark it PUBLISHED, or schedule a retry.
+
+        Freshness is rechecked immediately before the queue write: a relay that only gets to a row after
+        its one-bar window has passed completes it as ``EXPIRED`` (with the reason) instead of enqueueing
+        old news; the debate gate never sees it."""
+        payload = fields["candidate_payload"]
+        now_ns = time.time_ns()
+        if not is_fresh_payload(payload, now_ns):
+            age_s = (now_ns - int(payload.get("interval_end_exclusive_ns") or 0)) / 1e9
+            reason = f"expired before publish: bar closed {age_s:.0f}s ago (fresh window is one bar)"
+            try:
+                await self.pool.execute(
+                    "UPDATE scanner_debate_outbox SET status = 'EXPIRED', last_error = $2 WHERE candidate_id = $1",
+                    candidate_id, reason)
+            except Exception as e:  # the row stays PENDING: the next relay pass completes it
+                logger.error("Candidate %s: could not complete the expired row: %s", candidate_id, e)
+            logger.info("Candidate %s not queued for debate: %s", candidate_id, reason)
+            return False
+        try:
+            if not self.redis:
+                raise RuntimeError("Redis client not connected")
+            stream_id = await enqueue_debate(self.redis, {
+                "instrument_id": fields["instrument_id"],
+                "trigger_source": fields["trigger_source"],
+                "candidate_payload": json.dumps(payload),
+                "brief_key": brief_key,
+            })
+        except Exception as e:
+            logger.error("Candidate %s not queued for debate (attempt %d): %s", candidate_id, attempt_count, e)
+            await self._retry_outbox_row(candidate_id, attempt_count, str(e))
+            return False
+        self.queued_candidates_count += 1
+        logger.info("Candidate %s %s %s queued for debate (decision_trace_id=%s)", candidate_id,
+                    fields["instrument_id"], payload.get("timeframe"), payload.get("decision_trace_id"))
+        try:
+            await self.pool.execute(
+                """UPDATE scanner_debate_outbox SET status = 'PUBLISHED', published_stream_id = $2,
+                       published_at = now(), last_error = NULL WHERE candidate_id = $1""",
+                candidate_id, str(stream_id))
+        except Exception as e:  # the relay re-sends it after the lease; the debate gate drops the duplicate
+            logger.error("Candidate %s queued as %s but not marked published: %s", candidate_id, stream_id, e)
+        return True
+
+    async def _retry_outbox_row(self, candidate_id: UUID, attempt_count: int, error: str) -> None:
+        try:
+            if attempt_count >= DEBATE_RELAY_MAX_ATTEMPTS:
+                await self.pool.execute(
+                    "UPDATE scanner_debate_outbox SET status = 'FAILED', last_error = $2 WHERE candidate_id = $1",
+                    candidate_id, error)
+                logger.error("Candidate %s: debate enqueue FAILED after %d attempts", candidate_id, attempt_count)
+            else:
+                await self.pool.execute(
+                    """UPDATE scanner_debate_outbox SET last_error = $2,
+                           next_attempt_at = now() + make_interval(secs => $3) WHERE candidate_id = $1""",
+                    candidate_id, error, float(min(2 ** attempt_count, 300)))
+        except Exception as e:  # the row keeps its lease, so the relay still picks it up
+            logger.error("Candidate %s: could not record the failed enqueue: %s", candidate_id, e)
+
+    async def relay_debate_outbox_once(self) -> int:
+        """Claim PENDING rows whose lease or backoff has run out and publish them. Returns how many were queued."""
+        if not self.pool:
+            return 0
+        rows = await self.pool.fetch(
+            """
+            WITH claimed AS (
+                SELECT candidate_id FROM scanner_debate_outbox
+                WHERE status = 'PENDING' AND next_attempt_at <= now()
+                ORDER BY created_at
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE scanner_debate_outbox o
+            SET attempt_count = o.attempt_count + 1, next_attempt_at = now() + make_interval(secs => $1)
+            FROM claimed
+            WHERE o.candidate_id = claimed.candidate_id
+            RETURNING o.candidate_id, o.fields, o.attempt_count;
+            """,
+            float(DEBATE_RELAY_LEASE_S), DEBATE_RELAY_BATCH,
+        )
+        published = 0
+        for r in rows:
+            fields = json.loads(r["fields"]) if isinstance(r["fields"], str) else r["fields"]
+            payload = fields["candidate_payload"]
+            brief_key = ""
+            try:  # the brief the committing scan cached, if it got that far and it has not expired
+                key = brief_key_for(fields["instrument_id"], payload["timeframe"], payload["bar_close_inclusive_ns"])
+                if self.redis and await self.redis.exists(key):
+                    brief_key = key
+            except Exception as e:
+                logger.warning("Brief lookup for candidate %s failed: %s", r["candidate_id"], e)
+            published += await self._publish_outbox_row(r["candidate_id"], fields, brief_key, r["attempt_count"])
+        if rows:
+            logger.info("Debate outbox relay: %d of %d pending candidates queued", published, len(rows))
+        return published
+
+    async def _debate_relay_loop(self) -> None:
+        while self._running:
+            try:
+                await self.relay_debate_outbox_once()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("Error in debate outbox relay: %s", e)
+            await asyncio.sleep(DEBATE_RELAY_INTERVAL_S)
 
     async def stop(self) -> None:
         """Stop worker tasks and release connections."""
@@ -506,7 +665,9 @@ class ScannerWorker:
                 )
                 all_candidates.extend(candidates)
 
-        all_candidates = drop_unclosed_candidates(all_candidates, time.time_ns())
+        now_ns = time.time_ns()
+        all_candidates = drop_unclosed_candidates(all_candidates, now_ns)
+        to_queue: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []  # fresh, new: published after the commit
 
         # 3. Commit run, candidates, checkpoints, and outbox in a single transaction
         async with self.pool.acquire() as conn:
@@ -615,23 +776,22 @@ class ScannerWorker:
                             # R7.4: follows this setup through gate, triage, debate, approval, command and fill
                             "decision_trace_id": str(uuid4()),
                         }
-                        
-                        # AI Debate Engine Integration: Publish to Redis Stream
-                        if self.redis:
-                            try:
-                                brief_key = await self._publish_brief(
-                                    c, candidate_payload, frames_by_inst.get(c.instrument_id, {})
-                                )
-                                logger.info("Candidate %s %s %s queued for debate (decision_trace_id=%s)",
-                                            c.id, c.instrument_id, c.timeframe, candidate_payload["decision_trace_id"])
-                                await self.redis.xadd("stream:debate_queue", {
-                                    "instrument_id": c.instrument_id,
-                                    "trigger_source": "scanner",
-                                    "candidate_payload": json.dumps(candidate_payload),
-                                    "brief_key": brief_key or "",
-                                })
-                            except Exception as e:
-                                logger.error(f"Failed to push candidate to debate_queue: {e}")
+
+                        # AI Debate Engine: only a bar that just closed is worth a debate (D1 / F-H2). The
+                        # outbox row commits with the candidate; the queue write happens after the commit.
+                        if is_fresh(c, now_ns):
+                            fields = {"instrument_id": c.instrument_id, "trigger_source": "scanner",
+                                      "candidate_payload": candidate_payload}
+                            await conn.execute(
+                                """
+                                INSERT INTO scanner_debate_outbox (candidate_id, fields, attempt_count, next_attempt_at)
+                                VALUES ($1, $2::jsonb, 1, now() + make_interval(secs => $3));
+                                """,
+                                c.id,
+                                json.dumps(fields),
+                                float(DEBATE_RELAY_LEASE_S),
+                            )
+                            to_queue.append((c, fields, frames_by_inst.get(c.instrument_id, {})))
 
                         await conn.execute(
                             """
@@ -667,6 +827,10 @@ class ScannerWorker:
                         run_id,
                     )
 
+        if to_queue:
+            await self._publish_debate_candidates(to_queue)
+
         self.executed_runs_count += 1
-        logger.info("Executed scan run %s for spec %s: found %d candidates", run_id, spec_version_id, len(all_candidates))
+        logger.info("Executed scan run %s for spec %s: found %d candidates, %d fresh for debate",
+                    run_id, spec_version_id, len(all_candidates), len(to_queue))
         return run_id

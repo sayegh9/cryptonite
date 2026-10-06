@@ -117,7 +117,7 @@ class Redis:
     async def delete(self, key):
         self.kv.pop(key, None)
 
-    async def xadd(self, stream, fields):
+    async def xadd(self, stream, fields, **kwargs):
         self.streams.append((stream, fields))
 
     async def publish(self, channel, message):
