@@ -15,6 +15,8 @@ import pytest
 import redis.asyncio as aioredis
 from connections import REDIS_URL
 from cryptonite_scanner_service.derivatives_feed import (
+    HEARTBEAT_KEY,
+    HEARTBEAT_TTL_S,
     MARK_CHANNEL,
     MARK_KEY,
     OI_KEY,
@@ -289,3 +291,33 @@ async def test_funding_backfill_fills_gaps_idempotently_across_pages(funding_db_
     finally:
         await pool.execute("DELETE FROM funding_rates WHERE instrument_id = $1", inst)
         await pool.close()
+
+
+class _RecordingRedis:
+    def __init__(self, fail_first=False):
+        self.sets, self.fail_first = [], fail_first
+
+    async def set(self, key, value, ex=None):
+        if self.fail_first:
+            self.fail_first = False
+            raise ConnectionError("redis down")
+        self.sets.append((key, json.loads(value), ex))
+
+
+def test_heartbeat_is_written_without_binance_and_survives_redis_errors():
+    # A4 healthcheck: process liveness must not depend on Binance (no ws/http client is ever used here).
+    r = _RecordingRedis(fail_first=True)
+    feed = DerivativesFeed(r, None, ["btcusdt"], connect=None)
+
+    async def run():
+        stop = asyncio.Event()
+        task = asyncio.create_task(feed.run_heartbeat(stop, interval_s=0.05))
+        await asyncio.sleep(0.2)
+        stop.set()
+        await asyncio.wait_for(task, 1)
+
+    asyncio.run(run())
+    assert len(r.sets) >= 2
+    assert all(k == HEARTBEAT_KEY and ex == HEARTBEAT_TTL_S for k, _, ex in r.sets)
+    assert r.sets[0][1] == {"symbols": ["BTCUSDT"]}
+

@@ -65,6 +65,7 @@ ARTIFACT_FILES = ("equity_curve.parquet", "trades.parquet", "orders.parquet")
 MAX_ARTIFACT_BYTES = 256 * 1024**2
 MAX_JSON_BYTES = 8 * 1024**2
 DONE_TTL_S = DEFAULT_TIMEOUT_S + 300
+HEARTBEAT_EVERY_S = 10.0  # the serve loop touches --heartbeat at least this often, also while a job runs
 _JOB_NAME = re.compile(r"^[A-Za-z0-9-]{1,80}-[0-9a-f]{8}\.json$")
 
 
@@ -340,8 +341,31 @@ def _reclaim(path: Path) -> None:
         _remove(path)
 
 
+def _beat(heartbeat: Path | None) -> None:
+    """Liveness for the container healthcheck (its mtime): only the serve loop writes it."""
+    if heartbeat is not None:
+        try:
+            heartbeat.touch()
+        except OSError:
+            pass
+
+
+def _wait(proc: subprocess.Popen, timeout_s: float, heartbeat: Path | None) -> None:
+    """proc.wait(timeout_s) that keeps beating while the job runs; raises TimeoutExpired at the deadline."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        _beat(heartbeat)
+        try:
+            proc.wait(timeout=max(0.0, min(HEARTBEAT_EVERY_S, deadline - time.monotonic())))
+            return
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                raise
+
+
 def run_job(jobs_dir: Path, job_file: Path, catalog: Path, timeout_s: float = DEFAULT_TIMEOUT_S,
-            work_root: Path = Path("/tmp"), child_uid: int | None = None, scrub: list[Path] | None = None) -> dict[str, Any]:
+            work_root: Path = Path("/tmp"), child_uid: int | None = None, scrub: list[Path] | None = None,
+            heartbeat: Path | None = None) -> dict[str, Any]:
     """Run one claimed job; always writes done/<job>/status.json."""
     job_id = job_file.stem
     done = _dirs(jobs_dir)[2] / job_id
@@ -369,7 +393,7 @@ def run_job(jobs_dir: Path, job_file: Path, catalog: Path, timeout_s: float = DE
                 stdout=subprocess.DEVNULL, stderr=stderr, preexec_fn=lambda: _limits(child_uid, work),
             )
             try:
-                proc.wait(timeout=timeout_s)
+                _wait(proc, timeout_s, heartbeat)
                 status = {"ok": proc.returncode == 0, "returncode": proc.returncode}
             except subprocess.TimeoutExpired:
                 status = {"ok": False, "returncode": None, "error": f"timed out after {timeout_s:.0f} s"}
@@ -466,6 +490,7 @@ def main(argv: list[str]) -> int:
     serve.add_argument("--work", default="/tmp")
     serve.add_argument("--child-uid", type=int)
     serve.add_argument("--scrub", action="append", default=[], help="dirs emptied after every job (e.g. /dev/shm)")
+    serve.add_argument("--heartbeat", help="file touched every loop and during jobs (container healthcheck)")
     child = sub.add_parser("child")
     for flag in ("--catalog", "--artifacts", "--request", "--result"):
         child.add_argument(flag, required=True)
@@ -476,11 +501,13 @@ def main(argv: list[str]) -> int:
     if args.cmd == "serve":
         os.umask(0o007)  # results must be readable and deletable by the worker's group
         jobs, work = Path(args.jobs), Path(args.work)
+        heartbeat = Path(args.heartbeat) if args.heartbeat else None
         fail_orphans(jobs, work)
         while True:
+            _beat(heartbeat)
             purge_done(jobs)
             if serve_once(jobs, Path(args.catalog), work_root=work, child_uid=args.child_uid,
-                          scrub=[Path(p) for p in args.scrub]) is None:
+                          scrub=[Path(p) for p in args.scrub], heartbeat=heartbeat) is None:
                 time.sleep(1.0)
     request = BacktestRunRequest.model_validate_json(Path(args.request).read_text())
     result = BacktestRunner(Path(args.catalog), Path(args.artifacts)).run(request)
