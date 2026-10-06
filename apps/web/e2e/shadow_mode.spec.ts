@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { test, expect } from "./fixtures/offline";
 
 /**
  * F2 shadow mode panel (Mission Control → Autonomy & Evals), read-only, with stubbed APIs: shadow routes
