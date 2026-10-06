@@ -39,6 +39,7 @@ from cryptonite_orchestrator.mandate_gate import (
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from cryptonite_orchestrator.marks import start_mark_to_market
 from cryptonite_orchestrator.ops_monitor import ops_monitor
+from cryptonite_orchestrator.source_hash import instance_source_hash
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("cryptonite.orchestrator")
@@ -711,13 +712,14 @@ async def command_poller(pool, engine, quote_cache=None):
                                     strategy_source_hash, risk_policy_hash, last_processed_bar_ns,
                                     instrument_id, timeframe, resolved_parameters, allocation_usd,
                                     status, created_at, updated_at
-                                ) VALUES ($1, $2, $3, $4::uuid, 'dummy_hash', 'dummy_hash', 0, $5, $6, $7::jsonb, $8, 'RUNNING', now(), now())
+                                ) VALUES ($1, $2, $3, $4::uuid, $9, 'dummy_hash', 0, $5, $6, $7::jsonb, $8, 'RUNNING', now(), now())
                                 ON CONFLICT (instance_id) DO UPDATE SET status = 'RUNNING', updated_at = now();
                             """,
                                 target, payload.get("account_id") or acc_id, payload["strategy_name"],
                                 payload["strategy_version_id"], payload["instrument_id"],
                                 payload["timeframe"], json.dumps(payload.get("parameters", {})),
-                                payload.get("allocation_usd", Decimal("0"))
+                                payload.get("allocation_usd", Decimal("0")),
+                                await instance_source_hash(conn, payload["strategy_name"], payload["strategy_version_id"]),
                             )
                             await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
                         elif cmd_type in ("STOP", "PAUSE"):
