@@ -13,6 +13,12 @@ from cryptonite_schemas.identifiers import (
     to_nautilus_instrument_id,
     to_spot_instrument_id,
 )
+from cryptonite_schemas.universe import (
+    INGEST_UNIVERSE_KEY,
+    UNIVERSE_REFRESH_S,
+    UNIVERSE_TTL_S,
+    IngestUniverse,
+)
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
 from cryptonite_storage.coordinator import TwoStoreCoordinator
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
@@ -71,6 +77,7 @@ class IngestRecorder:
         self.stream_client: BinanceStreamClient | None = None
 
         self._running = False
+        self._universe_task: asyncio.Task | None = None
         self._symbol_metadata: dict[str, dict[str, Any]] = {}
         self.last_closed_bar_ts: dict[str, int] = {}
 
@@ -222,10 +229,29 @@ class IngestRecorder:
         )
         self.last_closed_bar_ts[f"{symbol}:{timeframe}"] = bar.ts_event_ns
 
+    def universe(self) -> IngestUniverse:
+        """What this recorder streams now, runtime-onboarded symbols included (D4)."""
+        return IngestUniverse.build(self.symbols, self.timeframes, self.perp_quote_symbols)
+
+    async def publish_universe(self) -> None:
+        """Publish the ingested universe for the API's creation checks; never raises."""
+        if not self.redis:
+            return
+        try:
+            await self.redis.set(INGEST_UNIVERSE_KEY, self.universe().model_dump_json(), ex=UNIVERSE_TTL_S)
+        except Exception as e:  # the key expiring makes creation fail closed, so a miss here is safe
+            logger.warning("Could not publish the ingest universe: %s", e)
+
+    async def _universe_publisher(self) -> None:
+        while self._running:
+            await self.publish_universe()
+            await asyncio.sleep(UNIVERSE_REFRESH_S)
+
     async def start(self) -> None:
         """Start the ingestion pipeline."""
         self._running = True
         await self.initialize()
+        self._universe_task = asyncio.create_task(self._universe_publisher())
 
         self.stream_client = BinanceStreamClient(
             symbols=self.symbols,
@@ -267,6 +293,7 @@ class IngestRecorder:
                             self.symbols.append(new_sym)
                         if self.stream_client:
                             self.stream_client.add_symbol(new_sym)
+                        await self.publish_universe()
             asyncio.create_task(_listen_for_new_instruments())
 
         if self.recovery_manager:
@@ -296,6 +323,8 @@ class IngestRecorder:
     async def stop(self) -> None:
         """Stop ingestion and release resources."""
         self._running = False
+        if self._universe_task:
+            self._universe_task.cancel()
         if self.stream_client:
             await self.stream_client.stop()
         if self.perp_quote_client:

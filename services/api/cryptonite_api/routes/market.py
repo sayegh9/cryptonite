@@ -4,8 +4,10 @@ import json
 import logging
 
 import httpx
-from cryptonite_api.routes.auth import require_operator, require_csrf
-from fastapi import APIRouter, HTTPException, Query, Request
+from cryptonite_api.routes.auth import require_operator
+from cryptonite_api.universe import load_universe
+from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, UNIVERSE_UNKNOWN
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 logger = logging.getLogger("cryptonite.api.market")
 router = APIRouter(prefix="/api/v1/market", tags=["market"])
@@ -218,3 +220,13 @@ async def get_market_overview(request: Request) -> list[dict]:
     ]
     await redis.setex(cache_key, 15, json.dumps(top30))
     return top30
+
+
+@router.get("/universe")
+async def get_ingest_universe(request: Request, auth: dict = Depends(require_operator)) -> dict:
+    """What ingest feeds (D4): the symbols, timeframes and perp quotes a mandate or strategy instance may
+    use. ``available: false`` while ingest has not published it; creation is refused (503) until it does."""
+    universe = await load_universe(request)
+    if universe is None:
+        return {"available": False, "reason": f"{UNIVERSE_UNKNOWN}: {INGEST_UNIVERSE_KEY} missing or expired"}
+    return {"available": True, **universe.view()}
