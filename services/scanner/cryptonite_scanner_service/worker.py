@@ -64,6 +64,15 @@ def is_fresh(c: Any, now_ns: int) -> bool:
     return bar_ns > 0 and 0 <= age_ns <= bar_ns
 
 
+def is_fresh_payload(payload: dict[str, Any], now_ns: int) -> bool:
+    """D1: the same one-bar window as ``is_fresh``, rechecked on the stored payload right before the queue
+    write — a relay after an outage must not push a setup whose window has passed (or one whose window
+    cannot be verified)."""
+    bar_ns = TIMEFRAME_MINUTES.get(payload.get("timeframe"), 0) * ONE_MINUTE_NS
+    age_ns = now_ns - int(payload.get("interval_end_exclusive_ns") or 0)
+    return bar_ns > 0 and 0 <= age_ns <= bar_ns
+
+
 def brief_key_for(instrument_id: str, timeframe: str, bar_close_inclusive_ns: int) -> str:
     return f"brief:{instrument_id}:{timeframe}:{bar_close_inclusive_ns}"
 
@@ -212,8 +221,24 @@ class ScannerWorker:
 
     async def _publish_outbox_row(self, candidate_id: UUID, fields: dict[str, Any], brief_key: str,
                                   attempt_count: int) -> bool:
-        """XADD one scanner_debate_outbox row to the debate queue and mark it PUBLISHED, or schedule a retry."""
+        """XADD one scanner_debate_outbox row to the debate queue and mark it PUBLISHED, or schedule a retry.
+
+        Freshness is rechecked immediately before the queue write: a relay that only gets to a row after
+        its one-bar window has passed completes it as ``EXPIRED`` (with the reason) instead of enqueueing
+        old news; the debate gate never sees it."""
         payload = fields["candidate_payload"]
+        now_ns = time.time_ns()
+        if not is_fresh_payload(payload, now_ns):
+            age_s = (now_ns - int(payload.get("interval_end_exclusive_ns") or 0)) / 1e9
+            reason = f"expired before publish: bar closed {age_s:.0f}s ago (fresh window is one bar)"
+            try:
+                await self.pool.execute(
+                    "UPDATE scanner_debate_outbox SET status = 'EXPIRED', last_error = $2 WHERE candidate_id = $1",
+                    candidate_id, reason)
+            except Exception as e:  # the row stays PENDING: the next relay pass completes it
+                logger.error("Candidate %s: could not complete the expired row: %s", candidate_id, e)
+            logger.info("Candidate %s not queued for debate: %s", candidate_id, reason)
+            return False
         try:
             if not self.redis:
                 raise RuntimeError("Redis client not connected")

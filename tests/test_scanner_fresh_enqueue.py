@@ -211,6 +211,32 @@ async def test_a_crash_between_commit_and_enqueue_loses_nothing(db_url, admin, r
     assert await admin.fetchval("SELECT count(*) FROM scanner_debate_outbox WHERE status = 'PUBLISHED'") == 2
 
 
+async def test_the_relay_never_queues_a_candidate_that_aged_out(db_url, admin, redis15):
+    """D1 review blocker 2: the relay rechecks the one-bar window immediately before the queue write —
+    rows it only reaches after an outage are completed as EXPIRED (with the reason), never enqueued."""
+    version_id = await seed_spec(admin, last_ingest_ns=int(LIVE_LAKE["ts_event_ns"].max()))
+    w = await make_worker(db_url, LIVE_LAKE, DownRedis(redis15.client))
+    try:
+        await w._execute_scan(spec_version_id=version_id, spec_hash="h", universe_data=UNIVERSE, rules_data=RULES,
+                              trigger_reason="COMMITTED_BAR_EVENT", trigger_event_id=str(uuid4()))
+        assert await admin.fetchval("SELECT count(*) FROM scanner_debate_outbox WHERE status = 'PENDING'") == 2
+        # the relay only gets to them a day later: age every stored payload past its fresh window
+        await admin.execute(
+            """UPDATE scanner_debate_outbox
+               SET next_attempt_at = now() - interval '1 second',
+                   fields = jsonb_set(fields, '{candidate_payload,interval_end_exclusive_ns}',
+                                      to_jsonb($1::bigint))""",
+            NOW_NS - DAY_NS)
+        w.redis = redis15.client  # Redis is back, but these setups are old news now
+        assert await w.relay_debate_outbox_once() == 0
+    finally:
+        await w.pool.close()
+    assert await queued(redis15) == []
+    rows = await admin.fetch("SELECT status, last_error FROM scanner_debate_outbox")
+    assert {r["status"] for r in rows} == {"EXPIRED"}
+    assert all("expired before publish" in (r["last_error"] or "") for r in rows)
+
+
 class DownRedis:
     """Redis that accepts the brief but refuses the queue write, like an outage mid-publish."""
 
