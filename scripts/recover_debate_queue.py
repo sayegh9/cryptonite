@@ -36,6 +36,7 @@ import redis.asyncio as redis
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services" / "debate_worker"))
 from debate_queue import (  # noqa: E402
     CONSUMER_IDLE_DELETE_MS,
+    DEL_IDLE_CONSUMER_LUA,
     GROUP,
     RECLAIM_IDLE_MS,
     STALE_RUN_S,
@@ -107,7 +108,8 @@ async def apply_plan(r, pool, plan: Plan) -> list[str]:
         if p["fields"] is None:  # trimmed from the stream: nothing to keep, only the PEL slot to free
             await r.xack(p["stream"], GROUP, p["message_id"])
             continue
-        await dead_letter(r, p["stream"], p["message_id"], p["fields"], "MANUAL_RECOVERY", p["deliveries"], TOOL)
+        await dead_letter(r, p["stream"], p["message_id"], p["fields"], "MANUAL_RECOVERY", p["deliveries"], TOOL,
+                          expected_owner=p["consumer"])
         args = " ".join(f"{shlex.quote(str(k))} {shlex.quote(str(v))}" for k, v in p["fields"].items())
         rollback.append(f"XADD {p['stream']} * {args}")
     if plan.runs:
@@ -122,7 +124,8 @@ async def apply_plan(r, pool, plan: Plan) -> list[str]:
             id_list = ", ".join(f"'{row['id']}'" for row in done)
             rollback.append(f"UPDATE debate_runs SET status = 'RUNNING', {undo}completed_at = NULL WHERE id IN ({id_list});")
     for c in plan.consumers:
-        await r.xgroup_delconsumer(c["stream"], GROUP, c["name"])
+        idle_ms = c.get("idle_ms", 0)
+        await r.eval(DEL_IDLE_CONSUMER_LUA, 1, c["stream"], GROUP, c["name"], idle_ms)
     return rollback
 
 

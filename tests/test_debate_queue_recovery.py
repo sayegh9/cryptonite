@@ -317,3 +317,164 @@ async def test_recovery_script_dry_run_then_apply(r, pool, recover_script, capsy
     assert await r.xinfo_consumers(stream, dq.GROUP) == []
     again = await recover_script.build_plan(r, pool, **limits)  # idempotent: nothing left to do
     assert (again.pending, again.runs, again.consumers) == ([], [], [])
+
+
+async def test_recover_own_does_not_steal_transferred_entry(r):
+    stream = dq.STREAMS[0]
+    msg_id = await r.xadd(stream, {"instrument_id": INSTRUMENT})
+    # Worker A initially reads the message
+    await r.xreadgroup(dq.GROUP, "debate-w1", {stream: ">"}, count=1)
+    # Another consumer reclaims it before worker A recovers
+    await r.xclaim(stream, dq.GROUP, "debate-w2", 0, [msg_id])
+
+    handler = Recorder()
+    # Worker A restarts and tries to recover its own entries
+    recovered = await dq.DebateQueue(r, "debate-w1", handler).recover_own()
+    assert recovered == 0
+    assert handler.calls == []
+    # Entry still belongs to debate-w2
+    rows = await r.xpending_range(stream, dq.GROUP, min=msg_id, max=msg_id, count=1)
+    assert rows[0]["consumer"] == "debate-w2"
+
+
+async def test_read_single_message_even_if_multiple_streams_have_work(r):
+    # Both streams have pending unread entries
+    await r.xadd(dq.STREAMS[0], {"instrument_id": INSTRUMENT, "n": "1"})
+    await r.xadd(dq.STREAMS[1], {"instrument_id": INSTRUMENT, "n": "2"})
+
+    handler = Recorder()
+    queue = dq.DebateQueue(r, "debate-reader", handler)
+    # Single read should process at most 1 message
+    await queue.read(block_ms=100)
+    assert len(handler.calls) == 1
+    # Check that only one message was read into PEL
+    p0 = await pending_count(r, dq.STREAMS[0])
+    p1 = await pending_count(r, dq.STREAMS[1])
+    # The processed one was acked, so total pending is 0
+    assert p0 + p1 == 0
+    # The other message is still unread in its stream:
+    unread_stream = dq.STREAMS[1] if handler.calls[0][0] == dq.STREAMS[0] else dq.STREAMS[0]
+    unread = await r.xreadgroup(dq.GROUP, "debate-reader2", {unread_stream: ">"}, count=1)
+    assert len(unread[0][1]) == 1
+
+
+async def test_lease_loss_cancels_handler_and_refuses_stale_ack_and_dlq(r):
+    stream = dq.STREAMS[0]
+    msg_id = await r.xadd(stream, {"instrument_id": INSTRUMENT})
+
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def long_handler(st, mid, fields, deliv):
+        started.set()
+        try:
+            await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    queue = dq.DebateQueue(r, "debate-victim", long_handler, lease_refresh_s=0.05)
+    task = asyncio.create_task(queue.read(block_ms=100))
+    await started.wait()
+
+    # Thief steals the message via XCLAIM
+    await r.xclaim(stream, dq.GROUP, "debate-thief", 0, [msg_id])
+
+    # Wait for victim's lease loop to detect loss and cancel long_handler
+    await asyncio.wait_for(cancelled.wait(), timeout=2.0)
+    await task
+
+    # Direct check that stale worker cannot ACK or DLQ
+    assert await dq.ack_if_owner(r, stream, msg_id, "debate-victim") is False
+    assert await dq.dead_letter(r, stream, msg_id, {"instrument_id": INSTRUMENT}, "TEST", 1, "debate-victim") is False
+
+    # The entry is still intact and owned by debate-thief
+    rows = await r.xpending_range(stream, dq.GROUP, min=msg_id, max=msg_id, count=1)
+    assert rows[0]["consumer"] == "debate-thief"
+
+
+async def test_reaped_run_fences_off_late_decision_and_routing(debate_main, pool, monkeypatch):
+    ref = f"stream:debate_queue/{uuid.uuid4().int % 10**13}-0"
+    payload = {"instrument_id": INSTRUMENT, "trigger_source": "test"}
+
+    def test_model():
+        def fn(messages, info: AgentInfo):
+            verdicts = {
+                "recommendation": {"recommendation": "BUY", "conviction_score": 0.8, "allocation_pct": 5.0, "reasoning": "trend"},
+                "final_allocation_pct": {"final_allocation_pct": 5.0, "conviction_level": "Overweight", "risk_reasoning": "size"},
+            }
+            if not info.output_tools:
+                return ModelResponse(parts=[TextPart("argument")])
+            tool = info.output_tools[0]
+            key = next(k for k in verdicts if k in tool.parameters_json_schema.get("properties", {}))
+            return ModelResponse(parts=[ToolCallPart(tool.name, verdicts[key])])
+        return FunctionModel(fn)
+
+    model = test_model()
+
+    original_route = debate_main.route_entry
+    route_called = False
+
+    async def failing_route(*args, **kwargs):
+        nonlocal route_called
+        route_called = True
+        return await original_route(*args, **kwargs)
+
+    orig_read_marks = debate_main.read_marks
+
+    async def reaper_read_marks(r):
+        # Simulate reaper setting the run to FAILED right before finalization:
+        await pool.execute("UPDATE debate_runs SET status = 'FAILED', failure_reason = 'REAPED_STALE' WHERE stream_message_id = $1", ref)
+        return await orig_read_marks(r)
+
+    monkeypatch.setattr(debate_main, "route_entry", failing_route)
+    monkeypatch.setattr(debate_main, "read_marks", reaper_read_marks)
+
+    with override_model(FLASH, model), override_model(PRO, model), override_model(EMBED, FakeEmbedder()):
+        await debate_main.process_debate_trigger(pool, redis_double(), payload, Gateway(), message_ref=ref)
+
+    assert route_called is False
+    row = await pool.fetchrow("SELECT status, failure_reason FROM debate_runs WHERE stream_message_id = $1", ref)
+    assert row["status"] == "FAILED" and row["failure_reason"] == "REAPED_STALE"
+    assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 0
+
+
+async def test_concurrent_exit_debate_triggers_claim_and_fence(debate_main, pool, monkeypatch):
+    run_id = await insert_run(pool, "RUNNING", 1)
+    context = {"current_position": {"instrument_id": INSTRUMENT, "quantity": 1.0}}
+    monkeypatch.setattr(debate_main.AntiCorruptionLayer, "get_instrument_context", AsyncMock(return_value=context))
+
+    exit_decision = {"recommendation": "CLOSE", "conviction_score": 0.9, "target_stop_price": 50000.0, "reasoning": "stop"}
+
+    def exit_model_fn(messages, info: AgentInfo):
+        if not info.output_tools:
+            return ModelResponse(parts=[TextPart("exit reasoning")])
+        tool = info.output_tools[0]
+        return ModelResponse(parts=[ToolCallPart(tool.name, exit_decision)])
+
+    model = FunctionModel(exit_model_fn)
+    ref1 = "stream:exit_debate_queue/100-0"
+    ref2 = "stream:exit_debate_queue/200-0"
+    with override_model(FLASH, model), override_model(PRO, model):
+        await debate_main.process_exit_debate_trigger(pool, redis_double(), {"instrument_id": INSTRUMENT, "run_id": str(run_id)},
+                                                      Gateway(), message_ref=ref1)
+        # Second trigger with different message_ref attempts to process the same run
+        await debate_main.process_exit_debate_trigger(pool, redis_double(), {"instrument_id": INSTRUMENT, "run_id": str(run_id)},
+                                                      Gateway(), message_ref=ref2)
+
+    decisions = await pool.fetch("SELECT * FROM exit_decisions WHERE run_id = $1", run_id)
+    assert len(decisions) == 1
+    run = await pool.fetchrow("SELECT status, stream_message_id FROM debate_runs WHERE id = $1", run_id)
+    assert run["stream_message_id"] == ref1
+
+
+async def test_exit_debate_no_position_preserves_reaped_status(debate_main, pool, monkeypatch):
+    run_id = await insert_run(pool, "FAILED", 35)
+    await pool.execute("UPDATE debate_runs SET failure_reason = 'REAPED_STALE' WHERE id = $1", run_id)
+    context = {"current_position": None}
+    monkeypatch.setattr(debate_main.AntiCorruptionLayer, "get_instrument_context", AsyncMock(return_value=context))
+
+    await debate_main.process_exit_debate_trigger(pool, redis_double(), {"instrument_id": INSTRUMENT, "run_id": str(run_id)},
+                                                  Gateway(), message_ref="stream:exit_debate_queue/300-0")
+    run = await pool.fetchrow("SELECT status, failure_reason FROM debate_runs WHERE id = $1", run_id)
+    assert run["status"] == "FAILED" and run["failure_reason"] == "REAPED_STALE"

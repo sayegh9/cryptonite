@@ -374,6 +374,17 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         marks = await read_marks(redis_client)  # B3: the mandate's room at live marks, not entry prices
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
+                # Durable finalization fence: lock debate_runs row FOR UPDATE and verify RUNNING
+                run_row = await conn.fetchrow(
+                    "SELECT status, stream_message_id FROM debate_runs WHERE id = $1 FOR UPDATE", run_id
+                )
+                if run_row is None or run_row["status"] != "RUNNING" or (message_ref and run_row["stream_message_id"] != message_ref):
+                    logger.warning(
+                        "Debate run %s is no longer RUNNING (status=%s): finalization fenced, aborting decision and route",
+                        run_id, run_row["status"] if run_row else None,
+                    )
+                    return
+
                 # Save final decision
                 await conn.execute(
                     """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_level, conviction_score,
@@ -391,7 +402,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                         mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
                     )
                 await conn.execute(
-                    "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2",
+                    "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2 AND status = 'RUNNING'",
                     final_status, run_id, mandate.id if mandate else None,
                 )
 
@@ -409,21 +420,36 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         logger.error(f"Debate failed for {instrument_id}: {e} (decision_trace_id={trace_id})")
         await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)  # a failed run must not block the setup
         async with pg_pool.acquire() as conn:
-            await conn.execute("UPDATE debate_runs SET status = 'FAILED', completed_at = now() WHERE id = $1", run_id)
+            await conn.execute("UPDATE debate_runs SET status = 'FAILED', completed_at = now() WHERE id = $1 AND status = 'RUNNING'", run_id)
 
-async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None):
+async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
+                                      message_ref: str | None = None):
     gateway = gateway or Gateway(redis=redis_client)
     instrument_id = payload.get("instrument_id")
     run_id_str = payload.get("run_id")
     run_id = uuid.UUID(run_id_str) if run_id_str else uuid.uuid4()
     
     logger.info(f"Starting exit debate run for {instrument_id}")
-    if run_id_str:  # redelivery guard (B4): a run the worker already finished (or the reaper closed) stays closed
-        async with pg_pool.acquire() as conn:
-            status = await conn.fetchval("SELECT status FROM debate_runs WHERE id = $1", run_id)
-        if status is not None and status != "RUNNING":
-            logger.warning(f"Exit debate run {run_id} is already {status}: not debated again")
-            return
+    async with pg_pool.acquire() as conn:
+        if run_id_str:
+            # Atomically claim the run for this handler
+            claimed = await conn.fetchval(
+                """UPDATE debate_runs
+                      SET stream_message_id = COALESCE($2, stream_message_id)
+                    WHERE id = $1 AND status = 'RUNNING'
+                      AND (stream_message_id IS NULL OR stream_message_id = $2)
+                RETURNING id""",
+                run_id, message_ref,
+            )
+            if not claimed:
+                logger.warning(f"Exit debate run {run_id} is already claimed or not RUNNING: skipping")
+                return
+        else:
+            await conn.execute(
+                """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, stream_message_id)
+                   VALUES ($1, $2, 'RUNNING', 'exit_monitor', now(), $3)""",
+                run_id, instrument_id, message_ref,
+            )
     acl = AntiCorruptionLayer(pg_pool)
     context = await acl.get_instrument_context(instrument_id)
     
@@ -431,7 +457,7 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
         logger.info(f"No open position found for {instrument_id}. Skipping exit debate.")
         if run_id_str:  # the run was created by the exit monitor; close it out
             async with pg_pool.acquire() as conn:
-                await conn.execute("UPDATE debate_runs SET status = 'NO_TRADE', completed_at = now() WHERE id = $1", run_id)
+                await conn.execute("UPDATE debate_runs SET status = 'NO_TRADE', completed_at = now() WHERE id = $1 AND status = 'RUNNING'", run_id)
         return
         
     try:
@@ -465,6 +491,17 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
 
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
+                # Durable finalization fence: lock debate_runs row FOR UPDATE and verify RUNNING
+                run_row = await conn.fetchrow(
+                    "SELECT status, stream_message_id FROM debate_runs WHERE id = $1 FOR UPDATE", run_id
+                )
+                if run_row is None or run_row["status"] != "RUNNING" or (message_ref and run_row["stream_message_id"] != message_ref):
+                    logger.warning(
+                        "Exit debate run %s is no longer RUNNING (status=%s): finalization fenced, aborting route",
+                        run_id, run_row["status"] if run_row else None,
+                    )
+                    return
+
                 await conn.execute(
                     """INSERT INTO exit_decisions (id, run_id, instrument_id, recommendation, conviction_score, target_stop_price, reasoning, created_at)
                        VALUES ($1, $2, $3, $4, $5, $6, $7, now())""",
@@ -474,14 +511,14 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
                 # proceeds at L1 (D8). Anything else waits for the operator.
                 final_status, mandate = await route_exit(conn, run_id, instrument_id, recommendation)
                 await conn.execute(
-                    "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2",
+                    "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2 AND status = 'RUNNING'",
                     final_status, run_id, mandate.id if mandate else None,
                 )
 
     except Exception as e:
         logger.error(f"Exit debate failed for {instrument_id}: {e}")
         async with pg_pool.acquire() as conn:
-            await conn.execute("UPDATE debate_runs SET status = 'FAILED', completed_at = now() WHERE id = $1", run_id)
+            await conn.execute("UPDATE debate_runs SET status = 'FAILED', completed_at = now() WHERE id = $1 AND status = 'RUNNING'", run_id)
 
 async def main():
     logger.info(f"Starting Cryptonite Debate Worker: {DEBATE_WORKER_NAME}")
@@ -502,7 +539,7 @@ async def main():
         if stream == DEBATE_QUEUE:
             await process_debate_trigger(pg_pool, redis_client, payload, gateway, message_ref=f"{stream}/{msg_id}")
         elif stream == EXIT_DEBATE_QUEUE:
-            await process_exit_debate_trigger(pg_pool, redis_client, payload, gateway)
+            await process_exit_debate_trigger(pg_pool, redis_client, payload, gateway, message_ref=f"{stream}/{msg_id}")
 
     # At-least-once with reclaim, bounded retries and a DLQ (B4, F-H6): see debate_queue.py
     queue = DebateQueue(redis_client, DEBATE_WORKER_NAME, handle)

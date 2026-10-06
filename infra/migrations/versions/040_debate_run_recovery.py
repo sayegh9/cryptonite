@@ -1,7 +1,7 @@
 """debate run recovery: failure reason and stream message id on debate_runs (review-plan B4, F-H6)
 
-Revision ID: 039
-Revises: 038
+Revision ID: 040
+Revises: 039
 Create Date: 2026-10-06 10:00:00.000000
 
 ``failure_reason`` says why a run ended FAILED when the worker did not finish it itself: ``REAPED_STALE``
@@ -24,8 +24,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "039"
-down_revision: str | None = "038"
+revision: str = "040"
+down_revision: str | None = "039"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
