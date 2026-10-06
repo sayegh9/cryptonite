@@ -6,9 +6,13 @@ script brings an existing stream down to the cap in one step and reports what it
 their id and time range, trigger sources, and, per consumer group, how many of them were never delivered or
 are still pending (unacknowledged). It refuses to drop undelivered or pending entries unless ``--force``.
 
-Dry run by default: prints the plan and changes nothing. ``--apply`` runs ``XTRIM <stream> MINID <first kept
-id>``, so exactly the reported entries go, even if new ones arrive in between. Take a Redis backup first
-(``docs/runbooks``); a trimmed entry cannot be restored from Redis itself.
+Dry run by default: prints the plan and changes nothing. ``--apply`` runs one Lua script that revalidates
+the CURRENT consumer groups and PEL and XTRIMs, atomically: if a group was created or rewound, or new
+entries became pending, after the plan was taken, the script refuses (exit without ``--force``) instead of
+dropping work the earlier snapshot thought was delivered. ``--force`` makes that decision explicit in the
+``apply_trim`` API too. The trim boundary stays exactly ``first_kept`` (``XTRIM ... MINID <first kept id>``),
+so entries arriving in between are kept. Take a Redis backup first (``docs/runbooks``); a trimmed entry
+cannot be restored from Redis itself.
 
     REDIS_URL=redis://:<password>@127.0.0.1:6379/0 uv run python scripts/trim_debate_queue.py            # dry run
     REDIS_URL=redis://:<password>@127.0.0.1:6379/0 uv run python scripts/trim_debate_queue.py --apply
@@ -74,11 +78,71 @@ def plan_trim(r: redis.Redis, stream: str, maxlen: int) -> TrimPlan:
     return p
 
 
-def apply_trim(r: redis.Redis, p: TrimPlan) -> int:
-    """Drop exactly the planned entries (everything before the first kept id). Returns how many went."""
+class UnsafeTrim(RuntimeError):
+    """The stream's groups/PEL changed after planning: the trim would drop undelivered or pending work."""
+
+
+# One atomic operation: revalidate the CURRENT state and trim, or refuse. Between the old plan and this
+# script a group could be created or rewound (undelivered entries appear) and entries could be re-read
+# into a PEL (pending entries appear); the earlier snapshot cannot see either, so it must not be trusted.
+# KEYS[1]=stream  ARGV[1]=planned first_kept id  ARGV[2]="1" only when the caller explicitly forces.
+_TRIM_LUA = """
+local stream, first_kept, force = KEYS[1], ARGV[1], ARGV[2]
+if redis.call('XLEN', stream) == 0 then
+  return {0, 0}
+end
+local dropped = redis.call('XRANGE', stream, '-', '(' .. first_kept)
+if #dropped == 0 then
+  return {0, 0}
+end
+
+local function id_tuple(id)
+  local ms, seq = id:match('^(%d+)%-(%d+)$')
+  return tonumber(ms) or 0, tonumber(seq) or 0
+end
+local function id_gt(a, b)
+  local ams, aseq = id_tuple(a)
+  local bms, bseq = id_tuple(b)
+  if ams ~= bms then return ams > bms end
+  return aseq > bseq
+end
+
+local unsafe = 0
+for _, g in ipairs(redis.call('XINFO', 'GROUPS', stream)) do
+  local gname, last_delivered, pending_total = nil, '0-0', 0
+  for j = 1, #g, 2 do
+    if g[j] == 'name' then gname = g[j + 1]
+    elseif g[j] == 'last-delivered-id' then last_delivered = g[j + 1]
+    elseif g[j] == 'pending' then pending_total = tonumber(g[j + 1]) or 0 end
+  end
+  for j = 1, #dropped do
+    if id_gt(dropped[j][1], last_delivered) then unsafe = 1 break end
+  end
+  if unsafe == 0 and pending_total > 0 then
+    local pel = redis.call('XPENDING', stream, gname, '-', '(' .. first_kept, pending_total)
+    if #pel > 0 then unsafe = 1 end
+  end
+end
+if unsafe == 1 and force ~= '1' then
+  return {0, 1}
+end
+return {redis.call('XTRIM', stream, 'MINID', first_kept), 0}
+"""
+
+
+def apply_trim(r: redis.Redis, p: TrimPlan, *, force: bool = False) -> int:
+    """Drop exactly the planned entries (everything before ``first_kept``), atomically revalidating the
+    current groups and PEL first. Raises :class:`UnsafeTrim` — dropping nothing — when that revalidation
+    finds undelivered or pending entries in the drop range and ``force`` was not given explicitly.
+    Returns how many went."""
     if not p.drop:
         return 0
-    return r.xtrim(p.stream, minid=p.first_kept, approximate=False)
+    trimmed, refused = r.eval(_TRIM_LUA, 1, p.stream, p.first_kept, "1" if force else "0")
+    if refused:
+        raise UnsafeTrim(
+            f"{p.stream}: groups/PEL changed since planning — undelivered or pending entries would be "
+            "dropped (rerun the plan, or force=True if that is intended)")
+    return trimmed
 
 
 def report(p: TrimPlan) -> str:
@@ -100,7 +164,9 @@ def main() -> None:
     ap.add_argument("--stream", action="append", help=f"stream to trim (repeatable; default {DEFAULT_STREAM})")
     ap.add_argument("--maxlen", type=int, default=DEFAULT_MAXLEN)
     ap.add_argument("--apply", action="store_true", help="trim; without it, only report")
-    ap.add_argument("--force", action="store_true", help="also drop undelivered or pending entries")
+    ap.add_argument("--force", action="store_true",
+                    help="explicitly drop undelivered or pending entries (plan-time or found by the "
+                         "atomic revalidation at apply time)")
     args = ap.parse_args()
     r = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"), decode_responses=True)
     for stream in args.stream or [DEFAULT_STREAM]:
@@ -111,7 +177,12 @@ def main() -> None:
         if p.unsafe and not args.force:
             print("  skipped: unsafe without --force")
             continue
-        print(f"  trimmed {apply_trim(r, p)} entries; length now {r.xlen(stream)}")
+        try:
+            trimmed = apply_trim(r, p, force=args.force)
+        except UnsafeTrim as e:
+            print(f"  skipped: {e}")
+            continue
+        print(f"  trimmed {trimmed} entries; length now {r.xlen(stream)}")
     if not args.apply:
         print("dry run: nothing changed (--apply to trim)")
 
