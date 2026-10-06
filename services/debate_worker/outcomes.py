@@ -17,6 +17,7 @@ from typing import Any
 import asyncpg
 import polars as pl
 from cryptonite_scanner.regime import HIGH_VOL_WINDOW_BARS, MIN_BARS, classify_regime
+from cryptonite_schemas.debate import normalize_verdict
 
 logger = logging.getLogger("cryptonite.debate_worker.outcomes")
 
@@ -52,8 +53,10 @@ def label_window(price: float, decision_ns: int, horizon_s: int, bars: pl.DataFr
 
 
 def signed_outcome(recommendation: str, return_pct: float) -> float:
-    """BUY profits from a rise. SELL / HOLD (spot: exit or stay out) are right when the asset falls."""
-    return return_pct if recommendation.upper() == "BUY" else -return_pct
+    """BUY profits from a rise. SELL / HOLD (spot: exit or stay out) are right when the asset falls.
+    The verdict is read by its direction (``normalize_verdict``: Overweight is a BUY); an unknown
+    verdict raises ``ValueError`` rather than being scored as a short."""
+    return return_pct if normalize_verdict(recommendation) == "BUY" else -return_pct
 
 
 async def label_pending(pool, query_engine, now: datetime.datetime | None = None) -> int:

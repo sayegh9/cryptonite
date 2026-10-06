@@ -22,6 +22,7 @@ from cryptonite_execution.approvals import (
     record_operator_approval,
 )
 from cryptonite_execution.mandate_store import resolve_mandate_for
+from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.mandate import ActionClass
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -175,10 +176,14 @@ async def trigger_exit_debate(req: DebateTriggerRequest, request: Request, _op=D
         logger.error(f"Failed to queue exit debate for {inst_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to queue exit debate: {str(e)}")
 
-# Debate recommendations (PM + CRO vocabularies) that translate into an order side.
-_BUY_RECOMMENDATIONS = {"BUY", "OVERWEIGHT"}
-_SELL_RECOMMENDATIONS = {"SELL", "UNDERWEIGHT"}
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
+
+
+def order_side(recommendation: str | None) -> str | None:
+    """The order side of a stored verdict (PM or CRO wording, any case; ``normalize_verdict``'s mapping, B2),
+    so the approve endpoint and routing cannot disagree. None for HOLD or an unknown verdict."""
+    direction = verdict_direction(recommendation)
+    return direction if direction in ("BUY", "SELL") else None
 
 
 def _get_redis(request: Request):
@@ -236,12 +241,8 @@ async def approve_debate(
 
         account = await conn.fetchrow("SELECT total_equity FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID)
 
-    recommendation = str(decision['recommendation'] or "").upper()
-    if recommendation in _BUY_RECOMMENDATIONS:
-        side = "BUY"
-    elif recommendation in _SELL_RECOMMENDATIONS:
-        side = "SELL"
-    else:
+    side = order_side(decision['recommendation'])
+    if side is None:
         raise HTTPException(status_code=409, detail=f"Recommendation '{decision['recommendation']}' has no order to execute; reject the debate instead")
 
     if not account:
@@ -399,7 +400,7 @@ async def list_debates(request: Request, limit: int = 50, _auth=Depends(require_
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT r.id as run_id, r.instrument_id, r.status, r.created_at, 
-                   d.recommendation, d.conviction_score, d.allocation_pct, d.reasoning
+                   d.recommendation, d.conviction_level, d.conviction_score, d.allocation_pct, d.reasoning
             FROM debate_runs r
             LEFT JOIN portfolio_decisions d ON d.run_id = r.id
             ORDER BY r.created_at DESC
@@ -410,14 +411,18 @@ async def list_debates(request: Request, limit: int = 50, _auth=Depends(require_
     for row in rows:
         d = dict(row)
         decision_str = None
+        level = d.get("conviction_level")
         if d.get("recommendation"):
-            decision_str = f"{d['recommendation']} ({(float(d['conviction_score'])*100) if d['conviction_score'] else 0}% Conviction) • {d['reasoning'] or ''}"
+            # B2: recommendation is the direction; the CRO's own wording (Overweight, ...) is shown next to it
+            wording = f" · {level}" if level and level.strip().upper() != str(d["recommendation"]).upper() else ""
+            decision_str = f"{d['recommendation']}{wording} ({(float(d['conviction_score'])*100) if d['conviction_score'] else 0}% Conviction) • {d['reasoning'] or ''}"
             
         result.append({
             "runId": str(d["run_id"]),
             "instrumentId": d["instrument_id"],
             "status": d["status"],
             "decision": decision_str,
+            "convictionLevel": level,
             "timestamp": d["created_at"].timestamp() * 1000,
             "turns": [] # We omit turns in the list view for performance
         })
