@@ -91,8 +91,8 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDebate, symbol }: AIBra
                 </div>
               </div>
               <div className="p-3 bg-cyan-950/40 border border-cyan-800/50 rounded-lg text-xs text-cyan-300 flex items-start space-x-2">
-                <span className="font-bold flex-none">Safe by Default:</span>
-                <span>All actions in this tab run in Simulation Mode. Real funds are never traded without explicit operator authentication.</span>
+                <span className="font-bold flex-none">Authority:</span>
+                <span>The AI trades on the PAPER venue, only inside active mandates. Each mandate&apos;s autonomy level decides what needs your approval; the banner in the header shows the current level.</span>
               </div>
             </div>
           )}

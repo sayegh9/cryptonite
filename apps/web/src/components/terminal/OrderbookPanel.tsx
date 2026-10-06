@@ -34,7 +34,9 @@ export function OrderbookPanel({ symbol }: OrderbookPanelProps) {
     const client = getStreamClient();
     const unsub = client.subscribe((msg: any) => {
       const msgSym = String(msg.symbol || (msg.instrument_id ? msg.instrument_id.split(".")[0] : "")).toUpperCase();
-      if ((msg.type === "open_kline" || msg.type === "closed_bar_committed") && msgSym === cleanSym) {
+      // Live ticks only: a closed_bar_committed event carries its batch's last close, which for a
+      // backfill page is historical and must not be shown as the current price.
+      if (msg.type === "open_kline" && msgSym === cleanSym) {
         const close = Number(msg.close);
         if (!isKnownNumber(close)) return;
         setPrice(close);

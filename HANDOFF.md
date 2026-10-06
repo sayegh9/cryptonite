@@ -1,5 +1,9 @@
 # HANDOFF
 
+## ▶ Resume here (2026-10-06): read [docs/HANDOVER-2026-10-06.md](docs/HANDOVER-2026-10-06.md) first
+
+The product-review plan run (`docs/product-review-plan.md`) stopped on 2026-10-06. Merged work is on `review-plan` (not yet on `main`, not deployed); four PRs are open. The section below is the older 2026-10-04 state.
+
 ## ▶ Resume here (2026-10-04, Linux workstation)
 
 **Where things are.** The stack runs on the Linux workstation (the Mac move below is done). Work is on
