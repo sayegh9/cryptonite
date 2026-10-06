@@ -26,6 +26,7 @@ from cryptonite_agents.debate_fleet import (
 )
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_schemas.debate import normalize_verdict
+from cryptonite_schemas.marks import read_marks
 from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate, release_cooldown
 from mandate_routing import route_entry, route_exit
 
@@ -350,6 +351,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         # scoring, routing and the approve endpoint read; ``conviction_level`` keeps the CRO's own
         # wording (Overweight, ...; the lite path's is its direction). Unknown wording fails the run.
         recommendation = normalize_verdict(conviction_level)
+        marks = await read_marks(redis_client)  # B3: the mandate's room at live marks, not entry prices
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 # Save final decision
@@ -366,7 +368,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                 else:
                     final_status, mandate = await route_entry(
                         conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
-                        mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id,
+                        mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
                     )
                 await conn.execute(
                     "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2",

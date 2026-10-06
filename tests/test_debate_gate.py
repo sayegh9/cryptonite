@@ -95,6 +95,13 @@ class Redis:
     async def delete(self, key):
         self.kv.pop(key, None)
 
+    async def eval(self, script, numkeys, *args):  # the one Lua script the gate runs: atomic compare-del
+        key, token = args[0], args[1]
+        if self.kv.get(key) == token:
+            del self.kv[key]
+            return 1
+        return 0
+
     expire = publish = AsyncMock()
 
 
@@ -250,6 +257,23 @@ async def test_a_crashed_attempt_leaves_a_window_only_its_own_candidate_passes(g
                                        None, "MARKET BRIEF")
     assert (same.allowed, other.reason) == (True, "COOLDOWN")
     assert redis.kv.get(crashed.cooldown_key) == f"cid:{cid}"  # still holding the window it owns
+
+
+async def test_a_stale_owner_never_deletes_another_candidates_window(gate, pool):
+    """D1 review: release_cooldown is a single Lua compare-and-delete, so if the window changes hands
+    (TTL expiry, then the next candidate's SET) before the failing attempt releases it, the stale owner
+    cannot delete the new owner's window."""
+    redis = Redis()
+    cid1, cid2 = str(uuid.uuid4()), str(uuid.uuid4())
+    first = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=cid1), None, "MARKET BRIEF")
+    assert first.allowed
+    redis.kv[first.cooldown_key] = f"cid:{cid2}"  # the window expired and candidate 2 took it over
+    await gate.release_cooldown(redis, first.cooldown_key, first.cooldown_token)
+    assert redis.kv[first.cooldown_key] == f"cid:{cid2}"  # the new owner's window survives
+    second = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=cid2), None, "MARKET BRIEF")
+    blocked = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=str(uuid.uuid4())),
+                                         None, "MARKET BRIEF")
+    assert (second.allowed, blocked.reason) == (True, "COOLDOWN")
 
 
 async def test_a_second_delivery_after_the_durable_run_is_dropped(main, pool, gate):

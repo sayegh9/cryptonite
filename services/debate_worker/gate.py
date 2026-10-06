@@ -55,15 +55,23 @@ class GateDecision:
     cooldown_token: str | None = None  # the caller's own token: release only while it still holds the key
 
 
+# Atomic compare-and-delete: read and delete in one script, so between the two no TTL expiry or other
+# candidate's SET can slip in and leave the stale owner deleting a window it no longer holds.
+_RELEASE_COOLDOWN_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
 async def release_cooldown(redis, key: str | None, token: str | None) -> None:
-    """Compare-and-delete: only the attempt whose token still holds the cooldown may release it, so a
-    failing attempt never deletes a window that has since become another candidate's (or its own
-    successor's)."""
+    """Compare-and-delete the cooldown: only the attempt whose token still holds it may release it, so a
+    failing attempt never deletes a window that has since become another candidate's."""
     if not key or token is None:
         return
     try:
-        if await redis.get(key) == token:
-            await redis.delete(key)
+        await redis.eval(_RELEASE_COOLDOWN_LUA, 1, key, token)
     except Exception:  # a failed release only costs the cooldown window, never the retry itself
         logger.warning("Cooldown %s not released", key)
 

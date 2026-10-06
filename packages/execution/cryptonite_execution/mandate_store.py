@@ -10,6 +10,8 @@ from decimal import Decimal
 from typing import Any
 
 from cryptonite_schemas.mandate import Mandate, MandateStatus, canonical_instrument
+from cryptonite_schemas.marks import LiveMark
+from cryptonite_schemas.marks import entry_room_pct as room_at_marks
 
 from cryptonite_execution.autonomy import Transition
 
@@ -95,15 +97,13 @@ async def resolve_mandate_for(conn, instrument_id: str, mandate_id: str | uuid.U
     return Mandate.from_row(rows[0]), ""
 
 
-async def entry_room_pct(conn, mandate: Mandate, instrument_id: str) -> Decimal:
+async def entry_room_pct(conn, mandate: Mandate, instrument_id: str, marks: dict[str, LiveMark] | None = None) -> Decimal:
     """Room for a new entry, as % of the mandate budget: under the instrument's position limit and under
-    the budget, with the mandate's open positions at their last marked price. (The orchestrator sizes the
-    order to the exact room at execution; this is for deciding whether to ask at all.)"""
-    row = await conn.fetchrow(
-        """SELECT COALESCE(SUM(quantity * current_price), 0) AS gross,
-                  COALESCE(SUM(quantity * current_price) FILTER (WHERE instrument_id = $2), 0) AS inst
-           FROM paper_positions WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0""",
-        mandate.instance_id, canonical_instrument(instrument_id))
-    budget = mandate.capital_budget_usd
-    room = min(budget * mandate.max_position_pct / 100 - Decimal(str(row["inst"])), budget - Decimal(str(row["gross"])))
-    return max(Decimal("0"), room / budget * 100)
+    the budget, with the mandate's open positions at their live mark (``marks``, B3), else at their last
+    stored mark. (The orchestrator sizes the order to the exact room at execution; this is for deciding
+    whether to ask at all.)"""
+    rows = await conn.fetch(
+        """SELECT instrument_id, quantity, current_price FROM paper_positions
+           WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0""",
+        mandate.instance_id)
+    return room_at_marks(mandate.capital_budget_usd, mandate.max_position_pct, rows, instrument_id, marks)
