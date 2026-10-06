@@ -182,8 +182,10 @@ async def test_web_approval_of_a_debate_decides_its_open_approval_once(h, routin
     await run_row(h, run_id)
     await h.pool.execute("UPDATE debate_runs SET status = 'PENDING_APPROVAL' WHERE id = $1", run_id)
     await h.pool.execute(
-        """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning)
-           VALUES ($1, $2, 'Overweight', 0.7, 5, 'r')""", run_id, BTC)
+        # the debate worker's write shape since B2 / migration 037: direction + the CRO's wording
+        """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_level, conviction_score,
+                                            allocation_pct, reasoning)
+           VALUES ($1, $2, 'BUY', 'Overweight', 0.7, 5, 'r')""", run_id, BTC)
     await h.pool.execute("UPDATE paper_accounts SET total_equity = 100000")
     await h.redis.set("market:24h:BTCUSDT", json.dumps({"last_price": 50000}), ex=60)
     async with h.pool.acquire() as conn:

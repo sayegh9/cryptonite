@@ -24,6 +24,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.mandate import (
     DEFAULT_APPROVAL_TTL_S,
     DEFAULT_REDUCE_VETO_S,
@@ -40,15 +41,15 @@ from cryptonite_schemas.marks import LiveMark
 from cryptonite_schemas.marks import entry_room_pct as room_at_marks
 
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
-BUY_WORDS = {"BUY", "OVERWEIGHT", "STRONG_BUY", "LONG"}
-SELL_WORDS = {"SELL", "UNDERWEIGHT", "STRONG_SELL", "SHORT"}
 MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
                    "max_leverage, strategies, autonomy_level, status, active_hours_utc, veto_window_s")
 
 
 def side_of(recommendation: str) -> str | None:
-    r = str(recommendation or "").upper().replace(" ", "_")
-    return "BUY" if r in BUY_WORDS else "SELL" if r in SELL_WORDS else None
+    """The order side of a verdict (``normalize_verdict``'s mapping; "strong buy" with a space is
+    STRONG_BUY); None for HOLD or an unknown verdict."""
+    direction = verdict_direction(str(recommendation or "").strip().replace(" ", "_"))
+    return direction if direction in ("BUY", "SELL") else None
 
 
 async def resolve_mandate(conn, instrument_id: str, mandate_id: str | None = None) -> Mandate | None:

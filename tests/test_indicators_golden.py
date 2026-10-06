@@ -9,10 +9,12 @@ from TA-Lib output recorded as fixtures.
 
 import math
 import random
+from pathlib import Path
 
 import polars as pl
 import pytest
 from cryptonite_scanner import indicators
+from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.indicators import (
     calc_atr,
     calc_bollinger_bands,
@@ -22,6 +24,8 @@ from cryptonite_scanner.indicators import (
     calc_sma,
     calc_volume_ratio,
 )
+from cryptonite_scanner.resampler import resample_1m_bars
+from cryptonite_storage.queries import AnalyticsQueryEngine
 
 # --- independent reference implementations (plain Python loops) ---------------------------------
 
@@ -223,3 +227,38 @@ def test_calc_volume_ratio_zero_protection():
 def test_unused_supertrend_helper_is_gone():
     """R7.1: the scanner's calc_supertrend was unused and not a SuperTrend (the strategy is separate)."""
     assert not hasattr(indicators, "calc_supertrend")
+
+
+# --- R7.2 extended through the lake path (B1 / F-C1) ---------------------------------------------
+# The parity tests above feed every implementation the same bars, so they cannot see a bar built from
+# the wrong minutes. Here the scanner's indicators on lake 1m -> query_bars_df -> resample_1m_bars must
+# equal its indicators on ingest's native 1h bars for the same day (tests/fixtures/b1_lake, 2026-10-04).
+
+LAKE_FIXTURE = Path(__file__).parent / "fixtures" / "b1_lake"
+PARITY_COLUMNS = ["ema_20", "ema_50", "rsi", "bb_lower", "bb_middle", "bb_upper", "macd", "macd_signal",
+                  "macd_hist", "atr", "volume_ratio"]
+
+
+@pytest.mark.parametrize("symbol", ["BTCUSDT", "ETHUSDT"])
+def test_scanner_indicators_through_lake_resampler_match_native_1h(symbol):
+    assert list(LAKE_FIXTURE.glob("binance_klines_enriched/*/*/*/*/date=*/*.parquet")), "B1 lake fixture missing"
+    engine = AnalyticsQueryEngine(LAKE_FIXTURE)
+    hour_ns = 3600 * 10**9
+    native = engine.query_bars_df(symbol, "1h").select(
+        bar_open_ns=pl.col("ts_event_ns").cast(pl.Int64) - hour_ns,
+        **{c: pl.col(c).cast(pl.Float64) for c in ("open", "high", "low", "close", "volume")})
+    assert native.height == 24
+    lake = resample_1m_bars(engine.query_bars_df(symbol, "1m"), "1h").filter(
+        pl.col("bar_open_ns").is_in(native["bar_open_ns"].implode()))
+    assert lake["bar_open_ns"].to_list() == native["bar_open_ns"].to_list()
+
+    want = ScannerEngine.enrich_indicators(native)
+    got = ScannerEngine.enrich_indicators(lake.select(native.columns))
+    compared = 0
+    for col in PARITY_COLUMNS:
+        for i, (g, w) in enumerate(zip(got[col].to_list(), want[col].to_list(), strict=True)):
+            assert (g is None) == (w is None), (symbol, col, i)
+            if w is not None:
+                assert g == pytest.approx(w, rel=1e-9, abs=1e-9), f"{symbol} {col} at hour {i}: lake {g} vs native {w}"
+                compared += 1
+    assert compared >= 150, compared
