@@ -1,6 +1,7 @@
 """Pre-debate gate (AI-first blueprint §6, A2.1 + A2.3): spend nothing on debates that cannot matter.
 
 Automatic (scanner) triggers pass, in order, before any model is called:
+  0. one decision per candidate id    -> the scanner's enqueue is at least once (D1): a redelivery is dropped
   1. kill switch / daily-loss latch   -> a new entry could not be placed anyway
   2. position at the concentration cap -> a new entry could not be sized
   3. stale candidate                  -> the setup is old news
@@ -33,6 +34,10 @@ MAX_POSITION_PCT = 25.0
 MIN_ENTRY_PCT = 1.0  # the dispatcher's floor: less than this headroom means no entry can be placed
 COOLDOWN_S = 30 * 60
 MIN_STALE_S = 15 * 60
+# D1: the scanner's debate outbox can publish a candidate twice (a crash between XADD and marking its row
+# published). Keyed on the candidate id, not the stream message: a future PEL retry of the same message
+# (F-H6) must delete this key before re-running the gate.
+DEDUPE_TTL_S = 2 * 86400
 TIMEFRAME_S = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 
 
@@ -105,6 +110,10 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     candidate = json.loads(payload.get("candidate_payload") or "{}")
     timeframe = candidate.get("timeframe", "?")
     now_s = now_s if now_s is not None else datetime.datetime.now(datetime.UTC).timestamp()
+
+    candidate_id = candidate.get("candidate_id")
+    if candidate_id and not await redis.set(f"debate:candidate:{candidate_id}", "1", nx=True, ex=DEDUPE_TTL_S):
+        return GateDecision(False, "DUPLICATE_CANDIDATE")
 
     async with pg_pool.acquire() as conn:
         latched = await conn.fetchval(

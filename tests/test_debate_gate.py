@@ -6,6 +6,7 @@ import importlib.util
 import json
 import sys
 import time
+import uuid
 from collections import Counter
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -95,10 +96,14 @@ class Redis:
     expire = publish = AsyncMock()
 
 
-def scanner_payload(age_s: float = 60, timeframe: str = "1h", brief: bool = True) -> dict:
+def scanner_payload(age_s: float = 60, timeframe: str = "1h", brief: bool = True,
+                    candidate_id: str | None = None) -> dict:
     close_ns = int((time.time() - age_s) * 1e9)
+    candidate = {"timeframe": timeframe, "bar_close_inclusive_ns": close_ns}
+    if candidate_id:
+        candidate["candidate_id"] = candidate_id
     return {"instrument_id": INSTRUMENT, "trigger_source": "scanner", "brief_key": "brief:k" if brief else "",
-            "candidate_payload": json.dumps({"timeframe": timeframe, "bar_close_inclusive_ns": close_ns})}
+            "candidate_payload": json.dumps(candidate)}
 
 
 class Models:
@@ -173,6 +178,19 @@ async def test_cooldown_allows_one_debate_per_setup_window(gate, pool):
     first = await gate.pre_debate_gate(pool, redis, scanner_payload(), None, "MARKET BRIEF")
     second = await gate.pre_debate_gate(pool, redis, scanner_payload(), None, "MARKET BRIEF")
     assert (first.allowed, second.reason) == (True, "COOLDOWN")
+
+
+async def test_a_redelivered_candidate_is_decided_once(gate, pool):
+    """D1: the scanner's enqueue is at-least-once (its relay retries a publish it cannot confirm), so a
+    second delivery of the same candidate id is dropped first, even after its cooldown was released."""
+    redis = Redis()
+    cid = str(uuid.uuid4())
+    first = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=cid), None, "MARKET BRIEF")
+    await redis.delete(first.cooldown_key)  # e.g. the debate it allowed failed
+    again = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=cid), None, "MARKET BRIEF")
+    other = await gate.pre_debate_gate(pool, redis, scanner_payload(candidate_id=str(uuid.uuid4())), None,
+                                       "MARKET BRIEF")
+    assert (first.allowed, again.reason, other.allowed) == (True, "DUPLICATE_CANDIDATE", True)
 
 
 async def test_daily_loss_latch_skips(gate, pool, db_url):
