@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { pauseMandate, resumeMandate } from "@/lib/mission/client";
 import { dispatchMandateUpdated } from "@/lib/mission/events";
 import type { Mandate } from "@/lib/mission/types";
+import { staleMarkText } from "@/lib/mission/marks";
 
 const usd = (v: string | number) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
@@ -99,6 +100,11 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
           text={`${usd(m.exposure_usd)} of ${usd(m.capital_budget_usd)} (${used.toFixed(1)}%)`}
           tone="bg-cyan-600"
         />
+        {m.marks_stale && (
+          <p className="text-amber-400" data-testid="mandate-marks-stale">
+            {staleMarkText(m.marks_age_s)}
+          </p>
+        )}
         <Meter
           label={`Drawdown vs hard stop — ${m.name}`}
           value={dd}
