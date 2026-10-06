@@ -41,8 +41,8 @@ from debate_queue import (  # noqa: E402
     RECLAIM_IDLE_MS,
     STALE_RUN_S,
     STREAMS,
-    ack_if_owner,
-    dead_letter,
+    ack_if_owner_min_idle,
+    dead_letter_min_idle,
 )
 
 TOOL = "recover_debate_queue"
@@ -54,6 +54,7 @@ class Plan:
     runs: list[dict] = field(default_factory=list)  # id, instrument_id, trigger_source, created_at
     consumers: list[dict] = field(default_factory=list)  # stream, name, idle_ms
     consumer_idle_ms: int = CONSUMER_IDLE_DELETE_MS  # the configured threshold this run planned with
+    pel_idle_ms: int = RECLAIM_IDLE_MS  # the configured pending-idle threshold this run planned with
     has_reason_column: bool = True
     applied_pending: int = 0
     applied_runs: int = 0
@@ -62,7 +63,7 @@ class Plan:
 
 async def build_plan(r, pool, *, pel_idle_ms: int = RECLAIM_IDLE_MS, run_age_s: int = STALE_RUN_S,
                      consumer_idle_ms: int = CONSUMER_IDLE_DELETE_MS) -> Plan:
-    plan = Plan(consumer_idle_ms=consumer_idle_ms)
+    plan = Plan(consumer_idle_ms=consumer_idle_ms, pel_idle_ms=pel_idle_ms)
     for stream in STREAMS:
         if not await r.exists(stream):
             continue
@@ -92,7 +93,7 @@ async def build_plan(r, pool, *, pel_idle_ms: int = RECLAIM_IDLE_MS, run_age_s: 
 
 
 def print_plan(plan: Plan) -> None:
-    print(f"Stuck PEL entries (idle > {RECLAIM_IDLE_MS // 60000} min): {len(plan.pending)}")
+    print(f"Stuck PEL entries (idle > {plan.pel_idle_ms // 60000} min): {len(plan.pending)}")
     for p in plan.pending:
         print(f"  {p['stream']} {p['message_id']} consumer={p['consumer']} idle={p['idle_ms'] // 1000}s "
               f"deliveries={p['deliveries']} payload={p['fields']}")
@@ -111,12 +112,27 @@ async def apply_plan(r, pool, plan: Plan) -> list[str]:
     rollback: list[str] = []
     plan.applied_pending = 0
     for p in plan.pending:
+        # Re-verify against the configured pending-idle threshold at apply time: the same owner may
+        # have renewed its lease after the snapshot, resetting idle to ~0 (or < configured). Do not
+        # DLQ/ACK active (healthy) work.
+        try:
+            rows = await r.xpending_range(p["stream"], GROUP, min=p["message_id"], max=p["message_id"], count=1)
+        except Exception:
+            continue
+        if not rows:
+            continue  # acked or no longer pending
+        r0 = rows[0]
+        if r0["consumer"] != p["consumer"]:
+            continue  # transferred
+        if int(r0["time_since_delivered"]) < plan.pel_idle_ms:
+            continue  # renewed or still active
+
         if p["fields"] is None:  # trimmed from the stream: nothing to keep, only the PEL slot to free
-            if await ack_if_owner(r, p["stream"], p["message_id"], p["consumer"]):
+            if await ack_if_owner_min_idle(r, p["stream"], p["message_id"], p["consumer"], plan.pel_idle_ms):
                 plan.applied_pending += 1
             continue
-        ok = await dead_letter(r, p["stream"], p["message_id"], p["fields"], "MANUAL_RECOVERY", p["deliveries"], TOOL,
-                               expected_owner=p["consumer"])
+        ok = await dead_letter_min_idle(r, p["stream"], p["message_id"], p["fields"], "MANUAL_RECOVERY", p["deliveries"], TOOL,
+                                       expected_owner=p["consumer"], min_idle_ms=plan.pel_idle_ms)
         if not ok:
             continue
         plan.applied_pending += 1

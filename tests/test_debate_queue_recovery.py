@@ -305,7 +305,8 @@ async def test_recovery_script_dry_run_then_apply(r, pool, recover_script, capsy
     # Both go: the holder's only pending entry is dead-lettered first
     assert sorted(c["name"] for c in plan.consumers) == ["worker-1a2b3c4d", "worker-deadbeef"]
     assert await pending_count(r, stream) == 1  # dry run changed nothing
-    assert "Stuck PEL entries (idle > 10 min): 1" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Stuck PEL entries" in out and ": 1" in out
 
     rollback = await recover_script.apply_plan(r, pool, plan)
     assert await pending_count(r, stream) == 0

@@ -405,6 +405,11 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                         run_id, run_row["status"] if run_row else None, run_row["claim_gen"] if run_row else None,
                     )
                     return
+                if consumer and message_ref:
+                    sr, _, mr = message_ref.partition("/")
+                    if not await is_pel_owner(redis_client, sr, mr, consumer):
+                        logger.warning("Debate run %s finalization: %s no longer owns %s in PEL; aborting decision and route", run_id, consumer, message_ref)
+                        return
 
                 # Save final decision
                 await conn.execute(
@@ -440,13 +445,15 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
 
     except Exception as e:
         logger.error(f"Debate failed for {instrument_id}: {e} (decision_trace_id={trace_id})")
-        await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)  # a failed run must not block the setup
+        await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
         async with pg_pool.acquire() as conn:
-            await conn.execute(
-                """UPDATE debate_runs SET status = 'FAILED', completed_at = now()
-                    WHERE id = $1 AND status = 'RUNNING' AND claim_gen = $2""",
-                run_id, my_generation,
-            )
+            async with conn.transaction():
+                rr = await conn.fetchrow("SELECT status,stream_message_id,claim_gen FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
+                if rr and rr["status"]=="RUNNING" and rr["claim_gen"]==my_generation:
+                    if consumer and message_ref:
+                        sr,_,mr=message_ref.partition("/")
+                        if await is_pel_owner(redis_client,sr,mr,consumer):
+                            await conn.execute("UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
 
 async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
                                       message_ref: str | None = None, delivered: int | None = None,
@@ -500,13 +507,14 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
 
     if not context.get("current_position"):
         logger.info(f"No open position found for {instrument_id}. Skipping exit debate.")
-        if run_id_str:  # the run was created by the exit monitor; close it out
-            async with pg_pool.acquire() as conn:
-                await conn.execute(
-                    """UPDATE debate_runs SET status = 'NO_TRADE', completed_at = now()
-                        WHERE id = $1 AND status = 'RUNNING' AND claim_gen = $2""",
-                    run_id, my_generation,
-                )
+        async with pg_pool.acquire() as conn:
+            async with conn.transaction():
+                rr = await conn.fetchrow("SELECT status,claim_gen,stream_message_id FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
+                if rr and rr["status"]=="RUNNING" and rr["claim_gen"]==my_generation:
+                    if consumer and message_ref:
+                        sr,_,mr=message_ref.partition("/")
+                        if await is_pel_owner(redis_client,sr,mr,consumer):
+                            await conn.execute("UPDATE debate_runs SET status='NO_TRADE',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
         return
 
     try:
@@ -556,6 +564,11 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
                         run_id, run_row["status"] if run_row else None, run_row["claim_gen"] if run_row else None, my_generation,
                     )
                     return
+                if consumer and message_ref:
+                    sr, _, mr = message_ref.partition("/")
+                    if not await is_pel_owner(redis_client, sr, mr, consumer):
+                        logger.warning("Exit debate run %s finalization: %s no longer owns %s in PEL; aborting route", run_id, consumer, message_ref)
+                        return
 
                 await conn.execute(
                     """INSERT INTO exit_decisions (id, run_id, instrument_id, recommendation, conviction_score, target_stop_price, reasoning, created_at)
@@ -574,11 +587,13 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
     except Exception as e:
         logger.error(f"Exit debate failed for {instrument_id}: {e}")
         async with pg_pool.acquire() as conn:
-            await conn.execute(
-                """UPDATE debate_runs SET status = 'FAILED', completed_at = now()
-                    WHERE id = $1 AND status = 'RUNNING' AND claim_gen = $2""",
-                run_id, my_generation,
-            )
+            async with conn.transaction():
+                rr = await conn.fetchrow("SELECT status,claim_gen,stream_message_id FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
+                if rr and rr["status"]=="RUNNING" and rr["claim_gen"]==my_generation:
+                    if consumer and message_ref:
+                        sr,_,mr=message_ref.partition("/")
+                        if await is_pel_owner(redis_client,sr,mr,consumer):
+                            await conn.execute("UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
 
 async def main():
     logger.info(f"Starting Cryptonite Debate Worker: {DEBATE_WORKER_NAME}")

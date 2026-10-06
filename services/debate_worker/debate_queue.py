@@ -98,6 +98,19 @@ end
 return 0
 """
 
+ACK_OWNED_MIN_IDLE_LUA = """
+local p = redis.call("XPENDING", KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
+if #p > 0 and p[1][2] == ARGV[3] then
+    local idle = tonumber(p[1][3]) or 0
+    local min_idle = tonumber(ARGV[4]) or 0
+    if idle >= min_idle then
+        redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
+        return 1
+    end
+end
+return 0
+"""
+
 DLQ_OWNED_LUA = """
 local p = redis.call("XPENDING", KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
 if #p > 0 and p[1][2] == ARGV[3] then
@@ -108,6 +121,24 @@ if #p > 0 and p[1][2] == ARGV[3] then
     redis.call(unpack(xadd_args))
     redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
     return 1
+end
+return 0
+"""
+
+DLQ_OWNED_MIN_IDLE_LUA = """
+local p = redis.call("XPENDING", KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
+if #p > 0 and p[1][2] == ARGV[3] then
+    local idle = tonumber(p[1][3]) or 0
+    local min_idle = tonumber(ARGV[4]) or 0
+    if idle >= min_idle then
+        local xadd_args = {"XADD", KEYS[2], "MAXLEN", "~", ARGV[5], "*"}
+        for i = 6, #ARGV do
+            table.insert(xadd_args, ARGV[i])
+        end
+        redis.call(unpack(xadd_args))
+        redis.call("XACK", KEYS[1], ARGV[1], ARGV[2])
+        return 1
+    end
 end
 return 0
 """
@@ -163,6 +194,11 @@ async def ack_if_owner(redis, stream: str, msg_id: str, consumer: str) -> bool:
     return bool(res)
 
 
+async def ack_if_owner_min_idle(redis, stream: str, msg_id: str, consumer: str, min_idle_ms: int) -> bool:
+    res = await redis.eval(ACK_OWNED_MIN_IDLE_LUA, 1, stream, GROUP, msg_id, consumer, min_idle_ms)
+    return bool(res)
+
+
 async def is_pel_owner(redis, stream: str, msg_id: str, consumer: str) -> bool:
     """True if consumer currently owns msg_id in the stream's group PEL."""
     res = await redis.eval(CHECK_OWNER_LUA, 1, stream, GROUP, msg_id, consumer)
@@ -183,6 +219,22 @@ async def dead_letter(redis, stream: str, msg_id: str, fields: dict, reason: str
         logger.error("Dead-lettered %s %s after %d deliveries: %s", stream, msg_id, delivered, reason)
         return True
     logger.warning("Refused DLQ for %s %s: owner %s no longer owns the entry", stream, msg_id, owner)
+    return False
+
+
+async def dead_letter_min_idle(redis, stream: str, msg_id: str, fields: dict, reason: str, delivered: int, consumer: str,
+                               expected_owner: str | None = None, min_idle_ms: int = 0) -> bool:
+    owner = expected_owner if expected_owner is not None else consumer
+    entry = {**fields, "dlq_source_stream": stream, "dlq_source_id": msg_id, "dlq_reason": str(reason)[:200],
+             "dlq_deliveries": str(delivered), "dlq_consumer": consumer, "dlq_at": str(int(time.time()))}
+    flat_args = [GROUP, msg_id, owner, str(min_idle_ms), str(DLQ_MAXLEN)]
+    for k, v in entry.items():
+        flat_args.extend([str(k), str(v)])
+    res = await redis.eval(DLQ_OWNED_MIN_IDLE_LUA, 2, stream, DLQ_STREAM, *flat_args)
+    if res:
+        logger.error("Dead-lettered %s %s after %d deliveries: %s", stream, msg_id, delivered, reason)
+        return True
+    logger.warning("Refused DLQ for %s %s: owner %s no longer owns the entry or idle < %dms", stream, msg_id, owner, min_idle_ms)
     return False
 
 
