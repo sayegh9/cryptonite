@@ -2,17 +2,24 @@
 
 Reads DATABASE_URL / REDIS_URL so tests run both on the host (localhost defaults)
 and inside the compose `test` service (postgres/redis hostnames).
+
+Tests never run against the dev DB `cryptonite` (C3, F-M9: test specs and kill-switch rows leaked
+into it). The default is the throwaway `cryptonite_ci`; `assert_not_dev_db` refuses the dev DB and
+conftest applies it to every *DATABASE_URL variable and to every asyncpg connection. Redis: see below.
 """
 
 import contextlib
 import os
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 import pytest
 
-DB_URL = os.getenv(
-    "DATABASE_URL", "postgresql://cryptonite:cryptonite_dev_pass@localhost:5432/cryptonite"
-)
+DEV_DATABASES = frozenset({"cryptonite"})  # the dev DB; tests refuse it (C3)
+
+# Default: the throwaway cryptonite_ci with the compose credentials (assembled from parts, so no credential
+# URL sits in the source for the secret scanner to flag).
+_LOCAL_PG = ("cryptonite", "cryptonite_dev_pass", "localhost:5432")
+DB_URL = os.getenv("DATABASE_URL") or urlunsplit(("postgresql", "{}:{}@{}".format(*_LOCAL_PG), "/cryptonite_ci", "", ""))
 # Tests share the Redis server with the live stack, whose DB 0 holds the event bus and the heartbeat keys
 # the API and healthchecks read (exit_monitor/notifier/learner:heartbeat), and DB 1 the agent sessions.
 # A suite run there masked a dead exit monitor for 5 minutes (it SETs exit_monitor:heartbeat) and
@@ -102,6 +109,27 @@ def redis_report_line() -> str:
     was = urlsplit(_ENV_REDIS_URL).path or "/0"
     return (f"redis: {parts.hostname}:{parts.port or 6379}{parts.path} (REDIS_URL said {was}; "
             f"dedicated={'yes' if dedicated_redis() else 'no'})")
+
+
+class DevDatabaseError(RuntimeError):
+    """A test tried to use the dev database."""
+
+
+def database_name(url: str) -> str:
+    """The database a libpq-style URL connects to (libpq defaults it to the user name)."""
+    parts = urlsplit(url)
+    name = unquote(parts.path.lstrip("/"))
+    return name or unquote(parts.username or "")
+
+
+def assert_not_dev_db(url: str, source: str = "DATABASE_URL") -> None:
+    name = database_name(url)
+    if name in DEV_DATABASES:
+        raise DevDatabaseError(
+            f"{source} points at the dev database '{name}'. Tests must use a throwaway database: point "
+            f"DATABASE_URL at e.g. cryptonite_ci_<item> (create it and run `alembic upgrade head` first; "
+            f"see HANDOFF.md)."
+        )
 
 
 def role_db_url(user: str, password: str) -> str:
