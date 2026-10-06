@@ -1,6 +1,8 @@
 # Build context is the repo root (like every image); keep host build output and deps out of it.
 **/node_modules
 **/.next
+# Never bake env files into the build: Next inlines NEXT_PUBLIC_* from them.
+**/.env*
 apps/web/test-results
 apps/web/playwright-report
 apps/web/e2e

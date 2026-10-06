@@ -211,7 +211,7 @@ Build `api` first when building many images in parallel; the shared cache lock s
 Run them through the `test` image (the `api` image has no Alembic):
 
 ```bash
-docker compose -f infra/docker-compose.yml run --rm test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
+docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
 ```
 
 Head is `031`. Migrate before deploying new images: the orchestrator and API read tables from 027–031.

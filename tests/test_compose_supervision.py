@@ -54,5 +54,32 @@ def test_python_healthchecks_do_not_need_curl():
     # Only the ingest image installs curl; every other Python image must probe with python itself.
     for name, svc in SERVICES.items():
         test = svc.get("healthcheck", {}).get("test", [])
-        if "curl" in test:
+        if any("curl" in part for part in test):  # list form and CMD-SHELL strings
             assert name == "ingest", name
+
+
+def test_web_runs_unprivileged():
+    web = SERVICES["web"]
+    assert web["cap_drop"] == ["ALL"] and "no-new-privileges:true" in web["security_opt"] and web["init"] is True
+    dockerfile = (REPO / "infra" / "docker" / "web.Dockerfile").read_text()
+    assert dockerfile.count("@sha256:") == 2  # both stages pinned by digest
+    assert "rm -rf .next/cache" in dockerfile
+    ignore = (REPO / "infra" / "docker" / "web.Dockerfile.dockerignore").read_text().split()
+    assert "**/.env*" in ignore and "**/node_modules" in ignore
+
+
+def test_liveness_checks_do_not_depend_on_outside_services():
+    # The sandbox is judged by its own serve-loop heartbeat file, the derivatives feed by its own
+    # heartbeat key (not by Binance reachability via perp:mark:*).
+    sandbox = SERVICES["strategy_sandbox"]
+    beat = sandbox["command"][sandbox["command"].index("--heartbeat") + 1]
+    assert beat.startswith("/tmp/") and beat in " ".join(sandbox["healthcheck"]["test"])
+    feed = " ".join(SERVICES["derivatives_feed"]["healthcheck"]["test"])
+    assert "derivatives_feed:heartbeat" in feed and "perp:mark" not in feed
+
+
+def test_slow_endpoints_get_headroom():
+    scanner = SERVICES["scanner"]["healthcheck"]
+    assert "timeout=20" in " ".join(scanner["test"]) and scanner["timeout"] == "25s"
+    sentiment = " ".join(SERVICES["sentiment"]["healthcheck"]["test"])
+    assert "timeout=8" in sentiment and SERVICES["sentiment"]["healthcheck"]["timeout"] == "10s"

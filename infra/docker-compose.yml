@@ -153,9 +153,10 @@ services:
     ports:
       - "127.0.0.1:8082:8082"
     restart: unless-stopped
-    healthcheck:  # GET /health (liveness)
+    healthcheck:  # GET /health (liveness); its busy event loop answers in 1.3-4.5 s at load ~26, so more headroom
       <<: *default-healthcheck
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=8)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=20)"]
+      timeout: 25s
     logging: *default-logging
 
   derivatives_feed:
@@ -178,9 +179,9 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       PERP_SYMBOLS: BTCUSDT,ETHUSDT
     restart: unless-stopped
-    healthcheck:  # no HTTP server: the first PERP_SYMBOLS mark price (15 s TTL) must be fresh
+    healthcheck:  # process liveness, not Binance reachability: its event loop rewrites this key every 30 s (90 s TTL)
       <<: *default-healthcheck
-      test: ["CMD", "python", "-c", "import os,sys,redis; sys.exit(0 if redis.Redis.from_url(os.environ['REDIS_URL'], socket_timeout=8).exists('perp:mark:' + os.environ['PERP_SYMBOLS'].split(',')[0]) else 1)"]
+      test: ["CMD", "python", "-c", "import os,sys,redis; sys.exit(0 if redis.Redis.from_url(os.environ['REDIS_URL'], socket_timeout=8).exists('derivatives_feed:heartbeat') else 1)"]
     logging: *default-logging
 
   api:
@@ -229,6 +230,10 @@ services:
       args:
         API_ORIGIN: http://api:8000
     container_name: cryptonite_web
+    init: true  # Next as PID 1 would not reap children or forward signals cleanly
+    cap_drop: [ALL]  # uid 1000 serving an unprivileged port needs no capabilities
+    security_opt:
+      - no-new-privileges:true
     environment:
       API_ORIGIN: http://api:8000
       API_BASE: http://api:8000/api/v1
@@ -287,7 +292,8 @@ services:
     container_name: cryptonite_strategy_sandbox
     command: ["python", "-m", "cryptonite_backtester.sandbox", "serve",
               "--jobs", "/app/data/sandbox_jobs", "--catalog", "/app/data/nautilus_catalog",
-              "--work", "/tmp", "--child-uid", "1001", "--scrub", "/dev/shm"]
+              "--work", "/tmp", "--child-uid", "1001", "--scrub", "/dev/shm",
+              "--heartbeat", "/tmp/.sandbox-alive"]
     environment:
       CRYPTONITE_STRATEGY_SANDBOX: "1"
       CRYPTONITE_SANDBOX_KILL_ALL: "1"  # after each job, kill every process but the server
@@ -308,9 +314,9 @@ services:
     mem_limit: 8g
     cpus: 2
     restart: unless-stopped
-    healthcheck:  # no network and no HTTP server: the `sandbox serve` process must exist
+    healthcheck:  # no network, no HTTP: the serve loop touches --heartbeat every pass and every 10 s during a job
       <<: *default-healthcheck
-      test: ["CMD", "python", "-c", "import os,sys; sys.exit(0 if any(b'cryptonite_backtester.sandbox\\x00serve' in open(f'/proc/{p}/cmdline', 'rb').read() for p in os.listdir('/proc') if p.isdigit() and int(p) != os.getpid()) else 1)"]
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time() - os.stat('/tmp/.sandbox-alive').st_mtime < 60 else 1)"]
     logging: *default-logging
 
   orchestrator:
@@ -593,11 +599,8 @@ services:
     environment:
       SENTIMENT_THREADS: "8"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,json,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8090/health'))['ok'] else 1)"]
-      interval: 30s
-      timeout: 5s
-      start_period: 60s
-      retries: 3
+      <<: *default-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request,json,sys; sys.exit(0 if json.load(urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=8))['ok'] else 1)"]
     restart: unless-stopped
     logging: *default-logging
 

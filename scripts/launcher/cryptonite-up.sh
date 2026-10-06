@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# One-click start: Docker stack (+ profiles), production web UI, then opens the terminal in an app
-# window. Safe to run when everything is already up: it only fills in what is missing.
+# One-click start: Docker stack (+ profiles), including the web UI (compose service `web`, :3000), then
+# opens the terminal in an app window. Safe to run when everything is already up: it only fills in what
+# is missing.
 #
 # It never changes what is already running (F-M2):
 #   - no migrations: it only warns when the schema is behind head. Upgrading is an explicit, reviewed
@@ -9,7 +10,17 @@
 #     recreated, even when its compose config changed. HELD_SERVICES are left out of `up`: an
 #     existing held container is only `start`ed if stopped, never created or recreated.
 #
-#   CRYPTONITE_PROFILES   compose profiles to start (default: "monitoring notifier")
+# So it never deploys anything either. These stay explicit steps (from the repo root):
+#   - UI or service update:  docker compose -f infra/docker-compose.yml up -d --build --no-deps web
+#     (same for any other non-held service)
+#   - ending the hold: clearing HELD_SERVICES only restarts the held containers as they are (old image
+#     and config). Deploy them, after review, with
+#       docker compose -f infra/docker-compose.yml up -d --build --force-recreate --no-deps \
+#         orchestrator scanner debate_worker learner
+#
+#   CRYPTONITE_PROFILES   compose profiles to start (default: "monitoring notifier"). Opt-in services
+#                         that were running when cryptonite-down.sh stopped them (e.g. research_worker)
+#                         are restarted as they are even if their profile is not listed.
 #   CRYPTONITE_HELD_SERVICES  overrides HELD_SERVICES below (set it to "" to start everything)
 #   CRYPTONITE_NO_BROWSER set to 1 to skip opening the window
 #   --pause-on-error      keep the terminal open on failure (used by the desktop launcher)
@@ -22,12 +33,11 @@ HELD_SERVICES="${CRYPTONITE_HELD_SERVICES-orchestrator scanner debate_worker lea
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 COMPOSE_FILE="$REPO/infra/docker-compose.yml"
 PROFILES="${CRYPTONITE_PROFILES:-monitoring notifier}"
-WEB_DIR="$REPO/apps/web"
 WEB_URL="http://localhost:3000"
 API_HEALTH="http://127.0.0.1:8000/health"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cryptonite"
-WEB_LOG="$STATE_DIR/web.log"
-WEB_PID="$STATE_DIR/web.pid"
+WEB_PID="$STATE_DIR/web.pid"  # host `pnpm start` from launchers before A4
+RUNNING_BEFORE_STOP="$STATE_DIR/running-services"  # written by cryptonite-down.sh
 
 PAUSE_ON_ERROR=0
 [[ "${1:-}" == "--pause-on-error" ]] && PAUSE_ON_ERROR=1
@@ -60,15 +70,10 @@ wait_http() {  # url, seconds, label
   fail "$3 did not respond at $1 within $2 s"
 }
 
-mkdir -p "$STATE_DIR"
+serving() { curl -fs -o /dev/null --max-time 2 "$1"; }
+listed() { [[ " ${services[*]} " == *" $1 "* ]]; }
 
-# The desktop launcher does not load ~/.bashrc, so nvm's node/pnpm are not on PATH yet.
-if ! command -v pnpm >/dev/null; then
-  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-  # shellcheck disable=SC1091
-  [[ -s "$NVM_DIR/nvm.sh" ]] && . "$NVM_DIR/nvm.sh"
-  command -v pnpm >/dev/null || fail "pnpm not found (nvm not loaded?)"
-fi
+mkdir -p "$STATE_DIR"
 
 step "Checking Docker and Ollama"
 docker info >/dev/null 2>&1 || fail "Docker is not running (sudo systemctl start docker)"
@@ -78,6 +83,12 @@ if curl -fs -o /dev/null --max-time 2 http://127.0.0.1:11434/api/version; then
 else
   warn "Ollama is not responding: local AI routes will fall back to the cloud tiers"
 fi
+
+# A misspelled held name would silently release the real service into `up`: refuse instead.
+all_services=" $(docker compose -f "$COMPOSE_FILE" --profile '*' config --services | tr '\n' ' ') "
+for svc in $HELD_SERVICES; do
+  [[ "$all_services" == *" $svc "* ]] || fail "HELD_SERVICES names '$svc', which is not a compose service (typo?)"
+done
 
 step "Starting Postgres and Redis"
 compose up -d --wait --no-recreate postgres redis
@@ -103,6 +114,27 @@ while read -r svc; do
   [[ " $HELD_SERVICES " == *" $svc "* ]] || services+=("$svc")
 done < <(compose config --services)
 (( ${#services[@]} )) || fail "no services left to start (HELD_SERVICES='$HELD_SERVICES')"
+
+if listed web; then
+  # Before A4 the launcher ran the UI on the host (`pnpm start`, pid in $WEB_PID). It holds :3000, so
+  # the web container could not bind it: stop it, as cryptonite-down.sh does.
+  if [[ -f "$WEB_PID" ]] && kill -0 "$(cat "$WEB_PID")" 2>/dev/null; then
+    kill -TERM -- "-$(cat "$WEB_PID")" 2>/dev/null || kill -TERM "$(cat "$WEB_PID")" || true
+    for _ in {1..15}; do serving "$WEB_URL" || break; sleep 1; done
+    ok "stopped the host web UI from an older launcher (the compose service takes over :3000)"
+  fi
+  rm -f "$WEB_PID"
+  if [[ -z "$(compose ps -q --status running web 2>/dev/null)" ]] && serving "$WEB_URL"; then
+    warn "something else serves :3000 (a manual pnpm dev/start?): the web container is left out."
+    warn "Stop it and run the launcher again to hand :3000 to the compose service."
+    kept=()
+    for svc in "${services[@]}"; do [[ "$svc" == web ]] || kept+=("$svc"); done
+    services=("${kept[@]}")
+  fi
+fi
+
+# A service whose image does not exist yet (e.g. web on the first run after A4) is built here; an
+# existing container is never rebuilt or recreated (see the header for explicit updates).
 compose up -d --no-recreate --no-deps "${services[@]}"
 ok "containers up (existing containers left as they were)"
 # Held services keep running on their old container (old image and config). `start` only restarts an
@@ -116,32 +148,35 @@ for svc in $HELD_SERVICES; do
     warn "held: $svc could not be started (docker compose logs $svc)"
   fi
 done
+# Opt-in services outside the active profiles that were running before cryptonite-down.sh: restart
+# their existing container as it is (never create one).
+if [[ -f "$RUNNING_BEFORE_STOP" ]]; then
+  while read -r svc; do
+    [[ -n "$svc" ]] || continue
+    listed "$svc" && continue
+    [[ " $HELD_SERVICES " == *" $svc "* ]] && continue
+    if [[ -n "$(docker compose -f "$COMPOSE_FILE" --profile '*' ps -a -q "$svc" 2>/dev/null)" ]] \
+        && docker compose -f "$COMPOSE_FILE" --profile '*' start "$svc" >/dev/null; then
+      ok "opt-in: $svc restarted (it was running before the last stop)"
+    else
+      warn "opt-in: $svc was running before the last stop but could not be restarted"
+    fi
+  done <"$RUNNING_BEFORE_STOP"
+  rm -f "$RUNNING_BEFORE_STOP"
+fi
 wait_http "$API_HEALTH" 90 "API"
 ok "API healthy"
 
-step "Starting the web UI"
-if curl -fs -o /dev/null --max-time 2 "$WEB_URL"; then
-  ok "already serving on $WEB_URL"
-elif [[ " ${services[*]} " == *" web "* ]]; then
-  # Supervised by compose (A4): it was started with the stack above; just wait for it.
-  wait_http "$WEB_URL" 90 "Web UI (docker compose logs web)"
+step "Waiting for the web UI"
+if listed web; then
+  # Supervised by compose (A4): started with the stack above (a first build takes a few minutes).
+  wait_http "$WEB_URL" 120 "Web UI (docker compose -f infra/docker-compose.yml logs web)"
   ok "serving on $WEB_URL (compose service)"
+elif serving "$WEB_URL"; then
+  ok "already serving on $WEB_URL (not the compose service)"
 else
-  cd "$WEB_DIR"
-  if [[ ! -d node_modules ]]; then
-    pnpm install --frozen-lockfile
-  fi
-  # Rebuild only when a source file is newer than the last production build.
-  if [[ ! -f .next/BUILD_ID ]] || [[ -n "$(find . \( -path ./node_modules -o -path ./.next \) -prune \
-        -o -type f -newer .next/BUILD_ID -print -quit)" ]]; then
-    echo "    building (sources changed since the last build)..."
-    pnpm build
-  fi
-  # setsid: the server must outlive the launcher's terminal window.
-  setsid nohup pnpm start >"$WEB_LOG" 2>&1 < /dev/null &
-  echo $! >"$WEB_PID"
-  wait_http "$WEB_URL" 60 "Web UI (log: $WEB_LOG)"
-  ok "serving on $WEB_URL (log: $WEB_LOG)"
+  warn "nothing serves $WEB_URL and the web service is not in the stack list."
+  warn "Start it with: docker compose -f infra/docker-compose.yml up -d --build --no-deps web"
 fi
 
 trap - ERR
