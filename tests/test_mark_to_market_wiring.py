@@ -365,4 +365,3 @@ def test_nonfinite_and_future_quotes_rejected():
     assert proj_inf._live_price(BTC) is None
     proj_fut = CoalescedMarkToMarketProjector(mock_pool, lambda inst: (D("50000"), now + 10_000_000_000))
     assert proj_fut._live_price(BTC) is None
-
