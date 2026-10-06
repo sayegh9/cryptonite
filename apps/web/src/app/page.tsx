@@ -2,7 +2,7 @@
 
 import React, { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
-import { buildQuery, DEFAULT_WORKSPACE, NAV_GROUPS, parseView, parseWorkspace, type WorkspaceMode } from "@/lib/navigation";
+import { buildQuery, DEFAULT_WORKSPACE, parseView, parseWorkspace, type WorkspaceMode } from "@/lib/navigation";
 import { type MissionView, useMandateStore } from "@/lib/stores/useMandateStore";
 import { MultiChartGrid } from "@/components/MultiChartGrid";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
@@ -22,6 +22,7 @@ import { AIBrainWorkspace } from "@/components/brain/AIBrainWorkspace";
 import { DecisionTraceDrawer } from "@/components/brain/DecisionTraceDrawer";
 import { MissionControl } from "@/components/mission/MissionControl";
 import { ModeBanner } from "@/components/mission/ModeBanner";
+import { WorkspaceNav } from "@/components/WorkspaceNav";
 import { dispatchBrainAsk } from "@/lib/brain/events";
 import { useBrainSetup } from "@/lib/brain/useBrainSetup";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
@@ -286,62 +287,38 @@ function Workstation() {
 
   return (
     <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
-      {/* Top Institutional Header */}
-      <header className="h-12 flex-none bg-zinc-950 border-b border-white/5 flex items-center justify-between px-4 z-20">
-        {/* min-w-0: the workspace nav scrolls before the mode banner is pushed off screen */}
-        <div className="flex items-center h-full min-w-0 flex-1">
-          <div className="flex flex-none items-center space-x-2 mr-8">
-            <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-2xs text-zinc-950">
-              C
-            </div>
-            <span className="font-bold text-sm tracking-widest text-zinc-100">
-              CRYPTONITE
-            </span>
+      {/*
+        Top Institutional Header. md+: one row; the nav shrinks and scrolls so the banner and the Brain
+        button always fit. Below md the banner takes a full-width second row, clear of the logo.
+      */}
+      <header className="flex-none bg-zinc-950 border-b border-white/5 flex flex-wrap md:flex-nowrap items-center px-4 z-20">
+        <div className="flex flex-none items-center h-12 space-x-2 mr-3 md:mr-8">
+          <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-2xs text-zinc-950" aria-hidden="true">
+            C
           </div>
-
-          <nav aria-label="Workspaces" className="flex items-center h-full font-mono text-xs font-semibold overflow-x-auto">
-            {NAV_GROUPS.map((group, gi) => (
-              <div
-                key={group.id}
-                role="group"
-                aria-label={group.label}
-                className={`flex items-center h-full gap-4 ${gi > 0 ? "ml-4 pl-4 border-l border-zinc-800" : ""}`}
-              >
-                <span className="text-2xs uppercase tracking-widest text-zinc-500 select-none" aria-hidden="true">{group.label}</span>
-                {group.items.map((tab) => {
-                  const active = workspaceMode === tab.mode && (tab.view ? urlView === tab.view : !(tab.mode === "terminal" && urlView === "scanner"));
-                  return (
-                    <button
-                      key={`${tab.mode}-${tab.view ?? ""}`}
-                      type="button"
-                      onClick={() => navigate(tab.mode, tab.view)}
-                      aria-current={active ? "page" : undefined}
-                      className={`h-full flex items-center border-b-2 px-1 whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${
-                        active
-                          ? "border-cyan-500 text-cyan-400"
-                          : "border-transparent text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-          </nav>
+          <span className="hidden sm:inline font-bold text-sm tracking-widest text-zinc-100">
+            CRYPTONITE
+          </span>
         </div>
 
-        <div className="flex flex-none items-center space-x-4 ml-4">
-          <ModeBanner poll className="max-w-sm 2xl:max-w-lg" />
-          
-          <button
-            onClick={() => setIsAgentChatOpen(true)}
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-cyan-400 rounded transition-colors font-mono text-xs font-bold"
-          >
-            <BrainCircuit className="w-3.5 h-3.5" />
-            <span>Brain</span>
-          </button>
-        </div>
+        <WorkspaceNav workspaceMode={workspaceMode} urlView={urlView} navigate={navigate} className="h-12 flex-1" />
+
+        <ModeBanner
+          poll
+          wrapBelowMd
+          className="order-last w-full mb-2 md:order-none md:w-auto md:mb-0 md:ml-4 md:flex-none"
+          summaryClassName="md:max-w-40 lg:max-w-56 xl:max-w-xs 2xl:max-w-md"
+        />
+
+        <button
+          onClick={() => setIsAgentChatOpen(true)}
+          aria-label="Brain"
+          title="Brain"
+          className="flex flex-none items-center space-x-1.5 ml-2 md:ml-4 px-2 sm:px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-cyan-400 rounded transition-colors font-mono text-xs font-bold"
+        >
+          <BrainCircuit className="w-3.5 h-3.5" aria-hidden="true" />
+          <span className="hidden sm:inline">Brain</span>
+        </button>
       </header>
 
       {/* Persistent Terminal Workspace */}

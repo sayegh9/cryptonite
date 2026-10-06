@@ -258,7 +258,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
               </span>
             </div>
             <span className="text-2xs text-zinc-500 font-mono">
-              Zero-Trading Authority: Analytical Signals Only
+              Candidates can start AI debates that feed active mandates
             </span>
           </div>
 
