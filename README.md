@@ -207,3 +207,9 @@ and `docs/PROJECT_DOCUMENTATION.md` are older snapshots kept for reference; they
 All AI-First phases (0–7) are on `main`. A mandate is running at L1 on paper; promotion to L2 depends on
 30 closed trades and 30 days at the level. A distilled triage model has passed certification and is
 waiting for an Ollama upgrade to be deployed. See [HANDOFF.md](HANDOFF.md) for the live state.
+
+**Product-review plan run (2026-10-05 → 2026-10-06):** the initial batch merged to `main` via PR #33;
+four item PRs (B3, B4, D1, D4) remain open on `review-plan` and are not yet reviewed or complete. The
+running stack is unchanged and on pre-remediation images — **deploy hold active; nothing from this run
+is deployed** (dev DB at Alembic `036`). Status matrix, open PRs and hold-release gates:
+[docs/HANDOVER-2026-10-06.md](docs/HANDOVER-2026-10-06.md).
