@@ -659,3 +659,59 @@ async def test_recover_apply_refuses_consumer_that_got_new_pending_since_snapsho
     assert plan.applied_consumers == 0 and rollback == []
     names = {c["name"] for c in await r.xinfo_consumers(stream, dq.GROUP)}
     assert "debate-c" in names  # not deleted while it holds pending work
+
+
+async def test_recover_apply_refuses_same_owner_renewed_after_snapshot(r, pool, recover_script):
+    stream = dq.STREAMS[0]
+    msg_id = await r.xadd(stream, {"instrument_id": INSTRUMENT, "trigger_source": "scanner"})
+    await read_without_handling(r, "debate-w1")
+    await asyncio.sleep(0.1)
+    plan = await recover_script.build_plan(r, pool, pel_idle_ms=50, consumer_idle_ms=10**9)
+    assert [(p["message_id"], p["consumer"]) for p in plan.pending] == [(msg_id, "debate-w1")]
+
+    # Same owner reclaims/renews the lease after snapshot (simulates keep-alive/renewal) so idle becomes 0
+    await r.xclaim(stream, dq.GROUP, "debate-w1", 0, [msg_id])
+
+    rollback = await recover_script.apply_plan(r, pool, plan)
+    assert plan.applied_pending == 0 and rollback == []
+    assert await pending_count(r, stream) == 1
+    rows = await r.xpending_range(stream, dq.GROUP, min=msg_id, max=msg_id, count=1)
+    assert rows[0]["consumer"] == "debate-w1"
+    assert await r.xrange(dq.DLQ_STREAM) == []
+
+
+async def test_no_db_claim_takeover_old_attempt_writes_nothing(debate_main, pool, monkeypatch):
+    ref = "stream:exit_debate_queue/1500-0"
+    run_id = await insert_run(pool, "RUNNING", 1, stream_message_id=ref, claim_gen=1)
+
+    claimed, release = asyncio.Event(), asyncio.Event()
+    context_calls = {"n": 0}
+
+    async def gated_context(self, instrument_id):
+        context_calls["n"] += 1
+        if context_calls["n"] == 1:
+            claimed.set()
+            await release.wait()
+            return dict(POSITION)
+        return dict(POSITION)
+
+    monkeypatch.setattr(debate_main.AntiCorruptionLayer, "get_instrument_context", gated_context)
+    model = exit_decision_model()
+    payload = {"instrument_id": INSTRUMENT, "run_id": str(run_id)}
+    with override_model(FLASH, model), override_model(PRO, model):
+        old = asyncio.create_task(debate_main.process_exit_debate_trigger(
+            pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-old"))
+        await asyncio.wait_for(claimed.wait(), 5)
+        # New owner takes over: reclaims message in PEL (different consumer)
+        async def is_owner_new(r,s,m,c):
+            return c == "debate-new"
+        monkeypatch.setattr(debate_main, "is_pel_owner", is_owner_new)
+        await asyncio.wait_for(debate_main.process_exit_debate_trigger(
+            pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-new"), 10)
+        release.set()
+        await asyncio.wait_for(old, 10)
+
+    run = await pool.fetchrow("SELECT status, claim_gen, failure_reason FROM debate_runs WHERE id = $1", run_id)
+    assert run["status"] not in ("RUNNING",)
+    assert run["claim_gen"] >= 2  # bumped by takeover(s)
+    assert await pool.fetchval("SELECT count(*) FROM exit_decisions WHERE run_id = $1", run_id) == 1
