@@ -9,7 +9,7 @@
 - Web (`apps/web`): `pnpm typecheck` · `pnpm lint` · `pnpm build` · `npx playwright test`
 - Python: `uv run pytest tests -q` · `uv run ruff check .` (uv resolve fails on macOS x86_64; use Docker/arm64)
 - Stack: `docker compose -f infra/docker-compose.yml up -d`
-- DB: `docker compose -f infra/docker-compose.yml run --rm test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head`
+- DB: `docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head` (`--no-deps`: never converge/recreate postgres and redis)
 
 ## Topology
 - `apps/web/src/{app,components,lib/stores}` — pages+API proxy, workspaces, persisted stores

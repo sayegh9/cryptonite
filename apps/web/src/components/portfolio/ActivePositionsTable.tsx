@@ -5,7 +5,7 @@ import { Layers, Minus, Repeat, X } from "lucide-react";
 import { usePortfolioStore, type PaperPosition } from "@/lib/stores/usePortfolioStore";
 import { usePerpetualStore } from "@/lib/stores/usePerpetualStore";
 import { closePosition, reducePosition, reversePosition } from "@/lib/portfolio/actions";
-import { fmtPrice, fmtQty, fmtSignedUsd, isPerp, liqDistanceOf, markOf, notionalOf } from "@/lib/portfolio/metrics";
+import { fmtPrice, fmtQty, fmtSignedUsd, isHeldPosition, isPerp, liqDistanceOf, markOf, notionalOf } from "@/lib/portfolio/metrics";
 import { LiquidationGauge } from "./LiquidationGauge";
 import { FreshnessBadge } from "./FreshnessBadge";
 
@@ -128,7 +128,7 @@ export function ActivePositionsTable({ onSelect }: { onSelect: (positionId: stri
   const loaded = usePortfolioStore((s) => s.loaded);
   const latched = usePortfolioStore((s) => s.killSwitch.is_latched);
   const open = useMemo(
-    () => positions.filter((p) => p.status === "OPEN").sort((a, b) => notionalOf(b) - notionalOf(a) || a.position_id.localeCompare(b.position_id)),
+    () => positions.filter(isHeldPosition).sort((a, b) => notionalOf(b) - notionalOf(a) || a.position_id.localeCompare(b.position_id)),
     [positions],
   );
   const totalPnl = open.reduce((acc, p) => acc + p.unrealized_pnl, 0);

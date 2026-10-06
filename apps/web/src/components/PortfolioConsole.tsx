@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { usePortfolioStore, usePortfolioSync } from "@/lib/stores/usePortfolioStore";
 import { closePosition, postCommand } from "@/lib/portfolio/actions";
-import { fmtPct, fmtPrice, fmtQty, fmtSignedUsd, fmtUsd, liqDistanceOf, notionalOf } from "@/lib/portfolio/metrics";
+import { fmtPct, fmtPrice, fmtQty, fmtSignedUsd, fmtUsd, isHeldPosition, liqDistanceOf, notionalOf } from "@/lib/portfolio/metrics";
 import { ActivePositionsTable } from "@/components/portfolio/ActivePositionsTable";
 import { StrategyDashboard } from "@/components/portfolio/StrategyDashboard";
 import { ExecutionLedger } from "@/components/portfolio/ExecutionLedger";
@@ -26,7 +26,7 @@ function MetricCards() {
   const latched = usePortfolioStore((s) => s.killSwitch.is_latched);
   const positionsKnown = usePortfolioStore((s) => s.positionsAt !== null);
   const killSwitchKnown = usePortfolioStore((s) => s.killSwitchAt !== null);
-  const open = positions.filter((p) => p.status === "OPEN");
+  const open = positions.filter(isHeldPosition);
   const longs = open.filter((p) => p.side !== "SHORT").length;
   const daily = account ? Number(account.daily_realized_pnl) : null;
   const upnl = open.reduce((a, p) => a + p.unrealized_pnl, 0);
@@ -142,7 +142,7 @@ export function PortfolioConsole() {
   const [deployAllocation, setDeployAllocation] = useState<number>(5000);
   const deploySlug = deployStrategyName || availableStrategies[0]?.slug || "";
 
-  const openPositions = positions.filter((p) => p.status === "OPEN");
+  const openPositions = positions.filter(isHeldPosition);
 
   const handleTripKillSwitch = async () => {
     setShowKillModal(false);

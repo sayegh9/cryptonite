@@ -165,6 +165,8 @@ async function mockBackend(page: Page, opts: { status?: unknown; mandates?: unkn
       },
     }),
   );
+  // Fail fast instead of proxying to :8000 (a half-open listener there hangs the request past the expect timeout)
+  await page.route("**/api/v1/ai/outcomes/by-regime*", (route) => route.fulfill({ status: 503, json: { detail: "offline" } }));
   await page.route("**/api/v1/control/kill-switch/status*", (route) =>
     route.fulfill({ json: { environment: "PAPER", account_id: "PAPER-ACCOUNT-001", is_latched: false } }),
   );
@@ -315,6 +317,7 @@ test.describe("Mission Control", () => {
         ],
       },
     });
+    await page.route("**/agent-api/brain/spend", (route) => route.fulfill({ status: 503, json: { detail: "offline" } }));
     await openMissionControl(page);
     const banner = page.getByTestId("mission-degraded-banner");
     await expect(banner).toBeVisible();

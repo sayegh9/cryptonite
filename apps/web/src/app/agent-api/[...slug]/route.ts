@@ -2,13 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
+// The compose `web` service reaches the API as http://api:8000; on the host it is the published port.
+const API_ORIGIN = process.env.API_ORIGIN || "http://127.0.0.1:8000";
+
 export async function POST(
   request: NextRequest,
   context: { params: Promise<{ slug: string[] }> }
 ) {
   const { slug } = await context.params;
   const path = slug.join("/");
-  const targetUrl = `http://127.0.0.1:8000/api/v1/agents/${path}`;
+  const targetUrl = `${API_ORIGIN}/api/v1/agents/${path}`;
 
   try {
     const body = await request.text();
@@ -96,7 +99,7 @@ export async function GET(
   
   // Extract query parameters
   const url = new URL(request.url);
-  const targetUrl = `http://127.0.0.1:8000/api/v1/agents/${path}${url.search}`;
+  const targetUrl = `${API_ORIGIN}/api/v1/agents/${path}${url.search}`;
 
   try {
     const headers = new Headers();
