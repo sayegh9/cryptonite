@@ -1,8 +1,10 @@
 """Debate queue recovery and run reaper (review-plan B4, F-H6): a killed worker's message is reclaimed,
 a poison message goes to the DLQ after 3 deliveries, a redelivery never opens a second run, stale RUNNING
-runs are reaped, idle consumers are deleted, and the one-off recovery script. Redis: the isolated test DB
-(connections.REDIS_URL, DB 15) with per-test stream names. Postgres: a throwaway DB at Alembic head.
-Models are FunctionModels; the worker's Redis in debate runs is an AsyncMock (nothing is published)."""
+runs are reaped, idle consumers are deleted, and the one-off recovery script. Claims fence on the durable
+claim generation proved against the live PEL owner under the row lock, so a stale attempt of the same
+message_ref (paused across a takeover, failed late, or claiming late) writes nothing. Redis: the isolated
+test DB (connections.REDIS_URL, DB 15) with per-test stream names. Postgres: a throwaway DB at Alembic
+head. Models are FunctionModels; the worker's Redis in debate runs is an AsyncMock (nothing is published)."""
 
 import asyncio
 import importlib.util
@@ -190,9 +192,9 @@ async def test_idle_consumers_without_pending_entries_are_deleted(r):
 async def insert_run(pool, status: str, age_min: float, **extra) -> uuid.UUID:
     run_id = uuid.uuid4()
     await pool.execute(
-        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, stream_message_id)
-           VALUES ($1, $2, $3, 'scanner', now() - make_interval(secs => $4), $5)""",
-        run_id, INSTRUMENT, status, age_min * 60, extra.get("stream_message_id"))
+        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, stream_message_id, claim_gen)
+           VALUES ($1, $2, $3, 'scanner', now() - make_interval(secs => $4), $5, $6)""",
+        run_id, INSTRUMENT, status, age_min * 60, extra.get("stream_message_id"), extra.get("claim_gen", 0))
     return run_id
 
 
@@ -478,3 +480,181 @@ async def test_exit_debate_no_position_preserves_reaped_status(debate_main, pool
                                                   Gateway(), message_ref="stream:exit_debate_queue/300-0")
     run = await pool.fetchrow("SELECT status, failure_reason FROM debate_runs WHERE id = $1", run_id)
     assert run["status"] == "FAILED" and run["failure_reason"] == "REAPED_STALE"
+
+
+# --- B4: durable claim fencing (same message_ref = work identity, not owner) -------------------
+
+POSITION = {"current_position": {"instrument_id": INSTRUMENT, "quantity": 1.0}}
+
+
+def exit_decision_model(fail_from: int | None = None, counter: dict | None = None):
+    """The exit fleet's verdict; optionally raise from the Nth call on (stale attempts run late)."""
+    exit_decision = {"recommendation": "CLOSE", "conviction_score": 0.9, "target_stop_price": 50000.0, "reasoning": "stop"}
+
+    def fn(messages, info: AgentInfo):
+        if counter is not None:
+            counter["n"] += 1
+            if fail_from is not None and counter["n"] >= fail_from:
+                raise RuntimeError("stale attempt failed late")
+        if not info.output_tools:
+            return ModelResponse(parts=[TextPart("exit reasoning")])
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, exit_decision)])
+
+    return FunctionModel(fn)
+
+
+async def test_first_exit_delivery_claims_and_routes_despite_stale_claim_generation(debate_main, pool, monkeypatch):
+    """Regression (B4): the first exit delivery used to be gated on a delivery-counter comparison
+    (``claim_gen < max(1, delivered)``), which matched zero rows when the stored generation was already
+    >= the delivery count: the message was ACKed without any work. Claims now lock + prove + bump."""
+    ref = "stream:exit_debate_queue/400-0"
+    run_id = await insert_run(pool, "RUNNING", 1, stream_message_id=ref, claim_gen=1)
+    monkeypatch.setattr(debate_main.AntiCorruptionLayer, "get_instrument_context", AsyncMock(return_value=dict(POSITION)))
+    model = exit_decision_model()
+    with override_model(FLASH, model), override_model(PRO, model):
+        await debate_main.process_exit_debate_trigger(pool, redis_double(), {"instrument_id": INSTRUMENT, "run_id": str(run_id)},
+                                                      Gateway(), message_ref=ref, delivered=1, consumer="debate-first")
+    run = await pool.fetchrow("SELECT status, claim_gen FROM debate_runs WHERE id = $1", run_id)
+    assert run["status"] != "RUNNING" and run["claim_gen"] == 2  # claimed under the lock; delivered never gated it
+    assert await pool.fetchval("SELECT count(*) FROM exit_decisions WHERE run_id = $1", run_id) == 1
+
+
+async def test_late_stale_claim_is_refused_and_writes_nothing(debate_main, pool, monkeypatch):
+    ref = "stream:exit_debate_queue/800-0"
+    run_id = await insert_run(pool, "RUNNING", 2, stream_message_id=ref, claim_gen=3)
+
+    async def not_owner(redis_client, stream, msg_id, consumer):
+        return False
+
+    monkeypatch.setattr(debate_main, "is_pel_owner", not_owner)
+    await debate_main.process_exit_debate_trigger(pool, redis_double(), {"instrument_id": INSTRUMENT, "run_id": str(run_id)},
+                                                  Gateway(), message_ref=ref, consumer="debate-stale")
+    run = await pool.fetchrow("SELECT status, claim_gen, failure_reason, completed_at FROM debate_runs WHERE id = $1", run_id)
+    assert (run["status"], run["claim_gen"], run["failure_reason"], run["completed_at"]) == ("RUNNING", 3, None, None)
+    assert await pool.fetchval("SELECT count(*) FROM exit_decisions") == 0
+
+
+async def run_same_ref_takeover(debate_main, monkeypatch, pool, ref, stale_return, *, fail_stale_from: int | None = None):
+    """Old consumer claims the exit run and pauses inside its claim->finalize window; the new consumer
+    takes the SAME message_ref over and finishes; only then is the old attempt released."""
+    run_id = await insert_run(pool, "RUNNING", 1, stream_message_id=ref)
+    claimed, release = asyncio.Event(), asyncio.Event()
+    context_calls = {"n": 0}
+
+    async def gated_context(self, instrument_id):
+        context_calls["n"] += 1
+        if context_calls["n"] == 1:  # the old attempt: paused right after its claim (gen 1)
+            claimed.set()
+            await release.wait()
+            return stale_return
+        return dict(POSITION)  # the takeover attempt
+
+    monkeypatch.setattr(debate_main.AntiCorruptionLayer, "get_instrument_context", gated_context)
+    counter = {"n": 0}
+    model = exit_decision_model(fail_from=fail_stale_from, counter=counter)
+    payload = {"instrument_id": INSTRUMENT, "run_id": str(run_id)}
+    with override_model(FLASH, model), override_model(PRO, model):
+        old = asyncio.create_task(debate_main.process_exit_debate_trigger(
+            pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-old"))
+        await asyncio.wait_for(claimed.wait(), 5)
+        new = asyncio.create_task(debate_main.process_exit_debate_trigger(
+            pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-new"))
+        await asyncio.wait_for(new, 10)  # takeover claims (gen 2) and completes while old is paused
+        release.set()
+        await asyncio.wait_for(old, 10)  # stale attempt resumes late
+    return run_id
+
+
+async def test_takeover_same_ref_old_success_late_is_fenced(debate_main, pool, monkeypatch):
+    run_id = await run_same_ref_takeover(debate_main, monkeypatch, pool, "stream:exit_debate_queue/700-0", dict(POSITION))
+    run = await pool.fetchrow("SELECT status, claim_gen, failure_reason FROM debate_runs WHERE id = $1", run_id)
+    assert run["status"] != "RUNNING" and run["failure_reason"] is None
+    assert run["claim_gen"] == 2  # the takeover's claim bumped past the old attempt's gen 1
+    assert await pool.fetchval("SELECT count(*) FROM exit_decisions WHERE run_id = $1", run_id) == 1  # only the winner routed
+
+
+async def test_takeover_same_ref_old_failure_late_writes_nothing(debate_main, pool, monkeypatch):
+    # The old attempt's model calls come after the takeover's (it resumes last), so failing from call 4
+    # makes only the stale attempt fail; its FAILED write must match the fenced generation and land nowhere.
+    run_id = await run_same_ref_takeover(debate_main, monkeypatch, pool, "stream:exit_debate_queue/701-0",
+                                         dict(POSITION), fail_stale_from=4)
+    run = await pool.fetchrow("SELECT status, claim_gen, failure_reason FROM debate_runs WHERE id = $1", run_id)
+    assert run["status"] != "RUNNING" and run["failure_reason"] is None
+    assert run["claim_gen"] == 2
+    assert await pool.fetchval("SELECT count(*) FROM exit_decisions WHERE run_id = $1", run_id) == 1
+
+
+async def test_takeover_same_ref_old_no_position_late_writes_nothing(debate_main, pool, monkeypatch):
+    run_id = await run_same_ref_takeover(debate_main, monkeypatch, pool, "stream:exit_debate_queue/702-0",
+                                         {"current_position": None})
+    run = await pool.fetchrow("SELECT status, claim_gen, failure_reason FROM debate_runs WHERE id = $1", run_id)
+    assert run["status"] not in ("RUNNING", "NO_TRADE") and run["failure_reason"] is None  # old's NO_TRADE write fenced
+    assert run["claim_gen"] == 2
+    assert await pool.fetchval("SELECT count(*) FROM exit_decisions WHERE run_id = $1", run_id) == 1
+
+
+async def test_late_entry_already_handled_cannot_close_the_new_owners_run(debate_main, pool, monkeypatch):
+    ref = "stream:debate_queue/900-0"
+    orphan = await insert_run(pool, "RUNNING", 1, stream_message_id=ref)
+
+    async def owner_is(redis_client, stream, msg_id, consumer):
+        return consumer == "debate-new"
+
+    monkeypatch.setattr(debate_main, "is_pel_owner", owner_is)
+    payload = {"instrument_id": INSTRUMENT, "trigger_source": "test"}
+
+    # The stale attempt arrives late: it must not close the healthy run of the consumer that took over
+    await debate_main.process_debate_trigger(pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-old")
+    run = await pool.fetchrow("SELECT status, failure_reason FROM debate_runs WHERE id = $1", orphan)
+    assert (run["status"], run["failure_reason"]) == ("RUNNING", None)
+    assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 0
+
+    # The current owner still closes the orphan as WORKER_LOST (durable no-re-debate policy preserved)
+    await debate_main.process_debate_trigger(pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-new")
+    run = await pool.fetchrow("SELECT status, failure_reason FROM debate_runs WHERE id = $1", orphan)
+    assert (run["status"], run["failure_reason"]) == ("FAILED", "WORKER_LOST")
+
+
+async def test_handle_refuses_entry_owned_by_another_consumer(r):
+    stream = dq.STREAMS[0]
+    msg_id = await r.xadd(stream, {"instrument_id": INSTRUMENT})
+    await read_without_handling(r, "debate-owner")
+    handler = Recorder()
+    intruder = dq.DebateQueue(r, "debate-intruder", handler)
+    assert await intruder.handle(stream, msg_id, {"instrument_id": INSTRUMENT}) is False  # initial ownership proof
+    assert handler.calls == []
+    assert await pending_count(r, stream) == 1  # left pending for the real owner
+
+
+async def test_recover_apply_refuses_entry_transferred_after_snapshot(r, pool, recover_script):
+    stream = dq.STREAMS[0]
+    msg_id = await r.xadd(stream, {"instrument_id": INSTRUMENT})
+    await read_without_handling(r, "debate-w1")
+    await asyncio.sleep(0.1)
+    plan = await recover_script.build_plan(r, pool, pel_idle_ms=50, consumer_idle_ms=10**9)
+    assert [(p["message_id"], p["consumer"]) for p in plan.pending] == [(msg_id, "debate-w1")]
+
+    await r.xclaim(stream, dq.GROUP, "debate-w2", 0, [msg_id])  # ownership transfer between snapshot and apply
+    rollback = await recover_script.apply_plan(r, pool, plan)
+
+    assert plan.applied_pending == 0 and rollback == []  # refused: no DLQ copy, no rollback XADD
+    assert await pending_count(r, stream) == 1
+    rows = await r.xpending_range(stream, dq.GROUP, min=msg_id, max=msg_id, count=1)
+    assert rows[0]["consumer"] == "debate-w2"
+    assert await r.xrange(dq.DLQ_STREAM) == []
+
+
+async def test_recover_apply_refuses_consumer_that_got_new_pending_since_snapshot(r, pool, recover_script):
+    stream = dq.STREAMS[0]
+    await r.xgroup_createconsumer(stream, dq.GROUP, "debate-c")
+    await asyncio.sleep(0.1)
+    plan = await recover_script.build_plan(r, pool, pel_idle_ms=10**9, consumer_idle_ms=50)
+    assert [c["name"] for c in plan.consumers] == ["debate-c"]  # idle and 0 pending at snapshot time
+
+    await r.xadd(stream, {"instrument_id": INSTRUMENT})
+    await r.xreadgroup(dq.GROUP, "debate-c", {stream: ">"}, count=1)  # new work lands under it before apply
+    rollback = await recover_script.apply_plan(r, pool, plan)
+
+    assert plan.applied_consumers == 0 and rollback == []
+    names = {c["name"] for c in await r.xinfo_consumers(stream, dq.GROUP)}
+    assert "debate-c" in names  # not deleted while it holds pending work

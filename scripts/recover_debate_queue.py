@@ -8,7 +8,7 @@ Finds, on ``stream:debate_queue`` and ``stream:exit_debate_queue`` (group ``deba
   (a consumer holds no state once it has nothing pending, and is recreated by its next read);
 and in Postgres:
 - ``debate_runs`` RUNNING for more than 30 min: FAILED, ``failure_reason = 'REAPED_STALE'``
-  (status only if migration 039 is not applied yet).
+  (status only if migration 040 is not applied yet).
 
 Dry run by default (prints what it would do). ``--apply`` writes, and prints the rollback for each
 change: an ``XADD`` that re-enqueues each dead-lettered payload as a new entry, and the ``UPDATE``
@@ -41,6 +41,7 @@ from debate_queue import (  # noqa: E402
     RECLAIM_IDLE_MS,
     STALE_RUN_S,
     STREAMS,
+    ack_if_owner,
     dead_letter,
 )
 
@@ -52,12 +53,16 @@ class Plan:
     pending: list[dict] = field(default_factory=list)  # stream, message_id, consumer, idle_ms, deliveries, fields
     runs: list[dict] = field(default_factory=list)  # id, instrument_id, trigger_source, created_at
     consumers: list[dict] = field(default_factory=list)  # stream, name, idle_ms
+    consumer_idle_ms: int = CONSUMER_IDLE_DELETE_MS  # the configured threshold this run planned with
     has_reason_column: bool = True
+    applied_pending: int = 0
+    applied_runs: int = 0
+    applied_consumers: int = 0
 
 
 async def build_plan(r, pool, *, pel_idle_ms: int = RECLAIM_IDLE_MS, run_age_s: int = STALE_RUN_S,
                      consumer_idle_ms: int = CONSUMER_IDLE_DELETE_MS) -> Plan:
-    plan = Plan()
+    plan = Plan(consumer_idle_ms=consumer_idle_ms)
     for stream in STREAMS:
         if not await r.exists(stream):
             continue
@@ -94,24 +99,30 @@ def print_plan(plan: Plan) -> None:
     print(f"Stale RUNNING debate_runs (> {STALE_RUN_S // 60} min): {len(plan.runs)}")
     for run in plan.runs:
         print(f"  {run['id']} {run['instrument_id']} {run['trigger_source']} created_at={run['created_at']}")
-    print(f"Idle consumers (> {CONSUMER_IDLE_DELETE_MS // 3600000} h, 0 pending after the above): {len(plan.consumers)}")
+    print(f"Idle consumers (> {plan.consumer_idle_ms // 3600000} h, 0 pending after the above): {len(plan.consumers)}")
     for c in plan.consumers:
         print(f"  {c['stream']} {c['name']} idle={c['idle_ms'] // 1000}s")
     if not plan.has_reason_column:
-        print("Note: migration 039 is not applied; runs would be set FAILED without failure_reason.")
+        print("Note: migration 040 is not applied; runs would be set FAILED without failure_reason.")
 
 
 async def apply_plan(r, pool, plan: Plan) -> list[str]:
     """Apply the plan; return the rollback commands for what was changed."""
     rollback: list[str] = []
+    plan.applied_pending = 0
     for p in plan.pending:
         if p["fields"] is None:  # trimmed from the stream: nothing to keep, only the PEL slot to free
-            await r.xack(p["stream"], GROUP, p["message_id"])
+            if await ack_if_owner(r, p["stream"], p["message_id"], p["consumer"]):
+                plan.applied_pending += 1
             continue
-        await dead_letter(r, p["stream"], p["message_id"], p["fields"], "MANUAL_RECOVERY", p["deliveries"], TOOL,
-                          expected_owner=p["consumer"])
+        ok = await dead_letter(r, p["stream"], p["message_id"], p["fields"], "MANUAL_RECOVERY", p["deliveries"], TOOL,
+                               expected_owner=p["consumer"])
+        if not ok:
+            continue
+        plan.applied_pending += 1
         args = " ".join(f"{shlex.quote(str(k))} {shlex.quote(str(v))}" for k, v in p["fields"].items())
         rollback.append(f"XADD {p['stream']} * {args}")
+    plan.applied_runs = 0
     if plan.runs:
         ids = [run["id"] for run in plan.runs]
         reason = ", failure_reason = 'REAPED_STALE'" if plan.has_reason_column else ""
@@ -119,13 +130,19 @@ async def apply_plan(r, pool, plan: Plan) -> list[str]:
             done = await conn.fetch(
                 f"""UPDATE debate_runs SET status = 'FAILED', completed_at = now(){reason}
                     WHERE id = ANY($1::uuid[]) AND status = 'RUNNING' RETURNING id""", ids)
+        plan.applied_runs = len(done)
         if done:
             undo = "failure_reason = NULL, " if plan.has_reason_column else ""
             id_list = ", ".join(f"'{row['id']}'" for row in done)
             rollback.append(f"UPDATE debate_runs SET status = 'RUNNING', {undo}completed_at = NULL WHERE id IN ({id_list});")
+    plan.applied_consumers = 0
     for c in plan.consumers:
-        idle_ms = c.get("idle_ms", 0)
-        await r.eval(DEL_IDLE_CONSUMER_LUA, 1, c["stream"], GROUP, c["name"], idle_ms)
+        # The configured threshold of this run (the snapshot's observed idle is only a display value:
+        # it would delete any 0-pending consumer regardless of how strict the configured window is).
+        # The Lua re-check still refuses consumers that received pending entries since the snapshot.
+        res = await r.eval(DEL_IDLE_CONSUMER_LUA, 1, c["stream"], GROUP, c["name"], plan.consumer_idle_ms)
+        if res:
+            plan.applied_consumers += 1
     return rollback
 
 
@@ -142,8 +159,8 @@ async def main() -> int:
             print("\nDry run: nothing changed. Re-run with --apply to write.")
             return 0
         rollback = await apply_plan(r, pool, plan)
-        print(f"\nApplied. Dead-lettered {len(plan.pending)} entries, reaped {len(plan.runs)} runs, "
-              f"deleted {len(plan.consumers)} consumers (consumers need no rollback).")
+        print(f"\nApplied. Dead-lettered {plan.applied_pending} entries, reaped {plan.applied_runs} runs, "
+              f"deleted {plan.applied_consumers} consumers (consumers need no rollback).")
         if rollback:
             print("Rollback:")
             for line in rollback:

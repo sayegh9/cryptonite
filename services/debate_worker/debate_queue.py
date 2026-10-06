@@ -81,6 +81,14 @@ end
 return 0
 """
 
+CHECK_OWNER_LUA = """
+local p = redis.call("XPENDING", KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
+if #p > 0 and p[1][2] == ARGV[3] then
+    return 1
+end
+return 0
+"""
+
 ACK_OWNED_LUA = """
 local p = redis.call("XPENDING", KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
 if #p > 0 and p[1][2] == ARGV[3] then
@@ -128,6 +136,21 @@ return 0
 """
 
 
+OWNER_LUA = """
+local p = redis.call("XPENDING", KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
+if #p > 0 then
+    return p[1][2]
+end
+return ""
+"""
+
+
+async def current_owner(redis, stream: str, msg_id: str) -> str:
+    """The consumer that currently owns the message in the PEL ("" if it is gone/acked)."""
+    res = await redis.eval(OWNER_LUA, 1, stream, GROUP, msg_id)
+    return res if isinstance(res, str) else ""
+
+
 async def deliveries(redis, stream: str, msg_id: str) -> int:
     """How many times Redis has delivered this pending entry (1 for a first read)."""
     rows = await redis.xpending_range(stream, GROUP, min=msg_id, max=msg_id, count=1)
@@ -137,6 +160,12 @@ async def deliveries(redis, stream: str, msg_id: str) -> int:
 async def ack_if_owner(redis, stream: str, msg_id: str, consumer: str) -> bool:
     """XACK atomically only if consumer still owns the message in the PEL."""
     res = await redis.eval(ACK_OWNED_LUA, 1, stream, GROUP, msg_id, consumer)
+    return bool(res)
+
+
+async def is_pel_owner(redis, stream: str, msg_id: str, consumer: str) -> bool:
+    """True if consumer currently owns msg_id in the stream's group PEL."""
+    res = await redis.eval(CHECK_OWNER_LUA, 1, stream, GROUP, msg_id, consumer)
     return bool(res)
 
 
@@ -199,6 +228,14 @@ class DebateQueue:
 
     async def handle(self, stream: str, msg_id: str, fields: dict, delivered: int = 1) -> bool:
         """Run one entry; True if it was acked (done or dead-lettered), False if left pending for retry."""
+        # Initial ownership proof: a pause between delivery/reclaim and this point may have let another
+        # consumer take the entry over; never run the handler (or any DB write) for work we no longer own.
+        owner = await current_owner(self.redis, stream, msg_id)
+        if owner != self.consumer:
+            logger.warning("Entry %s on %s is owned by %r (we are %r): not handling",
+                           msg_id, stream, owner, self.consumer)
+            return False
+
         if delivered > MAX_DELIVERIES:
             return await dead_letter(self.redis, stream, msg_id, fields, "MAX_DELIVERIES", delivered, self.consumer)
 
