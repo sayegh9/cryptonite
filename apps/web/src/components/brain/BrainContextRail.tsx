@@ -7,6 +7,7 @@ import { fetchBrainSpend, listBrainSessions, loadBrainHistory } from "@/lib/brai
 import type { BrainSessionSummary } from "@/lib/brain/types";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { listMandates } from "@/lib/mission/client";
+import { staleMarkText } from "@/lib/mission/marks";
 import { MANDATE_UPDATED_EVENT } from "@/lib/mission/events";
 import type { Mandate } from "@/lib/mission/types";
 import { fmtQuantity, isZeroQuantity } from "@/lib/format";
@@ -18,6 +19,9 @@ interface RailPosition {
   quantity?: string | number;
   unrealized_pnl?: string | number;
   status?: string;
+  /** B3: the API flags a position valued at a stored mark instead of a live quote. */
+  mark_stale?: boolean;
+  mark_age_s?: number | null;
 }
 
 /**
@@ -109,7 +113,16 @@ export function BrainContextRail() {
                     <span className={p.side === "SHORT" || p.side === "SELL" ? "text-rose-400" : "text-emerald-400"}>{p.side ?? ""}</span>{" "}
                     <span data-testid="brain-rail-qty">{fmtQuantity(p.quantity, steps[p.instrument_id])}</span> {p.instrument_id}
                   </span>
-                  {pnl !== null && <span className={pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>{pnl.toFixed(2)}</span>}
+                  {pnl !== null && (
+                    <span
+                      className={p.mark_stale ? "text-zinc-500" : pnl >= 0 ? "text-emerald-400" : "text-rose-400"}
+                      title={p.mark_stale ? staleMarkText(p.mark_age_s) : undefined}
+                      data-testid={p.mark_stale ? "brain-rail-pnl-stale" : "brain-rail-pnl"}
+                    >
+                      {pnl.toFixed(2)}
+                      {p.mark_stale ? " (stale)" : ""}
+                    </span>
+                  )}
                 </li>
               );
             })}
