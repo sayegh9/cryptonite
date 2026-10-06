@@ -9,6 +9,9 @@
   with source BINANCE_REST, so settlements missed while the stream was down are filled in.
   Rows already present (from either source) are left untouched.
 - Open interest is polled from REST (Binance has no OI stream) into ``perp:oi:{symbol}``.
+- ``derivatives_feed:heartbeat`` (90s TTL) is rewritten every 30 s by the event loop itself, whether or
+  not Binance is reachable: process liveness for the container healthcheck (mark freshness is its own
+  signal).
 
 All timestamps come from exchange event times (``E``, ``T``, OI ``time``), never the wall clock.
 
@@ -48,6 +51,9 @@ OI_TTL_S = 3 * OI_POLL_INTERVAL_S
 FUNDING_BACKFILL_INTERVAL_S = 3_600
 FUNDING_BACKFILL_LOOKBACK_DAYS = 30
 FUNDING_PAGE_LIMIT = 1_000  # Binance maximum
+HEARTBEAT_KEY = "derivatives_feed:heartbeat"
+HEARTBEAT_INTERVAL_S = 30
+HEARTBEAT_TTL_S = 3 * HEARTBEAT_INTERVAL_S
 STALE_STREAM_S = 30  # @1s stream: no frame for this long means a dead connection
 FUNDING_INTERVAL_HOURS = {1, 2, 4, 8}
 
@@ -331,6 +337,17 @@ class DerivativesFeed:
             except TimeoutError:
                 pass
 
+    async def run_heartbeat(self, stop: asyncio.Event, interval_s: float = HEARTBEAT_INTERVAL_S) -> None:
+        while not stop.is_set():
+            try:
+                await self.redis.set(HEARTBEAT_KEY, json.dumps({"symbols": self.symbols}), ex=HEARTBEAT_TTL_S)
+            except Exception as e:  # Redis down: the healthcheck reports it; keep the feed running
+                logger.warning("Could not write %s: %s", HEARTBEAT_KEY, e)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval_s)
+            except TimeoutError:
+                pass
+
     async def run_oi_poller(self, stop: asyncio.Event, interval_s: float = OI_POLL_INTERVAL_S) -> None:
         while not stop.is_set():
             await self.poll_open_interest_once()
@@ -352,7 +369,8 @@ async def main() -> None:
     try:
         async with httpx.AsyncClient(timeout=10) as http:
             feed = DerivativesFeed(redis, pool, symbols, http_client=http)
-            await asyncio.gather(feed.run_mark_stream(stop), feed.run_oi_poller(stop), feed.run_funding_backfill(stop))
+            await asyncio.gather(feed.run_mark_stream(stop), feed.run_oi_poller(stop), feed.run_funding_backfill(stop),
+                                 feed.run_heartbeat(stop))
     finally:
         stop.set()
         await redis.aclose()
