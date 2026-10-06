@@ -6,22 +6,28 @@ import datetime
 import json
 import logging
 import os
+import time
 import uuid
 from decimal import Decimal
-import time
 from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
-
-from cryptonite_execution.engine import PaperTradingEngine
-from cryptonite_execution.matching import PaperFill, match_order, match_working_orders
-from cryptonite_execution.risk import OrderIntent
-from pydantic import ValidationError
-from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from cryptonite_execution.bridge import EventBridgeWorker
+from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.mandate_store import load_mandate
 from cryptonite_execution.mandates import max_entry_quantity
+from cryptonite_execution.matching import PaperFill, match_order, match_working_orders
+from cryptonite_execution.risk import OrderIntent
+from cryptonite_schemas.mandate import (
+    MIN_MANDATE_ENTRY_PCT,
+    MandateReject,
+    mandate_id_from_instance,
+)
+from cryptonite_strategies.registry import STRATEGY_REGISTRY
+from nautilus_trader.model import Bar, BarType, Price, Quantity
+from pydantic import ValidationError
+
 from cryptonite_orchestrator.mandate_gate import (
     command_mandate_id,
     gate_ai_order,
@@ -29,11 +35,9 @@ from cryptonite_orchestrator.mandate_gate import (
     is_ai_command,
     mandate_exposure,
 )
-from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, MandateReject, mandate_id_from_instance
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
+from cryptonite_orchestrator.marks import start_mark_to_market
 from cryptonite_orchestrator.ops_monitor import ops_monitor
-from nautilus_trader.model import Bar, BarType
-from nautilus_trader.model import Price, Quantity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("cryptonite.orchestrator")
@@ -1181,7 +1185,6 @@ async def main():
         while True:
             try:
                 rows = await pool.fetch("SELECT * FROM paper_strategy_instances WHERE status = 'RUNNING'")
-                current_ids = {r["instance_id"] for r in rows}
                 
                 # Load new ones
                 for row in rows:
@@ -1305,6 +1308,7 @@ async def main():
     asyncio.create_task(consume_perp_marks(redis, engine))
     asyncio.create_task(risk_monitor(engine, pool, redis))
     asyncio.create_task(publish_positions())
+    mark_projector = await start_mark_to_market(pool, redis, engine, quote_cache)  # noqa: F841 (B3; kept referenced)
     asyncio.create_task(ops_monitor(engine, pool, redis))  # enforced limits (R1.8) + heartbeat alerts (R7.5)
 
     # Stream consumer for nautilus:stream:bus

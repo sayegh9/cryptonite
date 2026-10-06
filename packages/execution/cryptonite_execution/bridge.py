@@ -153,6 +153,32 @@ class IntegritySupervisor:
             logger.exception("Failed to persist integrity incident: %s", e)
 
 
+async def recompute_total_equity(conn: asyncpg.Connection, account_id: str) -> None:
+    """total_equity = cash_balance + spot value + perp unrealized PnL, at the positions' current_price."""
+    equity_row = await conn.fetchrow(
+        """
+        SELECT COALESCE(SUM(CASE
+            WHEN instrument_id LIKE '%-PERP.%'
+            THEN (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * (current_price - entry_price)
+            ELSE quantity * current_price
+        END), 0) as pos_val
+        FROM paper_positions
+        WHERE account_id = $1 AND status = 'OPEN';
+        """,
+        account_id
+    )
+    open_val = Decimal(str(equity_row["pos_val"])) if equity_row else Decimal("0")
+    await conn.execute(
+        """
+        UPDATE paper_accounts
+        SET total_equity = cash_balance + $2,
+            updated_at = now()
+        WHERE account_id = $1;
+        """,
+        account_id, open_val
+    )
+
+
 class EventBridgeWorker:
     """Async worker that consumes micro-batches from EventBridge and commits them atomically to PostgreSQL."""
 
@@ -423,29 +449,7 @@ class EventBridgeWorker:
         return len(batch)
 
     async def _recompute_total_equity(self, conn: asyncpg.Connection, account_id: str) -> None:
-        """total_equity = cash_balance + spot value + perp unrealized PnL."""
-        equity_row = await conn.fetchrow(
-            """
-            SELECT COALESCE(SUM(CASE
-                WHEN instrument_id LIKE '%-PERP.%'
-                THEN (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * (current_price - entry_price)
-                ELSE quantity * current_price
-            END), 0) as pos_val
-            FROM paper_positions
-            WHERE account_id = $1 AND status = 'OPEN';
-            """,
-            account_id
-        )
-        open_val = Decimal(str(equity_row["pos_val"])) if equity_row else Decimal("0")
-        await conn.execute(
-            """
-            UPDATE paper_accounts
-            SET total_equity = cash_balance + $2,
-                updated_at = now()
-            WHERE account_id = $1;
-            """,
-            account_id, open_val
-        )
+        await recompute_total_equity(conn, account_id)
 
     async def _persist_funding(self, conn: asyncpg.Connection, evt: dict[str, Any]) -> None:
         """Book a funding payment: account cash/realized PnL, and the open position's realized PnL
@@ -583,17 +587,28 @@ class EventBridgeWorker:
 
 
 class CoalescedMarkToMarketProjector:
-    """Updates paper_positions and paper_accounts mark-to-market valuation throttled to 250ms."""
+    """Marks open paper_positions to market (current_price, unrealized_pnl) and revalues their accounts
+    (total_equity, updated_at), coalesced to one pass every ``interval_s`` (review-plan B3, F-H3).
+
+    ``get_latest_price_fn(instrument_id)`` returns the live price, ``(price, quote_ts_ns)``, or None when
+    there is no fresh quote: such a position keeps its stored mark, which readers then flag stale. Each
+    row is updated by its own statement that computes the PnL from the row as it is at that moment, so a
+    fill the event bridge commits in between is never overwritten with an old quantity or entry price; a
+    row whose mark has not changed is not written. ``on_marked`` (optional, awaited after every pass)
+    gets ``{instrument_id: (price, quote_ts_ns)}`` for every instrument marked from a fresh quote.
+    """
 
     def __init__(
         self,
         pg_pool: asyncpg.Pool,
         get_latest_price_fn: Any,
-        interval_s: float = 0.25,
+        interval_s: float = 2.0,
+        on_marked: Any = None,
     ) -> None:
         self.pool = pg_pool
         self.get_latest_price_fn = get_latest_price_fn
         self.interval_s = interval_s
+        self.on_marked = on_marked
         self._running = False
         self._task: asyncio.Task[None] | None = None
 
@@ -610,28 +625,49 @@ class CoalescedMarkToMarketProjector:
             except asyncio.CancelledError:
                 pass
 
-    async def project_once(self) -> None:
-        """Update open positions mark-to-market."""
+    def _live_price(self, instrument_id: str) -> tuple[Decimal, int] | None:
+        got = self.get_latest_price_fn(instrument_id)
+        price, ts_ns = got if isinstance(got, tuple) else (got, time.time_ns())
+        if price is None:
+            return None
+        price = Decimal(str(price))
+        return (price, int(ts_ns)) if price > 0 else None
+
+    async def project_once(self) -> int:
+        """One mark-to-market pass; returns the number of position rows whose mark changed."""
+        marked: dict[str, tuple[Decimal, int]] = {}
+        accounts: set[str] = set()
+        changed_rows = 0
         async with self.pool.acquire() as conn:
             positions = await conn.fetch(
-                "SELECT position_id, instrument_id, side, entry_price, quantity FROM paper_positions WHERE status = 'OPEN';"
+                "SELECT position_id, account_id, instrument_id FROM paper_positions WHERE status = 'OPEN';"
             )
             for pos in positions:
-                cur_price = self.get_latest_price_fn(pos["instrument_id"])
-                if cur_price is not None and cur_price > 0:
-                    direction = -1 if pos.get("side") == "SHORT" else 1
-                    unrealized_pnl = direction * (cur_price - pos["entry_price"]) * pos["quantity"]
-                    await conn.execute(
-                        """
-                        UPDATE paper_positions
-                        SET current_price = $2,
-                            unrealized_pnl = $3
-                        WHERE position_id = $1;
-                        """,
-                        pos["position_id"],
-                        cur_price,
-                        unrealized_pnl,
-                    )
+                inst = pos["instrument_id"]
+                if inst not in marked:
+                    live = self._live_price(inst)
+                    if live is None:
+                        continue
+                    marked[inst] = live
+                changed = await conn.fetchval(
+                    """
+                    UPDATE paper_positions
+                    SET current_price = $2,
+                        unrealized_pnl = (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * ($2 - entry_price)
+                    WHERE position_id = $1 AND status = 'OPEN' AND current_price IS DISTINCT FROM $2
+                    RETURNING account_id;
+                    """,
+                    pos["position_id"],
+                    marked[inst][0],
+                )
+                if changed is not None:
+                    accounts.add(changed)
+                    changed_rows += 1
+            for account_id in sorted(accounts):
+                await recompute_total_equity(conn, account_id)
+        if self.on_marked is not None and marked:
+            await self.on_marked(marked)
+        return changed_rows
 
     async def _run_loop(self) -> None:
         while self._running:
@@ -641,5 +677,5 @@ class CoalescedMarkToMarketProjector:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug("Error in mark-to-market projection: %s", e)
-                await asyncio.sleep(1.0)
+                logger.warning("Error in mark-to-market projection: %s", e)
+                await asyncio.sleep(max(1.0, self.interval_s))
