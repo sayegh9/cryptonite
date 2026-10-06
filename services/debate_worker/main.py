@@ -26,6 +26,16 @@ from cryptonite_agents.debate_fleet import (
 )
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_schemas.debate import normalize_verdict
+from debate_queue import (
+    DEBATE_QUEUE,
+    EXIT_DEBATE_QUEUE,
+    HOUSEKEEPING_S,
+    DebateQueue,
+    PoisonMessage,
+    consumer_name,
+    ensure_groups,
+    housekeeping,
+)
 from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate
 from mandate_routing import route_entry, route_exit
 
@@ -34,9 +44,7 @@ logger = logging.getLogger("debate_worker")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_api:api_dev_pass@127.0.0.1:5432/cryptonite")
-DEBATE_QUEUE = "stream:debate_queue"
-DEBATE_WORKER_GROUP = "debate_workers"
-DEBATE_WORKER_NAME = f"worker-{uuid.uuid4().hex[:8]}"
+DEBATE_WORKER_NAME = consumer_name()  # stable per replica container (B4, F-H6); see debate_queue.py
 
 LITE_MAX_ALLOCATION_PCT = 5.0  # below this a lite verdict stands on its own
 LITE_MIN_CONVICTION = 0.35  # a small lite verdict weaker than this is recorded as NO_TRADE
@@ -113,14 +121,6 @@ async def recall_lessons(pg_pool, gateway: Gateway, context_text: str) -> str:
     return "\n- ".join(r["lessons_learned"] for r in lessons) if lessons else "No previous lessons yet."
 
 
-async def init_redis_group(redis_client: redis.Redis):
-    try:
-        await redis_client.xgroup_create(DEBATE_QUEUE, DEBATE_WORKER_GROUP, id="0", mkstream=True)
-        logger.info(f"Created consumer group {DEBATE_WORKER_GROUP} for {DEBATE_QUEUE}")
-    except Exception as e:
-        if "BUSYGROUP Consumer Group name already exists" not in str(e):
-            logger.error(f"Error creating consumer group: {e}")
-
 async def emit_heartbeat(redis_client, role_name: str, status: str, msg: str = ""):
     role_lower = role_name.lower()
     if "analyst" in role_lower:
@@ -170,11 +170,32 @@ class AntiCorruptionLayer:
                 "timestamp": time.time()
             }
 
-async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None):
+async def already_handled(pg_pool, message_ref: str | None) -> bool:
+    """Redelivery guard (B4): this stream message already has a run. A finished run means the worker died
+    between commit and ack; a RUNNING one means it died mid-debate, so the run is closed as WORKER_LOST
+    (not re-debated: the setup has aged by the reclaim window, and a rerun would pay for the models twice)."""
+    if not message_ref:
+        return False
+    async with pg_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id, status FROM debate_runs WHERE stream_message_id = $1", message_ref)
+        if row is None:
+            return False
+        if row["status"] == "RUNNING":
+            await conn.execute(
+                """UPDATE debate_runs SET status = 'FAILED', completed_at = now(), failure_reason = 'WORKER_LOST'
+                   WHERE id = $1 AND status = 'RUNNING'""", row["id"])
+        logger.warning(f"Redelivered {message_ref} already has run {row['id']} ({row['status']}): not debated again")
+        return True
+
+
+async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
+                                 message_ref: str | None = None):
     gateway = gateway or Gateway(redis=redis_client)
     instrument_id = payload.get("instrument_id")
     trigger_source = payload.get("trigger_source", "scanner")
-    
+    if await already_handled(pg_pool, message_ref):
+        return
+
     trace_id = decision_trace_id(payload)
     payload = {**payload, "decision_trace_id": trace_id}
     logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source} (decision_trace_id={trace_id})")
@@ -210,12 +231,17 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     run_id = uuid.uuid4()
     
     async with pg_pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, decision_trace_id)
-               VALUES ($1, $2, 'RUNNING', $3, now(), $4)""",
-            run_id, instrument_id, trigger_source, uuid.UUID(trace_id)
+        # Unique on stream_message_id (039): a concurrent redelivery cannot open a second run
+        created = await conn.fetchval(
+            """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, decision_trace_id, stream_message_id)
+               VALUES ($1, $2, 'RUNNING', $3, now(), $4, $5)
+               ON CONFLICT (stream_message_id) WHERE stream_message_id IS NOT NULL DO NOTHING RETURNING id""",
+            run_id, instrument_id, trigger_source, uuid.UUID(trace_id), message_ref
         )
-    
+    if created is None:
+        logger.warning(f"{message_ref} already has a run: not debated again")
+        return
+
     try:
         logger.info(f"Phase 1: Gathering Intelligence for {instrument_id}...")
         context_text = f"{brief}\n\n" if brief else ""
@@ -373,6 +399,12 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
     run_id = uuid.UUID(run_id_str) if run_id_str else uuid.uuid4()
     
     logger.info(f"Starting exit debate run for {instrument_id}")
+    if run_id_str:  # redelivery guard (B4): a run the worker already finished (or the reaper closed) stays closed
+        async with pg_pool.acquire() as conn:
+            status = await conn.fetchval("SELECT status FROM debate_runs WHERE id = $1", run_id)
+        if status is not None and status != "RUNNING":
+            logger.warning(f"Exit debate run {run_id} is already {status}: not debated again")
+            return
     acl = AntiCorruptionLayer(pg_pool)
     context = await acl.get_instrument_context(instrument_id)
     
@@ -445,33 +477,29 @@ async def main():
         logger.error("AI_TELEMETRY_DATABASE_URL not set: LLM spend is counted in this process only")
     gateway = Gateway(pool=telemetry_pool, redis=redis_client,
                       budget=BudgetGuard(pool=telemetry_pool, redis=redis_client, spend_unknown=telemetry_pool is None))
-    await init_redis_group(redis_client)
+    async def handle(stream: str, msg_id: str, payload: dict, delivered: int) -> None:
+        if not payload.get("instrument_id"):
+            raise PoisonMessage("no instrument_id")
+        if stream == DEBATE_QUEUE:
+            await process_debate_trigger(pg_pool, redis_client, payload, gateway, message_ref=f"{stream}/{msg_id}")
+        elif stream == EXIT_DEBATE_QUEUE:
+            await process_exit_debate_trigger(pg_pool, redis_client, payload, gateway)
+
+    # At-least-once with reclaim, bounded retries and a DLQ (B4, F-H6): see debate_queue.py
+    queue = DebateQueue(redis_client, DEBATE_WORKER_NAME, handle)
+    await ensure_groups(redis_client)
     try:
-        await redis_client.xgroup_create("stream:exit_debate_queue", DEBATE_WORKER_GROUP, id="0", mkstream=True)
-    except Exception:
-        pass
-    
+        await queue.recover_own()
+    except Exception as e:
+        logger.error(f"Recovering own pending entries failed: {e}")
+
+    next_housekeeping = 0.0
     while True:
         try:
-            messages = await redis_client.xreadgroup(
-                DEBATE_WORKER_GROUP, DEBATE_WORKER_NAME, {DEBATE_QUEUE: ">", "stream:exit_debate_queue": ">"}, count=1, block=5000
-            )
-            
-            if not messages:
-                continue
-                
-            for stream, msgs in messages:
-                for msg_id, payload in msgs:
-                    logger.info(f"Received message {msg_id} from {stream}: {payload}")
-                    try:
-                        if stream == DEBATE_QUEUE:
-                            await process_debate_trigger(pg_pool, redis_client, payload, gateway)
-                        elif stream == "stream:exit_debate_queue":
-                            await process_exit_debate_trigger(pg_pool, redis_client, payload, gateway)
-                        await redis_client.xack(stream, DEBATE_WORKER_GROUP, msg_id)
-                    except Exception as e:
-                        logger.error(f"Error processing message {msg_id}: {e}")
-        
+            if time.monotonic() >= next_housekeeping:
+                next_housekeeping = time.monotonic() + HOUSEKEEPING_S
+                await housekeeping(redis_client, pg_pool, queue)
+            await queue.read(block_ms=5000)
         except Exception as e:
             logger.error(f"Redis consumer error: {e}")
             await asyncio.sleep(2)
