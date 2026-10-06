@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from connections import REDIS_URL
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_schemas.identifiers import (
     to_nautilus_bar_type,
@@ -25,6 +26,8 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # The API may fall back to the all-zero dev TOTP key only in dev/test (R7.10); tests are "test"
 os.environ.setdefault("CRYPTONITE_ENV", "test")
+# Code under test that reads REDIS_URL itself must land on the same isolated test DB (connections.py).
+os.environ["REDIS_URL"] = REDIS_URL
 
 
 @pytest.fixture(autouse=True)
