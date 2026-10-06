@@ -386,7 +386,7 @@ export function TradingViewChart({
       // Durable closed bar: commit the provisional bar and recalculate indicators
       if (msg.type === "closed_bar_committed") {
         if (msg.instrument_id !== instId || msg.timeframe !== timeframe) return;
-        const bar = closedBarFromEvent(msg, provisionalCandleRef.current, previousProvisionalRef.current, timeframe);
+        const bar = closedBarFromEvent(msg, provisionalCandleRef.current, previousProvisionalRef.current);
         if (!bar) return;
 
         const bars = rawBarsRef.current;
@@ -406,6 +406,8 @@ export function TradingViewChart({
         } catch {
           // a historical point the series never had: the indicators below still get the committed bar
         }
+        // Only a batch's last bar is applied: a multi-bar recovery batch newer than the drawn history
+        // leaves the bars before it missing from rawBarsRef (follow-up: refetch history when bar_count > 1).
         if (bar.time === lastTime) bars[bars.length - 1] = bar;
         else {
           bars.push(bar);

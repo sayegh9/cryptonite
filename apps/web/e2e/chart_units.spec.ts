@@ -41,7 +41,7 @@ test.describe("chart modules", () => {
   test("a committed minute replaces the provisional candle with the same open", () => {
     const openSec = closedBarEvent.bar_open_ns / NS;
     const prov = nextProvisional(null, tick(openSec, 100, 100.8, 99.2, 100.4, 2.4), "1m");
-    expect(closedBarFromEvent(closedBarEvent, prov, null, "1m")).toEqual({
+    expect(closedBarFromEvent(closedBarEvent, prov, null)).toEqual({
       time: openSec, open: 100, high: 101, low: 99, close: 100.5, volume: 2.5,
     });
   });
@@ -50,27 +50,40 @@ test.describe("chart modules", () => {
     const openSec = closedBarEvent.bar_open_ns / NS;
     const done = nextProvisional(null, tick(openSec, 100, 101, 99, 100.5, 2.5), "1m");
     const next = nextProvisional(done, tick(openSec + 60, 100.5, 100.6, 100.4, 100.5, 0.1), "1m");
-    const { open, high, low, close, volume, ...noValues } = closedBarEvent; // an event without OHLCV
+    expect(closedBarFromEvent(closedBarEvent, next, done)?.time).toBe(openSec);
+    const { open, high, low, close, volume, ...noValues } = closedBarEvent; // a v2 event without OHLCV
     void [open, high, low, close, volume];
-    expect(closedBarFromEvent(noValues, next, done, "1m")).toEqual(done);
-    expect(closedBarFromEvent(noValues, next, null, "1m")).toBeNull();
+    expect(closedBarFromEvent(noValues, next, done)).toEqual(done);
+    expect(closedBarFromEvent(noValues, next, null)).toBeNull();
   });
 
-  test("a batch commits its last bar; old events fall back to the exclusive end", () => {
+  test("a batch commits its last bar", () => {
     const end = closedBarEvent.bar_open_ns + 3 * 60 * NS;
     const lastOpenSec = end / NS - 60;
     const prov = nextProvisional(null, tick(lastOpenSec, 7, 8, 6, 7.5, 1), "1m");
-    const batch = { bar_open_ns: closedBarEvent.bar_open_ns, interval_end_exclusive_ns: end, last_bar_open_ns: end - 60 * NS };
-    expect(closedBarFromEvent(batch, prov, null, "1m")?.time).toBe(lastOpenSec);
-    expect(closedBarFromEvent({ bar_open_ns: 0, interval_end_exclusive_ns: end }, prov, null, "1m")?.time).toBe(lastOpenSec);
+    const { open, high, low, close, volume, ...noValues } = closedBarEvent;
+    void [open, high, low, close, volume];
+    const batch = { ...noValues, interval_end_exclusive_ns: end, last_bar_open_ns: end - 60 * NS, bar_count: 3 };
+    expect(closedBarFromEvent(batch, prov, null)).toEqual(prov);
   });
 
-  test("the pre-fix event (close as bar_open_ns, end one step late) never matched the candle", () => {
+  test("a pre-fix (schema 1) event is ignored, even once the next minute is forming", () => {
+    // What the coordinator emitted for the same 09:00 kline before the fix: named by its close, the
+    // exclusive end one bar late, no last_bar_open_ns and no OHLCV.
     const openSec = closedBarEvent.bar_open_ns / NS;
-    const prov = nextProvisional(null, tick(openSec, 100, 101, 99, 100.5, 2.5), "1m");
     const closeNs = closedBarEvent.interval_end_exclusive_ns;
-    expect(Math.floor(closeNs / NS)).not.toBe(prov.time); // what the old handler compared
-    expect(closedBarFromEvent({ bar_open_ns: closeNs, interval_end_exclusive_ns: closeNs + 60 * NS }, prov, null, "1m")).toBeNull();
+    const preFix = {
+      schema_version: 1, bar_open_ns: closeNs, bar_close_inclusive_ns: closeNs,
+      interval_end_exclusive_ns: closeNs + 60 * NS, bar_count: 1,
+    };
+    const done = nextProvisional(null, tick(openSec, 100, 101, 99, 100.5, 2.5), "1m");
+    const forming = nextProvisional(done, tick(openSec + 60, 100.5, 100.6, 100.4, 100.5, 0.1), "1m");
+    // end - 1 bar is the FORMING bar's open: deriving the open would commit a partial candle
+    expect((preFix.interval_end_exclusive_ns - 60 * NS) / NS).toBe(forming.time);
+    expect(closedBarFromEvent(preFix, forming, done)).toBeNull();
+    expect(closedBarFromEvent(preFix, done, null)).toBeNull();
+    // a v2-labelled event that lacks last_bar_open_ns is not guessed at either
+    expect(closedBarFromEvent({ ...preFix, schema_version: 2 }, forming, done)).toBeNull();
   });
 
   test("indicators align to the newest bars and pick their pane", () => {

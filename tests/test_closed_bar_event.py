@@ -120,3 +120,15 @@ def test_higher_timeframe_bars_use_their_own_step(tmp_path, timeframe, tf_ms):
     event = commit(tmp_path, [kline(T0_MS, 100, tf_ms)], timeframe)
     assert event["bar_open_ns"] == event["last_bar_open_ns"] == T0_MS * 10**6
     assert event["interval_end_exclusive_ns"] == (T0_MS + tf_ms) * 10**6
+
+
+def test_the_corrected_event_is_schema_version_2(tmp_path):
+    """Consumers tell the corrected meaning from a not-yet-redeployed producer's version-1 events."""
+    assert commit(tmp_path, [kline(T0_MS, 100)])["schema_version"] == 2
+
+
+@pytest.mark.parametrize("timeframe", ["1M", "1x", "m", ""])
+def test_an_unknown_timeframe_is_refused_not_read_as_one_minute(tmp_path, timeframe):
+    coord = TwoStoreCoordinator(NautilusCatalogManager(tmp_path / "n"), AnalyticsLakeWriter(tmp_path / "l"))
+    with pytest.raises(ValueError):
+        coord._timeframe_to_ns(timeframe)
