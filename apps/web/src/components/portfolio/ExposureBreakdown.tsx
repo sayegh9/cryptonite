@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from "react";
 import { PieChart } from "lucide-react";
 import { usePortfolioStore } from "@/lib/stores/usePortfolioStore";
-import { exposureBy, fmtCompactUsd, fmtPct } from "@/lib/portfolio/metrics";
+import { exposureBy, fmtCompactUsd, fmtPct, isHeldPosition } from "@/lib/portfolio/metrics";
 
 /** Single-asset concentration cap enforced by the risk engine. */
 const CONCENTRATION_CAP = 0.25;
@@ -20,7 +20,7 @@ export function ExposureBreakdown() {
   const [by, setBy] = useState<"asset" | "strategy">("asset");
 
   const slices = useMemo(() => {
-    const all = exposureBy(positions.filter((p) => p.status === "OPEN"), by);
+    const all = exposureBy(positions.filter(isHeldPosition), by);
     if (all.length <= MAX_SLICES) return all.map((s, i) => ({ ...s, color: PALETTE[i] }));
     const head = all.slice(0, MAX_SLICES - 1).map((s, i) => ({ ...s, color: PALETTE[i] }));
     const rest = all.slice(MAX_SLICES - 1);

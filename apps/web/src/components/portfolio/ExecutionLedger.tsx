@@ -9,7 +9,7 @@ import {
   type PaperTrade,
 } from "@/lib/stores/usePortfolioStore";
 import { postCommand } from "@/lib/portfolio/actions";
-import { downloadCsv, fmtPrice, fmtQty, toCsv } from "@/lib/portfolio/metrics";
+import { downloadCsv, fmtLedgerQty, fmtPrice, toCsv } from "@/lib/portfolio/metrics";
 
 const RANGE_MS: Record<LedgerRange, number> = { "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, all: Infinity };
 const CANCELLABLE = new Set(["PENDING", "SUBMITTED", "ACCEPTED"]);
@@ -38,9 +38,9 @@ const ORDER_COLUMNS: Column<PaperOrder>[] = [
   { key: "origin", header: "Origin", sort: (o) => o.instance_id, csv: (o) => o.instance_id, cell: (o) => <span className="text-indigo-300">{o.instance_id}</span> },
   { key: "side", header: "Side", sort: (o) => o.side, csv: (o) => o.side, cell: (o) => sideTag(o.side) },
   { key: "type", header: "Type", sort: (o) => o.order_type, csv: (o) => o.order_type, cell: (o) => o.order_type },
-  { key: "qty", header: "Qty", align: "right", sort: (o) => Number(o.quantity), csv: (o) => o.quantity, cell: (o) => fmtQty(Number(o.quantity)) },
+  { key: "qty", header: "Qty", align: "right", sort: (o) => Number(o.quantity), csv: (o) => o.quantity, cell: (o) => fmtLedgerQty(Number(o.quantity)) },
   { key: "price", header: "Limit", align: "right", sort: (o) => Number(o.price ?? 0), csv: (o) => o.price ?? "MKT", cell: (o) => (o.price ? fmtPrice(Number(o.price)) : "MKT") },
-  { key: "filled", header: "Filled", align: "right", sort: (o) => Number(o.filled_qty), csv: (o) => o.filled_qty, cell: (o) => fmtQty(Number(o.filled_qty)) },
+  { key: "filled", header: "Filled", align: "right", sort: (o) => Number(o.filled_qty), csv: (o) => o.filled_qty, cell: (o) => fmtLedgerQty(Number(o.filled_qty)) },
   { key: "status", header: "Status", sort: (o) => o.status, csv: (o) => o.status, cell: (o) => <span className="px-1.5 py-0.5 rounded text-2xs bg-zinc-800 text-zinc-300">{o.status}</span> },
 ];
 
@@ -51,7 +51,7 @@ const TRADE_COLUMNS: Column<PaperTrade>[] = [
   { key: "origin", header: "Origin", sort: (t) => t.instance_id ?? "", csv: (t) => t.instance_id, cell: (t) => <span className="text-indigo-300">{t.instance_id ?? "—"}</span> },
   { key: "side", header: "Side", sort: (t) => t.side, csv: (t) => t.side, cell: (t) => sideTag(t.side) },
   { key: "price", header: "Fill Price", align: "right", sort: (t) => Number(t.price), csv: (t) => t.price, cell: (t) => fmtPrice(Number(t.price)) },
-  { key: "qty", header: "Qty", align: "right", sort: (t) => Number(t.quantity), csv: (t) => t.quantity, cell: (t) => fmtQty(Number(t.quantity)) },
+  { key: "qty", header: "Qty", align: "right", sort: (t) => Number(t.quantity), csv: (t) => t.quantity, cell: (t) => fmtLedgerQty(Number(t.quantity)) },
   { key: "notional", header: "Notional", align: "right", sort: (t) => Number(t.price) * Number(t.quantity), csv: (t) => Number(t.price) * Number(t.quantity), cell: (t) => fmtPrice(Number(t.price) * Number(t.quantity)) },
   { key: "fee", header: "Fee (USDT)", align: "right", sort: (t) => Number(t.commission), csv: (t) => t.commission, cell: (t) => <span className="text-red-400">-{Number(t.commission).toFixed(4)}</span> },
 ];
