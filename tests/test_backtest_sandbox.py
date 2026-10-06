@@ -266,3 +266,35 @@ def test_uncollected_results_are_purged(tmp_path):
     _fake_done(jobs, "new", {"ok": True}, RESULT)
     sandbox.purge_done(jobs)
     assert [p.name for p in (jobs / "done").iterdir()] == ["new"]
+
+
+def test_the_heartbeat_keeps_beating_while_a_job_runs(tmp_path, monkeypatch):
+    # A4 healthcheck: the sandbox is healthy while --heartbeat is fresh, so a long job must not starve it.
+    beats = []
+    monkeypatch.setattr(sandbox, "HEARTBEAT_EVERY_S", 0.1)
+    monkeypatch.setattr(sandbox, "_beat", lambda hb: beats.append((hb, time.monotonic())))
+    monkeypatch.setattr(sandbox, "_child_argv", lambda c, w: ["sh", "-c", "sleep 0.8"])
+    jobs = tmp_path / "jobs"
+    fail_orphans(jobs)
+    submit(jobs, request())
+    hb = tmp_path / ".alive"
+    assert serve_once(jobs, tmp_path, timeout_s=10, work_root=tmp_path, heartbeat=hb) is not None
+    assert len(beats) >= 5 and {b[0] for b in beats} == {hb}
+    assert max(b[1] - a[1] for a, b in zip(beats, beats[1:])) < 0.5
+    status = json.loads(next((jobs / "done").glob("*/status.json")).read_text())
+    assert status["returncode"] == 0
+
+
+def test_the_heartbeat_wait_still_times_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(sandbox, "HEARTBEAT_EVERY_S", 0.1)
+    monkeypatch.setattr(sandbox, "_child_argv", lambda c, w: ["sh", "-c", "sleep 30"])
+    jobs = tmp_path / "jobs"
+    fail_orphans(jobs)
+    submit(jobs, request())
+    hb = tmp_path / ".alive"
+    started = time.monotonic()
+    serve_once(jobs, tmp_path, timeout_s=1, work_root=tmp_path, heartbeat=hb)
+    assert time.monotonic() - started < 5
+    status = json.loads(next((jobs / "done").glob("*/status.json")).read_text())
+    assert status == {"ok": False, "returncode": None, "error": "timed out after 1 s"}
+    assert time.time() - hb.stat().st_mtime < 5  # the real _beat touched the file

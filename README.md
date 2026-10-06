@@ -167,7 +167,7 @@ rest); Telegram approvals add the notifier keys listed in [HANDOFF.md](HANDOFF.m
 docker compose -f infra/docker-compose.yml up -d postgres redis
 
 # 2. Migrations (the test image has Alembic)
-docker compose -f infra/docker-compose.yml run --rm test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
+docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
 
 # 3. Create your operator account (prints a TOTP secret for your authenticator app)
 docker compose -f infra/docker-compose.yml exec -T api python - <your-username> <your-password> < scripts/create_operator.py
