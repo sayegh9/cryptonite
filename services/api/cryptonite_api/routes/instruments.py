@@ -1,29 +1,60 @@
 """Instruments metadata route."""
 
-import math
 import logging
+import math
 import os
+import time
 from typing import Any
 
-import httpx
-
-from cryptonite_api.routes.auth import OPERATOR_WRITE, require_operator, require_csrf
-from fastapi import APIRouter, Request, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel, Field
 import asyncpg
-
-from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
+import httpx
+from cryptonite_api.routes.auth import OPERATOR_WRITE, require_csrf, require_operator
+from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
-
-from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from cryptonite_storage.coordinator import TwoStoreCoordinator
+from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from nautilus_trader.model import BarType
-
-from cryptonite_schemas.identifiers import to_spot_instrument_id
-from cryptonite_schemas.bar import RawBinanceKline
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1/instruments", tags=["instruments"])
 logger = logging.getLogger(__name__)
+
+# Same margin as ingest's REST client: the last kline of a range ending "now" is still forming, and this
+# host's clock may run ahead of Binance's.
+CLOSED_MARGIN_MS = 2_000
+
+
+def klines_to_bars(
+    klines: list[list[Any]],
+    instrument_id: str,
+    bar_type: str,
+    price_precision: int,
+    size_precision: int,
+    now_ms: int | None = None,
+) -> list[EnrichedBar]:
+    """Binance REST kline arrays -> lake bars stamped exactly like ingest (``EnrichedBar.from_binance_raw``):
+    ``ts_event_ns = ts_init_ns = kline CLOSE``, ``received_at_ns`` = arrival wall clock. A kline still open
+    at ``now_ms`` is skipped: a forming bar is not a bar.
+
+    B1 / F-C1: this path used to stamp ``ts_event_ns = ts_init_ns = kline OPEN`` (and ``received_at_ns`` =
+    Binance close time), so its rows sat one bar early next to ingest's and collided with them in
+    ``query_bars_df``. ``scripts/repair_lake_open_stamped_rows.py`` repairs the rows already written."""
+    now_ms = (int(time.time() * 1000) if now_ms is None else now_ms) - CLOSED_MARGIN_MS
+    received_at_ns = time.time_ns()
+    bars = []
+    for k in klines:
+        # 0 open time, 1 open, 2 high, 3 low, 4 close, 5 volume, 6 close time, 7 quote volume,
+        # 8 trades, 9 taker buy base volume, 10 taker buy quote volume
+        raw = RawBinanceKline(
+            open_time_ms=int(k[0]), open=str(k[1]), high=str(k[2]), low=str(k[3]), close=str(k[4]),
+            volume=str(k[5]), close_time_ms=int(k[6]), quote_volume=str(k[7]), trades_count=int(k[8]),
+            taker_buy_base_volume=str(k[9]), taker_buy_quote_volume=str(k[10]), is_closed=int(k[6]) < now_ms,
+        )
+        if raw.is_closed:
+            bars.append(EnrichedBar.from_binance_raw(raw, instrument_id, bar_type, price_precision, size_precision,
+                                                     received_at_ns=received_at_ns))
+    return bars
 
 class OnboardRequest(BaseModel):
     symbol: str
@@ -114,7 +145,7 @@ async def run_onboarding(symbol: str, pool: asyncpg.Pool, redis):
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             klines_resp = await client.get(
-                f"https://api.binance.com/api/v3/klines",
+                "https://api.binance.com/api/v3/klines",
                 params={"symbol": sym, "interval": "1m", "limit": 1000},
                 headers={'User-Agent': 'Mozilla/5.0'},
             )
@@ -126,38 +157,7 @@ async def run_onboarding(symbol: str, pool: asyncpg.Pool, redis):
         naut_mgr = NautilusCatalogManager(nautilus_dir)
         coord = TwoStoreCoordinator(naut_mgr, writer, pool)
 
-        bars = []
-        from cryptonite_schemas.bar import EnrichedBar
-        from decimal import Decimal
-        for k in klines_data:
-            open_d = Decimal(str(k[1]))
-            high_d = Decimal(str(k[2]))
-            low_d = Decimal(str(k[3]))
-            close_d = Decimal(str(k[4]))
-            vol_d = Decimal(str(k[5]))
-            bars.append(EnrichedBar(
-                instrument_id=inst_id,
-                bar_type=f"{inst_id}-1-MINUTE-LAST-EXTERNAL",
-                ts_event_ns=int(k[0]) * 1_000_000,
-                ts_init_ns=int(k[0]) * 1_000_000,
-                received_at_ns=int(k[6]) * 1_000_000,
-                price_precision=price_prec,
-                size_precision=size_prec,
-                open=open_d,
-                high=high_d,
-                low=low_d,
-                close=close_d,
-                volume=vol_d,
-                quote_volume=Decimal(str(k[7])),
-                taker_buy_base_volume=Decimal(str(k[9])),
-                taker_buy_quote_volume=Decimal(str(k[10])),
-                trades_count=int(k[8]),
-                open_raw=str(int(open_d * (10**price_prec))),
-                high_raw=str(int(high_d * (10**price_prec))),
-                low_raw=str(int(low_d * (10**price_prec))),
-                close_raw=str(int(close_d * (10**price_prec))),
-                volume_raw=str(int(vol_d * (10**size_prec)))
-            ))
+        bars = klines_to_bars(klines_data, inst_id, f"{inst_id}-1-MINUTE-LAST-EXTERNAL", price_prec, size_prec)
 
         if bars:
             bt = BarType.from_str(f"{inst_id}-1-MINUTE-LAST-EXTERNAL")
@@ -210,10 +210,6 @@ async def run_backfill(instrument_id: str, timeframe: str, lookback_days: int, p
         naut_mgr = NautilusCatalogManager(nautilus_dir)
         coord = TwoStoreCoordinator(naut_mgr, writer, pool)
         
-        import time
-        from cryptonite_schemas.bar import EnrichedBar
-        from decimal import Decimal
-        
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - (lookback_days * 24 * 3600 * 1000)
         
@@ -246,7 +242,7 @@ async def run_backfill(instrument_id: str, timeframe: str, lookback_days: int, p
             while current_start < now_ms:
                 # Fetch up to 1000 bars
                 klines_resp = await client.get(
-                    f"https://api.binance.com/api/v3/klines",
+                    "https://api.binance.com/api/v3/klines",
                     params={"symbol": sym, "interval": timeframe, "limit": 1000, "startTime": current_start, "endTime": now_ms},
                     headers={'User-Agent': 'Mozilla/5.0'},
                 )
@@ -258,38 +254,8 @@ async def run_backfill(instrument_id: str, timeframe: str, lookback_days: int, p
                 if not klines_data:
                     break
                     
-                bars = []
-                for k in klines_data:
-                    open_d = Decimal(str(k[1]))
-                    high_d = Decimal(str(k[2]))
-                    low_d = Decimal(str(k[3]))
-                    close_d = Decimal(str(k[4]))
-                    vol_d = Decimal(str(k[5]))
-                    
-                    bars.append(EnrichedBar(
-                        instrument_id=instrument_id,
-                        bar_type=bt_str,
-                        ts_event_ns=int(k[0]) * 1_000_000,
-                        ts_init_ns=int(k[0]) * 1_000_000,
-                        received_at_ns=int(k[6]) * 1_000_000,
-                        price_precision=price_prec,
-                        size_precision=size_prec,
-                        open=open_d,
-                        high=high_d,
-                        low=low_d,
-                        close=close_d,
-                        volume=vol_d,
-                        quote_volume=Decimal(str(k[7])),
-                        taker_buy_base_volume=Decimal(str(k[9])),
-                        taker_buy_quote_volume=Decimal(str(k[10])),
-                        trades_count=int(k[8]),
-                        open_raw=str(int(open_d * (10**price_prec))),
-                        high_raw=str(int(high_d * (10**price_prec))),
-                        low_raw=str(int(low_d * (10**price_prec))),
-                        close_raw=str(int(close_d * (10**price_prec))),
-                        volume_raw=str(int(vol_d * (10**size_prec)))
-                    ))
-                
+                bars = klines_to_bars(klines_data, instrument_id, bt_str, price_prec, size_prec)
+
                 if bars:
                     await coord.commit_batch(
                         bars=bars,
