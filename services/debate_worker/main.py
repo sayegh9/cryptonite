@@ -450,10 +450,12 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
             async with conn.transaction():
                 rr = await conn.fetchrow("SELECT status,stream_message_id,claim_gen FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
                 if rr and rr["status"]=="RUNNING" and rr["claim_gen"]==my_generation:
+                    owned = True
                     if consumer and message_ref:
                         sr,_,mr=message_ref.partition("/")
-                        if await is_pel_owner(redis_client,sr,mr,consumer):
-                            await conn.execute("UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
+                        owned = await is_pel_owner(redis_client,sr,mr,consumer)
+                    if owned:
+                        await conn.execute("UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
 
 async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
                                       message_ref: str | None = None, delivered: int | None = None,
@@ -511,10 +513,12 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
             async with conn.transaction():
                 rr = await conn.fetchrow("SELECT status,claim_gen,stream_message_id FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
                 if rr and rr["status"]=="RUNNING" and rr["claim_gen"]==my_generation:
+                    owned = True
                     if consumer and message_ref:
                         sr,_,mr=message_ref.partition("/")
-                        if await is_pel_owner(redis_client,sr,mr,consumer):
-                            await conn.execute("UPDATE debate_runs SET status='NO_TRADE',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
+                        owned = await is_pel_owner(redis_client,sr,mr,consumer)
+                    if owned:
+                        await conn.execute("UPDATE debate_runs SET status='NO_TRADE',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
         return
 
     try:
