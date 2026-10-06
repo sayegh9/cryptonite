@@ -9,6 +9,7 @@ import type { GateCheck, Mandate } from "@/lib/mission/types";
 import { useAutonomyStore } from "@/lib/stores/useAutonomyStore";
 import OutcomesByRegime from "./OutcomesByRegime";
 import ReliabilityChart from "./ReliabilityChart";
+import { fmtGateActual } from "@/lib/format";
 
 const CHECK_LABEL: Record<string, string> = {
   days_at_level: "Days at this level",
@@ -136,7 +137,7 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
                       </td>
                       <td className="py-1 text-zinc-400">{c.required}</td>
                       <td className="py-1 tabular-nums">
-                        {c.actual}
+                        {fmtGateActual(c.name, c.actual, view.gate.metrics)}
                         {iv && <div className="text-2xs text-zinc-500" data-testid="gate-check-interval">{iv}</div>}
                       </td>
                       <td className="py-1">
