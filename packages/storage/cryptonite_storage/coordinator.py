@@ -17,6 +17,7 @@ from nautilus_trader.model import BarType
 
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
+from cryptonite_storage.queries import timeframe_ns
 
 logger = logging.getLogger("cryptonite.coordinator")
 
@@ -258,14 +259,9 @@ class TwoStoreCoordinator:
                 )
 
     def _timeframe_to_ns(self, timeframe: str) -> int:
-        tf = timeframe.lower()
-        if tf.endswith("m"):
-            return int(tf[:-1]) * 60 * 1_000_000_000
-        elif tf.endswith("h"):
-            return int(tf[:-1]) * 3600 * 1_000_000_000
-        elif tf.endswith("d"):
-            return int(tf[:-1]) * 86400 * 1_000_000_000
-        return 60 * 1_000_000_000
+        # Raises on an unknown or month (1M) timeframe instead of silently taking one minute: the
+        # closed_bar_committed open times are derived from it.
+        return timeframe_ns(timeframe)
 
     async def _insert_pending_batch(
         self,
@@ -329,9 +325,15 @@ class TwoStoreCoordinator:
             return
         outbox_event_id = str(uuid.uuid4())
         step_ns = self._timeframe_to_ns(timeframe)
-        interval_end_exclusive_ns = start_ns + (bar_count * step_ns)
+        # Bars are stamped at their CLOSE: start_ns / end_ns are the first and last bar's close. The event
+        # names the batch by the resampler's contract (and the open_kline ticks'): the first bar's OPEN,
+        # the last bar's close as the exclusive end. It used to send the first close as bar_open_ns and
+        # end one step late, so the chart never matched its provisional candle (B1 / F-C1 follow-up).
+        # schema_version 2 marks the corrected meaning, so consumers can ignore version-1 events from a
+        # producer not yet redeployed instead of misreading their times.
+        last = bars[-1] if bars else None
         event_payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "producer": "cryptonite-ingest",
             "occurred_at_ns": time.time_ns(),
             "event_id": outbox_event_id,
@@ -343,10 +345,13 @@ class TwoStoreCoordinator:
             "instrument_id": f"{symbol.upper()}.{venue.upper()}",
             "timeframe": timeframe,
             "bar_type": bar_type,
-            "bar_open_ns": start_ns,
-            "bar_close_inclusive_ns": end_ns,
-            "interval_end_exclusive_ns": interval_end_exclusive_ns,
+            "bar_open_ns": start_ns - step_ns,
+            "bar_close_inclusive_ns": end_ns - 1_000_000,
+            "interval_end_exclusive_ns": end_ns,
+            "last_bar_open_ns": end_ns - step_ns,
             "bar_count": bar_count,
+            # final values of the last bar, so a consumer never depends on having seen its last tick
+            **({f: str(getattr(last, f)) for f in ("open", "high", "low", "close", "volume")} if last else {}),
             "payload_checksum": payload_checksum,
             "analytics_file_checksum": analytics_file_checksum,
             "nautilus_file_checksum": nautilus_file_checksum,

@@ -40,14 +40,17 @@ export interface ClosedBarCommittedEvent {
   event_id: string;
   instrument_id: string;
   timeframe: string;
-  bar_open_ns: number;
+  bar_open_ns: number; // the batch's first bar OPEN
   bar_close_inclusive_ns: number;
-  interval_end_exclusive_ns: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
+  interval_end_exclusive_ns: number; // the batch's last bar close
+  last_bar_open_ns: number;
+  bar_count: number;
+  // final values of the batch's last bar, as decimal strings
+  open: string;
+  high: string;
+  low: string;
+  close: string;
+  volume: string;
 }
 
 export interface SignalCandidate {

@@ -7,8 +7,17 @@ import time
 from decimal import Decimal
 from pathlib import Path
 
+import asyncpg
 import pytest
-from connections import REDIS_URL, install_redis_db_guard, redis_report_line
+from connections import (
+    DB_URL,
+    DEV_DATABASES,
+    REDIS_URL,
+    DevDatabaseError,
+    assert_not_dev_db,
+    install_redis_db_guard,
+    redis_report_line,
+)
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_schemas.identifiers import (
     to_nautilus_bar_type,
@@ -33,6 +42,49 @@ install_redis_db_guard()  # any redis-py client on the live DBs 0/1 raises (conn
 
 def pytest_report_header(config):
     return redis_report_line()  # REDIS_URL is rewritten to the test DB: say so once per run
+
+# Never the dev DB (C3, F-M9). Services default to `cryptonite` when DATABASE_URL is unset, so pin the
+# test default before any service module is imported; then refuse a dev-DB URL in any *DATABASE_URL
+# variable (pytest_configure) and any asyncpg connection that lands on it, however its URL was built.
+os.environ.setdefault("DATABASE_URL", DB_URL)
+os.environ.setdefault("ASYNC_DATABASE_URL", DB_URL.replace("postgresql://", "postgresql+asyncpg://", 1))
+
+
+def dev_db_env_vars(environ=os.environ) -> list[str]:
+    bad = []
+    for key, value in sorted(environ.items()):
+        if key.endswith("DATABASE_URL") and value:
+            try:
+                assert_not_dev_db(value.replace("+asyncpg", ""), key)
+            except DevDatabaseError:
+                bad.append(key)
+    return bad
+
+
+def pytest_configure(config):
+    bad = dev_db_env_vars()
+    if bad:
+        raise pytest.UsageError(
+            f"Refusing to run tests: {', '.join(bad)} point(s) at the dev database "
+            f"({', '.join(sorted(DEV_DATABASES))}). Use a throwaway database such as cryptonite_ci_<item>."
+        )
+
+
+_asyncpg_connect = asyncpg.connection.connect
+
+
+async def _connect_never_dev_db(*args, **kwargs):
+    con = await _asyncpg_connect(*args, **kwargs)
+    name = await con.fetchval("SELECT current_database()")
+    if name in DEV_DATABASES:
+        await con.close()
+        raise DevDatabaseError(f"A test connected to the dev database '{name}'; tests must use a throwaway database.")
+    return con
+
+
+# asyncpg.create_pool resolves asyncpg.connection.connect when the pool is built, so both paths are covered
+asyncpg.connection.connect = _connect_never_dev_db
+asyncpg.connect = _connect_never_dev_db
 
 
 @pytest.fixture(autouse=True)

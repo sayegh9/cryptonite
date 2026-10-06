@@ -40,19 +40,22 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
     }
   }, []);
 
+  // Shares the header's in-flight refresh (useMandateStore.refresh); a click or a mandate change asks
+  // for data fetched after it
   const reload = useCallback(() => void refresh(), [refresh]);
+  const reloadNow = useCallback(() => void refresh({ after: performance.now() }), [refresh]);
 
   useEffect(() => {
     if (!isActive) return;
     reload();
     const t = setInterval(reload, 5000);
-    const onUpdated = () => reload();
+    const onUpdated = (e: Event) => void refresh({ after: e.timeStamp });
     window.addEventListener(MANDATE_UPDATED_EVENT, onUpdated);
     return () => {
       clearInterval(t);
       window.removeEventListener(MANDATE_UPDATED_EVENT, onUpdated);
     };
-  }, [isActive, reload]);
+  }, [isActive, reload, refresh]);
 
   return (
     <div data-testid="mission-control" className="flex h-full min-h-0 flex-col overflow-y-auto bg-zinc-950 p-4 text-zinc-100">
@@ -74,7 +77,7 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
               </button>
             ))}
           </div>
-          <button type="button" onClick={reload} aria-label="Refresh Mission Control" className="text-zinc-500 hover:text-zinc-200">
+          <button type="button" onClick={reloadNow} aria-label="Refresh Mission Control" className="text-zinc-500 hover:text-zinc-200">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
