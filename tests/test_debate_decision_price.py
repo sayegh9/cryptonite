@@ -71,10 +71,12 @@ def scanner_payload() -> dict:
 
 
 def live_tick(bid: str, ask: str, age_s: float, instrument: str = INSTRUMENT) -> list:
+    """One stream entry in the real ``{"data": <json>}`` envelope the ingest writes."""
     now_ns = time.time_ns()
-    return [("1700000000000-0", {"instrument_id": instrument, "bid_price": bid, "ask_price": ask,
-                                 "bid_size": "1.0", "ask_size": "1.0",
-                                 "arrival_ns": str(now_ns - int(age_s * 1e9))})]
+    ui_record = {"instrument_id": instrument, "bid_price": bid, "ask_price": ask,
+                 "bid_size": "1.0", "ask_size": "1.0",
+                 "arrival_ns": str(now_ns - int(age_s * 1e9))}
+    return [("1700000000000-0", {"data": json.dumps(ui_record)})]
 
 
 class FakeEmbedder:
@@ -140,7 +142,8 @@ async def test_no_binance_fallback_remains_in_the_worker():
 @pytest.mark.parametrize("raw_ticks", [
     [],  # missing: empty stream
     live_tick("65000", "65020", DECISION_PRICE_MAX_AGE_S + 20.0),  # stale
-    [("1700000000000-0", {"junk": "1"})],  # malformed entry
+    [("1700000000000-0", {"data": "not-json"})],  # malformed envelope
+    [("1700000000000-0", {"data": json.dumps({"junk": "1"})})],  # malformed tick
     live_tick("-5", "-4", 1.0),  # non-positive quote
     live_tick("3000", "3010", 1.0, instrument="ETHUSDT.BINANCE"),  # wrong symbol
 ])
@@ -243,6 +246,39 @@ async def test_final_quote_is_the_persisted_price(debate_main, pool):
     assert run["status"] == "PENDING_APPROVAL"
     assert float((await pool.fetchrow("SELECT decision_price FROM portfolio_decisions WHERE run_id = $1",
                                       run["id"]))["decision_price"]) == pytest.approx(65210.0)
+
+
+def test_parse_quote_tick_accepts_bytes_envelope():
+    """The ingest envelope parses with bytes keys/values too (no decode_responses)."""
+    from cryptonite_schemas.marks import parse_quote_tick
+    now_ns = time.time_ns()
+    ui = {"instrument_id": INSTRUMENT, "bid_price": "65000", "ask_price": "65020",
+          "bid_size": "1.0", "ask_size": "1.0", "arrival_ns": str(now_ns - 1_000_000_000)}
+    tick = parse_quote_tick({b"data": json.dumps(ui).encode()})
+    assert tick is not None and tick[0] == INSTRUMENT and tick[3] == int(ui["arrival_ns"])
+    assert parse_quote_tick({"data": "not-json"}) is None
+
+
+async def test_high_volume_stream_still_finds_deep_tick(debate_main, pool):
+    """Retention-complete scan: the target tick buried under 1100 newer other-symbol ticks is still
+    found — no scan-window false NO_PRICE. A stream without the symbol stays NO_PRICE."""
+    now_ns = time.time_ns()
+
+    def other(i):
+        ui = {"instrument_id": f"SYM{i % 40}.BINANCE",
+              "bid_price": "10", "ask_price": "11", "bid_size": "1", "ask_size": "1",
+              "arrival_ns": str(now_ns - 1_000_000_000)}
+        return (f"170000000{i:04d}-0", {"data": json.dumps(ui)})
+
+    deep = live_tick("65000", "65020", 2.0)  # oldest entry: last in reverse order
+    calls = {"n": 0}
+    run = await run_entry(debate_main, pool, quote_double([other(i) for i in range(1100)] + deep), calls)
+    assert run["status"] == "PENDING_APPROVAL"
+    assert float((await pool.fetchrow("SELECT decision_price FROM portfolio_decisions WHERE run_id = $1",
+                                      run["id"]))["decision_price"]) == pytest.approx(65010.0)
+
+    absent = await run_entry(debate_main, pool, quote_double([other(i) for i in range(1100)]), {"n": 0})
+    assert absent["status"] == "NO_PRICE"
 
 
 async def test_missing_instrument_id_is_refused(debate_main, pool):

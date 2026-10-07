@@ -154,25 +154,43 @@ def resolve_decision_price(instrument_id: str, marks: dict[str, LiveMark] | None
 
 # All-market live quotes (review-plan B5, F-M14): ``paper:marks`` only covers instruments with open
 # positions, so a first entry would never price. The ingest publishes every instrument's Binance book
-# ticker to this stream (bounded, latest ~1000 across the universe); the orchestrator's quote cache
-# and the exit monitor read the same feed. One bounded reverse scan finds this instrument's latest tick.
+# ticker to this stream as ``{"data": <json>}`` envelopes (bounded, MAXLEN ~1000, approximate
+# trimming); the orchestrator's quote cache and the exit monitor read the same feed. The scan count
+# covers the stream's full retention with margin, so the read is retention-complete: a still-present
+# symbol can never be missed because of a scan window — absence means the symbol is not fed at all.
 QUOTE_STREAM_KEY = "cryptonite:stream:ui_quote_tick"
-QUOTE_SCAN_COUNT = 500
+QUOTE_SCAN_COUNT = 1500
+
+
+def _field(fields: dict, key: str) -> Any:
+    if key in fields:
+        return fields[key]
+    return fields.get(key.encode())
 
 
 def parse_quote_tick(fields: Any) -> tuple[str, Decimal, Decimal, int] | None:
-    """A stream entry's fields -> (canonical instrument, bid, ask, arrival_ns); None when unusable."""
+    """A stream entry -> (canonical instrument, bid, ask, arrival_ns); None when unusable.
+
+    Unwraps the ingest ``{"data": <json>}`` envelope (str or bytes keys/values, as with or without
+    decode_responses); bare field dicts are accepted leniently.
+    """
     if not isinstance(fields, dict):
         return None
-
-    def get(k):
-        return fields.get(k) if k in fields else fields.get(k.encode() if isinstance(k, str) else k)
+    inner = _field(fields, "data")
+    if inner is not None:
+        try:
+            inner = json.loads(inner.decode() if isinstance(inner, bytes) else inner)
+        except (ValueError, TypeError, AttributeError):
+            return None
+        if not isinstance(inner, dict):
+            return None
+        fields = inner
     try:
-        inst = get("instrument_id")
+        inst = _field(fields, "instrument_id")
         inst = inst.decode() if isinstance(inst, bytes) else str(inst)
-        bid = Decimal(str(get("bid_price")))
-        ask = Decimal(str(get("ask_price")))
-        arrival_ns = int(get("arrival_ns"))
+        bid = Decimal(str(_field(fields, "bid_price")))
+        ask = Decimal(str(_field(fields, "ask_price")))
+        arrival_ns = int(_field(fields, "arrival_ns"))  # type: ignore[arg-type]
     except (TypeError, ValueError, InvalidOperation, AttributeError):
         return None
     if not bid.is_finite() or not ask.is_finite() or bid <= 0 or ask <= 0 or arrival_ns <= 0:
@@ -199,15 +217,17 @@ async def read_live_quote(redis: Any, instrument_id: str) -> tuple[str, Decimal,
 
 def resolve_quote_price(instrument_id: str, tick: tuple[str, Decimal, Decimal, int] | None,
                         now_ns: int | None = None) -> DecisionPrice:
-    """The tick's mid price when its arrival is fresh, else an explicit NO_PRICE (never a guess)."""
+    """The tick's mid price when it is this instrument's fresh arrival, else NO_PRICE (never a guess)."""
     now_ns = now_ns or time.time_ns()
-    if tick is not None:
+    if tick is not None and tick[0] == _canonical(instrument_id):
         _, bid, ask, arrival_ns = tick
         raw_age_s = (now_ns - arrival_ns) / 1e9
         if -1.0 <= raw_age_s <= DECISION_PRICE_MAX_AGE_S:
             return DecisionPrice((bid + ask) / 2, "quote", arrival_ns, max(0.0, raw_age_s))
         return DecisionPrice(None, "NO_PRICE", arrival_ns, max(0.0, raw_age_s))
-    return DecisionPrice(None, "NO_PRICE", None, None)
+    quote_ts = tick[3] if tick is not None else None
+    age = max(0.0, (now_ns - quote_ts) / 1e9) if quote_ts else None
+    return DecisionPrice(None, "NO_PRICE", quote_ts, age)
 
 
 def summarize(views: list[MarkView]) -> dict[str, Any]:

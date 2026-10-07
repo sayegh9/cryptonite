@@ -262,11 +262,11 @@ def fresh_marks(price: str = "65000.0", age_s: float = 2.0) -> dict:
 
 
 def fresh_tick(bid: str = "65000", ask: str = "65020", age_s: float = 2.0) -> list:
-    """A fresh shared quote-stream tick for INSTRUMENT (B5 decision-price source)."""
+    """A fresh shared quote-stream tick for INSTRUMENT (B5 decision-price source, real envelope)."""
     now_ns = time.time_ns()
-    return [("1700000000000-0", {"instrument_id": INSTRUMENT, "bid_price": bid, "ask_price": ask,
-                                 "bid_size": "1.0", "ask_size": "1.0",
-                                 "arrival_ns": str(now_ns - int(age_s * 1e9))})]
+    return [("1700000000000-0", {"data": json.dumps(
+        {"instrument_id": INSTRUMENT, "bid_price": bid, "ask_price": ask,
+         "bid_size": "1.0", "ask_size": "1.0", "arrival_ns": str(now_ns - int(age_s * 1e9))})})]
 
 
 async def test_redelivered_message_does_not_open_a_second_run(debate_main, pool):
