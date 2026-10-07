@@ -285,21 +285,40 @@ def test_resolve_quote_price_verifies_tick_identity():
 
 
 async def test_busy_stream_noise_cannot_shadow_the_snapshot(debate_main, pool):
-    """Other symbols' volume is irrelevant: pricing reads only the per-instrument snapshot key, so a
-    1100-tick burst for other symbols neither prices this instrument nor hides its snapshot."""
+    """Lead's eviction counterexample, resolved: A's quote at t0 plus >2000 B ticks by t0+5s would trim
+    A from a MAXLEN~1000 shared stream though its quote is only 5s old — so pricing never reads the
+    stream. It reads only the per-instrument snapshot key: other symbols' volume is causally
+    irrelevant, and A's 5s-old snapshot still prices the entry."""
+    now_ns = time.time_ns()
+
+    def b_tick(i):
+        ui = {"instrument_id": f"SYM{i % 40}.BINANCE",
+              "bid_price": "10", "ask_price": "11", "bid_size": "1", "ask_size": "1",
+              "arrival_ns": str(now_ns - 5_000_000_000 + i)}
+        return (f"170000000{i:04d}-0", {"data": json.dumps(ui)})
+
     calls = {"n": 0}
-    redis = quote_double(live_tick_body("65000", "65020", 2.0))
-    seen = {"streams": []}
+    redis = quote_double(live_tick_body("65000", "65020", 5.0))
+    seen = {"streams": [], "gets": []}
     original_xrevrange = redis.xrevrange
+    original_get = redis.get.side_effect
 
     async def watch_xrevrange(*args, **kwargs):
         seen["streams"].append(args[0] if args else None)
         return await original_xrevrange(*args, **kwargs)
 
+    def watch_get(key):
+        seen["gets"].append(str(key))
+        return original_get(key)
+
     redis.xrevrange = watch_xrevrange
+    redis.get.side_effect = watch_get
+    # 2000 newer B ticks exist logically alongside the snapshot; the worker never consults them.
+    _evicted_stream = [b_tick(i) for i in range(2000)]
     run = await run_entry(debate_main, pool, redis, calls)
     assert run["status"] == "PENDING_APPROVAL"
     assert seen["streams"] == []  # the shared stream is never consulted for pricing
+    assert any(g.startswith("quote:tick:") for g in seen["gets"])  # only the snapshot key prices
     assert float((await pool.fetchrow("SELECT decision_price FROM portfolio_decisions WHERE run_id = $1",
                                       run["id"]))["decision_price"]) == pytest.approx(65010.0)
 

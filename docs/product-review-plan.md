@@ -276,7 +276,7 @@ C1 (CI) goes first so every later PR is gated by it.
 ### E1. Deploy the held services (recommendation 7, D5)
 - **Owner:** **Platform Engineer**, run sheet by **Senior Project Manager**; **Operator** approves. **Review:** Reality Checker.
 - **Precondition:** Phase B and D1–D5 merged; CI green; a fresh backup (A3) taken.
-- **Change:** back up, apply migrations up to head, rebuild and recreate orchestrator, scanner, debate_worker ×3 and learner. Verify: On-Chain Analyst gone from full debate (R3.2), rule triage active (R3.1), R7.3, F4 and F7 live, mark-to-market running.
+- **Change:** back up, apply migrations up to head, rebuild and recreate orchestrator, scanner, debate_worker ×3 and learner. Sequencing (B5 cross-service contract): rebuild and recreate the ingest producer with or before the debate worker, so `quote:tick:*` snapshot keys exist before any B5 reader deploys — without the producer every entry records fail-closed `NO_PRICE`. Verify: On-Chain Analyst gone from full debate (R3.2), rule triage active (R3.1), R7.3, F4 and F7 live, mark-to-market running, and `quote:tick:<instrument>` keys present with fresh `arrival_ns`.
 - **Done when:** a post-deploy checklist passes with evidence (container image dates, a debate without the On-Chain Analyst, a triage hard reject, moving unrealized PnL).
 - **Effort:** S.
 
