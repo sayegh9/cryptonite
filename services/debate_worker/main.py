@@ -453,7 +453,10 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                     owned = True
                     if consumer and message_ref:
                         sr,_,mr=message_ref.partition("/")
-                        owned = await is_pel_owner(redis_client,sr,mr,consumer)
+                        try:
+                            owned = await is_pel_owner(redis_client,sr,mr,consumer)
+                        except Exception:
+                            owned = False
                     if owned:
                         await conn.execute("UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
 
