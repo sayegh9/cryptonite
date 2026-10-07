@@ -1,9 +1,9 @@
 """FastAPI application entry point for Cryptonite API and Stream Gateway."""
 
+import asyncio
 import logging
 import os
 import time
-import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -15,23 +15,23 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.routes import (
-    settings,
-    research,
-    ai,
     agents,
-    brain,
+    ai,
+    alerts,
     auth,
     backtests,
     bars,
+    brain,
     control,
     instruments,
+    market,
     paper,
+    research,
     scanners,
+    settings,
     signals,
     strategies,
     ws,
-    alerts,
-    market,
 )
 from cryptonite_api.stream_gateway import ALLOWED_ORIGINS, StreamHub
 
@@ -89,6 +89,13 @@ async def lifespan(app: FastAPI):
                     logger.info("Default admin operator user auto-seeded successfully.")
         except Exception as e:
             logger.warning(f"Could not auto-seed admin operator user: {e}")
+
+    # Seed built-in scanner presets if database is fresh
+    try:
+        from cryptonite_api.routes.scanners import ensure_presets_seeded
+        await ensure_presets_seeded(app.state.pool)
+    except Exception as e:
+        logger.warning(f"Could not seed scanner presets: {e}")
 
     yield
 
