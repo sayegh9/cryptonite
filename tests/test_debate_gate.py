@@ -97,6 +97,14 @@ class Redis:
             return {INSTRUMENT: encode_mark(Decimal("65000.0"), now_ns - 2_000_000_000, now_ns)}
         return {}
 
+    async def xrevrange(self, key, *args, **kwargs):
+        if key == "cryptonite:stream:ui_quote_tick":
+            now_ns = time.time_ns()
+            return [("1700000000000-0", {"instrument_id": INSTRUMENT, "bid_price": "65000",
+                                         "ask_price": "65020", "bid_size": "1.0", "ask_size": "1.0",
+                                         "arrival_ns": str(now_ns - 2_000_000_000)})]
+        return []
+
     async def incr(self, key):
         self.kv[key] = int(self.kv.get(key, 0)) + 1
 

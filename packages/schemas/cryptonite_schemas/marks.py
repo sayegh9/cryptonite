@@ -132,14 +132,14 @@ class DecisionPrice:
     """
 
     price: Decimal | None
-    source: str  # live | NO_PRICE
+    source: str  # quote | NO_PRICE
     quote_ts_ns: int | None
     age_s: float | None
 
 
 def resolve_decision_price(instrument_id: str, marks: dict[str, LiveMark] | None,
                            now_ns: int | None = None) -> DecisionPrice:
-    """The live quote for this instrument when fresh, else an explicit NO_PRICE (never a guess)."""
+    """The live mark when its quote is fresh, else an explicit NO_PRICE (never a guess)."""
     now_ns = now_ns or time.time_ns()
     m = (marks or {}).get(_canonical(instrument_id))
     if m is not None and m.price.is_finite() and m.price > 0:
@@ -150,6 +150,64 @@ def resolve_decision_price(instrument_id: str, marks: dict[str, LiveMark] | None
     quote_ts = m.quote_ts_ns if m is not None else None
     age = max(0.0, (now_ns - quote_ts) / 1e9) if quote_ts else None
     return DecisionPrice(None, "NO_PRICE", quote_ts, age)
+
+
+# All-market live quotes (review-plan B5, F-M14): ``paper:marks`` only covers instruments with open
+# positions, so a first entry would never price. The ingest publishes every instrument's Binance book
+# ticker to this stream (bounded, latest ~1000 across the universe); the orchestrator's quote cache
+# and the exit monitor read the same feed. One bounded reverse scan finds this instrument's latest tick.
+QUOTE_STREAM_KEY = "cryptonite:stream:ui_quote_tick"
+QUOTE_SCAN_COUNT = 500
+
+
+def parse_quote_tick(fields: Any) -> tuple[str, Decimal, Decimal, int] | None:
+    """A stream entry's fields -> (canonical instrument, bid, ask, arrival_ns); None when unusable."""
+    if not isinstance(fields, dict):
+        return None
+
+    def get(k):
+        return fields.get(k) if k in fields else fields.get(k.encode() if isinstance(k, str) else k)
+    try:
+        inst = get("instrument_id")
+        inst = inst.decode() if isinstance(inst, bytes) else str(inst)
+        bid = Decimal(str(get("bid_price")))
+        ask = Decimal(str(get("ask_price")))
+        arrival_ns = int(get("arrival_ns"))
+    except (TypeError, ValueError, InvalidOperation, AttributeError):
+        return None
+    if not bid.is_finite() or not ask.is_finite() or bid <= 0 or ask <= 0 or arrival_ns <= 0:
+        return None
+    return _canonical(inst), bid, ask, arrival_ns
+
+
+async def read_live_quote(redis: Any, instrument_id: str) -> tuple[str, Decimal, Decimal, int] | None:
+    """This instrument's latest book tick from the shared quote stream, or None (never raises)."""
+    if redis is None:
+        return None
+    try:
+        entries = await redis.xrevrange(QUOTE_STREAM_KEY, "+", "-", count=QUOTE_SCAN_COUNT)
+    except Exception as e:
+        logger.warning("Could not read live quotes: %s", e)
+        return None
+    target = _canonical(instrument_id)
+    for _, fields in entries or []:
+        tick = parse_quote_tick(fields)
+        if tick is not None and tick[0] == target:
+            return tick
+    return None
+
+
+def resolve_quote_price(instrument_id: str, tick: tuple[str, Decimal, Decimal, int] | None,
+                        now_ns: int | None = None) -> DecisionPrice:
+    """The tick's mid price when its arrival is fresh, else an explicit NO_PRICE (never a guess)."""
+    now_ns = now_ns or time.time_ns()
+    if tick is not None:
+        _, bid, ask, arrival_ns = tick
+        raw_age_s = (now_ns - arrival_ns) / 1e9
+        if -1.0 <= raw_age_s <= DECISION_PRICE_MAX_AGE_S:
+            return DecisionPrice((bid + ask) / 2, "quote", arrival_ns, max(0.0, raw_age_s))
+        return DecisionPrice(None, "NO_PRICE", arrival_ns, max(0.0, raw_age_s))
+    return DecisionPrice(None, "NO_PRICE", None, None)
 
 
 def summarize(views: list[MarkView]) -> dict[str, Any]:

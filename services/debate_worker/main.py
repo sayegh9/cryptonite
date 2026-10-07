@@ -26,7 +26,7 @@ from cryptonite_agents.debate_fleet import (
 )
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_schemas.debate import normalize_verdict
-from cryptonite_schemas.marks import read_marks, resolve_decision_price
+from cryptonite_schemas.marks import read_live_quote, read_marks, resolve_quote_price
 from debate_queue import (
     DEBATE_QUEUE,
     EXIT_DEBATE_QUEUE,
@@ -226,15 +226,16 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     except (TypeError, ValueError):
         candidate_id = None
     logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source} (decision_trace_id={trace_id})")
-    # B5: the decision price is the orchestrator's live mark for this instrument only — a finite
-    # positive quote no older than DECISION_PRICE_MAX_AGE_S. No 24h-ticker cache, no HTTP fallback.
-    # Resolved before the gate, so an unusable quote ends the attempt as NO_PRICE: a terminal
-    # debate_runs row (candidate/message/trace, completed_at, reason NO_PRICE) is persisted under the
-    # same ownership/unique guards as a run, with no portfolio decision, model call or order. A
+    # B5: the decision price is a bounded quote from the orchestrator's all-market quote source —
+    # the shared ui_quote_tick stream of Binance book tickers (same feed as its quote cache): the
+    # latest same-instrument tick, mid of a finite positive bid/ask no older than
+    # DECISION_PRICE_MAX_AGE_S. No 24h-ticker cache, no HTTP fallback. Resolved before the gate, so
+    # an unusable quote ends the attempt as NO_PRICE: a terminal debate_runs row
+    # (candidate/message/trace, completed_at, reason NO_PRICE) is persisted under the same
+    # ownership/unique guards as a run, with no portfolio decision, model call or order. A
     # redelivered message then hits that row in already_handled (idempotent skip, no re-debate).
-    # (The mandate-room read below re-reads marks at decision time.)
-    price_marks = await read_marks(redis_client)
-    quoted = resolve_decision_price(instrument_id, price_marks)
+    # (The mandate-room read below still uses paper:marks at decision time.)
+    quoted = resolve_quote_price(instrument_id, await read_live_quote(redis_client, instrument_id))
     if quoted.price is None:
         logger.warning(f"No usable decision price for {instrument_id} (source={quoted.source}, "
                        f"quote_age_s={quoted.age_s}): NO_PRICE, recording the terminal outcome")
@@ -442,10 +443,11 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                         return
 
                 # B5: revalidate the quote at decision time, under the same row lock and PEL proof: a
-                # quote fresh when the debate started may be minutes stale now. The final quote is the
-                # persisted decision_price and the mandate-room marks; a stale one ends the run as
-                # terminal NO_PRICE with no decision and no route.
-                final_quoted = resolve_decision_price(instrument_id, marks)
+                # quote fresh when the debate started may be minutes stale now. The final tick's mid is
+                # the persisted decision_price and the mandate-room marks still come from paper:marks; a
+                # stale one ends the run as terminal NO_PRICE with no decision and no route.
+                final_quoted = resolve_quote_price(instrument_id,
+                                                   await read_live_quote(redis_client, instrument_id))
                 if final_quoted.price is None:
                     logger.warning(f"Decision price for {instrument_id} went stale during the debate "
                                    f"(source={final_quoted.source}, quote_age_s={final_quoted.age_s}): "

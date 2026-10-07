@@ -1,7 +1,8 @@
 """Bounded, declared decision price (review-plan B5, F-M14): the entry debate prices from the
-orchestrator's live marks only — a finite positive same-symbol quote no older than
-DECISION_PRICE_MAX_AGE_S. Stale/missing/invalid/wrong-symbol quotes end the attempt as NO_PRICE
-with no run row, no model call and no order; the worker makes zero outbound HTTP (the direct
+orchestrator's all-market quote source only — the shared ui_quote_tick stream of Binance book
+tickers (same feed as its quote cache): the latest same-instrument tick, mid of a finite positive
+bid/ask no older than DECISION_PRICE_MAX_AGE_S. Stale/missing/invalid/wrong-symbol quotes end the
+attempt as NO_PRICE with no model call and no order; the worker makes zero outbound HTTP (the direct
 api.binance.com fallback is gone). Throwaway DB at Alembic head; FunctionModels; FakeRedis only."""
 
 import importlib.util
@@ -9,7 +10,6 @@ import json
 import sys
 import time
 import uuid
-from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -18,7 +18,7 @@ import pytest
 from cryptonite_agents.gateway import Gateway
 from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
 from cryptonite_agents.gateway.routes import EMBED, FLASH, FLASH_LITE, PRO
-from cryptonite_schemas.marks import DECISION_PRICE_MAX_AGE_S, encode_mark
+from cryptonite_schemas.marks import DECISION_PRICE_MAX_AGE_S
 from migrated_db import migrated_database
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -55,11 +55,11 @@ async def pool(db_url):
     await pool.close()
 
 
-def marks_double(raw_marks: dict, brief: str | None = "MARKET BRIEF BTCUSDT") -> AsyncMock:
-    """Worker Redis double serving exactly these live marks (and no 24h-ticker fallback data)."""
+def quote_double(entries: list, brief: str | None = "MARKET BRIEF BTCUSDT") -> AsyncMock:
+    """Worker Redis double serving exactly these quote-stream entries (no ticker fallback data)."""
     redis = AsyncMock()
     redis.get.side_effect = lambda key: brief if str(key) == "brief:k" else None
-    redis.hgetall.return_value = raw_marks
+    redis.xrevrange.return_value = entries
     return redis
 
 
@@ -70,9 +70,11 @@ def scanner_payload() -> dict:
             "candidate_payload": json.dumps(candidate)}
 
 
-def live_mark(price: str, age_s: float) -> dict:
+def live_tick(bid: str, ask: str, age_s: float, instrument: str = INSTRUMENT) -> list:
     now_ns = time.time_ns()
-    return {INSTRUMENT: encode_mark(Decimal(price), now_ns - int(age_s * 1e9), now_ns)}
+    return [("1700000000000-0", {"instrument_id": instrument, "bid_price": bid, "ask_price": ask,
+                                 "bid_size": "1.0", "ask_size": "1.0",
+                                 "arrival_ns": str(now_ns - int(age_s * 1e9))})]
 
 
 class FakeEmbedder:
@@ -111,18 +113,20 @@ async def run_entry(debate_main, pool, redis, calls: dict, payload: dict | None 
 
 
 async def test_fresh_quote_debates_and_declares_the_price(debate_main, pool, monkeypatch):
-    """A fresh same-symbol quote runs the debate and the stored decision price equals the quote."""
+    """A fresh same-symbol quote runs the debate and the stored decision price equals the tick mid —
+    with no open position on the instrument (the first-entry regression: paper:marks is empty)."""
     import httpx
 
     def no_http(*args, **kwargs):
         raise AssertionError("worker must make zero outbound HTTP")
 
     monkeypatch.setattr(httpx, "AsyncClient", no_http)
+    assert await pool.fetchval("SELECT count(*) FROM paper_positions") == 0
     calls = {"n": 0}
-    run = await run_entry(debate_main, pool, marks_double(live_mark("65000.5", 2.0)), calls)
+    run = await run_entry(debate_main, pool, quote_double(live_tick("65000", "65020", 2.0)), calls)
     assert calls["n"] > 0 and run["status"] == "PENDING_APPROVAL"
     decision = await pool.fetchrow("SELECT * FROM portfolio_decisions WHERE run_id = $1", run["id"])
-    assert float(decision["decision_price"]) == pytest.approx(65000.5)
+    assert float(decision["decision_price"]) == pytest.approx(65010.0)
 
 
 async def test_no_binance_fallback_remains_in_the_worker():
@@ -133,16 +137,16 @@ async def test_no_binance_fallback_remains_in_the_worker():
     assert "market:24h" not in source
 
 
-@pytest.mark.parametrize("raw_marks", [
-    {},  # missing
-    live_mark("65000.0", DECISION_PRICE_MAX_AGE_S + 20.0),  # stale
-    {INSTRUMENT: "not-json"},  # invalid payload
-    {INSTRUMENT: encode_mark(Decimal("-5"), 1, 1)},  # non-positive
-    {"ETHUSDT.BINANCE": encode_mark(Decimal("3000"), time.time_ns() - 1_000_000_000, time.time_ns())},  # wrong symbol
+@pytest.mark.parametrize("raw_ticks", [
+    [],  # missing: empty stream
+    live_tick("65000", "65020", DECISION_PRICE_MAX_AGE_S + 20.0),  # stale
+    [("1700000000000-0", {"junk": "1"})],  # malformed entry
+    live_tick("-5", "-4", 1.0),  # non-positive quote
+    live_tick("3000", "3010", 1.0, instrument="ETHUSDT.BINANCE"),  # wrong symbol
 ])
-async def test_unusable_quote_is_no_price_without_side_effects(debate_main, pool, raw_marks):
+async def test_unusable_quote_is_no_price_without_side_effects(debate_main, pool, raw_ticks):
     calls = {"n": 0}
-    redis = marks_double(dict(raw_marks))
+    redis = quote_double(list(raw_ticks))
     run = await run_entry(debate_main, pool, redis, calls)
     # A terminal, durable NO_PRICE outcome: identity, trace, completion time and reason recorded…
     assert run["status"] == "NO_PRICE" and run["failure_reason"] == "NO_PRICE"
@@ -165,7 +169,7 @@ async def test_no_price_redelivery_is_idempotent(debate_main, pool, monkeypatch)
                                                 "bar_close_inclusive_ns": int((time.time() - 60) * 1e9),
                                                 "candidate_id": str(uuid.uuid4())})}
     calls = {"n": 0}
-    redis = marks_double({})
+    redis = quote_double([])
     first = await run_entry(debate_main, pool, redis, calls, payload, message_ref=ref, consumer="debate-w1")
     assert first["status"] == "NO_PRICE" and first["stream_message_id"] == ref
     second = await run_entry(debate_main, pool, redis, calls, payload, message_ref=ref, consumer="debate-w1")
@@ -179,7 +183,7 @@ async def test_no_price_refused_without_pel_ownership(debate_main, pool, monkeyp
     from unittest.mock import AsyncMock as _AsyncMock
     monkeypatch.setattr(debate_main, "is_pel_owner", _AsyncMock(return_value=False))
     calls = {"n": 0}
-    run = await run_entry(debate_main, pool, marks_double({}), calls,
+    run = await run_entry(debate_main, pool, quote_double([]), calls,
                           message_ref="stream:debate_queue/901-0", consumer="debate-stale")
     assert run is None and calls["n"] == 0
     assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
@@ -188,10 +192,10 @@ async def test_no_price_refused_without_pel_ownership(debate_main, pool, monkeyp
 async def test_retry_after_no_price_passes_once_quotes_flow(debate_main, pool):
     """A later attempt with quotes flowing debates normally (direct calls carry no dedupe identity)."""
     calls = {"n": 0}
-    redis = marks_double({})
+    redis = quote_double([])
     first = await run_entry(debate_main, pool, redis, calls)
     assert calls["n"] == 0 and first["status"] == "NO_PRICE"
-    redis.hgetall.return_value = live_mark("65100.0", 1.0)
+    redis.xrevrange.return_value = live_tick("65090", "65110", 1.0)
     run = await run_entry(debate_main, pool, redis, calls)
     assert calls["n"] > 0 and run["status"] == "PENDING_APPROVAL"
     assert float((await pool.fetchrow("SELECT decision_price FROM portfolio_decisions WHERE run_id = $1",
@@ -201,16 +205,16 @@ async def test_retry_after_no_price_passes_once_quotes_flow(debate_main, pool):
 async def test_boundary_age_is_accepted(debate_main, pool):
     """A quote just inside the bound still prices the debate."""
     calls = {"n": 0}
-    run = await run_entry(debate_main, pool, marks_double(live_mark("64900.0", DECISION_PRICE_MAX_AGE_S - 1.0)), calls)
+    run = await run_entry(debate_main, pool, quote_double(live_tick("64890", "64910", DECISION_PRICE_MAX_AGE_S - 1.0)), calls)
     assert run is not None and run["status"] == "PENDING_APPROVAL"
 
 
 async def test_stale_quote_at_decision_time_ends_no_price(debate_main, pool, monkeypatch):
     """A quote fresh at debate start but expired by finalization ends terminal NO_PRICE: no decision,
     no route — the persisted price is never minutes stale."""
-    fresh, stale = live_mark("65000.0", 1.0), live_mark("65000.0", DECISION_PRICE_MAX_AGE_S + 30.0)
-    redis = marks_double(fresh)
-    redis.hgetall.side_effect = [fresh, stale]  # price-time read, then the finalization re-read
+    fresh, stale = live_tick("65000", "65020", 1.0), live_tick("65000", "65020", DECISION_PRICE_MAX_AGE_S + 30.0)
+    redis = quote_double(fresh)
+    redis.xrevrange.side_effect = [fresh, stale]  # price-time read, then the finalization re-read
     routed = {"n": 0}
     original_route = debate_main.route_entry
 
@@ -231,14 +235,14 @@ async def test_stale_quote_at_decision_time_ends_no_price(debate_main, pool, mon
 
 async def test_final_quote_is_the_persisted_price(debate_main, pool):
     """The decision-time quote — not the debate-start one — is stored and used for mandate room."""
-    first, second = live_mark("65000.0", 1.0), live_mark("65200.0", 1.0)
-    redis = marks_double(first)
-    redis.hgetall.side_effect = [first, second]
+    first, second = live_tick("65000", "65020", 1.0), live_tick("65200", "65220", 1.0)
+    redis = quote_double(first)
+    redis.xrevrange.side_effect = [first, second]
     calls = {"n": 0}
     run = await run_entry(debate_main, pool, redis, calls)
     assert run["status"] == "PENDING_APPROVAL"
     assert float((await pool.fetchrow("SELECT decision_price FROM portfolio_decisions WHERE run_id = $1",
-                                      run["id"]))["decision_price"]) == pytest.approx(65200.0)
+                                      run["id"]))["decision_price"]) == pytest.approx(65210.0)
 
 
 async def test_missing_instrument_id_is_refused(debate_main, pool):
@@ -247,7 +251,7 @@ async def test_missing_instrument_id_is_refused(debate_main, pool):
     model = counting_model(calls)
     with override_model(FLASH, model), override_model(FLASH_LITE, model), override_model(PRO, model), \
          override_model(EMBED, FakeEmbedder()):
-        await debate_main.process_debate_trigger(pool, marks_double(live_mark("65000.0", 1.0)),
+        await debate_main.process_debate_trigger(pool, quote_double(live_tick("65000", "65020", 1.0)),
                                                  {"trigger_source": "test"}, Gateway())
     assert calls["n"] == 0
     assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
@@ -260,6 +264,6 @@ async def test_exit_debate_needs_no_decision_price(debate_main, pool):
         "INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at) VALUES ($1, $2, 'RUNNING', 'exit_monitor', now())",
         run_id, INSTRUMENT)
     await debate_main.process_exit_debate_trigger(
-        pool, marks_double({}), {"instrument_id": INSTRUMENT, "run_id": str(run_id)}, Gateway())
+        pool, quote_double([]), {"instrument_id": INSTRUMENT, "run_id": str(run_id)}, Gateway())
     row = await pool.fetchrow("SELECT status FROM debate_runs WHERE id = $1", run_id)
     assert row["status"] == "NO_TRADE"  # no open position in the empty ACL view; priced nothing, fenced nothing
