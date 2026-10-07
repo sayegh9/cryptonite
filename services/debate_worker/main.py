@@ -573,8 +573,11 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
                     return
                 if consumer and message_ref:
                     sr, _, mr = message_ref.partition("/")
-                    if not await is_pel_owner(redis_client, sr, mr, consumer):
-                        logger.warning("Exit debate run %s finalization: %s no longer owns %s in PEL; aborting route", run_id, consumer, message_ref)
+                    try:
+                        if not await is_pel_owner(redis_client, sr, mr, consumer):
+                            logger.warning("Exit debate run %s finalization: %s no longer owns %s in PEL; aborting route", run_id, consumer, message_ref)
+                            return
+                    except Exception:
                         return
 
                 await conn.execute(
