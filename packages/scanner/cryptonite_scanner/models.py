@@ -12,6 +12,8 @@ from uuid import UUID
 from pydantic import BaseModel, Field, model_validator
 
 MAX_ACTIVE_SPECS: int = int(os.getenv("MAX_ACTIVE_SPECS", "10"))
+ALLOWED_AUTOMATIC_TIMEFRAMES: tuple[str, ...] = ("15m", "1h", "4h")
+MIN_RISK_REWARD_RATIO: float = 1.5
 
 
 class RuleOperator(StrEnum):
@@ -80,9 +82,17 @@ class UniverseConfig(BaseModel):
 
 
 class RiskConfig(BaseModel):
-    stop_loss_atr_mult: float = 2.0
-    take_profit_atr_mult: float = 4.0
-    risk_reward_ratio: float = 2.0
+    direction: str = "LONG"  # "LONG" or "SHORT"
+    stop_mode: str = "structure"  # "structure", "donchian", "atr"
+    donchian_lookback: int = 20
+    min_atr_mult: float = 0.5
+    max_atr_mult: float = 4.0
+    fallback_stop_atr_mult: float = 2.0
+    fallback_target_atr_mult: float = 3.0
+    min_risk_reward: float = 1.5
+    stop_loss_atr_mult: float = 2.0  # legacy compatibility
+    take_profit_atr_mult: float = 4.0  # legacy compatibility
+    risk_reward_ratio: float = 2.0  # legacy compatibility
 
 
 def compute_spec_hash(universe: dict[str, Any], rules: list[Any] | dict[str, Any]) -> str:
@@ -179,7 +189,20 @@ class SignalCandidateRead(BaseModel):
     suggested_entry: Decimal
     suggested_stop: Decimal
     suggested_target: Decimal
+    risk_reward_ratio: Decimal | None = None
     created_at: datetime
+
+    @model_validator(mode="after")
+    def populate_risk_reward(self) -> "SignalCandidateRead":
+        if self.risk_reward_ratio is None:
+            if "risk_reward_ratio" in self.metrics and self.metrics["risk_reward_ratio"] is not None:
+                self.risk_reward_ratio = Decimal(str(self.metrics["risk_reward_ratio"])).quantize(Decimal("0.01"))
+            elif self.suggested_entry is not None and self.suggested_stop is not None and self.suggested_target is not None:
+                risk = abs(self.suggested_entry - self.suggested_stop)
+                reward = abs(self.suggested_target - self.suggested_entry)
+                if risk > Decimal("0"):
+                    self.risk_reward_ratio = (reward / risk).quantize(Decimal("0.01"))
+        return self
 
 
 def deduplicate_candidates(candidates: list[SignalCandidateRead]) -> list[SignalCandidateRead]:
