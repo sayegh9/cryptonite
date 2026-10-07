@@ -1,21 +1,27 @@
-"""D3 Slice 1: Structure-based stop/target, zero-lookahead HTF evaluation,
-symmetric long/short logic, varied R:R, and invalid ATR/level fallback tests.
-
-Isolated unit tests for ScannerEngine and models (no DB/Redis required).
+"""D3: Structure-based stop/target, zero-lookahead HTF evaluation,
+symmetric long/short logic, varied R:R, invalid ATR/level fallback,
+pre-insert R:R rejection gate, and automatic trigger timeframe restriction tests.
 """
 
+from datetime import UTC, datetime
 from decimal import Decimal
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
+import asyncpg
 import polars as pl
+import pytest
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import (
     RiskConfig,
     RuleCondition,
     RuleGroup,
     RuleOperator,
+    SignalCandidateRead,
 )
 from cryptonite_scanner.resampler import ONE_MINUTE_NS
+from cryptonite_scanner_service.worker import ScannerWorker
+from migrated_db import migrated_database
 
 
 def _make_dummy_ohlcv(
@@ -593,3 +599,199 @@ def test_varied_risk_reward_ratios_and_engine_filtering():
     assert len(cands_high) > 0
     c_ok = cands_high[-1]
     assert c_ok.risk_reward_ratio >= Decimal("1.50")
+
+
+# -----------------------------------------------------------------------------
+# Worker Integration Fixtures & Tests
+# -----------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def db_url():
+    with migrated_database("cryptonite_ci_d3") as url:
+        yield url
+
+
+def as_scanner(url: str) -> str:
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(netloc=f"cryptonite_scanner:scanner_dev_pass@{parts.netloc.rsplit('@', 1)[-1]}"))
+
+
+@pytest.fixture
+async def admin(db_url):
+    conn = await asyncpg.connect(db_url)
+    yield conn
+    await conn.execute(
+        "TRUNCATE scanner_debate_outbox, outbox_events, signal_candidates, scanner_checkpoints, "
+        "scan_runs, scan_spec_versions, scan_specs, ingest_checkpoints CASCADE"
+    )
+    await conn.close()
+
+
+class FakeLakeQueryEngine:
+    def __init__(self, df: pl.DataFrame):
+        self._df = df
+
+    def query_bars_df(self, **_kwargs) -> pl.DataFrame:
+        return self._df
+
+
+async def _seed_spec(pool, slug: str, universe: dict, rules: list) -> tuple[uuid4, uuid4]:
+    import json
+    spec_id = uuid4()
+    ver_id = uuid4()
+    await pool.execute(
+        """
+        INSERT INTO scan_specs (id, slug, name, active_version_id, is_archived)
+        VALUES ($1, $2, $2, NULL, false);
+        """,
+        spec_id, slug,
+    )
+    await pool.execute(
+        """
+        INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+        VALUES ($1, $2, 1, 'hash-val', $3::jsonb, $4::jsonb);
+        """,
+        ver_id, spec_id, json.dumps(universe), json.dumps(rules),
+    )
+    await pool.execute(
+        "UPDATE scan_specs SET active_version_id = $1 WHERE id = $2;",
+        ver_id, spec_id,
+    )
+    return spec_id, ver_id
+
+
+@pytest.mark.asyncio
+async def test_worker_pre_insert_rr_rejection_gate(admin, db_url, monkeypatch):
+    """Verify that candidates with R:R < 1.5 are rejected before signal_candidates and outbox."""
+    import time
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+    now_ts = (time.time_ns() // (60 * ONE_MINUTE_NS)) * (60 * ONE_MINUTE_NS)
+
+    universe = {"instrument_ids": ["BTCUSDT.BINANCE"], "timeframes": ["15m"]}
+    rules = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 0}]}]
+    spec_id, ver_id = await _seed_spec(pool, "test-rr-filter", universe, rules)
+
+    cand_rejected = SignalCandidateRead(
+        id=uuid4(),
+        scan_run_id=uuid4(),
+        spec_version_id=ver_id,
+        instrument_id="BTCUSDT.BINANCE",
+        timeframe="15m",
+        bar_open_ns=now_ts - 15 * ONE_MINUTE_NS,
+        bar_close_inclusive_ns=now_ts - 1_000_000,
+        interval_end_exclusive_ns=now_ts,
+        matched_rules=["rule_low_rr"],
+        metrics={"stop_type": "donchian_low", "target_type": "atr_fallback", "risk_reward_ratio": 1.20},
+        suggested_entry=Decimal("100.00"),
+        suggested_stop=Decimal("95.00"),
+        suggested_target=Decimal("106.00"),
+        risk_reward_ratio=Decimal("1.20"),
+        created_at=datetime.now(UTC),
+    )
+    cand_accepted = SignalCandidateRead(
+        id=uuid4(),
+        scan_run_id=uuid4(),
+        spec_version_id=ver_id,
+        instrument_id="BTCUSDT.BINANCE",
+        timeframe="15m",
+        bar_open_ns=now_ts - 30 * ONE_MINUTE_NS,
+        bar_close_inclusive_ns=now_ts - 15 * ONE_MINUTE_NS - 1_000_000,
+        interval_end_exclusive_ns=now_ts - 15 * ONE_MINUTE_NS,
+        matched_rules=["rule_high_rr"],
+        metrics={"stop_type": "donchian_low", "target_type": "htf_donchian_high", "risk_reward_ratio": 2.00},
+        suggested_entry=Decimal("100.00"),
+        suggested_stop=Decimal("97.00"),
+        suggested_target=Decimal("106.00"),
+        risk_reward_ratio=Decimal("2.00"),
+        created_at=datetime.now(UTC),
+    )
+
+    def mock_evaluate(*_args, **_kwargs):
+        return [cand_rejected, cand_accepted]
+
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(mock_evaluate))
+
+    lake_df = _make_dummy_ohlcv(n_bars=300, base_price=100.0, step_ns=ONE_MINUTE_NS, start_ns=now_ts - 300 * ONE_MINUTE_NS)
+    worker = ScannerWorker(database_url=as_scanner(db_url), analytics_lake_path="/nonexistent-lake")
+    worker.pool = pool
+    worker.query_engine = FakeLakeQueryEngine(lake_df)
+
+    await worker._execute_scan(
+        spec_version_id=ver_id,
+        spec_hash="hash-rr",
+        universe_data=universe,
+        rules_data=rules,
+        trigger_reason="COMMITTED_BAR_EVENT",
+        trigger_event_id=str(uuid4()),
+        watermark_ns=now_ts,
+    )
+
+    # Verify database contents:
+    row_rejected = await pool.fetchrow("SELECT id FROM signal_candidates WHERE id = $1;", cand_rejected.id)
+    assert row_rejected is None, "Candidate with R:R < 1.5 must be rejected and not inserted into signal_candidates!"
+
+    row_accepted = await pool.fetchrow("SELECT id FROM signal_candidates WHERE id = $1;", cand_accepted.id)
+    assert row_accepted is not None, "Candidate with R:R >= 1.5 must be inserted into signal_candidates!"
+
+    outbox_rejected = await pool.fetchrow("SELECT candidate_id FROM scanner_debate_outbox WHERE candidate_id = $1;", cand_rejected.id)
+    assert outbox_rejected is None, "Candidate with R:R < 1.5 must not produce debate outbox row!"
+
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_trigger_timeframe_restriction(admin, db_url, monkeypatch):
+    """Verify that COMMITTED_BAR_EVENT evaluates only 15m/1h/4h, skipping 1m and 5m."""
+    import time
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+    now_ts = (time.time_ns() // (60 * ONE_MINUTE_NS)) * (60 * ONE_MINUTE_NS)
+
+    universe = {"instrument_ids": ["BTCUSDT.BINANCE"], "timeframes": ["1m", "5m", "15m", "1h"]}
+    rules = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 0}]}]
+    spec_id, ver_id = await _seed_spec(pool, "test-tf-restrict", universe, rules)
+
+    evaluated_timeframes: list[str] = []
+
+    def mock_eval(cls, df, rule_groups, risk_config, instrument_id, timeframe, spec_version_id, scan_run_id, price_precision=2, **_kwargs):
+        evaluated_timeframes.append(timeframe)
+        return []
+
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(mock_eval))
+
+    lake_df = _make_dummy_ohlcv(n_bars=300, base_price=100.0, step_ns=ONE_MINUTE_NS, start_ns=now_ts - 300 * ONE_MINUTE_NS)
+    worker = ScannerWorker(database_url=as_scanner(db_url), analytics_lake_path="/nonexistent-lake")
+    worker.pool = pool
+    worker.query_engine = FakeLakeQueryEngine(lake_df)
+
+    # 1. Trigger via COMMITTED_BAR_EVENT -> Only 15m and 1h evaluated!
+    evaluated_timeframes.clear()
+    await worker._execute_scan(
+        spec_version_id=ver_id,
+        spec_hash="hash-tf",
+        universe_data=universe,
+        rules_data=rules,
+        trigger_reason="COMMITTED_BAR_EVENT",
+        trigger_event_id=str(uuid4()),
+        watermark_ns=now_ts,
+    )
+    assert set(evaluated_timeframes) == {"15m", "1h"}, f"Expected only 15m and 1h for automatic event, got {evaluated_timeframes}"
+    assert "1m" not in evaluated_timeframes
+    assert "5m" not in evaluated_timeframes
+
+    # 2. Trigger via MANUAL_JOB -> All configured timeframes evaluated!
+    evaluated_timeframes.clear()
+    await worker._execute_scan(
+        spec_version_id=ver_id,
+        spec_hash="hash-tf",
+        universe_data=universe,
+        rules_data=rules,
+        trigger_reason="MANUAL_JOB",
+        trigger_event_id=None,
+        watermark_ns=now_ts,
+    )
+    assert "1m" in evaluated_timeframes
+    assert "5m" in evaluated_timeframes
+    assert "15m" in evaluated_timeframes
+    assert "1h" in evaluated_timeframes
+
+    await pool.close()

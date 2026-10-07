@@ -78,7 +78,7 @@ PRESET_BOLLINGER_BREAKOUT = ScanSpecCreate(
     description="Detects momentum breakouts closing above upper Bollinger Band with >= 1.5x volume expansion.",
     universe=UniverseConfig(
         instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
-        timeframes=["5m", "15m", "1h"],
+        timeframes=["15m", "1h"],
     ),
     rules=[
         RuleGroup(
@@ -130,10 +130,10 @@ PRESET_MACD_MOMENTUM = ScanSpecCreate(
 PRESET_SCALP_MULTI_TF = ScanSpecCreate(
     slug="scalp-multi-tf",
     name="Execution Strategist Multi-TF",
-    description="Captures 5m, 15m, 1H and 4H bar close states for the Execution Strategist Engine.",
+    description="Captures 15m, 1H and 4H bar close states for the Execution Strategist Engine.",
     universe=UniverseConfig(
         instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
-        timeframes=["5m", "15m", "1h", "4h"],  # no 1d (review-plan Q8, A1a M2: a 300-day lookback per event)
+        timeframes=["15m", "1h", "4h"],  # no 1d (review-plan Q8, A1a M2: a 300-day lookback per event)
     ),
     rules=[
         RuleGroup(

@@ -25,7 +25,9 @@ import redis.asyncio as aioredis
 from cryptonite_scanner.brief import brief_data, build_brief
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import (
+    ALLOWED_AUTOMATIC_TIMEFRAMES,
     MAX_ACTIVE_SPECS,
+    MIN_RISK_REWARD_RATIO,
     RiskConfig,
     RuleCondition,
     RuleGroup,
@@ -36,6 +38,14 @@ from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resam
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
 BRIEF_TTL_S = 2 * 3600
+
+HTF_MAP: dict[str, str] = {
+    "1m": "5m",
+    "5m": "15m",
+    "15m": "1h",
+    "1h": "4h",
+    "4h": "1d",
+}
 
 logger = logging.getLogger("cryptonite.scanner.worker")
 
@@ -475,6 +485,19 @@ class ScannerWorker:
         event_id = payload.get("event_id", str(uuid4()))
         instrument_id = payload.get("instrument_id", "BTCUSDT.BINANCE")
         bar_close_ns = payload.get("bar_close_inclusive_ns", time.time_ns())
+        bar_timeframe = payload.get("timeframe")
+
+        if bar_timeframe and bar_timeframe not in ALLOWED_AUTOMATIC_TIMEFRAMES:
+            logger.debug(
+                "Skipping committed bar event %s: timeframe %s not in ALLOWED_AUTOMATIC_TIMEFRAMES %s",
+                event_id,
+                bar_timeframe,
+                ALLOWED_AUTOMATIC_TIMEFRAMES,
+            )
+            if self.redis:
+                await self.redis.xack(stream, self.consumer_group, msg_id)
+                self.processed_events_count += 1
+            return
 
         # Load active scan spec versions deterministically ordered
         if not self.pool:
@@ -618,6 +641,12 @@ class ScannerWorker:
         source_instruments = universe_data.get("instrument_ids", ["BTCUSDT.BINANCE"])
         source_timeframes = universe_data.get("timeframes", ["1m", "5m", "15m", "1h"])
 
+        # Restrict automatic triggers strictly to ALLOWED_AUTOMATIC_TIMEFRAMES (15m, 1h, 4h)
+        if trigger_reason == "COMMITTED_BAR_EVENT":
+            target_timeframes = [tf for tf in source_timeframes if tf in ALLOWED_AUTOMATIC_TIMEFRAMES]
+        else:
+            target_timeframes = source_timeframes
+
         # Parse rule groups
         parsed_groups: list[RuleGroup] = []
         for rg in rules_data:
@@ -647,7 +676,8 @@ class ScannerWorker:
         frames_by_inst: dict[str, dict[str, Any]] = {}  # enriched frames, for the market brief
         # Only the history the indicators need: EMA-200 plus warm-up on the largest timeframe. Loading the
         # whole lake on every run grew with every backfilled day.
-        lookback_min = SCAN_LOOKBACK_BARS * max(TIMEFRAME_MINUTES.get(tf, 60) for tf in source_timeframes)
+        all_eval_tfs = list(set(target_timeframes + [HTF_MAP[tf] for tf in target_timeframes if tf in HTF_MAP]))
+        lookback_min = SCAN_LOOKBACK_BARS * max(TIMEFRAME_MINUTES.get(tf, 60) for tf in (all_eval_tfs or source_timeframes))
         start_ns = time.time_ns() - lookback_min * 60 * 1_000_000_000
         since_date = time.strftime("%Y-%m-%d", time.gmtime(start_ns / 1e9))
         for inst in source_instruments:
@@ -668,30 +698,87 @@ class ScannerWorker:
             max_seen_watermark = max(max_seen_watermark, max_bar_ts)
 
             # 2. Resample and evaluate for each timeframe
-            for tf in source_timeframes:
+            for tf in target_timeframes:
                 # a bar still open at scan time is neither a signal nor brief context (B1 / F-C1)
                 resampled_df = resample_1m_bars(df_1m, tf).filter(
                     pl.col("interval_end_exclusive_ns") <= time.time_ns()
                 )
                 if resampled_df.is_empty():
                     continue
-                frames_by_inst.setdefault(inst, {})[tf] = ScannerEngine.enrich_indicators(resampled_df)
+                enriched_df = ScannerEngine.enrich_indicators(resampled_df)
+                frames_by_inst.setdefault(inst, {})[tf] = enriched_df
 
-                candidates = ScannerEngine.evaluate(
-                    df=resampled_df,
-                    rule_groups=parsed_groups,
-                    risk_config=risk_config,
-                    instrument_id=inst,
-                    timeframe=tf,
-                    spec_version_id=spec_version_id,
-                    scan_run_id=run_id,
-                    price_precision=2,
-                )
+                # Higher-timeframe context for structure target
+                htf_tf = HTF_MAP.get(tf)
+                htf_df = None
+                if htf_tf:
+                    if htf_tf in frames_by_inst.get(inst, {}):
+                        htf_df = frames_by_inst[inst][htf_tf]
+                    else:
+                        resampled_htf = resample_1m_bars(df_1m, htf_tf).filter(
+                            pl.col("interval_end_exclusive_ns") <= time.time_ns()
+                        )
+                        if not resampled_htf.is_empty():
+                            htf_df = ScannerEngine.enrich_indicators(resampled_htf)
+                            frames_by_inst.setdefault(inst, {})[htf_tf] = htf_df
+
+                try:
+                    candidates = ScannerEngine.evaluate(
+                        df=enriched_df,
+                        rule_groups=parsed_groups,
+                        risk_config=risk_config,
+                        instrument_id=inst,
+                        timeframe=tf,
+                        spec_version_id=spec_version_id,
+                        scan_run_id=run_id,
+                        price_precision=2,
+                        htf_df=htf_df,
+                    )
+                except TypeError as te:
+                    if "htf_df" in str(te):
+                        candidates = ScannerEngine.evaluate(
+                            df=enriched_df,
+                            rule_groups=parsed_groups,
+                            risk_config=risk_config,
+                            instrument_id=inst,
+                            timeframe=tf,
+                            spec_version_id=spec_version_id,
+                            scan_run_id=run_id,
+                            price_precision=2,
+                        )
+                    else:
+                        raise
                 all_candidates.extend(candidates)
 
         now_ns = time.time_ns()
         all_candidates = drop_unclosed_candidates(all_candidates, now_ns)
         all_candidates = deduplicate_candidates(all_candidates)
+
+        # Pre-insert rejection gate: reject candidates where R:R < MIN_RISK_REWARD_RATIO
+        # Record rejection reasons with entry/stop/target/R:R in worker logs without creating candidate rows
+        accepted_candidates = []
+        for c in all_candidates:
+            rr = float(c.risk_reward_ratio) if c.risk_reward_ratio is not None else float(c.metrics.get("risk_reward_ratio", 0.0))
+            if rr < MIN_RISK_REWARD_RATIO:
+                logger.info(
+                    "Rejected candidate %s for %s %s at %d: R:R %.2f < %.2f "
+                    "(entry=%s, stop=%s [%s], target=%s [%s])",
+                    c.id,
+                    c.instrument_id,
+                    c.timeframe,
+                    c.bar_close_inclusive_ns,
+                    rr,
+                    MIN_RISK_REWARD_RATIO,
+                    c.suggested_entry,
+                    c.suggested_stop,
+                    c.metrics.get("stop_type"),
+                    c.suggested_target,
+                    c.metrics.get("target_type"),
+                )
+                continue
+            accepted_candidates.append(c)
+        all_candidates = accepted_candidates
+
         # Sort candidates deterministically to enforce global lock acquisition order and prevent deadlocks across concurrent workers/jobs
         all_candidates.sort(key=lambda c: (c.instrument_id, c.timeframe, c.bar_close_inclusive_ns))
         to_queue: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []  # fresh, new: published after the commit
