@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CONFIGURABLE_LIMITS,
   fetchEnforcedLimits,
@@ -51,6 +51,10 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saved, setSaved] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Stop any pending enforcement poll when the form unmounts.
+  useEffect(() => () => { if (pollRef.current !== null) clearInterval(pollRef.current); }, []);
 
   const load = useCallback(() => {
     fetchRiskLimits()
@@ -95,20 +99,44 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
         ...(needsTotp ? { totp_code: totp } : {}),
       });
       const savedVer = res.override_version ?? 0;
-      try {
-        const enforcedState = await fetchEnforcedLimits();
-        const enforced = enforcedState.effective_version ?? 0;
-        const enforcedAt = enforcedState.enforced_at;
-        if (enforced > 0 && savedVer > 0 && enforced === savedVer && enforcedAt) {
-          setSaved(`Enforced since ${new Date(enforcedAt).toLocaleString()}.`);
-        } else {
-          setSaved(`Saved. Not yet enforced (orchestrator v${enforced}, override v${savedVer}).`);
-        }
-      } catch {
-        setSaved(`Saved. Not yet enforced (orchestrator v0, override v${savedVer}).`);
-      }
       setTotp("");
       setReason("");
+      // Poll GET /control/enforced-limits until the orchestrator reports this exact
+      // override version as enforced. Until then (stale/missing/error) the honest
+      // status is "Saved. Not yet enforced"; there is no fabricated enforced_at.
+      if (pollRef.current !== null) clearInterval(pollRef.current);
+      let attempts = 0;
+      const maxAttempts = 60; // ~2 min at 2s intervals
+      let resolved = false;
+      const stop = () => { if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; } };
+      const pending = (enforced: number) => setSaved(`Saved. Not yet enforced (orchestrator v${enforced}, override v${savedVer}).`);
+      const check = async () => {
+        attempts++;
+        let enforced = 0;
+        try {
+          const state = await fetchEnforcedLimits();
+          const enforcedAt = state.enforced_at;
+          enforced = state.effective_version ?? 0;
+          // Only claim "enforced" with a full, fresh telemetry report: version match,
+          // valid paper values and as_of, and a real reported enforced_at.
+          const complete = state.paper !== null && typeof state.as_of === "string" && state.as_of.length > 0;
+          if (!resolved && complete && enforced > 0 && savedVer > 0 && enforced === savedVer && enforcedAt) {
+            resolved = true;
+            stop();
+            setSaved(`Enforced since ${new Date(enforcedAt).toLocaleString()}.`);
+            return;
+          }
+        } catch {
+          enforced = 0; // unavailable telemetry fails closed to pending
+        }
+        if (!resolved) {
+          pending(enforced);
+          if (attempts >= maxAttempts) { resolved = true; stop(); }
+        }
+      };
+      pending(0);
+      await check().catch(() => undefined);
+      if (!resolved) pollRef.current = setInterval(check, 2000);
       load();
       onSaved?.();
     } catch (err) {

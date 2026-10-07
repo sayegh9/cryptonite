@@ -125,4 +125,74 @@ test.describe("Operator → Enforced limits", () => {
     await expect(card.getByTestId("enforced-limits-unknown")).toContainText("unknown (enforced-limits unavailable: HTTP 500)");
     await expect(card).not.toContainText("5 % of equity");
   });
+
+  test("transitions to enforced after the orchestrator applies the override", async ({ page }) => {
+    const card = await openOperator(page, { status: 200, body: { as_of: "2026-10-07T00:00:00Z", paper: null } }, () => ({
+      status: 200,
+      body: { ...CONFIG, success: true, applies_within_s: 60, override_version: 7 },
+    }));
+    const form = card.getByTestId("risk-limits-form");
+    await form.getByLabel("Max order size").fill("10");
+    await form.getByLabel("Reason").fill("tighten the order cap");
+
+    // Orchestrator has not applied v7 yet: effective_version is still stale (0).
+    await page.unroute("**/api/v1/control/enforced-limits");
+    await page.route("**/api/v1/control/enforced-limits", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ as_of: null, paper: null, effective_version: 0, enforced_at: null }),
+      }));
+
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("Not yet enforced");
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("override v7");
+
+    // The orchestrator applies v7 a moment later; the form must poll and flip over.
+    await page.unroute("**/api/v1/control/enforced-limits");
+    await page.route("**/api/v1/control/enforced-limits", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          as_of: "2026-10-07T00:05:00Z",
+          paper: { max_daily_loss_pct: "3", min_order_equity_pct: "1", max_order_equity_pct: "10", taker_fee_bps: "10", account_backstop_drawdown_pct: "20" },
+          effective_version: 7,
+          enforced_at: "2026-10-07T00:05:00Z",
+        }),
+      }));
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("Enforced since");
+  });
+
+  test("stale or missing enforced telemetry keeps the pending message", async ({ page }) => {
+    const card = await openOperator(page, { status: 200, body: { as_of: null, paper: null } }, () => ({
+      status: 200,
+      body: { ...CONFIG, success: true, applies_within_s: 60, override_version: 3 },
+    }));
+    const form = card.getByTestId("risk-limits-form");
+    await form.getByLabel("Max order size").fill("10");
+    await form.getByLabel("Reason").fill("tighten the order cap");
+
+    // effective_version never reaches 3 (and there is no enforced_at): pending stays.
+    await page.unroute("**/api/v1/control/enforced-limits");
+    await page.route("**/api/v1/control/enforced-limits", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ as_of: "2026-10-07T00:00:00Z", paper: null, effective_version: 2, enforced_at: null }),
+      }));
+
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("Not yet enforced");
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("override v3");
+
+    // Missing telemetry (paper: null, no version fields) also fails closed to pending.
+    await page.unroute("**/api/v1/control/enforced-limits");
+    await page.route("**/api/v1/control/enforced-limits", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ as_of: null, paper: null }) }));
+    await form.getByLabel("Max order size").fill("9");
+    await form.getByLabel("Reason").fill("tighter still");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("Not yet enforced");
+  });
 });
