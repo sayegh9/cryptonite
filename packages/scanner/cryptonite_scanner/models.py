@@ -2,13 +2,16 @@
 
 import hashlib
 import json
+import os
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+MAX_ACTIVE_SPECS: int = int(os.getenv("MAX_ACTIVE_SPECS", "10"))
 
 
 class RuleOperator(StrEnum):
@@ -19,6 +22,8 @@ class RuleOperator(StrEnum):
     EQ = "=="
     CROSS_ABOVE = "cross_above"
     CROSS_BELOW = "cross_below"
+    CROSSES_ABOVE = "crosses_above"
+    CROSSES_BELOW = "crosses_below"
 
 
 class RuleCondition(BaseModel):
@@ -26,6 +31,41 @@ class RuleCondition(BaseModel):
     operator: RuleOperator
     value: float | str  # numeric threshold or target column name e.g. "ema_200"
     lookback: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def set_default_lookback(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            op = data.get("operator")
+            if op in (
+                RuleOperator.CROSS_ABOVE,
+                RuleOperator.CROSS_BELOW,
+                RuleOperator.CROSSES_ABOVE,
+                RuleOperator.CROSSES_BELOW,
+                "cross_above",
+                "cross_below",
+                "crosses_above",
+                "crosses_below",
+            ) and "lookback" not in data:
+                data["lookback"] = 1
+        return data
+
+    @model_validator(mode="after")
+    def validate_condition(self) -> Self:
+        is_crossover = self.operator in (
+            RuleOperator.CROSS_ABOVE,
+            RuleOperator.CROSS_BELOW,
+            RuleOperator.CROSSES_ABOVE,
+            RuleOperator.CROSSES_BELOW,
+        )
+        if is_crossover:
+            if self.lookback < 1:
+                raise ValueError(
+                    f"Crossover condition '{self.operator}' requires lookback >= 1, got {self.lookback}"
+                )
+        elif self.lookback < 0:
+            raise ValueError(f"Condition lookback cannot be negative, got {self.lookback}")
+        return self
 
 
 class RuleGroup(BaseModel):
@@ -140,3 +180,16 @@ class SignalCandidateRead(BaseModel):
     suggested_stop: Decimal
     suggested_target: Decimal
     created_at: datetime
+
+
+def deduplicate_candidates(candidates: list[SignalCandidateRead]) -> list[SignalCandidateRead]:
+    """Deduplicate candidates per (instrument_id, timeframe, bar_close_inclusive_ns) across specs."""
+    seen: set[tuple[str, str, int]] = set()
+    deduped: list[SignalCandidateRead] = []
+    for c in candidates:
+        key = (c.instrument_id, c.timeframe, c.bar_close_inclusive_ns)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(c)
+    return deduped

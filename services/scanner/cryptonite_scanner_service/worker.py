@@ -25,10 +25,12 @@ import redis.asyncio as aioredis
 from cryptonite_scanner.brief import brief_data, build_brief
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import (
+    MAX_ACTIVE_SPECS,
     RiskConfig,
     RuleCondition,
     RuleGroup,
     RuleOperator,
+    deduplicate_candidates,
 )
 from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
 from cryptonite_storage.queries import AnalyticsQueryEngine
@@ -348,15 +350,26 @@ class ScannerWorker:
         if not self.pool:
             return
 
-        # Fetch active spec versions
+        # Fetch active spec versions deterministically ordered
         rows = await self.pool.fetch(
             """
-            SELECT s.slug, s.active_version_id, v.id as version_id, v.universe, v.rules, v.spec_hash
+            SELECT s.slug, s.active_version_id, s.created_at, v.id as version_id, v.universe, v.rules, v.spec_hash
             FROM scan_specs s
             JOIN scan_spec_versions v ON s.active_version_id = v.id
-            WHERE s.is_archived = false;
+            WHERE s.is_archived = false
+            ORDER BY s.created_at ASC, s.slug ASC;
             """
         )
+
+        if len(rows) > MAX_ACTIVE_SPECS:
+            logger.error(
+                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d)! "
+                "Processing all %d active specs to avoid dropping trading signals, "
+                "but operator action is required to archive excess specs.",
+                len(rows),
+                MAX_ACTIVE_SPECS,
+                len(rows),
+            )
 
         for r in rows:
             version_id = r["version_id"]
@@ -463,17 +476,28 @@ class ScannerWorker:
         instrument_id = payload.get("instrument_id", "BTCUSDT.BINANCE")
         bar_close_ns = payload.get("bar_close_inclusive_ns", time.time_ns())
 
-        # Load active scan spec versions
+        # Load active scan spec versions deterministically ordered
         if not self.pool:
             return
         active_specs = await self.pool.fetch(
             """
-            SELECT s.slug, s.active_version_id, v.id as version_id, v.universe, v.rules, v.spec_hash
+            SELECT s.slug, s.active_version_id, s.created_at, v.id as version_id, v.universe, v.rules, v.spec_hash
             FROM scan_specs s
             JOIN scan_spec_versions v ON s.active_version_id = v.id
-            WHERE s.is_archived = false;
+            WHERE s.is_archived = false
+            ORDER BY s.created_at ASC, s.slug ASC;
             """
         )
+
+        if len(active_specs) > MAX_ACTIVE_SPECS:
+            logger.error(
+                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d)! "
+                "Processing all %d active specs to avoid dropping trading signals, "
+                "but operator action is required to archive excess specs.",
+                len(active_specs),
+                MAX_ACTIVE_SPECS,
+                len(active_specs),
+            )
 
         for spec in active_specs:
             universe = json.loads(spec["universe"]) if isinstance(spec["universe"], str) else spec["universe"]
@@ -667,6 +691,9 @@ class ScannerWorker:
 
         now_ns = time.time_ns()
         all_candidates = drop_unclosed_candidates(all_candidates, now_ns)
+        all_candidates = deduplicate_candidates(all_candidates)
+        # Sort candidates deterministically to enforce global lock acquisition order and prevent deadlocks across concurrent workers/jobs
+        all_candidates.sort(key=lambda c: (c.instrument_id, c.timeframe, c.bar_close_inclusive_ns))
         to_queue: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []  # fresh, new: published after the commit
 
         # 3. Commit run, candidates, checkpoints, and outbox in a single transaction
@@ -721,8 +748,50 @@ class ScannerWorker:
                         len(all_candidates),
                     )
 
-                # b. Insert candidates with idempotency key
+                # b. Insert candidates with idempotency key and serialized cross-spec deduplication
                 for c in all_candidates:
+                    # Serialise concurrent candidate insertions for this bar across specs/workers:
+                    # Transaction-level advisory lock prevents SELECT-then-INSERT races across jobs.
+                    # Lock keys are acquired in sorted order to prevent deadlocks.
+                    lock_key = f"signal_candidate:{c.instrument_id}:{c.timeframe}:{c.bar_close_inclusive_ns}"
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0));", lock_key)
+
+                    # Deduplicate across specs per (instrument, timeframe, bar)
+                    existing_across_specs = None
+                    if hasattr(conn, "fetchval"):
+                        existing_across_specs = await conn.fetchval(
+                            """
+                            SELECT id FROM signal_candidates
+                            WHERE instrument_id = $1 AND timeframe = $2 AND bar_close_inclusive_ns = $3
+                            LIMIT 1;
+                            """,
+                            c.instrument_id,
+                            c.timeframe,
+                            c.bar_close_inclusive_ns,
+                        )
+                    elif hasattr(conn, "fetchrow"):
+                        r = await conn.fetchrow(
+                            """
+                            SELECT id FROM signal_candidates
+                            WHERE instrument_id = $1 AND timeframe = $2 AND bar_close_inclusive_ns = $3
+                            LIMIT 1;
+                            """,
+                            c.instrument_id,
+                            c.timeframe,
+                            c.bar_close_inclusive_ns,
+                        )
+                        existing_across_specs = r.get("id") if isinstance(r, dict) else (r[0] if r else None)
+                    if existing_across_specs:
+                        logger.debug(
+                            "Candidate %s for %s %s %d skipped: already exists across specs (%s)",
+                            c.id,
+                            c.instrument_id,
+                            c.timeframe,
+                            c.bar_close_inclusive_ns,
+                            existing_across_specs,
+                        )
+                        continue
+
                     res = await conn.fetchrow(
                         """
                         INSERT INTO signal_candidates (

@@ -276,7 +276,10 @@ C1 (CI) goes first so every later PR is gated by it.
 ### E1. Deploy the held services (recommendation 7, D5)
 - **Owner:** **Platform Engineer**, run sheet by **Senior Project Manager**; **Operator** approves. **Review:** Reality Checker.
 - **Precondition:** Phase B and D1–D5 merged; CI green; a fresh backup (A3) taken.
-- **Change:** back up, apply migrations up to head, rebuild and recreate orchestrator, scanner, debate_worker ×3 and learner. Sequencing (B5 cross-service contract): rebuild and recreate the ingest producer with or before the debate worker, so `quote:tick:*` snapshot keys exist before any B5 reader deploys — without the producer every entry records fail-closed `NO_PRICE`. Verify: On-Chain Analyst gone from full debate (R3.2), rule triage active (R3.1), R7.3, F4 and F7 live, mark-to-market running, and `quote:tick:<instrument>` keys present with fresh `arrival_ns`.
+- **Change:** back up, apply migrations up to head, rebuild and recreate orchestrator, scanner, debate_worker ×3 and learner. Sequencing:
+  1. (B5 cross-service contract): rebuild and recreate the ingest producer with or before the debate worker, so `quote:tick:*` snapshot keys exist before any B5 reader deploys — without the producer every entry records fail-closed `NO_PRICE`.
+  2. (D2 pre-scanner-start preset upgrade contract): before starting the scanner service container, execute the guarded preset upgrade sequence (dry-run verification, then apply, then re-read verification) via `POST /api/v1/scanners/presets/upgrade` or `scripts/upgrade_scanner_presets.py` (see `docs/runbooks/e1_preset_upgrade.md`). Re-read `GET /api/v1/scanners` to verify active versions have event crossover rules (`lookback: 1`) and custom specs remain preserved. Only start the scanner service after upgrade verification passes, so the worker never evaluates incoming bars under old state-based rules.
+Verify: On-Chain Analyst gone from full debate (R3.2), rule triage active (R3.1), R7.3, F4 and F7 live, mark-to-market running, `quote:tick:<instrument>` keys present with fresh `arrival_ns`, and scanner evaluating event-based crossover specs.
 - **Done when:** a post-deploy checklist passes with evidence (container image dates, a debate without the On-Chain Analyst, a triage hard reject, moving unrealized PnL).
 - **Effort:** S.
 

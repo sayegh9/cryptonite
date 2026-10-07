@@ -51,6 +51,9 @@ class FakeConn:
             return {"id": args[0]}
         return {"id": args[0]}
 
+    async def fetchval(self, sql, *args):
+        return None
+
     async def execute(self, sql, *args):
         return "OK"
 
