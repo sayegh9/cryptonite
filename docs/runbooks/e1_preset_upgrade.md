@@ -11,10 +11,12 @@
 
 Phase D2 rewrote all built-in scanner presets (`macd-momentum-shift`, `bollinger-breakout`, `rsi-oversold-reversal`, `trend-pullback`) from continuous **state-based** rules (e.g., `close > bb_upper`) to discrete **event-based** crossover triggers (e.g., `close crosses_above bb_upper` with `lookback: 1`).
 
-In the deployed database, preset rows already exist with pre-D2 versions (v1) active. To prevent the scanner service from processing incoming closed bars under legacy state rules upon deployment:
-1. **Pre-Scanner-Start Gate**: Preset specifications must be upgraded **before** the `cryptonite_scanner` service is started.
-2. **Custom Spec Preservation**: Any user-customized scanner specifications are automatically detected and preserved without modification (`custom_preserved`).
-3. **Active Cap Enforcement**: Upgrades strictly honor `MAX_ACTIVE_SPECS = 10` and serialize under `pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))` and `FOR UPDATE` row locks.
+On the live host, preset rows already exist in the database with legacy state versions active, and the held legacy scanner container is **currently running**. To avoid processing incoming closed bars under legacy state rules upon deployment:
+1. **Stop Running Scanner**: The running scanner service container must be explicitly stopped **before** migrations or preset upgrades.
+2. **Pre-Scanner-Start Gate**: Preset specifications must be upgraded and verified **before** the new scanner container is started.
+3. **Custom Spec Preservation**: Any user-customized scanner specifications are automatically detected and preserved without modification (`custom_preserved`).
+4. **Active Cap Enforcement**: Upgrades strictly honor `MAX_ACTIVE_SPECS = 10` and serialize under `pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))` and `FOR UPDATE` row locks.
+5. **Stateful Container Safety**: Do **not** recreate or rebuild stateful `postgres` or `redis` containers (deferred per handover).
 
 ---
 
@@ -23,21 +25,32 @@ In the deployed database, preset rows already exist with pre-D2 versions (v1) ac
 Follow this exact order during the E1 deployment:
 
 1. **A3 Precondition**: Verify durable backup taken and restore proof verified (see `docs/runbooks/backup.md`).
-2. **Database Migration**: Apply all Alembic migrations up to head:
+2. **Stop Legacy Scanner**: Explicitly stop the currently running scanner container:
    ```bash
-   docker compose -f infra/docker-compose.yml exec api alembic -c infra/alembic.ini upgrade head
+   docker compose -f infra/docker-compose.yml stop scanner
    ```
-3. **Core Services Online**: Rebuild and start core infrastructure services:
-   - `postgres`
-   - `redis`
-   - `ingest` (produces `quote:tick:*` snapshot keys required by B5)
-   - `api` (serves operator routes)
-   > **STOP / GATE**: Do **NOT** start `scanner`, `debate_worker`, or `learner` yet.
-4. **Preset Upgrade Sequence**: Execute Step 3 below (Dry-Run -> Apply -> Re-read Verification).
-5. **Worker Services Online**: Once preset upgrade verification passes, start the remaining services:
-   - `scanner`
-   - `debate_worker` (replicas ×3)
-   - `learner`
+3. **Database Migration**: Apply all Alembic migrations up to head using the tested migration configuration path:
+   ```bash
+   docker compose -f infra/docker-compose.yml exec api alembic -c infra/migrations/alembic.ini upgrade head
+   ```
+4. **Ingest Producer Online (B5 Sequencing Contract)**:
+   Rebuild and recreate the ingest producer container before debate workers deploy, ensuring `quote:tick:*` snapshot keys are populated in Redis:
+   ```bash
+   docker compose -f infra/docker-compose.yml up -d --build ingest
+   ```
+5. **Capture Pre-Upgrade Snapshot**: Record the active version IDs of the built-in presets before applying upgrades:
+   ```bash
+   docker compose -f infra/docker-compose.yml exec postgres psql -U cryptonite -d cryptonite -c \
+     "SELECT s.slug, s.active_version_id AS pre_upgrade_version_id, v.version_num, v.spec_hash \
+      FROM scan_specs s \
+      JOIN scan_spec_versions v ON s.active_version_id = v.id \
+      WHERE s.slug IN ('macd-momentum-shift', 'bollinger-breakout', 'rsi-oversold-reversal', 'trend-pullback');"
+   ```
+6. **Preset Upgrade Sequence**: Execute Section 3 below (Dry-Run Verification -> Apply Upgrade -> Committed Re-Read Verification).
+7. **Worker Services Online**: Once preset upgrade verification passes, rebuild and start the scanner, debate workers, and learner:
+   ```bash
+   docker compose -f infra/docker-compose.yml up -d --build scanner debate_worker learner
+   ```
 
 ---
 
@@ -47,13 +60,13 @@ Upgrades can be performed either via the authenticated REST API or via the dedic
 
 ### Method A: Via HTTP API (Recommended)
 
-Requires an Operator authorization token (`OPERATOR_TOKEN`).
+Requires an Operator authorization token (`OPERATOR_TOKEN`). Note: `--fail-with-body` ensures 4xx/5xx responses fail visibly rather than outputting misleading JSON into `jq`.
 
 #### Step 3.1: Dry-Run Verification
 Simulate the upgrade to inspect planned actions without mutating the database:
 
 ```bash
-curl -s -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=true" \
+curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=true" \
   -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq .
 ```
 
@@ -105,7 +118,7 @@ Verify that:
 Execute the upgrade against the active database:
 
 ```bash
-curl -s -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=false" \
+curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=false" \
   -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq .
 ```
 
@@ -114,15 +127,15 @@ curl -s -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=f
 - `dry_run: false`.
 
 #### Step 3.3: Re-read Verification
-Verify that the active versions now reflect the new crossover rules:
+Verify that the committed active versions now reflect the new crossover rules:
 
 ```bash
-curl -s "http://localhost:8000/api/v1/scanners" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq '.[] | {slug: .slug, version: .active_version.version_num, rules: .active_version.rules}'
+curl -sS --fail-with-body "http://localhost:8000/api/v1/scanners" \
+  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq '.[] | {slug: .slug, version: .active_version.version_num, hash: .active_version.spec_hash, rules: .active_version.rules}'
 ```
 
 Verify that:
-- `active_version.version_num` is incremented (e.g. `2`).
+- `active_version.version_num` is incremented.
 - Rule conditions show `crosses_above` or `crosses_below` with `lookback: 1`.
 
 ---
@@ -135,11 +148,11 @@ Alternatively, execute the standalone Python script from the host or deploy cont
 # 1. Dry run:
 DATABASE_URL="${DATABASE_URL}" uv run python scripts/upgrade_scanner_presets.py
 
-# 2. Apply:
+# 2. Apply (includes committed re-read verification):
 DATABASE_URL="${DATABASE_URL}" uv run python scripts/upgrade_scanner_presets.py --apply
 ```
 
-The script displays a formatted console table and prints rollback SQL commands upon completion.
+The script displays a formatted console table, verifies the committed database state, and prints conditional rollback SQL commands upon completion.
 
 ---
 
@@ -151,22 +164,27 @@ Initiate rollback if:
 2. An unexpected custom preset was inadvertently modified (prevented by hash checking).
 
 ### Rollback Procedure
-Because versioning in `scan_spec_versions` is strictly append-only and immutable, rollback simply re-points `active_version_id` to the previous version:
+Because versioning in `scan_spec_versions` is strictly append-only and immutable, rollback re-points `active_version_id` to the captured pre-upgrade version ID.
+
+> **Precondition**: Confirm fresh backup (A3) exists and Reality Checker authorization is recorded.
+
+Execute the rollback query with the exact pre-upgrade and applied IDs captured during Step 2.5:
 
 ```sql
 -- Connect to database as operator:
 -- docker compose -f infra/docker-compose.yml exec postgres psql -U cryptonite -d cryptonite
 
--- Revert a preset back to version 1:
-UPDATE scan_specs s
-SET active_version_id = v.id, updated_at = now()
-FROM scan_spec_versions v
-WHERE v.spec_id = s.id
-  AND v.version_num = 1
-  AND s.slug = '<preset-slug>';
+-- Safely revert a preset ONLY if current active version is the applied target version:
+UPDATE scan_specs
+SET active_version_id = '<pre_upgrade_version_id>', updated_at = now()
+WHERE slug = '<preset-slug>' AND active_version_id = '<applied_version_id>';
 ```
 
-After executing rollback SQL, verify active specs with `GET /api/v1/scanners`.
+After executing rollback SQL, verify active specs with:
+```bash
+curl -sS --fail-with-body "http://localhost:8000/api/v1/scanners" \
+  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq .
+```
 
 ---
 

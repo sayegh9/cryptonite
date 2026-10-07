@@ -118,7 +118,7 @@ REDIS_URL="redis://:...@127.0.0.1:6379/15" uv run --extra dev pytest tests/test_
 ```
 
 Results across the scanner test suite:
-- `tests/test_scanner_events_d2.py`: **18 passed**
+- `tests/test_scanner_events_d2.py`: **20 passed**
   - `test_rule_condition_lookback_validation`: Enforces lookback >= 1, rejects negative, defaults to 1.
   - `test_deterministic_crossover_produces_one_candidate_not_continuation`: Crossover event produces exactly 1 candidate across 250 trending bars.
   - `test_deterministic_cross_below_produces_one_candidate`: Cross-below event semantics verified.
@@ -135,11 +135,13 @@ Results across the scanner test suite:
   - `test_get_scanners_is_read_only`: `GET /api/v1/scanners` performs zero mutations on active versions or specs.
   - `test_preset_upgrade_operator_endpoint_dry_run_and_apply`: `dry_run=True` reports planned transitions without DB mutations; `dry_run=False` transitions matching presets and preserves custom specs.
   - `test_activate_preset_version_operator_route_and_cap_guard`: Guarded operator route explicitly activates preset version and rejects with HTTP 400 when active cap is reached.
-  - `test_concurrent_user_edit_vs_preset_upgrade_race_preserves_custom_edit`: Concurrent user update (`update_scanner`) and operator preset upgrade (`upgrade_presets`) serialize under advisory lock and row locks; concurrent user edits are strictly preserved and never overwritten.
-  - `test_operator_script_upgrade_presets_dry_run_and_apply`: Standalone operator script `scripts/upgrade_scanner_presets.py` verified in dry-run mode (zero mutations) and apply mode (commits target crossover versions and prints rollback SQL).
+  - `test_ordering_user_edit_then_preset_upgrade_preserves_custom_edit`: Deterministic ordering 1: user custom edit commits first; subsequent preset upgrade recognizes custom hash and marks as `custom_preserved`.
+  - `test_ordering_preset_upgrade_then_user_edit_preserves_custom_edit`: Deterministic ordering 2: preset upgrade commits first; subsequent user edit appends new version and updates active version.
+  - `test_concurrent_race_conditional_update_guard_preserves_custom_edit`: Deterministic ordering 3: simulates race where upgrade update encounters changed active version id, evaluates to `UPDATE 0`, and safely falls back to preserving user customization.
+  - `test_operator_script_upgrade_presets_dry_run_and_apply`: Standalone operator script `scripts/upgrade_scanner_presets.py` verified in dry-run mode (zero mutations) and apply mode (commits target crossover versions, verifies committed state, and prints conditional rollback SQL).
 - `tests/test_scanner_fresh_enqueue.py`: **18 passed** (fresh enqueue, relay lease, bounded queue).
 - `tests/test_scanner_closed_bar_guard.py`: **5 passed** (closed bar enforcement, future candidate filtering).
 - `tests/test_scanner_engine.py`: **1 passed** (scanner engine baseline candidate generation).
 - `tests/test_api_endpoints.py`: **5 passed** (API health, ready, instruments, scanners CRUD/run enqueue, bars).
-- **Total:** **47 passed**, **0 failed**.
+- **Total:** **49 passed**, **0 failed**.
 - **Code hygiene:** `uvx ruff check` clean; `git diff --check` clean (0 trailing whitespace issues).

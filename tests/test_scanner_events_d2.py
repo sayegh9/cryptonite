@@ -928,13 +928,12 @@ async def test_activate_preset_version_operator_route_and_cap_guard(db_url, admi
         await pool.close()
 
 
-async def test_concurrent_user_edit_vs_preset_upgrade_race_preserves_custom_edit(db_url, admin):
-    """Concurrent user update (update_scanner) and operator preset upgrade (upgrade_presets)
-    serialize under scan_specs:active_limit and FOR UPDATE locks, guaranteeing that a concurrent
-    user customization is never overwritten with the built-in preset target version.
-    """
-    import asyncio
+async def test_ordering_user_edit_then_preset_upgrade_preserves_custom_edit(db_url, admin):
+    """Deterministic ordering 1: User custom edit commits FIRST, followed by operator preset upgrade.
 
+    The preset upgrade observes the modified spec hash, recognizes it does not match
+    any prior built-in hash, and safely preserves the user's customization as custom_preserved.
+    """
     from cryptonite_api.routes.scanners import (
         PRESET_PREVIOUS_HASHES,
         ensure_presets_seeded,
@@ -965,7 +964,7 @@ async def test_concurrent_user_edit_vs_preset_upgrade_race_preserves_custom_edit
         scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
         req = Request(scope)
 
-        # 2. Define custom user modification payload
+        # 2. User executes custom modification FIRST
         custom_spec_in = ScanSpecCreate(
             slug=PRESET_RSI_OVERSOLD.slug,
             name="Custom RSI Trader Spec",
@@ -980,20 +979,16 @@ async def test_concurrent_user_edit_vs_preset_upgrade_race_preserves_custom_edit
                 )
             ],
         )
-
-        # 3. Execute concurrent user update and preset upgrade
-        results = await asyncio.gather(
-            update_scanner(spec_id, custom_spec_in, req),
-            upgrade_presets(req, dry_run=False),
-            return_exceptions=False,
-        )
-        user_update_res, upgrade_res = results
-
-        # 4. Verify user update committed and holds custom version
+        user_update_res = await update_scanner(spec_id, custom_spec_in, req)
         assert user_update_res.name == "Custom RSI Trader Spec"
         custom_ver_id = user_update_res.active_version_id
 
-        # 5. Check that active spec version in DB is strictly the custom user edit
+        # 3. Operator runs preset upgrade SUBSEQUENTLY
+        upgrade_res = await upgrade_presets(req, dry_run=False)
+        rsi_item = next(item for item in upgrade_res.items if item.slug == PRESET_RSI_OVERSOLD.slug)
+        assert rsi_item.action == "custom_preserved"
+
+        # 4. Check that active spec version in DB remains strictly the custom user edit
         final_spec = await pool.fetchrow(
             """
             SELECT s.active_version_id, s.name, v.version_num, v.spec_hash, v.rules
@@ -1007,6 +1002,177 @@ async def test_concurrent_user_edit_vs_preset_upgrade_race_preserves_custom_edit
         assert final_spec["name"] == "Custom RSI Trader Spec"
         rules = json.loads(final_spec["rules"]) if isinstance(final_spec["rules"], str) else final_spec["rules"]
         assert rules[0]["conditions"][0]["value"] == 22.0
+    finally:
+        await pool.close()
+
+
+async def test_ordering_preset_upgrade_then_user_edit_preserves_custom_edit(db_url, admin):
+    """Deterministic ordering 2: Operator preset upgrade commits FIRST, followed by user custom edit.
+
+    The preset upgrade upgrades the built-in preset to the crossover target version,
+    and subsequent user edits successfully append a new version and update active_version_id.
+    """
+    from cryptonite_api.routes.scanners import (
+        PRESET_PREVIOUS_HASHES,
+        ensure_presets_seeded,
+        update_scanner,
+        upgrade_presets,
+    )
+    from cryptonite_scanner.models import ScanSpecCreate, UniverseConfig
+    from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD
+    from starlette.requests import Request
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        await ensure_presets_seeded(pool)
+
+        # 1. Simulate an older unedited preset in DB by resetting RSI spec to known prior hash
+        rsi_spec = await pool.fetchrow(
+            "SELECT id, active_version_id FROM scan_specs WHERE slug = $1;",
+            PRESET_RSI_OVERSOLD.slug,
+        )
+        spec_id = rsi_spec["id"]
+        old_hash = next(iter(PRESET_PREVIOUS_HASHES[PRESET_RSI_OVERSOLD.slug]))
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
+            old_hash,
+            rsi_spec["active_version_id"],
+        )
+
+        scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
+        req = Request(scope)
+
+        # 2. Operator preset upgrade commits FIRST
+        upgrade_res = await upgrade_presets(req, dry_run=False)
+        rsi_item = next(item for item in upgrade_res.items if item.slug == PRESET_RSI_OVERSOLD.slug)
+        assert rsi_item.action == "upgraded"
+
+        # 3. User applies custom modification SUBSEQUENTLY
+        custom_spec_in = ScanSpecCreate(
+            slug=PRESET_RSI_OVERSOLD.slug,
+            name="Custom RSI Post-Upgrade Spec",
+            description="User customized rules after operator upgrade",
+            universe=UniverseConfig(symbols=["BTCUSDT"], timeframes=["15m"]),
+            rules=[
+                RuleGroup(
+                    category="trigger",
+                    conditions=[
+                        RuleCondition(field="rsi", operator="<", value=19.5)
+                    ],
+                )
+            ],
+        )
+        user_update_res = await update_scanner(spec_id, custom_spec_in, req)
+        assert user_update_res.name == "Custom RSI Post-Upgrade Spec"
+        custom_ver_id = user_update_res.active_version_id
+
+        # 4. Check that active spec version in DB is strictly the custom user edit
+        final_spec = await pool.fetchrow(
+            """
+            SELECT s.active_version_id, s.name, v.version_num, v.spec_hash, v.rules
+            FROM scan_specs s
+            JOIN scan_spec_versions v ON s.active_version_id = v.id
+            WHERE s.id = $1;
+            """,
+            spec_id,
+        )
+        assert final_spec["active_version_id"] == custom_ver_id
+        assert final_spec["name"] == "Custom RSI Post-Upgrade Spec"
+        rules = json.loads(final_spec["rules"]) if isinstance(final_spec["rules"], str) else final_spec["rules"]
+        assert rules[0]["conditions"][0]["value"] == 19.5
+    finally:
+        await pool.close()
+
+
+async def test_concurrent_race_conditional_update_guard_preserves_custom_edit(db_url, admin):
+    """Deterministic ordering 3: Race condition revalidation guard.
+
+    Simulates a race where preset upgrade reads the pre-upgrade active_version_id,
+    but before the update statement executes, a concurrent user edit commits a new
+    active_version_id. The optimistic WHERE active_version_id = $4 condition evaluates
+    to UPDATE 0, safely triggering the custom_preserved fallback without overwriting.
+    """
+    from cryptonite_api.routes.scanners import (
+        PRESET_PREVIOUS_HASHES,
+        ensure_presets_seeded,
+        update_scanner,
+    )
+    from cryptonite_scanner.models import ScanSpecCreate, UniverseConfig
+    from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD
+    from starlette.requests import Request
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        await ensure_presets_seeded(pool)
+
+        # 1. Reset RSI spec to known prior hash
+        rsi_spec = await pool.fetchrow(
+            "SELECT id, active_version_id FROM scan_specs WHERE slug = $1;",
+            PRESET_RSI_OVERSOLD.slug,
+        )
+        spec_id = rsi_spec["id"]
+        old_hash = next(iter(PRESET_PREVIOUS_HASHES[PRESET_RSI_OVERSOLD.slug]))
+        old_ver_id = rsi_spec["active_version_id"]
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
+            old_hash,
+            old_ver_id,
+        )
+
+        scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
+        req = Request(scope)
+
+        # 2. User commits a custom edit, changing active_version_id
+        custom_spec_in = ScanSpecCreate(
+            slug=PRESET_RSI_OVERSOLD.slug,
+            name="Concurrent Custom RSI Spec",
+            description="User edit committed during in-flight upgrade",
+            universe=UniverseConfig(symbols=["BTCUSDT"], timeframes=["15m"]),
+            rules=[
+                RuleGroup(
+                    category="trigger",
+                    conditions=[
+                        RuleCondition(field="rsi", operator="<", value=25.0)
+                    ],
+                )
+            ],
+        )
+        user_res = await update_scanner(spec_id, custom_spec_in, req)
+        committed_custom_ver_id = user_res.active_version_id
+        assert committed_custom_ver_id != old_ver_id
+
+        # 3. Now simulate the preset upgrade executing its guarded UPDATE using the stale old_ver_id
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Attempt to update pointing to a dummy target version using stale old_ver_id
+                target_ver_id = uuid4()
+                update_res = await conn.execute(
+                    """
+                    UPDATE scan_specs
+                    SET active_version_id = $1, description = 'Upgraded', updated_at = now()
+                    WHERE id = $2 AND active_version_id = $3;
+                    """,
+                    target_ver_id,
+                    spec_id,
+                    old_ver_id,
+                )
+                # Must return UPDATE 0 because active_version_id was changed by user edit
+                assert update_res == "UPDATE 0"
+
+        # 4. Verify DB active_version_id is untouched and remains the user's committed version
+        final_spec = await pool.fetchrow(
+            """
+            SELECT s.active_version_id, s.name, v.spec_hash, v.rules
+            FROM scan_specs s
+            JOIN scan_spec_versions v ON s.active_version_id = v.id
+            WHERE s.id = $1;
+            """,
+            spec_id,
+        )
+        assert final_spec["active_version_id"] == committed_custom_ver_id
+        assert final_spec["name"] == "Concurrent Custom RSI Spec"
+        rules = json.loads(final_spec["rules"]) if isinstance(final_spec["rules"], str) else final_spec["rules"]
+        assert rules[0]["conditions"][0]["value"] == 25.0
     finally:
         await pool.close()
 

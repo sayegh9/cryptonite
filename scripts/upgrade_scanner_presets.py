@@ -4,7 +4,7 @@ Usage:
     # Dry-run by default (inspects plan, makes zero database modifications):
     DATABASE_URL="postgresql://cryptonite:<pass>@localhost:5432/cryptonite" uv run python scripts/upgrade_scanner_presets.py
 
-    # Apply upgrades to database:
+    # Apply upgrades to database with committed re-read verification:
     DATABASE_URL="postgresql://cryptonite:<pass>@localhost:5432/cryptonite" uv run python scripts/upgrade_scanner_presets.py --apply
 
     # Alternatively via HTTP API (requires operator auth token):
@@ -16,8 +16,9 @@ Guarantees:
     - Transitions unedited built-in presets matching PRESET_PREVIOUS_HASHES to new event crossover target hashes.
     - Preserves user-edited custom specs without modification (custom_preserved).
     - Honors MAX_ACTIVE_SPECS limit (10).
-    - Re-reads and verifies active versions after apply.
-    - Prints SQL rollback instructions for operator safety.
+    - Re-reads and verifies committed active versions after apply; exits nonzero on any mismatch.
+    - Reports commit only after transaction block exits.
+    - Prints conditional SQL rollback instructions capturing exact pre-upgrade active_version_ids.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from cryptonite_api.routes.scanners import (  # noqa: E402
 )
 from cryptonite_scanner.models import (  # noqa: E402
     MAX_ACTIVE_SPECS,
+    RuleOperator,
     compute_spec_hash,
 )
 from cryptonite_scanner.presets import BUILTIN_PRESETS  # noqa: E402
@@ -52,6 +54,9 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
 
     pool = await asyncpg.create_pool(db_url)
     try:
+        rollback_sqls: list[str] = []
+        expected_upgrades: dict[str, str] = {}  # slug -> target_hash
+
         async with pool.acquire() as conn:
             async with conn.transaction():
                 # Acquire advisory lock to serialize against concurrent creations/updates
@@ -64,8 +69,6 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
 
                 print("\n{:<25} {:<12} {:<15} {:<18} {:<18}".format("SLUG", "STATUS", "ACTION", "CURRENT_HASH", "TARGET_HASH"))
                 print("-" * 90)
-
-                rollback_sqls: list[str] = []
 
                 for preset in BUILTIN_PRESETS:
                     univ_dict = preset.universe.model_dump()
@@ -111,6 +114,7 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
                                     ver_id, spec_id,
                                 )
                                 active_count += 1
+                                expected_upgrades[preset.slug] = target_hash
                         continue
 
                     curr_hash = spec_row["spec_hash"]
@@ -120,6 +124,7 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
 
                     if curr_hash == target_hash:
                         print(f"{preset.slug:<25} {'CURRENT':<12} {'NOOP':<15} {str(curr_hash)[:12]+'...':<18} {target_hash[:12]+'...':<18}")
+                        expected_upgrades[preset.slug] = target_hash
                         continue
 
                     if curr_hash in prior_hashes:
@@ -156,21 +161,87 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
                             if update_res == "UPDATE 0":
                                 print(f"  [!] Concurrent edit detected on '{preset.slug}'; custom version preserved.")
                             else:
+                                expected_upgrades[preset.slug] = target_hash
                                 rollback_sqls.append(
-                                    f"UPDATE scan_specs SET active_version_id = '{spec_row['active_version_id']}' WHERE id = '{spec_id}'; -- revert {preset.slug} to v{curr_ver}"
+                                    f"UPDATE scan_specs SET active_version_id = '{spec_row['active_version_id']}', updated_at = now() "
+                                    f"WHERE id = '{spec_id}' AND active_version_id = '{existing_ver_id}'; "
+                                    f"-- revert {preset.slug} to pre-upgrade version {curr_ver} ({str(curr_hash)[:12]}...)"
                                 )
                     else:
                         print(f"{preset.slug:<25} {'CUSTOM':<12} {'PRESERVED':<15} {str(curr_hash)[:12]+'...':<18} {target_hash[:12]+'...':<18}")
 
-                if apply:
-                    print("\n[+] Preset upgrades successfully committed.")
-                    if rollback_sqls:
-                        print("\n[*] Rollback criteria: To revert applied upgrades, run:")
-                        for sql in rollback_sqls:
-                            print(f"    psql: {sql}")
-                else:
-                    print("\n[*] Dry run complete. No modifications were made to the database.")
-                    print("[*] To execute the upgrades, re-run with --apply flag.")
+            # Transaction has committed after block exit
+            if apply:
+                print("\n[+] Database transaction committed.")
+            else:
+                print("\n[*] Dry run complete. No modifications were made to the database.")
+                print("[*] To execute the upgrades, re-run with --apply flag.")
+                return 0
+
+            # -------------------------------------------------------------
+            # Post-Apply Committed Re-Read Verification
+            # -------------------------------------------------------------
+            print("\n[*] Running committed re-read verification from database...")
+            re_read_rows = await conn.fetch(
+                """
+                SELECT s.slug, s.name, s.is_archived, s.active_version_id,
+                       v.version_num, v.spec_hash, v.rules
+                FROM scan_specs s
+                LEFT JOIN scan_spec_versions v ON s.active_version_id = v.id
+                WHERE s.is_archived = false
+                ORDER BY s.slug ASC;
+                """
+            )
+            mismatches: list[str] = []
+
+            for slug, exp_hash in expected_upgrades.items():
+                row = next((r for r in re_read_rows if r["slug"] == slug), None)
+                if not row or not row["active_version_id"]:
+                    mismatches.append(f"{slug}: missing active version in committed database")
+                    continue
+                if row["spec_hash"] != exp_hash:
+                    mismatches.append(
+                        f"{slug}: committed hash mismatch (got {row['spec_hash'][:12]}..., expected {exp_hash[:12]}...)"
+                    )
+                rules_val = json.loads(row["rules"]) if isinstance(row["rules"], str) else row["rules"]
+                preset_def = next((p for p in BUILTIN_PRESETS if p.slug == slug), None)
+                preset_expects_crossover = (
+                    preset_def is not None
+                    and any(
+                        cond.operator in [RuleOperator.CROSS_ABOVE, RuleOperator.CROSS_BELOW, RuleOperator.CROSSES_ABOVE, RuleOperator.CROSSES_BELOW]
+                        for rg in preset_def.rules
+                        for cond in rg.conditions
+                    )
+                )
+                if preset_expects_crossover:
+                    has_crossover = any(
+                        cond.get("operator") in ["cross_above", "crosses_above", "cross_below", "crosses_below"]
+                        and cond.get("lookback", 0) >= 1
+                        for rg in rules_val
+                        for cond in rg.get("conditions", [])
+                    )
+                    if not has_crossover:
+                        mismatches.append(f"{slug}: active rules missing crossover condition with lookback >= 1")
+
+            re_read_active_count = len([r for r in re_read_rows if r["active_version_id"] is not None])
+            if re_read_active_count > MAX_ACTIVE_SPECS:
+                mismatches.append(f"Active specs cap exceeded: {re_read_active_count} > {MAX_ACTIVE_SPECS}")
+
+            if mismatches:
+                print("\n[!] ERROR: Committed re-read verification FAILED:", file=sys.stderr)
+                for m in mismatches:
+                    print(f"    - {m}", file=sys.stderr)
+                return 1
+
+            print(f"[+] Committed re-read verification PASSED: {len(expected_upgrades)} presets verified with valid event crossover rules.")
+            print(f"[+] Active specs count within limit: {re_read_active_count}/{MAX_ACTIVE_SPECS}")
+
+            if rollback_sqls:
+                print("\n[*] Rollback Criteria:")
+                print("    If post-upgrade anomalies occur, verify backup (A3) and Reality Checker gate, then execute:")
+                for sql in rollback_sqls:
+                    print(f"    psql: {sql}")
+
     finally:
         await pool.close()
 
@@ -194,8 +265,54 @@ async def run_http_api(api_url: str, token: str | None, apply: bool) -> int:
             return 1
         data = resp.json()
         print(f"[*] Response: dry_run={data.get('dry_run')}, active_count={data.get('active_count')}/{data.get('max_active_specs')}")
+        expected_upgrades: dict[str, str] = {}
         for item in data.get("items", []):
             print(f"  - {item['slug']}: {item['action']} ({item['detail']})")
+            if item["action"] in ["upgraded", "already_current"]:
+                expected_upgrades[item["slug"]] = item["target_hash"]
+
+        if apply:
+            print("\n[*] Running committed re-read verification via GET /api/v1/scanners...")
+            list_resp = await client.get(f"{api_url.rstrip('/')}/api/v1/scanners", headers=headers)
+            if list_resp.status_code != 200:
+                print(f"[!] Failed to re-read scanners ({list_resp.status_code}): {list_resp.text}", file=sys.stderr)
+                return 1
+            scanners = list_resp.json()
+            mismatches: list[str] = []
+            for slug, exp_hash in expected_upgrades.items():
+                sc = next((s for s in scanners if s["slug"] == slug), None)
+                if not sc or not sc.get("active_version"):
+                    mismatches.append(f"{slug}: missing active version in GET /api/v1/scanners")
+                    continue
+                act_ver = sc["active_version"]
+                if act_ver.get("spec_hash") != exp_hash:
+                    mismatches.append(f"{slug}: hash mismatch (got {act_ver.get('spec_hash')[:12]}..., expected {exp_hash[:12]}...)")
+                rules_val = act_ver.get("rules", [])
+                preset_def = next((p for p in BUILTIN_PRESETS if p.slug == slug), None)
+                preset_expects_crossover = (
+                    preset_def is not None
+                    and any(
+                        cond.operator in [RuleOperator.CROSS_ABOVE, RuleOperator.CROSS_BELOW, RuleOperator.CROSSES_ABOVE, RuleOperator.CROSSES_BELOW]
+                        for rg in preset_def.rules
+                        for cond in rg.conditions
+                    )
+                )
+                if preset_expects_crossover:
+                    has_crossover = any(
+                        cond.get("operator") in ["cross_above", "crosses_above", "cross_below", "crosses_below"]
+                        and cond.get("lookback", 0) >= 1
+                        for rg in rules_val
+                        for cond in rg.get("conditions", [])
+                    )
+                    if not has_crossover:
+                        mismatches.append(f"{slug}: active rules missing crossover condition with lookback >= 1")
+            if mismatches:
+                print("\n[!] ERROR: Committed re-read verification FAILED:", file=sys.stderr)
+                for m in mismatches:
+                    print(f"    - {m}", file=sys.stderr)
+                return 1
+            print("[+] Committed re-read verification PASSED via API.")
+
     return 0
 
 
