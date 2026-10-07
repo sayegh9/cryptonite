@@ -350,22 +350,28 @@ class ScannerWorker:
         if not self.pool:
             return
 
-        # Fetch active spec versions
+        # Fetch active spec versions deterministically ordered
         rows = await self.pool.fetch(
             """
-            SELECT s.slug, s.active_version_id, v.id as version_id, v.universe, v.rules, v.spec_hash
+            SELECT s.slug, s.active_version_id, s.created_at, v.id as version_id, v.universe, v.rules, v.spec_hash
             FROM scan_specs s
             JOIN scan_spec_versions v ON s.active_version_id = v.id
-            WHERE s.is_archived = false;
+            WHERE s.is_archived = false
+            ORDER BY s.created_at ASC, s.slug ASC;
             """
         )
 
         if len(rows) > MAX_ACTIVE_SPECS:
-            logger.warning(
-                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d); capping to %d",
+            omitted = [r["slug"] for r in rows[MAX_ACTIVE_SPECS:]]
+            logger.error(
+                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d)! "
+                "Deterministically processing first %d (%s) and visibly omitting (%s). "
+                "Operator action required to deactivate/archive excess specs.",
                 len(rows),
                 MAX_ACTIVE_SPECS,
                 MAX_ACTIVE_SPECS,
+                [r["slug"] for r in rows[:MAX_ACTIVE_SPECS]],
+                omitted,
             )
             rows = rows[:MAX_ACTIVE_SPECS]
 
@@ -474,24 +480,30 @@ class ScannerWorker:
         instrument_id = payload.get("instrument_id", "BTCUSDT.BINANCE")
         bar_close_ns = payload.get("bar_close_inclusive_ns", time.time_ns())
 
-        # Load active scan spec versions
+        # Load active scan spec versions deterministically ordered
         if not self.pool:
             return
         active_specs = await self.pool.fetch(
             """
-            SELECT s.slug, s.active_version_id, v.id as version_id, v.universe, v.rules, v.spec_hash
+            SELECT s.slug, s.active_version_id, s.created_at, v.id as version_id, v.universe, v.rules, v.spec_hash
             FROM scan_specs s
             JOIN scan_spec_versions v ON s.active_version_id = v.id
-            WHERE s.is_archived = false;
+            WHERE s.is_archived = false
+            ORDER BY s.created_at ASC, s.slug ASC;
             """
         )
 
         if len(active_specs) > MAX_ACTIVE_SPECS:
-            logger.warning(
-                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d); capping to %d",
+            omitted = [s["slug"] for s in active_specs[MAX_ACTIVE_SPECS:]]
+            logger.error(
+                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d)! "
+                "Deterministically processing first %d (%s) and visibly omitting (%s). "
+                "Operator action required to deactivate/archive excess specs.",
                 len(active_specs),
                 MAX_ACTIVE_SPECS,
                 MAX_ACTIVE_SPECS,
+                [s["slug"] for s in active_specs[:MAX_ACTIVE_SPECS]],
+                omitted,
             )
             active_specs = active_specs[:MAX_ACTIVE_SPECS]
 
@@ -742,8 +754,17 @@ class ScannerWorker:
                         len(all_candidates),
                     )
 
-                # b. Insert candidates with idempotency key
+                # b. Insert candidates with idempotency key and serialized cross-spec deduplication
                 for c in all_candidates:
+                    # Serialise concurrent candidate insertions for this bar across specs/workers:
+                    # Transaction-level advisory lock prevents SELECT-then-INSERT races across jobs.
+                    lock_key = f"signal_candidate:{c.instrument_id}:{c.timeframe}:{c.bar_close_inclusive_ns}"
+                    if hasattr(conn, "execute"):
+                        try:
+                            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0));", lock_key)
+                        except Exception as lock_err:
+                            logger.debug("Candidate advisory lock skipped or unsupported: %s", lock_err)
+
                     # Deduplicate across specs per (instrument, timeframe, bar)
                     existing_across_specs = None
                     if hasattr(conn, "fetchval"):

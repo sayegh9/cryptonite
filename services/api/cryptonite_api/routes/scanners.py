@@ -17,47 +17,112 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 router = APIRouter(prefix="/api/v1/scanners", tags=["scanners"])
 
 
+# Known prior hashes for unedited built-in presets (before event crossover rewrite)
+PRESET_PREVIOUS_HASHES: dict[str, set[str]] = {
+    "rsi-oversold-reversal": {"6c06d8c94c121430b9dd4e09470bf1e4f6a2789369a90140d240f8d7d9fdd07a"},
+    "trend-pullback": {"800d5d0c9370712e789981f21a86e8312601e8631aa71d5a25eb935b27824586"},
+    "bollinger-breakout": {"4db974a03f6671097f2a56103cdeac0c31de1644d57a88746c9f6a47c6db32da"},
+    "macd-momentum-shift": {"ce67b07159b95938ef6d93f1add67ef32654d572d5953d8ad528f1183120ab9a"},
+}
+
+
 async def ensure_presets_seeded(pool: Any) -> None:
-    """Seed built-in scanner presets if no specs currently exist in database."""
-    count = await pool.fetchval("SELECT count(*) FROM scan_specs;")
-    if count > 0:
+    """Seed or idempotently transition built-in scanner presets.
+
+    - Inserts missing presets on a fresh or partial database.
+    - Transitions unedited presets matching prior built-in hashes to the new event-crossover version.
+    - Preserves user-edited specs by leaving their active version untouched.
+    """
+    if not pool:
         return
 
     for preset in BUILTIN_PRESETS:
-        spec_id = uuid4()
-        version_id = uuid4()
         univ_dict = preset.universe.model_dump()
         rules_dict = [rg.model_dump() for rg in preset.rules]
-        spec_hash = compute_spec_hash(univ_dict, {"rules": rules_dict})
+        target_hash = compute_spec_hash(univ_dict, {"rules": rules_dict})
 
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    """
-                    INSERT INTO scan_specs (id, slug, name, description, active_version_id, is_archived)
-                    VALUES ($1, $2, $3, $4, NULL, false);
-                    """,
-                    spec_id,
+                spec_row = await conn.fetchrow(
+                    "SELECT id, slug, active_version_id, is_archived FROM scan_specs WHERE slug = $1;",
                     preset.slug,
-                    preset.name,
-                    preset.description,
                 )
-                await conn.execute(
-                    """
-                    INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
-                    VALUES ($1, $2, 1, $3, $4::jsonb, $5::jsonb);
-                    """,
-                    version_id,
-                    spec_id,
-                    spec_hash,
-                    json.dumps(univ_dict),
-                    json.dumps(rules_dict),
-                )
-                await conn.execute(
-                    "UPDATE scan_specs SET active_version_id = $1 WHERE id = $2;",
-                    version_id,
-                    spec_id,
-                )
+                if not spec_row:
+                    spec_id = uuid4()
+                    version_id = uuid4()
+                    await conn.execute(
+                        """
+                        INSERT INTO scan_specs (id, slug, name, description, active_version_id, is_archived)
+                        VALUES ($1, $2, $3, $4, NULL, false);
+                        """,
+                        spec_id,
+                        preset.slug,
+                        preset.name,
+                        preset.description,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                        VALUES ($1, $2, 1, $3, $4::jsonb, $5::jsonb);
+                        """,
+                        version_id,
+                        spec_id,
+                        target_hash,
+                        json.dumps(univ_dict),
+                        json.dumps(rules_dict),
+                    )
+                    await conn.execute(
+                        "UPDATE scan_specs SET active_version_id = $1 WHERE id = $2;",
+                        version_id,
+                        spec_id,
+                    )
+                else:
+                    spec_id = spec_row["id"]
+                    active_ver_id = spec_row["active_version_id"]
+                    active_hash = None
+                    if active_ver_id:
+                        active_hash = await conn.fetchval(
+                            "SELECT spec_hash FROM scan_spec_versions WHERE id = $1;",
+                            active_ver_id,
+                        )
+
+                    # If already on the target hash, idempotent no-op
+                    if active_hash == target_hash:
+                        continue
+
+                    # Only auto-transition if current active spec matches a known prior built-in hash
+                    prior_hashes = PRESET_PREVIOUS_HASHES.get(preset.slug, set())
+                    if active_hash in prior_hashes:
+                        existing_ver_id = await conn.fetchval(
+                            "SELECT id FROM scan_spec_versions WHERE spec_id = $1 AND spec_hash = $2;",
+                            spec_id,
+                            target_hash,
+                        )
+                        if not existing_ver_id:
+                            existing_ver_id = uuid4()
+                            max_ver = await conn.fetchval(
+                                "SELECT COALESCE(MAX(version_num), 0) FROM scan_spec_versions WHERE spec_id = $1;",
+                                spec_id,
+                            )
+                            next_ver = (max_ver or 0) + 1
+                            await conn.execute(
+                                """
+                                INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb);
+                                """,
+                                existing_ver_id,
+                                spec_id,
+                                next_ver,
+                                target_hash,
+                                json.dumps(univ_dict),
+                                json.dumps(rules_dict),
+                            )
+                        await conn.execute(
+                            "UPDATE scan_specs SET active_version_id = $1, description = $2, updated_at = now() WHERE id = $3;",
+                            existing_ver_id,
+                            preset.description,
+                            spec_id,
+                        )
 
 
 @router.get("", dependencies=AUTHED_READ)
@@ -122,6 +187,13 @@ async def create_scanner(spec_in: ScanSpecCreate, request: Request) -> ScanSpecR
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Serialise concurrent spec creations to avoid racing MAX_ACTIVE_SPECS limit
+            if hasattr(conn, "execute"):
+                try:
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
+                except Exception:
+                    pass
+
             # Check unique slug
             existing = await conn.fetchval("SELECT id FROM scan_specs WHERE slug = $1;", spec_in.slug)
             if existing:
@@ -349,4 +421,97 @@ async def get_scan_job(job_id: UUID, request: Request) -> ScanJobRead:
         created_at=row["created_at"],
         started_at=row["started_at"],
         completed_at=row["completed_at"],
+    )
+
+
+@router.post("/presets/{slug}/activate", dependencies=OPERATOR_WRITE)
+async def activate_preset_version(slug: str, request: Request) -> ScanSpecRead:
+    """Explicit guarded operator activation to upgrade/activate the latest built-in preset version."""
+    pool = request.app.state.pool
+    preset = next((p for p in BUILTIN_PRESETS if p.slug == slug), None)
+    if not preset:
+        raise HTTPException(status_code=404, detail=f"Built-in preset '{slug}' not found")
+
+    univ_dict = preset.universe.model_dump()
+    rules_dict = [rg.model_dump() for rg in preset.rules]
+    target_hash = compute_spec_hash(univ_dict, {"rules": rules_dict})
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            spec_row = await conn.fetchrow(
+                "SELECT id, slug, active_version_id, is_archived FROM scan_specs WHERE slug = $1;",
+                slug,
+            )
+            if not spec_row:
+                raise HTTPException(status_code=404, detail=f"Scan spec '{slug}' not found in database")
+
+            spec_id = spec_row["id"]
+            existing_ver_id = await conn.fetchval(
+                "SELECT id FROM scan_spec_versions WHERE spec_id = $1 AND spec_hash = $2;",
+                spec_id,
+                target_hash,
+            )
+            if not existing_ver_id:
+                existing_ver_id = uuid4()
+                max_ver = await conn.fetchval(
+                    "SELECT COALESCE(MAX(version_num), 0) FROM scan_spec_versions WHERE spec_id = $1;",
+                    spec_id,
+                )
+                next_ver = (max_ver or 0) + 1
+                await conn.execute(
+                    """
+                    INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb);
+                    """,
+                    existing_ver_id,
+                    spec_id,
+                    next_ver,
+                    target_hash,
+                    json.dumps(univ_dict),
+                    json.dumps(rules_dict),
+                )
+
+            await conn.execute(
+                """
+                UPDATE scan_specs
+                SET active_version_id = $1, description = $2, is_archived = false, updated_at = now()
+                WHERE id = $3;
+                """,
+                existing_ver_id,
+                preset.description,
+                spec_id,
+            )
+
+    row = await pool.fetchrow(
+        """
+        SELECT s.id, s.slug, s.name, s.description, s.active_version_id, s.is_archived,
+               s.created_at, s.updated_at,
+               v.version_num, v.spec_hash, v.universe, v.rules, v.created_at as version_created_at
+        FROM scan_specs s
+        JOIN scan_spec_versions v ON s.active_version_id = v.id
+        WHERE s.id = $1;
+        """,
+        spec_id,
+    )
+
+    active_ver = ScanSpecVersionRead(
+        id=row["active_version_id"],
+        spec_id=row["id"],
+        version_num=row["version_num"],
+        spec_hash=row["spec_hash"],
+        universe=json.loads(row["universe"]) if isinstance(row["universe"], str) else row["universe"],
+        rules=json.loads(row["rules"]) if isinstance(row["rules"], str) else row["rules"],
+        created_at=row["version_created_at"],
+    )
+
+    return ScanSpecRead(
+        id=row["id"],
+        slug=row["slug"],
+        name=row["name"],
+        description=row["description"],
+        active_version_id=row["active_version_id"],
+        active_version=active_ver,
+        is_archived=row["is_archived"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

@@ -598,3 +598,224 @@ async def test_create_scanner_api_guard_rejects_at_max_active_specs(db_url, admi
     finally:
         await pool.close()
 
+
+async def test_cross_spec_dedupe_concurrent_race_serialized(db_url, admin, redis15, monkeypatch):
+    """Two concurrent _execute_scan executions racing on different specs for the same bar
+    are serialized by transaction advisory lock, producing exactly 1 candidate across specs."""
+    import asyncio
+    t0 = 1_791_201_600 * 10**9  # 2026-10-05 12:00:00 UTC
+    opens = [t0 - 15 * ONE_MINUTE_NS + i * ONE_MINUTE_NS for i in range(15)]
+    lake_df = pl.DataFrame({
+        "bar_open_ns": opens,
+        "ts_event_ns": [o + ONE_MINUTE_NS for o in opens],
+        "open": [100.0] * 15,
+        "high": [105.0] * 15,
+        "low": [95.0] * 15,
+        "close": [102.0] * 15,
+        "volume": [500.0] * 15,
+    })
+
+    rule1 = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 0}]}]
+    rule2 = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 10}]}]
+    spec1_id = await seed_spec_row(admin, "race-spec-1", "Race Spec 1", rule1)
+    spec2_id = await seed_spec_row(admin, "race-spec-2", "Race Spec 2", rule2)
+
+    fake_now = t0 + 30 * 10**9
+    monkeypatch.setattr(real_time, "time_ns", lambda: fake_now)
+
+    def mock_eval(cls, df, rule_groups, risk_config, instrument_id, timeframe, spec_version_id, scan_run_id, price_precision=2):
+        last_row = df.to_dicts()[-1]
+        return [
+            SignalCandidateRead(
+                id=uuid4(),
+                scan_run_id=scan_run_id,
+                spec_version_id=spec_version_id,
+                instrument_id=instrument_id,
+                timeframe=timeframe,
+                bar_open_ns=last_row["bar_open_ns"],
+                bar_close_inclusive_ns=last_row["interval_end_exclusive_ns"] - 1,
+                interval_end_exclusive_ns=last_row["interval_end_exclusive_ns"],
+                matched_rules=["match"],
+                metrics={},
+                suggested_entry=Decimal("100"),
+                suggested_stop=Decimal("95"),
+                suggested_target=Decimal("110"),
+                created_at=datetime.now(UTC),
+            )
+        ]
+
+    monkeypatch.setattr(worker_mod.ScannerEngine, "evaluate", classmethod(mock_eval))
+
+    w1 = await make_worker(db_url, lake_df, redis15.client)
+    w2 = await make_worker(db_url, lake_df, redis15.client)
+    universe = {"instrument_ids": ["BTCUSDT.BINANCE"], "timeframes": ["15m"]}
+
+    try:
+        # Race both executions concurrently
+        task1 = asyncio.create_task(
+            w1._execute_scan(
+                spec_version_id=spec1_id,
+                spec_hash="hash1",
+                universe_data=universe,
+                rules_data=rule1,
+                trigger_reason="COMMITTED_BAR_EVENT",
+                trigger_event_id=str(uuid4()),
+            )
+        )
+        task2 = asyncio.create_task(
+            w2._execute_scan(
+                spec_version_id=spec2_id,
+                spec_hash="hash2",
+                universe_data=universe,
+                rules_data=rule2,
+                trigger_reason="COMMITTED_BAR_EVENT",
+                trigger_event_id=str(uuid4()),
+            )
+        )
+        await asyncio.gather(task1, task2)
+    finally:
+        await w1.pool.close()
+        await w2.pool.close()
+
+    # Total signal_candidates across specs must be exactly 1
+    candidates_count = await admin.fetchval(
+        "SELECT count(*) FROM signal_candidates WHERE instrument_id = 'BTCUSDT.BINANCE'"
+    )
+    assert candidates_count == 1
+
+    # Total debate outbox entries must also be exactly 1
+    outbox_count = await admin.fetchval("SELECT count(*) FROM scanner_debate_outbox")
+    assert outbox_count == 1
+
+
+async def test_worker_active_specs_deterministic_order_and_visible_error(db_url, admin, redis15, caplog):
+    """When active specs exceed MAX_ACTIVE_SPECS, worker logs ERROR with omitted slugs and orders deterministically."""
+    import logging
+    lake_df = pl.DataFrame({
+        "bar_open_ns": [1000],
+        "ts_event_ns": [1000 + ONE_MINUTE_NS],
+        "open": [100.0],
+        "high": [101.0],
+        "low": [99.0],
+        "close": [100.0],
+        "volume": [10.0],
+    })
+
+    # Seed 12 active specs in DB
+    rule = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 0}]}]
+    for i in range(12):
+        await seed_spec_row(admin, f"det-spec-{i:02d}", f"Det Spec {i}", rule)
+
+    # Ingest checkpoint so reconcile primes
+    await admin.execute(
+        """INSERT INTO ingest_checkpoints (venue, market_type, symbol, bar_type, timeframe, first_timestamp_ns, last_timestamp_ns)
+           VALUES ('BINANCE', 'SPOT', 'BTCUSDT', 'BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL', '1m', 0, $1)""",
+        1000 + ONE_MINUTE_NS,
+    )
+
+    w = await make_worker(db_url, lake_df, redis15.client)
+    executed_specs: list[UUID] = []
+
+    async def mock_execute_scan(spec_version_id, **_kwargs):
+        executed_specs.append(spec_version_id)
+        return uuid4()
+
+    w._execute_scan = mock_execute_scan
+
+    try:
+        with caplog.at_level(logging.ERROR):
+            await w.reconcile_and_prime()
+        # Verify deterministic count
+        assert len(executed_specs) == MAX_ACTIVE_SPECS
+        # Verify visible error log
+        assert any(
+            "exceeds MAX_ACTIVE_SPECS (10)" in record.message and "visibly omitting" in record.message
+            for record in caplog.records
+            if record.levelno == logging.ERROR
+        )
+    finally:
+        await w.pool.close()
+
+
+async def test_ensure_presets_seeded_idempotent_transition(db_url, admin):
+    """ensure_presets_seeded seeds fresh DB, idempotently transitions older unedited preset versions,
+    and preserves user-edited specs."""
+    from cryptonite_api.routes.scanners import PRESET_PREVIOUS_HASHES, ensure_presets_seeded
+    from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        # 1. Fresh seeding
+        await ensure_presets_seeded(pool)
+        specs = await pool.fetch("SELECT slug, active_version_id FROM scan_specs;")
+        assert len(specs) >= 4
+
+        # 2. Simulate an older unedited preset in DB: set RSI preset to its known prior hash
+        rsi_spec = await pool.fetchrow("SELECT id, active_version_id FROM scan_specs WHERE slug = $1;", PRESET_RSI_OVERSOLD.slug)
+        old_hash = next(iter(PRESET_PREVIOUS_HASHES[PRESET_RSI_OVERSOLD.slug]))
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
+            old_hash,
+            rsi_spec["active_version_id"],
+        )
+
+        # Run ensure_presets_seeded again: should transition RSI preset to new version
+        await ensure_presets_seeded(pool)
+        updated_rsi = await pool.fetchrow(
+            """
+            SELECT s.active_version_id, v.version_num, v.spec_hash
+            FROM scan_specs s
+            JOIN scan_spec_versions v ON s.active_version_id = v.id
+            WHERE s.slug = $1;
+            """,
+            PRESET_RSI_OVERSOLD.slug,
+        )
+        assert updated_rsi["spec_hash"] != old_hash
+        assert updated_rsi["version_num"] >= 2
+
+        # 3. Simulate a user-edited spec with a custom hash: should NOT be overwritten
+        custom_hash = "custom_user_hash_12345"
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
+            custom_hash,
+            updated_rsi["active_version_id"],
+        )
+        user_active_ver_id = updated_rsi["active_version_id"]
+
+        # Run ensure_presets_seeded: user spec must be preserved
+        await ensure_presets_seeded(pool)
+        preserved_rsi = await pool.fetchrow(
+            "SELECT active_version_id FROM scan_specs WHERE slug = $1;",
+            PRESET_RSI_OVERSOLD.slug,
+        )
+        assert preserved_rsi["active_version_id"] == user_active_ver_id
+    finally:
+        await pool.close()
+
+
+async def test_activate_preset_version_operator_route(db_url, admin):
+    """Guarded operator activation endpoint explicitly activates latest preset version."""
+    from cryptonite_api.routes.scanners import activate_preset_version, ensure_presets_seeded
+    from cryptonite_scanner.presets import PRESET_MACD_MOMENTUM
+    from starlette.requests import Request
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        await ensure_presets_seeded(pool)
+
+        # Archive the MACD preset to simulate inactive or archived state
+        await pool.execute(
+            "UPDATE scan_specs SET is_archived = true WHERE slug = $1;",
+            PRESET_MACD_MOMENTUM.slug,
+        )
+
+        scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
+        req = Request(scope)
+
+        # Operator explicitly activates the preset
+        res = await activate_preset_version(PRESET_MACD_MOMENTUM.slug, req)
+        assert res.slug == PRESET_MACD_MOMENTUM.slug
+        assert res.is_archived is False
+        assert res.active_version is not None
+    finally:
+        await pool.close()
