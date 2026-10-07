@@ -17,7 +17,7 @@ Key deliverables and hardening implemented:
 3. **Cross-Spec Deduplication & Deadlock-Free Serialization**: Added `deduplicate_candidates` utility and integrated deduplication into `ScannerWorker._execute_scan`. Candidates are sorted deterministically by `(instrument_id, timeframe, bar_close_inclusive_ns)` before acquiring PostgreSQL transaction advisory locks (`pg_advisory_xact_lock(hashtextextended(...))`), enforcing a global lock order that eliminates deadlocks and SELECT-then-INSERT races across parallel workers/jobs. Removed all `try/except` fail-open blocks on lock acquisition. Verified with a deterministic concurrent race test.
 4. **Max Active Specs Guard & Signal Preservation**: Defined `MAX_ACTIVE_SPECS = 10`. Enforced rejection with HTTP 400 in API `create_scanner` and `activate_preset_version` routes, serialized via transaction advisory lock (`pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))`). The worker never slices or drops existing active specs (preserving trading signals in flight); it processes all active specs with prominent `logger.error` alerts when the cap is exceeded.
 5. **Read-Only Scanners GET & Idempotent Preset Upgrade**: Removed all write/mutation side-effects from `GET /api/v1/scanners`. `ensure_presets_seeded()` is restricted strictly to fresh database bootstrapping. Added explicit operator-only upgrade endpoint `POST /api/v1/scanners/presets/upgrade` supporting `dry_run` mode (for E1 sequencing), safely transitioning unedited presets while strictly preserving user-edited custom specs and honoring active spec caps.
-6. **Volume Reduction Assessment (10-02..10-04)**: Evaluated 1m lake data across 2026-10-02 to 2026-10-04 for BTCUSDT and ETHUSDT without live writes. Demonstrated a **16.5x reduction** on BTCUSDT MACD momentum candidates (99 -> 6). Across all presets combined, volume reduction achieved **9.5x on BTCUSDT** and **6.8x on ETHUSDT**, which represents an honest partial result relative to the 10–50x exit goal. E1 remains held. Full multi-spec reduction down to target is completed in downstream Phase D3 via structure-based stop/target R:R filtering and higher-timeframe restriction (15m/1h/4h only).
+6. **Volume Reduction Assessment (10-02..10-04)**: Evaluated 1m lake data across 2026-10-02 to 2026-10-04 for BTCUSDT and ETHUSDT without live writes. Demonstrated a **16.5x reduction** on BTCUSDT MACD momentum candidates (99 -> 6). Across all presets combined, volume reduction achieved **9.5x on BTCUSDT** and **6.8x on ETHUSDT**, which represents an honest partial result relative to the 10–50x exit goal. E1 remains held. Full multi-spec candidate reduction down to the 10–50x exit gate is prospective and planned for downstream Phase D3 via structure-based stop/target R:R filtering and higher-timeframe restriction (15m/1h/4h only); combined multi-spec reduction remains below the D2 phase gate (at 6.8x–9.5x) until D3 is implemented and measured.
 
 ---
 
@@ -58,14 +58,18 @@ Rewrote the 4 seed presets to trigger on events rather than states:
 
 ### 2.4 API Route Guard & Operator Upgrade (`services/api/cryptonite_api/routes/scanners.py`)
 - `GET /api/v1/scanners`: Strictly read-only; no database mutations or seeding side-effects.
-- In `create_scanner`: acquires `pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))` directly (no fail-open try/except) before checking active specs count, serializing concurrent creation requests and preventing limit races.
+- In `create_scanner`, `update_scanner`, and `archive_scanner`: acquires `pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))` directly (no fail-open try/except) inside the transaction, serializing all scan spec mutations (creates, updates, upgrades, activations, archives). In `update_scanner`, additionally row-locks `scan_specs` via `SELECT ... FOR UPDATE` before appending new version numbers.
 - In `ensure_presets_seeded()`: Bootstraps presets only on a fresh, unseeded database (`count == 0`), returning immediately on existing databases.
 - Added `POST /api/v1/scanners/presets/upgrade` (guarded by `OPERATOR_WRITE`):
   - Supports `dry_run: bool = False` for E1 dry-run verification.
+  - Locks preset rows `FOR UPDATE OF s` and checks `active_version_id = $4` during updates to guarantee concurrent user edits are never overwritten.
   - Transitions presets whose active version matches known prior built-in hashes (`PRESET_PREVIOUS_HASHES`) to new event-crossover versions.
-  - Strictly preserves user-edited custom specs without overwriting.
+  - Strictly preserves user-edited custom specs without overwriting (`custom_preserved`).
   - Honors active spec limits and never unarchives specs accidentally.
 - In `POST /api/v1/scanners/presets/{slug}/activate` (guarded by `OPERATOR_WRITE`): Serializes via advisory lock and enforces `MAX_ACTIVE_SPECS` limit before activating or unarchiving.
+- **Operator Tooling & E1 Runbook**:
+  - Provided `scripts/upgrade_scanner_presets.py` supporting dry-run inspection (default) and `--apply` mode with printed rollback SQL commands.
+  - Documented complete pre-scanner-start deployment sequence, verification steps, and rollback criteria in `docs/runbooks/e1_preset_upgrade.md`.
 
 ### 2.5 Scanner Worker Daemon (`services/scanner/cryptonite_scanner_service/worker.py`)
 - In `reconcile_and_prime` and `_handle_stream_message`: Queries active specs deterministically (`ORDER BY s.created_at ASC, s.slug ASC`). Never slices or drops active specs to ensure zero signal loss; logs prominent `logger.error` on cap overflow.
@@ -98,9 +102,10 @@ Evaluated against enriched 1m lake data (`data/analytics_lake/binance_klines_enr
    - Presets like Bollinger breakout and RSI oversold reversal have naturally lower starting candidate counts (12 and 3 respectively) and narrower differences between crossing the band vs closing outside the band over a 3-day window.
    - Cross-spec deduplication prevents duplicate submissions for the same bar, but when different specs trigger on different bars across 15m intervals, the total candidate count sums to 12 (BTC) and 17 (ETH) over 3 days (approx 4–6 candidates/day).
 4. **Path to Full 10–50x Multi-Spec Target (Phase D3)**:
-   - Full system-level candidate suppression into the 10–50x range across all specs relies on Phase D3 controls:
+   - Full candidate suppression into the 10–50x range across all combined specs is prospective and planned for Phase D3 controls:
      - Enforcing trigger timeframes restricted to 15m/1h/4h only.
-     - Structure-based stop/target calculations with mandatory R:R filtering (rejecting candidates where R:R < 1.5).
+     - Structure-based stop/target calculations with mandatory R:R >= 1.5 filtering (rejecting candidates where R:R < 1.5).
+   - Until Phase D3 is implemented and measured against the historical baseline, the multi-spec aggregate volume reduction (6.8x–9.5x) remains below the D2 phase exit gate, and E1 deployment sequencing remains held.
 
 ---
 
@@ -109,11 +114,11 @@ Evaluated against enriched 1m lake data (`data/analytics_lake/binance_klines_enr
 All tests executed against an isolated throwaway database (`cryptonite_ci_d2_*`) and isolated Redis DB 15:
 
 ```bash
-uv run --extra dev pytest tests/test_scanner_events_d2.py tests/test_scanner_fresh_enqueue.py tests/test_scanner_closed_bar_guard.py tests/test_scanner_engine.py -v
+REDIS_URL="redis://:...@127.0.0.1:6379/15" uv run --extra dev pytest tests/test_scanner_events_d2.py tests/test_scanner_fresh_enqueue.py tests/test_scanner_closed_bar_guard.py tests/test_scanner_engine.py tests/test_api_endpoints.py -v
 ```
 
 Results across the scanner test suite:
-- `tests/test_scanner_events_d2.py`: **16 passed**
+- `tests/test_scanner_events_d2.py`: **18 passed**
   - `test_rule_condition_lookback_validation`: Enforces lookback >= 1, rejects negative, defaults to 1.
   - `test_deterministic_crossover_produces_one_candidate_not_continuation`: Crossover event produces exactly 1 candidate across 250 trending bars.
   - `test_deterministic_cross_below_produces_one_candidate`: Cross-below event semantics verified.
@@ -130,8 +135,11 @@ Results across the scanner test suite:
   - `test_get_scanners_is_read_only`: `GET /api/v1/scanners` performs zero mutations on active versions or specs.
   - `test_preset_upgrade_operator_endpoint_dry_run_and_apply`: `dry_run=True` reports planned transitions without DB mutations; `dry_run=False` transitions matching presets and preserves custom specs.
   - `test_activate_preset_version_operator_route_and_cap_guard`: Guarded operator route explicitly activates preset version and rejects with HTTP 400 when active cap is reached.
+  - `test_concurrent_user_edit_vs_preset_upgrade_race_preserves_custom_edit`: Concurrent user update (`update_scanner`) and operator preset upgrade (`upgrade_presets`) serialize under advisory lock and row locks; concurrent user edits are strictly preserved and never overwritten.
+  - `test_operator_script_upgrade_presets_dry_run_and_apply`: Standalone operator script `scripts/upgrade_scanner_presets.py` verified in dry-run mode (zero mutations) and apply mode (commits target crossover versions and prints rollback SQL).
 - `tests/test_scanner_fresh_enqueue.py`: **18 passed** (fresh enqueue, relay lease, bounded queue).
 - `tests/test_scanner_closed_bar_guard.py`: **5 passed** (closed bar enforcement, future candidate filtering).
 - `tests/test_scanner_engine.py`: **1 passed** (scanner engine baseline candidate generation).
-- **Total:** **40 passed**, **0 failed**.
+- `tests/test_api_endpoints.py`: **5 passed** (API health, ready, instruments, scanners CRUD/run enqueue, bars).
+- **Total:** **47 passed**, **0 failed**.
 - **Code hygiene:** `uvx ruff check` clean; `git diff --check` clean (0 trailing whitespace issues).

@@ -253,7 +253,12 @@ async def update_scanner(spec_id: UUID, spec_in: ScanSpecCreate, request: Reques
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            spec = await conn.fetchrow("SELECT id FROM scan_specs WHERE id = $1 AND is_archived = false;", spec_id)
+            # Serialise against concurrent preset upgrades/activations/creations
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
+            spec = await conn.fetchrow(
+                "SELECT id, slug, active_version_id FROM scan_specs WHERE id = $1 AND is_archived = false FOR UPDATE;",
+                spec_id,
+            )
             if not spec:
                 raise HTTPException(status_code=404, detail="Scan spec not found")
 
@@ -327,13 +332,16 @@ async def update_scanner(spec_id: UUID, spec_in: ScanSpecCreate, request: Reques
 async def archive_scanner(spec_id: UUID, request: Request) -> dict[str, str]:
     """Archive a scanner specification without deleting research history."""
     pool = request.app.state.pool
-    res = await pool.execute(
-        "UPDATE scan_specs SET is_archived = true, updated_at = now() WHERE id = $1;",
-        spec_id,
-    )
-    if "0" in res:
-        raise HTTPException(status_code=404, detail="Scan spec not found")
-    return {"status": "archived", "id": str(spec_id)}
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
+            res = await conn.execute(
+                "UPDATE scan_specs SET is_archived = true, updated_at = now() WHERE id = $1;",
+                spec_id,
+            )
+            if "0" in res:
+                raise HTTPException(status_code=404, detail="Scan spec not found")
+            return {"status": "archived", "id": str(spec_id)}
 
 
 @router.post("/{spec_id}/run", status_code=status.HTTP_202_ACCEPTED, dependencies=OPERATOR_WRITE)
@@ -428,7 +436,8 @@ async def upgrade_presets(
                            v.version_num, v.spec_hash
                     FROM scan_specs s
                     LEFT JOIN scan_spec_versions v ON s.active_version_id = v.id
-                    WHERE s.slug = $1;
+                    WHERE s.slug = $1
+                    FOR UPDATE OF s;
                     """,
                     preset.slug,
                 )
@@ -538,12 +547,40 @@ async def upgrade_presets(
                                 json.dumps(univ_dict),
                                 json.dumps(rules_dict),
                             )
-                        await conn.execute(
-                            "UPDATE scan_specs SET active_version_id = $1, description = $2, updated_at = now() WHERE id = $3;",
+                        update_res = await conn.execute(
+                            """
+                            UPDATE scan_specs
+                            SET active_version_id = $1, description = $2, updated_at = now()
+                            WHERE id = $3 AND active_version_id = $4;
+                            """,
                             existing_ver_id,
                             preset.description,
                             spec_id,
+                            spec_row["active_version_id"],
                         )
+                        if update_res == "UPDATE 0":
+                            rechecked = await conn.fetchrow(
+                                """
+                                SELECT s.id, s.slug, s.name, s.active_version_id, s.is_archived,
+                                       v.version_num, v.spec_hash
+                                FROM scan_specs s
+                                LEFT JOIN scan_spec_versions v ON s.active_version_id = v.id
+                                WHERE s.id = $1;
+                                """,
+                                spec_id,
+                            )
+                            items.append(
+                                PresetUpgradeItem(
+                                    slug=preset.slug,
+                                    name=preset.name,
+                                    current_version_num=rechecked["version_num"] if rechecked else None,
+                                    current_hash=rechecked["spec_hash"] if rechecked else None,
+                                    target_hash=target_hash,
+                                    action="custom_preserved",
+                                    detail="Preset active version concurrently changed; user edit preserved.",
+                                )
+                            )
+                            continue
                     items.append(
                         PresetUpgradeItem(
                             slug=preset.slug,

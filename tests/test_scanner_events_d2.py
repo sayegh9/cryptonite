@@ -926,3 +926,157 @@ async def test_activate_preset_version_operator_route_and_cap_guard(db_url, admi
         assert "maximum active specs limit (10) reached" in exc_info.value.detail
     finally:
         await pool.close()
+
+
+async def test_concurrent_user_edit_vs_preset_upgrade_race_preserves_custom_edit(db_url, admin):
+    """Concurrent user update (update_scanner) and operator preset upgrade (upgrade_presets)
+    serialize under scan_specs:active_limit and FOR UPDATE locks, guaranteeing that a concurrent
+    user customization is never overwritten with the built-in preset target version.
+    """
+    import asyncio
+
+    from cryptonite_api.routes.scanners import (
+        PRESET_PREVIOUS_HASHES,
+        ensure_presets_seeded,
+        update_scanner,
+        upgrade_presets,
+    )
+    from cryptonite_scanner.models import ScanSpecCreate, UniverseConfig
+    from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD
+    from starlette.requests import Request
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        await ensure_presets_seeded(pool)
+
+        # 1. Simulate an older unedited preset in DB by resetting RSI spec to known prior hash
+        rsi_spec = await pool.fetchrow(
+            "SELECT id, active_version_id FROM scan_specs WHERE slug = $1;",
+            PRESET_RSI_OVERSOLD.slug,
+        )
+        spec_id = rsi_spec["id"]
+        old_hash = next(iter(PRESET_PREVIOUS_HASHES[PRESET_RSI_OVERSOLD.slug]))
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
+            old_hash,
+            rsi_spec["active_version_id"],
+        )
+
+        scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
+        req = Request(scope)
+
+        # 2. Define custom user modification payload
+        custom_spec_in = ScanSpecCreate(
+            slug=PRESET_RSI_OVERSOLD.slug,
+            name="Custom RSI Trader Spec",
+            description="User custom RSI edit that must not be overwritten by preset upgrade",
+            universe=UniverseConfig(symbols=["BTCUSDT"], timeframes=["15m"]),
+            rules=[
+                RuleGroup(
+                    category="trigger",
+                    conditions=[
+                        RuleCondition(field="rsi", operator="<", value=22.0)
+                    ],
+                )
+            ],
+        )
+
+        # 3. Execute concurrent user update and preset upgrade
+        results = await asyncio.gather(
+            update_scanner(spec_id, custom_spec_in, req),
+            upgrade_presets(req, dry_run=False),
+            return_exceptions=False,
+        )
+        user_update_res, upgrade_res = results
+
+        # 4. Verify user update committed and holds custom version
+        assert user_update_res.name == "Custom RSI Trader Spec"
+        custom_ver_id = user_update_res.active_version_id
+
+        # 5. Check that active spec version in DB is strictly the custom user edit
+        final_spec = await pool.fetchrow(
+            """
+            SELECT s.active_version_id, s.name, v.version_num, v.spec_hash, v.rules
+            FROM scan_specs s
+            JOIN scan_spec_versions v ON s.active_version_id = v.id
+            WHERE s.id = $1;
+            """,
+            spec_id,
+        )
+        assert final_spec["active_version_id"] == custom_ver_id
+        assert final_spec["name"] == "Custom RSI Trader Spec"
+        rules = json.loads(final_spec["rules"]) if isinstance(final_spec["rules"], str) else final_spec["rules"]
+        assert rules[0]["conditions"][0]["value"] == 22.0
+    finally:
+        await pool.close()
+
+
+async def test_operator_script_upgrade_presets_dry_run_and_apply(db_url, admin):
+    """Operator script scripts/upgrade_scanner_presets.py operates safely against DB:
+    dry run makes no modifications, apply commits version upgrades and prints rollback criteria.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from cryptonite_api.routes.scanners import PRESET_PREVIOUS_HASHES, ensure_presets_seeded
+    from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD
+
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "upgrade_scanner_presets.py"
+    spec = importlib.util.spec_from_file_location("upgrade_scanner_presets", script_path)
+    script_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script_mod)
+    run_direct_db = script_mod.run_direct_db
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        await ensure_presets_seeded(pool)
+
+        # Set RSI to prior hash
+        rsi_spec = await pool.fetchrow(
+            "SELECT id, active_version_id FROM scan_specs WHERE slug = $1;",
+            PRESET_RSI_OVERSOLD.slug,
+        )
+        old_hash = next(iter(PRESET_PREVIOUS_HASHES[PRESET_RSI_OVERSOLD.slug]))
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
+            old_hash,
+            rsi_spec["active_version_id"],
+        )
+    finally:
+        await pool.close()
+
+    # 1. Run script in dry-run mode
+    ret_dry = await run_direct_db(db_url, apply=False)
+    assert ret_dry == 0
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        # Check that dry-run did not mutate DB
+        curr_hash = await pool.fetchval(
+            "SELECT spec_hash FROM scan_spec_versions WHERE id = $1;",
+            rsi_spec["active_version_id"],
+        )
+        assert curr_hash == old_hash
+    finally:
+        await pool.close()
+
+    # 2. Run script in apply mode
+    ret_apply = await run_direct_db(db_url, apply=True)
+    assert ret_apply == 0
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        # Check that apply mutated DB to crossover target
+        new_row = await pool.fetchrow(
+            """
+            SELECT s.active_version_id, v.spec_hash, v.version_num
+            FROM scan_specs s
+            JOIN scan_spec_versions v ON s.active_version_id = v.id
+            WHERE s.slug = $1;
+            """,
+            PRESET_RSI_OVERSOLD.slug,
+        )
+        assert new_row["spec_hash"] != old_hash
+        assert new_row["version_num"] >= 2
+    finally:
+        await pool.close()
