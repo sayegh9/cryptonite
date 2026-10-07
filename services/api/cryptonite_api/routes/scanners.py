@@ -35,12 +35,16 @@ class PresetUpgradeResponse(BaseModel):
     items: list[PresetUpgradeItem]
 
 
-# Known prior hashes for unedited built-in presets (before event crossover rewrite)
+# Known prior hashes for unedited built-in presets (before event crossover rewrite / D3 timeframe restriction)
 PRESET_PREVIOUS_HASHES: dict[str, set[str]] = {
     "rsi-oversold-reversal": {"6c06d8c94c121430b9dd4e09470bf1e4f6a2789369a90140d240f8d7d9fdd07a"},
     "trend-pullback": {"800d5d0c9370712e789981f21a86e8312601e8631aa71d5a25eb935b27824586"},
-    "bollinger-breakout": {"4db974a03f6671097f2a56103cdeac0c31de1644d57a88746c9f6a47c6db32da"},
+    "bollinger-breakout": {
+        "4db974a03f6671097f2a56103cdeac0c31de1644d57a88746c9f6a47c6db32da",
+        "6c5d344cc2280da32b6e56271b1fdb4e10242579293a42e1787ce3b8899bee14",
+    },
     "macd-momentum-shift": {"ce67b07159b95938ef6d93f1add67ef32654d572d5953d8ad528f1183120ab9a"},
+    "scalp-multi-tf": {"051dae405791bc2021937f72f887ef8154dd7e75ea5a2e26e9e4fc78a60859fd"},
 }
 
 

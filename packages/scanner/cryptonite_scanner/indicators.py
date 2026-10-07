@@ -131,3 +131,15 @@ def calc_wick_ratio(
     
     return (upper_wick / safe_range), (lower_wick / safe_range)
 
+
+def calc_donchian_channel(
+    high_col: str = "high",
+    low_col: str = "low",
+    period: int = 20,
+) -> tuple[pl.Expr, pl.Expr, pl.Expr]:
+    """Donchian Channel: returns (lower, middle, upper)."""
+    upper = pl.col(high_col).rolling_max(window_size=period)
+    lower = pl.col(low_col).rolling_min(window_size=period)
+    middle = (upper + lower) / 2.0
+    return lower, middle, upper
+
