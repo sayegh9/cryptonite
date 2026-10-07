@@ -745,16 +745,30 @@ class ScannerWorker:
                 # b. Insert candidates with idempotency key
                 for c in all_candidates:
                     # Deduplicate across specs per (instrument, timeframe, bar)
-                    existing_across_specs = await conn.fetchval(
-                        """
-                        SELECT id FROM signal_candidates
-                        WHERE instrument_id = $1 AND timeframe = $2 AND bar_close_inclusive_ns = $3
-                        LIMIT 1;
-                        """,
-                        c.instrument_id,
-                        c.timeframe,
-                        c.bar_close_inclusive_ns,
-                    )
+                    existing_across_specs = None
+                    if hasattr(conn, "fetchval"):
+                        existing_across_specs = await conn.fetchval(
+                            """
+                            SELECT id FROM signal_candidates
+                            WHERE instrument_id = $1 AND timeframe = $2 AND bar_close_inclusive_ns = $3
+                            LIMIT 1;
+                            """,
+                            c.instrument_id,
+                            c.timeframe,
+                            c.bar_close_inclusive_ns,
+                        )
+                    elif hasattr(conn, "fetchrow"):
+                        r = await conn.fetchrow(
+                            """
+                            SELECT id FROM signal_candidates
+                            WHERE instrument_id = $1 AND timeframe = $2 AND bar_close_inclusive_ns = $3
+                            LIMIT 1;
+                            """,
+                            c.instrument_id,
+                            c.timeframe,
+                            c.bar_close_inclusive_ns,
+                        )
+                        existing_across_specs = r.get("id") if isinstance(r, dict) else (r[0] if r else None)
                     if existing_across_specs:
                         logger.debug(
                             "Candidate %s for %s %s %d skipped: already exists across specs (%s)",
