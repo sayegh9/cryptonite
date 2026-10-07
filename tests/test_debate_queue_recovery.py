@@ -746,6 +746,9 @@ async def test_no_db_claim_takeover_old_attempt_writes_nothing(debate_main, pool
         return c == "debate-old"
     monkeypatch.setattr(debate_main, "is_pel_owner", is_owner_initial)
 
+    route_spy = AsyncMock()
+    monkeypatch.setattr(debate_main, "route_exit", route_spy)
+
     with override_model(FLASH, model), override_model(PRO, model):
         old = asyncio.create_task(debate_main.process_exit_debate_trigger(
             pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-old"))
@@ -764,6 +767,7 @@ async def test_no_db_claim_takeover_old_attempt_writes_nothing(debate_main, pool
     assert run["status"] == "RUNNING"  # None of success, failure, or no-position wrote terminal state
     assert run["mandate_id"] is None
     assert await pool.fetchval("SELECT count(*) FROM exit_decisions WHERE run_id = $1", run_id) == 0
+    route_spy.assert_not_awaited()
 
 
 async def test_direct_invalid_exit_updates_to_failed(debate_main, pool, monkeypatch):
@@ -818,6 +822,8 @@ async def test_entry_stale_before_insert_refused(debate_main, pool, monkeypatch)
         return False
 
     monkeypatch.setattr(debate_main, "is_pel_owner", not_owner)
+    persona_spy = AsyncMock()
+    monkeypatch.setattr(type(debate_main.MARKET_ANALYST), "run", persona_spy)
 
     model = debate_model()
     with override_model(FLASH, model), override_model(PRO, model), override_model(EMBED, FakeEmbedder()):
@@ -825,10 +831,11 @@ async def test_entry_stale_before_insert_refused(debate_main, pool, monkeypatch)
             pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-w1"
         )
 
-    # Cooldown released, zero runs inserted, zero decisions
+    # Cooldown released, zero runs inserted, zero decisions, zero persona calls
     assert cooldown_released.is_set()
     assert await pool.fetchval("SELECT count(*) FROM debate_runs WHERE stream_message_id = $1", ref) == 0
     assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 0
+    persona_spy.assert_not_awaited()
 
 
 async def test_exit_no_runid_stale_before_insert_refused(debate_main, pool, monkeypatch):
@@ -841,6 +848,10 @@ async def test_exit_no_runid_stale_before_insert_refused(debate_main, pool, monk
         return False
 
     monkeypatch.setattr(debate_main, "is_pel_owner", not_owner)
+    route_spy = AsyncMock()
+    monkeypatch.setattr(debate_main, "route_exit", route_spy)
+    persona_spy = AsyncMock()
+    monkeypatch.setattr(type(debate_main.EXIT_BULL), "run", persona_spy)
 
     await debate_main.process_exit_debate_trigger(
         pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-w1"
@@ -848,6 +859,8 @@ async def test_exit_no_runid_stale_before_insert_refused(debate_main, pool, monk
 
     assert await pool.fetchval("SELECT count(*) FROM debate_runs WHERE stream_message_id = $1", ref) == 0
     assert await pool.fetchval("SELECT count(*) FROM exit_decisions") == 0
+    route_spy.assert_not_awaited()
+    persona_spy.assert_not_awaited()
 
 
 async def test_recover_apply_refuses_renewal_between_precheck_and_lua_eval_dlq(r, pool, recover_script, monkeypatch):
