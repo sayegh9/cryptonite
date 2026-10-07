@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CONFIGURABLE_LIMITS,
+  fetchEnforcedLimits,
   fetchRiskLimits,
   loosenedLimits,
   proposedValue,
@@ -93,12 +94,18 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
         reason,
         ...(needsTotp ? { totp_code: totp } : {}),
       });
-      const enforced = (res as any).effective_version ?? 0;
       const savedVer = res.override_version ?? 0;
-      if (enforced === savedVer && savedVer > 0) {
-        setSaved(`Enforced since ${(res as any).enforced_at ? new Date((res as any).enforced_at).toLocaleString() : new Date().toLocaleString()}.`);
-      } else {
-        setSaved(`Saved. Not yet enforced (orchestrator v${enforced}, override v${savedVer}).`);
+      try {
+        const enforcedState = await fetchEnforcedLimits();
+        const enforced = enforcedState.effective_version ?? 0;
+        const enforcedAt = enforcedState.enforced_at;
+        if (enforced > 0 && savedVer > 0 && enforced === savedVer && enforcedAt) {
+          setSaved(`Enforced since ${new Date(enforcedAt).toLocaleString()}.`);
+        } else {
+          setSaved(`Saved. Not yet enforced (orchestrator v${enforced}, override v${savedVer}).`);
+        }
+      } catch {
+        setSaved(`Saved. Not yet enforced (orchestrator v0, override v${savedVer}).`);
       }
       setTotp("");
       setReason("");
