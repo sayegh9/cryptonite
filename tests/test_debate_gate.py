@@ -9,6 +9,7 @@ import sys
 import time
 import uuid
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -18,6 +19,7 @@ import pytest
 from cryptonite_agents.gateway import Gateway
 from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
 from cryptonite_agents.gateway.routes import EMBED, FLASH, FLASH_LITE, PRO
+from cryptonite_schemas.marks import encode_mark
 from migrated_db import migrated_database
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -87,7 +89,22 @@ class Redis:
         return True
 
     async def get(self, key):
+        from cryptonite_schemas.marks import quote_tick_key
+        if str(key) == quote_tick_key(INSTRUMENT):
+            now_ns = time.time_ns()
+            return json.dumps({"instrument_id": INSTRUMENT, "bid_price": "65000", "ask_price": "65020",
+                               "bid_size": "1.0", "ask_size": "1.0",
+                               "arrival_ns": str(now_ns - 2_000_000_000)})
         return self.kv.get(key)
+
+    async def hgetall(self, key):
+        if key == "paper:marks":
+            now_ns = time.time_ns()
+            return {INSTRUMENT: encode_mark(Decimal("65000.0"), now_ns - 2_000_000_000, now_ns)}
+        return {}
+
+    async def xrevrange(self, key, *args, **kwargs):
+        return []  # B5 prices from the per-instrument snapshot now; the stream is never consulted
 
     async def incr(self, key):
         self.kv[key] = int(self.kv.get(key, 0)) + 1

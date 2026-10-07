@@ -5,7 +5,9 @@ models are pydantic-ai FunctionModels."""
 import importlib.util
 import json
 import sys
+import time
 import uuid
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -14,6 +16,7 @@ import pytest
 from cryptonite_agents.gateway import Gateway
 from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
 from cryptonite_agents.gateway.routes import EMBED, FLASH, PRO
+from cryptonite_schemas.marks import encode_mark
 from migrated_db import migrated_database
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -51,9 +54,26 @@ async def pool(db_url):
 
 
 def redis_double():
+    from cryptonite_schemas.marks import quote_tick_key
     redis = AsyncMock()
-    redis.get.return_value = json.dumps({"last_price": 65000.0})
+    redis.get.side_effect = lambda key: fresh_tick_body() if str(key) == quote_tick_key(INSTRUMENT) \
+        else json.dumps({"last_price": 65000.0})
+    redis.hgetall.return_value = fresh_marks()
     return redis
+
+
+def fresh_marks(price: str = "65000.0", age_s: float = 2.0) -> dict:
+    """A fresh orchestrator live mark for INSTRUMENT (B5 mandate-room source)."""
+    now_ns = time.time_ns()
+    return {INSTRUMENT: encode_mark(Decimal(price), now_ns - int(age_s * 1e9), now_ns)}
+
+
+def fresh_tick_body(bid: str = "65000", ask: str = "65020", age_s: float = 2.0) -> str:
+    """A snapshot body exactly as the ingest pipeline writes it for INSTRUMENT."""
+    now_ns = time.time_ns()
+    return json.dumps({"instrument_id": INSTRUMENT, "bid_price": bid, "ask_price": ask,
+                       "bid_size": "1.0", "ask_size": "1.0",
+                       "arrival_ns": str(now_ns - int(age_s * 1e9))})
 
 
 class FakeEmbedder:

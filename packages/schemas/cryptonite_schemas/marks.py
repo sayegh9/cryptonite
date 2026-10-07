@@ -28,6 +28,10 @@ MARKS_KEY = "paper:marks"
 # old (``MAX_MARK_QUOTE_AGE_S``) and runs every 1-5 s, so a running projector keeps marks under this.
 MAX_MARK_QUOTE_AGE_S = 10.0
 LIVE_MARK_MAX_AGE_S = 15.0
+# A debate decision price is only valid from a quote at most this old (review-plan B5, F-M14): the
+# worker debates on the same live source as the orchestrator and declares NO_PRICE without any model
+# or order side effect when the quote is absent or older than this.
+DECISION_PRICE_MAX_AGE_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,104 @@ def resolve_mark(instrument_id: str, stored_price: Any, marks: dict[str, LiveMar
 def unrealized_pnl(side: str, quantity: Any, entry_price: Any, mark: Decimal) -> Decimal:
     direction = Decimal("-1") if str(side).upper() == "SHORT" else Decimal("1")
     return direction * Decimal(str(quantity)) * (mark - Decimal(str(entry_price)))
+
+
+@dataclass(frozen=True)
+class DecisionPrice:
+    """A debate decision price resolved from the per-instrument quote snapshot (B5).
+
+    ``price`` is the finite positive quote for exactly this instrument, or None with
+    ``source`` ``"NO_PRICE"`` when the quote is absent, stale, invalid, or for another symbol.
+    ``quote_ts_ns``/``age_s`` declare what was used; None when there was nothing usable.
+    """
+
+    price: Decimal | None
+    source: str  # quote | NO_PRICE
+    quote_ts_ns: int | None
+    age_s: float | None
+
+
+# All-market latest quotes (review-plan B5, F-M14): ``paper:marks`` only covers instruments with
+# open positions, and a shared stream is retention-bounded but not age-bounded — under a busy
+# multi-symbol feed an instrument's still-fresh tick can be evicted before it ages out. So the ingest
+# writes a per-instrument snapshot beside the stream, in the same quote pipeline, from the same tick:
+# key ``quote:tick:<canonical instrument>`` holding the ui_record JSON
+# ``{instrument_id, bid_price, ask_price, bid_size, ask_size, arrival_ns}``. The TTL only bounds
+# garbage for delisted symbols; freshness is always decided by the timestamp check below. Readers do
+# one constant-time GET: presence never depends on other symbols' volume.
+QUOTE_TICK_KEY_PREFIX = "quote:tick:"
+QUOTE_TICK_TTL_S = 60
+
+
+def quote_tick_key(instrument_id: str) -> str:
+    return f"{QUOTE_TICK_KEY_PREFIX}{_canonical(instrument_id)}"
+
+
+def _field(fields: dict, key: str) -> Any:
+    if key in fields:
+        return fields[key]
+    return fields.get(key.encode())
+
+
+def parse_quote_record(data: Any) -> tuple[str, Decimal, Decimal, int] | None:
+    """A snapshot value -> (canonical instrument, bid, ask, arrival_ns); None when unusable.
+
+    Accepts the ui_record JSON (str or bytes, as with or without decode_responses) or a bare dict.
+    """
+    if isinstance(data, dict):
+        record = data
+    else:
+        try:
+            record = json.loads(data.decode() if isinstance(data, bytes) else data)
+        except (ValueError, TypeError, AttributeError):
+            return None
+        if not isinstance(record, dict):
+            return None
+    try:
+        inst = _field(record, "instrument_id")
+        inst = inst.decode() if isinstance(inst, bytes) else str(inst)
+        bid = Decimal(str(_field(record, "bid_price")))
+        ask = Decimal(str(_field(record, "ask_price")))
+        arrival_ns = int(_field(record, "arrival_ns"))  # type: ignore[arg-type]
+    except (TypeError, ValueError, InvalidOperation, AttributeError):
+        return None
+    if not bid.is_finite() or not ask.is_finite() or bid <= 0 or ask <= 0 or arrival_ns <= 0:
+        return None
+    return _canonical(inst), bid, ask, arrival_ns
+
+
+async def read_live_quote(redis: Any, instrument_id: str) -> tuple[str, Decimal, Decimal, int] | None:
+    """This instrument's latest snapshot tick, or None when absent/unusable (never raises)."""
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(quote_tick_key(instrument_id))
+    except Exception as e:
+        logger.warning("Could not read live quote: %s", e)
+        return None
+    if raw is None:
+        return None
+    tick = parse_quote_record(raw)
+    if tick is not None and tick[0] != _canonical(instrument_id):
+        logger.warning("Quote snapshot for %s holds another instrument (%s): ignoring",
+                       instrument_id, tick[0])
+        return None
+    return tick
+
+
+def resolve_quote_price(instrument_id: str, tick: tuple[str, Decimal, Decimal, int] | None,
+                        now_ns: int | None = None) -> DecisionPrice:
+    """The tick's mid price when it is this instrument's fresh arrival, else NO_PRICE (never a guess)."""
+    now_ns = now_ns or time.time_ns()
+    if tick is not None and tick[0] == _canonical(instrument_id):
+        _, bid, ask, arrival_ns = tick
+        raw_age_s = (now_ns - arrival_ns) / 1e9
+        if -1.0 <= raw_age_s <= DECISION_PRICE_MAX_AGE_S:
+            return DecisionPrice((bid + ask) / 2, "quote", arrival_ns, max(0.0, raw_age_s))
+        return DecisionPrice(None, "NO_PRICE", arrival_ns, max(0.0, raw_age_s))
+    quote_ts = tick[3] if tick is not None else None
+    age = max(0.0, (now_ns - quote_ts) / 1e9) if quote_ts else None
+    return DecisionPrice(None, "NO_PRICE", quote_ts, age)
 
 
 def summarize(views: list[MarkView]) -> dict[str, Any]:

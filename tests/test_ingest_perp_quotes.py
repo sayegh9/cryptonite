@@ -88,3 +88,40 @@ async def test_spot_quotes_are_not_throttled_by_default():
     for i in range(3):
         await spot._handle_book_ticker(BOOK_TICKER, arrival_ns=i)
     assert len(written["cryptonite:stream:ui_quote_tick"]) == 3
+
+
+async def test_quote_snapshot_written_in_same_pipeline_as_stream_for_spot_and_perp():
+    """B5: the same pipeline writes a per-instrument latest-quote snapshot (key, TTL, body) beside
+    the stream entry, from the same tick — for both spot and perp instruments."""
+    from contextlib import asynccontextmanager as _acm
+    from unittest.mock import AsyncMock as _AsyncMock
+    from unittest.mock import MagicMock as _MagicMock
+
+    from cryptonite_schemas.marks import QUOTE_TICK_TTL_S, quote_tick_key
+
+    assert QUOTE_TICK_TTL_S == 60
+
+    for make, inst in ((lambda r: BinanceStreamClient(symbols=["BTCUSDT"], timeframes=["1m"], redis=r),
+                        "BTCUSDT.BINANCE"),
+                       (perp_quote_client, "BTCUSDT-PERP.BINANCE")):
+        ops = []
+
+        @_acm
+        async def pipe_ctx(transaction=False):
+            m = _MagicMock()
+            m.xadd.side_effect = lambda s, f, **_: ops.append(("xadd", s, f))
+            m.setex.side_effect = lambda k, t, v: ops.append(("setex", k, t, v))
+            m.execute = _AsyncMock()
+            yield m
+
+        redis = _MagicMock()
+        redis.pipeline = pipe_ctx
+        await make(redis)._handle_book_ticker(BOOK_TICKER, arrival_ns=2_000)
+
+        kinds = [o[0] for o in ops]
+        assert kinds == ["xadd", "xadd", "xadd", "setex"]  # snapshot in the same pipeline
+        _, key, ttl, body = ops[3]
+        assert (key, ttl) == (quote_tick_key(inst), 60)
+        stream_body = next(f for k, s, f in ops if k == "xadd" and s == "cryptonite:stream:ui_quote_tick")
+        assert json.loads(body) == json.loads(stream_body["data"])  # same tick, same content
+        assert json.loads(body)["instrument_id"] == inst

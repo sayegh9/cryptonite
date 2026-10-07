@@ -11,6 +11,7 @@ from typing import Any
 import redis.asyncio as aioredis
 import websockets
 from cryptonite_schemas.bar import RawBinanceKline
+from cryptonite_schemas.marks import QUOTE_TICK_TTL_S, quote_tick_key
 from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger("cryptonite.stream")
@@ -204,6 +205,10 @@ class BinanceStreamClient:
                         pipe.xadd("nautilus:stream:bus", bus_record, maxlen=5000, approximate=True)
                         pipe.xadd("cryptonite:stream:ingress_health", {"data": json.dumps(health_record)}, maxlen=5000, approximate=True)
                         pipe.xadd("cryptonite:stream:ui_quote_tick", {"data": json.dumps(ui_record)}, maxlen=1000, approximate=True)
+                        # B5: per-instrument latest-quote snapshot from the same tick, same pipeline:
+                        # constant-time reads that cannot be evicted by other symbols' volume. The TTL
+                        # only bounds garbage; freshness is always the arrival_ns check in the reader.
+                        pipe.setex(quote_tick_key(inst_str), QUOTE_TICK_TTL_S, json.dumps(ui_record))
                         await pipe.execute()
                 except Exception as ex:
                     logger.debug("Failed to publish QuoteTick pipeline: %s", ex)
