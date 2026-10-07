@@ -227,10 +227,11 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         candidate_id = None
     logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source} (decision_trace_id={trace_id})")
     # B5: the decision price is a bounded quote from the orchestrator's all-market quote source —
-    # the shared ui_quote_tick stream of Binance book tickers (same feed as its quote cache): the
-    # latest same-instrument tick, mid of a finite positive bid/ask no older than
-    # DECISION_PRICE_MAX_AGE_S. No 24h-ticker cache, no HTTP fallback. Resolved before the gate, so
-    # an unusable quote ends the attempt as NO_PRICE: a terminal debate_runs row
+    # the per-instrument latest-quote snapshot the ingest writes in its quote pipeline (same Binance
+    # bookTicker feed as the orchestrator's quote cache): a finite positive bid/ask no older than
+    # DECISION_PRICE_MAX_AGE_S. No 24h-ticker cache, no HTTP fallback, no stream scan (a shared
+    # stream is retention-bounded but not age-bounded: another symbol's volume could evict a fresh
+    # tick). Resolved before the gate, so an unusable quote ends the attempt as NO_PRICE: a terminal debate_runs row
     # (candidate/message/trace, completed_at, reason NO_PRICE) is persisted under the same
     # ownership/unique guards as a run, with no portfolio decision, model call or order. A
     # redelivered message then hits that row in already_handled (idempotent skip, no re-debate).
@@ -443,9 +444,10 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                         return
 
                 # B5: revalidate the quote at decision time, under the same row lock and PEL proof: a
-                # quote fresh when the debate started may be minutes stale now. The final tick's mid is
-                # the persisted decision_price and the mandate-room marks still come from paper:marks; a
-                # stale one ends the run as terminal NO_PRICE with no decision and no route.
+                # quote fresh when the debate started may be minutes stale now. The final snapshot mid
+                # is the persisted decision_price and the mandate-room marks still come from
+                # paper:marks; a stale one ends the run as terminal NO_PRICE with no decision and
+                # no route.
                 final_quoted = resolve_quote_price(instrument_id,
                                                    await read_live_quote(redis_client, instrument_id))
                 if final_quoted.price is None:

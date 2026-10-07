@@ -248,10 +248,11 @@ class FakeEmbedder:
 
 
 def redis_double():
+    from cryptonite_schemas.marks import quote_tick_key
     double = AsyncMock()
-    double.get.return_value = json.dumps({"last_price": 65000.0})
+    double.get.side_effect = lambda key: fresh_tick_body() if str(key) == quote_tick_key(INSTRUMENT) \
+        else json.dumps({"last_price": 65000.0})
     double.hgetall.return_value = fresh_marks()
-    double.xrevrange.return_value = fresh_tick()
     return double
 
 
@@ -261,12 +262,12 @@ def fresh_marks(price: str = "65000.0", age_s: float = 2.0) -> dict:
     return {INSTRUMENT: encode_mark(Decimal(price), now_ns - int(age_s * 1e9), now_ns)}
 
 
-def fresh_tick(bid: str = "65000", ask: str = "65020", age_s: float = 2.0) -> list:
-    """A fresh shared quote-stream tick for INSTRUMENT (B5 decision-price source, real envelope)."""
+def fresh_tick_body(bid: str = "65000", ask: str = "65020", age_s: float = 2.0) -> str:
+    """A snapshot body exactly as the ingest pipeline writes it for INSTRUMENT."""
     now_ns = time.time_ns()
-    return [("1700000000000-0", {"data": json.dumps(
-        {"instrument_id": INSTRUMENT, "bid_price": bid, "ask_price": ask,
-         "bid_size": "1.0", "ask_size": "1.0", "arrival_ns": str(now_ns - int(age_s * 1e9))})})]
+    return json.dumps({"instrument_id": INSTRUMENT, "bid_price": bid, "ask_price": ask,
+                       "bid_size": "1.0", "ask_size": "1.0",
+                       "arrival_ns": str(now_ns - int(age_s * 1e9))})
 
 
 async def test_redelivered_message_does_not_open_a_second_run(debate_main, pool):

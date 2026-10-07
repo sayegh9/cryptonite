@@ -1,15 +1,16 @@
 """Bounded, declared decision price (review-plan B5, F-M14): the entry debate prices from the
-orchestrator's all-market quote source only — the shared ui_quote_tick stream of Binance book
-tickers (same feed as its quote cache): the latest same-instrument tick, mid of a finite positive
-bid/ask no older than DECISION_PRICE_MAX_AGE_S. Stale/missing/invalid/wrong-symbol quotes end the
-attempt as NO_PRICE with no model call and no order; the worker makes zero outbound HTTP (the direct
-api.binance.com fallback is gone). Throwaway DB at Alembic head; FunctionModels; FakeRedis only."""
+per-instrument latest-quote snapshot the ingest writes in its quote pipeline (same Binance bookTicker
+feed as the orchestrator's quote cache) — a finite positive bid/ask no older than
+DECISION_PRICE_MAX_AGE_S. Stale/missing/invalid/wrong-symbol quotes end the attempt as NO_PRICE
+with no model call and no order; the worker makes zero outbound HTTP (the direct api.binance.com
+fallback is gone). Throwaway DB at Alembic head; FunctionModels; FakeRedis only."""
 
 import importlib.util
 import json
 import sys
 import time
 import uuid
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -55,12 +56,34 @@ async def pool(db_url):
     await pool.close()
 
 
-def quote_double(entries: list, brief: str | None = "MARKET BRIEF BTCUSDT") -> AsyncMock:
-    """Worker Redis double serving exactly these quote-stream entries (no ticker fallback data)."""
+def switching_double(bodies: list, brief: str | None = "MARKET BRIEF BTCUSDT") -> AsyncMock:
+    """Snapshot bodies served in order, one per snapshot GET (other keys: brief/cooldown/None)."""
+    from cryptonite_schemas.marks import quote_tick_key
     redis = AsyncMock()
-    redis.get.side_effect = lambda key: brief if str(key) == "brief:k" else None
-    redis.xrevrange.return_value = entries
+    state = {"i": 0}
+
+    def get(key):
+        if str(key) == quote_tick_key(INSTRUMENT):
+            i = state["i"]
+            state["i"] += 1
+            return bodies[min(i, len(bodies) - 1)]
+        return brief if str(key) == "brief:k" else None
+
+    redis.get.side_effect = get
     return redis
+
+
+def quote_double(body: str | None, brief: str | None = "MARKET BRIEF BTCUSDT") -> AsyncMock:
+    """Worker Redis double serving this snapshot body at quote:tick:<instrument> (else None)."""
+    return switching_double([body], brief)
+
+
+def live_tick_body(bid: str, ask: str, age_s: float, instrument: str = INSTRUMENT) -> str:
+    """A snapshot body exactly as the ingest pipeline writes it."""
+    now_ns = time.time_ns()
+    return json.dumps({"instrument_id": instrument, "bid_price": bid, "ask_price": ask,
+                       "bid_size": "1.0", "ask_size": "1.0",
+                       "arrival_ns": str(now_ns - int(age_s * 1e9))})
 
 
 def scanner_payload() -> dict:
@@ -69,14 +92,6 @@ def scanner_payload() -> dict:
     return {"instrument_id": INSTRUMENT, "trigger_source": "scanner", "brief_key": "brief:k",
             "candidate_payload": json.dumps(candidate)}
 
-
-def live_tick(bid: str, ask: str, age_s: float, instrument: str = INSTRUMENT) -> list:
-    """One stream entry in the real ``{"data": <json>}`` envelope the ingest writes."""
-    now_ns = time.time_ns()
-    ui_record = {"instrument_id": instrument, "bid_price": bid, "ask_price": ask,
-                 "bid_size": "1.0", "ask_size": "1.0",
-                 "arrival_ns": str(now_ns - int(age_s * 1e9))}
-    return [("1700000000000-0", {"data": json.dumps(ui_record)})]
 
 
 class FakeEmbedder:
@@ -125,7 +140,7 @@ async def test_fresh_quote_debates_and_declares_the_price(debate_main, pool, mon
     monkeypatch.setattr(httpx, "AsyncClient", no_http)
     assert await pool.fetchval("SELECT count(*) FROM paper_positions") == 0
     calls = {"n": 0}
-    run = await run_entry(debate_main, pool, quote_double(live_tick("65000", "65020", 2.0)), calls)
+    run = await run_entry(debate_main, pool, quote_double(live_tick_body("65000", "65020", 2.0)), calls)
     assert calls["n"] > 0 and run["status"] == "PENDING_APPROVAL"
     decision = await pool.fetchrow("SELECT * FROM portfolio_decisions WHERE run_id = $1", run["id"])
     assert float(decision["decision_price"]) == pytest.approx(65010.0)
@@ -139,17 +154,17 @@ async def test_no_binance_fallback_remains_in_the_worker():
     assert "market:24h" not in source
 
 
-@pytest.mark.parametrize("raw_ticks", [
-    [],  # missing: empty stream
-    live_tick("65000", "65020", DECISION_PRICE_MAX_AGE_S + 20.0),  # stale
-    [("1700000000000-0", {"data": "not-json"})],  # malformed envelope
-    [("1700000000000-0", {"data": json.dumps({"junk": "1"})})],  # malformed tick
-    live_tick("-5", "-4", 1.0),  # non-positive quote
-    live_tick("3000", "3010", 1.0, instrument="ETHUSDT.BINANCE"),  # wrong symbol
+@pytest.mark.parametrize("body", [
+    None,  # missing: no snapshot key
+    live_tick_body("65000", "65020", DECISION_PRICE_MAX_AGE_S + 20.0),  # stale
+    "not-json",  # malformed body
+    json.dumps({"junk": "1"}),  # malformed tick
+    live_tick_body("-5", "-4", 1.0),  # non-positive quote
+    live_tick_body("3000", "3010", 1.0, instrument="ETHUSDT.BINANCE"),  # wrong symbol
 ])
-async def test_unusable_quote_is_no_price_without_side_effects(debate_main, pool, raw_ticks):
+async def test_unusable_quote_is_no_price_without_side_effects(debate_main, pool, body):
     calls = {"n": 0}
-    redis = quote_double(list(raw_ticks))
+    redis = quote_double(body)
     run = await run_entry(debate_main, pool, redis, calls)
     # A terminal, durable NO_PRICE outcome: identity, trace, completion time and reason recorded…
     assert run["status"] == "NO_PRICE" and run["failure_reason"] == "NO_PRICE"
@@ -195,10 +210,9 @@ async def test_no_price_refused_without_pel_ownership(debate_main, pool, monkeyp
 async def test_retry_after_no_price_passes_once_quotes_flow(debate_main, pool):
     """A later attempt with quotes flowing debates normally (direct calls carry no dedupe identity)."""
     calls = {"n": 0}
-    redis = quote_double([])
+    redis = switching_double([None, live_tick_body("65090", "65110", 1.0)])
     first = await run_entry(debate_main, pool, redis, calls)
     assert calls["n"] == 0 and first["status"] == "NO_PRICE"
-    redis.xrevrange.return_value = live_tick("65090", "65110", 1.0)
     run = await run_entry(debate_main, pool, redis, calls)
     assert calls["n"] > 0 and run["status"] == "PENDING_APPROVAL"
     assert float((await pool.fetchrow("SELECT decision_price FROM portfolio_decisions WHERE run_id = $1",
@@ -208,16 +222,15 @@ async def test_retry_after_no_price_passes_once_quotes_flow(debate_main, pool):
 async def test_boundary_age_is_accepted(debate_main, pool):
     """A quote just inside the bound still prices the debate."""
     calls = {"n": 0}
-    run = await run_entry(debate_main, pool, quote_double(live_tick("64890", "64910", DECISION_PRICE_MAX_AGE_S - 1.0)), calls)
+    run = await run_entry(debate_main, pool, quote_double(live_tick_body("64890", "64910", DECISION_PRICE_MAX_AGE_S - 1.0)), calls)
     assert run is not None and run["status"] == "PENDING_APPROVAL"
 
 
 async def test_stale_quote_at_decision_time_ends_no_price(debate_main, pool, monkeypatch):
     """A quote fresh at debate start but expired by finalization ends terminal NO_PRICE: no decision,
     no route — the persisted price is never minutes stale."""
-    fresh, stale = live_tick("65000", "65020", 1.0), live_tick("65000", "65020", DECISION_PRICE_MAX_AGE_S + 30.0)
-    redis = quote_double(fresh)
-    redis.xrevrange.side_effect = [fresh, stale]  # price-time read, then the finalization re-read
+    fresh, stale = live_tick_body("65000", "65020", 1.0), live_tick_body("65000", "65020", DECISION_PRICE_MAX_AGE_S + 30.0)
+    redis = switching_double([fresh, stale])  # price-time read, then the finalization re-read
     routed = {"n": 0}
     original_route = debate_main.route_entry
 
@@ -238,9 +251,8 @@ async def test_stale_quote_at_decision_time_ends_no_price(debate_main, pool, mon
 
 async def test_final_quote_is_the_persisted_price(debate_main, pool):
     """The decision-time quote — not the debate-start one — is stored and used for mandate room."""
-    first, second = live_tick("65000", "65020", 1.0), live_tick("65200", "65220", 1.0)
-    redis = quote_double(first)
-    redis.xrevrange.side_effect = [first, second]
+    first, second = live_tick_body("65000", "65020", 1.0), live_tick_body("65200", "65220", 1.0)
+    redis = switching_double([first, second])
     calls = {"n": 0}
     run = await run_entry(debate_main, pool, redis, calls)
     assert run["status"] == "PENDING_APPROVAL"
@@ -248,37 +260,48 @@ async def test_final_quote_is_the_persisted_price(debate_main, pool):
                                       run["id"]))["decision_price"]) == pytest.approx(65210.0)
 
 
-def test_parse_quote_tick_accepts_bytes_envelope():
-    """The ingest envelope parses with bytes keys/values too (no decode_responses)."""
-    from cryptonite_schemas.marks import parse_quote_tick
+def test_parse_quote_record_accepts_str_bytes_and_dict():
+    """Snapshot bodies parse with str/bytes/dict shapes; garbage and wrong types do not."""
+    from cryptonite_schemas.marks import parse_quote_record
     now_ns = time.time_ns()
     ui = {"instrument_id": INSTRUMENT, "bid_price": "65000", "ask_price": "65020",
           "bid_size": "1.0", "ask_size": "1.0", "arrival_ns": str(now_ns - 1_000_000_000)}
-    tick = parse_quote_tick({b"data": json.dumps(ui).encode()})
-    assert tick is not None and tick[0] == INSTRUMENT and tick[3] == int(ui["arrival_ns"])
-    assert parse_quote_tick({"data": "not-json"}) is None
+    body = json.dumps(ui)
+    for raw in (body, body.encode(), ui):
+        tick = parse_quote_record(raw)
+        assert tick is not None and tick[0] == INSTRUMENT and tick[3] == int(ui["arrival_ns"])
+    assert parse_quote_record("not-json") is None
+    assert parse_quote_record({"junk": "1"}) is None
+    assert parse_quote_record(None) is None
 
 
-async def test_high_volume_stream_still_finds_deep_tick(debate_main, pool):
-    """Retention-complete scan: the target tick buried under 1100 newer other-symbol ticks is still
-    found — no scan-window false NO_PRICE. A stream without the symbol stays NO_PRICE."""
+def test_resolve_quote_price_verifies_tick_identity():
+    """A fresh tick for another instrument never prices this one (defense in depth)."""
+    from cryptonite_schemas.marks import resolve_quote_price
     now_ns = time.time_ns()
+    other = ("ETHUSDT.BINANCE", Decimal("3000"), Decimal("3010"), now_ns - 1_000_000_000)
+    decided = resolve_quote_price(INSTRUMENT, other, now_ns)
+    assert (decided.price, decided.source) == (None, "NO_PRICE")
 
-    def other(i):
-        ui = {"instrument_id": f"SYM{i % 40}.BINANCE",
-              "bid_price": "10", "ask_price": "11", "bid_size": "1", "ask_size": "1",
-              "arrival_ns": str(now_ns - 1_000_000_000)}
-        return (f"170000000{i:04d}-0", {"data": json.dumps(ui)})
 
-    deep = live_tick("65000", "65020", 2.0)  # oldest entry: last in reverse order
+async def test_busy_stream_noise_cannot_shadow_the_snapshot(debate_main, pool):
+    """Other symbols' volume is irrelevant: pricing reads only the per-instrument snapshot key, so a
+    1100-tick burst for other symbols neither prices this instrument nor hides its snapshot."""
     calls = {"n": 0}
-    run = await run_entry(debate_main, pool, quote_double([other(i) for i in range(1100)] + deep), calls)
+    redis = quote_double(live_tick_body("65000", "65020", 2.0))
+    seen = {"streams": []}
+    original_xrevrange = redis.xrevrange
+
+    async def watch_xrevrange(*args, **kwargs):
+        seen["streams"].append(args[0] if args else None)
+        return await original_xrevrange(*args, **kwargs)
+
+    redis.xrevrange = watch_xrevrange
+    run = await run_entry(debate_main, pool, redis, calls)
     assert run["status"] == "PENDING_APPROVAL"
+    assert seen["streams"] == []  # the shared stream is never consulted for pricing
     assert float((await pool.fetchrow("SELECT decision_price FROM portfolio_decisions WHERE run_id = $1",
                                       run["id"]))["decision_price"]) == pytest.approx(65010.0)
-
-    absent = await run_entry(debate_main, pool, quote_double([other(i) for i in range(1100)]), {"n": 0})
-    assert absent["status"] == "NO_PRICE"
 
 
 async def test_missing_instrument_id_is_refused(debate_main, pool):
@@ -287,7 +310,7 @@ async def test_missing_instrument_id_is_refused(debate_main, pool):
     model = counting_model(calls)
     with override_model(FLASH, model), override_model(FLASH_LITE, model), override_model(PRO, model), \
          override_model(EMBED, FakeEmbedder()):
-        await debate_main.process_debate_trigger(pool, quote_double(live_tick("65000", "65020", 1.0)),
+        await debate_main.process_debate_trigger(pool, quote_double(live_tick_body("65000", "65020", 1.0)),
                                                  {"trigger_source": "test"}, Gateway())
     assert calls["n"] == 0
     assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0

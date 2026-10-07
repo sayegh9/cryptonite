@@ -89,6 +89,12 @@ class Redis:
         return True
 
     async def get(self, key):
+        from cryptonite_schemas.marks import quote_tick_key
+        if str(key) == quote_tick_key(INSTRUMENT):
+            now_ns = time.time_ns()
+            return json.dumps({"instrument_id": INSTRUMENT, "bid_price": "65000", "ask_price": "65020",
+                               "bid_size": "1.0", "ask_size": "1.0",
+                               "arrival_ns": str(now_ns - 2_000_000_000)})
         return self.kv.get(key)
 
     async def hgetall(self, key):
@@ -98,12 +104,7 @@ class Redis:
         return {}
 
     async def xrevrange(self, key, *args, **kwargs):
-        if key == "cryptonite:stream:ui_quote_tick":
-            now_ns = time.time_ns()
-            return [("1700000000000-0", {"data": json.dumps(
-                {"instrument_id": INSTRUMENT, "bid_price": "65000", "ask_price": "65020",
-                 "bid_size": "1.0", "ask_size": "1.0", "arrival_ns": str(now_ns - 2_000_000_000)})})]
-        return []
+        return []  # B5 prices from the per-instrument snapshot now; the stream is never consulted
 
     async def incr(self, key):
         self.kv[key] = int(self.kv.get(key, 0)) + 1

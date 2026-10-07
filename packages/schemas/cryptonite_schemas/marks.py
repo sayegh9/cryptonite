@@ -152,14 +152,20 @@ def resolve_decision_price(instrument_id: str, marks: dict[str, LiveMark] | None
     return DecisionPrice(None, "NO_PRICE", quote_ts, age)
 
 
-# All-market live quotes (review-plan B5, F-M14): ``paper:marks`` only covers instruments with open
-# positions, so a first entry would never price. The ingest publishes every instrument's Binance book
-# ticker to this stream as ``{"data": <json>}`` envelopes (bounded, MAXLEN ~1000, approximate
-# trimming); the orchestrator's quote cache and the exit monitor read the same feed. The scan count
-# covers the stream's full retention with margin, so the read is retention-complete: a still-present
-# symbol can never be missed because of a scan window — absence means the symbol is not fed at all.
-QUOTE_STREAM_KEY = "cryptonite:stream:ui_quote_tick"
-QUOTE_SCAN_COUNT = 1500
+# All-market latest quotes (review-plan B5, F-M14): ``paper:marks`` only covers instruments with
+# open positions, and a shared stream is retention-bounded but not age-bounded — under a busy
+# multi-symbol feed an instrument's still-fresh tick can be evicted before it ages out. So the ingest
+# writes a per-instrument snapshot beside the stream, in the same quote pipeline, from the same tick:
+# key ``quote:tick:<canonical instrument>`` holding the ui_record JSON
+# ``{instrument_id, bid_price, ask_price, bid_size, ask_size, arrival_ns}``. The TTL only bounds
+# garbage for delisted symbols; freshness is always decided by the timestamp check below. Readers do
+# one constant-time GET: presence never depends on other symbols' volume.
+QUOTE_TICK_KEY_PREFIX = "quote:tick:"
+QUOTE_TICK_TTL_S = 60
+
+
+def quote_tick_key(instrument_id: str) -> str:
+    return f"{QUOTE_TICK_KEY_PREFIX}{_canonical(instrument_id)}"
 
 
 def _field(fields: dict, key: str) -> Any:
@@ -168,29 +174,26 @@ def _field(fields: dict, key: str) -> Any:
     return fields.get(key.encode())
 
 
-def parse_quote_tick(fields: Any) -> tuple[str, Decimal, Decimal, int] | None:
-    """A stream entry -> (canonical instrument, bid, ask, arrival_ns); None when unusable.
+def parse_quote_record(data: Any) -> tuple[str, Decimal, Decimal, int] | None:
+    """A snapshot value -> (canonical instrument, bid, ask, arrival_ns); None when unusable.
 
-    Unwraps the ingest ``{"data": <json>}`` envelope (str or bytes keys/values, as with or without
-    decode_responses); bare field dicts are accepted leniently.
+    Accepts the ui_record JSON (str or bytes, as with or without decode_responses) or a bare dict.
     """
-    if not isinstance(fields, dict):
-        return None
-    inner = _field(fields, "data")
-    if inner is not None:
+    if isinstance(data, dict):
+        record = data
+    else:
         try:
-            inner = json.loads(inner.decode() if isinstance(inner, bytes) else inner)
+            record = json.loads(data.decode() if isinstance(data, bytes) else data)
         except (ValueError, TypeError, AttributeError):
             return None
-        if not isinstance(inner, dict):
+        if not isinstance(record, dict):
             return None
-        fields = inner
     try:
-        inst = _field(fields, "instrument_id")
+        inst = _field(record, "instrument_id")
         inst = inst.decode() if isinstance(inst, bytes) else str(inst)
-        bid = Decimal(str(_field(fields, "bid_price")))
-        ask = Decimal(str(_field(fields, "ask_price")))
-        arrival_ns = int(_field(fields, "arrival_ns"))  # type: ignore[arg-type]
+        bid = Decimal(str(_field(record, "bid_price")))
+        ask = Decimal(str(_field(record, "ask_price")))
+        arrival_ns = int(_field(record, "arrival_ns"))  # type: ignore[arg-type]
     except (TypeError, ValueError, InvalidOperation, AttributeError):
         return None
     if not bid.is_finite() or not ask.is_finite() or bid <= 0 or ask <= 0 or arrival_ns <= 0:
@@ -199,20 +202,22 @@ def parse_quote_tick(fields: Any) -> tuple[str, Decimal, Decimal, int] | None:
 
 
 async def read_live_quote(redis: Any, instrument_id: str) -> tuple[str, Decimal, Decimal, int] | None:
-    """This instrument's latest book tick from the shared quote stream, or None (never raises)."""
+    """This instrument's latest snapshot tick, or None when absent/unusable (never raises)."""
     if redis is None:
         return None
     try:
-        entries = await redis.xrevrange(QUOTE_STREAM_KEY, "+", "-", count=QUOTE_SCAN_COUNT)
+        raw = await redis.get(quote_tick_key(instrument_id))
     except Exception as e:
-        logger.warning("Could not read live quotes: %s", e)
+        logger.warning("Could not read live quote: %s", e)
         return None
-    target = _canonical(instrument_id)
-    for _, fields in entries or []:
-        tick = parse_quote_tick(fields)
-        if tick is not None and tick[0] == target:
-            return tick
-    return None
+    if raw is None:
+        return None
+    tick = parse_quote_record(raw)
+    if tick is not None and tick[0] != _canonical(instrument_id):
+        logger.warning("Quote snapshot for %s holds another instrument (%s): ignoring",
+                       instrument_id, tick[0])
+        return None
+    return tick
 
 
 def resolve_quote_price(instrument_id: str, tick: tuple[str, Decimal, Decimal, int] | None,
