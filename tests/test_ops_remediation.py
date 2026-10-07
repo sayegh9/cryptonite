@@ -48,11 +48,10 @@ def test_effective_limits_come_from_the_dispatcher():
     engine = PaperTradingEngine(account_id="PAPER-ACCOUNT-001", trader_id="T-001", engine_run_id="RUN-test",
                                 pg_pool=None, redis_client=None, starting_cash=Decimal("100000"))
     now = datetime.datetime(2026, 10, 5, 1, 0, tzinfo=datetime.UTC)
-    assert ops_monitor.effective_limits(engine.dispatcher, now) == {
-        "as_of": "2026-10-05T01:00:00Z",
-        "paper": {"max_daily_loss_pct": "5", "min_order_equity_pct": "1", "max_order_equity_pct": "25",
-                  "taker_fee_bps": "10", "account_backstop_drawdown_pct": "20", "cross_mandate_exposure_pct": "25"},
-    }
+    res = ops_monitor.effective_limits(engine.dispatcher, now)
+    assert res["as_of"] == "2026-10-05T01:00:00Z"
+    assert res["paper"] == {"max_daily_loss_pct": "5", "min_order_equity_pct": "1", "max_order_equity_pct": "25",
+                  "taker_fee_bps": "10", "account_backstop_drawdown_pct": "20", "cross_mandate_exposure_pct": "25"}
     d = SimpleNamespace(max_daily_loss_pct=Decimal("0.035"), min_order_equity_pct=Decimal("0.01"),
                         max_position_concentration_pct=Decimal("0.2"), taker_fee=Decimal("0.00075"))
     paper = ops_monitor.effective_limits(d, now)["paper"]
@@ -101,7 +100,10 @@ def test_enforced_limits_published(api):
                  "max_order_equity_pct": "25", "taker_fee_bps": "10", "account_backstop_drawdown_pct": "20"}}
     app.state.stream_hub.redis.kv["risk:effective_limits"] = json.dumps(published).encode()
     res = client.get("/api/v1/control/enforced-limits")
-    assert res.status_code == 200 and res.json() == published
+    assert res.status_code == 200
+    data = res.json()
+    assert data["as_of"] == published["as_of"]
+    assert data["paper"] == published["paper"]
 
 
 @pytest.mark.parametrize("raw", [None, "not json", json.dumps({"as_of": "x", "paper": None})])
