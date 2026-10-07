@@ -20,6 +20,7 @@ from cryptonite_api.main import create_app
 from cryptonite_api.routes.auth import COOKIE_NAME
 from cryptonite_execution.mandate_store import load_mandate
 from cryptonite_orchestrator.mandate_gate import ensure_mandate_instance
+from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from migrated_db import seed_paper_account
 
 RealAsyncClient = httpx.AsyncClient  # captured before any test monkeypatches httpx.AsyncClient
@@ -89,11 +90,18 @@ async def make_harness(db_url: str, *, heartbeat: bool = True) -> Harness:
     h.username = username
     if heartbeat:
         await redis.set("exit_monitor:heartbeat", json.dumps({"stop_loss_pct": 5.0, "trail_activate_pct": 3.0, "trail_pct": 2.0}), ex=300)
+    await publish_test_universe(redis)
     return h
+
+
+async def publish_test_universe(redis, symbols=("BTCUSDT", "ETHUSDT"), timeframes=("1m", "1h"), perps=("BTCUSDT", "ETHUSDT")):
+    """What ingest publishes in the dev stack (D4); mandate and instance creation fail closed without it."""
+    universe = IngestUniverse.build(list(symbols), list(timeframes), list(perps))
+    await redis.set(INGEST_UNIVERSE_KEY, universe.model_dump_json(), ex=300)
 
 
 async def close_harness(h: Harness) -> None:
     assert_isolated(h.redis)
-    await h.redis.delete("exit_monitor:heartbeat", "notifier:heartbeat")
+    await h.redis.delete("exit_monitor:heartbeat", "notifier:heartbeat", INGEST_UNIVERSE_KEY)
     await h.redis.aclose()
     await h.pool.close()

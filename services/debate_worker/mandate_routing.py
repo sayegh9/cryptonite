@@ -37,6 +37,8 @@ from cryptonite_schemas.mandate import (
     mandate_id_from_instance,
     timeout_policy_for,
 )
+from cryptonite_schemas.marks import LiveMark
+from cryptonite_schemas.marks import entry_room_pct as room_at_marks
 
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
@@ -70,17 +72,15 @@ async def mandate_holding(conn, mandate: Mandate, instrument_id: str) -> Decimal
     return Decimal(str(qty or 0))
 
 
-async def entry_room_pct(conn, mandate: Mandate, instrument_id: str) -> Decimal:
+async def entry_room_pct(conn, mandate: Mandate, instrument_id: str, marks: dict[str, LiveMark] | None = None) -> Decimal:
     """Room for a new entry, as % of the mandate budget: under the instrument's position limit and under
-    the budget, with the mandate's open positions at their last marked price."""
-    row = await conn.fetchrow(
-        """SELECT COALESCE(SUM(quantity * current_price), 0) AS gross,
-                  COALESCE(SUM(quantity * current_price) FILTER (WHERE instrument_id = $3), 0) AS inst
-           FROM paper_positions WHERE account_id = $1 AND instance_id = $2 AND status = 'OPEN' AND quantity > 0""",
-        PAPER_ACCOUNT_ID, mandate.instance_id, canonical_instrument(instrument_id))
-    budget = mandate.capital_budget_usd
-    room = min(budget * mandate.max_position_pct / 100 - Decimal(str(row["inst"])), budget - Decimal(str(row["gross"])))
-    return max(Decimal("0"), room / budget * 100)
+    the budget, with the mandate's open positions at their live mark (``marks``, from the orchestrator's
+    projector), else at their stored mark (B3)."""
+    rows = await conn.fetch(
+        """SELECT instrument_id, quantity, current_price FROM paper_positions
+           WHERE account_id = $1 AND instance_id = $2 AND status = 'OPEN' AND quantity > 0""",
+        PAPER_ACCOUNT_ID, mandate.instance_id)
+    return room_at_marks(mandate.capital_budget_usd, mandate.max_position_pct, rows, instrument_id, marks)
 
 
 async def position_owner(conn, instrument_id: str) -> tuple[Mandate | None, Decimal]:
@@ -143,9 +143,11 @@ async def _enqueue(conn, mandate: Mandate, command_type: str, payload: dict[str,
 async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendation: str, conviction: float,
                       allocation_pct: float, *, mandate_id: str | None = None,
                       now: datetime.datetime | None = None,
-                      decision_trace_id: str | None = None) -> tuple[str, Mandate | None]:
+                      decision_trace_id: str | None = None,
+                      marks: dict[str, LiveMark] | None = None) -> tuple[str, Mandate | None]:
     """Returns (debate_runs status, mandate). ``decision_trace_id`` (R7.4) rides in the command and
-    approval payloads so the order and its fill can be traced back to the scanner candidate."""
+    approval payloads so the order and its fill can be traced back to the scanner candidate. ``marks``
+    (``cryptonite_schemas.marks.read_marks``) values the mandate's positions for its room."""
     now = now or datetime.datetime.now(datetime.UTC)
     side = side_of(recommendation)
     if side is None:
@@ -158,7 +160,7 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     if decision_trace_id:
         base["decision_trace_id"] = str(decision_trace_id)
     if side == "BUY":
-        room = await entry_room_pct(conn, mandate, instrument_id)
+        room = await entry_room_pct(conn, mandate, instrument_id, marks)
         if room < MIN_MANDATE_ENTRY_PCT:
             return "NO_TRADE", mandate  # already at the position limit: nothing to ask the operator
         alloc = round(min(float(allocation_pct), float(mandate.max_position_pct), float(room)), 2)

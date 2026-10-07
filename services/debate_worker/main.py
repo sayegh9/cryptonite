@@ -26,7 +26,19 @@ from cryptonite_agents.debate_fleet import (
 )
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_schemas.debate import normalize_verdict
-from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate
+from cryptonite_schemas.marks import read_marks
+from debate_queue import (
+    DEBATE_QUEUE,
+    EXIT_DEBATE_QUEUE,
+    HOUSEKEEPING_S,
+    DebateQueue,
+    PoisonMessage,
+    consumer_name,
+    ensure_groups,
+    housekeeping,
+    is_pel_owner,
+)
+from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate, release_cooldown
 from mandate_routing import route_entry, route_exit
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
@@ -34,9 +46,7 @@ logger = logging.getLogger("debate_worker")
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_api:api_dev_pass@127.0.0.1:5432/cryptonite")
-DEBATE_QUEUE = "stream:debate_queue"
-DEBATE_WORKER_GROUP = "debate_workers"
-DEBATE_WORKER_NAME = f"worker-{uuid.uuid4().hex[:8]}"
+DEBATE_WORKER_NAME = consumer_name()  # stable per replica container (B4, F-H6); see debate_queue.py
 
 LITE_MAX_ALLOCATION_PCT = 5.0  # below this a lite verdict stands on its own
 LITE_MIN_CONVICTION = 0.35  # a small lite verdict weaker than this is recorded as NO_TRADE
@@ -113,14 +123,6 @@ async def recall_lessons(pg_pool, gateway: Gateway, context_text: str) -> str:
     return "\n- ".join(r["lessons_learned"] for r in lessons) if lessons else "No previous lessons yet."
 
 
-async def init_redis_group(redis_client: redis.Redis):
-    try:
-        await redis_client.xgroup_create(DEBATE_QUEUE, DEBATE_WORKER_GROUP, id="0", mkstream=True)
-        logger.info(f"Created consumer group {DEBATE_WORKER_GROUP} for {DEBATE_QUEUE}")
-    except Exception as e:
-        if "BUSYGROUP Consumer Group name already exists" not in str(e):
-            logger.error(f"Error creating consumer group: {e}")
-
 async def emit_heartbeat(redis_client, role_name: str, status: str, msg: str = ""):
     role_lower = role_name.lower()
     if "analyst" in role_lower:
@@ -170,52 +172,120 @@ class AntiCorruptionLayer:
                 "timestamp": time.time()
             }
 
-async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None):
+async def already_handled(pg_pool, message_ref: str | None, redis_client=None, consumer: str | None = None) -> bool:
+    """Redelivery guard (B4): this stream message already has a run. A finished run means the worker died
+    between commit and ack; a RUNNING one means it died mid-debate, so the run is closed as WORKER_LOST
+    (not re-debated: the setup has aged by the reclaim window, and a rerun would pay for the models twice).
+    The close happens under the row lock only if we still own the message in the PEL: a stale attempt must
+    never close the healthy run of the consumer that took the entry over."""
+    if not message_ref:
+        return False
+    async with pg_pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT id, status, claim_gen FROM debate_runs WHERE stream_message_id = $1 FOR UPDATE", message_ref
+            )
+            if row is None:
+                return False
+            if row["status"] == "RUNNING":
+                if consumer and redis_client:
+                    stream, _, msg_id = message_ref.partition("/")
+                    if not await is_pel_owner(redis_client, stream, msg_id, consumer):
+                        logger.warning(f"Redelivered {message_ref} is no longer owned by {consumer}; "
+                                       f"leaving run {row['id']} (RUNNING) to its current owner")
+                        return True
+                await conn.execute(
+                    """UPDATE debate_runs SET status = 'FAILED', completed_at = now(), failure_reason = 'WORKER_LOST'
+                       WHERE id = $1 AND status = 'RUNNING' AND claim_gen = $2""",
+                    row["id"], row["claim_gen"],
+                )
+            logger.warning(f"Redelivered {message_ref} already has run {row['id']} ({row['status']}): not debated again")
+            return True
+
+
+async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
+                                 message_ref: str | None = None, delivered: int | None = None,
+                                 consumer: str | None = None):
     gateway = gateway or Gateway(redis=redis_client)
     instrument_id = payload.get("instrument_id")
     trigger_source = payload.get("trigger_source", "scanner")
-    
+    if await already_handled(pg_pool, message_ref, redis_client, consumer):
+        return
+
     trace_id = decision_trace_id(payload)
     payload = {**payload, "decision_trace_id": trace_id}
+    # D1: the candidate id makes the run row durable dedupe (partial unique index, migration 039)
+    candidate_id = None
+    try:
+        candidate = json.loads(payload.get("candidate_payload") or "{}")
+        if isinstance(candidate, dict) and candidate.get("candidate_id"):
+            candidate_id = uuid.UUID(str(candidate["candidate_id"]))
+    except (TypeError, ValueError):
+        candidate_id = None
     logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source} (decision_trace_id={trace_id})")
     brief = await load_brief(redis_client, payload)
     gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
                                  brief_data=await load_brief_data(redis_client, payload))
     if not gate.allowed:
         return
-    acl = AntiCorruptionLayer(pg_pool)
-    context = await acl.get_instrument_context(instrument_id)
-    
-    sym = (instrument_id or "BTCUSDT").split(".")[0].upper()
-    decision_price = None
-    try:
-        cached_market = await redis_client.get(f"market:24h:{sym}")
-        if cached_market:
-            decision_price = float(json.loads(cached_market).get("last_price", 0))
-    except Exception:
-        pass
 
-    if not decision_price:
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=4.0) as http_client:
-                bn_r = await http_client.get("https://api.binance.com/api/v3/ticker/24hr", params={"symbol": sym})
-                if bn_r.status_code == 200:
-                    decision_price = float(bn_r.json().get("lastPrice", 0))
-        except Exception as e:
-            logger.warning(f"Could not fetch live price for {sym}: {e}")
-
-    context["current_price"] = decision_price
-    
+    # D1: the run row is the first durable write of a run. Until it commits, any failure releases the
+    # cooldown and re-raises, so the PEL retry of the same message passes the gate again instead of
+    # hitting a cooldown (or dedupe) left behind by an attempt that never became durable.
+    my_generation = 0  # the INSERT itself is this attempt's claim (the unique message ref orders entries)
     run_id = uuid.uuid4()
-    
-    async with pg_pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, decision_trace_id)
-               VALUES ($1, $2, 'RUNNING', $3, now(), $4)""",
-            run_id, instrument_id, trigger_source, uuid.UUID(trace_id)
-        )
-    
+    try:
+        acl = AntiCorruptionLayer(pg_pool)
+        context = await acl.get_instrument_context(instrument_id)
+
+        sym = (instrument_id or "BTCUSDT").split(".")[0].upper()
+        decision_price = None
+        try:
+            cached_market = await redis_client.get(f"market:24h:{sym}")
+            if cached_market:
+                decision_price = float(json.loads(cached_market).get("last_price", 0))
+        except Exception:
+            pass
+
+        if not decision_price:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=4.0) as http_client:
+                    bn_r = await http_client.get("https://api.binance.com/api/v3/ticker/24hr", params={"symbol": sym})
+                    if bn_r.status_code == 200:
+                        decision_price = float(bn_r.json().get("lastPrice", 0))
+            except Exception as e:
+                logger.warning(f"Could not fetch live price for {sym}: {e}")
+
+        context["current_price"] = decision_price
+
+        async with pg_pool.acquire() as conn:
+            async with conn.transaction():
+                if consumer and message_ref:
+                    sr, _, mr = message_ref.partition("/")
+                    if not await is_pel_owner(redis_client, sr, mr, consumer):
+                        logger.warning(
+                            "Debate run %s insert refused: %s no longer owns %s in PEL",
+                            run_id, consumer, message_ref,
+                        )
+                        await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
+                        return
+                await conn.execute(
+                    """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at,
+                                                decision_trace_id, candidate_id, stream_message_id, claim_gen)
+                       VALUES ($1, $2, 'RUNNING', $3, now(), $4, $5, $6, $7)""",
+                    run_id, instrument_id, trigger_source, uuid.UUID(trace_id), candidate_id, message_ref, my_generation,
+                )
+    except asyncpg.UniqueViolationError:
+        # D1 / B4: two deliveries raced past the gate; the winner owns the candidate/message. This one ends here —
+        # no model call and never a second durable decision.
+        logger.info(f"Duplicate debate run for candidate {candidate_id} / {message_ref}; dropping the redelivery")
+        return
+    except BaseException:
+        # Covers CancelledError too (except Exception misses it). A hard crash still leaves the cooldown
+        # key behind, but its value is the candidate's own token, so the redelivery passes it anyway.
+        await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
+        raise
     try:
         logger.info(f"Phase 1: Gathering Intelligence for {instrument_id}...")
         context_text = f"{brief}\n\n" if brief else ""
@@ -326,8 +396,31 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         # scoring, routing and the approve endpoint read; ``conviction_level`` keeps the CRO's own
         # wording (Overweight, ...; the lite path's is its direction). Unknown wording fails the run.
         recommendation = normalize_verdict(conviction_level)
+        marks = await read_marks(redis_client)  # B3: the mandate's room at live marks, not entry prices
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
+                # Durable finalization fence: lock the row FOR UPDATE; only the holder of the current
+                # claim_gen (bumped by every claim under this lock) may write its decision and route.
+                run_row = await conn.fetchrow(
+                    "SELECT status, stream_message_id, claim_gen FROM debate_runs WHERE id = $1 FOR UPDATE", run_id
+                )
+                if (
+                    run_row is None
+                    or run_row["status"] != "RUNNING"
+                    or run_row["claim_gen"] != my_generation
+                    or (message_ref and run_row["stream_message_id"] != message_ref)
+                ):
+                    logger.warning(
+                        "Debate run %s is no longer RUNNING or claimed by another owner (status=%s, gen=%s): finalization fenced, aborting decision and route",
+                        run_id, run_row["status"] if run_row else None, run_row["claim_gen"] if run_row else None,
+                    )
+                    return
+                if consumer and message_ref:
+                    sr, _, mr = message_ref.partition("/")
+                    if not await is_pel_owner(redis_client, sr, mr, consumer):
+                        logger.warning("Debate run %s finalization: %s no longer owns %s in PEL; aborting decision and route", run_id, consumer, message_ref)
+                        return
+
                 # Save final decision
                 await conn.execute(
                     """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_level, conviction_score,
@@ -342,11 +435,12 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                 else:
                     final_status, mandate = await route_entry(
                         conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
-                        mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id,
+                        mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
                     )
                 await conn.execute(
-                    "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2",
-                    final_status, run_id, mandate.id if mandate else None,
+                    """UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3
+                        WHERE id = $2 AND status = 'RUNNING' AND claim_gen = $4""",
+                    final_status, run_id, mandate.id if mandate else None, my_generation,
                 )
 
         logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level} (decision_trace_id={trace_id})")
@@ -361,28 +455,100 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
 
     except Exception as e:
         logger.error(f"Debate failed for {instrument_id}: {e} (decision_trace_id={trace_id})")
-        if gate.cooldown_key:  # a failed run must not block the setup for the cooldown window
-            await redis_client.delete(gate.cooldown_key)
+        await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
         async with pg_pool.acquire() as conn:
-            await conn.execute("UPDATE debate_runs SET status = 'FAILED', completed_at = now() WHERE id = $1", run_id)
+            async with conn.transaction():
+                rr = await conn.fetchrow("SELECT status,stream_message_id,claim_gen FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
+                if rr and rr["status"]=="RUNNING" and rr["claim_gen"]==my_generation:
+                    owned = True
+                    if consumer and message_ref:
+                        sr,_,mr=message_ref.partition("/")
+                        try:
+                            owned = await is_pel_owner(redis_client,sr,mr,consumer)
+                        except Exception:
+                            owned = False
+                    if owned:
+                        await conn.execute("UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
 
-async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None):
+async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
+                                      message_ref: str | None = None, delivered: int | None = None,
+                                      consumer: str | None = None):
     gateway = gateway or Gateway(redis=redis_client)
     instrument_id = payload.get("instrument_id")
     run_id_str = payload.get("run_id")
     run_id = uuid.UUID(run_id_str) if run_id_str else uuid.uuid4()
-    
+    my_generation = 0
+
     logger.info(f"Starting exit debate run for {instrument_id}")
+    if run_id_str:
+        # Claim under the row lock: FOR UPDATE serializes concurrent attempts of this same run, the
+        # current-PEL-owner proof inside the transaction refuses a stale attempt, and the generation
+        # bump fences every earlier holder (their later writes match the old generation only).
+        async with pg_pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT status, stream_message_id, claim_gen FROM debate_runs WHERE id = $1 FOR UPDATE", run_id)
+                if row is None or row["status"] != "RUNNING":
+                    logger.warning(f"Exit debate run {run_id} is not RUNNING (status={row['status'] if row else None}): skipping")
+                    return
+                if row["stream_message_id"] and message_ref and row["stream_message_id"] != message_ref:
+                    logger.warning(f"Exit debate run {run_id} belongs to {row['stream_message_id']}, not {message_ref}: skipping")
+                    return
+                if consumer and message_ref:
+                    stream, _, msg_id = message_ref.partition("/")
+                    if not await is_pel_owner(redis_client, stream, msg_id, consumer):
+                        logger.warning(f"Exit claim for {run_id} refused: {consumer} no longer owns {message_ref} in PEL")
+                        return
+                my_generation = row["claim_gen"] + 1
+                await conn.execute(
+                    """UPDATE debate_runs SET claim_gen = $2, stream_message_id = COALESCE($3, stream_message_id)
+                       WHERE id = $1""",
+                    run_id, my_generation, message_ref,
+                )
+    else:
+        try:
+            async with pg_pool.acquire() as conn:
+                async with conn.transaction():
+                    if consumer and message_ref:
+                        sr, _, mr = message_ref.partition("/")
+                        if not await is_pel_owner(redis_client, sr, mr, consumer):
+                            logger.warning(
+                                "Exit debate run %s insert refused: %s no longer owns %s in PEL",
+                                run_id, consumer, message_ref,
+                            )
+                            return
+                    await conn.execute(
+                        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, stream_message_id, claim_gen)
+                           VALUES ($1, $2, 'RUNNING', 'exit_monitor', now(), $3, $4)""",
+                        run_id, instrument_id, message_ref, my_generation,
+                    )
+        except asyncpg.UniqueViolationError:
+            logger.info(f"Duplicate exit run for {message_ref}: the existing run wins")
+            await already_handled(pg_pool, message_ref, redis_client, consumer)
+            return
     acl = AntiCorruptionLayer(pg_pool)
     context = await acl.get_instrument_context(instrument_id)
-    
+
     if not context.get("current_position"):
         logger.info(f"No open position found for {instrument_id}. Skipping exit debate.")
-        if run_id_str:  # the run was created by the exit monitor; close it out
-            async with pg_pool.acquire() as conn:
-                await conn.execute("UPDATE debate_runs SET status = 'NO_TRADE', completed_at = now() WHERE id = $1", run_id)
+        async with pg_pool.acquire() as conn:
+            async with conn.transaction():
+                rr = await conn.fetchrow("SELECT status,claim_gen,stream_message_id FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
+                if rr and rr["status"] == "RUNNING" and rr["claim_gen"] == my_generation:
+                    owned = True
+                    if consumer and message_ref:
+                        sr, _, mr = message_ref.partition("/")
+                        try:
+                            owned = await is_pel_owner(redis_client, sr, mr, consumer)
+                        except Exception:
+                            owned = False
+                    if owned:
+                        await conn.execute(
+                            "UPDATE debate_runs SET status='NO_TRADE',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2",
+                            run_id, my_generation,
+                        )
         return
-        
+
     try:
         logger.info(f"Phase 1: Exit Debate for {instrument_id}...")
         position = context["current_position"]
@@ -414,6 +580,31 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
 
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
+                # Durable finalization fence: lock the row FOR UPDATE; only the holder of the current
+                # claim_gen may insert its decision and route. A newer claim (takeover) has bumped past us.
+                run_row = await conn.fetchrow(
+                    "SELECT status, stream_message_id, claim_gen FROM debate_runs WHERE id = $1 FOR UPDATE", run_id
+                )
+                if (
+                    run_row is None
+                    or run_row["status"] != "RUNNING"
+                    or run_row["claim_gen"] != my_generation
+                    or (message_ref and run_row["stream_message_id"] != message_ref)
+                ):
+                    logger.warning(
+                        "Exit debate run %s is no longer RUNNING or claimed by a newer generation (status=%s, gen=%s, expected=%s): finalization fenced, aborting route",
+                        run_id, run_row["status"] if run_row else None, run_row["claim_gen"] if run_row else None, my_generation,
+                    )
+                    return
+                if consumer and message_ref:
+                    sr, _, mr = message_ref.partition("/")
+                    try:
+                        if not await is_pel_owner(redis_client, sr, mr, consumer):
+                            logger.warning("Exit debate run %s finalization: %s no longer owns %s in PEL; aborting route", run_id, consumer, message_ref)
+                            return
+                    except Exception:
+                        return
+
                 await conn.execute(
                     """INSERT INTO exit_decisions (id, run_id, instrument_id, recommendation, conviction_score, target_stop_price, reasoning, created_at)
                        VALUES ($1, $2, $3, $4, $5, $6, $7, now())""",
@@ -423,14 +614,29 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
                 # proceeds at L1 (D8). Anything else waits for the operator.
                 final_status, mandate = await route_exit(conn, run_id, instrument_id, recommendation)
                 await conn.execute(
-                    "UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3 WHERE id = $2",
-                    final_status, run_id, mandate.id if mandate else None,
+                    """UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3
+                        WHERE id = $2 AND status = 'RUNNING' AND claim_gen = $4""",
+                    final_status, run_id, mandate.id if mandate else None, my_generation,
                 )
 
     except Exception as e:
         logger.error(f"Exit debate failed for {instrument_id}: {e}")
         async with pg_pool.acquire() as conn:
-            await conn.execute("UPDATE debate_runs SET status = 'FAILED', completed_at = now() WHERE id = $1", run_id)
+            async with conn.transaction():
+                rr = await conn.fetchrow("SELECT status,claim_gen,stream_message_id FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
+                if rr and rr["status"] == "RUNNING" and rr["claim_gen"] == my_generation:
+                    owned = True
+                    if consumer and message_ref:
+                        sr, _, mr = message_ref.partition("/")
+                        try:
+                            owned = await is_pel_owner(redis_client, sr, mr, consumer)
+                        except Exception:
+                            owned = False
+                    if owned:
+                        await conn.execute(
+                            "UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2",
+                            run_id, my_generation,
+                        )
 
 async def main():
     logger.info(f"Starting Cryptonite Debate Worker: {DEBATE_WORKER_NAME}")
@@ -445,33 +651,34 @@ async def main():
         logger.error("AI_TELEMETRY_DATABASE_URL not set: LLM spend is counted in this process only")
     gateway = Gateway(pool=telemetry_pool, redis=redis_client,
                       budget=BudgetGuard(pool=telemetry_pool, redis=redis_client, spend_unknown=telemetry_pool is None))
-    await init_redis_group(redis_client)
+    async def handle(stream: str, msg_id: str, payload: dict, delivered: int) -> None:
+        if not payload.get("instrument_id"):
+            raise PoisonMessage("no instrument_id")
+        # Queue ownership context (B4): the consumer name + the live PEL proof the DB claims re-check
+        # under their row lock. The queue has already proven ownership once before invoking this handler;
+        # each claim proves it again at the moment it takes the run.
+        if stream == DEBATE_QUEUE:
+            await process_debate_trigger(pg_pool, redis_client, payload, gateway, message_ref=f"{stream}/{msg_id}",
+                                         delivered=delivered, consumer=DEBATE_WORKER_NAME)
+        elif stream == EXIT_DEBATE_QUEUE:
+            await process_exit_debate_trigger(pg_pool, redis_client, payload, gateway, message_ref=f"{stream}/{msg_id}",
+                                              delivered=delivered, consumer=DEBATE_WORKER_NAME)
+
+    # At-least-once with reclaim, bounded retries and a DLQ (B4, F-H6): see debate_queue.py
+    queue = DebateQueue(redis_client, DEBATE_WORKER_NAME, handle)
+    await ensure_groups(redis_client)
     try:
-        await redis_client.xgroup_create("stream:exit_debate_queue", DEBATE_WORKER_GROUP, id="0", mkstream=True)
-    except Exception:
-        pass
-    
+        await queue.recover_own()
+    except Exception as e:
+        logger.error(f"Recovering own pending entries failed: {e}")
+
+    next_housekeeping = 0.0
     while True:
         try:
-            messages = await redis_client.xreadgroup(
-                DEBATE_WORKER_GROUP, DEBATE_WORKER_NAME, {DEBATE_QUEUE: ">", "stream:exit_debate_queue": ">"}, count=1, block=5000
-            )
-            
-            if not messages:
-                continue
-                
-            for stream, msgs in messages:
-                for msg_id, payload in msgs:
-                    logger.info(f"Received message {msg_id} from {stream}: {payload}")
-                    try:
-                        if stream == DEBATE_QUEUE:
-                            await process_debate_trigger(pg_pool, redis_client, payload, gateway)
-                        elif stream == "stream:exit_debate_queue":
-                            await process_exit_debate_trigger(pg_pool, redis_client, payload, gateway)
-                        await redis_client.xack(stream, DEBATE_WORKER_GROUP, msg_id)
-                    except Exception as e:
-                        logger.error(f"Error processing message {msg_id}: {e}")
-        
+            if time.monotonic() >= next_housekeeping:
+                next_housekeeping = time.monotonic() + HOUSEKEEPING_S
+                await housekeeping(redis_client, pg_pool, queue)
+            await queue.read(block_ms=5000)
         except Exception as e:
             logger.error(f"Redis consumer error: {e}")
             await asyncio.sleep(2)

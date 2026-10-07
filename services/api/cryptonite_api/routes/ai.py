@@ -3,6 +3,7 @@
 - Mandates: create and loosen only with operator TOTP (they give the AI more room); tighten, pause and
   demote without it. Autonomy level and status never change through an edit, only through the
   autonomy endpoints (promotion needs a passing gate and TOTP) or the risk monitor (halts, demotions).
+  A mandate covers only instruments ingest feeds (D4): an un-fed one is a 422, an unknown universe a 503.
 - Approvals: the operator approves or vetoes a PENDING approval from the web (session + CSRF) or from
   Telegram through the notifier (HMAC-signed, single-use nonce; approving new risk needs TOTP there).
   Decisions are server-side and idempotent (``cryptonite_execution.approvals``).
@@ -22,6 +23,7 @@ from cryptonite_agents.gateway.local_tier import read_published as read_local_ti
 from cryptonite_api import shadow as shadow_report
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.similar import similar_or_none
+from cryptonite_api.universe import require_fed
 from cryptonite_execution.approvals import (
     APPROVAL_COLUMNS,
     ApprovalConflict,
@@ -58,6 +60,7 @@ from cryptonite_schemas.mandate import (
     MandateStatus,
     risk_adding_change,
 )
+from cryptonite_schemas.marks import LiveMark, read_marks, resolve_mark, summarize, unrealized_pnl
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
@@ -210,16 +213,17 @@ def _dec(v: Any) -> str | None:
     return format(d, "f")
 
 
-async def mandate_view(conn, row: Any) -> dict[str, Any]:
+async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None) -> dict[str, Any]:
+    """``marks`` (``read_marks``): positions and exposure at the live mark, else the stored mark flagged
+    stale (B3, F-H3); ``marks_stale`` / ``marks_age_s`` say which."""
     m = Mandate.from_row(row)
     eq = await conn.fetchrow(
         "SELECT equity, hwm, drawdown_pct, ts FROM ai_mandate_equity WHERE mandate_id = $1 ORDER BY ts DESC, id DESC LIMIT 1", m.id)
-    exposure = await conn.fetchval(
-        "SELECT COALESCE(SUM(quantity * current_price), 0) FROM paper_positions WHERE instance_id = $1 AND status = 'OPEN'",
-        m.instance_id)
     positions = await conn.fetch(
         """SELECT instrument_id, side, quantity, entry_price, current_price FROM paper_positions
            WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0 ORDER BY instrument_id""", m.instance_id)
+    views = [resolve_mark(p["instrument_id"], p["current_price"], marks) for p in positions]
+    exposure = sum((Decimal(str(p["quantity"])) * v.price for p, v in zip(positions, views)), Decimal("0"))
     pending = await conn.fetchval("SELECT count(*) FROM ai_approvals WHERE mandate_id = $1 AND status = 'PENDING'", m.id)
     proposal = await conn.fetchrow(
         """SELECT id, to_level, detail, created_at FROM ai_autonomy_events
@@ -238,7 +242,10 @@ async def mandate_view(conn, row: Any) -> dict[str, Any]:
         "drawdown_pct": _dec(eq["drawdown_pct"]) if eq else "0", "equity_ts": eq["ts"].isoformat() if eq else None,
         "exposure_usd": _dec(exposure), "budget_used_pct": str(round(Decimal(_dec(exposure)) / m.capital_budget_usd * 100, 2)),
         "positions": [{"instrument_id": p["instrument_id"], "side": p["side"], "quantity": _dec(p["quantity"]),
-                       "entry_price": _dec(p["entry_price"]), "current_price": _dec(p["current_price"])} for p in positions],
+                       "entry_price": _dec(p["entry_price"]), "current_price": _dec(v.price),
+                       "unrealized_pnl": _dec(unrealized_pnl(p["side"], p["quantity"], p["entry_price"], v.price)),
+                       **v.fields()} for p, v in zip(positions, views)],
+        **summarize(views),
         "pending_approvals": pending,
         "pending_proposal": {"id": proposal["id"], "to_level": proposal["to_level"],
                              "created_at": proposal["created_at"].isoformat()} if proposal else None,
@@ -247,9 +254,10 @@ async def mandate_view(conn, row: Any) -> dict[str, Any]:
 
 @router.get("/mandates")
 async def list_mandates(request: Request, auth: dict = Depends(require_operator)):
+    marks = await read_marks(_redis(request))
     async with request.app.state.pool.acquire() as conn:
         rows = await conn.fetch(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE status <> 'ARCHIVED' ORDER BY created_at")
-        return {"mandates": [await mandate_view(conn, r) for r in rows]}
+        return {"mandates": [await mandate_view(conn, r, marks) for r in rows]}
 
 
 @router.get("/mandates/{mandate_id}")
@@ -258,7 +266,7 @@ async def get_mandate(mandate_id: uuid.UUID, request: Request, auth: dict = Depe
         row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mandate_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Mandate not found")
-        view = await mandate_view(conn, row)
+        view = await mandate_view(conn, row, await read_marks(_redis(request)))
         view["equity_curve"] = [
             {"ts": r["ts"].isoformat(), "equity": _dec(r["equity"]), "hwm": _dec(r["hwm"]),
              "benchmark_price": _dec(r["benchmark_price"])}
@@ -280,6 +288,7 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
     """A new mandate always starts at L1 Copilot; creating one gives the AI room, so it needs TOTP."""
     if req.allow_perps:
         raise HTTPException(status_code=422, detail="MANDATE_PERPS_NOT_ALLOWED: perps can be enabled only after L3 (O1)")
+    await require_fed(request, req.instruments)  # D4: no mandate on an instrument ingest does not feed
     await require_totp(request, auth, req.totp_code)
     try:
         m = Mandate(id=uuid.uuid4(), **req.model_dump(exclude={"totp_code"}))
@@ -301,7 +310,7 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
             await record_event(conn, m.id, "CREATED", to_level=1, reason="created", actor=actor(auth),
                                detail=json.loads(m.model_dump_json()))
             row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
-            view = await mandate_view(conn, row)
+            view = await mandate_view(conn, row, await read_marks(_redis(request)))
     await _publish_updated(request, m.id, "created")
     return view
 
@@ -323,6 +332,8 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 new = Mandate(**{**old.model_dump(), **patch})
             except ValidationError as e:
                 raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
+            if added := sorted(set(new.instruments) - set(old.instruments)):
+                await require_fed(request, added)  # D4: an edit cannot add an un-fed instrument either
             if risk_adding_change(old, new):
                 await require_totp(request, auth, req.totp_code)
             await conn.execute(
@@ -338,7 +349,8 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
             changed = {k: [str(getattr(old, k)), str(getattr(new, k))] for k in patch if getattr(old, k) != getattr(new, k)}
             await record_event(conn, mandate_id, "EDITED", reason=", ".join(changed) or "no change", actor=actor(auth),
                                detail={"changes": changed, "risk_adding": risk_adding_change(old, new)})
-            view = await mandate_view(conn, await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mandate_id))
+            view = await mandate_view(conn, await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mandate_id),
+                                     await read_marks(_redis(request)))
     await _publish_updated(request, mandate_id, "edited")
     return view
 
@@ -360,7 +372,8 @@ async def _transition(request: Request, auth: dict, mandate_id: uuid.UUID, trigg
                 await conn.execute(
                     """UPDATE ai_approvals SET status = 'CANCELLED', decided_via = 'system', decided_at = now()
                        WHERE mandate_id = $1 AND status = 'PENDING' AND action_class = 'ADD_RISK'""", m.id)
-            view = await mandate_view(conn, await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id))
+            view = await mandate_view(conn, await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id),
+                                     await read_marks(_redis(request)))
     await _publish_updated(request, mandate_id, t.kind.lower())
     return view
 

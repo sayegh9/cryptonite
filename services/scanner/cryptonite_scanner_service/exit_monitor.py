@@ -42,6 +42,7 @@ PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 AI_INSTANCE = "AI_DEBATE_WORKER"
 HEARTBEAT_KEY = "exit_monitor:heartbeat"
 QUOTE_STREAM = "cryptonite:stream:ui_quote_tick"
+EXIT_DEBATE_QUEUE_MAXLEN = 10_000  # XADD trims the oldest entries (approximate); was unbounded (D1 / F-H2)
 
 INTERVAL_S = float(os.getenv("EXIT_MONITOR_INTERVAL_S", "30"))
 STOP_LOSS_PCT = float(os.getenv("EXIT_STOP_LOSS_PCT", "5"))
@@ -239,7 +240,8 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
             "INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at) VALUES ($1, $2, 'RUNNING', $3, now())",
             run_id, pos.instrument_id, f"exit_monitor:{action.reason}",
         )
-        await redis_client.xadd("stream:exit_debate_queue", {"instrument_id": pos.instrument_id, "run_id": str(run_id)})
+        await redis_client.xadd("stream:exit_debate_queue", {"instrument_id": pos.instrument_id, "run_id": str(run_id)},
+                                maxlen=EXIT_DEBATE_QUEUE_MAXLEN, approximate=True)
         await redis_client.set(f"debounce:exit:{pos.instrument_id}", "1", ex=DEBATE_DEBOUNCE_S)
         logger.info("Exit debate for %s (%s, pnl %.2f%%)", pos.instrument_id, action.reason, pos.pnl_pct)
     if await redis_client.set(f"exit:alert:{pos.key}:{action.kind}:{action.reason}", "1", nx=True, ex=ALERT_DEBOUNCE_S):
