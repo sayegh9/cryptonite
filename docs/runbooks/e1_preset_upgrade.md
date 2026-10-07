@@ -25,20 +25,24 @@ On the live host, preset rows already exist in the database with legacy state ve
 Follow this exact order during the E1 deployment:
 
 1. **A3 Precondition**: Verify durable backup taken and restore proof verified (see `docs/runbooks/backup.md`).
-2. **Stop Legacy Scanner**: Explicitly stop the currently running scanner container:
+2. **Stop Legacy Workers**: Explicitly stop the currently running legacy scanner, debate worker, and learner containers:
    ```bash
-   docker compose -f infra/docker-compose.yml stop scanner
+   docker compose -f infra/docker-compose.yml stop scanner debate_worker learner
    ```
-3. **Database Migration**: Apply all Alembic migrations up to head using the `test` service container runner (the `api` runtime container does not package `infra/migrations`, while the `test` service mounts the repository workspace and includes the Alembic environment):
+3. **Database Migration**: Apply all Alembic migrations up to head using the canonical handover `test` service runner (the `api` runtime container does not package `infra/migrations`, while the `test` service mounts the repository workspace and includes the Alembic environment):
    ```bash
    docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
    ```
-4. **Ingest Producer Online (B5 Sequencing Contract)**:
-   Rebuild and recreate the ingest producer container using `--no-deps` before debate workers deploy, ensuring `quote:tick:*` snapshot keys are populated in Redis while preserving stateful containers (`postgres`, `redis`):
+4. **Deploy Ingest & New API (B5 Sequencing Contract & Upgraded API Online)**:
+   Rebuild and recreate the ingest producer container (ensuring `quote:tick:*` snapshot keys are populated in Redis for B5) and the new API container (serving the D2 `/presets/upgrade` route) using `--no-deps --force-recreate --build` while strictly preserving stateful containers (`postgres`, `redis`):
    ```bash
-   docker compose -f infra/docker-compose.yml up -d --no-deps --build ingest
+   docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate --build ingest api
    ```
-5. **Capture Pre-Upgrade Snapshot**: Record the active version IDs of the built-in presets before applying upgrades:
+5. **Verify API Health**: Ensure the newly deployed API service is healthy before executing operator upgrade commands:
+   ```bash
+   curl -sS --fail "http://localhost:8000/health"
+   ```
+6. **Capture Pre-Upgrade Snapshot**: Record the active version IDs of the built-in presets before applying upgrades:
    ```bash
    docker compose -f infra/docker-compose.yml exec postgres psql -U cryptonite -d cryptonite -c \
      "SELECT s.slug, s.active_version_id AS pre_upgrade_version_id, v.version_num, v.spec_hash \
@@ -46,8 +50,8 @@ Follow this exact order during the E1 deployment:
       JOIN scan_spec_versions v ON s.active_version_id = v.id \
       WHERE s.slug IN ('macd-momentum-shift', 'bollinger-breakout', 'rsi-oversold-reversal', 'trend-pullback');"
    ```
-6. **Preset Upgrade Sequence**: Execute Section 3 below (Dry-Run Verification -> Apply Upgrade -> Committed Re-Read Verification).
-7. **Worker Services Online**: Once preset upgrade verification passes, rebuild and start the scanner, debate workers, and learner with `--no-deps` to preserve stateful infrastructure:
+7. **Preset Upgrade Sequence**: Execute Section 3 below (Dry-Run Verification -> Apply Upgrade -> Committed Re-Read Verification).
+8. **Start New Scanner & Workers Online**: Once preset upgrade verification passes, rebuild and start the scanner, debate workers, and learner with `--no-deps` to preserve stateful infrastructure:
    ```bash
    docker compose -f infra/docker-compose.yml up -d --no-deps --build scanner debate_worker learner
    ```

@@ -2,7 +2,7 @@ import json
 from typing import Any
 from uuid import UUID, uuid4
 
-from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_auth, require_operator
 from cryptonite_scanner.models import (
     MAX_ACTIVE_SPECS,
     ScanJobRead,
@@ -12,7 +12,7 @@ from cryptonite_scanner.models import (
     compute_spec_hash,
 )
 from cryptonite_scanner.presets import BUILTIN_PRESETS
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/scanners", tags=["scanners"])
@@ -102,8 +102,19 @@ async def ensure_presets_seeded(pool: Any) -> None:
 
 
 @router.get("", dependencies=AUTHED_READ)
-async def list_scanners(request: Request, include_archived: bool = False) -> list[ScanSpecRead]:
-    """List scanner specs with their current active version."""
+async def list_scanners(
+    request: Request,
+    include_archived: bool = False,
+    auth_data: dict = Depends(require_auth),
+) -> list[ScanSpecRead]:
+    """List scanner specs with their current active version.
+
+    By default, returns only active (non-archived) specs.
+    Access to archived specs (include_archived=true) is restricted to operators.
+    """
+    if include_archived and isinstance(auth_data, dict):
+        await require_operator(auth_data)
+
     pool = request.app.state.pool
 
     where_clause = "" if include_archived else "WHERE s.is_archived = false"

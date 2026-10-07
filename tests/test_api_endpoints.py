@@ -4,7 +4,6 @@ from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
 
-
 @pytest.fixture
 async def api_client(operator_auth):
     async with lifespan(app):
@@ -114,3 +113,44 @@ def test_websocket_origin_validation_and_subscription():
             sub_resp = ws.receive_json()
             assert sub_resp["status"] == "subscribed"
             assert sub_resp["instrument_id"] == "BTCUSDT.BINANCE"
+
+
+@pytest.mark.asyncio
+async def test_scanners_include_archived_auth_guard():
+    """Security test: GET /api/v1/scanners?include_archived=true is restricted to operators.
+
+    Unauthenticated -> 401
+    Viewer role -> 403 Forbidden
+    Operator role -> 200 OK
+    """
+    from cryptonite_api.routes.auth import require_auth, require_operator
+
+    async with lifespan(app):
+        # 1. Unauthenticated request without credentials -> 401
+        app.dependency_overrides.clear()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            unauth_resp = await client.get("/api/v1/scanners?include_archived=true")
+            assert unauth_resp.status_code == 401
+
+            # 2. Viewer role: can access active scanners (include_archived=False)
+            app.dependency_overrides[require_auth] = lambda: {"type": "cookie", "role": "viewer", "user_id": "test-viewer"}
+            viewer_active_resp = await client.get("/api/v1/scanners")
+            assert viewer_active_resp.status_code == 200
+
+            # Viewer role: requesting include_archived=true is rejected with 403 Forbidden
+            viewer_archived_resp = await client.get("/api/v1/scanners?include_archived=true")
+            assert viewer_archived_resp.status_code == 403
+            assert "Insufficient privileges" in viewer_archived_resp.json()["detail"]
+
+            # 3. Machine token without operator scope (e.g. readonly) -> 403 Forbidden on include_archived=true
+            app.dependency_overrides[require_auth] = lambda: {"type": "machine_token", "scopes": ["operator:read"]}
+            token_archived_resp = await client.get("/api/v1/scanners?include_archived=true")
+            assert token_archived_resp.status_code == 403
+            assert "Insufficient machine token scopes" in token_archived_resp.json()["detail"]
+
+            # 4. Operator role: requesting include_archived=true succeeds with 200 OK
+            app.dependency_overrides[require_auth] = lambda: {"type": "cookie", "role": "operator", "user_id": "test-operator"}
+            app.dependency_overrides[require_operator] = lambda: {"type": "cookie", "role": "operator", "user_id": "test-operator"}
+            operator_resp = await client.get("/api/v1/scanners?include_archived=true")
+            assert operator_resp.status_code == 200
+        app.dependency_overrides.clear()

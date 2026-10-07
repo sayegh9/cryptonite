@@ -143,6 +143,6 @@ Results across the scanner test suite:
 - `tests/test_scanner_fresh_enqueue.py`: **18 passed** (fresh enqueue, relay lease, bounded queue).
 - `tests/test_scanner_closed_bar_guard.py`: **5 passed** (closed bar enforcement, future candidate filtering).
 - `tests/test_scanner_engine.py`: **1 passed** (scanner engine baseline candidate generation).
-- `tests/test_api_endpoints.py`: **5 passed** (API health, ready, instruments, scanners CRUD/run enqueue, bars).
-- **Total:** **50 passed**, **0 failed**.
+- `tests/test_api_endpoints.py`: **6 passed** (API health, ready, instruments, scanners CRUD/run enqueue, bars, scanners include_archived auth guard).
+- **Total:** **51 passed**, **0 failed**.
 - **Code hygiene:** `uvx ruff check` clean; `git diff --check` clean (0 trailing whitespace issues).
