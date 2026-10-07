@@ -71,7 +71,7 @@ test.describe("Operator → Enforced limits", () => {
     await form.getByLabel("Reason").fill("tighten the order cap");
     await expect(form.getByTestId("risk-limits-totp")).toHaveCount(0);
     await form.getByRole("button", { name: "Save" }).click();
-    await expect(form.getByTestId("risk-limits-saved")).toContainText("within 60 s");
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("Not yet enforced");
     expect(sent[0]).toMatchObject({ max_daily_loss_pct: "3", max_order_equity_pct: "10", cross_mandate_exposure_pct: null, reason: "tighten the order cap" });
     expect(sent[0]).not.toHaveProperty("totp_code");
 

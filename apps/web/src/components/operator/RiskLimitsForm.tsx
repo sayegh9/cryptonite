@@ -93,7 +93,13 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
         reason,
         ...(needsTotp ? { totp_code: totp } : {}),
       });
-      setSaved(`Saved. The orchestrator applies it within ${res.applies_within_s ?? 60} s.`);
+      const enforced = (res as any).effective_version ?? 0;
+      const savedVer = res.override_version ?? 0;
+      if (enforced === savedVer && savedVer > 0) {
+        setSaved(`Enforced since ${(res as any).enforced_at ? new Date((res as any).enforced_at).toLocaleString() : new Date().toLocaleString()}.`);
+      } else {
+        setSaved(`Saved. Not yet enforced (orchestrator v${enforced}, override v${savedVer}).`);
+      }
       setTotp("");
       setReason("");
       load();

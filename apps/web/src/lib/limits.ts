@@ -19,6 +19,8 @@ export interface EnforcedPaperLimits {
 export interface EnforcedLimits {
   as_of: string | null;
   paper: EnforcedPaperLimits | null;
+  effective_version?: number;
+  enforced_at?: string | null;
 }
 
 /** The orchestrator republishes every 60 s; older than this the values are "delayed". */
@@ -32,7 +34,7 @@ export type LimitsState =
 export async function fetchEnforcedLimits(): Promise<EnforcedLimits> {
   const raw = await fetchApi("/control/enforced-limits");
   const paper = raw && typeof raw.paper === "object" && raw.paper !== null ? (raw.paper as EnforcedPaperLimits) : null;
-  return { as_of: typeof raw?.as_of === "string" ? raw.as_of : null, paper };
+  return { as_of: typeof raw?.as_of === "string" ? raw.as_of : null, paper, effective_version: typeof raw?.effective_version === "number" ? raw.effective_version : 0, enforced_at: typeof raw?.enforced_at === "string" ? raw.enforced_at : null };
 }
 
 export function useEnforcedLimits(pollMs = 60_000): LimitsState {
@@ -80,6 +82,7 @@ export interface RiskLimitsConfig {
   updated_by: string | null;
   updated_at: string | null;
   reason: string | null;
+  override_version?: number;
 }
 
 export interface RiskLimitsUpdate extends LimitValues {
