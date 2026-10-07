@@ -1246,3 +1246,104 @@ async def test_operator_script_upgrade_presets_dry_run_and_apply(db_url, admin):
         assert new_row["version_num"] >= 2
     finally:
         await pool.close()
+
+
+async def test_preset_upgrade_handles_archived_builtin_preset_without_false_failure(db_url, admin):
+    """Archived built-in presets are upgraded to target crossover versions while preserving
+    archived state (is_archived = true). Operator script DB re-read and HTTP API verification
+    verify the upgraded spec without false failure and do not count it against the active spec limit.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from cryptonite_api.routes.scanners import (
+        PRESET_PREVIOUS_HASHES,
+        ensure_presets_seeded,
+        list_scanners,
+        upgrade_presets,
+    )
+    from cryptonite_scanner.presets import PRESET_BOLLINGER_BREAKOUT
+    from starlette.requests import Request
+
+    # 1. Load standalone operator script
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "upgrade_scanner_presets.py"
+    spec = importlib.util.spec_from_file_location("upgrade_scanner_presets", script_path)
+    script_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script_mod)
+    run_direct_db = script_mod.run_direct_db
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        await ensure_presets_seeded(pool)
+
+        # 2. Archive bollinger-breakout and reset to prior hash
+        bb_spec = await pool.fetchrow(
+            "SELECT id, active_version_id FROM scan_specs WHERE slug = $1;",
+            PRESET_BOLLINGER_BREAKOUT.slug,
+        )
+        spec_id = bb_spec["id"]
+        old_hash = next(iter(PRESET_PREVIOUS_HASHES[PRESET_BOLLINGER_BREAKOUT.slug]))
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
+            old_hash,
+            bb_spec["active_version_id"],
+        )
+        await pool.execute(
+            "UPDATE scan_specs SET is_archived = true WHERE id = $1;",
+            spec_id,
+        )
+    finally:
+        await pool.close()
+
+    # 3. Direct DB mode: run script in apply mode
+    ret_apply = await run_direct_db(db_url, apply=True)
+    assert ret_apply == 0, "run_direct_db must succeed without false failure on archived preset"
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        # Verify DB row has new crossover hash, bumped version, and is_archived = true
+        updated_row = await pool.fetchrow(
+            """
+            SELECT s.is_archived, s.active_version_id, v.spec_hash, v.version_num, v.rules
+            FROM scan_specs s
+            JOIN scan_spec_versions v ON s.active_version_id = v.id
+            WHERE s.slug = $1;
+            """,
+            PRESET_BOLLINGER_BREAKOUT.slug,
+        )
+        assert updated_row["is_archived"] is True
+        assert updated_row["spec_hash"] != old_hash
+        assert updated_row["version_num"] >= 2
+        rules = json.loads(updated_row["rules"]) if isinstance(updated_row["rules"], str) else updated_row["rules"]
+        assert any(cond.get("operator") in ["cross_above", "crosses_above"] for rg in rules for cond in rg.get("conditions", []))
+
+        # Verify active count query does not count archived spec
+        active_count = await pool.fetchval(
+            "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
+        )
+        # BUILTIN_PRESETS has 5 specs total; 1 is archived, so exactly 4 are active
+        assert active_count == 4
+
+        # 4. HTTP API verification: test GET /api/v1/scanners with include_archived
+        scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
+        req = Request(scope)
+
+        # Default GET /api/v1/scanners (include_archived=False) omits archived preset
+        active_scanners = await list_scanners(req, include_archived=False)
+        assert not any(s.slug == PRESET_BOLLINGER_BREAKOUT.slug for s in active_scanners)
+
+        # GET /api/v1/scanners?include_archived=true includes archived preset with active_version
+        all_scanners = await list_scanners(req, include_archived=True)
+        archived_item = next((s for s in all_scanners if s.slug == PRESET_BOLLINGER_BREAKOUT.slug), None)
+        assert archived_item is not None
+        assert archived_item.is_archived is True
+        assert archived_item.active_version is not None
+        assert archived_item.active_version.spec_hash == updated_row["spec_hash"]
+
+        # 5. HTTP upgrade endpoint test on archived preset
+        upgrade_resp = await upgrade_presets(req, dry_run=False)
+        bb_item = next(i for i in upgrade_resp.items if i.slug == PRESET_BOLLINGER_BREAKOUT.slug)
+        assert bb_item.action == "already_current"
+        assert bb_item.target_hash == updated_row["spec_hash"]
+    finally:
+        await pool.close()

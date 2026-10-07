@@ -188,7 +188,6 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
                        v.version_num, v.spec_hash, v.rules
                 FROM scan_specs s
                 LEFT JOIN scan_spec_versions v ON s.active_version_id = v.id
-                WHERE s.is_archived = false
                 ORDER BY s.slug ASC;
                 """
             )
@@ -223,7 +222,7 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
                     if not has_crossover:
                         mismatches.append(f"{slug}: active rules missing crossover condition with lookback >= 1")
 
-            re_read_active_count = len([r for r in re_read_rows if r["active_version_id"] is not None])
+            re_read_active_count = len([r for r in re_read_rows if r["active_version_id"] is not None and not r["is_archived"]])
             if re_read_active_count > MAX_ACTIVE_SPECS:
                 mismatches.append(f"Active specs cap exceeded: {re_read_active_count} > {MAX_ACTIVE_SPECS}")
 
@@ -272,8 +271,8 @@ async def run_http_api(api_url: str, token: str | None, apply: bool) -> int:
                 expected_upgrades[item["slug"]] = item["target_hash"]
 
         if apply:
-            print("\n[*] Running committed re-read verification via GET /api/v1/scanners...")
-            list_resp = await client.get(f"{api_url.rstrip('/')}/api/v1/scanners", headers=headers)
+            print("\n[*] Running committed re-read verification via GET /api/v1/scanners?include_archived=true...")
+            list_resp = await client.get(f"{api_url.rstrip('/')}/api/v1/scanners?include_archived=true", headers=headers)
             if list_resp.status_code != 200:
                 print(f"[!] Failed to re-read scanners ({list_resp.status_code}): {list_resp.text}", file=sys.stderr)
                 return 1
@@ -306,6 +305,11 @@ async def run_http_api(api_url: str, token: str | None, apply: bool) -> int:
                     )
                     if not has_crossover:
                         mismatches.append(f"{slug}: active rules missing crossover condition with lookback >= 1")
+
+            re_read_active_count = len([s for s in scanners if s.get("active_version") is not None and not s.get("is_archived")])
+            if re_read_active_count > MAX_ACTIVE_SPECS:
+                mismatches.append(f"Active specs cap exceeded: {re_read_active_count} > {MAX_ACTIVE_SPECS}")
+
             if mismatches:
                 print("\n[!] ERROR: Committed re-read verification FAILED:", file=sys.stderr)
                 for m in mismatches:

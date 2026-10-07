@@ -29,14 +29,14 @@ Follow this exact order during the E1 deployment:
    ```bash
    docker compose -f infra/docker-compose.yml stop scanner
    ```
-3. **Database Migration**: Apply all Alembic migrations up to head using the tested migration configuration path:
+3. **Database Migration**: Apply all Alembic migrations up to head using the `test` service container runner (the `api` runtime container does not package `infra/migrations`, while the `test` service mounts the repository workspace and includes the Alembic environment):
    ```bash
-   docker compose -f infra/docker-compose.yml exec api alembic -c infra/migrations/alembic.ini upgrade head
+   docker compose -f infra/docker-compose.yml run --rm test alembic -c infra/migrations/alembic.ini upgrade head
    ```
 4. **Ingest Producer Online (B5 Sequencing Contract)**:
-   Rebuild and recreate the ingest producer container before debate workers deploy, ensuring `quote:tick:*` snapshot keys are populated in Redis:
+   Rebuild and recreate the ingest producer container using `--no-deps` before debate workers deploy, ensuring `quote:tick:*` snapshot keys are populated in Redis while preserving stateful containers (`postgres`, `redis`):
    ```bash
-   docker compose -f infra/docker-compose.yml up -d --build ingest
+   docker compose -f infra/docker-compose.yml up -d --no-deps --build ingest
    ```
 5. **Capture Pre-Upgrade Snapshot**: Record the active version IDs of the built-in presets before applying upgrades:
    ```bash
@@ -47,9 +47,9 @@ Follow this exact order during the E1 deployment:
       WHERE s.slug IN ('macd-momentum-shift', 'bollinger-breakout', 'rsi-oversold-reversal', 'trend-pullback');"
    ```
 6. **Preset Upgrade Sequence**: Execute Section 3 below (Dry-Run Verification -> Apply Upgrade -> Committed Re-Read Verification).
-7. **Worker Services Online**: Once preset upgrade verification passes, rebuild and start the scanner, debate workers, and learner:
+7. **Worker Services Online**: Once preset upgrade verification passes, rebuild and start the scanner, debate workers, and learner with `--no-deps` to preserve stateful infrastructure:
    ```bash
-   docker compose -f infra/docker-compose.yml up -d --build scanner debate_worker learner
+   docker compose -f infra/docker-compose.yml up -d --no-deps --build scanner debate_worker learner
    ```
 
 ---
@@ -60,14 +60,14 @@ Upgrades can be performed either via the authenticated REST API or via the dedic
 
 ### Method A: Via HTTP API (Recommended)
 
-Requires an Operator authorization token (`OPERATOR_TOKEN`). Note: `--fail-with-body` ensures 4xx/5xx responses fail visibly rather than outputting misleading JSON into `jq`.
+Requires an Operator authorization token (`OPERATOR_TOKEN`). Note: `( set -o pipefail; curl ... | jq . )` ensures that non-2xx failures (caught by `--fail-with-body`) fail the pipeline visibly with a non-zero exit code rather than succeeding silently due to `jq`.
 
 #### Step 3.1: Dry-Run Verification
 Simulate the upgrade to inspect planned actions without mutating the database:
 
 ```bash
-curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=true" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq .
+( set -o pipefail; curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=true" \
+  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq . )
 ```
 
 **Expected JSON Response:**
@@ -118,8 +118,8 @@ Verify that:
 Execute the upgrade against the active database:
 
 ```bash
-curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=false" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq .
+( set -o pipefail; curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=false" \
+  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq . )
 ```
 
 **Expected JSON Response:**
@@ -127,11 +127,11 @@ curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets
 - `dry_run: false`.
 
 #### Step 3.3: Re-read Verification
-Verify that the committed active versions now reflect the new crossover rules:
+Verify that the committed active versions now reflect the new crossover rules (including archived presets):
 
 ```bash
-curl -sS --fail-with-body "http://localhost:8000/api/v1/scanners" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq '.[] | {slug: .slug, version: .active_version.version_num, hash: .active_version.spec_hash, rules: .active_version.rules}'
+( set -o pipefail; curl -sS --fail-with-body "http://localhost:8000/api/v1/scanners?include_archived=true" \
+  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq '.[] | {slug: .slug, is_archived: .is_archived, version: .active_version.version_num, hash: .active_version.spec_hash, rules: .active_version.rules}' )
 ```
 
 Verify that:
@@ -182,8 +182,8 @@ WHERE slug = '<preset-slug>' AND active_version_id = '<applied_version_id>';
 
 After executing rollback SQL, verify active specs with:
 ```bash
-curl -sS --fail-with-body "http://localhost:8000/api/v1/scanners" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq .
+( set -o pipefail; curl -sS --fail-with-body "http://localhost:8000/api/v1/scanners?include_archived=true" \
+  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq . )
 ```
 
 ---

@@ -102,18 +102,19 @@ async def ensure_presets_seeded(pool: Any) -> None:
 
 
 @router.get("", dependencies=AUTHED_READ)
-async def list_scanners(request: Request) -> list[ScanSpecRead]:
-    """List active scanner specs with their current active version."""
+async def list_scanners(request: Request, include_archived: bool = False) -> list[ScanSpecRead]:
+    """List scanner specs with their current active version."""
     pool = request.app.state.pool
 
+    where_clause = "" if include_archived else "WHERE s.is_archived = false"
     rows = await pool.fetch(
-        """
+        f"""
         SELECT s.id, s.slug, s.name, s.description, s.active_version_id, s.is_archived,
                s.created_at, s.updated_at,
                v.version_num, v.spec_hash, v.universe, v.rules, v.created_at as version_created_at
         FROM scan_specs s
         LEFT JOIN scan_spec_versions v ON s.active_version_id = v.id
-        WHERE s.is_archived = false
+        {where_clause}
         ORDER BY s.created_at ASC;
         """
     )

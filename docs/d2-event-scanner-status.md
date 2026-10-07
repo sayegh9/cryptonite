@@ -118,7 +118,7 @@ REDIS_URL="redis://:...@127.0.0.1:6379/15" uv run --extra dev pytest tests/test_
 ```
 
 Results across the scanner test suite:
-- `tests/test_scanner_events_d2.py`: **20 passed**
+- `tests/test_scanner_events_d2.py`: **21 passed**
   - `test_rule_condition_lookback_validation`: Enforces lookback >= 1, rejects negative, defaults to 1.
   - `test_deterministic_crossover_produces_one_candidate_not_continuation`: Crossover event produces exactly 1 candidate across 250 trending bars.
   - `test_deterministic_cross_below_produces_one_candidate`: Cross-below event semantics verified.
@@ -139,9 +139,10 @@ Results across the scanner test suite:
   - `test_ordering_preset_upgrade_then_user_edit_preserves_custom_edit`: Deterministic ordering 2: preset upgrade commits first; subsequent user edit appends new version and updates active version.
   - `test_concurrent_race_conditional_update_guard_preserves_custom_edit`: Deterministic ordering 3: simulates race where upgrade update encounters changed active version id, evaluates to `UPDATE 0`, and safely falls back to preserving user customization.
   - `test_operator_script_upgrade_presets_dry_run_and_apply`: Standalone operator script `scripts/upgrade_scanner_presets.py` verified in dry-run mode (zero mutations) and apply mode (commits target crossover versions, verifies committed state, and prints conditional rollback SQL).
+  - `test_preset_upgrade_handles_archived_builtin_preset_without_false_failure`: Archived built-in presets upgraded to crossover versions preserving archived state; DB and HTTP verifications succeed without false failure and do not count against active cap.
 - `tests/test_scanner_fresh_enqueue.py`: **18 passed** (fresh enqueue, relay lease, bounded queue).
 - `tests/test_scanner_closed_bar_guard.py`: **5 passed** (closed bar enforcement, future candidate filtering).
 - `tests/test_scanner_engine.py`: **1 passed** (scanner engine baseline candidate generation).
 - `tests/test_api_endpoints.py`: **5 passed** (API health, ready, instruments, scanners CRUD/run enqueue, bars).
-- **Total:** **49 passed**, **0 failed**.
+- **Total:** **50 passed**, **0 failed**.
 - **Code hygiene:** `uvx ruff check` clean; `git diff --check` clean (0 trailing whitespace issues).
