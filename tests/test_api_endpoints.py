@@ -1,3 +1,6 @@
+import hashlib
+from uuid import uuid4
+
 import pytest
 from cryptonite_api.main import app, lifespan
 from httpx import ASGITransport, AsyncClient
@@ -154,3 +157,124 @@ async def test_scanners_include_archived_auth_guard():
             operator_resp = await client.get("/api/v1/scanners?include_archived=true")
             assert operator_resp.status_code == 200
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_operator_machine_token_real_header_and_db_row():
+    """End-to-end ASGI test proving real X-API-Token header and database token rows.
+
+    Proves without dependency overrides:
+    - Authorization: Bearer is rejected with 401 Unauthorized (proves X-API-Token requirement)
+    - Missing or invalid X-API-Token returns 401 Unauthorized
+    - Non-operator machine token (scopes: ['viewer']) returns 403 Forbidden on dry-run, apply, and include_archived
+    - Operator-scoped machine token (scopes: ['operator']) succeeds with 200 OK on:
+      * POST /api/v1/scanners/presets/upgrade?dry_run=true
+      * POST /api/v1/scanners/presets/upgrade?dry_run=false
+      * GET /api/v1/scanners?include_archived=true
+    """
+    app.dependency_overrides.clear()
+
+    async with lifespan(app):
+        pool = app.state.pool
+
+        # Generate unique temporary tokens for this test run (no secrets committed)
+        op_raw_token = f"tok_op_{uuid4().hex}"
+        op_hash = hashlib.sha256(op_raw_token.encode("utf-8")).hexdigest()
+
+        viewer_raw_token = f"tok_viewer_{uuid4().hex}"
+        viewer_hash = hashlib.sha256(viewer_raw_token.encode("utf-8")).hexdigest()
+
+        try:
+            # Seed tokens directly in machine_api_tokens table
+            await pool.execute(
+                """
+                INSERT INTO machine_api_tokens (token_hash, name, scopes, is_active)
+                VALUES ($1, $2, $3, true), ($4, $5, $6, true)
+                """,
+                op_hash,
+                "e2e-test-operator-token",
+                ["operator"],
+                viewer_hash,
+                "e2e-test-viewer-token",
+                ["viewer"],
+            )
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                # 1. Bearer header is NOT recognized -> 401 Unauthorized
+                bearer_resp = await client.post(
+                    "/api/v1/scanners/presets/upgrade?dry_run=true",
+                    headers={"Authorization": f"Bearer {op_raw_token}"},
+                )
+                assert bearer_resp.status_code == 401
+                assert "Authentication required" in bearer_resp.json()["detail"]
+
+                # 2. Missing token header -> 401 Unauthorized
+                no_token_resp = await client.post("/api/v1/scanners/presets/upgrade?dry_run=true")
+                assert no_token_resp.status_code == 401
+
+                # 3. Invalid token -> 401 Unauthorized
+                bad_token_resp = await client.post(
+                    "/api/v1/scanners/presets/upgrade?dry_run=true",
+                    headers={"X-API-Token": "invalid_nonexistent_token"},
+                )
+                assert bad_token_resp.status_code == 401
+
+                # 4. Viewer token (lacks operator scope):
+                # Active scanner listing succeeds
+                v_list_resp = await client.get(
+                    "/api/v1/scanners",
+                    headers={"X-API-Token": viewer_raw_token},
+                )
+                assert v_list_resp.status_code == 200
+
+                # Archived scanners query rejected with 403 Forbidden
+                v_arch_resp = await client.get(
+                    "/api/v1/scanners?include_archived=true",
+                    headers={"X-API-Token": viewer_raw_token},
+                )
+                assert v_arch_resp.status_code == 403
+                assert "Insufficient machine token scopes" in v_arch_resp.json()["detail"]
+
+                # Preset upgrade dry-run rejected with 403 Forbidden
+                v_dry_resp = await client.post(
+                    "/api/v1/scanners/presets/upgrade?dry_run=true",
+                    headers={"X-API-Token": viewer_raw_token},
+                )
+                assert v_dry_resp.status_code == 403
+
+                # 5. Operator token (has operator scope):
+                # Dry-run succeeds with 200 OK
+                op_dry_resp = await client.post(
+                    "/api/v1/scanners/presets/upgrade?dry_run=true",
+                    headers={"X-API-Token": op_raw_token},
+                )
+                assert op_dry_resp.status_code == 200
+                dry_data = op_dry_resp.json()
+                assert dry_data["dry_run"] is True
+                assert "items" in dry_data
+
+                # Apply upgrade succeeds with 200 OK
+                op_apply_resp = await client.post(
+                    "/api/v1/scanners/presets/upgrade?dry_run=false",
+                    headers={"X-API-Token": op_raw_token},
+                )
+                assert op_apply_resp.status_code == 200
+                apply_data = op_apply_resp.json()
+                assert apply_data["dry_run"] is False
+
+                # Archived scanners GET succeeds with 200 OK
+                op_arch_resp = await client.get(
+                    "/api/v1/scanners?include_archived=true",
+                    headers={"X-API-Token": op_raw_token},
+                )
+                assert op_arch_resp.status_code == 200
+                arch_data = op_arch_resp.json()
+                assert isinstance(arch_data, list)
+                assert len(arch_data) >= 1
+        finally:
+            await pool.execute(
+                "DELETE FROM machine_api_tokens WHERE token_hash IN ($1, $2)",
+                op_hash,
+                viewer_hash,
+            )
+            app.dependency_overrides.clear()

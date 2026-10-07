@@ -1332,8 +1332,8 @@ async def test_preset_upgrade_handles_archived_builtin_preset_without_false_fail
         active_scanners = await list_scanners(req, include_archived=False)
         assert not any(s.slug == PRESET_BOLLINGER_BREAKOUT.slug for s in active_scanners)
 
-        # GET /api/v1/scanners?include_archived=true includes archived preset with active_version
-        all_scanners = await list_scanners(req, include_archived=True)
+        # GET /api/v1/scanners?include_archived=true includes archived preset with active_version (requires operator auth)
+        all_scanners = await list_scanners(req, include_archived=True, auth_data={"type": "cookie", "role": "operator"})
         archived_item = next((s for s in all_scanners if s.slug == PRESET_BOLLINGER_BREAKOUT.slug), None)
         assert archived_item is not None
         assert archived_item.is_archived is True

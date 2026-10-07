@@ -112,7 +112,7 @@ async def list_scanners(
     By default, returns only active (non-archived) specs.
     Access to archived specs (include_archived=true) is restricted to operators.
     """
-    if include_archived and isinstance(auth_data, dict):
+    if include_archived:
         await require_operator(auth_data)
 
     pool = request.app.state.pool

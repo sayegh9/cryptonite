@@ -255,7 +255,7 @@ async def run_http_api(api_url: str, token: str | None, apply: bool) -> int:
     url = f"{api_url.rstrip('/')}/api/v1/scanners/presets/upgrade?dry_run={'true' if dry_run else 'false'}"
     headers = {}
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        headers["X-API-Token"] = token
 
     print(f"[*] Calling API endpoint: {url}")
     async with httpx.AsyncClient() as client:
@@ -326,7 +326,7 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true", help="Apply modifications to database (default is dry-run)")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL"), help="PostgreSQL connection URL")
     parser.add_argument("--api-url", default=os.getenv("API_URL"), help="HTTP API URL (e.g. http://localhost:8000)")
-    parser.add_argument("--token", default=os.getenv("OPERATOR_TOKEN"), help="Bearer token for API auth")
+    parser.add_argument("--token", default=os.getenv("OPERATOR_TOKEN"), help="Operator machine token for X-API-Token header (requires 'operator' scope)")
 
     args = parser.parse_args()
 

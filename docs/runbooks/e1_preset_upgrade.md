@@ -64,14 +64,16 @@ Upgrades can be performed either via the authenticated REST API or via the dedic
 
 ### Method A: Via HTTP API (Recommended)
 
-Requires an Operator authorization token (`OPERATOR_TOKEN`). Note: `( set -o pipefail; curl ... | jq . )` ensures that non-2xx failures (caught by `--fail-with-body`) fail the pipeline visibly with a non-zero exit code rather than succeeding silently due to `jq`.
+Requires an Operator-scoped machine API token (`OPERATOR_TOKEN`) passed via the `X-API-Token` header. Note that the Cryptonite API authenticates machine tokens exclusively via the `X-API-Token` header (validated against `machine_api_tokens` in PostgreSQL with `'operator'` present in `scopes`), while interactive browser sessions use session cookies (`cryptonite_session`). The `Authorization: Bearer` header is not accepted.
+
+Note: `( set -o pipefail; curl ... | jq . )` ensures that non-2xx failures (caught by `--fail-with-body`) fail the pipeline visibly with a non-zero exit code rather than succeeding silently due to `jq`.
 
 #### Step 3.1: Dry-Run Verification
 Simulate the upgrade to inspect planned actions without mutating the database:
 
 ```bash
 ( set -o pipefail; curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=true" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq . )
+  -H "X-API-Token: ${OPERATOR_TOKEN}" | jq . )
 ```
 
 **Expected JSON Response:**
@@ -123,7 +125,7 @@ Execute the upgrade against the active database:
 
 ```bash
 ( set -o pipefail; curl -sS --fail-with-body -X POST "http://localhost:8000/api/v1/scanners/presets/upgrade?dry_run=false" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq . )
+  -H "X-API-Token: ${OPERATOR_TOKEN}" | jq . )
 ```
 
 **Expected JSON Response:**
@@ -135,7 +137,7 @@ Verify that the committed active versions now reflect the new crossover rules (i
 
 ```bash
 ( set -o pipefail; curl -sS --fail-with-body "http://localhost:8000/api/v1/scanners?include_archived=true" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq '.[] | {slug: .slug, is_archived: .is_archived, version: .active_version.version_num, hash: .active_version.spec_hash, rules: .active_version.rules}' )
+  -H "X-API-Token: ${OPERATOR_TOKEN}" | jq '.[] | {slug: .slug, is_archived: .is_archived, version: .active_version.version_num, hash: .active_version.spec_hash, rules: .active_version.rules}' )
 ```
 
 Verify that:
@@ -187,7 +189,7 @@ WHERE slug = '<preset-slug>' AND active_version_id = '<applied_version_id>';
 After executing rollback SQL, verify active specs with:
 ```bash
 ( set -o pipefail; curl -sS --fail-with-body "http://localhost:8000/api/v1/scanners?include_archived=true" \
-  -H "Authorization: Bearer ${OPERATOR_TOKEN}" | jq . )
+  -H "X-API-Token: ${OPERATOR_TOKEN}" | jq . )
 ```
 
 ---
