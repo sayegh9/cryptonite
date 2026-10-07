@@ -9,10 +9,10 @@ Create Date: 2026-10-06 10:00:00.000000
 or ``WORKER_LOST`` (the message was redelivered after the worker that started the run died). NULL for
 every other row, including runs that failed with an error in the worker.
 
-``stream_message_id`` (``<stream>/<entry id>``) is the Redis stream entry an entry debate was started
+``stream_message_id`` (``<stream>/<entry id>``) is the Redis stream entry a debate was started
 from. The partial unique index makes redelivery idempotent: a reclaimed message can never create a
-second run for the same candidate. NULL for exit debates (their run row is created by the producer and
-carried in the payload), operator rows and every row from before this migration.
+second run for the same candidate or exit trigger. Populated for entry and exit debates on claim/insert;
+NULL for operator rows and legacy rows from before this migration.
 
 ``claim_gen`` (B4) is the attempt generation of the run. A claim locks the row FOR UPDATE, proves the
 current Redis PEL ownership of the message inside that transaction, then bumps the generation; every

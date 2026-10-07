@@ -680,7 +680,7 @@ async def test_recover_apply_refuses_same_owner_renewed_after_snapshot(r, pool, 
     assert await r.xrange(dq.DLQ_STREAM) == []
 
 
-async def test_no_db_claim_takeover_old_attempt_writes_nothing(debate_main, pool, monkeypatch):
+async def test_takeover_with_new_db_claim_old_attempt_writes_nothing(debate_main, pool, monkeypatch):
     ref = "stream:exit_debate_queue/1500-0"
     run_id = await insert_run(pool, "RUNNING", 1, stream_message_id=ref, claim_gen=1)
 
@@ -703,7 +703,7 @@ async def test_no_db_claim_takeover_old_attempt_writes_nothing(debate_main, pool
             pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-old"))
         await asyncio.wait_for(claimed.wait(), 5)
         # New owner takes over: reclaims message in PEL (different consumer)
-        async def is_owner_new(r,s,m,c):
+        async def is_owner_new(r, s, m, c):
             return c == "debate-new"
         monkeypatch.setattr(debate_main, "is_pel_owner", is_owner_new)
         await asyncio.wait_for(debate_main.process_exit_debate_trigger(
@@ -715,3 +715,190 @@ async def test_no_db_claim_takeover_old_attempt_writes_nothing(debate_main, pool
     assert run["status"] not in ("RUNNING",)
     assert run["claim_gen"] >= 2  # bumped by takeover(s)
     assert await pool.fetchval("SELECT count(*) FROM exit_decisions WHERE run_id = $1", run_id) == 1
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "no_position"])
+async def test_no_db_claim_takeover_old_attempt_writes_nothing(debate_main, pool, monkeypatch, outcome):
+    """Old acquires claim, pauses context; change only mocked Redis owner (NO new DB handler);
+    release old; assert SAME gen + RUNNING + zero exit_decisions + no route."""
+    ref = f"stream:exit_debate_queue/{uuid.uuid4().int % 10**13}-0"
+    run_id = await insert_run(pool, "RUNNING", 1, stream_message_id=ref, claim_gen=1)
+
+    claimed, release = asyncio.Event(), asyncio.Event()
+
+    async def gated_context(self, instrument_id):
+        claimed.set()
+        await release.wait()
+        if outcome == "no_position":
+            return {"current_position": None}
+        return dict(POSITION)
+
+    monkeypatch.setattr(debate_main.AntiCorruptionLayer, "get_instrument_context", gated_context)
+    if outcome == "failure":
+        counter = {"n": 0}
+        model = exit_decision_model(fail_from=1, counter=counter)
+    else:
+        model = exit_decision_model()
+    payload = {"instrument_id": INSTRUMENT, "run_id": str(run_id)}
+
+    # Initially debate-old is the PEL owner, so its claim succeeds and bumps claim_gen to 2
+    async def is_owner_initial(r, s, m, c):
+        return c == "debate-old"
+    monkeypatch.setattr(debate_main, "is_pel_owner", is_owner_initial)
+
+    with override_model(FLASH, model), override_model(PRO, model):
+        old = asyncio.create_task(debate_main.process_exit_debate_trigger(
+            pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-old"))
+        await asyncio.wait_for(claimed.wait(), 5)
+
+        # While old is paused in context, change ONLY mocked Redis owner (NO new DB handler!)
+        async def is_owner_lost(r, s, m, c):
+            return False  # debate-old lost Redis PEL ownership
+        monkeypatch.setattr(debate_main, "is_pel_owner", is_owner_lost)
+
+        release.set()
+        await asyncio.wait_for(old, 10)
+
+    run = await pool.fetchrow("SELECT status, claim_gen, mandate_id FROM debate_runs WHERE id = $1", run_id)
+    assert run["claim_gen"] == 2  # SAME gen as acquired by old (no new DB handler bumped it)
+    assert run["status"] == "RUNNING"  # None of success, failure, or no-position wrote terminal state
+    assert run["mandate_id"] is None
+    assert await pool.fetchval("SELECT count(*) FROM exit_decisions WHERE run_id = $1", run_id) == 0
+
+
+async def test_direct_invalid_exit_updates_to_failed(debate_main, pool, monkeypatch):
+    """Direct/trusted exit execution (consumer=None, message_ref=None) updates to FAILED on error."""
+    run_id = await insert_run(pool, "RUNNING", 1)
+    payload = {"instrument_id": INSTRUMENT, "run_id": str(run_id)}
+
+    context = {"current_position": {"instrument_id": INSTRUMENT, "quantity": 1.0}}
+    monkeypatch.setattr(debate_main.AntiCorruptionLayer, "get_instrument_context", AsyncMock(return_value=context))
+    counter = {"n": 0}
+    model = exit_decision_model(fail_from=1, counter=counter)
+    with override_model(FLASH, model), override_model(PRO, model):
+        await debate_main.process_exit_debate_trigger(
+            pool, redis_double(), payload, Gateway(), consumer=None, message_ref=None
+        )
+    run = await pool.fetchrow("SELECT status, claim_gen, completed_at FROM debate_runs WHERE id = $1", run_id)
+    assert run["status"] == "FAILED"
+    assert run["completed_at"] is not None
+
+
+async def test_entry_stale_before_insert_refused(debate_main, pool, monkeypatch):
+    """Entry fresh INSERT checks current PEL ownership inside transaction; if lost during context
+    fetch, releases cooldown and returns without creating a run row."""
+    ref = f"stream:debate_queue/{uuid.uuid4().int % 10**13}-0"
+    candidate_id = uuid.uuid4()
+    candidate_payload = json.dumps({"candidate_id": str(candidate_id), "instrument_id": INSTRUMENT})
+    payload = {
+        "instrument_id": INSTRUMENT,
+        "trigger_source": "scanner",
+        "candidate_payload": candidate_payload,
+    }
+
+    cooldown_released = asyncio.Event()
+
+    async def fake_gate(*args, **kwargs):
+        class Gate:
+            allowed = True
+            cooldown_key = f"cooldown:{INSTRUMENT}"
+            cooldown_token = "token-123"
+        return Gate()
+
+    async def fake_release(redis_client, key, token):
+        cooldown_released.set()
+
+    monkeypatch.setattr(debate_main, "pre_debate_gate", fake_gate)
+    monkeypatch.setattr(debate_main, "release_cooldown", fake_release)
+    monkeypatch.setattr(debate_main.AntiCorruptionLayer, "get_instrument_context",
+                        AsyncMock(return_value=dict(POSITION)))
+
+    # Simulate PEL ownership lost before INSERT
+    async def not_owner(redis_client, stream, msg_id, consumer):
+        return False
+
+    monkeypatch.setattr(debate_main, "is_pel_owner", not_owner)
+
+    model = debate_model()
+    with override_model(FLASH, model), override_model(PRO, model), override_model(EMBED, FakeEmbedder()):
+        await debate_main.process_debate_trigger(
+            pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-w1"
+        )
+
+    # Cooldown released, zero runs inserted, zero decisions
+    assert cooldown_released.is_set()
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs WHERE stream_message_id = $1", ref) == 0
+    assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 0
+
+
+async def test_exit_no_runid_stale_before_insert_refused(debate_main, pool, monkeypatch):
+    """No-runid exit INSERT checks current PEL ownership inside transaction; if not owner,
+    refuses insert and returns without creating a run row."""
+    ref = f"stream:exit_debate_queue/{uuid.uuid4().int % 10**13}-0"
+    payload = {"instrument_id": INSTRUMENT}  # no run_id: creates new run
+
+    async def not_owner(redis_client, stream, msg_id, consumer):
+        return False
+
+    monkeypatch.setattr(debate_main, "is_pel_owner", not_owner)
+
+    await debate_main.process_exit_debate_trigger(
+        pool, redis_double(), payload, Gateway(), message_ref=ref, consumer="debate-w1"
+    )
+
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs WHERE stream_message_id = $1", ref) == 0
+    assert await pool.fetchval("SELECT count(*) FROM exit_decisions") == 0
+
+
+async def test_recover_apply_refuses_renewal_between_precheck_and_lua_eval_dlq(r, pool, recover_script, monkeypatch):
+    """When lease renewal occurs between Python XPENDING precheck and DLQ Lua eval,
+    the Lua script's min_idle guard refuses DLQ: PEL 1, DLQ 0, rollback 0."""
+    stream = dq.STREAMS[0]
+    msg_id = await r.xadd(stream, {"instrument_id": INSTRUMENT, "trigger_source": "scanner"})
+    await read_without_handling(r, "debate-w1")
+    await asyncio.sleep(0.1)
+    plan = await recover_script.build_plan(r, pool, pel_idle_ms=50, consumer_idle_ms=10**9)
+    assert [(p["message_id"], p["consumer"]) for p in plan.pending] == [(msg_id, "debate-w1")]
+
+    orig_xpending_range = r.xpending_range
+
+    async def hook_xpending_range(*args, **kwargs):
+        res = await orig_xpending_range(*args, **kwargs)
+        # Worker renews lease right after Python precheck returns: idle reset to 0 in Redis
+        await r.xclaim(stream, dq.GROUP, "debate-w1", 0, [msg_id])
+        return res
+
+    monkeypatch.setattr(r, "xpending_range", hook_xpending_range)
+    rollback = await recover_script.apply_plan(r, pool, plan)
+
+    assert plan.applied_pending == 0
+    assert rollback == []
+    assert await pending_count(r, stream) == 1
+    assert await r.xrange(dq.DLQ_STREAM) == []
+
+
+async def test_recover_apply_refuses_renewal_between_precheck_and_lua_eval_trimmed_ack(r, pool, recover_script, monkeypatch):
+    """When lease renewal occurs between Python XPENDING precheck and trimmed ACK Lua eval,
+    the Lua script's min_idle guard refuses ACK: PEL 1, DLQ 0, rollback 0."""
+    stream = dq.STREAMS[0]
+    msg_id = await r.xadd(stream, {"instrument_id": INSTRUMENT, "trigger_source": "scanner"})
+    await read_without_handling(r, "debate-w1")
+    await asyncio.sleep(0.1)
+    plan = await recover_script.build_plan(r, pool, pel_idle_ms=50, consumer_idle_ms=10**9)
+    # Simulate trimmed entry (fields=None)
+    plan.pending[0]["fields"] = None
+
+    orig_xpending_range = r.xpending_range
+
+    async def hook_xpending_range(*args, **kwargs):
+        res = await orig_xpending_range(*args, **kwargs)
+        await r.xclaim(stream, dq.GROUP, "debate-w1", 0, [msg_id])
+        return res
+
+    monkeypatch.setattr(r, "xpending_range", hook_xpending_range)
+    rollback = await recover_script.apply_plan(r, pool, plan)
+
+    assert plan.applied_pending == 0
+    assert rollback == []
+    assert await pending_count(r, stream) == 1
+    assert await r.xrange(dq.DLQ_STREAM) == []

@@ -260,12 +260,22 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         context["current_price"] = decision_price
 
         async with pg_pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at,
-                                            decision_trace_id, candidate_id, stream_message_id, claim_gen)
-                   VALUES ($1, $2, 'RUNNING', $3, now(), $4, $5, $6, $7)""",
-                run_id, instrument_id, trigger_source, uuid.UUID(trace_id), candidate_id, message_ref, my_generation,
-            )
+            async with conn.transaction():
+                if consumer and message_ref:
+                    sr, _, mr = message_ref.partition("/")
+                    if not await is_pel_owner(redis_client, sr, mr, consumer):
+                        logger.warning(
+                            "Debate run %s insert refused: %s no longer owns %s in PEL",
+                            run_id, consumer, message_ref,
+                        )
+                        await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
+                        return
+                await conn.execute(
+                    """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at,
+                                                decision_trace_id, candidate_id, stream_message_id, claim_gen)
+                       VALUES ($1, $2, 'RUNNING', $3, now(), $4, $5, $6, $7)""",
+                    run_id, instrument_id, trigger_source, uuid.UUID(trace_id), candidate_id, message_ref, my_generation,
+                )
     except asyncpg.UniqueViolationError:
         # D1 / B4: two deliveries raced past the gate; the winner owns the candidate/message. This one ends here —
         # no model call and never a second durable decision.
@@ -498,11 +508,20 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
     else:
         try:
             async with pg_pool.acquire() as conn:
-                await conn.execute(
-                    """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, stream_message_id, claim_gen)
-                       VALUES ($1, $2, 'RUNNING', 'exit_monitor', now(), $3, $4)""",
-                    run_id, instrument_id, message_ref, my_generation,
-                )
+                async with conn.transaction():
+                    if consumer and message_ref:
+                        sr, _, mr = message_ref.partition("/")
+                        if not await is_pel_owner(redis_client, sr, mr, consumer):
+                            logger.warning(
+                                "Exit debate run %s insert refused: %s no longer owns %s in PEL",
+                                run_id, consumer, message_ref,
+                            )
+                            return
+                    await conn.execute(
+                        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, stream_message_id, claim_gen)
+                           VALUES ($1, $2, 'RUNNING', 'exit_monitor', now(), $3, $4)""",
+                        run_id, instrument_id, message_ref, my_generation,
+                    )
         except asyncpg.UniqueViolationError:
             logger.info(f"Duplicate exit run for {message_ref}: the existing run wins")
             await already_handled(pg_pool, message_ref, redis_client, consumer)
@@ -515,13 +534,19 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 rr = await conn.fetchrow("SELECT status,claim_gen,stream_message_id FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
-                if rr and rr["status"]=="RUNNING" and rr["claim_gen"]==my_generation:
+                if rr and rr["status"] == "RUNNING" and rr["claim_gen"] == my_generation:
                     owned = True
                     if consumer and message_ref:
-                        sr,_,mr=message_ref.partition("/")
-                        owned = await is_pel_owner(redis_client,sr,mr,consumer)
+                        sr, _, mr = message_ref.partition("/")
+                        try:
+                            owned = await is_pel_owner(redis_client, sr, mr, consumer)
+                        except Exception:
+                            owned = False
                     if owned:
-                        await conn.execute("UPDATE debate_runs SET status='NO_TRADE',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
+                        await conn.execute(
+                            "UPDATE debate_runs SET status='NO_TRADE',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2",
+                            run_id, my_generation,
+                        )
         return
 
     try:
@@ -599,11 +624,19 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 rr = await conn.fetchrow("SELECT status,claim_gen,stream_message_id FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
-                if rr and rr["status"]=="RUNNING" and rr["claim_gen"]==my_generation:
+                if rr and rr["status"] == "RUNNING" and rr["claim_gen"] == my_generation:
+                    owned = True
                     if consumer and message_ref:
-                        sr,_,mr=message_ref.partition("/")
-                        if await is_pel_owner(redis_client,sr,mr,consumer):
-                            await conn.execute("UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
+                        sr, _, mr = message_ref.partition("/")
+                        try:
+                            owned = await is_pel_owner(redis_client, sr, mr, consumer)
+                        except Exception:
+                            owned = False
+                    if owned:
+                        await conn.execute(
+                            "UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2",
+                            run_id, my_generation,
+                        )
 
 async def main():
     logger.info(f"Starting Cryptonite Debate Worker: {DEBATE_WORKER_NAME}")
