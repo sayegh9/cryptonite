@@ -124,7 +124,7 @@ def unrealized_pnl(side: str, quantity: Any, entry_price: Any, mark: Decimal) ->
 
 @dataclass(frozen=True)
 class DecisionPrice:
-    """A debate decision price resolved from the orchestrator's live marks (B5).
+    """A debate decision price resolved from the per-instrument quote snapshot (B5).
 
     ``price`` is the finite positive quote for exactly this instrument, or None with
     ``source`` ``"NO_PRICE"`` when the quote is absent, stale, invalid, or for another symbol.
@@ -135,21 +135,6 @@ class DecisionPrice:
     source: str  # quote | NO_PRICE
     quote_ts_ns: int | None
     age_s: float | None
-
-
-def resolve_decision_price(instrument_id: str, marks: dict[str, LiveMark] | None,
-                           now_ns: int | None = None) -> DecisionPrice:
-    """The live mark when its quote is fresh, else an explicit NO_PRICE (never a guess)."""
-    now_ns = now_ns or time.time_ns()
-    m = (marks or {}).get(_canonical(instrument_id))
-    if m is not None and m.price.is_finite() and m.price > 0:
-        raw_age_s = (now_ns - m.quote_ts_ns) / 1e9
-        # Same 1.0 s clock-skew tolerance as resolve_mark, but the stricter B5 freshness bound.
-        if -1.0 <= raw_age_s <= DECISION_PRICE_MAX_AGE_S:
-            return DecisionPrice(m.price, "live", m.quote_ts_ns, max(0.0, raw_age_s))
-    quote_ts = m.quote_ts_ns if m is not None else None
-    age = max(0.0, (now_ns - quote_ts) / 1e9) if quote_ts else None
-    return DecisionPrice(None, "NO_PRICE", quote_ts, age)
 
 
 # All-market latest quotes (review-plan B5, F-M14): ``paper:marks`` only covers instruments with

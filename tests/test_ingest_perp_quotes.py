@@ -90,7 +90,7 @@ async def test_spot_quotes_are_not_throttled_by_default():
     assert len(written["cryptonite:stream:ui_quote_tick"]) == 3
 
 
-async def test_quote_snapshot_written_atomically_with_stream_for_spot_and_perp():
+async def test_quote_snapshot_written_in_same_pipeline_as_stream_for_spot_and_perp():
     """B5: the same pipeline writes a per-instrument latest-quote snapshot (key, TTL, body) beside
     the stream entry, from the same tick — for both spot and perp instruments."""
     from contextlib import asynccontextmanager as _acm
