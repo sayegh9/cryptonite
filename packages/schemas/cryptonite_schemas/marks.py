@@ -28,6 +28,10 @@ MARKS_KEY = "paper:marks"
 # old (``MAX_MARK_QUOTE_AGE_S``) and runs every 1-5 s, so a running projector keeps marks under this.
 MAX_MARK_QUOTE_AGE_S = 10.0
 LIVE_MARK_MAX_AGE_S = 15.0
+# A debate decision price is only valid from a quote at most this old (review-plan B5, F-M14): the
+# worker debates on the same live source as the orchestrator and declares NO_PRICE without any model
+# or order side effect when the quote is absent or older than this.
+DECISION_PRICE_MAX_AGE_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,36 @@ def resolve_mark(instrument_id: str, stored_price: Any, marks: dict[str, LiveMar
 def unrealized_pnl(side: str, quantity: Any, entry_price: Any, mark: Decimal) -> Decimal:
     direction = Decimal("-1") if str(side).upper() == "SHORT" else Decimal("1")
     return direction * Decimal(str(quantity)) * (mark - Decimal(str(entry_price)))
+
+
+@dataclass(frozen=True)
+class DecisionPrice:
+    """A debate decision price resolved from the orchestrator's live marks (B5).
+
+    ``price`` is the finite positive quote for exactly this instrument, or None with
+    ``source`` ``"NO_PRICE"`` when the quote is absent, stale, invalid, or for another symbol.
+    ``quote_ts_ns``/``age_s`` declare what was used; None when there was nothing usable.
+    """
+
+    price: Decimal | None
+    source: str  # live | NO_PRICE
+    quote_ts_ns: int | None
+    age_s: float | None
+
+
+def resolve_decision_price(instrument_id: str, marks: dict[str, LiveMark] | None,
+                           now_ns: int | None = None) -> DecisionPrice:
+    """The live quote for this instrument when fresh, else an explicit NO_PRICE (never a guess)."""
+    now_ns = now_ns or time.time_ns()
+    m = (marks or {}).get(_canonical(instrument_id))
+    if m is not None and m.price.is_finite() and m.price > 0:
+        raw_age_s = (now_ns - m.quote_ts_ns) / 1e9
+        # Same 1.0 s clock-skew tolerance as resolve_mark, but the stricter B5 freshness bound.
+        if -1.0 <= raw_age_s <= DECISION_PRICE_MAX_AGE_S:
+            return DecisionPrice(m.price, "live", m.quote_ts_ns, max(0.0, raw_age_s))
+    quote_ts = m.quote_ts_ns if m is not None else None
+    age = max(0.0, (now_ns - quote_ts) / 1e9) if quote_ts else None
+    return DecisionPrice(None, "NO_PRICE", quote_ts, age)
 
 
 def summarize(views: list[MarkView]) -> dict[str, Any]:

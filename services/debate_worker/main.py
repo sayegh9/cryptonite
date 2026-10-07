@@ -26,7 +26,7 @@ from cryptonite_agents.debate_fleet import (
 )
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_schemas.debate import normalize_verdict
-from cryptonite_schemas.marks import read_marks
+from cryptonite_schemas.marks import read_marks, resolve_decision_price
 from debate_queue import (
     DEBATE_QUEUE,
     EXIT_DEBATE_QUEUE,
@@ -223,6 +223,21 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     except (TypeError, ValueError):
         candidate_id = None
     logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source} (decision_trace_id={trace_id})")
+    # B5: the decision price is the orchestrator's live mark for this instrument only — a finite
+    # positive quote no older than DECISION_PRICE_MAX_AGE_S. No 24h-ticker cache, no HTTP fallback.
+    # Resolved before the gate, so an unusable quote ends the attempt as NO_PRICE with no run row,
+    # no model call and no order — and no cooldown is ever taken, so the retry passes the gate freely
+    # once quotes flow again. (The mandate-room read below re-reads marks at decision time.)
+    price_marks = await read_marks(redis_client)
+    quoted = resolve_decision_price(instrument_id or "BTCUSDT", price_marks)
+    if quoted.price is None:
+        logger.warning(f"No usable decision price for {instrument_id} (source={quoted.source}, "
+                       f"quote_age_s={quoted.age_s}): NO_PRICE, not debating")
+        return
+    logger.info(f"Decision price for {instrument_id}: {quoted.price} (source={quoted.source}, "
+                f"quote_age_s={round(quoted.age_s, 1)}, quote_ts_ns={quoted.quote_ts_ns})")
+    decision_price = float(quoted.price)
+
     brief = await load_brief(redis_client, payload)
     gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
                                  brief_data=await load_brief_data(redis_client, payload))
@@ -237,25 +252,6 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     try:
         acl = AntiCorruptionLayer(pg_pool)
         context = await acl.get_instrument_context(instrument_id)
-
-        sym = (instrument_id or "BTCUSDT").split(".")[0].upper()
-        decision_price = None
-        try:
-            cached_market = await redis_client.get(f"market:24h:{sym}")
-            if cached_market:
-                decision_price = float(json.loads(cached_market).get("last_price", 0))
-        except Exception:
-            pass
-
-        if not decision_price:
-            try:
-                import httpx
-                async with httpx.AsyncClient(timeout=4.0) as http_client:
-                    bn_r = await http_client.get("https://api.binance.com/api/v3/ticker/24hr", params={"symbol": sym})
-                    if bn_r.status_code == 200:
-                        decision_price = float(bn_r.json().get("lastPrice", 0))
-            except Exception as e:
-                logger.warning(f"Could not fetch live price for {sym}: {e}")
 
         context["current_price"] = decision_price
 
