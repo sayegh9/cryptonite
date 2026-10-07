@@ -209,6 +209,9 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     gateway = gateway or Gateway(redis=redis_client)
     instrument_id = payload.get("instrument_id")
     trigger_source = payload.get("trigger_source", "scanner")
+    if not instrument_id:
+        logger.warning("Debate trigger without instrument_id: refusing (no fallback symbol)")
+        return
     if await already_handled(pg_pool, message_ref, redis_client, consumer):
         return
 
@@ -225,14 +228,35 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     logger.info(f"Starting debate run for {instrument_id} triggered by {trigger_source} (decision_trace_id={trace_id})")
     # B5: the decision price is the orchestrator's live mark for this instrument only — a finite
     # positive quote no older than DECISION_PRICE_MAX_AGE_S. No 24h-ticker cache, no HTTP fallback.
-    # Resolved before the gate, so an unusable quote ends the attempt as NO_PRICE with no run row,
-    # no model call and no order — and no cooldown is ever taken, so the retry passes the gate freely
-    # once quotes flow again. (The mandate-room read below re-reads marks at decision time.)
+    # Resolved before the gate, so an unusable quote ends the attempt as NO_PRICE: a terminal
+    # debate_runs row (candidate/message/trace, completed_at, reason NO_PRICE) is persisted under the
+    # same ownership/unique guards as a run, with no portfolio decision, model call or order. A
+    # redelivered message then hits that row in already_handled (idempotent skip, no re-debate).
+    # (The mandate-room read below re-reads marks at decision time.)
     price_marks = await read_marks(redis_client)
-    quoted = resolve_decision_price(instrument_id or "BTCUSDT", price_marks)
+    quoted = resolve_decision_price(instrument_id, price_marks)
     if quoted.price is None:
         logger.warning(f"No usable decision price for {instrument_id} (source={quoted.source}, "
-                       f"quote_age_s={quoted.age_s}): NO_PRICE, not debating")
+                       f"quote_age_s={quoted.age_s}): NO_PRICE, recording the terminal outcome")
+        try:
+            async with pg_pool.acquire() as conn:
+                async with conn.transaction():
+                    if consumer and message_ref:
+                        sr, _, mr = message_ref.partition("/")
+                        if not await is_pel_owner(redis_client, sr, mr, consumer):
+                            logger.warning(f"NO_PRICE outcome for {message_ref} refused: {consumer} "
+                                           f"no longer owns it in PEL")
+                            return
+                    await conn.execute(
+                        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at,
+                                                    completed_at, decision_trace_id, candidate_id,
+                                                    stream_message_id, claim_gen, failure_reason)
+                           VALUES ($1, $2, 'NO_PRICE', $3, now(), now(), $4, $5, $6, 0, 'NO_PRICE')""",
+                        uuid.uuid4(), instrument_id, trigger_source, uuid.UUID(trace_id),
+                        candidate_id, message_ref)
+        except asyncpg.UniqueViolationError:
+            logger.info(f"NO_PRICE outcome for {message_ref or candidate_id} already recorded: "
+                        f"redelivery is idempotent")
         return
     logger.info(f"Decision price for {instrument_id}: {quoted.price} (source={quoted.source}, "
                 f"quote_age_s={round(quoted.age_s, 1)}, quote_ts_ns={quoted.quote_ts_ns})")
@@ -416,6 +440,26 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                     if not await is_pel_owner(redis_client, sr, mr, consumer):
                         logger.warning("Debate run %s finalization: %s no longer owns %s in PEL; aborting decision and route", run_id, consumer, message_ref)
                         return
+
+                # B5: revalidate the quote at decision time, under the same row lock and PEL proof: a
+                # quote fresh when the debate started may be minutes stale now. The final quote is the
+                # persisted decision_price and the mandate-room marks; a stale one ends the run as
+                # terminal NO_PRICE with no decision and no route.
+                final_quoted = resolve_decision_price(instrument_id, marks)
+                if final_quoted.price is None:
+                    logger.warning(f"Decision price for {instrument_id} went stale during the debate "
+                                   f"(source={final_quoted.source}, quote_age_s={final_quoted.age_s}): "
+                                   f"run {run_id} ends NO_PRICE, aborting decision and route")
+                    await conn.execute(
+                        """UPDATE debate_runs SET status = 'NO_PRICE', completed_at = now(),
+                                                    failure_reason = 'NO_PRICE'
+                           WHERE id = $1 AND status = 'RUNNING' AND claim_gen = $2""",
+                        run_id, my_generation,
+                    )
+                    return
+                decision_price = float(final_quoted.price)
+                logger.info(f"Final decision price for {instrument_id}: {final_quoted.price} "
+                            f"(quote_age_s={round(final_quoted.age_s, 1)})")
 
                 # Save final decision
                 await conn.execute(

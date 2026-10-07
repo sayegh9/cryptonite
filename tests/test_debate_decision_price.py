@@ -100,12 +100,14 @@ def counting_model(calls: dict) -> FunctionModel:
     return FunctionModel(fn)
 
 
-async def run_entry(debate_main, pool, redis, calls: dict, payload: dict | None = None):
+async def run_entry(debate_main, pool, redis, calls: dict, payload: dict | None = None,
+                    message_ref: str | None = None, consumer: str | None = None):
     model = counting_model(calls)
     with override_model(FLASH, model), override_model(FLASH_LITE, model), override_model(PRO, model), \
          override_model(EMBED, FakeEmbedder()):
-        await debate_main.process_debate_trigger(pool, redis, payload or scanner_payload(), Gateway())
-    return await pool.fetchrow("SELECT * FROM debate_runs WHERE instrument_id = $1", INSTRUMENT)
+        await debate_main.process_debate_trigger(pool, redis, payload or scanner_payload(), Gateway(),
+                                                 message_ref=message_ref, consumer=consumer)
+    return await pool.fetchrow("SELECT * FROM debate_runs WHERE instrument_id = $1 ORDER BY created_at DESC LIMIT 1", INSTRUMENT)
 
 
 async def test_fresh_quote_debates_and_declares_the_price(debate_main, pool, monkeypatch):
@@ -142,20 +144,53 @@ async def test_unusable_quote_is_no_price_without_side_effects(debate_main, pool
     calls = {"n": 0}
     redis = marks_double(dict(raw_marks))
     run = await run_entry(debate_main, pool, redis, calls)
-    assert run is None  # no run row opened
+    # A terminal, durable NO_PRICE outcome: identity, trace, completion time and reason recorded…
+    assert run["status"] == "NO_PRICE" and run["failure_reason"] == "NO_PRICE"
+    assert run["completed_at"] is not None and run["decision_trace_id"] is not None
+    # …with no model call, no decision and no order behind it…
     assert calls["n"] == 0  # no model call, not even triage: the price resolves before the gate
-    assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 0  # no order input staged
-    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
+    assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 0
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 1
     set_keys = [str(c.args[0]) for c in redis.set.await_args_list or [] if c.args]
     assert not [k for k in set_keys if k.startswith("debate:cooldown:")]  # no cooldown ever taken
 
 
-async def test_retry_after_no_price_passes_once_quotes_flow(debate_main, pool):
-    """No cooldown was ever taken, so the retry passes the gate once quotes flow again."""
+async def test_no_price_redelivery_is_idempotent(debate_main, pool, monkeypatch):
+    """The same queued message twice records one NO_PRICE row; the redelivery never re-debates."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    monkeypatch.setattr(debate_main, "is_pel_owner", _AsyncMock(return_value=True))
+    ref = "stream:debate_queue/900-0"
+    payload = {**scanner_payload(),
+               "candidate_payload": json.dumps({"timeframe": "1h",
+                                                "bar_close_inclusive_ns": int((time.time() - 60) * 1e9),
+                                                "candidate_id": str(uuid.uuid4())})}
     calls = {"n": 0}
     redis = marks_double({})
-    await run_entry(debate_main, pool, redis, calls)
+    first = await run_entry(debate_main, pool, redis, calls, payload, message_ref=ref, consumer="debate-w1")
+    assert first["status"] == "NO_PRICE" and first["stream_message_id"] == ref
+    second = await run_entry(debate_main, pool, redis, calls, payload, message_ref=ref, consumer="debate-w1")
     assert calls["n"] == 0
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 1
+    assert second["id"] == first["id"] and second["status"] == "NO_PRICE"
+
+
+async def test_no_price_refused_without_pel_ownership(debate_main, pool, monkeypatch):
+    """A stale queued attempt records nothing: the NO_PRICE insert is owner-guarded too."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    monkeypatch.setattr(debate_main, "is_pel_owner", _AsyncMock(return_value=False))
+    calls = {"n": 0}
+    run = await run_entry(debate_main, pool, marks_double({}), calls,
+                          message_ref="stream:debate_queue/901-0", consumer="debate-stale")
+    assert run is None and calls["n"] == 0
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
+
+
+async def test_retry_after_no_price_passes_once_quotes_flow(debate_main, pool):
+    """A later attempt with quotes flowing debates normally (direct calls carry no dedupe identity)."""
+    calls = {"n": 0}
+    redis = marks_double({})
+    first = await run_entry(debate_main, pool, redis, calls)
+    assert calls["n"] == 0 and first["status"] == "NO_PRICE"
     redis.hgetall.return_value = live_mark("65100.0", 1.0)
     run = await run_entry(debate_main, pool, redis, calls)
     assert calls["n"] > 0 and run["status"] == "PENDING_APPROVAL"
@@ -168,6 +203,54 @@ async def test_boundary_age_is_accepted(debate_main, pool):
     calls = {"n": 0}
     run = await run_entry(debate_main, pool, marks_double(live_mark("64900.0", DECISION_PRICE_MAX_AGE_S - 1.0)), calls)
     assert run is not None and run["status"] == "PENDING_APPROVAL"
+
+
+async def test_stale_quote_at_decision_time_ends_no_price(debate_main, pool, monkeypatch):
+    """A quote fresh at debate start but expired by finalization ends terminal NO_PRICE: no decision,
+    no route — the persisted price is never minutes stale."""
+    fresh, stale = live_mark("65000.0", 1.0), live_mark("65000.0", DECISION_PRICE_MAX_AGE_S + 30.0)
+    redis = marks_double(fresh)
+    redis.hgetall.side_effect = [fresh, stale]  # price-time read, then the finalization re-read
+    routed = {"n": 0}
+    original_route = debate_main.route_entry
+
+    async def counting_route(*args, **kwargs):
+        routed["n"] += 1
+        return await original_route(*args, **kwargs)
+
+    monkeypatch.setattr(debate_main, "route_entry", counting_route)
+    calls = {"n": 0}
+    run = await run_entry(debate_main, pool, redis, calls)
+    assert calls["n"] > 0  # the debate itself ran on the fresh quote
+    assert routed["n"] == 0  # but nothing routed
+    row = await pool.fetchrow("SELECT status, failure_reason, completed_at FROM debate_runs WHERE id = $1", run["id"])
+    assert (row["status"], row["failure_reason"]) == ("NO_PRICE", "NO_PRICE")
+    assert row["completed_at"] is not None
+    assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions WHERE run_id = $1", run["id"]) == 0
+
+
+async def test_final_quote_is_the_persisted_price(debate_main, pool):
+    """The decision-time quote — not the debate-start one — is stored and used for mandate room."""
+    first, second = live_mark("65000.0", 1.0), live_mark("65200.0", 1.0)
+    redis = marks_double(first)
+    redis.hgetall.side_effect = [first, second]
+    calls = {"n": 0}
+    run = await run_entry(debate_main, pool, redis, calls)
+    assert run["status"] == "PENDING_APPROVAL"
+    assert float((await pool.fetchrow("SELECT decision_price FROM portfolio_decisions WHERE run_id = $1",
+                                      run["id"]))["decision_price"]) == pytest.approx(65200.0)
+
+
+async def test_missing_instrument_id_is_refused(debate_main, pool):
+    """No fallback symbol: a trigger without instrument_id records and debates nothing."""
+    calls = {"n": 0}
+    model = counting_model(calls)
+    with override_model(FLASH, model), override_model(FLASH_LITE, model), override_model(PRO, model), \
+         override_model(EMBED, FakeEmbedder()):
+        await debate_main.process_debate_trigger(pool, marks_double(live_mark("65000.0", 1.0)),
+                                                 {"trigger_source": "test"}, Gateway())
+    assert calls["n"] == 0
+    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
 
 
 async def test_exit_debate_needs_no_decision_price(debate_main, pool):
