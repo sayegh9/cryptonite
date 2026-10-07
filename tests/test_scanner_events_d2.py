@@ -435,8 +435,8 @@ def test_max_active_specs_constant():
     assert MAX_ACTIVE_SPECS == 10
 
 
-async def test_worker_caps_active_specs_to_max(db_url, admin, redis15):
-    """When more than MAX_ACTIVE_SPECS active specs exist in DB, worker caps execution to MAX_ACTIVE_SPECS."""
+async def test_worker_processes_all_active_specs_above_cap_without_dropping_signals(db_url, admin, redis15):
+    """When more than MAX_ACTIVE_SPECS active specs exist in DB, worker processes all active specs to avoid dropping signals."""
     lake_df = pl.DataFrame({
         "bar_open_ns": [1000],
         "ts_event_ns": [1000 + ONE_MINUTE_NS],
@@ -462,7 +462,7 @@ async def test_worker_caps_active_specs_to_max(db_url, admin, redis15):
     w._execute_scan = mock_execute_scan
 
     try:
-        # 1. Test reconcile_and_prime capping
+        # 1. Test reconcile_and_prime processes all active specs
         # Set ingest checkpoint so reconcile primes
         await admin.execute(
             """INSERT INTO ingest_checkpoints (venue, market_type, symbol, bar_type, timeframe, first_timestamp_ns, last_timestamp_ns)
@@ -470,9 +470,9 @@ async def test_worker_caps_active_specs_to_max(db_url, admin, redis15):
             1000 + ONE_MINUTE_NS,
         )
         await w.reconcile_and_prime()
-        assert len(executed_specs) == MAX_ACTIVE_SPECS
+        assert len(executed_specs) == 12
 
-        # 2. Test _handle_stream_message capping
+        # 2. Test _handle_stream_message processes all active specs
         executed_specs.clear()
         stream_msg = {
             "data": json.dumps({
@@ -482,7 +482,7 @@ async def test_worker_caps_active_specs_to_max(db_url, admin, redis15):
             })
         }
         await w._handle_stream_message("stream", "1-0", stream_msg)
-        assert len(executed_specs) == MAX_ACTIVE_SPECS
+        assert len(executed_specs) == 12
     finally:
         await w.pool.close()
 
@@ -689,7 +689,7 @@ async def test_cross_spec_dedupe_concurrent_race_serialized(db_url, admin, redis
 
 
 async def test_worker_active_specs_deterministic_order_and_visible_error(db_url, admin, redis15, caplog):
-    """When active specs exceed MAX_ACTIVE_SPECS, worker logs ERROR with omitted slugs and orders deterministically."""
+    """When active specs exceed MAX_ACTIVE_SPECS, worker logs ERROR visibly and processes all active specs."""
     import logging
     lake_df = pl.DataFrame({
         "bar_open_ns": [1000],
@@ -725,11 +725,11 @@ async def test_worker_active_specs_deterministic_order_and_visible_error(db_url,
     try:
         with caplog.at_level(logging.ERROR):
             await w.reconcile_and_prime()
-        # Verify deterministic count
-        assert len(executed_specs) == MAX_ACTIVE_SPECS
+        # Verify all active specs executed (no signal drops)
+        assert len(executed_specs) == 12
         # Verify visible error log
         assert any(
-            "exceeds MAX_ACTIVE_SPECS (10)" in record.message and "visibly omitting" in record.message
+            "exceeds MAX_ACTIVE_SPECS (10)" in record.message and "Processing all 12 active specs" in record.message
             for record in caplog.records
             if record.levelno == logging.ERROR
         )
@@ -737,11 +737,9 @@ async def test_worker_active_specs_deterministic_order_and_visible_error(db_url,
         await w.pool.close()
 
 
-async def test_ensure_presets_seeded_idempotent_transition(db_url, admin):
-    """ensure_presets_seeded seeds fresh DB, idempotently transitions older unedited preset versions,
-    and preserves user-edited specs."""
-    from cryptonite_api.routes.scanners import PRESET_PREVIOUS_HASHES, ensure_presets_seeded
-    from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD
+async def test_ensure_presets_seeded_bootstraps_fresh_db_and_noop_when_populated(db_url, admin):
+    """ensure_presets_seeded bootstraps empty DB, but does not mutate already-populated DB."""
+    from cryptonite_api.routes.scanners import ensure_presets_seeded
 
     pool = await asyncpg.create_pool(db_url)
     try:
@@ -750,7 +748,63 @@ async def test_ensure_presets_seeded_idempotent_transition(db_url, admin):
         specs = await pool.fetch("SELECT slug, active_version_id FROM scan_specs;")
         assert len(specs) >= 4
 
-        # 2. Simulate an older unedited preset in DB: set RSI preset to its known prior hash
+        # Record active version IDs
+        orig_active = {r["slug"]: r["active_version_id"] for r in specs}
+
+        # Modify one version hash manually to simulate DB with custom or outdated state
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = 'arbitrary_hash' WHERE id = $1;",
+            next(iter(orig_active.values())),
+        )
+
+        # 2. Run ensure_presets_seeded again: must be an immediate no-op
+        await ensure_presets_seeded(pool)
+
+        specs_after = await pool.fetch("SELECT slug, active_version_id FROM scan_specs;")
+        after_active = {r["slug"]: r["active_version_id"] for r in specs_after}
+        assert orig_active == after_active
+    finally:
+        await pool.close()
+
+
+async def test_get_scanners_is_read_only(db_url, admin):
+    """GET /api/v1/scanners is read-only and does not mutate active versions or specs."""
+    from cryptonite_api.routes.scanners import ensure_presets_seeded, list_scanners
+    from starlette.requests import Request
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        await ensure_presets_seeded(pool)
+        specs_before = await pool.fetch("SELECT slug, active_version_id, updated_at FROM scan_specs ORDER BY slug;")
+
+        scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
+        req = Request(scope)
+
+        scanners = await list_scanners(req)
+        assert len(scanners) >= 4
+
+        specs_after = await pool.fetch("SELECT slug, active_version_id, updated_at FROM scan_specs ORDER BY slug;")
+        assert [r["active_version_id"] for r in specs_before] == [r["active_version_id"] for r in specs_after]
+        assert [r["updated_at"] for r in specs_before] == [r["updated_at"] for r in specs_after]
+    finally:
+        await pool.close()
+
+
+async def test_preset_upgrade_operator_endpoint_dry_run_and_apply(db_url, admin):
+    """POST /presets/upgrade dry_run previews without mutating, apply mode upgrades unedited and preserves custom."""
+    from cryptonite_api.routes.scanners import (
+        PRESET_PREVIOUS_HASHES,
+        ensure_presets_seeded,
+        upgrade_presets,
+    )
+    from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD, PRESET_TREND_PULLBACK
+    from starlette.requests import Request
+
+    pool = await asyncpg.create_pool(db_url)
+    try:
+        await ensure_presets_seeded(pool)
+
+        # 1. Simulate an older unedited preset in DB: set RSI preset to its known prior hash
         rsi_spec = await pool.fetchrow("SELECT id, active_version_id FROM scan_specs WHERE slug = $1;", PRESET_RSI_OVERSOLD.slug)
         old_hash = next(iter(PRESET_PREVIOUS_HASHES[PRESET_RSI_OVERSOLD.slug]))
         await pool.execute(
@@ -759,8 +813,43 @@ async def test_ensure_presets_seeded_idempotent_transition(db_url, admin):
             rsi_spec["active_version_id"],
         )
 
-        # Run ensure_presets_seeded again: should transition RSI preset to new version
-        await ensure_presets_seeded(pool)
+        # 2. Simulate a user-edited custom preset: set Trend Pullback to custom hash
+        trend_spec = await pool.fetchrow("SELECT id, active_version_id FROM scan_specs WHERE slug = $1;", PRESET_TREND_PULLBACK.slug)
+        custom_hash = "custom_trader_hash_99999"
+        await pool.execute(
+            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
+            custom_hash,
+            trend_spec["active_version_id"],
+        )
+
+        scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
+        req = Request(scope)
+
+        # 3. Dry-run upgrade
+        dry_res = await upgrade_presets(req, dry_run=True)
+        assert dry_res.dry_run is True
+
+        rsi_dry = next(it for it in dry_res.items if it.slug == PRESET_RSI_OVERSOLD.slug)
+        assert rsi_dry.action == "would_upgrade"
+
+        trend_dry = next(it for it in dry_res.items if it.slug == PRESET_TREND_PULLBACK.slug)
+        assert trend_dry.action == "custom_preserved"
+
+        # Verify DB was NOT modified during dry-run
+        db_rsi = await pool.fetchval("SELECT spec_hash FROM scan_spec_versions WHERE id = $1;", rsi_spec["active_version_id"])
+        assert db_rsi == old_hash
+
+        # 4. Apply upgrade
+        apply_res = await upgrade_presets(req, dry_run=False)
+        assert apply_res.dry_run is False
+
+        rsi_apply = next(it for it in apply_res.items if it.slug == PRESET_RSI_OVERSOLD.slug)
+        assert rsi_apply.action == "upgraded"
+
+        trend_apply = next(it for it in apply_res.items if it.slug == PRESET_TREND_PULLBACK.slug)
+        assert trend_apply.action == "custom_preserved"
+
+        # Verify RSI was upgraded in DB
         updated_rsi = await pool.fetchrow(
             """
             SELECT s.active_version_id, v.version_num, v.spec_hash
@@ -773,37 +862,28 @@ async def test_ensure_presets_seeded_idempotent_transition(db_url, admin):
         assert updated_rsi["spec_hash"] != old_hash
         assert updated_rsi["version_num"] >= 2
 
-        # 3. Simulate a user-edited spec with a custom hash: should NOT be overwritten
-        custom_hash = "custom_user_hash_12345"
-        await pool.execute(
-            "UPDATE scan_spec_versions SET spec_hash = $1 WHERE id = $2;",
-            custom_hash,
-            updated_rsi["active_version_id"],
-        )
-        user_active_ver_id = updated_rsi["active_version_id"]
-
-        # Run ensure_presets_seeded: user spec must be preserved
-        await ensure_presets_seeded(pool)
-        preserved_rsi = await pool.fetchrow(
+        # Verify Trend Pullback custom spec remained untouched
+        preserved_trend = await pool.fetchrow(
             "SELECT active_version_id FROM scan_specs WHERE slug = $1;",
-            PRESET_RSI_OVERSOLD.slug,
+            PRESET_TREND_PULLBACK.slug,
         )
-        assert preserved_rsi["active_version_id"] == user_active_ver_id
+        assert preserved_trend["active_version_id"] == trend_spec["active_version_id"]
     finally:
         await pool.close()
 
 
-async def test_activate_preset_version_operator_route(db_url, admin):
-    """Guarded operator activation endpoint explicitly activates latest preset version."""
+async def test_activate_preset_version_operator_route_and_cap_guard(db_url, admin):
+    """Guarded operator activation activates preset version and rejects when MAX_ACTIVE_SPECS is reached."""
     from cryptonite_api.routes.scanners import activate_preset_version, ensure_presets_seeded
     from cryptonite_scanner.presets import PRESET_MACD_MOMENTUM
+    from fastapi import HTTPException
     from starlette.requests import Request
 
     pool = await asyncpg.create_pool(db_url)
     try:
         await ensure_presets_seeded(pool)
 
-        # Archive the MACD preset to simulate inactive or archived state
+        # Archive the MACD preset
         await pool.execute(
             "UPDATE scan_specs SET is_archived = true WHERE slug = $1;",
             PRESET_MACD_MOMENTUM.slug,
@@ -812,10 +892,37 @@ async def test_activate_preset_version_operator_route(db_url, admin):
         scope = {"type": "http", "app": SimpleNamespace(state=SimpleNamespace(pool=pool))}
         req = Request(scope)
 
-        # Operator explicitly activates the preset
+        # 1. Activate MACD when under cap -> success
         res = await activate_preset_version(PRESET_MACD_MOMENTUM.slug, req)
         assert res.slug == PRESET_MACD_MOMENTUM.slug
         assert res.is_archived is False
         assert res.active_version is not None
+
+        # 2. Archive MACD again
+        await pool.execute(
+            "UPDATE scan_specs SET is_archived = true WHERE slug = $1;",
+            PRESET_MACD_MOMENTUM.slug,
+        )
+
+        # Seed additional active specs up to MAX_ACTIVE_SPECS (10 active specs)
+        rule = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 0}]}]
+        curr_active = await pool.fetchval(
+            "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
+        )
+        needed = 10 - curr_active
+        for i in range(needed):
+            await seed_spec_row(admin, f"fill-cap-{i}", f"Fill Cap {i}", rule)
+
+        # Now active count == 10
+        total_active = await pool.fetchval(
+            "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
+        )
+        assert total_active == 10
+
+        # Attempting to activate archived preset must fail with HTTP 400
+        with pytest.raises(HTTPException) as exc_info:
+            await activate_preset_version(PRESET_MACD_MOMENTUM.slug, req)
+        assert exc_info.value.status_code == 400
+        assert "maximum active specs limit (10) reached" in exc_info.value.detail
     finally:
         await pool.close()

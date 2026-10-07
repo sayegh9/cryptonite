@@ -362,18 +362,14 @@ class ScannerWorker:
         )
 
         if len(rows) > MAX_ACTIVE_SPECS:
-            omitted = [r["slug"] for r in rows[MAX_ACTIVE_SPECS:]]
             logger.error(
                 "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d)! "
-                "Deterministically processing first %d (%s) and visibly omitting (%s). "
-                "Operator action required to deactivate/archive excess specs.",
+                "Processing all %d active specs to avoid dropping trading signals, "
+                "but operator action is required to archive excess specs.",
                 len(rows),
                 MAX_ACTIVE_SPECS,
-                MAX_ACTIVE_SPECS,
-                [r["slug"] for r in rows[:MAX_ACTIVE_SPECS]],
-                omitted,
+                len(rows),
             )
-            rows = rows[:MAX_ACTIVE_SPECS]
 
         for r in rows:
             version_id = r["version_id"]
@@ -494,18 +490,14 @@ class ScannerWorker:
         )
 
         if len(active_specs) > MAX_ACTIVE_SPECS:
-            omitted = [s["slug"] for s in active_specs[MAX_ACTIVE_SPECS:]]
             logger.error(
                 "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d)! "
-                "Deterministically processing first %d (%s) and visibly omitting (%s). "
-                "Operator action required to deactivate/archive excess specs.",
+                "Processing all %d active specs to avoid dropping trading signals, "
+                "but operator action is required to archive excess specs.",
                 len(active_specs),
                 MAX_ACTIVE_SPECS,
-                MAX_ACTIVE_SPECS,
-                [s["slug"] for s in active_specs[:MAX_ACTIVE_SPECS]],
-                omitted,
+                len(active_specs),
             )
-            active_specs = active_specs[:MAX_ACTIVE_SPECS]
 
         for spec in active_specs:
             universe = json.loads(spec["universe"]) if isinstance(spec["universe"], str) else spec["universe"]
@@ -700,6 +692,8 @@ class ScannerWorker:
         now_ns = time.time_ns()
         all_candidates = drop_unclosed_candidates(all_candidates, now_ns)
         all_candidates = deduplicate_candidates(all_candidates)
+        # Sort candidates deterministically to enforce global lock acquisition order and prevent deadlocks across concurrent workers/jobs
+        all_candidates.sort(key=lambda c: (c.instrument_id, c.timeframe, c.bar_close_inclusive_ns))
         to_queue: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []  # fresh, new: published after the commit
 
         # 3. Commit run, candidates, checkpoints, and outbox in a single transaction
@@ -758,12 +752,9 @@ class ScannerWorker:
                 for c in all_candidates:
                     # Serialise concurrent candidate insertions for this bar across specs/workers:
                     # Transaction-level advisory lock prevents SELECT-then-INSERT races across jobs.
+                    # Lock keys are acquired in sorted order to prevent deadlocks.
                     lock_key = f"signal_candidate:{c.instrument_id}:{c.timeframe}:{c.bar_close_inclusive_ns}"
-                    if hasattr(conn, "execute"):
-                        try:
-                            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0));", lock_key)
-                        except Exception as lock_err:
-                            logger.debug("Candidate advisory lock skipped or unsupported: %s", lock_err)
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0));", lock_key)
 
                     # Deduplicate across specs per (instrument, timeframe, bar)
                     existing_across_specs = None

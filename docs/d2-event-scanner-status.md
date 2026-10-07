@@ -1,6 +1,6 @@
 # D2: Event-Based Scanner Conditions & Candidate Deduplication
 
-**Status:** In Review (Implementation Complete; Multi-Spec Combined Volume Reduction Partial at 6.8x–9.5x)
+**Status:** In Review (Implementation Complete; Multi-Spec Combined Volume Reduction Partial at 6.8x–9.5x; E1 Sequencing Held)
 **Task ID:** `01a115b8-0555-7e40-b20f-987dd0f8d56a`
 **Reference Plan:** `docs/product-review-plan.md` §D2 and `docs/product-review-2026-10-05.md` §5.2.1 (Finding F-H2)
 **Branch:** `feat/d2-event-scanner-dedupe`
@@ -14,10 +14,10 @@ Phase D2 transitions the scanner from **state-based** conditions (which fire con
 Key deliverables and hardening implemented:
 1. **Grammar & Crossover Semantics**: Added `RuleOperator.CROSSES_ABOVE` and `CROSSES_BELOW` aliases alongside `CROSS_ABOVE` / `CROSS_BELOW`. Enforced `lookback >= 1` validation on crossover conditions with a default of `lookback = 1`. Hardened Polars condition expressions with `.fill_null(False)` to prevent null leakage on shifted bars.
 2. **Preset Specs Rewritten**: Updated all 4 seed presets in `packages/scanner/cryptonite_scanner/presets.py` to use crossover triggers with `lookback = 1`.
-3. **Cross-Spec Deduplication & Transaction Serialization**: Added `deduplicate_candidates` utility and integrated deduplication into `ScannerWorker._execute_scan`. Enforced PostgreSQL transaction advisory locking (`pg_advisory_xact_lock(hashtextextended(...))`) per `(instrument_id, timeframe, bar_close_inclusive_ns)` to eliminate SELECT-then-INSERT races across parallel workers/jobs. Verified with a deterministic concurrent race test.
-4. **Max Active Specs Guard & Policy**: Defined `MAX_ACTIVE_SPECS = 10`. Enforced rejection with HTTP 400 in API `create_scanner` route serialized via transaction advisory lock (`pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))`). Hardened worker `reconcile_and_prime` and stream consumer with deterministic SQL ordering (`ORDER BY created_at ASC, slug ASC`) and prominent visible error alerts on cap overflow, preventing silent omissions.
-5. **Idempotent Preset Version Transition & Operator Activation**: Upgraded `ensure_presets_seeded()` to transition existing databases from older built-in preset hashes (`PRESET_PREVIOUS_HASHES`) to new immutable event-crossover versions, while strictly preserving user-edited custom specs. Added guarded operator activation endpoint `POST /api/v1/scanners/presets/{slug}/activate`.
-6. **Volume Reduction Assessment (10-02..10-04)**: Evaluated 1m lake data across 2026-10-02 to 2026-10-04 for BTCUSDT and ETHUSDT without live writes. Demonstrated a **16.5x reduction** on BTCUSDT MACD momentum candidates (99 -> 6). Across all presets combined, volume reduction achieved **9.5x on BTCUSDT** and **6.8x on ETHUSDT**, which represents an honest partial result relative to the 10–50x exit goal. Full multi-spec reduction down to target is completed in downstream Phase D3 via structure-based stop/target R:R filtering and higher-timeframe restriction (15m/1h/4h only).
+3. **Cross-Spec Deduplication & Deadlock-Free Serialization**: Added `deduplicate_candidates` utility and integrated deduplication into `ScannerWorker._execute_scan`. Candidates are sorted deterministically by `(instrument_id, timeframe, bar_close_inclusive_ns)` before acquiring PostgreSQL transaction advisory locks (`pg_advisory_xact_lock(hashtextextended(...))`), enforcing a global lock order that eliminates deadlocks and SELECT-then-INSERT races across parallel workers/jobs. Removed all `try/except` fail-open blocks on lock acquisition. Verified with a deterministic concurrent race test.
+4. **Max Active Specs Guard & Signal Preservation**: Defined `MAX_ACTIVE_SPECS = 10`. Enforced rejection with HTTP 400 in API `create_scanner` and `activate_preset_version` routes, serialized via transaction advisory lock (`pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))`). The worker never slices or drops existing active specs (preserving trading signals in flight); it processes all active specs with prominent `logger.error` alerts when the cap is exceeded.
+5. **Read-Only Scanners GET & Idempotent Preset Upgrade**: Removed all write/mutation side-effects from `GET /api/v1/scanners`. `ensure_presets_seeded()` is restricted strictly to fresh database bootstrapping. Added explicit operator-only upgrade endpoint `POST /api/v1/scanners/presets/upgrade` supporting `dry_run` mode (for E1 sequencing), safely transitioning unedited presets while strictly preserving user-edited custom specs and honoring active spec caps.
+6. **Volume Reduction Assessment (10-02..10-04)**: Evaluated 1m lake data across 2026-10-02 to 2026-10-04 for BTCUSDT and ETHUSDT without live writes. Demonstrated a **16.5x reduction** on BTCUSDT MACD momentum candidates (99 -> 6). Across all presets combined, volume reduction achieved **9.5x on BTCUSDT** and **6.8x on ETHUSDT**, which represents an honest partial result relative to the 10–50x exit goal. E1 remains held. Full multi-spec reduction down to target is completed in downstream Phase D3 via structure-based stop/target R:R filtering and higher-timeframe restriction (15m/1h/4h only).
 
 ---
 
@@ -56,19 +56,23 @@ Rewrote the 4 seed presets to trigger on events rather than states:
    - Trigger: `rsi CROSS_ABOVE 40.0` (lookback=1)
    - Confirmation: `close > open`
 
-### 2.4 API Route Guard & Preset Migration (`services/api/cryptonite_api/routes/scanners.py`)
-- In `create_scanner`: acquires `pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))` before checking active specs count, serializing concurrent creation requests and preventing limit races.
-- In `ensure_presets_seeded()`:
-  - Seeds presets on fresh database.
-  - Detects existing specs matching known unedited prior built-in hashes (`PRESET_PREVIOUS_HASHES`) and appends immutable v2 versions with event crossover rules.
-  - Preserves user-edited specs by leaving their active version untouched.
-- Added `POST /api/v1/scanners/presets/{slug}/activate` (guarded by `OPERATOR_WRITE`) for explicit operator-driven preset activation and upgrade.
+### 2.4 API Route Guard & Operator Upgrade (`services/api/cryptonite_api/routes/scanners.py`)
+- `GET /api/v1/scanners`: Strictly read-only; no database mutations or seeding side-effects.
+- In `create_scanner`: acquires `pg_advisory_xact_lock(hashtext('scan_specs:active_limit'))` directly (no fail-open try/except) before checking active specs count, serializing concurrent creation requests and preventing limit races.
+- In `ensure_presets_seeded()`: Bootstraps presets only on a fresh, unseeded database (`count == 0`), returning immediately on existing databases.
+- Added `POST /api/v1/scanners/presets/upgrade` (guarded by `OPERATOR_WRITE`):
+  - Supports `dry_run: bool = False` for E1 dry-run verification.
+  - Transitions presets whose active version matches known prior built-in hashes (`PRESET_PREVIOUS_HASHES`) to new event-crossover versions.
+  - Strictly preserves user-edited custom specs without overwriting.
+  - Honors active spec limits and never unarchives specs accidentally.
+- In `POST /api/v1/scanners/presets/{slug}/activate` (guarded by `OPERATOR_WRITE`): Serializes via advisory lock and enforces `MAX_ACTIVE_SPECS` limit before activating or unarchiving.
 
 ### 2.5 Scanner Worker Daemon (`services/scanner/cryptonite_scanner_service/worker.py`)
-- In `reconcile_and_prime` and `_handle_stream_message`: queries active specs deterministically (`ORDER BY s.created_at ASC, s.slug ASC`). If `len(rows) > MAX_ACTIVE_SPECS`, logs a prominent `logger.error` listing the exact omitted slugs (preventing silent omission).
+- In `reconcile_and_prime` and `_handle_stream_message`: Queries active specs deterministically (`ORDER BY s.created_at ASC, s.slug ASC`). Never slices or drops active specs to ensure zero signal loss; logs prominent `logger.error` on cap overflow.
 - In `_execute_scan`:
   - Runs in-memory `deduplicate_candidates(all_candidates)` after unclosed bar filtering.
-  - In candidate database persistence loop: acquires `pg_advisory_xact_lock(hashtextextended($1, 0))` on `signal_candidate:{inst}:{tf}:{bar_close_ns}`, then verifies if candidate exists across any spec. If found, logs debug and skips insertion and debate outbox queuing.
+  - Deterministically sorts candidates by `(instrument_id, timeframe, bar_close_inclusive_ns)` before acquiring advisory locks to guarantee global canonical lock ordering and prevent deadlocks across concurrent workers.
+  - In candidate database persistence loop: acquires `pg_advisory_xact_lock(hashtextextended($1, 0))` directly on `signal_candidate:{inst}:{tf}:{bar_close_ns}`, then verifies if candidate exists across any spec. If found, logs debug and skips insertion and debate outbox queuing.
 
 ---
 
@@ -89,7 +93,7 @@ Evaluated against enriched 1m lake data (`data/analytics_lake/binance_klines_enr
 
 ### Assessment & Honest Partial Result
 1. **Single-Spec Momentum Success**: The transition to event crossover rules achieved **16.5x reduction** on BTCUSDT momentum (from 99 candidates down to 6), successfully falling within the 10–50x reduction goal for that standalone spec.
-2. **Multi-Spec Combined Volume (Partial Result)**: Across all 4 seed specs combined, the reduction was **9.5x on BTCUSDT** (114 down to 12) and **6.8x on ETHUSDT** (115 down to 17). This falls below the plan's 10–50x exit goal when evaluating multiple presets simultaneously.
+2. **Multi-Spec Combined Volume (Partial Result)**: Across all 4 seed specs combined, the reduction was **9.5x on BTCUSDT** (114 down to 12) and **6.8x on ETHUSDT** (115 down to 17). This falls below the plan's 10–50x exit goal when evaluating multiple presets simultaneously. E1 remains held.
 3. **Root Cause Analysis**:
    - Presets like Bollinger breakout and RSI oversold reversal have naturally lower starting candidate counts (12 and 3 respectively) and narrower differences between crossing the band vs closing outside the band over a 3-day window.
    - Cross-spec deduplication prevents duplicate submissions for the same bar, but when different specs trigger on different bars across 15m intervals, the total candidate count sums to 12 (BTC) and 17 (ETH) over 3 days (approx 4–6 candidates/day).
@@ -109,23 +113,25 @@ uv run --extra dev pytest tests/test_scanner_events_d2.py tests/test_scanner_fre
 ```
 
 Results across the scanner test suite:
-- `tests/test_scanner_events_d2.py`: **14 passed**
+- `tests/test_scanner_events_d2.py`: **16 passed**
   - `test_rule_condition_lookback_validation`: Enforces lookback >= 1, rejects negative, defaults to 1.
   - `test_deterministic_crossover_produces_one_candidate_not_continuation`: Crossover event produces exactly 1 candidate across 250 trending bars.
   - `test_deterministic_cross_below_produces_one_candidate`: Cross-below event semantics verified.
   - `test_deduplicate_candidates_in_memory`: In-memory candidate deduplication per (instrument, timeframe, bar).
   - `test_cross_spec_candidate_deduplication_in_worker`: Cross-spec candidate deduplication in worker database and outbox.
   - `test_max_active_specs_constant`: `MAX_ACTIVE_SPECS == 10`.
-  - `test_worker_caps_active_specs_to_max`: Worker caps active specs to 10 in reconcile and stream handling.
+  - `test_worker_processes_all_active_specs_above_cap_without_dropping_signals`: Worker executes all active specs even when exceeding cap (no trading signals dropped).
   - `test_preset_specs_are_crossover_triggers`: All 4 presets verified to use crossover triggers with lookback >= 1.
   - `test_volume_reduction_crossover_vs_state_comparison`: Verified >= 5x volume reduction on trending oscillation.
   - `test_create_scanner_api_guard_rejects_at_max_active_specs`: HTTP 400 rejection on 11th active spec.
   - `test_cross_spec_dedupe_concurrent_race_serialized`: Two concurrent worker scans racing on different specs for the same bar serialize via advisory lock, persisting exactly 1 candidate.
-  - `test_worker_active_specs_deterministic_order_and_visible_error`: Deterministic ordering and visible ERROR log with omitted slugs on cap breach.
-  - `test_ensure_presets_seeded_idempotent_transition`: Seeds fresh DB, transitions older unedited preset versions, preserves user-edited custom specs.
-  - `test_activate_preset_version_operator_route`: Guarded operator route explicitly activates latest preset version.
+  - `test_worker_active_specs_deterministic_order_and_visible_error`: Deterministic ordering and visible ERROR log with processed count on cap breach.
+  - `test_ensure_presets_seeded_bootstraps_fresh_db_and_noop_when_populated`: Fresh DB bootstrapped; already populated DB left unmutated.
+  - `test_get_scanners_is_read_only`: `GET /api/v1/scanners` performs zero mutations on active versions or specs.
+  - `test_preset_upgrade_operator_endpoint_dry_run_and_apply`: `dry_run=True` reports planned transitions without DB mutations; `dry_run=False` transitions matching presets and preserves custom specs.
+  - `test_activate_preset_version_operator_route_and_cap_guard`: Guarded operator route explicitly activates preset version and rejects with HTTP 400 when active cap is reached.
 - `tests/test_scanner_fresh_enqueue.py`: **18 passed** (fresh enqueue, relay lease, bounded queue).
 - `tests/test_scanner_closed_bar_guard.py`: **5 passed** (closed bar enforcement, future candidate filtering).
 - `tests/test_scanner_engine.py`: **1 passed** (scanner engine baseline candidate generation).
-- **Total:** **38 passed**, **0 failed**.
+- **Total:** **40 passed**, **0 failed**.
 - **Code hygiene:** `uvx ruff check` clean; `git diff --check` clean (0 trailing whitespace issues).

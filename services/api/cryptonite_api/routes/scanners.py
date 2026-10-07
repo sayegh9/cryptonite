@@ -13,8 +13,26 @@ from cryptonite_scanner.models import (
 )
 from cryptonite_scanner.presets import BUILTIN_PRESETS
 from fastapi import APIRouter, HTTPException, Request, Response, status
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/scanners", tags=["scanners"])
+
+
+class PresetUpgradeItem(BaseModel):
+    slug: str
+    name: str
+    current_version_num: int | None = None
+    current_hash: str | None = None
+    target_hash: str
+    action: str
+    detail: str
+
+
+class PresetUpgradeResponse(BaseModel):
+    dry_run: bool
+    active_count: int
+    max_active_specs: int = MAX_ACTIVE_SPECS
+    items: list[PresetUpgradeItem]
 
 
 # Known prior hashes for unedited built-in presets (before event crossover rewrite)
@@ -27,109 +45,66 @@ PRESET_PREVIOUS_HASHES: dict[str, set[str]] = {
 
 
 async def ensure_presets_seeded(pool: Any) -> None:
-    """Seed or idempotently transition built-in scanner presets.
+    """Bootstrap built-in scanner presets on a fresh, unseeded database.
 
-    - Inserts missing presets on a fresh or partial database.
-    - Transitions unedited presets matching prior built-in hashes to the new event-crossover version.
-    - Preserves user-edited specs by leaving their active version untouched.
+    - Returns immediately if any scan_specs exist (only fresh database bootstrapped).
+    - Honors MAX_ACTIVE_SPECS limit if presets ever exceed cap.
+    - Upgrades to new preset versions must be executed via POST /presets/upgrade.
     """
     if not pool:
         return
 
-    for preset in BUILTIN_PRESETS:
-        univ_dict = preset.universe.model_dump()
-        rules_dict = [rg.model_dump() for rg in preset.rules]
-        target_hash = compute_spec_hash(univ_dict, {"rules": rules_dict})
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
+            count = await conn.fetchval("SELECT count(*) FROM scan_specs;")
+            if count and count > 0:
+                return
 
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                spec_row = await conn.fetchrow(
-                    "SELECT id, slug, active_version_id, is_archived FROM scan_specs WHERE slug = $1;",
+            active_count = 0
+            for preset in BUILTIN_PRESETS:
+                univ_dict = preset.universe.model_dump()
+                rules_dict = [rg.model_dump() for rg in preset.rules]
+                target_hash = compute_spec_hash(univ_dict, {"rules": rules_dict})
+
+                spec_id = uuid4()
+                version_id = uuid4()
+                should_activate = active_count < MAX_ACTIVE_SPECS
+                await conn.execute(
+                    """
+                    INSERT INTO scan_specs (id, slug, name, description, active_version_id, is_archived)
+                    VALUES ($1, $2, $3, $4, NULL, $5);
+                    """,
+                    spec_id,
                     preset.slug,
+                    preset.name,
+                    preset.description,
+                    not should_activate,
                 )
-                if not spec_row:
-                    spec_id = uuid4()
-                    version_id = uuid4()
-                    await conn.execute(
-                        """
-                        INSERT INTO scan_specs (id, slug, name, description, active_version_id, is_archived)
-                        VALUES ($1, $2, $3, $4, NULL, false);
-                        """,
-                        spec_id,
-                        preset.slug,
-                        preset.name,
-                        preset.description,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
-                        VALUES ($1, $2, 1, $3, $4::jsonb, $5::jsonb);
-                        """,
-                        version_id,
-                        spec_id,
-                        target_hash,
-                        json.dumps(univ_dict),
-                        json.dumps(rules_dict),
-                    )
+                await conn.execute(
+                    """
+                    INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                    VALUES ($1, $2, 1, $3, $4::jsonb, $5::jsonb);
+                    """,
+                    version_id,
+                    spec_id,
+                    target_hash,
+                    json.dumps(univ_dict),
+                    json.dumps(rules_dict),
+                )
+                if should_activate:
                     await conn.execute(
                         "UPDATE scan_specs SET active_version_id = $1 WHERE id = $2;",
                         version_id,
                         spec_id,
                     )
-                else:
-                    spec_id = spec_row["id"]
-                    active_ver_id = spec_row["active_version_id"]
-                    active_hash = None
-                    if active_ver_id:
-                        active_hash = await conn.fetchval(
-                            "SELECT spec_hash FROM scan_spec_versions WHERE id = $1;",
-                            active_ver_id,
-                        )
-
-                    # If already on the target hash, idempotent no-op
-                    if active_hash == target_hash:
-                        continue
-
-                    # Only auto-transition if current active spec matches a known prior built-in hash
-                    prior_hashes = PRESET_PREVIOUS_HASHES.get(preset.slug, set())
-                    if active_hash in prior_hashes:
-                        existing_ver_id = await conn.fetchval(
-                            "SELECT id FROM scan_spec_versions WHERE spec_id = $1 AND spec_hash = $2;",
-                            spec_id,
-                            target_hash,
-                        )
-                        if not existing_ver_id:
-                            existing_ver_id = uuid4()
-                            max_ver = await conn.fetchval(
-                                "SELECT COALESCE(MAX(version_num), 0) FROM scan_spec_versions WHERE spec_id = $1;",
-                                spec_id,
-                            )
-                            next_ver = (max_ver or 0) + 1
-                            await conn.execute(
-                                """
-                                INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
-                                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb);
-                                """,
-                                existing_ver_id,
-                                spec_id,
-                                next_ver,
-                                target_hash,
-                                json.dumps(univ_dict),
-                                json.dumps(rules_dict),
-                            )
-                        await conn.execute(
-                            "UPDATE scan_specs SET active_version_id = $1, description = $2, updated_at = now() WHERE id = $3;",
-                            existing_ver_id,
-                            preset.description,
-                            spec_id,
-                        )
+                    active_count += 1
 
 
 @router.get("", dependencies=AUTHED_READ)
 async def list_scanners(request: Request) -> list[ScanSpecRead]:
     """List active scanner specs with their current active version."""
     pool = request.app.state.pool
-    await ensure_presets_seeded(pool)
 
     rows = await pool.fetch(
         """
@@ -188,11 +163,7 @@ async def create_scanner(spec_in: ScanSpecCreate, request: Request) -> ScanSpecR
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Serialise concurrent spec creations to avoid racing MAX_ACTIVE_SPECS limit
-            if hasattr(conn, "execute"):
-                try:
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
-                except Exception:
-                    pass
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
 
             # Check unique slug
             existing = await conn.fetchval("SELECT id FROM scan_specs WHERE slug = $1;", spec_in.slug)
@@ -424,6 +395,187 @@ async def get_scan_job(job_id: UUID, request: Request) -> ScanJobRead:
     )
 
 
+@router.post("/presets/upgrade", dependencies=OPERATOR_WRITE)
+async def upgrade_presets(
+    request: Request,
+    dry_run: bool = False,
+) -> PresetUpgradeResponse:
+    """Explicit operator-only idempotent upgrade for built-in scanner presets.
+
+    - Supports dry_run mode (E1 sequencing) to preview changes without mutation.
+    - Transitions presets whose active version matches a known prior built-in hash.
+    - Preserves user-edited / custom specs untouched.
+    - Honors MAX_ACTIVE_SPECS limit and never unarchives specs accidentally.
+    """
+    pool = request.app.state.pool
+    items: list[PresetUpgradeItem] = []
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
+            active_count = await conn.fetchval(
+                "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
+            )
+
+            for preset in BUILTIN_PRESETS:
+                univ_dict = preset.universe.model_dump()
+                rules_dict = [rg.model_dump() for rg in preset.rules]
+                target_hash = compute_spec_hash(univ_dict, {"rules": rules_dict})
+
+                spec_row = await conn.fetchrow(
+                    """
+                    SELECT s.id, s.slug, s.name, s.active_version_id, s.is_archived,
+                           v.version_num, v.spec_hash
+                    FROM scan_specs s
+                    LEFT JOIN scan_spec_versions v ON s.active_version_id = v.id
+                    WHERE s.slug = $1;
+                    """,
+                    preset.slug,
+                )
+
+                if not spec_row:
+                    should_activate = active_count < MAX_ACTIVE_SPECS
+                    action = "would_seed" if dry_run else "missing_seeded"
+                    detail = (
+                        f"Preset '{preset.slug}' not present in DB; {'would seed' if dry_run else 'seeded'} "
+                        f"as {'active' if should_activate else 'archived (cap reached)'}."
+                    )
+                    if not dry_run:
+                        spec_id = uuid4()
+                        version_id = uuid4()
+                        await conn.execute(
+                            """
+                            INSERT INTO scan_specs (id, slug, name, description, active_version_id, is_archived)
+                            VALUES ($1, $2, $3, $4, NULL, $5);
+                            """,
+                            spec_id,
+                            preset.slug,
+                            preset.name,
+                            preset.description,
+                            not should_activate,
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                            VALUES ($1, $2, 1, $3, $4::jsonb, $5::jsonb);
+                            """,
+                            version_id,
+                            spec_id,
+                            target_hash,
+                            json.dumps(univ_dict),
+                            json.dumps(rules_dict),
+                        )
+                        if should_activate:
+                            await conn.execute(
+                                "UPDATE scan_specs SET active_version_id = $1 WHERE id = $2;",
+                                version_id,
+                                spec_id,
+                            )
+                            active_count += 1
+                    items.append(
+                        PresetUpgradeItem(
+                            slug=preset.slug,
+                            name=preset.name,
+                            current_version_num=None,
+                            current_hash=None,
+                            target_hash=target_hash,
+                            action=action,
+                            detail=detail,
+                        )
+                    )
+                    continue
+
+                curr_hash = spec_row["spec_hash"]
+                curr_ver = spec_row["version_num"]
+                is_archived = spec_row["is_archived"]
+
+                if curr_hash == target_hash:
+                    items.append(
+                        PresetUpgradeItem(
+                            slug=preset.slug,
+                            name=preset.name,
+                            current_version_num=curr_ver,
+                            current_hash=curr_hash,
+                            target_hash=target_hash,
+                            action="already_current",
+                            detail=f"Preset '{preset.slug}' is already on target hash {target_hash[:12]}...",
+                        )
+                    )
+                    continue
+
+                prior_hashes = PRESET_PREVIOUS_HASHES.get(preset.slug, set())
+                if curr_hash in prior_hashes:
+                    action = "would_upgrade" if dry_run else "upgraded"
+                    detail = (
+                        f"Matched prior built-in hash {curr_hash[:12]}...; "
+                        f"{'would upgrade' if dry_run else 'upgraded'} to v{(curr_ver or 0) + 1} "
+                        f"with event crossover target hash {target_hash[:12]}... "
+                        f"(archived state preserved: {is_archived})."
+                    )
+                    if not dry_run:
+                        spec_id = spec_row["id"]
+                        existing_ver_id = await conn.fetchval(
+                            "SELECT id FROM scan_spec_versions WHERE spec_id = $1 AND spec_hash = $2;",
+                            spec_id,
+                            target_hash,
+                        )
+                        if not existing_ver_id:
+                            existing_ver_id = uuid4()
+                            max_ver = await conn.fetchval(
+                                "SELECT COALESCE(MAX(version_num), 0) FROM scan_spec_versions WHERE spec_id = $1;",
+                                spec_id,
+                            )
+                            next_ver = (max_ver or 0) + 1
+                            await conn.execute(
+                                """
+                                INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb);
+                                """,
+                                existing_ver_id,
+                                spec_id,
+                                next_ver,
+                                target_hash,
+                                json.dumps(univ_dict),
+                                json.dumps(rules_dict),
+                            )
+                        await conn.execute(
+                            "UPDATE scan_specs SET active_version_id = $1, description = $2, updated_at = now() WHERE id = $3;",
+                            existing_ver_id,
+                            preset.description,
+                            spec_id,
+                        )
+                    items.append(
+                        PresetUpgradeItem(
+                            slug=preset.slug,
+                            name=preset.name,
+                            current_version_num=curr_ver,
+                            current_hash=curr_hash,
+                            target_hash=target_hash,
+                            action=action,
+                            detail=detail,
+                        )
+                    )
+                else:
+                    items.append(
+                        PresetUpgradeItem(
+                            slug=preset.slug,
+                            name=preset.name,
+                            current_version_num=curr_ver,
+                            current_hash=curr_hash,
+                            target_hash=target_hash,
+                            action="custom_preserved",
+                            detail=f"Preset has custom hash {curr_hash[:12] if curr_hash else 'none'}; user modifications preserved.",
+                        )
+                    )
+
+    return PresetUpgradeResponse(
+        dry_run=dry_run,
+        active_count=active_count,
+        max_active_specs=MAX_ACTIVE_SPECS,
+        items=items,
+    )
+
+
 @router.post("/presets/{slug}/activate", dependencies=OPERATOR_WRITE)
 async def activate_preset_version(slug: str, request: Request) -> ScanSpecRead:
     """Explicit guarded operator activation to upgrade/activate the latest built-in preset version."""
@@ -438,12 +590,24 @@ async def activate_preset_version(slug: str, request: Request) -> ScanSpecRead:
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
             spec_row = await conn.fetchrow(
                 "SELECT id, slug, active_version_id, is_archived FROM scan_specs WHERE slug = $1;",
                 slug,
             )
             if not spec_row:
                 raise HTTPException(status_code=404, detail=f"Scan spec '{slug}' not found in database")
+
+            is_currently_active = (not spec_row["is_archived"]) and (spec_row["active_version_id"] is not None)
+            if not is_currently_active:
+                active_count = await conn.fetchval(
+                    "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
+                )
+                if active_count >= MAX_ACTIVE_SPECS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot activate preset: maximum active specs limit ({MAX_ACTIVE_SPECS}) reached. Archive an existing spec first.",
+                    )
 
             spec_id = spec_row["id"]
             existing_ver_id = await conn.fetchval(
