@@ -31,7 +31,7 @@ Follow this exact order during the E1 deployment:
    ```
 3. **Database Migration**: Apply all Alembic migrations up to head using the `test` service container runner (the `api` runtime container does not package `infra/migrations`, while the `test` service mounts the repository workspace and includes the Alembic environment):
    ```bash
-   docker compose -f infra/docker-compose.yml run --rm test alembic -c infra/migrations/alembic.ini upgrade head
+   docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
    ```
 4. **Ingest Producer Online (B5 Sequencing Contract)**:
    Rebuild and recreate the ingest producer container using `--no-deps` before debate workers deploy, ensuring `quote:tick:*` snapshot keys are populated in Redis while preserving stateful containers (`postgres`, `redis`):

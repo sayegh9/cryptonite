@@ -172,7 +172,7 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
 
             # Transaction has committed after block exit
             if apply:
-                print("\n[+] Database transaction committed.")
+                print("\n[*] Database transaction committed; verification pending...")
             else:
                 print("\n[*] Dry run complete. No modifications were made to the database.")
                 print("[*] To execute the upgrades, re-run with --apply flag.")
@@ -234,6 +234,7 @@ async def run_direct_db(db_url: str, apply: bool) -> int:
 
             print(f"[+] Committed re-read verification PASSED: {len(expected_upgrades)} presets verified with valid event crossover rules.")
             print(f"[+] Active specs count within limit: {re_read_active_count}/{MAX_ACTIVE_SPECS}")
+            print("[+] Preset upgrades successfully committed and verified.")
 
             if rollback_sqls:
                 print("\n[*] Rollback Criteria:")
