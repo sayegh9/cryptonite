@@ -1,10 +1,10 @@
-"""Scanner specifications, immutable versions, and execution jobs route."""
-
 import json
 from typing import Any
 from uuid import UUID, uuid4
 
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE
 from cryptonite_scanner.models import (
+    MAX_ACTIVE_SPECS,
     ScanJobRead,
     ScanSpecCreate,
     ScanSpecRead,
@@ -12,7 +12,6 @@ from cryptonite_scanner.models import (
     compute_spec_hash,
 )
 from cryptonite_scanner.presets import BUILTIN_PRESETS
-from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
 router = APIRouter(prefix="/api/v1/scanners", tags=["scanners"])
@@ -127,6 +126,15 @@ async def create_scanner(spec_in: ScanSpecCreate, request: Request) -> ScanSpecR
             existing = await conn.fetchval("SELECT id FROM scan_specs WHERE slug = $1;", spec_in.slug)
             if existing:
                 raise HTTPException(status_code=400, detail=f"Slug '{spec_in.slug}' already exists")
+
+            active_count = await conn.fetchval(
+                "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
+            )
+            if active_count >= MAX_ACTIVE_SPECS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot create active spec: maximum active specs limit ({MAX_ACTIVE_SPECS}) reached. Archive an existing spec first.",
+                )
 
             await conn.execute(
                 """

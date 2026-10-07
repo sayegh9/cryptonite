@@ -12,7 +12,7 @@ from cryptonite_scanner.models import (
 PRESET_RSI_OVERSOLD = ScanSpecCreate(
     slug="rsi-oversold-reversal",
     name="RSI Oversold Reversal",
-    description="Identifies oversold conditions with RSI < 30 and bounce above lower Bollinger Band with volume.",
+    description="Identifies oversold reversals where price crosses above lower Bollinger Band with RSI <= 35 and volume.",
     universe=UniverseConfig(
         instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
         timeframes=["15m", "1h"],
@@ -22,15 +22,15 @@ PRESET_RSI_OVERSOLD = ScanSpecCreate(
             category="trigger",
             logic="AND",
             conditions=[
-                RuleCondition(field="rsi", operator=RuleOperator.LT, value=30.0),
+                RuleCondition(field="close", operator=RuleOperator.CROSS_ABOVE, value="bb_lower", lookback=1),
             ],
         ),
         RuleGroup(
             category="confirmation",
             logic="AND",
             conditions=[
-                RuleCondition(field="close", operator=RuleOperator.GT, value="bb_lower"),
-                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=1.0),
+                RuleCondition(field="rsi", operator=RuleOperator.LTE, value=35.0, lookback=0),
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=1.0, lookback=0),
             ],
         ),
     ],
@@ -40,7 +40,7 @@ PRESET_RSI_OVERSOLD = ScanSpecCreate(
 PRESET_TREND_PULLBACK = ScanSpecCreate(
     slug="trend-pullback",
     name="Trend Pullback Bounce",
-    description="Scans for uptrending assets (Close > EMA200, EMA20 > EMA50) that pulled back to RSI <= 45 with a bullish candle.",
+    description="Scans for uptrending assets (Close > EMA200, EMA20 > EMA50) where RSI crosses above 40 out of a pullback with a bullish candle.",
     universe=UniverseConfig(
         instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
         timeframes=["15m", "1h"],
@@ -50,22 +50,22 @@ PRESET_TREND_PULLBACK = ScanSpecCreate(
             category="trend",
             logic="AND",
             conditions=[
-                RuleCondition(field="close", operator=RuleOperator.GT, value="ema_200"),
-                RuleCondition(field="ema_20", operator=RuleOperator.GT, value="ema_50"),
+                RuleCondition(field="close", operator=RuleOperator.GT, value="ema_200", lookback=0),
+                RuleCondition(field="ema_20", operator=RuleOperator.GT, value="ema_50", lookback=0),
             ],
         ),
         RuleGroup(
             category="trigger",
             logic="AND",
             conditions=[
-                RuleCondition(field="rsi", operator=RuleOperator.LTE, value=45.0),
+                RuleCondition(field="rsi", operator=RuleOperator.CROSS_ABOVE, value=40.0, lookback=1),
             ],
         ),
         RuleGroup(
             category="confirmation",
             logic="AND",
             conditions=[
-                RuleCondition(field="close", operator=RuleOperator.GT, value="open"),
+                RuleCondition(field="close", operator=RuleOperator.GT, value="open", lookback=0),
             ],
         ),
     ],
@@ -85,15 +85,15 @@ PRESET_BOLLINGER_BREAKOUT = ScanSpecCreate(
             category="trigger",
             logic="AND",
             conditions=[
-                RuleCondition(field="close", operator=RuleOperator.GT, value="bb_upper"),
+                RuleCondition(field="close", operator=RuleOperator.CROSS_ABOVE, value="bb_upper", lookback=1),
             ],
         ),
         RuleGroup(
             category="confirmation",
             logic="AND",
             conditions=[
-                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=1.5),
-                RuleCondition(field="close", operator=RuleOperator.GT, value="open"),
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=1.5, lookback=0),
+                RuleCondition(field="close", operator=RuleOperator.GT, value="open", lookback=0),
             ],
         ),
     ],
@@ -113,14 +113,14 @@ PRESET_MACD_MOMENTUM = ScanSpecCreate(
             category="trend",
             logic="AND",
             conditions=[
-                RuleCondition(field="close", operator=RuleOperator.GT, value="ema_50"),
+                RuleCondition(field="close", operator=RuleOperator.GT, value="ema_50", lookback=0),
             ],
         ),
         RuleGroup(
             category="trigger",
             logic="AND",
             conditions=[
-                RuleCondition(field="macd_hist", operator=RuleOperator.GT, value=0.0),
+                RuleCondition(field="macd_hist", operator=RuleOperator.CROSS_ABOVE, value=0.0, lookback=1),
             ],
         ),
     ],

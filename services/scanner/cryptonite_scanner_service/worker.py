@@ -25,10 +25,12 @@ import redis.asyncio as aioredis
 from cryptonite_scanner.brief import brief_data, build_brief
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import (
+    MAX_ACTIVE_SPECS,
     RiskConfig,
     RuleCondition,
     RuleGroup,
     RuleOperator,
+    deduplicate_candidates,
 )
 from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
 from cryptonite_storage.queries import AnalyticsQueryEngine
@@ -358,6 +360,15 @@ class ScannerWorker:
             """
         )
 
+        if len(rows) > MAX_ACTIVE_SPECS:
+            logger.warning(
+                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d); capping to %d",
+                len(rows),
+                MAX_ACTIVE_SPECS,
+                MAX_ACTIVE_SPECS,
+            )
+            rows = rows[:MAX_ACTIVE_SPECS]
+
         for r in rows:
             version_id = r["version_id"]
             universe = json.loads(r["universe"]) if isinstance(r["universe"], str) else r["universe"]
@@ -474,6 +485,15 @@ class ScannerWorker:
             WHERE s.is_archived = false;
             """
         )
+
+        if len(active_specs) > MAX_ACTIVE_SPECS:
+            logger.warning(
+                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d); capping to %d",
+                len(active_specs),
+                MAX_ACTIVE_SPECS,
+                MAX_ACTIVE_SPECS,
+            )
+            active_specs = active_specs[:MAX_ACTIVE_SPECS]
 
         for spec in active_specs:
             universe = json.loads(spec["universe"]) if isinstance(spec["universe"], str) else spec["universe"]
@@ -667,6 +687,7 @@ class ScannerWorker:
 
         now_ns = time.time_ns()
         all_candidates = drop_unclosed_candidates(all_candidates, now_ns)
+        all_candidates = deduplicate_candidates(all_candidates)
         to_queue: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []  # fresh, new: published after the commit
 
         # 3. Commit run, candidates, checkpoints, and outbox in a single transaction
@@ -723,6 +744,28 @@ class ScannerWorker:
 
                 # b. Insert candidates with idempotency key
                 for c in all_candidates:
+                    # Deduplicate across specs per (instrument, timeframe, bar)
+                    existing_across_specs = await conn.fetchval(
+                        """
+                        SELECT id FROM signal_candidates
+                        WHERE instrument_id = $1 AND timeframe = $2 AND bar_close_inclusive_ns = $3
+                        LIMIT 1;
+                        """,
+                        c.instrument_id,
+                        c.timeframe,
+                        c.bar_close_inclusive_ns,
+                    )
+                    if existing_across_specs:
+                        logger.debug(
+                            "Candidate %s for %s %s %d skipped: already exists across specs (%s)",
+                            c.id,
+                            c.instrument_id,
+                            c.timeframe,
+                            c.bar_close_inclusive_ns,
+                            existing_across_specs,
+                        )
+                        continue
+
                     res = await conn.fetchrow(
                         """
                         INSERT INTO signal_candidates (

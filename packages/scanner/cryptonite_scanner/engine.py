@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import polars as pl
+
 from cryptonite_scanner.indicators import (
     calc_atr,
     calc_bollinger_bands,
@@ -23,6 +24,7 @@ from cryptonite_scanner.models import (
     RuleGroup,
     RuleOperator,
     SignalCandidateRead,
+    deduplicate_candidates,
 )
 
 
@@ -124,7 +126,6 @@ class ScannerEngine:
             for group, cond_details in rule_eval_details:
                 for cond, _ in cond_details:
                     actual_val = row.get(cond.field)
-                    target_val = row.get(cond.value) if isinstance(cond.value, str) else cond.value
                     if actual_val is not None:
                         matched_explanations.append(
                             f"[{group.category.upper()}] {cond.field} ({float(actual_val):.2f}) {cond.operator} {cond.value}"
@@ -170,6 +171,8 @@ class ScannerEngine:
 
         return candidates
 
+    deduplicate_candidates = staticmethod(deduplicate_candidates)
+
     @staticmethod
     def _build_condition_expr(cond: RuleCondition) -> pl.Expr:
         """Construct a Polars boolean expression for a rule condition."""
@@ -181,23 +184,40 @@ class ScannerEngine:
         else:
             right_col = pl.lit(float(cond.value))
 
+        is_cross_above = cond.operator in (
+            RuleOperator.CROSS_ABOVE,
+            getattr(RuleOperator, "CROSSES_ABOVE", "crosses_above"),
+        )
+        is_cross_below = cond.operator in (
+            RuleOperator.CROSS_BELOW,
+            getattr(RuleOperator, "CROSSES_BELOW", "crosses_below"),
+        )
+
+        if is_cross_above:
+            shift_n = cond.lookback if cond.lookback >= 1 else 1
+            prev_left = left_col.shift(shift_n)
+            prev_right = right_col.shift(shift_n) if isinstance(cond.value, str) else right_col
+            return ((prev_left <= prev_right) & (left_col > right_col)).fill_null(False)
+        elif is_cross_below:
+            shift_n = cond.lookback if cond.lookback >= 1 else 1
+            prev_left = left_col.shift(shift_n)
+            prev_right = right_col.shift(shift_n) if isinstance(cond.value, str) else right_col
+            return ((prev_left >= prev_right) & (left_col < right_col)).fill_null(False)
+
+        if cond.lookback > 0:
+            left_col = left_col.shift(cond.lookback)
+            if isinstance(cond.value, str):
+                right_col = right_col.shift(cond.lookback)
+
         if cond.operator == RuleOperator.GT:
-            return left_col > right_col
+            return (left_col > right_col).fill_null(False)
         elif cond.operator == RuleOperator.GTE:
-            return left_col >= right_col
+            return (left_col >= right_col).fill_null(False)
         elif cond.operator == RuleOperator.LT:
-            return left_col < right_col
+            return (left_col < right_col).fill_null(False)
         elif cond.operator == RuleOperator.LTE:
-            return left_col <= right_col
+            return (left_col <= right_col).fill_null(False)
         elif cond.operator == RuleOperator.EQ:
-            return left_col == right_col
-        elif cond.operator == RuleOperator.CROSS_ABOVE:
-            prev_left = left_col.shift(1)
-            prev_right = right_col.shift(1) if isinstance(cond.value, str) else right_col
-            return (prev_left <= prev_right) & (left_col > right_col)
-        elif cond.operator == RuleOperator.CROSS_BELOW:
-            prev_left = left_col.shift(1)
-            prev_right = right_col.shift(1) if isinstance(cond.value, str) else right_col
-            return (prev_left >= prev_right) & (left_col < right_col)
+            return (left_col == right_col).fill_null(False)
 
         return pl.lit(True)
