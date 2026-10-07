@@ -257,8 +257,8 @@ async def test_two_mandates_cannot_together_exceed_the_btc_cap(db):
 
     # F7 lowers the cap to 10%: new entries stop, exits still go through
     await db.execute(
-        """INSERT INTO risk_limit_overrides (environment, account_id, cross_mandate_exposure_pct, updated_by, reason)
-           VALUES ('PAPER', $1, 10, 'op', 'test the cap')""", ACCOUNT)
+        """INSERT INTO risk_limit_overrides (environment, account_id, cross_mandate_exposure_pct, updated_by, reason, override_version)
+           VALUES ('PAPER', $1, 10, 'op', 'test the cap', 1)""", ACCOUNT)
     await risk_overrides.refresh_risk_limits(engine, db, env="PAPER")
     assert risk_overrides.STATE.cross_cap_pct == D("10")
     status, reason = await drain(db, engine, quotes, await queue(db, b, {**eth_entry, "quantity": "0.1"}))

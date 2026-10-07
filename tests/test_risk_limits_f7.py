@@ -181,7 +181,7 @@ async def test_migration_035_repeats_the_invariants(db_url):
     try:
         acct = f"A-{uuid.uuid4().hex[:6]}"
         await conn.execute(
-            "INSERT INTO risk_limit_overrides (environment, account_id, max_daily_loss_pct, updated_by, reason) VALUES ('PAPER', $1, 2, 'op', 'tighten')",
+            "INSERT INTO risk_limit_overrides (environment, account_id, max_daily_loss_pct, updated_by, reason, override_version) VALUES ('PAPER', $1, 2, 'op', 'tighten', 1)",
             acct)
         for col, val in [("max_daily_loss_pct", "5.5"), ("max_order_equity_pct", "26"), ("max_order_equity_pct", "0.5"),
                          ("cross_mandate_exposure_pct", "25.01"), ("cross_mandate_exposure_pct", "0")]:
