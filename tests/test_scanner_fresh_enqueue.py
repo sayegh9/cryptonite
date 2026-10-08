@@ -192,7 +192,7 @@ async def test_a_crash_between_commit_and_enqueue_loses_nothing(db_url, admin, r
         m.setattr(ScannerWorker, "_publish_debate_candidates", dies_after_commit)
         try:
             await w._execute_scan(spec_version_id=version_id, spec_hash="h", universe_data=UNIVERSE,
-                                  rules_data=RULES, trigger_reason="COMMITTED_BAR_EVENT", trigger_event_id=str(uuid4()))
+                                  rules_data=RULES, trigger_reason="MANUAL_JOB", trigger_event_id=str(uuid4()))
         finally:
             await w.pool.close()
     assert await queued(redis15) == []
@@ -218,7 +218,7 @@ async def test_the_relay_never_queues_a_candidate_that_aged_out(db_url, admin, r
     w = await make_worker(db_url, LIVE_LAKE, DownRedis(redis15.client))
     try:
         await w._execute_scan(spec_version_id=version_id, spec_hash="h", universe_data=UNIVERSE, rules_data=RULES,
-                              trigger_reason="COMMITTED_BAR_EVENT", trigger_event_id=str(uuid4()))
+                              trigger_reason="MANUAL_JOB", trigger_event_id=str(uuid4()))
         assert await admin.fetchval("SELECT count(*) FROM scanner_debate_outbox WHERE status = 'PENDING'") == 2
         # the relay only gets to them a day later: age every stored payload past its fresh window
         await admin.execute(
@@ -255,7 +255,7 @@ async def test_a_failed_enqueue_is_retried_by_the_relay(db_url, admin, redis15):
     w = await make_worker(db_url, LIVE_LAKE, DownRedis(redis15.client))
     try:
         await w._execute_scan(spec_version_id=version_id, spec_hash="h", universe_data=UNIVERSE, rules_data=RULES,
-                              trigger_reason="COMMITTED_BAR_EVENT", trigger_event_id=str(uuid4()))
+                              trigger_reason="MANUAL_JOB", trigger_event_id=str(uuid4()))
         rows = await admin.fetch("SELECT status, attempt_count, last_error FROM scanner_debate_outbox")
         assert [(r["status"], r["attempt_count"]) for r in rows] == [("PENDING", 1)] * 2
         assert all("redis down" in r["last_error"] for r in rows)
@@ -277,7 +277,7 @@ async def test_relay_gives_up_after_max_attempts(db_url, admin, redis15, monkeyp
     w = await make_worker(db_url, LIVE_LAKE, DownRedis(redis15.client))
     try:
         await w._execute_scan(spec_version_id=version_id, spec_hash="h", universe_data=UNIVERSE, rules_data=RULES,
-                              trigger_reason="COMMITTED_BAR_EVENT", trigger_event_id=str(uuid4()))
+                              trigger_reason="MANUAL_JOB", trigger_event_id=str(uuid4()))
         await admin.execute("UPDATE scanner_debate_outbox SET next_attempt_at = now() - interval '1 second'")
         assert await w.relay_debate_outbox_once() == 0
     finally:

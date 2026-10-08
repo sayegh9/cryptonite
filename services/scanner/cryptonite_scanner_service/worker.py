@@ -489,9 +489,9 @@ class ScannerWorker:
         bar_close_ns = payload.get("bar_close_inclusive_ns", time.time_ns())
         bar_timeframe = payload.get("timeframe")
 
-        if bar_timeframe and bar_timeframe not in ALLOWED_AUTOMATIC_TIMEFRAMES:
+        if not bar_timeframe or bar_timeframe not in ALLOWED_AUTOMATIC_TIMEFRAMES:
             logger.debug(
-                "Skipping committed bar event %s: timeframe %s not in ALLOWED_AUTOMATIC_TIMEFRAMES %s",
+                "Skipping committed bar event %s: invalid or missing timeframe %r (allowed: %s)",
                 event_id,
                 bar_timeframe,
                 ALLOWED_AUTOMATIC_TIMEFRAMES,
@@ -649,15 +649,16 @@ class ScannerWorker:
         source_instruments = universe_data.get("instrument_ids", ["BTCUSDT.BINANCE"])
         source_timeframes = universe_data.get("timeframes", ["1m", "5m", "15m", "1h"])
 
-        if trigger_reason == "COMMITTED_BAR_EVENT" and bar_timeframe is not None:
-            # Automatic scan on a specific committed closed bar event:
-            # strictly evaluate only the committed allowed event timeframe
+        if trigger_reason == "COMMITTED_BAR_EVENT":
+            # Automatic scan on a committed closed bar event:
+            # strictly evaluate only the committed allowed event timeframe.
+            # Refuse missing, None, or disallowed timeframes.
             if bar_timeframe in ALLOWED_AUTOMATIC_TIMEFRAMES and bar_timeframe in source_timeframes:
                 target_timeframes = [bar_timeframe]
             else:
                 target_timeframes = []
         else:
-            # Manual jobs, priming, or test executions: evaluate configured timeframes
+            # Manual jobs, priming, or backfills: evaluate configured timeframes
             target_timeframes = source_timeframes
 
         if not target_timeframes:

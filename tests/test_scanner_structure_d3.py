@@ -725,6 +725,7 @@ async def test_worker_pre_insert_rr_rejection_gate(admin, db_url, monkeypatch):
         trigger_reason="COMMITTED_BAR_EVENT",
         trigger_event_id=str(uuid4()),
         watermark_ns=now_ts,
+        bar_timeframe="15m",
     )
 
     # Verify database contents:
@@ -910,10 +911,31 @@ async def test_integration_stream_message_mixed_universe_5m_15m(admin, db_url, m
 
     # 5m event is skipped by stream handler: 0 evaluations, candidate count unchanged
     assert len(evaluated_tfs) == 0
-    cands_after = await pool.fetch("SELECT timeframe FROM signal_candidates WHERE spec_version_id = $1;", ver_id)
-    assert len(cands_after) == 1
-    outbox_after = await pool.fetch("SELECT candidate_id FROM scanner_debate_outbox;")
-    assert len(outbox_after) == 1
+    cands_after_5m = await pool.fetch("SELECT timeframe FROM signal_candidates WHERE spec_version_id = $1;", ver_id)
+    assert len(cands_after_5m) == 1
+    outbox_after_5m = await pool.fetch("SELECT candidate_id FROM scanner_debate_outbox;")
+    assert len(outbox_after_5m) == 1
+    assert ("closed_bar_committed", worker.consumer_group, "5m-msg-1") in worker.redis.xacked
+
+    # 3. Send event with missing timeframe (omitted or None)
+    evaluated_tfs.clear()
+    msg_missing_tf = {
+        "data": json.dumps({
+            "event_id": "ev-missing-tf-integration",
+            "instrument_id": "BTCUSDT.BINANCE",
+            "bar_close_inclusive_ns": now_ts,
+            # 'timeframe' is deliberately omitted
+        })
+    }
+    await worker._handle_stream_message("closed_bar_committed", "missing-tf-msg-1", msg_missing_tf)
+
+    # Missing timeframe event is skipped by stream handler: 0 evaluations, candidate count unchanged, and message is acknowledged safely
+    assert len(evaluated_tfs) == 0
+    cands_after_missing = await pool.fetch("SELECT timeframe FROM signal_candidates WHERE spec_version_id = $1;", ver_id)
+    assert len(cands_after_missing) == 1
+    outbox_after_missing = await pool.fetch("SELECT candidate_id FROM scanner_debate_outbox;")
+    assert len(outbox_after_missing) == 1
+    assert ("closed_bar_committed", worker.consumer_group, "missing-tf-msg-1") in worker.redis.xacked
 
     await pool.close()
 
@@ -1041,6 +1063,7 @@ async def test_worker_qualification_before_dedupe_two_specs_same_bar(admin, db_u
         trigger_reason="COMMITTED_BAR_EVENT",
         trigger_event_id=str(uuid4()),
         watermark_ns=now_ts,
+        bar_timeframe="15m",
     )
 
     # Spec A candidate must NOT exist
