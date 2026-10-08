@@ -10,9 +10,14 @@
 | Sunday 02:45 | `cryptonite-backup drill`: restore the newest dump into `cryptonite_restore_drill`, prove row-count equality against the backup-time manifest, drop it | — |
 
 Output goes to `~/backups/cryptonite/{db,data,secrets}` (mode 700/600); every mode appends to
-`~/backups/cryptonite/backup.log`, and each drill additionally writes a per-run evidence file
-`~/backups/cryptonite/drill-<stamp>.log`. The DB backup needs `infra-postgres-1` running; when the stack is
-stopped the night's run fails and is logged. PG access is portable: with `PGHOST`/`PGPORT`/`PGDATABASE`
+`~/backups/cryptonite/backup.log` — successes and failures alike. A failed `db`/`data`/`secrets` run
+is always logged with a durable nonzero verdict: the specific reason when a step can report one,
+otherwise a generic "… backup attempt failed (exit N); nothing published" line written by the exit
+trap, and nothing is published (partial scratch files are removed). Each drill additionally writes a
+per-run evidence file `~/backups/cryptonite/drill-<stamp>.log`, and `~/backups/cryptonite/drill-last.log`
+is a symlink that always points at the newest run's evidence, refreshed at the start of every drill run
+so it also covers a run that fails before restoring. The DB backup needs `infra-postgres-1` running;
+when the stack is stopped the night's run fails and is logged. PG access is portable: with `PGHOST`/`PGPORT`/`PGDATABASE`
 set or `CRYPTONITE_PG_DIRECT=1` the client binaries run directly against that cluster (this is how CI
 exercises the drill against its throwaway postgres); otherwise they run through the `infra-postgres-1`
 container.

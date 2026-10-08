@@ -10,6 +10,9 @@ diffs vs earlier A3 heads:
   - the manifest carries alembic_version_hash (sha256 of the ordered alembic_version rows) and the
     drill validates the manifest strictly (exact table set, numeric counts, no extras/duplicates/
     blanks, allowlisted identifiers, hash present) before comparing the restored database to it.
+  - failed db/data/secrets attempts are durably logged (the specific reason, or a generic nonzero
+    verdict from the exit trap) and publish nothing; `drill-last.log` symlinks the newest drill
+    evidence, giving the plan's stable latest pointer.
 
 Runs backup.sh against throwaway databases on the compose postgres cluster and a throwaway DEST dir:
 never the dev DB `cryptonite`, never the real backup dir, no live data touched."""
@@ -98,7 +101,7 @@ def rewrite_manifest(bed, edit):
 
 
 def drill_evidence(bed):
-    return next(bed["dest"].glob("drill-*.log")).read_text()
+    return next(p for p in bed["dest"].glob("drill-*.log") if p.name != "drill-last.log").read_text()
 
 
 def scratch_exists(bed):
@@ -164,10 +167,36 @@ def test_db_backup_rejects_count_query_failure_and_publishes_nothing(bed):
     r = run_backup(bed["env"], "db")
     assert r.returncode != 0
     log = (bed["dest"] / "backup.log").read_text()
-    assert "count query failed for execution_commands" in log
+    assert "count query failed for execution_commands" in log  # specific reason is logged durably
     assert list((bed["dest"] / "db").glob("cryptonite-*.dump")) == []
     assert list((bed["dest"] / "db").glob("cryptonite-*.dump.counts")) == []
     assert list((bed["dest"] / "db").glob("*.part*")) == []  # no partial files left behind
+
+
+def test_data_backup_failure_is_logged_and_publishes_nothing(bed):
+    """A failed data run (here: tar cannot find $REPO/data) is durably logged and publishes nothing.
+
+    Covers the exit-trap verdict path: failures that exit under `set -e` before any specific log
+    (a failing tar|zstd pipeline) still append a durable nonzero verdict to backup.log and leave no
+    partial archive behind."""
+    empty_repo = Path(bed["dest"]).parent / "empty-repo"
+    empty_repo.mkdir()
+    env = {**bed["env"], "CRYPTONITE_REPO": str(empty_repo)}
+    r = run_backup(env, "data")
+    assert r.returncode != 0
+    assert "ERROR: data backup attempt failed" in (bed["dest"] / "backup.log").read_text()
+    assert list((bed["dest"] / "data").glob("data-*.tar.zst")) == []  # nothing published
+    assert list((bed["dest"] / "data").glob("*.part*")) == []  # partial archive removed
+
+
+def test_secrets_backup_failure_is_logged_and_publishes_nothing(bed):
+    """A failed secrets run (here: missing passphrase file) is durably logged and publishes nothing."""
+    env = {**bed["env"],
+           "CRYPTONITE_BACKUP_PASSPHRASE_FILE": str(bed["dest"] / "no-such-passphrase")}
+    r = run_backup(env, "secrets")
+    assert r.returncode != 0
+    assert "ERROR: secrets backup attempt failed" in (bed["dest"] / "backup.log").read_text()
+    assert list((bed["dest"] / "secrets").glob("secrets-*.tar.gpg")) == []  # nothing published
 
 
 # --------------------------------------------------------------------------- drill: happy path + restore failures
@@ -185,6 +214,9 @@ def test_drill_passes_with_matching_counts(bed):
     assert "drill OK" in body and "drill FAILED" not in body
     assert "drill OK" in (bed["dest"] / "backup.log").read_text()
     assert not scratch_exists(bed)  # scratch always dropped, on success too
+    # the plan's stable latest pointer: drill-last.log symlinks the newest run's evidence
+    last = bed["dest"] / "drill-last.log"
+    assert last.is_symlink() and last.read_text() == body
 
 
 def test_drill_fails_on_corrupt_dump(bed):
@@ -197,6 +229,8 @@ def test_drill_fails_on_corrupt_dump(bed):
     assert "pg_restore exit=" in body and "pg_restore exit=0" not in body
     assert "drill FAILED" in body
     assert not scratch_exists(bed)  # scratch dropped even though the restore failed
+    last = bed["dest"] / "drill-last.log"  # pointer follows even a failing run
+    assert last.is_symlink() and "drill FAILED" in last.read_text()
 
 
 def test_drill_fails_without_manifest(bed):

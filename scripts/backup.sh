@@ -55,7 +55,40 @@ log() {
     echo "$line" | tee -a "$LOGFILE"
     if [ -n "$EVIDENCE" ]; then echo "$line" >> "$EVIDENCE"; fi
 }
-fail() { log "ERROR: $*"; exit 1; }
+fail() { log "ERROR: $*"; FAIL_LOGGED=1; exit 1; }
+
+# A durable nonzero verdict for every failed backup attempt, whatever the exit path. Mode failures
+# that already went through fail() logged a specific reason (FAIL_LOGGED=1); anything that exits
+# under set -e before a log call (e.g. a failing tar|zstd or gpg pipeline, a failed mv) still gets a
+# verdict appended to backup.log here, so "a failed nightly run is logged" is true for db/data/secrets.
+MODE="${1:-}"
+FAIL_LOGGED=0
+stop_snapshot_holder() { :; }  # db redefines the real one (snapshot-holder teardown)
+cleanup_scratch() { :; }       # drill redefines the real one (scratch database drop)
+on_exit() {
+    local rc=$?
+    case "$MODE" in
+        db)
+            stop_snapshot_holder
+            if [ -n "${out:-}" ]; then rm -f "$out.part" "$out.part.counts"; fi
+            rm -f "${snap_fifo:-}" "${snap_ctl:-}"
+            ;;
+        data|secrets)
+            if [ -n "${out:-}" ]; then rm -f "$out.part"; fi
+            ;;
+        drill)
+            cleanup_scratch
+            ;;
+    esac
+    if [ "$rc" != 0 ] && [ "$FAIL_LOGGED" != 1 ]; then
+        case "$MODE" in
+            db|data|secrets)
+                log "ERROR: $MODE backup attempt failed (exit $rc); nothing published"
+                ;;
+        esac
+    fi
+}
+trap on_exit EXIT
 
 prune() {  # prune <dir> <glob> <keep>
     ls -1t "$1"/$2 2>/dev/null | tail -n +"$(($3 + 1))" | xargs -r rm -f || true
@@ -80,7 +113,7 @@ db)
             SNAP_PID=
         fi
     }
-    trap 'stop_snapshot_holder; rm -f "$out.part" "$out.part.counts" "${snap_fifo:-}" "${snap_ctl:-}"; trap - EXIT' EXIT
+    # Mode cleanup (holder, partial files) runs via the global on_exit trap on every exit path.
 
     # One exported PostgreSQL snapshot feeds the dump AND every per-table count, so the manifest can
     # never lag or lead the dump under concurrent writes. A holder psql session exports the snapshot
@@ -135,7 +168,6 @@ db)
     rm -f "$snap_fifo" "$snap_ctl"
     mv "$out.part" "$out"
     mv "$out.part.counts" "$out.counts"
-    trap - EXIT
     find "$DEST/db" -name 'cryptonite-*.dump' -mtime +14 -delete
     find "$DEST/db" -name 'cryptonite-*.dump.counts' -mtime +14 -delete
     log "db backup $out ($(du -h "$out" | cut -f1)); counts in $out.counts"
@@ -159,6 +191,11 @@ secrets)
     log "secrets backup $out"
     ;;
 drill)
+    EVIDENCE="$DEST/drill-$STAMP.log"
+    : > "$EVIDENCE"
+    # The plan names a stable latest pointer: symlink the newest run's evidence here. Refreshed at
+    # the start of every drill run, so it also covers a run that fails before restoring anything.
+    ln -sfn "drill-$STAMP.log" "$DEST/drill-last.log"
     # The scratch database is the only database this mode may drop. Refuse a configuration
     # that would point the scratch cleanup at the source database (or at postgres/template*).
     case "$SCRATCH" in
@@ -167,10 +204,7 @@ drill)
     dump="$(ls -1t "$DEST"/db/cryptonite-*.dump 2>/dev/null | head -1 || true)"
     [ -n "$dump" ] || fail "drill: no dumps in $DEST/db"
     manifest="$dump.counts"
-    EVIDENCE="$DEST/drill-$STAMP.log"
-    : > "$EVIDENCE"
     cleanup_scratch() { pg dropdb -U cryptonite --if-exists "$SCRATCH" >/dev/null 2>&1 || true; }
-    trap cleanup_scratch EXIT  # the scratch database is always dropped, on success and on error
     log "drill start dump=$dump"
     pg dropdb -U cryptonite --if-exists "$SCRATCH"
     pg createdb -U cryptonite "$SCRATCH"
@@ -286,7 +320,6 @@ drill)
         fi
     fi
     cleanup_scratch
-    trap - EXIT
     if [ "$status" = 0 ]; then
         log "drill OK ($dump); evidence $EVIDENCE"
     else
