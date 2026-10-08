@@ -216,9 +216,12 @@ docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python
 
 Current code head on `origin/main` is **`040`** (linear `036 → 037` (B2 verdicts) → `038` (C3) →
 `039` (D1 outbox) → `040` (B4 recovery); revisions 032–036 also apply). _Refreshed 2026-10-08 (A6
-audit)._ Migrate before deploying new images: the orchestrator and API read tables from 027–040. The
-**dev DB is still at Alembic `036`** — no live migration has been applied; a code-head revision is not
-production revision evidence. Production reaches 037–040 only through the controlled E1 sequence
+audit); as-of: origin/main `efd6b4c`._ Migrate before deploying new images: the orchestrator and
+API read tables from 027–040. **When D5 #41 merges, the single code head advances to `041`
+(`041_risk_limit_overrides_version`, `down_revision = "040"`)**; verify the exact merged head at deploy
+time. The **dev DB is still at Alembic `036`** — no live migration has been applied; a code-head
+revision is not production revision evidence. Production reaches the **merged release head** only through
+the controlled E1 sequence — `upgrade head`, then verify `alembic current` == merged head
 (`docs/HANDOVER-2026-10-08.md`, `docs/operator-release-checklist.md`).
 
 ### 8.4. Tests

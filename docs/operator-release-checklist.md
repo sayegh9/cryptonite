@@ -58,13 +58,17 @@ scanner/workers. `postgres` and `redis` stay untouched throughout.
 
 ### 3.2 Migrations
 
-- [ ] Back up (standing rule), then apply migrations to the merged release head through the `test`
-  runner:
+- [ ] Back up (standing rule), then apply migrations to the **merged release head** through the `test`
+  runner — `upgrade head`, then **verify the migrated head**:
   ```bash
   docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
+  docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python -m alembic -c infra/migrations/alembic.ini current
   ```
+- [ ] `current` must equal the **merged release head** — today `040`; once D5 #41 merges it is **`041`**
+  (`infra/migrations/versions/041_risk_limit_overrides_version.py`, `down_revision = "040"`), subject to
+  an exact merged-head check at deploy time (open heads #39/#43 may add revisions).
 - [ ] The dev DB is at Alembic `036`; **do not** cite dev-revision checks as production evidence —
-  production reaches `037→040` only through this controlled step.
+  production reaches the merged release head only through this controlled step.
 
 ### 3.3 Deploy the updated stateless services the downstream contracts need (B5 + D2)
 
