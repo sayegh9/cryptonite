@@ -795,3 +795,142 @@ async def test_automatic_trigger_timeframe_restriction(admin, db_url, monkeypatc
     assert "1h" in evaluated_timeframes
 
     await pool.close()
+
+
+def test_unrounded_derived_price_ratio_boundary():
+    """Verify that unrounded derived price ratio correctly rejects true 1.496 despite rounding to 1.50."""
+    # 1. 1.496 boundary: entry=100.00, stop=89.97 (risk=10.03), target=115.01 (reward=15.01) -> 15.01 / 10.03 = 1.49651...
+    cand_1496 = SignalCandidateRead(
+        id=uuid4(),
+        scan_run_id=uuid4(),
+        spec_version_id=uuid4(),
+        instrument_id="BTCUSDT.BINANCE",
+        timeframe="15m",
+        bar_open_ns=1000,
+        bar_close_inclusive_ns=2000,
+        interval_end_exclusive_ns=2001,
+        matched_rules=["test"],
+        metrics={},
+        suggested_entry=Decimal("100.00"),
+        suggested_stop=Decimal("89.97"),
+        suggested_target=Decimal("115.01"),
+        created_at=datetime.now(UTC),
+    )
+    risk_1496 = abs(cand_1496.suggested_entry - cand_1496.suggested_stop)
+    reward_1496 = abs(cand_1496.suggested_target - cand_1496.suggested_entry)
+    derived_rr_1496 = reward_1496 / risk_1496
+    assert derived_rr_1496 < Decimal("1.5")
+
+    # 2. 1.500 boundary: entry=100.00, stop=90.00 (risk=10.00), target=115.00 (reward=15.00) -> 1.5000
+    cand_1500 = SignalCandidateRead(
+        id=uuid4(),
+        scan_run_id=uuid4(),
+        spec_version_id=uuid4(),
+        instrument_id="BTCUSDT.BINANCE",
+        timeframe="15m",
+        bar_open_ns=1000,
+        bar_close_inclusive_ns=2000,
+        interval_end_exclusive_ns=2001,
+        matched_rules=["test"],
+        metrics={},
+        suggested_entry=Decimal("100.00"),
+        suggested_stop=Decimal("90.00"),
+        suggested_target=Decimal("115.00"),
+        created_at=datetime.now(UTC),
+    )
+    risk_1500 = abs(cand_1500.suggested_entry - cand_1500.suggested_stop)
+    reward_1500 = abs(cand_1500.suggested_target - cand_1500.suggested_entry)
+    derived_rr_1500 = reward_1500 / risk_1500
+    assert derived_rr_1500 >= Decimal("1.5")
+
+
+@pytest.mark.asyncio
+async def test_worker_qualification_before_dedupe_two_specs_same_bar(admin, db_url, monkeypatch):
+    """Verify that qualification happens BEFORE deduplication so passing spec B is not dropped by sub-threshold spec A."""
+    import time
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+    now_ts = 1_791_201_600 * 10**9
+    # Pin time_ns so candidate bar closing at now_ts is within freshness window (0 <= age_ns <= 15m)
+    monkeypatch.setattr(time, "time_ns", lambda: now_ts + 5 * ONE_MINUTE_NS)
+
+    universe = {"instrument_ids": ["BTCUSDT.BINANCE"], "timeframes": ["15m"]}
+    rules = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 0}]}]
+    spec_a_id, ver_a_id = await _seed_spec(pool, "spec-a-low-rr", universe, rules)
+    spec_b_id, ver_b_id = await _seed_spec(pool, "spec-b-high-rr", universe, rules)
+
+    same_bar_open = now_ts - 15 * ONE_MINUTE_NS
+    same_bar_close = now_ts - 1_000_000
+    same_bar_end = now_ts
+
+    # Spec A has RR = 1.20 (< 1.50) on the EXACT same bar
+    cand_spec_a = SignalCandidateRead(
+        id=uuid4(),
+        scan_run_id=uuid4(),
+        spec_version_id=ver_a_id,
+        instrument_id="BTCUSDT.BINANCE",
+        timeframe="15m",
+        bar_open_ns=same_bar_open,
+        bar_close_inclusive_ns=same_bar_close,
+        interval_end_exclusive_ns=same_bar_end,
+        matched_rules=["rule_a"],
+        metrics={"stop_type": "donchian_low", "target_type": "atr_fallback", "risk_reward_ratio": 1.20},
+        suggested_entry=Decimal("100.00"),
+        suggested_stop=Decimal("95.00"),  # risk = 5.00
+        suggested_target=Decimal("106.00"),  # reward = 6.00 -> RR = 1.20
+        created_at=datetime.now(UTC),
+    )
+
+    # Spec B has RR = 1.80 (>= 1.50) on the EXACT same bar
+    cand_spec_b = SignalCandidateRead(
+        id=uuid4(),
+        scan_run_id=uuid4(),
+        spec_version_id=ver_b_id,
+        instrument_id="BTCUSDT.BINANCE",
+        timeframe="15m",
+        bar_open_ns=same_bar_open,
+        bar_close_inclusive_ns=same_bar_close,
+        interval_end_exclusive_ns=same_bar_end,
+        matched_rules=["rule_b"],
+        metrics={"stop_type": "donchian_low", "target_type": "htf_donchian_high", "risk_reward_ratio": 1.80},
+        suggested_entry=Decimal("100.00"),
+        suggested_stop=Decimal("95.00"),  # risk = 5.00
+        suggested_target=Decimal("109.00"),  # reward = 9.00 -> RR = 1.80
+        created_at=datetime.now(UTC),
+    )
+
+    # Evaluate returns [cand_spec_a, cand_spec_b] in order: spec A first
+    # If deduplication happened before qualification, spec A would be selected and then rejected,
+    # leaving 0 candidates persisted.
+    # Because qualification happens first, spec A is rejected, spec B qualifies, passes dedupe, and persists.
+    def mock_evaluate(*_args, **_kwargs):
+        return [cand_spec_a, cand_spec_b]
+
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(mock_evaluate))
+
+    lake_df = _make_dummy_ohlcv(n_bars=300, base_price=100.0, step_ns=ONE_MINUTE_NS, start_ns=now_ts - 300 * ONE_MINUTE_NS)
+    worker = ScannerWorker(database_url=as_scanner(db_url), analytics_lake_path="/nonexistent-lake")
+    worker.pool = pool
+    worker.query_engine = FakeLakeQueryEngine(lake_df)
+
+    await worker._execute_scan(
+        spec_version_id=ver_b_id,
+        spec_hash="hash-two-spec",
+        universe_data=universe,
+        rules_data=rules,
+        trigger_reason="COMMITTED_BAR_EVENT",
+        trigger_event_id=str(uuid4()),
+        watermark_ns=now_ts,
+    )
+
+    # Spec A candidate must NOT exist
+    row_a = await pool.fetchrow("SELECT id FROM signal_candidates WHERE id = $1;", cand_spec_a.id)
+    assert row_a is None, "Spec A candidate with R:R < 1.5 must not be inserted"
+
+    # Spec B candidate MUST exist (survived qualification and dedupe)
+    row_b = await pool.fetchrow("SELECT id FROM signal_candidates WHERE id = $1;", cand_spec_b.id)
+    assert row_b is not None, "Spec B candidate with R:R >= 1.5 must be persisted even when Spec A on the same bar had R:R < 1.5"
+
+    outbox_b = await pool.fetchrow("SELECT candidate_id FROM scanner_debate_outbox WHERE candidate_id = $1;", cand_spec_b.id)
+    assert outbox_b is not None
+
+    await pool.close()

@@ -279,10 +279,10 @@ class ScannerEngine:
             target_dec = round(Decimal(str(target_val)), price_precision)
             risk = abs(entry_dec - stop_dec)
             reward = abs(target_dec - entry_dec)
-            rr_dec = (reward / risk).quantize(Decimal("0.01")) if risk > Decimal("0") else Decimal("0.00")
-            rr_float = float(rr_dec)
+            derived_rr = (reward / risk) if risk > Decimal("0") else Decimal("0")
+            rr_float = float(round(derived_rr, 4))
 
-            if filter_min_rr and rr_float < risk_config.min_risk_reward:
+            if filter_min_rr and derived_rr < Decimal(str(risk_config.min_risk_reward)):
                 continue
 
             # Snapshot metrics
@@ -320,7 +320,7 @@ class ScannerEngine:
                 suggested_entry=entry_dec,
                 suggested_stop=stop_dec,
                 suggested_target=target_dec,
-                risk_reward_ratio=rr_dec,
+                risk_reward_ratio=derived_rr,
                 created_at=datetime.now(tz=UTC),
             )
             candidates.append(candidate)

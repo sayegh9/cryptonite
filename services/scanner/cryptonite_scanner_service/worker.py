@@ -15,6 +15,7 @@ import logging
 import os
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -32,6 +33,7 @@ from cryptonite_scanner.models import (
     RuleCondition,
     RuleGroup,
     RuleOperator,
+    SignalCandidateRead,
     deduplicate_candidates,
 )
 from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
@@ -752,22 +754,25 @@ class ScannerWorker:
 
         now_ns = time.time_ns()
         all_candidates = drop_unclosed_candidates(all_candidates, now_ns)
-        all_candidates = deduplicate_candidates(all_candidates)
 
-        # Pre-insert rejection gate: reject candidates where R:R < MIN_RISK_REWARD_RATIO
-        # Record rejection reasons with entry/stop/target/R:R in worker logs without creating candidate rows
-        accepted_candidates = []
+        # 1. Pre-insert qualification gate: evaluate unrounded derived price ratio for each candidate.
+        # Reject candidates failing R:R >= MIN_RISK_REWARD_RATIO BEFORE deduplication, so a passing
+        # candidate on the same bar is not dropped in favor of a rejected duplicate.
+        min_rr_dec = Decimal(str(MIN_RISK_REWARD_RATIO))
+        qualified_candidates: list[SignalCandidateRead] = []
         for c in all_candidates:
-            rr = float(c.risk_reward_ratio) if c.risk_reward_ratio is not None else float(c.metrics.get("risk_reward_ratio", 0.0))
-            if rr < MIN_RISK_REWARD_RATIO:
+            risk = abs(c.suggested_entry - c.suggested_stop)
+            reward = abs(c.suggested_target - c.suggested_entry)
+            derived_rr = (reward / risk) if risk > Decimal("0") else Decimal("0")
+            if derived_rr < min_rr_dec:
                 logger.info(
-                    "Rejected candidate %s for %s %s at %d: R:R %.2f < %.2f "
+                    "Rejected candidate %s for %s %s at %d: R:R %.4f < %.2f "
                     "(entry=%s, stop=%s [%s], target=%s [%s])",
                     c.id,
                     c.instrument_id,
                     c.timeframe,
                     c.bar_close_inclusive_ns,
-                    rr,
+                    float(derived_rr),
                     MIN_RISK_REWARD_RATIO,
                     c.suggested_entry,
                     c.suggested_stop,
@@ -776,10 +781,21 @@ class ScannerWorker:
                     c.metrics.get("target_type"),
                 )
                 continue
-            accepted_candidates.append(c)
-        all_candidates = accepted_candidates
+            qualified_candidates.append(c)
 
-        # Sort candidates deterministically to enforce global lock acquisition order and prevent deadlocks across concurrent workers/jobs
+        # 2. Sort qualified candidates deterministically (preferring higher R:R on duplicate bars)
+        def _candidate_rank_key(c: SignalCandidateRead) -> tuple[str, str, int, Decimal, UUID]:
+            risk = abs(c.suggested_entry - c.suggested_stop)
+            reward = abs(c.suggested_target - c.suggested_entry)
+            rr = (reward / risk) if risk > Decimal("0") else Decimal("0")
+            return (c.instrument_id, c.timeframe, c.bar_close_inclusive_ns, -rr, c.id)
+
+        qualified_candidates.sort(key=_candidate_rank_key)
+
+        # 3. Deduplicate qualified candidates across specs per (instrument, timeframe, bar_close)
+        all_candidates = deduplicate_candidates(qualified_candidates)
+
+        # 4. Canonical sort order for pg_advisory_xact_lock to prevent deadlocks across concurrent workers/jobs
         all_candidates.sort(key=lambda c: (c.instrument_id, c.timeframe, c.bar_close_inclusive_ns))
         to_queue: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []  # fresh, new: published after the commit
 

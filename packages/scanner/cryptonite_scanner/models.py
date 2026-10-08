@@ -196,12 +196,12 @@ class SignalCandidateRead(BaseModel):
     def populate_risk_reward(self) -> "SignalCandidateRead":
         if self.risk_reward_ratio is None:
             if "risk_reward_ratio" in self.metrics and self.metrics["risk_reward_ratio"] is not None:
-                self.risk_reward_ratio = Decimal(str(self.metrics["risk_reward_ratio"])).quantize(Decimal("0.01"))
+                self.risk_reward_ratio = Decimal(str(self.metrics["risk_reward_ratio"]))
             elif self.suggested_entry is not None and self.suggested_stop is not None and self.suggested_target is not None:
                 risk = abs(self.suggested_entry - self.suggested_stop)
                 reward = abs(self.suggested_target - self.suggested_entry)
                 if risk > Decimal("0"):
-                    self.risk_reward_ratio = (reward / risk).quantize(Decimal("0.01"))
+                    self.risk_reward_ratio = reward / risk
         return self
 
 
