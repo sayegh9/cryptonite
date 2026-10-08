@@ -1,16 +1,14 @@
 """Integration test for scanner job execution, run idempotency, and candidate outbox events."""
 
 import json
-from decimal import Decimal
 from uuid import uuid4
 
 import asyncpg
 import pytest
+from connections import DB_URL, REDIS_URL
 from cryptonite_scanner.models import compute_spec_hash
 from cryptonite_scanner.presets import PRESET_RSI_OVERSOLD
 from cryptonite_scanner_service.worker import ScannerWorker
-from connections import DB_URL, REDIS_URL
-
 
 
 @pytest.mark.asyncio
@@ -74,6 +72,7 @@ async def test_scan_job_and_run_idempotency(tmp_path):
             trigger_reason="COMMITTED_BAR_EVENT",
             trigger_event_id=trigger_event_id,
             watermark_ns=1700000000000000000,
+            bar_timeframe="15m",
         )
 
         # Second run execution with exact same trigger_event_id (simulating Redis redelivery)
@@ -85,9 +84,11 @@ async def test_scan_job_and_run_idempotency(tmp_path):
             trigger_reason="COMMITTED_BAR_EVENT",
             trigger_event_id=trigger_event_id,
             watermark_ns=1700000000000000000,
+            bar_timeframe="15m",
         )
 
         # Query database to confirm only 1 scan_runs record exists for this trigger_event_id
+        assert run_id_1 is not None and run_id_2 is not None
         runs_count = await pool.fetchval(
             "SELECT count(*) FROM scan_runs WHERE spec_version_id = $1 AND trigger_event_id = $2;",
             version_id,
