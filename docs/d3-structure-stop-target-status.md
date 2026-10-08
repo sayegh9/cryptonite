@@ -116,48 +116,48 @@ Replay benchmark executed using `scripts/replay_d3_benchmark.py` across all 5 bu
 ### 3.1 Oct 2–4 Baseline Window (3 Days, 4,321 1m bars each)
 - **Data Coverage**: BTCUSDT (4,321 1m, 287 15m, 71 1h, 17 4h); ETHUSDT (4,321 1m, 287 15m, 71 1h, 17 4h).
 - **BTCUSDT**:
-  - D1 State Baseline: 15m = 111 | All TFs = 136 (deduped: 119)
+  - D1 State Baseline: 15m = 111 raw (99 deduped) | All TFs = 136 raw (119 deduped)
   - D2 Crossover Baseline: 15m = 13 | All TFs = 14 (deduped: 13)
-  - D3 Generated: 14 raw | Filter rejections: 11 (all below R:R 1.5) | Qualified: 3
+  - D3 Generated: 14 raw | Filter rejections: `{'below_rr_threshold': 11}` (invalid ATR discarded at engine level) | Qualified: 3
   - D3 Accepted (deduped): **3** (15m=3, 1h=0, 4h=0)
-  - **Reduction**: 15m = **37.0x** | All-TF = **45.3x** vs D1 (4.3x vs D2)
-  - Valid-signal retention rate: **23.1%** | Mean R:R = **1.50**
+  - **Reduction**: 15m = **37.0x raw** (**33.0x deduped like-for-like**) | All-TF = **45.3x raw** (**39.7x deduped like-for-like**, 4.3x vs D2)
+  - Candidate retention rate: **23.1%** | Mean R:R = **1.50**
 - **ETHUSDT**:
-  - D1 State Baseline: 15m = 117 | All TFs = 142 (deduped: 128)
+  - D1 State Baseline: 15m = 117 raw (106 deduped) | All TFs = 142 raw (128 deduped)
   - D2 Crossover Baseline: 15m = 21 | All TFs = 23 (deduped: 19)
-  - D3 Generated: 23 raw | Filter rejections: 18 (all below R:R 1.5) | Qualified: 5
+  - D3 Generated: 23 raw | Filter rejections: `{'below_rr_threshold': 18}` | Qualified: 5
   - D3 Accepted (deduped): **4** (15m=3, 1h=1, 4h=0)
-  - **Reduction**: 15m = **39.0x** | All-TF = **35.5x** vs D1 (4.8x vs D2)
-  - Valid-signal retention rate: **21.1%** | Mean R:R = **1.50**
+  - **Reduction**: 15m = **39.0x raw** (**35.3x deduped like-for-like**) | All-TF = **35.5x raw** (**32.0x deduped like-for-like**, 4.8x vs D2)
+  - Candidate retention rate: **21.1%** | Mean R:R = **1.50**
 - **Combined (BTC + ETH)**:
-  - 15m D1 Baseline: 228 -> D3 Accepted: **6** (**38.0x reduction**)
-  - All-TF D1 Baseline: 278 -> D3 Accepted: **7** (**39.7x reduction**, 4.6x vs D2)
-  - Combined valid-signal retention rate: **21.9%**
+  - 15m D1 Baseline: 228 raw (205 deduped) -> D3 Accepted: **6** (**38.0x raw**, **34.2x deduped like-for-like**)
+  - All-TF D1 Baseline: 278 raw (247 deduped) -> D3 Accepted: **7** (**39.7x raw**, **35.3x deduped like-for-like**, 4.6x vs D2)
+  - Combined candidate retention rate: **21.9%**
 
 ### 3.2 Oct 1–7 Extended Holdout Window (7 Days, 10,079 1m bars each)
 - **Data Coverage**: BTCUSDT (10,079 1m, 669 15m, 165 1h, 40 4h); ETHUSDT (10,078 1m, 668 15m, 164 1h, 40 4h).
 - **BTCUSDT**:
-  - D1 State Baseline: 15m = 240 | All TFs = 313 (deduped: 286)
+  - D1 State Baseline: 15m = 240 raw (220 deduped) | All TFs = 313 raw (286 deduped)
   - D2 Crossover Baseline: 15m = 35 | All TFs = 39 (deduped: 34)
-  - D3 Generated: 39 raw | Filter rejections: 27 (all below R:R 1.5) | Qualified: 12
+  - D3 Generated: 39 raw | Filter rejections: `{'below_rr_threshold': 27}` | Qualified: 12
   - D3 Accepted (deduped): **12** (15m=10, 1h=2, 4h=0)
-  - **Reduction**: 15m = **24.0x** | All-TF = **26.1x** vs D1 (2.8x vs D2)
-  - Valid-signal retention rate: **35.3%** | Mean R:R = **2.16** (max 3.27)
+  - **Reduction**: 15m = **24.0x raw** (**22.0x deduped like-for-like**) | All-TF = **26.1x raw** (**23.8x deduped like-for-like**, 2.8x vs D2)
+  - Candidate retention rate: **35.3%** | Mean R:R = **2.16** (max 3.27)
   - Stop provenance: 6 atr_fallback, 6 donchian_low
   - Target provenance: 8 atr_fallback, 3 htf_donchian_high, 1 htf_bb_upper
 - **ETHUSDT**:
-  - D1 State Baseline: 15m = 247 | All TFs = 311 (deduped: 284)
+  - D1 State Baseline: 15m = 247 raw (225 deduped) | All TFs = 311 raw (284 deduped)
   - D2 Crossover Baseline: 15m = 38 | All TFs = 46 (deduped: 40)
-  - D3 Generated: 46 raw | Filter rejections: 31 (all below R:R 1.5) | Qualified: 15
+  - D3 Generated: 46 raw | Filter rejections: `{'below_rr_threshold': 31}` | Qualified: 15
   - D3 Accepted (deduped): **14** (15m=11, 1h=3, 4h=0)
-  - **Reduction**: 15m = **22.5x** | All-TF = **22.2x** vs D1 (2.9x vs D2)
-  - Valid-signal retention rate: **35.0%** | Mean R:R = **1.83** (max 2.89)
+  - **Reduction**: 15m = **22.5x raw** (**20.5x deduped like-for-like**) | All-TF = **22.2x raw** (**20.3x deduped like-for-like**, 2.9x vs D2)
+  - Candidate retention rate: **35.0%** | Mean R:R = **1.83** (max 2.89)
   - Stop provenance: 8 atr_fallback, 6 donchian_low
   - Target provenance: 8 atr_fallback, 5 htf_donchian_high, 1 htf_bb_upper
 - **Combined (BTC + ETH)**:
-  - 15m D1 Baseline: 487 -> D3 Accepted: **21** (**23.2x reduction**)
-  - All-TF D1 Baseline: 624 -> D3 Accepted: **26** (**24.0x reduction**, 2.8x vs D2)
-  - Combined valid-signal retention rate: **35.1%**
+  - 15m D1 Baseline: 487 raw (445 deduped) -> D3 Accepted: **21** (**23.2x raw**, **21.2x deduped like-for-like**)
+  - All-TF D1 Baseline: 624 raw (570 deduped) -> D3 Accepted: **26** (**24.0x raw**, **21.9x deduped like-for-like**, 2.8x vs D2)
+  - Combined candidate retention rate: **35.1%**
 
 ### 3.3 Metric Reconciliation: Preliminary Draft (5+5, 22.9x) vs Final Multi-TF Benchmark (3+3, 38.0x)
 - **Preliminary Exploration Draft**:
@@ -167,25 +167,26 @@ Replay benchmark executed using `scripts/replay_d3_benchmark.py` across all 5 bu
   - Covers all 5 active presets across all automatic timeframes (15m, 1h, 4h).
   - Strictly enforces unrounded derived price ratio (`reward / risk >= 1.50`) and worker-equivalent qualification-before-deduplication.
   - Result:
-    * 15m Window: 3 BTC + 3 ETH = **6 accepted candidates** out of 228 D1 candidates (**38.0x reduction**, reconciling the 3+3 report).
-    * All-TF Window: 3 BTC + 4 ETH = **7 accepted candidates** out of 278 D1 candidates (**39.7x reduction** vs D1; 4.6x vs D2 crossover).
-    * 7-day Extended Holdout Window: 21 accepted on 15m (**23.2x reduction**), 26 accepted All-TF (**24.0x reduction**).
-  - Both preliminary and finalized metrics solidly satisfy the 10–50x exit gate (23.2x–39.7x across all evaluated scopes).
+    * 15m Window: 3 BTC + 3 ETH = **6 accepted candidates** out of 228 raw (205 deduped) D1 candidates (**38.0x raw**, **34.2x deduped like-for-like**).
+    * All-TF Window: 3 BTC + 4 ETH = **7 accepted candidates** out of 278 raw (247 deduped) D1 candidates (**39.7x raw**, **35.3x deduped like-for-like** vs D1; 4.6x vs D2 crossover).
+    * 7-day Extended Holdout Window: 21 accepted on 15m (**23.2x raw**, **21.2x deduped like-for-like**), 26 accepted All-TF (**24.0x raw**, **21.9x deduped like-for-like**).
+  - Both raw and like-for-like deduped metrics solidly satisfy the 10–50x exit gate (21.2x–35.3x deduped like-for-like; 23.2x–39.7x raw across all evaluated scopes).
 
 ---
 
 ## 4. Test Verification Summary
 
 All tests executed and verified against clean isolated CI fixtures:
-- `tests/test_scanner_structure_d3.py`: **11 / 11 passed**
+- `tests/test_scanner_structure_d3.py`: **12 / 12 passed**
   - Includes `test_unrounded_derived_price_ratio_boundary` (1.496 rejected, 1.500 accepted)
   - Includes `test_worker_qualification_before_dedupe_two_specs_same_bar` (same-bar higher R:R candidate prioritized)
   - Includes `test_deterministic_no_lookahead_htf` (future HTF bars cannot alter candidate)
   - Includes `test_fallback_exact_risk_reward_ratio` (exact 1.50 fallback)
   - Includes `test_automatic_trigger_timeframe_restriction` (automatic stream events restricted to 15m/1h/4h)
-- Full Targeted Regression Suite: **30 / 30 passed**
+  - Includes `test_integration_stream_message_mixed_universe_5m_15m` (integration regression proving a 15m event on mixed `[5m, 15m]` evaluates/enqueues ONLY 15m, 0 5m candidates/outbox, and 5m events are ignored)
+- Full Targeted Regression Suite: **31 / 31 passed**
   - `tests/test_benchmarks.py::test_polars_scanner_engine_p95_latency`: passed (5.04s)
   - `tests/test_scanner_fresh_enqueue.py`: 18 / 18 passed
-  - `tests/test_scanner_structure_d3.py`: 11 / 11 passed
+  - `tests/test_scanner_structure_d3.py`: 12 / 12 passed
 - GitHub Actions CI (PR #43): **6 / 6 checks passing green** (`ruff`, `web`, `pytest`, `e2e-smoke`, `verify`, `CodeRabbit`).
 - Lint & Style: `ruff check` clean (0 errors), `git diff --check` clean.

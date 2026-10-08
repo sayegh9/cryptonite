@@ -799,6 +799,7 @@ async def test_automatic_trigger_timeframe_restriction(admin, db_url, monkeypatc
     assert len(scans_executed) == 1
     assert scans_executed[-1]["trigger_reason"] == "COMMITTED_BAR_EVENT"
     assert scans_executed[-1]["trigger_event_id"] == "ev-15m"
+    assert scans_executed[-1].get("bar_timeframe") == "15m"
     assert len(worker.redis.xacked) == 3
 
     # 1h event should be processed
@@ -806,6 +807,113 @@ async def test_automatic_trigger_timeframe_restriction(admin, db_url, monkeypatc
     await worker._handle_stream_message("closed_bar_committed", "4-0", msg_1h)
     assert len(scans_executed) == 2
     assert scans_executed[-1]["trigger_event_id"] == "ev-1h"
+    assert scans_executed[-1].get("bar_timeframe") == "1h"
+
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_integration_stream_message_mixed_universe_5m_15m(admin, db_url, monkeypatch):
+    """Integration regression proving that a 15m stream event with a mixed [5m, 15m] universe
+    evaluates and enqueues ONLY 15m candidates (0 automatic 5m candidates/outbox), and 5m events are ignored."""
+    import json
+    import time
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+    now_ts = 1_791_201_600 * 10**9
+    # Pin time_ns so 15m bar is within freshness window (age = 5m <= 15m)
+    monkeypatch.setattr(time, "time_ns", lambda: now_ts + 5 * ONE_MINUTE_NS)
+
+    universe = {"instrument_ids": ["BTCUSDT.BINANCE"], "timeframes": ["5m", "15m"]}
+    rules = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 0}]}]
+    spec_id, ver_id = await _seed_spec(pool, "mixed-5m-15m-spec", universe, rules)
+
+    evaluated_tfs: list[str] = []
+
+    def mock_evaluate(cls, df, rule_groups, risk_config, instrument_id, timeframe, spec_version_id, scan_run_id, price_precision=2, **_kwargs):
+        evaluated_tfs.append(timeframe)
+        return [
+            SignalCandidateRead(
+                id=uuid4(),
+                scan_run_id=scan_run_id,
+                spec_version_id=spec_version_id,
+                instrument_id=instrument_id,
+                timeframe=timeframe,
+                bar_open_ns=now_ts - 15 * ONE_MINUTE_NS,
+                bar_close_inclusive_ns=now_ts - 1000,
+                interval_end_exclusive_ns=now_ts,
+                matched_rules=["rule_test"],
+                metrics={"stop_type": "donchian_low", "target_type": "atr_fallback", "risk_reward_ratio": 2.0},
+                suggested_entry=Decimal("100.00"),
+                suggested_stop=Decimal("95.00"),
+                suggested_target=Decimal("110.00"),
+                created_at=datetime.now(UTC),
+            )
+        ]
+
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(mock_evaluate))
+    monkeypatch.setattr(ScannerEngine, "enrich_indicators", classmethod(lambda cls, df: df))
+
+    lake_df = _make_dummy_ohlcv(n_bars=300, base_price=100.0, step_ns=ONE_MINUTE_NS, start_ns=now_ts - 300 * ONE_MINUTE_NS)
+    worker = ScannerWorker(database_url=as_scanner(db_url), analytics_lake_path="/nonexistent-lake")
+    worker.pool = pool
+    worker.query_engine = FakeLakeQueryEngine(lake_df)
+
+    class DummyRedis:
+        def __init__(self):
+            self.xacked: list[tuple[str, str, str]] = []
+
+        async def xack(self, stream: str, group: str, msg_id: str) -> None:
+            self.xacked.append((stream, group, msg_id))
+
+    worker.redis = DummyRedis()  # type: ignore
+
+    # 1. Send 15m closed bar committed stream event
+    evaluated_tfs.clear()
+    msg_15m = {
+        "data": json.dumps({
+            "event_id": "ev-15m-integration",
+            "instrument_id": "BTCUSDT.BINANCE",
+            "timeframe": "15m",
+            "bar_close_inclusive_ns": now_ts,
+        })
+    }
+    await worker._handle_stream_message("closed_bar_committed", "15m-msg-1", msg_15m)
+
+    # Verify only 15m was evaluated
+    assert evaluated_tfs == ["15m"], f"Expected only 15m evaluated, got {evaluated_tfs}"
+
+    # Verify DB candidate rows: 15m candidate exists, 5m candidate DOES NOT exist
+    cands = await pool.fetch("SELECT timeframe FROM signal_candidates WHERE spec_version_id = $1;", ver_id)
+    assert len(cands) == 1
+    assert cands[0]["timeframe"] == "15m"
+
+    # Verify Outbox rows: 15m outbox entry exists, 0 5m outbox entries exist
+    outbox_rows = await pool.fetch("SELECT fields FROM scanner_debate_outbox;")
+    assert len(outbox_rows) == 1
+    outbox_payload = outbox_rows[0]["fields"]
+    if isinstance(outbox_payload, str):
+        outbox_payload = json.loads(outbox_payload)
+    assert outbox_payload["candidate_payload"]["timeframe"] == "15m"
+
+    # 2. Send 5m closed bar committed stream event
+    evaluated_tfs.clear()
+    msg_5m = {
+        "data": json.dumps({
+            "event_id": "ev-5m-integration",
+            "instrument_id": "BTCUSDT.BINANCE",
+            "timeframe": "5m",
+            "bar_close_inclusive_ns": now_ts,
+        })
+    }
+    await worker._handle_stream_message("closed_bar_committed", "5m-msg-1", msg_5m)
+
+    # 5m event is skipped by stream handler: 0 evaluations, candidate count unchanged
+    assert len(evaluated_tfs) == 0
+    cands_after = await pool.fetch("SELECT timeframe FROM signal_candidates WHERE spec_version_id = $1;", ver_id)
+    assert len(cands_after) == 1
+    outbox_after = await pool.fetch("SELECT candidate_id FROM scanner_debate_outbox;")
+    assert len(outbox_after) == 1
 
     await pool.close()
 

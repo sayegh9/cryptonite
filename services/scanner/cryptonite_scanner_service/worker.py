@@ -531,6 +531,10 @@ class ScannerWorker:
             if allowed_instruments and instrument_id not in allowed_instruments:
                 continue
 
+            spec_timeframes = universe.get("timeframes", [])
+            if bar_timeframe and spec_timeframes and bar_timeframe not in spec_timeframes:
+                continue
+
             await self._execute_scan(
                 spec_version_id=spec["version_id"],
                 spec_hash=spec["spec_hash"],
@@ -539,6 +543,7 @@ class ScannerWorker:
                 trigger_reason="COMMITTED_BAR_EVENT",
                 trigger_event_id=event_id,
                 watermark_ns=bar_close_ns,
+                bar_timeframe=bar_timeframe,
             )
 
         # XACK only after database transaction has completed
@@ -634,6 +639,7 @@ class ScannerWorker:
         trigger_event_id: str | None,
         watermark_ns: int | None = None,
         scan_job_id: UUID | None = None,
+        bar_timeframe: str | None = None,
     ) -> UUID:
         """Core execution logic: loads 1m lake data, resamples, evaluates rules, commits run & candidates."""
         if not self.pool:
@@ -643,7 +649,25 @@ class ScannerWorker:
         source_instruments = universe_data.get("instrument_ids", ["BTCUSDT.BINANCE"])
         source_timeframes = universe_data.get("timeframes", ["1m", "5m", "15m", "1h"])
 
-        target_timeframes = source_timeframes
+        if trigger_reason == "COMMITTED_BAR_EVENT" and bar_timeframe is not None:
+            # Automatic scan on a specific committed closed bar event:
+            # strictly evaluate only the committed allowed event timeframe
+            if bar_timeframe in ALLOWED_AUTOMATIC_TIMEFRAMES and bar_timeframe in source_timeframes:
+                target_timeframes = [bar_timeframe]
+            else:
+                target_timeframes = []
+        else:
+            # Manual jobs, priming, or test executions: evaluate configured timeframes
+            target_timeframes = source_timeframes
+
+        if not target_timeframes:
+            logger.debug(
+                "No eligible timeframes to scan for spec %s (trigger=%s, bar_tf=%s)",
+                spec_version_id,
+                trigger_reason,
+                bar_timeframe,
+            )
+            return run_id
 
         # Parse rule groups
         parsed_groups: list[RuleGroup] = []

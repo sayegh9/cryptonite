@@ -121,6 +121,7 @@ def evaluate_window(engine: AnalyticsQueryEngine, start_ns: int, end_ns: int, wi
                 )
                 d1_raw_cands.extend(c)
         d1_15m_raw = [c for c in d1_raw_cands if c.timeframe == "15m"]
+        d1_15m_deduped = deduplicate_candidates(d1_15m_raw)
         d1_all_deduped = deduplicate_candidates(d1_raw_cands)
 
         # ---------------------------------------------------------------------
@@ -170,7 +171,8 @@ def evaluate_window(engine: AnalyticsQueryEngine, start_ns: int, end_ns: int, wi
         # 4. Worker-Equivalent Qualification Before Deduplication
         # ---------------------------------------------------------------------
         qualified_cands = []
-        filter_reasons = {"below_rr_threshold": 0, "invalid_atr": 0}
+        # Note: Invalid ATR is discarded at engine level before candidate creation.
+        filter_reasons = {"below_rr_threshold": 0}
 
         for c in d3_all_cands:
             risk = abs(c.suggested_entry - c.suggested_stop)
@@ -191,9 +193,9 @@ def evaluate_window(engine: AnalyticsQueryEngine, start_ns: int, end_ns: int, wi
         d3_accepted_1h = [c for c in d3_accepted_all if c.timeframe == "1h"]
         d3_accepted_4h = [c for c in d3_accepted_all if c.timeframe == "4h"]
 
-        # Valid-signal retention measure:
-        # What percentage of D2 raw setups passed the D3 structural R:R quality bar?
-        retention_rate = (len(d3_accepted_all) / len(d2_all_deduped) * 100.0) if d2_all_deduped else 0.0
+        # Candidate retention measure:
+        # What percentage of D2 candidate setups passed the D3 structural R:R gate?
+        candidate_retention_rate = (len(d3_accepted_all) / len(d2_all_deduped) * 100.0) if d2_all_deduped else 0.0
 
         # Provenance metrics
         stop_types = {}
@@ -208,28 +210,31 @@ def evaluate_window(engine: AnalyticsQueryEngine, start_ns: int, end_ns: int, wi
 
         mean_rr = (sum(rr_vals) / len(rr_vals)) if rr_vals else 0.0
 
-        # Reductions
-        red_15m_vs_d1 = len(d1_15m_raw) / len(d3_accepted_15m) if d3_accepted_15m else float("inf")
-        red_all_vs_d1 = len(d1_raw_cands) / len(d3_accepted_all) if d3_accepted_all else float("inf")
+        # Reductions vs D1 (both raw and like-for-like deduped)
+        red_15m_vs_d1_raw = len(d1_15m_raw) / len(d3_accepted_15m) if d3_accepted_15m else float("inf")
+        red_15m_vs_d1_dedup = len(d1_15m_deduped) / len(d3_accepted_15m) if d3_accepted_15m else float("inf")
+        red_all_vs_d1_raw = len(d1_raw_cands) / len(d3_accepted_all) if d3_accepted_all else float("inf")
+        red_all_vs_d1_dedup = len(d1_all_deduped) / len(d3_accepted_all) if d3_accepted_all else float("inf")
         red_all_vs_d2 = len(d2_all_deduped) / len(d3_accepted_all) if d3_accepted_all else float("inf")
 
         print("  -- Counts & Reductions --")
-        print(f"  D1 State Baseline (raw):      15m={len(d1_15m_raw):3d} | All TFs={len(d1_raw_cands):3d} (deduped: {len(d1_all_deduped)})")
+        print(f"  D1 State Baseline:            15m={len(d1_15m_raw):3d} raw ({len(d1_15m_deduped):3d} deduped) | All TFs={len(d1_raw_cands):3d} raw ({len(d1_all_deduped):3d} deduped)")
         print(f"  D2 Crossover Baseline (raw):  15m={len(d2_15m_raw):3d} | All TFs={len(d2_raw_cands):3d} (deduped: {len(d2_all_deduped)})")
         print(f"  D3 Raw Generated:             15m={len([c for c in d3_all_cands if c.timeframe == '15m']):3d} | All TFs={len(d3_all_cands):3d}")
         print(f"  D3 Filter Rejections:         {filter_reasons}")
         print(f"  D3 Qualified (pre-dedupe):    {len(qualified_cands):3d}")
         print(f"  D3 Accepted (deduped):        15m={len(d3_accepted_15m):3d} | 1h={len(d3_accepted_1h):3d} | 4h={len(d3_accepted_4h):3d} | Total={len(d3_accepted_all):3d}")
-        print(f"  15m Reduction vs D1:          {red_15m_vs_d1:.1f}x")
-        print(f"  All-TF Reduction vs D1:       {red_all_vs_d1:.1f}x")
+        print(f"  15m Reduction vs D1:          {red_15m_vs_d1_raw:.1f}x raw ({red_15m_vs_d1_dedup:.1f}x deduped like-for-like)")
+        print(f"  All-TF Reduction vs D1:       {red_all_vs_d1_raw:.1f}x raw ({red_all_vs_d1_dedup:.1f}x deduped like-for-like)")
         print(f"  All-TF Reduction vs D2:       {red_all_vs_d2:.1f}x")
-        print(f"  Valid-Signal Retention Rate:  {retention_rate:.1f}%")
+        print(f"  Candidate Retention Rate:     {candidate_retention_rate:.1f}%")
         print(f"  Stop Provenance:              {stop_types}")
         print(f"  Target Provenance:            {target_types}")
         print(f"  Accepted R:R:                 mean={mean_rr:.2f}, min={min(rr_vals) if rr_vals else 0.0:.2f}, max={max(rr_vals) if rr_vals else 0.0:.2f}")
 
         window_results[symbol] = {
             "d1_raw_15m": len(d1_15m_raw),
+            "d1_dedup_15m": len(d1_15m_deduped),
             "d1_raw_all": len(d1_raw_cands),
             "d1_deduped_all": len(d1_all_deduped),
             "d2_raw_15m": len(d2_15m_raw),
@@ -241,34 +246,40 @@ def evaluate_window(engine: AnalyticsQueryEngine, start_ns: int, end_ns: int, wi
             "d3_accepted_1h": len(d3_accepted_1h),
             "d3_accepted_4h": len(d3_accepted_4h),
             "d3_accepted_all": len(d3_accepted_all),
-            "red_15m_vs_d1": red_15m_vs_d1,
-            "red_all_vs_d1": red_all_vs_d1,
+            "red_15m_vs_d1_raw": red_15m_vs_d1_raw,
+            "red_15m_vs_d1_dedup": red_15m_vs_d1_dedup,
+            "red_all_vs_d1_raw": red_all_vs_d1_raw,
+            "red_all_vs_d1_dedup": red_all_vs_d1_dedup,
             "red_all_vs_d2": red_all_vs_d2,
-            "retention_rate": retention_rate,
+            "candidate_retention_rate": candidate_retention_rate,
             "mean_rr": mean_rr,
         }
 
     # Combined multi-asset metrics
     btc = window_results["BTCUSDT"]
     eth = window_results["ETHUSDT"]
-    comb_d1_15m = btc["d1_raw_15m"] + eth["d1_raw_15m"]
-    comb_d1_all = btc["d1_raw_all"] + eth["d1_raw_all"]
+    comb_d1_15m_raw = btc["d1_raw_15m"] + eth["d1_raw_15m"]
+    comb_d1_15m_dedup = btc["d1_dedup_15m"] + eth["d1_dedup_15m"]
+    comb_d1_all_raw = btc["d1_raw_all"] + eth["d1_raw_all"]
+    comb_d1_all_dedup = btc["d1_deduped_all"] + eth["d1_deduped_all"]
     comb_d2_all = btc["d2_deduped_all"] + eth["d2_deduped_all"]
     comb_d3_15m = btc["d3_accepted_15m"] + eth["d3_accepted_15m"]
     comb_d3_all = btc["d3_accepted_all"] + eth["d3_accepted_all"]
-    comb_15m_red = comb_d1_15m / comb_d3_15m if comb_d3_15m else float("inf")
-    comb_all_red = comb_d1_all / comb_d3_all if comb_d3_all else float("inf")
+    comb_15m_red_raw = comb_d1_15m_raw / comb_d3_15m if comb_d3_15m else float("inf")
+    comb_15m_red_dedup = comb_d1_15m_dedup / comb_d3_15m if comb_d3_15m else float("inf")
+    comb_all_red_raw = comb_d1_all_raw / comb_d3_all if comb_d3_all else float("inf")
+    comb_all_red_dedup = comb_d1_all_dedup / comb_d3_all if comb_d3_all else float("inf")
     comb_retention = (comb_d3_all / comb_d2_all * 100.0) if comb_d2_all else 0.0
 
     print("\n" + "-" * 70)
     print(f"  COMBINED BTC+ETH METRICS ({window_name})")
     print("-" * 70)
-    print(f"  Combined 15m D1 Baseline:     {comb_d1_15m}")
-    print(f"  Combined 15m D3 Accepted:     {comb_d3_15m}  ==>  Reduction: {comb_15m_red:.1f}x")
-    print(f"  Combined All-TF D1 Baseline:  {comb_d1_all}")
-    print(f"  Combined All-TF D3 Accepted:  {comb_d3_all}  ==>  Reduction: {comb_all_red:.1f}x")
+    print(f"  Combined 15m D1 Baseline:     {comb_d1_15m_raw} raw, {comb_d1_15m_dedup} deduped")
+    print(f"  Combined 15m D3 Accepted:     {comb_d3_15m}  ==>  Reduction: {comb_15m_red_raw:.1f}x raw ({comb_15m_red_dedup:.1f}x deduped like-for-like)")
+    print(f"  Combined All-TF D1 Baseline:  {comb_d1_all_raw} raw, {comb_d1_all_dedup} deduped")
+    print(f"  Combined All-TF D3 Accepted:  {comb_d3_all}  ==>  Reduction: {comb_all_red_raw:.1f}x raw ({comb_all_red_dedup:.1f}x deduped like-for-like)")
     print(f"  Combined All-TF vs D2:        {comb_d2_all} -> {comb_d3_all} ({(comb_d2_all / comb_d3_all):.1f}x)")
-    print(f"  Combined Retention Rate:      {comb_retention:.1f}%")
+    print(f"  Combined Candidate Retention: {comb_retention:.1f}%")
 
     return window_results
 
