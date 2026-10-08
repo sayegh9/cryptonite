@@ -104,8 +104,8 @@ Key architectural deliverables:
   - Passes enriched `htf_df` to `ScannerEngine.evaluate`.
 - Pre-Insert Qualification Before Deduplication:
   - Rejects candidates failing unrounded `(reward / risk) >= Decimal("1.5")` before deduplication.
-  - Sorts qualified candidates by `(instrument_id, timeframe, bar_close_inclusive_ns, -rr, id)` so highest R:R setup wins duplicate bar slots.
-  - Deduplicates qualified candidates across specs, then acquires advisory transaction locks in canonical order.
+  - Sorts qualified candidates by `(instrument_id, timeframe, bar_close_inclusive_ns, -rr, id)` so highest R:R setup wins duplicate bar slots within that spec execution run.
+  - Across concurrent runs for different specs, deduplication follows the transactional Postgres advisory lock (`pg_try_advisory_xact_lock`) / first-committer path, ensuring no duplicate candidates are committed concurrently across specs without claiming a global multi-spec highest-R:R auction.
 
 ---
 
@@ -159,6 +159,19 @@ Replay benchmark executed using `scripts/replay_d3_benchmark.py` across all 5 bu
   - All-TF D1 Baseline: 624 -> D3 Accepted: **26** (**24.0x reduction**, 2.8x vs D2)
   - Combined valid-signal retention rate: **35.1%**
 
+### 3.3 Metric Reconciliation: Preliminary Draft (5+5, 22.9x) vs Final Multi-TF Benchmark (3+3, 38.0x)
+- **Preliminary Exploration Draft**:
+  - Evaluated only 15m bars across 4 presets prior to adding unrounded R:R filtering and qualification-before-dedupe ordering.
+  - Resulted in 5 BTC + 5 ETH = 10 accepted candidates on 15m out of 229 D1 candidates (**22.9x reduction**).
+- **Finalized Reproducible Multi-TF Benchmark (`scripts/replay_d3_benchmark.py`)**:
+  - Covers all 5 active presets across all automatic timeframes (15m, 1h, 4h).
+  - Strictly enforces unrounded derived price ratio (`reward / risk >= 1.50`) and worker-equivalent qualification-before-deduplication.
+  - Result:
+    * 15m Window: 3 BTC + 3 ETH = **6 accepted candidates** out of 228 D1 candidates (**38.0x reduction**, reconciling the 3+3 report).
+    * All-TF Window: 3 BTC + 4 ETH = **7 accepted candidates** out of 278 D1 candidates (**39.7x reduction** vs D1; 4.6x vs D2 crossover).
+    * 7-day Extended Holdout Window: 21 accepted on 15m (**23.2x reduction**), 26 accepted All-TF (**24.0x reduction**).
+  - Both preliminary and finalized metrics solidly satisfy the 10–50x exit gate (23.2x–39.7x across all evaluated scopes).
+
 ---
 
 ## 4. Test Verification Summary
@@ -169,10 +182,10 @@ All tests executed and verified against clean isolated CI fixtures:
   - Includes `test_worker_qualification_before_dedupe_two_specs_same_bar` (same-bar higher R:R candidate prioritized)
   - Includes `test_deterministic_no_lookahead_htf` (future HTF bars cannot alter candidate)
   - Includes `test_fallback_exact_risk_reward_ratio` (exact 1.50 fallback)
-  - Includes `test_automatic_trigger_timeframe_restriction` (automatic events restricted to 15m/1h/4h)
-- Full Regression Suite: **34 / 34 passed**
-  - `tests/test_scanner_events_d2.py`: 21 passed
-  - `tests/test_scanner_closed_bar_guard.py`: 5 passed
-  - `tests/test_scanner_engine.py`: 1 passed
-  - `tests/test_api_endpoints.py`: 7 passed
+  - Includes `test_automatic_trigger_timeframe_restriction` (automatic stream events restricted to 15m/1h/4h)
+- Full Targeted Regression Suite: **30 / 30 passed**
+  - `tests/test_benchmarks.py::test_polars_scanner_engine_p95_latency`: passed (5.04s)
+  - `tests/test_scanner_fresh_enqueue.py`: 18 / 18 passed
+  - `tests/test_scanner_structure_d3.py`: 11 / 11 passed
+- GitHub Actions CI (PR #43): **6 / 6 checks passing green** (`ruff`, `web`, `pytest`, `e2e-smoke`, `verify`, `CodeRabbit`).
 - Lint & Style: `ruff check` clean (0 errors), `git diff --check` clean.
