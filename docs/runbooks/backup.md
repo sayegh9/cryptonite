@@ -12,7 +12,10 @@
 Output goes to `~/backups/cryptonite/{db,data,secrets}` (mode 700/600); every mode appends to
 `~/backups/cryptonite/backup.log`, and each drill additionally writes a per-run evidence file
 `~/backups/cryptonite/drill-<stamp>.log`. The DB backup needs `infra-postgres-1` running; when the stack is
-stopped the night's run fails and is logged.
+stopped the night's run fails and is logged. PG access is portable: with `PGHOST`/`PGPORT`/`PGDATABASE`
+set or `CRYPTONITE_PG_DIRECT=1` the client binaries run directly against that cluster (this is how CI
+exercises the drill against its throwaway postgres); otherwise they run through the `infra-postgres-1`
+container.
 
 The `db` mode writes a row-count manifest beside each dump (`cryptonite-<stamp>.dump.counts`, same
 14-day rotation): per-table counts taken right after `pg_dump`. The drill restores the newest dump

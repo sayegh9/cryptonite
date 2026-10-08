@@ -16,19 +16,26 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "backup.sh"
 PG_CONTAINER = os.getenv("CRYPTONITE_PG_CONTAINER", "infra-postgres-1")
 
+# Portable PG access, mirroring backup.sh: run the client binaries directly when pointed at a
+# reachable cluster (CRYPTONITE_PG_DIRECT=1, or PGHOST/PGPORT/PGDATABASE set — as in CI), else go
+# through the compose container. Either way only throwaway databases are touched, never `cryptonite`.
+PG_DIRECT = bool(os.getenv("CRYPTONITE_PG_DIRECT") or os.getenv("PGHOST") or os.getenv("PGPORT") or os.getenv("PGDATABASE"))
+
 TABLES = ["operator_users", "ai_mandates", "execution_commands", "paper_accounts",
           "portfolio_decisions", "alembic_version"]
 SEED = {"operator_users": 3, "ai_mandates": 2, "execution_commands": 5, "paper_accounts": 1,
         "portfolio_decisions": 4, "alembic_version": 1}
 
 
-def docker(*args, **kwargs):
-    return subprocess.run(["docker", "exec", PG_CONTAINER, *args],
-                          capture_output=True, text=True, **kwargs)
+def run_pg(*args, **kwargs):
+    """Run a postgres client on the reachable cluster (direct, or via the compose container)."""
+    if PG_DIRECT:
+        return subprocess.run(list(args), capture_output=True, text=True, **kwargs)
+    return subprocess.run(["docker", "exec", PG_CONTAINER, *args], capture_output=True, text=True, **kwargs)
 
 
 def psql(db, sql):
-    return docker("psql", "-U", "cryptonite", "-d", db, "-tAc", sql)
+    return run_pg("psql", "-U", "cryptonite", "-d", db, "-tAc", sql)
 
 
 @pytest.fixture
@@ -37,7 +44,7 @@ def bed(tmp_path):
     tag = uuid.uuid4().hex[:8]
     src, scratch = f"a3_src_{tag}", f"a3_scratch_{tag}"
     dest = tmp_path / "backups"
-    assert docker("createdb", "-U", "cryptonite", src).returncode == 0
+    assert run_pg("createdb", "-U", "cryptonite", src).returncode == 0
     try:
         for t in TABLES:
             cols = "version_num VARCHAR(32) PRIMARY KEY" if t == "alembic_version" else "id SERIAL PRIMARY KEY, note TEXT"
@@ -54,8 +61,8 @@ def bed(tmp_path):
                "CRYPTONITE_BACKUP_SCRATCH": scratch}
         yield {"env": env, "src": src, "scratch": scratch, "dest": dest}
     finally:
-        docker("dropdb", "-U", "cryptonite", "--if-exists", src)
-        docker("dropdb", "-U", "cryptonite", "--if-exists", scratch)
+        run_pg("dropdb", "-U", "cryptonite", "--if-exists", src)
+        run_pg("dropdb", "-U", "cryptonite", "--if-exists", scratch)
 
 
 def run_backup(env, *args):
@@ -67,7 +74,7 @@ def source_count(bed, table):
 
 
 def scratch_exists(bed):
-    out = docker("psql", "-U", "cryptonite", "-d", "postgres", "-tAc",
+    out = run_pg("psql", "-U", "cryptonite", "-d", "postgres", "-tAc",
                  f"SELECT 1 FROM pg_database WHERE datname='{bed['scratch']}'")
     return out.stdout.strip() == "1"
 
@@ -117,8 +124,8 @@ def test_drill_fails_on_count_mismatch(bed):
     manifest = Path(str(dump) + ".counts")
     lines = manifest.read_text().splitlines()
     manifest.write_text("\n".join(
-        f"operator_users={SEED['operator_users'] + 10}" if l.startswith("operator_users=") else l
-        for l in lines) + "\n")
+        f"operator_users={SEED['operator_users'] + 10}" if line.startswith("operator_users=") else line
+        for line in lines) + "\n")
     assert run_backup(bed["env"], "drill").returncode != 0
     body = next(bed["dest"].glob("drill-*.log")).read_text()
     assert "MISMATCH operator_users snapshot=13 restored=3" in body

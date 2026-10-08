@@ -14,7 +14,9 @@
 # Environment overrides (defaults preserve production behavior; tests point these at throwaways):
 #   CRYPTONITE_REPO, CRYPTONITE_BACKUP_DIR, CRYPTONITE_PG_CONTAINER,
 #   CRYPTONITE_BACKUP_DB (source database, default cryptonite),
-#   CRYPTONITE_BACKUP_SCRATCH (scratch database, default cryptonite_restore_drill)
+#   CRYPTONITE_BACKUP_SCRATCH (scratch database, default cryptonite_restore_drill),
+#   CRYPTONITE_PG_DIRECT=1 (or PGHOST/PGPORT/PGDATABASE) to run PG clients directly instead of
+#   through the container (how CI operates)
 set -euo pipefail
 umask 077  # dumps hold password hashes and encrypted TOTP secrets
 
@@ -25,6 +27,17 @@ DB="${CRYPTONITE_BACKUP_DB:-cryptonite}"
 SCRATCH="${CRYPTONITE_BACKUP_SCRATCH:-cryptonite_restore_drill}"
 PASSPHRASE_FILE="${CRYPTONITE_BACKUP_PASSPHRASE_FILE:-$HOME/.config/cryptonite-backup/passphrase}"
 STAMP="$(date -u +%Y-%m-%dT%H%MZ)"
+# Portable PG access: run the client binaries directly when pointed at a reachable cluster
+# (CRYPTONITE_PG_DIRECT=1 or PGHOST/PGPORT/PGDATABASE set — that is how CI talks to its throwaway
+# postgres service); otherwise go through the compose container as a convenience.
+if [ -n "${CRYPTONITE_PG_DIRECT:-}" ] || [ -n "${PGHOST:-}${PGPORT:-}${PGDATABASE:-}" ]; then
+    PG_DIRECT=1
+else
+    PG_DIRECT=
+fi
+pg() {  # run a postgres client binary on the reachable cluster
+    if [ -n "$PG_DIRECT" ]; then "$@"; else docker exec "$PG_CONTAINER" "$@"; fi
+}
 # Tables the drill compares. The manifest is written right after pg_dump (not inside the same
 # snapshot), so under concurrent writes it can lag the dump by seconds; that is why the drill
 # compares the restore against the manifest, never against the live database.
@@ -50,11 +63,11 @@ db)
     out="$DEST/db/cryptonite-$STAMP.dump"
     rm -f "$out.part" "$out.part.counts"
     trap 'rm -f "$out.part" "$out.part.counts"' EXIT
-    docker exec "$PG_CONTAINER" pg_dump -U cryptonite -Fc "$DB" > "$out.part"
+    pg pg_dump -U cryptonite -Fc "$DB" > "$out.part"
     # Row-count snapshot for the drill's equality check (see TABLES note above).
     : > "$out.part.counts"
     for t in $TABLES; do
-        printf '%s=%s\n' "$t" "$(docker exec "$PG_CONTAINER" psql -U cryptonite -d "$DB" -tAc "SELECT count(*) FROM $t")" >> "$out.part.counts"
+        printf '%s=%s\n' "$t" "$(pg psql -U cryptonite -d "$DB" -tAc "SELECT count(*) FROM $t")" >> "$out.part.counts"
     done
     mv "$out.part" "$out"
     mv "$out.part.counts" "$out.counts"
@@ -92,20 +105,28 @@ drill)
     manifest="$dump.counts"
     EVIDENCE="$DEST/drill-$STAMP.log"
     : > "$EVIDENCE"
-    cleanup_scratch() { docker exec "$PG_CONTAINER" dropdb -U cryptonite --if-exists "$SCRATCH" >/dev/null 2>&1 || true; }
+    cleanup_scratch() { pg dropdb -U cryptonite --if-exists "$SCRATCH" >/dev/null 2>&1 || true; }
     trap cleanup_scratch EXIT  # the scratch database is always dropped, on success and on error
     log "drill start dump=$dump"
-    docker exec "$PG_CONTAINER" dropdb -U cryptonite --if-exists "$SCRATCH"
-    docker exec "$PG_CONTAINER" createdb -U cryptonite "$SCRATCH"
+    pg dropdb -U cryptonite --if-exists "$SCRATCH"
+    pg createdb -U cryptonite "$SCRATCH"
     # roles and extensions already exist in the cluster; ownership/grant noise is expected.
     # The restore exit code is recorded, never masked: a failed restore fails the drill.
-    if docker exec -i "$PG_CONTAINER" pg_restore -U cryptonite -d "$SCRATCH" --no-owner < "$dump" >>"$EVIDENCE" 2>&1; then
-        restore_rc=0
+    if [ -n "$PG_DIRECT" ]; then
+        if pg_restore -U cryptonite -d "$SCRATCH" --no-owner < "$dump" >>"$EVIDENCE" 2>&1; then
+            restore_rc=0
+        else
+            restore_rc=$?
+        fi
     else
-        restore_rc=$?
+        if docker exec -i "$PG_CONTAINER" pg_restore -U cryptonite -d "$SCRATCH" --no-owner < "$dump" >>"$EVIDENCE" 2>&1; then
+            restore_rc=0
+        else
+            restore_rc=$?
+        fi
     fi
     log "drill pg_restore exit=$restore_rc"
-    q() { docker exec "$PG_CONTAINER" psql -U cryptonite -d "$1" -tAc "$2"; }
+    q() { pg psql -U cryptonite -d "$1" -tAc "$2"; }
     status=0
     [ "$restore_rc" = 0 ] || status=1
     if [ ! -f "$manifest" ]; then
