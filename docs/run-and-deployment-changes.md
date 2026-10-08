@@ -214,7 +214,12 @@ Run them through the `test` image (the `api` image has no Alembic):
 docker compose -f infra/docker-compose.yml run --rm --no-deps test uv run python -m alembic -c infra/migrations/alembic.ini upgrade head
 ```
 
-Head is `031`. Migrate before deploying new images: the orchestrator and API read tables from 027–031.
+Current code head on `origin/main` is **`040`** (linear `036 → 037` (B2 verdicts) → `038` (C3) →
+`039` (D1 outbox) → `040` (B4 recovery); revisions 032–036 also apply). _Refreshed 2026-10-08 (A6
+audit)._ Migrate before deploying new images: the orchestrator and API read tables from 027–040. The
+**dev DB is still at Alembic `036`** — no live migration has been applied; a code-head revision is not
+production revision evidence. Production reaches 037–040 only through the controlled E1 sequence
+(`docs/HANDOVER-2026-10-08.md`, `docs/operator-release-checklist.md`).
 
 ### 8.4. Tests
 Never against the dev DB: use a throwaway `cryptonite_ci` database (command in HANDOFF.md). Run the

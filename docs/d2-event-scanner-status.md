@@ -1,9 +1,16 @@
 # D2: Event-Based Scanner Conditions & Candidate Deduplication
 
-**Status:** In Review (Implementation Complete; Multi-Spec Combined Volume Reduction Partial at 6.8x–9.5x; E1 Sequencing Held)
+**Status:** **MERGED** via PR #40 (head `fac6e2f`, merged into `origin/main` at `efd6b4c`). Live stack adoption is still an E1 deploy step; the multi-spec 10–50x volume-reduction phase gate remains prospective via D3.
 **Task ID:** `01a115b8-0555-7e40-b20f-987dd0f8d56a`
 **Reference Plan:** `docs/product-review-plan.md` §D2 and `docs/product-review-2026-10-05.md` §5.2.1 (Finding F-H2)
 **Branch:** `feat/d2-event-scanner-dedupe`
+
+> **Post-merge status (2026-10-08, A6 audit):** merged into `origin/main` as PR #40. It reaches the live
+> stack only through the E1 deploy sequence — specifically the pre-scanner preset upgrade
+> (`docs/runbooks/e1_preset_upgrade.md`, operator checklist §4) and the scanner start gated on
+> verification passing. The combined multi-spec measurement (6.8x–9.5x, §3) is below the plan's 10–50x
+> exit gate and remains honestly reported as partial; closing that gate is D3 (#43). Historical
+> assessment below is preserved unchanged as measured.
 
 ---
 
