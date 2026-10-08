@@ -77,7 +77,7 @@ on_exit() {
             if [ -n "${out:-}" ]; then rm -f "$out.part"; fi
             ;;
         drill)
-            cleanup_scratch
+            cleanup_scratch || true  # best-effort on earlier errors; the pre-verdict drop reports status
             ;;
     esac
     if [ "$rc" != 0 ] && [ "$FAIL_LOGGED" != 1 ]; then
@@ -204,7 +204,7 @@ drill)
     dump="$(ls -1t "$DEST"/db/cryptonite-*.dump 2>/dev/null | head -1 || true)"
     [ -n "$dump" ] || fail "drill: no dumps in $DEST/db"
     manifest="$dump.counts"
-    cleanup_scratch() { pg dropdb -U cryptonite --if-exists "$SCRATCH" >/dev/null 2>&1 || true; }
+    cleanup_scratch() { pg dropdb -U cryptonite --if-exists "$SCRATCH" >/dev/null 2>&1; }  # drop status is observable
     log "drill start dump=$dump"
     pg dropdb -U cryptonite --if-exists "$SCRATCH"
     pg createdb -U cryptonite "$SCRATCH"
@@ -319,7 +319,13 @@ drill)
             fi
         fi
     fi
-    cleanup_scratch
+    # The scratch database must be demonstrably gone before the drill can claim success. A failed
+    # final drop changes the verdict to FAILED (a leftover scratch DB that keeps the drop busy proves
+    # the cleanup is not working). The EXIT trap still retries the drop best-effort afterwards.
+    if ! cleanup_scratch; then
+        log "drill FAILED: could not drop the scratch database $SCRATCH"
+        status=1
+    fi
     if [ "$status" = 0 ]; then
         log "drill OK ($dump); evidence $EVIDENCE"
     else

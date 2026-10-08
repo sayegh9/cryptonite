@@ -38,6 +38,9 @@ the restored version hash to match the manifest exactly. A missing, partial, emp
 manifest, a non-numeric value, a missing or unreadable table, or a hash mismatch fails the drill.
 Equality is manifest-vs-restored, never live-vs-restored. The drill exits nonzero on any failure;
 the evidence file holds the restore log, every MATCH/MISMATCH line and the final OK/FAILED verdict.
+Dropping the scratch database is part of the verdict: a final `dropdb` that fails changes the drill
+to FAILED with a nonzero exit (a leftover scratch database can never ride along with an OK verdict);
+a best-effort retry still runs on the way out for earlier errors.
 Dumps written before this manifest format existed (`alembic_version_hash` absent) are flagged
 invalid by the drill; take a fresh `db` backup first.
 

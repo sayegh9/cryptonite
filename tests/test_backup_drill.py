@@ -13,6 +13,8 @@ diffs vs earlier A3 heads:
   - failed db/data/secrets attempts are durably logged (the specific reason, or a generic nonzero
     verdict from the exit trap) and publish nothing; `drill-last.log` symlinks the newest drill
     evidence, giving the plan's stable latest pointer.
+  - the final scratch drop is part of the drill verdict: a `dropdb` failure changes the outcome to
+    FAILED with a nonzero exit (the EXIT trap keeps the drop best-effort for earlier errors).
 
 Runs backup.sh against throwaway databases on the compose postgres cluster and a throwaway DEST dir:
 never the dev DB `cryptonite`, never the real backup dir, no live data touched."""
@@ -47,6 +49,14 @@ def run_pg(*args, **kwargs):
     if PG_DIRECT:
         return subprocess.run(list(args), capture_output=True, text=True, **kwargs)
     return subprocess.run(["docker", "exec", PG_CONTAINER, *args], capture_output=True, text=True, **kwargs)
+
+
+def open_pg(*args):
+    """Spawn a long-lived postgres client (fire-and-forget) on the reachable cluster."""
+    if PG_DIRECT:
+        return subprocess.Popen(list(args), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return subprocess.Popen(["docker", "exec", PG_CONTAINER, *args],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def psql(db, sql):
@@ -291,6 +301,63 @@ def test_drill_fails_on_count_mismatch(bed):
     assert f"MISMATCH operator_users snapshot={SEED['operator_users'] + 10} restored={SEED['operator_users']}" in body
     assert "drill FAILED" in body
     assert not scratch_exists(bed)
+
+
+def test_drill_fails_when_scratch_drop_fails(bed):
+    """A failed final scratch drop must fail the drill: nonzero exit and FAILED, never OK.
+
+    While the drill runs, a watcher attaches a live psql session (`SET application_name='a3_holder'`
+    then `SELECT pg_sleep(60)`) to the throwaway scratch database as soon as createdb makes it
+    reachable; any backend on the target DB blocks DROP DATABASE. Attachment is confirmed
+    authoritatively via pg_stat_activity (not by process liveness), so the drill's final
+    `dropdb --if-exists` deterministically fails with "database ... is being accessed by other
+    users" — and the drop is part of the drill verdict."""
+    # Widen the restore window so the watcher is guaranteed to attach before the final drop.
+    assert psql(bed["src"],
+                "INSERT INTO execution_commands(note) SELECT 'x' FROM generate_series(1, 8000)").returncode == 0
+    assert run_backup(bed["env"], "db").returncode == 0
+    drill_proc = subprocess.Popen(["bash", str(SCRIPT), "drill"], env=bed["env"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    holder = None
+    try:
+        attached = False
+        # Fast retry: spawn a holder, give it a beat to connect (docker exec + psql), then confirm
+        # authoritatively via pg_stat_activity. A psql that cannot connect (scratch not created yet)
+        # exits on its own and the next iteration retries within a few hundred ms — well inside the
+        # restore/comparison window before the drill's final drop.
+        for _ in range(600):
+            if drill_proc.poll() is not None:
+                break
+            holder = open_pg("psql", "-U", "cryptonite", "-d", bed["scratch"],
+                             "-c", "SET application_name='a3_holder'",
+                             "-c", "SELECT pg_sleep(60)")
+            time.sleep(0.05)
+            out = run_pg("psql", "-U", "cryptonite", "-d", "postgres", "-tAc",
+                         "SELECT count(*) FROM pg_stat_activity WHERE datname='" + bed["scratch"]
+                         + "' AND application_name='a3_holder'")
+            if out.stdout.strip() not in ("", "0"):
+                attached = True
+                break
+            if holder.poll() is None:
+                holder.terminate()
+            holder.wait(timeout=5)
+            holder = None
+        out, err = drill_proc.communicate(timeout=180)
+        assert attached, f"never attached a backend to the scratch database: {err[-500:]}"
+        assert drill_proc.returncode != 0, "a failed scratch drop must fail the drill"
+        body = drill_evidence(bed)
+        assert "could not drop the scratch database" in body
+        assert "drill FAILED" in body
+        assert "drill OK" not in body  # no OK verdict while the scratch DB is still there
+        assert scratch_exists(bed)  # the drill could not (and must not claim it did) drop it
+    finally:
+        if holder is not None:
+            holder.terminate()
+            holder.wait(timeout=10)
+        if drill_proc.poll() is None:
+            drill_proc.kill()
+            drill_proc.wait(timeout=10)
+    # fixture teardown drops the leftover scratch DB once the holder's connection is gone
 
 
 # --------------------------------------------------------------------------- safety
