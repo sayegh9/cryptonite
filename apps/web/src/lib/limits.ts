@@ -37,6 +37,23 @@ export async function fetchEnforcedLimits(): Promise<EnforcedLimits> {
   return { as_of: typeof raw?.as_of === "string" ? raw.as_of : null, paper, effective_version: typeof raw?.effective_version === "number" ? raw.effective_version : 0, enforced_at: typeof raw?.enforced_at === "string" ? raw.enforced_at : null };
 }
 
+/**
+ * True only when the enforced telemetry is trustworthy enough to claim "enforced": paper values
+ * published, as_of within LIMITS_MAX_AGE_MS (not in the future), enforced_at a real parseable
+ * timestamp that does not postdate the snapshot that reports it. Anything stale, missing, or
+ * internally inconsistent is treated as unavailable (fail closed).
+ */
+export function isEnforcedLimitsValid(state: EnforcedLimits): boolean {
+  if (!state || state.paper === null) return false;
+  const asOfMs = typeof state.as_of === "string" ? Date.parse(state.as_of) : NaN;
+  const enforcedAtMs = typeof state.enforced_at === "string" ? Date.parse(state.enforced_at) : NaN;
+  if (!Number.isFinite(asOfMs) || !Number.isFinite(enforcedAtMs)) return false;
+  const now = Date.now();
+  if (asOfMs > now || now - asOfMs > LIMITS_MAX_AGE_MS) return false;
+  if (enforcedAtMs > asOfMs) return false; // enforced_at must not postdate the reporting snapshot
+  return true;
+}
+
 export function useEnforcedLimits(pollMs = 60_000): LimitsState {
   const [state, setState] = useState<LimitsState>({ status: "loading", data: null, error: null });
   useEffect(() => {

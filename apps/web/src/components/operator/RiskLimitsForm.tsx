@@ -5,6 +5,7 @@ import {
   CONFIGURABLE_LIMITS,
   fetchEnforcedLimits,
   fetchRiskLimits,
+  isEnforcedLimitsValid,
   loosenedLimits,
   proposedValue,
   updateRiskLimits,
@@ -52,9 +53,14 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saved, setSaved] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Monotonic "save generation": an in-flight GET from an older save must never win over a newer one.
+  const genRef = useRef(0);
 
-  // Stop any pending enforcement poll when the form unmounts.
-  useEffect(() => () => { if (pollRef.current !== null) clearInterval(pollRef.current); }, []);
+  // On unmount, stop the poll AND invalidate any in-flight check so it cannot setState afterwards.
+  useEffect(() => () => {
+    genRef.current++;
+    if (pollRef.current !== null) clearInterval(pollRef.current);
+  }, []);
 
   const load = useCallback(() => {
     fetchRiskLimits()
@@ -104,29 +110,34 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
       // Poll GET /control/enforced-limits until the orchestrator reports this exact
       // override version as enforced. Until then (stale/missing/error) the honest
       // status is "Saved. Not yet enforced"; there is no fabricated enforced_at.
+      // Each save takes a fresh generation; a check superseded by a later save is inert.
       if (pollRef.current !== null) clearInterval(pollRef.current);
+      const gen = ++genRef.current;
       let attempts = 0;
       const maxAttempts = 60; // ~2 min at 2s intervals
       let resolved = false;
       const stop = () => { if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; } };
       const pending = (enforced: number) => setSaved(`Saved. Not yet enforced (orchestrator v${enforced}, override v${savedVer}).`);
       const check = async () => {
+        if (resolved) { stop(); return; } // already settled: wind the poll down
         attempts++;
+        if (genRef.current !== gen) { resolved = true; return; } // superseded by a newer save (or unmount)
         let enforced = 0;
         try {
           const state = await fetchEnforcedLimits();
+          if (genRef.current !== gen) { resolved = true; return; } // old in-flight response: drop it
           const enforcedAt = state.enforced_at;
           enforced = state.effective_version ?? 0;
-          // Only claim "enforced" with a full, fresh telemetry report: version match,
-          // valid paper values and as_of, and a real reported enforced_at.
-          const complete = state.paper !== null && typeof state.as_of === "string" && state.as_of.length > 0;
-          if (!resolved && complete && enforced > 0 && savedVer > 0 && enforced === savedVer && enforcedAt) {
+          // Only claim "enforced" with a complete, fresh, temporally consistent telemetry
+          // report and an exact version match on a real reported enforced_at.
+          if (isEnforcedLimitsValid(state) && enforced > 0 && savedVer > 0 && enforced === savedVer && enforcedAt) {
             resolved = true;
             stop();
             setSaved(`Enforced since ${new Date(enforcedAt).toLocaleString()}.`);
             return;
           }
         } catch {
+          if (genRef.current !== gen) { resolved = true; return; }
           enforced = 0; // unavailable telemetry fails closed to pending
         }
         if (!resolved) {
@@ -135,8 +146,8 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
         }
       };
       pending(0);
-      await check().catch(() => undefined);
-      if (!resolved) pollRef.current = setInterval(check, 2000);
+      void check().catch(() => undefined); // first poll fires immediately; never blocks the POST returning
+      pollRef.current = setInterval(check, 2000);
       load();
       onSaved?.();
     } catch (err) {

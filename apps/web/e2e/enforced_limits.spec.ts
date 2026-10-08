@@ -155,10 +155,10 @@ test.describe("Operator → Enforced limits", () => {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          as_of: "2026-10-07T00:05:00Z",
+          as_of: new Date().toISOString(),
           paper: { max_daily_loss_pct: "3", min_order_equity_pct: "1", max_order_equity_pct: "10", taker_fee_bps: "10", account_backstop_drawdown_pct: "20" },
           effective_version: 7,
-          enforced_at: "2026-10-07T00:05:00Z",
+          enforced_at: new Date().toISOString(),
         }),
       }));
     await expect(form.getByTestId("risk-limits-saved")).toContainText("Enforced since");
@@ -194,5 +194,123 @@ test.describe("Operator → Enforced limits", () => {
     await form.getByLabel("Reason").fill("tighter still");
     await form.getByRole("button", { name: "Save" }).click();
     await expect(form.getByTestId("risk-limits-saved")).toContainText("Not yet enforced");
+  });
+
+  test("stale or temporally-inconsistent telemetry keeps pending even when the version matches", async ({ page }) => {
+    const posts = { n: 0 };
+    const card = await openOperator(page, { status: 200, body: { as_of: null, paper: null } }, () => {
+      posts.n++;
+      return { status: 200, body: { ...CONFIG, success: true, applies_within_s: 60, override_version: posts.n === 1 ? 4 : 5 } };
+    });
+    const form = card.getByTestId("risk-limits-form");
+    await form.getByLabel("Max order size").fill("10");
+    await form.getByLabel("Reason").fill("tighten the order cap");
+
+    // Version matches (4) but as_of is older than LIMITS_MAX_AGE_MS: delayed telemetry → pending.
+    const staleAsOf = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    await page.unroute("**/api/v1/control/enforced-limits");
+    await page.route("**/api/v1/control/enforced-limits", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          as_of: staleAsOf,
+          paper: { max_daily_loss_pct: "3", min_order_equity_pct: "1", max_order_equity_pct: "10", taker_fee_bps: "10", account_backstop_drawdown_pct: "20" },
+          effective_version: 4,
+          enforced_at: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+        }),
+      }));
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("Not yet enforced");
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("override v4");
+    await expect(form.getByTestId("risk-limits-saved")).not.toContainText("Enforced since");
+
+    // Fresh as_of but enforced_at postdates it (internally inconsistent): pending stays.
+    const nowIso = new Date().toISOString();
+    await page.unroute("**/api/v1/control/enforced-limits");
+    await page.route("**/api/v1/control/enforced-limits", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          as_of: nowIso,
+          paper: { max_daily_loss_pct: "3", min_order_equity_pct: "1", max_order_equity_pct: "9", taker_fee_bps: "10", account_backstop_drawdown_pct: "20" },
+          effective_version: 5,
+          enforced_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        }),
+      }));
+    await form.getByLabel("Max order size").fill("9");
+    await form.getByLabel("Reason").fill("tighter still");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("Not yet enforced");
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("override v5");
+    await expect(form.getByTestId("risk-limits-saved")).not.toContainText("Enforced since");
+  });
+
+  test("an old delayed response cannot mask a newer pending override", async ({ page }) => {
+    const sent: Record<string, unknown>[] = [];
+    const card = await openOperator(page, { status: 200, body: { as_of: null, paper: null } }, (body) => {
+      sent.push(body);
+      const num = sent.length;
+      return { status: 200, body: { ...CONFIG, success: true, applies_within_s: 60, override_version: num === 1 ? 1 : 2 } };
+    });
+    const form = card.getByTestId("risk-limits-form");
+
+    let armed = false;
+    let armedCalls = 0;
+    let releaseOld!: () => void;
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    await page.unroute("**/api/v1/control/enforced-limits");
+    await page.route("**/api/v1/control/enforced-limits", async (route) => {
+      if (!armed) {
+        // Card's own polling: harmless neutral state.
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ as_of: null, paper: null }) });
+      }
+      armedCalls++;
+      if (armedCalls === 1) {
+        // Save 1's poll: held until the test releases it, then resolves as v1 *enforced*.
+        await oldGate;
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            as_of: new Date().toISOString(),
+            paper: { max_daily_loss_pct: "3", min_order_equity_pct: "1", max_order_equity_pct: "10", taker_fee_bps: "10", account_backstop_drawdown_pct: "20" },
+            effective_version: 1,
+            enforced_at: new Date().toISOString(),
+          }),
+        });
+      }
+      // Save 2's polls: v2 not yet enforced → pending.
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          as_of: new Date().toISOString(),
+          paper: { max_daily_loss_pct: "3", min_order_equity_pct: "1", max_order_equity_pct: "9", taker_fee_bps: "10", account_backstop_drawdown_pct: "20" },
+          effective_version: 2,
+          enforced_at: null,
+        }),
+      });
+    });
+
+    // Save 1: override v1, its poll is blocked in-flight.
+    await form.getByLabel("Max order size").fill("10");
+    await form.getByLabel("Reason").fill("tighten the order cap");
+    armed = true;
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("override v1");
+
+    // Save 2 supersedes: override v2, status is pending v2.
+    await form.getByLabel("Max order size").fill("9");
+    await form.getByLabel("Reason").fill("tighter still");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("override v2");
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("Not yet enforced");
+
+    // Release save 1's old response: v1 would claim "Enforced"; the generation guard must drop it.
+    releaseOld();
+    await expect(form.getByTestId("risk-limits-saved")).toContainText("override v2");
+    await expect(form.getByTestId("risk-limits-saved")).not.toContainText("Enforced since");
   });
 });
