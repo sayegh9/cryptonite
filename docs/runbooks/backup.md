@@ -18,15 +18,23 @@ exercises the drill against its throwaway postgres); otherwise they run through 
 container.
 
 The `db` mode writes a row-count manifest beside each dump (`cryptonite-<stamp>.dump.counts`, same
-14-day rotation): per-table counts taken right after `pg_dump`. The drill restores the newest dump
-into the scratch database (created empty first, always dropped again — even when the restore or a
-comparison fails, via a trap that can only drop the scratch name and refuses source/postgres names),
-records the `pg_restore` exit code unmasked, then requires every manifest count to equal the restored
-count exactly (a missing table, an unreadable `alembic_version`, or a missing manifest fails the
-drill). Equality is manifest-vs-restored, never live-vs-restored: the manifest is seconds newer than
-the dump, so concurrent writes between dump and drill cannot cause false failures. The drill exits
-nonzero on any failure; the evidence file holds the restore log, every MATCH/MISMATCH line and the
-final OK/FAILED verdict.
+14-day rotation). The dump and every count come from one exported PostgreSQL snapshot (a holder
+session exports it, `pg_dump --snapshot` uses it, and each count runs `SET TRANSACTION SNAPSHOT` on
+it), so the manifest always describes exactly the rows inside the dump even while the database is
+being written to. Every count query is fail-checked and must return a number before anything is
+published: a failed query aborts the backup instead of logging success with a hollow value. The
+manifest also carries `alembic_version_hash` (sha256 of the ordered `alembic_version` rows). The
+drill restores the newest dump into the scratch database (created empty first, always dropped again —
+even when the restore or a comparison fails, via a trap that can only drop the scratch name and
+refuses source/postgres names), records the `pg_restore` exit code unmasked, then strictly validates
+the manifest — exactly the six count tables, one numeric count each, no extras, duplicates or blank
+lines, identifiers allowlisted, and the alembic hash present — and requires every restored count and
+the restored version hash to match the manifest exactly. A missing, partial, empty or duplicate
+manifest, a non-numeric value, a missing or unreadable table, or a hash mismatch fails the drill.
+Equality is manifest-vs-restored, never live-vs-restored. The drill exits nonzero on any failure;
+the evidence file holds the restore log, every MATCH/MISMATCH line and the final OK/FAILED verdict.
+Dumps written before this manifest format existed (`alembic_version_hash` absent) are flagged
+invalid by the drill; take a fresh `db` backup first.
 
 **The DB dump alone cannot restore TOTP**: operator TOTP secrets are encrypted with the AES key in
 `.env`. Restore the secrets archive with the dump.
@@ -48,4 +56,6 @@ zstd -dc ~/backups/cryptonite/data/data-<stamp>.tar.zst | tar -C <repo> -xf -
 ```
 
 First drill: 2026-10-04 20:53 UTC, OK (operator_users, ai_mandates, execution_commands 241,
-paper_accounts, portfolio_decisions 41, alembic 031).
+paper_accounts, portfolio_decisions 41). The alembic head was operator-confirmed as 031 at the time;
+from the snapshot-consistency rework onward the drill itself verifies the alembic revision via
+`alembic_version_hash` (older dumps lack it and are flagged invalid by the newer drill).
