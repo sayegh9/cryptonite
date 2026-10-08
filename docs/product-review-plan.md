@@ -131,6 +131,12 @@ C1 (CI) goes first so every later PR is gated by it.
 - **Change:** find why the `15 2 * * *` cron never fired (cron PATH, user crontab vs. system, `cryptonite-backup` not on PATH, cron service state); fix it and log to `~/backups/cryptonite/backup.log`. Add `restic` or `rclone` copy to the off-machine target. Move the passphrase off the disk. Add a weekly restore drill into a throwaway DB that writes `drill-last.log`. Prune local dumps to keep the disk under 70%.
 - **Done when:** 3 consecutive nightly log entries; a non-empty drill log; one restore from the off-machine copy verified (row counts match).
 - **Effort:** S–M.
+- **`drill-last.log` implementation:** the drill writes per-run evidence
+  `~/backups/cryptonite/drill-<stamp>.log` (restore log, every MATCH/MISMATCH line, final OK/FAILED
+  verdict); `drill-last.log` is a symlink to the newest run's evidence, refreshed at the start of
+  every drill run — updated on success and failure alike, so a run that fails before restoring
+  anything is still the latest log. The per-run evidence is strictly more complete than a single
+  dated `drill-last.log` file, and the stable name the plan requires always points at it.
 
 ### A4. Supervise the web UI and every service (F-M1, F-M10)
 - **Owner:** **Platform Engineer**. **Review:** Code Reviewer.

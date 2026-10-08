@@ -126,6 +126,14 @@ jobs:
       # The redis service container belongs to this job alone: the Nautilus spike tests may use DB 0
       # (tests/connections.py; on the host they skip so the live stack's DB 0 is never touched).
       CRYPTONITE_TEST_REDIS_DEDICATED: "1"
+      # A3 backup-drill tests create throwaway databases/DEST dirs via the portable harness: direct
+      # client binaries against this job's postgres service (no docker socket on the runner). The
+      # `cryptonite` superuser here is the service's POSTGRES_USER, not the dev cluster.
+      CRYPTONITE_PG_DIRECT: "1"
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: cryptonite
+      PGPASSWORD: cryptonite_dev_pass
       PYTHONDONTWRITEBYTECODE: "1"
       UV_FROZEN: "1"
     steps:
