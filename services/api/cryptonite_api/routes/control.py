@@ -260,10 +260,11 @@ def _risk_limits_view(env: str, account_id: str, row) -> dict:
         "updated_by": row["updated_by"] if row else None,
         "updated_at": row["updated_at"].isoformat() if row and row["updated_at"] else None,
         "reason": row["reason"] if row else None,
+        "override_version": int(row["override_version"]) if row and "override_version" in row and row["override_version"] is not None else 1,
     }
 
 
-_OVERRIDE_SQL = """SELECT max_daily_loss_pct, max_order_equity_pct, cross_mandate_exposure_pct, updated_by, updated_at, reason
+_OVERRIDE_SQL = """SELECT max_daily_loss_pct, max_order_equity_pct, cross_mandate_exposure_pct, updated_by, updated_at, reason, override_version
                    FROM risk_limit_overrides WHERE environment = $1 AND account_id = $2"""
 
 
@@ -318,18 +319,20 @@ async def update_risk_limits(
                         raise HTTPException(status_code=401, detail=(
                             "TOTP_REQUIRED: loosening " + ", ".join(check.loosened) + " needs your current TOTP code"))
                     raise
+            next_version = row["override_version"] + 1 if row else 1
             saved = await conn.fetchrow(
                 """INSERT INTO risk_limit_overrides (environment, account_id, max_daily_loss_pct, max_order_equity_pct,
-                       cross_mandate_exposure_pct, updated_by, updated_at, reason)
-                   VALUES ($1, $2, $3, $4, $5, $6, now(), $7)
+                       cross_mandate_exposure_pct, updated_by, updated_at, reason, override_version)
+                   VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8)
                    ON CONFLICT (environment, account_id) DO UPDATE SET
                        max_daily_loss_pct = EXCLUDED.max_daily_loss_pct,
                        max_order_equity_pct = EXCLUDED.max_order_equity_pct,
                        cross_mandate_exposure_pct = EXCLUDED.cross_mandate_exposure_pct,
-                       updated_by = EXCLUDED.updated_by, updated_at = now(), reason = EXCLUDED.reason
-                   RETURNING max_daily_loss_pct, max_order_equity_pct, cross_mandate_exposure_pct, updated_by, updated_at, reason""",
+                       updated_by = EXCLUDED.updated_by, updated_at = now(), reason = EXCLUDED.reason,
+                       override_version = EXCLUDED.override_version
+                   RETURNING max_daily_loss_pct, max_order_equity_pct, cross_mandate_exposure_pct, updated_by, updated_at, reason, override_version""",
                 req.environment, req.account_id, requested.max_daily_loss_pct, requested.max_order_equity_pct,
-                requested.cross_mandate_exposure_pct, username, req.reason)
+                requested.cross_mandate_exposure_pct, username, req.reason, next_version)
 
     await auth_mgr.log_audit_event(
         username=username, action="RISK_LIMITS_UPDATE", ip_address=client_ip,
@@ -364,7 +367,8 @@ async def get_enforced_limits(request: Request, auth: dict = Depends(require_ope
         data = None
     if not isinstance(data, dict) or not isinstance(data.get("paper"), dict):
         return {"as_of": None, "paper": None}
-    return {"as_of": data.get("as_of"), "paper": {k: str(v) for k, v in data["paper"].items()}}
+    result = {"as_of": data.get("as_of"), "paper": {k: str(v) for k, v in data["paper"].items()}, "effective_version": int(data.get("effective_version") or 0), "enforced_at": data.get("enforced_at")}
+    return result
 
 
 @router.get("/balances")

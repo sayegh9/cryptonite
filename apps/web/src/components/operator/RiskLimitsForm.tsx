@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CONFIGURABLE_LIMITS,
+  fetchEnforcedLimits,
   fetchRiskLimits,
+  isEnforcedLimitsValid,
   loosenedLimits,
   proposedValue,
   updateRiskLimits,
@@ -50,6 +52,15 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saved, setSaved] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Monotonic "save generation": an in-flight GET from an older save must never win over a newer one.
+  const genRef = useRef(0);
+
+  // On unmount, stop the poll AND invalidate any in-flight check so it cannot setState afterwards.
+  useEffect(() => () => {
+    genRef.current++;
+    if (pollRef.current !== null) clearInterval(pollRef.current);
+  }, []);
 
   const load = useCallback(() => {
     fetchRiskLimits()
@@ -93,9 +104,50 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
         reason,
         ...(needsTotp ? { totp_code: totp } : {}),
       });
-      setSaved(`Saved. The orchestrator applies it within ${res.applies_within_s ?? 60} s.`);
+      const savedVer = res.override_version ?? 0;
       setTotp("");
       setReason("");
+      // Poll GET /control/enforced-limits until the orchestrator reports this exact
+      // override version as enforced. Until then (stale/missing/error) the honest
+      // status is "Saved. Not yet enforced"; there is no fabricated enforced_at.
+      // Each save takes a fresh generation; a check superseded by a later save is inert.
+      if (pollRef.current !== null) clearInterval(pollRef.current);
+      const gen = ++genRef.current;
+      let attempts = 0;
+      const maxAttempts = 60; // ~2 min at 2s intervals
+      let resolved = false;
+      const stop = () => { if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; } };
+      const pending = (enforced: number) => setSaved(`Saved. Not yet enforced (orchestrator v${enforced}, override v${savedVer}).`);
+      const check = async () => {
+        if (resolved) { stop(); return; } // already settled: wind the poll down
+        attempts++;
+        if (genRef.current !== gen) { resolved = true; return; } // superseded by a newer save (or unmount)
+        let enforced = 0;
+        try {
+          const state = await fetchEnforcedLimits();
+          if (genRef.current !== gen) { resolved = true; return; } // old in-flight response: drop it
+          const enforcedAt = state.enforced_at;
+          enforced = state.effective_version ?? 0;
+          // Only claim "enforced" with a complete, fresh, temporally consistent telemetry
+          // report and an exact version match on a real reported enforced_at.
+          if (isEnforcedLimitsValid(state) && enforced > 0 && savedVer > 0 && enforced === savedVer && enforcedAt) {
+            resolved = true;
+            stop();
+            setSaved(`Enforced since ${new Date(enforcedAt).toLocaleString()}.`);
+            return;
+          }
+        } catch {
+          if (genRef.current !== gen) { resolved = true; return; }
+          enforced = 0; // unavailable telemetry fails closed to pending
+        }
+        if (!resolved) {
+          pending(enforced);
+          if (attempts >= maxAttempts) { resolved = true; stop(); }
+        }
+      };
+      pending(0);
+      void check().catch(() => undefined); // first poll fires immediately; never blocks the POST returning
+      pollRef.current = setInterval(check, 2000);
       load();
       onSaved?.();
     } catch (err) {

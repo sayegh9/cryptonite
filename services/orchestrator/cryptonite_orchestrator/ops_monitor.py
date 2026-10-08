@@ -54,8 +54,11 @@ def effective_limits(dispatcher, now: datetime.datetime | None = None,
     if cross_mandate_exposure_pct is None:
         cross_mandate_exposure_pct = risk_overrides.STATE.cross_cap_pct
     pct = Decimal("100")
+    enforced_at = risk_overrides.STATE.enforced_at.isoformat().replace("+00:00", "Z") if getattr(risk_overrides.STATE, "enforced_at", None) else None
     return {
         "as_of": now.isoformat().replace("+00:00", "Z"),
+        "effective_version": int(getattr(risk_overrides.STATE, "last_applied_version", 0)) if getattr(risk_overrides.STATE, "last_applied_version", 0) else 0,
+        "enforced_at": enforced_at,
         "paper": {
             "max_daily_loss_pct": _plain(Decimal(str(dispatcher.max_daily_loss_pct)) * pct),
             "min_order_equity_pct": _plain(Decimal(str(dispatcher.min_order_equity_pct)) * pct),

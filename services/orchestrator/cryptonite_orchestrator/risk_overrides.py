@@ -52,6 +52,8 @@ class RiskState:
     overrides_loaded_at: float | None = None
     betas: dict[str, Decimal] = field(default_factory=dict)  # lake symbol -> beta to BTC
     betas_at: float | None = None
+    last_applied_version: int = 0
+    enforced_at: datetime.datetime | None = None
 
 
 STATE = RiskState()
@@ -61,14 +63,16 @@ def environment() -> str:
     return os.getenv("ENVIRONMENT", "PAPER").upper()
 
 
-async def load_overrides(conn, env: str, account_id: str) -> RiskLimitValues:
+async def load_overrides(conn, env: str, account_id: str) -> tuple[RiskLimitValues, int]:
     row = await conn.fetchrow(
-        """SELECT max_daily_loss_pct, max_order_equity_pct, cross_mandate_exposure_pct
+        """SELECT max_daily_loss_pct, max_order_equity_pct, cross_mandate_exposure_pct, override_version
            FROM risk_limit_overrides WHERE environment = $1 AND account_id = $2""", env, account_id)
-    return RiskLimitValues.from_row(row)
+    if row is None:
+        return RiskLimitValues(), 0
+    return RiskLimitValues.from_row(row), int(row["override_version"]) if "override_version" in row else 1
 
 
-def apply_overrides(engine, overrides: RiskLimitValues, state: RiskState = STATE) -> bool:
+def apply_overrides(engine, overrides: RiskLimitValues, state: RiskState = STATE, version: int = 0) -> bool:
     """Apply ``overrides`` to the engine's dispatcher (tighter only) and the F4 cap."""
     d = engine.dispatcher
     if state.baseline is None:
@@ -76,6 +80,10 @@ def apply_overrides(engine, overrides: RiskLimitValues, state: RiskState = STATE
     changed = apply_to_dispatcher(d, state.baseline, overrides)
     state.overrides = overrides
     state.cross_cap_pct = cross_mandate_cap_pct(overrides)
+    if changed or version != state.last_applied_version:
+        state.last_applied_version = version
+        state.enforced_at = datetime.datetime.now(datetime.UTC)
+        changed = True
     return changed
 
 
@@ -83,14 +91,14 @@ async def refresh_risk_limits(engine, pool, state: RiskState = STATE, env: str |
     account_id = getattr(engine, "account_id", "PAPER-ACCOUNT-001")
     try:
         async with pool.acquire() as conn:
-            overrides = await load_overrides(conn, env or environment(), account_id)
+            overrides, version = await load_overrides(conn, env or environment(), account_id)
     except Exception as e:  # keep what is applied: a failed read must not loosen anything
         logger.error("Could not read risk_limit_overrides: %s", e)
         return None
-    if apply_overrides(engine, overrides, state):
+    if apply_overrides(engine, overrides, state, version):
         d = engine.dispatcher
-        logger.warning("Risk limits applied: max_daily_loss_pct=%s max_order_equity_pct=%s cross_mandate_cap=%s%%",
-                       d.max_daily_loss_pct, d.max_position_concentration_pct, state.cross_cap_pct)
+        logger.warning("Risk limits applied: max_daily_loss_pct=%s max_order_equity_pct=%s cross_mandate_cap=%s%% (v%s)",
+                       d.max_daily_loss_pct, d.max_position_concentration_pct, state.cross_cap_pct, state.last_applied_version)
     state.overrides_loaded_at = time.time()
     return overrides
 
