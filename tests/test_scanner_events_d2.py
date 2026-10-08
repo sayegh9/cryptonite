@@ -405,6 +405,7 @@ async def test_cross_spec_candidate_deduplication_in_worker(db_url, admin, redis
             rules_data=rule1,
             trigger_reason="COMMITTED_BAR_EVENT",
             trigger_event_id=str(uuid4()),
+            bar_timeframe="15m",
         )
         # Run spec 2 on the exact same bar
         await w._execute_scan(
@@ -414,6 +415,7 @@ async def test_cross_spec_candidate_deduplication_in_worker(db_url, admin, redis
             rules_data=rule2,
             trigger_reason="COMMITTED_BAR_EVENT",
             trigger_event_id=str(uuid4()),
+            bar_timeframe="15m",
         )
     finally:
         await w.pool.close()
@@ -479,6 +481,7 @@ async def test_worker_processes_all_active_specs_above_cap_without_dropping_sign
                 "event_id": str(uuid4()),
                 "instrument_id": "BTCUSDT.BINANCE",
                 "bar_close_inclusive_ns": 1000 + ONE_MINUTE_NS - 1,
+                "timeframe": "15m",
             })
         }
         await w._handle_stream_message("stream", "1-0", stream_msg)
@@ -660,6 +663,7 @@ async def test_cross_spec_dedupe_concurrent_race_serialized(db_url, admin, redis
                 rules_data=rule1,
                 trigger_reason="COMMITTED_BAR_EVENT",
                 trigger_event_id=str(uuid4()),
+                bar_timeframe="15m",
             )
         )
         task2 = asyncio.create_task(
@@ -670,6 +674,7 @@ async def test_cross_spec_dedupe_concurrent_race_serialized(db_url, admin, redis
                 rules_data=rule2,
                 trigger_reason="COMMITTED_BAR_EVENT",
                 trigger_event_id=str(uuid4()),
+                bar_timeframe="15m",
             )
         )
         await asyncio.gather(task1, task2)
