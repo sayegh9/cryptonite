@@ -5,6 +5,7 @@ pre-insert R:R rejection gate, and automatic trigger timeframe restriction tests
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
@@ -741,58 +742,70 @@ async def test_worker_pre_insert_rr_rejection_gate(admin, db_url, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_automatic_trigger_timeframe_restriction(admin, db_url, monkeypatch):
-    """Verify that COMMITTED_BAR_EVENT evaluates only 15m/1h/4h, skipping 1m and 5m."""
+    """Verify that automatic stream events strictly restrict triggers to 15m/1h/4h, skipping 1m and 5m."""
+    import json
     import time
+
+    from cryptonite_scanner.models import ALLOWED_AUTOMATIC_TIMEFRAMES
+    from cryptonite_scanner.presets import BUILTIN_PRESETS
+
+    # 1. Verify all built-in presets only use allowed automatic timeframes
+    for p in BUILTIN_PRESETS:
+        for tf in p.universe.timeframes:
+            assert tf in ALLOWED_AUTOMATIC_TIMEFRAMES, f"Preset {p.slug} has non-automatic timeframe {tf}"
+
+    # 2. Test stream handler skips 1m and 5m committed bar events
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
     now_ts = (time.time_ns() // (60 * ONE_MINUTE_NS)) * (60 * ONE_MINUTE_NS)
-
-    universe = {"instrument_ids": ["BTCUSDT.BINANCE"], "timeframes": ["1m", "5m", "15m", "1h"]}
+    universe = {"instrument_ids": ["BTCUSDT.BINANCE"], "timeframes": ["15m", "1h"]}
     rules = [{"category": "trigger", "conditions": [{"field": "close", "operator": ">", "value": 0}]}]
-    spec_id, ver_id = await _seed_spec(pool, "test-tf-restrict", universe, rules)
+    await _seed_spec(pool, "test-tf-restrict", universe, rules)
 
-    evaluated_timeframes: list[str] = []
-
-    def mock_eval(cls, df, rule_groups, risk_config, instrument_id, timeframe, spec_version_id, scan_run_id, price_precision=2, **_kwargs):
-        evaluated_timeframes.append(timeframe)
-        return []
-
-    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(mock_eval))
-
-    lake_df = _make_dummy_ohlcv(n_bars=300, base_price=100.0, step_ns=ONE_MINUTE_NS, start_ns=now_ts - 300 * ONE_MINUTE_NS)
     worker = ScannerWorker(database_url=as_scanner(db_url), analytics_lake_path="/nonexistent-lake")
     worker.pool = pool
-    worker.query_engine = FakeLakeQueryEngine(lake_df)
 
-    # 1. Trigger via COMMITTED_BAR_EVENT -> Only 15m and 1h evaluated!
-    evaluated_timeframes.clear()
-    await worker._execute_scan(
-        spec_version_id=ver_id,
-        spec_hash="hash-tf",
-        universe_data=universe,
-        rules_data=rules,
-        trigger_reason="COMMITTED_BAR_EVENT",
-        trigger_event_id=str(uuid4()),
-        watermark_ns=now_ts,
-    )
-    assert set(evaluated_timeframes) == {"15m", "1h"}, f"Expected only 15m and 1h for automatic event, got {evaluated_timeframes}"
-    assert "1m" not in evaluated_timeframes
-    assert "5m" not in evaluated_timeframes
+    class DummyRedis:
+        def __init__(self):
+            self.xacked: list[tuple[str, str, str]] = []
 
-    # 2. Trigger via MANUAL_JOB -> All configured timeframes evaluated!
-    evaluated_timeframes.clear()
-    await worker._execute_scan(
-        spec_version_id=ver_id,
-        spec_hash="hash-tf",
-        universe_data=universe,
-        rules_data=rules,
-        trigger_reason="MANUAL_JOB",
-        trigger_event_id=None,
-        watermark_ns=now_ts,
-    )
-    assert "1m" in evaluated_timeframes
-    assert "5m" in evaluated_timeframes
-    assert "15m" in evaluated_timeframes
-    assert "1h" in evaluated_timeframes
+        async def xack(self, stream: str, group: str, msg_id: str) -> None:
+            self.xacked.append((stream, group, msg_id))
+
+    worker.redis = DummyRedis()  # type: ignore
+
+    scans_executed: list[dict[str, Any]] = []
+
+    async def mock_execute_scan(*args, **kwargs):
+        scans_executed.append(kwargs)
+        return uuid4()
+
+    monkeypatch.setattr(worker, "_execute_scan", mock_execute_scan)
+
+    # 1m event should be skipped (XACK'd, 0 scans executed)
+    msg_1m = {"data": json.dumps({"event_id": "ev-1m", "instrument_id": "BTCUSDT.BINANCE", "timeframe": "1m", "bar_close_inclusive_ns": now_ts})}
+    await worker._handle_stream_message("closed_bar_committed", "1-0", msg_1m)
+    assert len(scans_executed) == 0
+    assert len(worker.redis.xacked) == 1
+
+    # 5m event should also be skipped
+    msg_5m = {"data": json.dumps({"event_id": "ev-5m", "instrument_id": "BTCUSDT.BINANCE", "timeframe": "5m", "bar_close_inclusive_ns": now_ts})}
+    await worker._handle_stream_message("closed_bar_committed", "2-0", msg_5m)
+    assert len(scans_executed) == 0
+    assert len(worker.redis.xacked) == 2
+
+    # 15m event should be processed (1 scan executed)
+    msg_15m = {"data": json.dumps({"event_id": "ev-15m", "instrument_id": "BTCUSDT.BINANCE", "timeframe": "15m", "bar_close_inclusive_ns": now_ts})}
+    await worker._handle_stream_message("closed_bar_committed", "3-0", msg_15m)
+    assert len(scans_executed) == 1
+    assert scans_executed[-1]["trigger_reason"] == "COMMITTED_BAR_EVENT"
+    assert scans_executed[-1]["trigger_event_id"] == "ev-15m"
+    assert len(worker.redis.xacked) == 3
+
+    # 1h event should be processed
+    msg_1h = {"data": json.dumps({"event_id": "ev-1h", "instrument_id": "BTCUSDT.BINANCE", "timeframe": "1h", "bar_close_inclusive_ns": now_ts})}
+    await worker._handle_stream_message("closed_bar_committed", "4-0", msg_1h)
+    assert len(scans_executed) == 2
+    assert scans_executed[-1]["trigger_event_id"] == "ev-1h"
 
     await pool.close()
 

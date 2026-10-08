@@ -138,8 +138,10 @@ def calc_donchian_channel(
     period: int = 20,
 ) -> tuple[pl.Expr, pl.Expr, pl.Expr]:
     """Donchian Channel: returns (lower, middle, upper)."""
-    upper = pl.col(high_col).rolling_max(window_size=period)
-    lower = pl.col(low_col).rolling_min(window_size=period)
+    high_expr = pl.col(high_col).cast(pl.Float64)
+    low_expr = pl.col(low_col).cast(pl.Float64)
+    upper = high_expr.rolling_max(window_size=period)
+    lower = low_expr.rolling_min(window_size=period)
     middle = (upper + lower) / 2.0
     return lower, middle, upper
 

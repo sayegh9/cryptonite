@@ -643,11 +643,7 @@ class ScannerWorker:
         source_instruments = universe_data.get("instrument_ids", ["BTCUSDT.BINANCE"])
         source_timeframes = universe_data.get("timeframes", ["1m", "5m", "15m", "1h"])
 
-        # Restrict automatic triggers strictly to ALLOWED_AUTOMATIC_TIMEFRAMES (15m, 1h, 4h)
-        if trigger_reason == "COMMITTED_BAR_EVENT":
-            target_timeframes = [tf for tf in source_timeframes if tf in ALLOWED_AUTOMATIC_TIMEFRAMES]
-        else:
-            target_timeframes = source_timeframes
+        target_timeframes = source_timeframes
 
         # Parse rule groups
         parsed_groups: list[RuleGroup] = []
