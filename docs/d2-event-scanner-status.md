@@ -7,10 +7,12 @@
 
 > **Post-merge status (2026-10-08, A6 audit):** merged into `origin/main` as PR #40. It reaches the live
 > stack only through the E1 deploy sequence — specifically the pre-scanner preset upgrade
-> (`docs/runbooks/e1_preset_upgrade.md`, operator checklist §4) and the scanner start gated on
-> verification passing. The combined multi-spec measurement (6.8x–9.5x, §3) is below the plan's 10–50x
-> exit gate and remains honestly reported as partial; closing that gate is D3 (#43). Historical
-> assessment below is preserved unchanged as measured.
+> (`docs/runbooks/e1_preset_upgrade.md`, operator release checklist §3.6) and the scanner start gated on
+> verification passing. The combined multi-spec measurement (6.8x–9.5x, §3) was below the plan's 10–50x
+> exit gate at merge time. **D3 (#43)** now meets the numeric 10–50x gate in its offline multi-TF replay
+> (15m combined **38.0x**; all-TF **39.7x**, `scripts/replay_d3_benchmark.py` in #43), but PR #43 is
+> **unmerged and the production/live reduction is unverified** — the gate closes in production only
+> after D3 lands and is measured live. Historical assessment below is preserved unchanged as measured.
 
 ---
 
