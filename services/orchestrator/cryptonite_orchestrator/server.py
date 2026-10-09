@@ -1333,6 +1333,25 @@ async def main():
 
     logger.info("Listening for live bars on %s...", stream_name)
 
+    _instrument_precisions: dict[str, tuple[int, int]] = {}
+
+    async def _get_instrument_precisions(inst_id: str) -> tuple[int | None, int | None]:
+        if inst_id in _instrument_precisions:
+            return _instrument_precisions[inst_id]
+        if pool:
+            try:
+                row = await pool.fetchrow(
+                    "SELECT price_precision, size_precision FROM instruments WHERE instrument_id = $1 AND is_active = true",
+                    inst_id,
+                )
+                if row and row["price_precision"] is not None and row["size_precision"] is not None:
+                    res = (int(row["price_precision"]), int(row["size_precision"]))
+                    _instrument_precisions[inst_id] = res
+                    return res
+            except Exception as ex:
+                logger.warning("Error fetching precisions for %s in orchestrator: %s", inst_id, ex)
+        return (None, None)
+
     while True:
         try:
             messages = await redis.xreadgroup(
@@ -1348,17 +1367,25 @@ async def main():
                         except Exception:
                             payload_dict = json.loads(payload_json)
                             bt = BarType.from_str(payload_dict["bar_type"])
-                            b = Bar(
-                                bar_type=bt,
-                                open=Price(Decimal(str(payload_dict["open"])), 2),
-                                high=Price(Decimal(str(payload_dict["high"])), 2),
-                                low=Price(Decimal(str(payload_dict["low"])), 2),
-                                close=Price(Decimal(str(payload_dict["close"])), 2),
-                                volume=Quantity(Decimal(str(payload_dict["volume"])), 4),
-                                ts_event=int(payload_dict["ts_event"]),
-                                ts_init=int(payload_dict["ts_init"])
-                            )
-                            engine.on_live_bar(b)
+                            inst_str = str(bt.instrument_id)
+                            p_prec, s_prec = await _get_instrument_precisions(inst_str)
+                            if p_prec is None or s_prec is None:
+                                logger.error(
+                                    "Missing instrument precision metadata for %s in bar fallback parser. Failing closed.",
+                                    inst_str,
+                                )
+                            else:
+                                b = Bar(
+                                    bar_type=bt,
+                                    open=Price(Decimal(str(payload_dict["open"])), p_prec),
+                                    high=Price(Decimal(str(payload_dict["high"])), p_prec),
+                                    low=Price(Decimal(str(payload_dict["low"])), p_prec),
+                                    close=Price(Decimal(str(payload_dict["close"])), p_prec),
+                                    volume=Quantity(Decimal(str(payload_dict["volume"])), s_prec),
+                                    ts_event=int(payload_dict["ts_event"]),
+                                    ts_init=int(payload_dict["ts_init"]),
+                                )
+                                engine.on_live_bar(b)
 
                     await redis.xack(stream_name, group_name, msg_id)
                     

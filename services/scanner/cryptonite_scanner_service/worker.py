@@ -355,7 +355,31 @@ class ScannerWorker:
         if self.pool:
             await self.pool.close()
             self.pool = None
-        logger.info("ScannerWorker stopped")
+    async def _load_instrument_precisions(self, instrument_ids: list[str]) -> dict[str, int]:
+        """Fetch validated price_precision for a list of canonical instrument IDs from the DB.
+
+        Fails closed for any instrument missing from the DB or lacking a valid price_precision.
+        """
+        precisions: dict[str, int] = {}
+        if not self.pool or not instrument_ids:
+            return precisions
+
+        try:
+            rows = await self.pool.fetch(
+                """
+                SELECT instrument_id, price_precision
+                FROM instruments
+                WHERE instrument_id = ANY($1) AND is_active = true;
+                """,
+                instrument_ids,
+            )
+            for r in rows:
+                if r["price_precision"] is not None:
+                    precisions[r["instrument_id"]] = int(r["price_precision"])
+        except Exception as e:
+            logger.warning("Error fetching instrument precisions from database: %s", e)
+
+        return precisions
 
     async def reconcile_and_prime(self) -> None:
         """Reconcile scanner checkpoints against latest ingest watermarks on startup."""
@@ -703,7 +727,14 @@ class ScannerWorker:
         lookback_min = SCAN_LOOKBACK_BARS * max(TIMEFRAME_MINUTES.get(tf, 60) for tf in (all_eval_tfs or source_timeframes))
         start_ns = time.time_ns() - lookback_min * 60 * 1_000_000_000
         since_date = time.strftime("%Y-%m-%d", time.gmtime(start_ns / 1e9))
+        precisions = await self._load_instrument_precisions(source_instruments)
         for inst in source_instruments:
+            inst_price_prec = precisions.get(inst)
+            if inst_price_prec is None:
+                logger.warning(
+                    "Instrument %s precision metadata missing or inactive in database. Failing closed.",
+                    inst,
+                )
             raw_symbol = inst.split(".")[0]
             # 1. Fetch 1m bars from Analytics Lake via DuckDB
             df_1m = self.query_engine.query_bars_df(symbol=raw_symbol, timeframe="1m", start_ns=start_ns)
@@ -754,7 +785,7 @@ class ScannerWorker:
                         timeframe=tf,
                         spec_version_id=spec_version_id,
                         scan_run_id=run_id,
-                        price_precision=2,
+                        price_precision=inst_price_prec,
                         htf_df=htf_df,
                     )
                 except TypeError as te:
@@ -767,7 +798,7 @@ class ScannerWorker:
                             timeframe=tf,
                             spec_version_id=spec_version_id,
                             scan_run_id=run_id,
-                            price_precision=2,
+                            price_precision=inst_price_prec,
                         )
                     else:
                         raise

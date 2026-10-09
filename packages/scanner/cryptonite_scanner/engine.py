@@ -4,10 +4,13 @@ Evaluates multi-factor rule groups over resampled OHLCV DataFrames and returns
 strictly analytical SignalCandidate records. Completely isolated from execution.
 """
 
+import logging
 import math
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
+
+logger = logging.getLogger("cryptonite.scanner.engine")
 
 import polars as pl
 
@@ -71,11 +74,19 @@ class ScannerEngine:
         timeframe: str,
         spec_version_id: UUID,
         scan_run_id: UUID,
-        price_precision: int = 2,
+        price_precision: int | None = 2,
         htf_df: pl.DataFrame | None = None,
         filter_min_rr: bool = False,
     ) -> list[SignalCandidateRead]:
         """Evaluate rule groups against the DataFrame and produce SignalCandidate records."""
+        if price_precision is None or not isinstance(price_precision, int) or price_precision < 0:
+            logger.error(
+                "Missing or invalid price_precision for instrument %s (value=%s). Failing closed.",
+                instrument_id,
+                price_precision,
+            )
+            return []
+
         if df.is_empty():
             return []
 
@@ -158,8 +169,13 @@ class ScannerEngine:
                 for cond, _ in cond_details:
                     actual_val = row.get(cond.field)
                     if actual_val is not None:
+                        prec_fmt = (
+                            price_precision
+                            if cond.field in ("close", "open", "high", "low", "ema_20", "ema_50", "ema_200", "bb_lower", "bb_upper", "donchian_lower", "donchian_upper", "atr")
+                            else 2
+                        )
                         matched_explanations.append(
-                            f"[{group.category.upper()}] {cond.field} ({float(actual_val):.2f}) {cond.operator} {cond.value}"
+                            f"[{group.category.upper()}] {cond.field} ({float(actual_val):.{prec_fmt}f}) {cond.operator} {cond.value}"
                         )
 
             entry_dec = round(Decimal(str(row["close"])), price_precision)
