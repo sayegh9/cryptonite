@@ -1,7 +1,9 @@
+import datetime
 import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import duckdb
@@ -86,12 +88,147 @@ def get_live_market_data(symbols: str = "BTCUSDT") -> str:
                     "low_24h": float(item["lowPrice"]),
                     "volume_24h": float(item["volume"]),
                 }
-                for item in data
+            for item in data
             ]
             return json.dumps(results, indent=2)
         return f"Binance API returned status {resp.status_code}: {resp.text}"
     except Exception as e:
         return f"Error fetching live market data: {e}"
+
+
+_SYMBOL_REGEX = re.compile(r"^[A-Z0-9]{3,20}$")
+_ALLOWED_INTERVALS = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
+_FED_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT"})
+
+_EXCHANGE_INFO_CACHE: set[str] | None = None
+_EXCHANGE_INFO_FETCHED_AT: float = 0.0
+_EXCHANGE_INFO_TTL_S: float = 86400.0  # 24h
+
+_KLINES_CACHE: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
+_KLINES_CACHE_TTL_S: float = 60.0  # 60s
+
+
+def _get_valid_symbols() -> set[str]:
+    global _EXCHANGE_INFO_CACHE, _EXCHANGE_INFO_FETCHED_AT
+    now = time.time()
+    if _EXCHANGE_INFO_CACHE is not None and (now - _EXCHANGE_INFO_FETCHED_AT) < _EXCHANGE_INFO_TTL_S:
+        return _EXCHANGE_INFO_CACHE
+    try:
+        import httpx
+        resp = httpx.get("https://api.binance.com/api/v3/exchangeInfo", timeout=10.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            valid = {s["symbol"].upper() for s in data.get("symbols", []) if s.get("status") == "TRADING"}
+            _EXCHANGE_INFO_CACHE = valid
+            _EXCHANGE_INFO_FETCHED_AT = now
+            return valid
+    except Exception as e:
+        logger.warning("Could not refresh Binance exchangeInfo: %s", e)
+    if _EXCHANGE_INFO_CACHE is not None:
+        return _EXCHANGE_INFO_CACHE
+    return set()
+
+
+def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
+    """Fetches historical klines/candles for any valid trading symbol on Binance.
+
+    Parameters:
+        symbol: Trading pair symbol (e.g. 'BTCUSDT', 'SOLUSDT', 'WLDUSDT').
+        interval: Candle timeframe ('1m', '5m', '15m', '1h', '4h', '1d'). Default is '1h'.
+        limit: Number of candles to retrieve (1 to 500). Default is 200.
+    """
+    clean_symbol = symbol.strip().split(".")[0].upper()
+    if not _SYMBOL_REGEX.match(clean_symbol):
+        return f"Error: Invalid symbol format '{symbol}'. Symbol must be alphanumeric (3-20 chars)."
+
+    valid_symbols = _get_valid_symbols()
+    if valid_symbols and clean_symbol not in valid_symbols:
+        return f"Error: Symbol '{clean_symbol}' is not a valid active trading pair on Binance."
+
+    if interval not in _ALLOWED_INTERVALS:
+        return f"Error: Invalid interval '{interval}'. Allowed intervals: {sorted(_ALLOWED_INTERVALS)}"
+
+    try:
+        limit_val = int(limit)
+    except (ValueError, TypeError):
+        return f"Error: Limit must be an integer, got '{limit}'."
+
+    if not (1 <= limit_val <= 500):
+        return f"Error: Limit must be between 1 and 500, got {limit_val}."
+
+    now = time.time()
+    cache_key = (clean_symbol, interval, limit_val)
+    if cache_key in _KLINES_CACHE:
+        cached_time, cached_result = _KLINES_CACHE[cache_key]
+        if (now - cached_time) < _KLINES_CACHE_TTL_S:
+            return json.dumps(cached_result, indent=2)
+
+    try:
+        import httpx
+        # Fetch slightly extra candles in case the last candle is still open
+        fetch_limit = min(limit_val + 2, 500)
+        params = {"symbol": clean_symbol, "interval": interval, "limit": fetch_limit}
+        resp = httpx.get("https://api.binance.com/api/v3/klines", params=params, timeout=10.0)
+
+        used_weight_str = resp.headers.get("X-MBX-USED-WEIGHT-1M") or resp.headers.get("x-mbx-used-weight-1m")
+        if used_weight_str:
+            try:
+                weight = int(used_weight_str)
+                if weight > 3000:
+                    return f"Error: Rate limit protection triggered (weight {weight} > 3000). Request rejected."
+            except ValueError:
+                pass
+
+        if resp.status_code in (429, 418):
+            retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after") or "60"
+            return f"Error: Rate limited by Binance API (HTTP {resp.status_code}). Retry-After: {retry_after}s."
+
+        if resp.status_code != 200:
+            return f"Binance API returned status {resp.status_code}: {resp.text}"
+
+        raw_klines = resp.json()
+        now_ms = int(time.time() * 1000)
+
+        # Filter strictly closed candles (close_time <= now_ms)
+        closed_klines = [k for k in raw_klines if int(k[6]) <= now_ms]
+        trimmed = closed_klines[-limit_val:] if len(closed_klines) > limit_val else closed_klines
+
+        if not trimmed:
+            return f"Error: No closed candles available for {clean_symbol} {interval}."
+
+        fetched_at_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        last_closed_close_time_iso = datetime.datetime.fromtimestamp(trimmed[-1][6] / 1000, tz=datetime.timezone.utc).isoformat()
+        in_feed = "fed" if clean_symbol in _FED_SYMBOLS else "unknown"
+
+        candles = [
+            {
+                "open_time_ms": k[0],
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+                "close_time_ms": k[6],
+            }
+            for k in trimmed
+        ]
+
+        output_data = {
+            "source": "binance_spot_klines",
+            "symbol": clean_symbol,
+            "interval": interval,
+            "fetched_at": fetched_at_iso,
+            "last_closed_close_time": last_closed_close_time_iso,
+            "in_feed": in_feed,
+            "candle_count": len(candles),
+            "candles": candles,
+        }
+
+        _KLINES_CACHE[cache_key] = (now, output_data)
+        return json.dumps(output_data, indent=2)
+
+    except Exception as e:
+        return f"Error fetching klines data: {e}"
 
 def query_parquet_duckdb(query: str) -> str:
     """Executes a DuckDB SQL query against the massive Parquet data catalog.
@@ -323,6 +460,7 @@ QUERY_POSTGRES = _register(RiskClass.READ)(query_postgres_readonly)
 QUERY_PARQUET = _register(RiskClass.READ)(query_parquet_duckdb)
 SCANNER_CONTEXT = _register(RiskClass.READ)(get_scanner_context)
 LIVE_MARKET_DATA = _register(RiskClass.READ)(get_live_market_data)
+GET_KLINES = _register(RiskClass.READ)(get_klines)
 NEWS_SENTIMENT = _register(RiskClass.READ)(get_news_sentiment)  # A6.3: headlines + local FinBERT tags
 READ_TEARSHEET = _register(RiskClass.READ)(read_nautilus_tearsheet)
 EXECUTION_ANALYSIS = _register(RiskClass.READ)(run_execution_analysis)
