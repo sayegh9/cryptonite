@@ -3,10 +3,14 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+from collections import OrderedDict
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import duckdb
+from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 
@@ -98,14 +102,21 @@ def get_live_market_data(symbols: str = "BTCUSDT") -> str:
 
 _SYMBOL_REGEX = re.compile(r"^[A-Z0-9]{3,20}$")
 _ALLOWED_INTERVALS = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
-_FED_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT"})
 
 _EXCHANGE_INFO_CACHE: set[str] | None = None
 _EXCHANGE_INFO_FETCHED_AT: float = 0.0
 _EXCHANGE_INFO_TTL_S: float = 86400.0  # 24h
 
-_KLINES_CACHE: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
+# Bounded LRU cache (C2): exact-key hits are served within TTL; the cache never grows past
+# _KLINES_CACHE_MAX. All reads/writes happen under _KLINES_CACHE_LOCK (see get_klines).
+_KLINES_CACHE: OrderedDict[tuple[str, str, int], tuple[float, list[dict]]] = OrderedDict()
 _KLINES_CACHE_TTL_S: float = 60.0  # 60s
+_KLINES_CACHE_MAX = 256
+
+# Serializes the preflight budget gate, the cache and the HTTP fetch so parallel Brain calls cannot
+# interleave around the budget check (M1/C2): a request is only issued when the gate passed for that
+# exact request, and the weight recorded by the previous response is visible to every waiter.
+_KLINES_CACHE_LOCK = threading.Lock()
 
 # Shared rate-limit budget: the last X-MBX-USED-WEIGHT-1M weight seen and the time it was recorded.
 # New requests are refused up-front for _WEIGHT_WINDOW_S while the recorded weight is at/over the cap.
@@ -113,6 +124,12 @@ _WEIGHT_LIMIT = 3000
 _LAST_USED_WEIGHT: int = 0
 _LAST_WEIGHT_AT: float = 0.0
 _WEIGHT_WINDOW_S: float = 60.0
+
+# in_feed truthfulness (T1): the authoritative *live* ingest universe is Redis `ingest:universe`
+# (published by the ingest service, TTL 180s). Cached 60s here; an empty/unreachable/unreadable key
+# means "unknown" and callers must report in_feed="unknown" rather than guess.
+_IN_FEED_CACHE: tuple[float, frozenset[str]] | None = None
+_IN_FEED_TTL_S: float = 60.0
 
 
 def _get_valid_symbols() -> set[str]:
@@ -134,6 +151,57 @@ def _get_valid_symbols() -> set[str]:
     if _EXCHANGE_INFO_CACHE is not None:
         return _EXCHANGE_INFO_CACHE
     return set()
+
+
+def _parse_server_date_ms(raw: str | None) -> int | None:
+    """Epoch milliseconds from an RFC 7231 HTTP 'Date' header (the Binance response's own time).
+
+    ``None`` when the header is missing or unparseable: callers must FAIL CLOSED rather than fall
+    back to the client clock for the closed-candle boundary (C1).
+    """
+    if not raw:
+        return None
+    try:
+        dt = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.UTC)
+    return int(dt.timestamp() * 1000)
+
+
+def _fed_symbols() -> frozenset[str]:
+    """The authoritative live ingest universe (Redis ``ingest:universe``), cached for 60s (T1).
+
+    Returns an EMPTY set when the key is missing, unreadable, or Redis is unreachable: callers must
+    then report ``in_feed="unknown"`` rather than guess. Never raises.
+    """
+    global _IN_FEED_CACHE
+    now = time.time()
+    if _IN_FEED_CACHE is not None and (now - _IN_FEED_CACHE[0]) < _IN_FEED_TTL_S:
+        return _IN_FEED_CACHE[1]
+    universe: frozenset[str] = frozenset()
+    try:
+        import redis  # local import: Redis is a service runtime dep (agent_worker), not a package dep
+        client = redis.Redis.from_url(
+            os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+            socket_timeout=0.5,
+            socket_connect_timeout=0.5,
+            decode_responses=True,
+        )
+        try:
+            raw = client.get(INGEST_UNIVERSE_KEY)
+        finally:
+            client.close()
+        parsed = IngestUniverse.parse(raw) if raw else None
+        if parsed is not None:
+            universe = frozenset(parsed.symbols)
+    except Exception as e:  # pragma: no cover - environment dependent
+        logger.warning("Could not read %s for in_feed; reporting 'unknown': %s", INGEST_UNIVERSE_KEY, e)
+    _IN_FEED_CACHE = (time.time(), universe)
+    return universe
 
 
 def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
@@ -170,93 +238,115 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
 
     now = time.time()
     cache_key = (clean_symbol, interval, limit_val)
-    if cache_key in _KLINES_CACHE:
-        cached_time, cached_result = _KLINES_CACHE[cache_key]
-        if (now - cached_time) < _KLINES_CACHE_TTL_S:
-            return json.dumps(cached_result, indent=2)
 
-    # Pre-flight shared-budget gate: refuse BEFORE issuing a new request while the recorded
-    # 1-minute weight is at/over the cap (the recorded weight is refreshed on every response).
+    # Serialized critical section (M1/C2): the cache, the preflight budget gate and the HTTP fetch
+    # run under one lock, so parallel Brain calls cannot interleave around the budget check. A
+    # request is only issued when the gate passed for that exact request, and the weight recorded by
+    # the previous response is visible to every waiter. The bounded cache doubles as a request
+    # coalescer: identical concurrent calls share a single response.
     global _LAST_USED_WEIGHT, _LAST_WEIGHT_AT
-    if _LAST_USED_WEIGHT >= _WEIGHT_LIMIT and (now - _LAST_WEIGHT_AT) < _WEIGHT_WINDOW_S:
-        return (
-            f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} >= {_WEIGHT_LIMIT} "
-            f"within the current 1-minute window). Request skipped before sending."
-        )
+    with _KLINES_CACHE_LOCK:
+        if cache_key in _KLINES_CACHE:
+            cached_time, cached_result = _KLINES_CACHE[cache_key]
+            if (now - cached_time) < _KLINES_CACHE_TTL_S:
+                _KLINES_CACHE.move_to_end(cache_key)
+                return json.dumps(cached_result, indent=2)
 
-    try:
-        import httpx
-        # Fetch slightly extra candles in case the last candle is still open
-        fetch_limit = min(limit_val + 2, 500)
-        params = {"symbol": clean_symbol, "interval": interval, "limit": fetch_limit}
-        resp = httpx.get("https://api.binance.com/api/v3/klines", params=params, timeout=10.0)
+        # Pre-flight shared-budget gate: refuse BEFORE issuing a new request while the recorded
+        # 1-minute weight is at/over the cap (the recorded weight is refreshed on every response).
+        if _LAST_USED_WEIGHT >= _WEIGHT_LIMIT and (now - _LAST_WEIGHT_AT) < _WEIGHT_WINDOW_S:
+            return (
+                f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} >= {_WEIGHT_LIMIT} "
+                f"within the current 1-minute window). Request skipped before sending."
+            )
 
-        # Record the shared-budget weight from every response so the NEXT call pre-flights.
-        used_weight_str = resp.headers.get("X-MBX-USED-WEIGHT-1M") or resp.headers.get("x-mbx-used-weight-1m")
-        if used_weight_str:
-            try:
-                _LAST_USED_WEIGHT = int(used_weight_str)
-                _LAST_WEIGHT_AT = time.time()
-            except ValueError:
-                pass
+        try:
+            import httpx
+            # Fetch slightly extra candles in case the last candle is still open
+            fetch_limit = min(limit_val + 2, 500)
+            params = {"symbol": clean_symbol, "interval": interval, "limit": fetch_limit}
+            resp = httpx.get("https://api.binance.com/api/v3/klines", params=params, timeout=10.0)
 
-        # 429/418 first: Retry-After is the actionable guidance and must not be masked by the
-        # weight gate below.
-        if resp.status_code in (429, 418):
-            retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after") or "60"
-            return f"Error: Rate limited by Binance API (HTTP {resp.status_code}). Retry-After: {retry_after}s."
+            # Record the shared-budget weight from every response so the NEXT call pre-flights.
+            used_weight_str = resp.headers.get("X-MBX-USED-WEIGHT-1M") or resp.headers.get("x-mbx-used-weight-1m")
+            if used_weight_str:
+                try:
+                    _LAST_USED_WEIGHT = int(used_weight_str)
+                    _LAST_WEIGHT_AT = time.time()
+                except ValueError:
+                    pass
 
-        if resp.status_code != 200:
-            return f"Binance API returned status {resp.status_code}: {resp.text}"
+            # 429/418 first: Retry-After is the actionable guidance and must not be masked by the
+            # weight gate below.
+            if resp.status_code in (429, 418):
+                retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after") or "60"
+                return f"Error: Rate limited by Binance API (HTTP {resp.status_code}). Retry-After: {retry_after}s."
 
-        # Post-response gate for a served-but-over-budget request (kept so a 200 that pushed the
-        # budget over the cap still fails closed).
-        if _LAST_USED_WEIGHT > _WEIGHT_LIMIT:
-            return f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} > 3000). Request rejected."
+            if resp.status_code != 200:
+                return f"Binance API returned status {resp.status_code}: {resp.text}"
 
-        raw_klines = resp.json()
-        now_ms = int(time.time() * 1000)
+            # Post-response gate for a served-but-over-budget request (kept so a 200 that pushed the
+            # budget over the cap still fails closed).
+            if _LAST_USED_WEIGHT > _WEIGHT_LIMIT:
+                return f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} > 3000). Request rejected."
 
-        # Filter strictly closed candles (close_time <= now_ms)
-        closed_klines = [k for k in raw_klines if int(k[6]) <= now_ms]
-        trimmed = closed_klines[-limit_val:] if len(closed_klines) > limit_val else closed_klines
+            # C1: the closed-candle boundary comes from the SERVER's time (the RFC 7231 'Date'
+            # header on the Binance response), never from the client clock. Second granularity is
+            # conservative in the safe direction: a candle that closed inside the current server
+            # second is dropped (never reported closed prematurely), and any candle closed at or
+            # before the Date second is included. Missing/unparseable server time FAILS CLOSED.
+            server_time_ms = _parse_server_date_ms(resp.headers.get("Date") or resp.headers.get("date"))
+            if server_time_ms is None:
+                return (
+                    "Error: Binance server time unavailable ('Date' header missing or unparseable); "
+                    "refusing to report a closed-candle boundary."
+                )
 
-        if not trimmed:
-            return f"Error: No closed candles available for {clean_symbol} {interval}."
+            raw_klines = resp.json()
+            closed_klines = [k for k in raw_klines if int(k[6]) <= server_time_ms]
+            trimmed = closed_klines[-limit_val:] if len(closed_klines) > limit_val else closed_klines
 
-        fetched_at_iso = datetime.datetime.now(datetime.UTC).isoformat()
-        last_closed_close_time_iso = datetime.datetime.fromtimestamp(trimmed[-1][6] / 1000, tz=datetime.UTC).isoformat()
-        in_feed = "fed" if clean_symbol in _FED_SYMBOLS else "unknown"
+            if not trimmed:
+                return f"Error: No closed candles available for {clean_symbol} {interval}."
 
-        candles = [
-            {
-                "open_time_ms": k[0],
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-                "close_time_ms": k[6],
+            fetched_at_iso = datetime.datetime.now(datetime.UTC).isoformat()
+            last_closed_close_time_iso = datetime.datetime.fromtimestamp(trimmed[-1][6] / 1000, tz=datetime.UTC).isoformat()
+            in_feed = "fed" if clean_symbol in _fed_symbols() else "unknown"
+
+            candles = [
+                {
+                    "open_time_ms": k[0],
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),
+                    "close_time_ms": k[6],
+                }
+                for k in trimmed
+            ]
+
+            output_data = {
+                "source": "binance_spot_klines",
+                "symbol": clean_symbol,
+                "interval": interval,
+                "fetched_at": fetched_at_iso,
+                "last_closed_close_time": last_closed_close_time_iso,
+                "in_feed": in_feed,
+                "candle_count": len(candles),
+                "candles": candles,
             }
-            for k in trimmed
-        ]
 
-        output_data = {
-            "source": "binance_spot_klines",
-            "symbol": clean_symbol,
-            "interval": interval,
-            "fetched_at": fetched_at_iso,
-            "last_closed_close_time": last_closed_close_time_iso,
-            "in_feed": in_feed,
-            "candle_count": len(candles),
-            "candles": candles,
-        }
+            # Bounded LRU write: the newest entry goes to the MRU end; the oldest entry past the cap
+            # is evicted so the cache size stays <= _KLINES_CACHE_MAX.
+            _KLINES_CACHE[cache_key] = (time.time(), output_data)
+            _KLINES_CACHE.move_to_end(cache_key)
+            while len(_KLINES_CACHE) > _KLINES_CACHE_MAX:
+                _KLINES_CACHE.popitem(last=False)
+            return json.dumps(output_data, indent=2)
 
-        _KLINES_CACHE[cache_key] = (now, output_data)
-        return json.dumps(output_data, indent=2)
-
-    except Exception as e:
-        return f"Error fetching klines data: {e}"
+        except Exception as e:
+            return f"Error fetching klines data: {e}"
 
 def query_parquet_duckdb(query: str) -> str:
     """Executes a DuckDB SQL query against the massive Parquet data catalog.

@@ -187,18 +187,25 @@ def operator_auth():
 
 @pytest.fixture(autouse=True)
 def reset_klines_shared_weight_state():
-    """Reset the get_klines shared-budget globals between tests.
+    """Reset the get_klines module-level state between tests.
 
-    The pre-flight weight gate (review proposal for PR #46) keeps module-level state, so it must
-    be isolated per test; otherwise one test's 3005 reading would trip the gate inside its neighbor.
+    The pre-flight weight gate (review proposal for PR #46) and the cached in_feed universe both
+    keep module-level state, so they must be isolated per test; otherwise one test's 3005 reading
+    would trip the gate inside its neighbor, or a cached universe could leak between tests.
     """
     import cryptonite_agents.tools as _tools
 
-    old = (_tools._LAST_USED_WEIGHT, _tools._LAST_WEIGHT_AT, _tools._KLINES_CACHE.copy())
+    old = (
+        _tools._LAST_USED_WEIGHT,
+        _tools._LAST_WEIGHT_AT,
+        _tools._KLINES_CACHE.copy(),
+        _tools._IN_FEED_CACHE,
+    )
     _tools._LAST_USED_WEIGHT = 0
     _tools._LAST_WEIGHT_AT = 0.0
     _tools._KLINES_CACHE.clear()
+    _tools._IN_FEED_CACHE = None
     yield
-    _tools._LAST_USED_WEIGHT, _tools._LAST_WEIGHT_AT, cache = old
+    _tools._LAST_USED_WEIGHT, _tools._LAST_WEIGHT_AT, cache, _tools._IN_FEED_CACHE = old
     _tools._KLINES_CACHE.clear()
     _tools._KLINES_CACHE.update(cache)
