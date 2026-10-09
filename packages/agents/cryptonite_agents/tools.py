@@ -196,8 +196,8 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
         if not trimmed:
             return f"Error: No closed candles available for {clean_symbol} {interval}."
 
-        fetched_at_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        last_closed_close_time_iso = datetime.datetime.fromtimestamp(trimmed[-1][6] / 1000, tz=datetime.timezone.utc).isoformat()
+        fetched_at_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        last_closed_close_time_iso = datetime.datetime.fromtimestamp(trimmed[-1][6] / 1000, tz=datetime.UTC).isoformat()
         in_feed = "fed" if clean_symbol in _FED_SYMBOLS else "unknown"
 
         candles = [
