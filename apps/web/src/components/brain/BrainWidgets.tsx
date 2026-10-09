@@ -14,6 +14,30 @@ import type {
 
 const fmt = (n: number, digits = 2) => n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 
+/** Milliseconds for a bar timeframe string such as "1m", "15m", "1h", "4h", "1d". Defaults to 1m. */
+function intervalMs(timeframe: string): number {
+  const m = /^(\d+)m$/.exec(timeframe);
+  if (m) return Number(m[1]) * 60_000;
+  const h = /^(\d+)h$/.exec(timeframe);
+  if (h) return Number(h[1]) * 3_600_000;
+  const d = /^(\d+)d$/.exec(timeframe);
+  if (d) return Number(d[1]) * 86_400_000;
+  const s = /^(\d+)s$/.exec(timeframe);
+  if (s) return Number(s[1]) * 1_000;
+  return 60_000;
+}
+
+/** Compact human age like "3m", "12h", "1d 5h". */
+function formatAge(ms: number): string {
+  const mins = Math.max(0, Math.round(ms / 60_000));
+  if (mins < 1) return "<1m";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h${mins % 60 >= 10 ? ` ${mins % 60}m` : ""}`;
+  const days = Math.floor(hours / 24);
+  return `${days}d${hours % 24 ? ` ${hours % 24}h` : ""}`;
+}
+
 function WidgetFrame({ icon, title, children, testId }: { icon: React.ReactNode; title: string; children: React.ReactNode; testId: string }) {
   return (
     <section data-testid={testId} className="mt-2 rounded-lg border border-zinc-800 bg-zinc-950/80 p-3 font-mono text-2xs text-zinc-300">
@@ -27,7 +51,7 @@ function WidgetFrame({ icon, title, children, testId }: { icon: React.ReactNode;
 }
 
 function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
-  const [closes, setCloses] = useState<number[] | null>(null);
+  const [bars, setBars] = useState<any[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -37,14 +61,30 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((body) => {
         if (cancelled) return;
-        const bars: any[] = Array.isArray(body) ? body : body.bars ?? [];
-        setCloses(bars.map((b) => Number(b.close)).filter((v) => Number.isFinite(v)));
+        const rows: any[] = Array.isArray(body) ? body : body.bars ?? [];
+        setBars(rows);
       })
       .catch((e) => !cancelled && setError(e.message));
     return () => {
       cancelled = true;
     };
   }, [widget.symbol, widget.timeframe]);
+
+  const symbol = widget.symbol.split(".")[0];
+  const closes = (bars ?? []).map((b) => Number(b.close)).filter((v) => Number.isFinite(v));
+
+  // Staleness: this card shows STORED bars from the analytics lake (/api/v1/bars). A chart is stale
+  // when its last bar closed more than two full timeframes ago; live REST prices discussed by the
+  // Brain live in the conversation, not in this stored chart.
+  const interval = intervalMs(widget.timeframe);
+  const lastBar = bars && bars.length > 0 ? bars[bars.length - 1] : null;
+  const lastCloseMs = lastBar
+    ? Number(lastBar.bar_close_inclusive_ns) > 0
+      ? Number(lastBar.bar_close_inclusive_ns) / 1_000_000
+      : (Number(lastBar.time ?? 0) > 0 ? Number(lastBar.time) : Date.now() / 1000) * 1000 + interval
+    : null;
+  const ageMs = lastCloseMs == null ? null : Date.now() - lastCloseMs;
+  const stale = ageMs != null && ageMs > 2 * interval;
 
   const W = 320;
   const H = 72;
@@ -63,13 +103,19 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
 
   return (
     <WidgetFrame testId="brain-widget-price-chart" icon={<BarChart3 className="h-3 w-3 text-cyan-400" />} title={`${widget.symbol} · ${widget.timeframe}`}>
-      {closes === null && !error && (
+      {bars === null && !error && (
         <div className="flex h-[72px] items-center justify-center text-zinc-500">
           <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading bars…
         </div>
       )}
       {error && <div className="text-zinc-500">No bars available ({error}).</div>}
-      {closes && closes.length > 1 && (
+      {bars !== null && !error && bars.length === 0 && (
+        <div className="text-zinc-500" data-testid="brain-widget-price-chart-empty">
+          No stored bars for {symbol}.
+        </div>
+      )}
+      {bars !== null && !error && bars.length > 0 && closes.length <= 1 && <div className="text-zinc-500">Not enough bars to draw.</div>}
+      {bars !== null && !error && closes.length > 1 && (
         <div>
           <svg viewBox={`0 0 ${W} ${H}`} className="h-[72px] w-full" role="img" aria-label={`${widget.symbol} price, ${closes.length} bars`}>
             <path d={path} fill="none" strokeWidth="1.5" className={up ? "stroke-emerald-400" : "stroke-rose-400"} />
@@ -83,9 +129,17 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
               {fmt(change ?? 0)}% over {closes.length} bars
             </span>
           </div>
+          {stale && (
+            <div className="mt-1 flex items-start gap-1 text-amber-400" data-testid="brain-widget-price-chart-stale" role="note">
+              <AlertTriangle className="mt-px h-3 w-3 flex-none" aria-hidden />
+              <span>
+                Stored bars are stale — last bar {formatAge(ageMs!)} ago (&gt;2×{widget.timeframe}); live REST prices are in the
+                discussion.
+              </span>
+            </div>
+          )}
         </div>
       )}
-      {closes && closes.length <= 1 && !error && <div className="text-zinc-500">Not enough bars to draw.</div>}
     </WidgetFrame>
   );
 }
