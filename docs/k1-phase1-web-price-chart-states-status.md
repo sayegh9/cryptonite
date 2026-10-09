@@ -62,5 +62,7 @@ Run (in the worktree, against an isolated build):
 
 ## 5. Exact head / CI / next step
 
-- Branch `feat/k1-web-price-chart-states` → PR opened after verification below; exact head reported to lead.
+- **Branch** `feat/k1-web-price-chart-states` → **PR #48** https://github.com/sayegh9/cryptonite/pull/48
+- **Exact head:** `e9133f44408dabdeb0f66d0c486b3eddcc3e6a88` (`e9133f4`) · base `origin/main` `fbc80f5` · MERGEABLE
+- **CI (all pass):** `pytest` 5m24s · `e2e-smoke` 8m20s (9 specs incl. new) · `web` build 39s · `ruff` · `verify` · CodeRabbit (rate-limited pass)
 - Operator next step (not performed): merge, then the normal web rebuild/deploy path; no DB/ingest action.
