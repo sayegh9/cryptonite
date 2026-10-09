@@ -9,6 +9,7 @@ Verifies:
 
 from decimal import Decimal
 from uuid import uuid4
+
 import polars as pl
 import pytest
 from cryptonite_scanner.engine import ScannerEngine

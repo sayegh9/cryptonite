@@ -10,8 +10,6 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-logger = logging.getLogger("cryptonite.scanner.engine")
-
 import polars as pl
 
 from cryptonite_scanner.indicators import (
@@ -31,6 +29,8 @@ from cryptonite_scanner.models import (
     SignalCandidateRead,
     deduplicate_candidates,
 )
+
+logger = logging.getLogger("cryptonite.scanner.engine")
 
 
 class ScannerEngine:
