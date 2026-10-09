@@ -107,6 +107,13 @@ _EXCHANGE_INFO_TTL_S: float = 86400.0  # 24h
 _KLINES_CACHE: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
 _KLINES_CACHE_TTL_S: float = 60.0  # 60s
 
+# Shared rate-limit budget: the last X-MBX-USED-WEIGHT-1M weight seen and the time it was recorded.
+# New requests are refused up-front for _WEIGHT_WINDOW_S while the recorded weight is at/over the cap.
+_WEIGHT_LIMIT = 3000
+_LAST_USED_WEIGHT: int = 0
+_LAST_WEIGHT_AT: float = 0.0
+_WEIGHT_WINDOW_S: float = 60.0
+
 
 def _get_valid_symbols() -> set[str]:
     global _EXCHANGE_INFO_CACHE, _EXCHANGE_INFO_FETCHED_AT
@@ -142,7 +149,12 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
         return f"Error: Invalid symbol format '{symbol}'. Symbol must be alphanumeric (3-20 chars)."
 
     valid_symbols = _get_valid_symbols()
-    if valid_symbols and clean_symbol not in valid_symbols:
+    if not valid_symbols:
+        return (
+            f"Error: Cannot verify symbol '{clean_symbol}' against Binance exchangeInfo "
+            f"(symbol lookup unavailable); refusing unverified symbol lookup."
+        )
+    if clean_symbol not in valid_symbols:
         return f"Error: Symbol '{clean_symbol}' is not a valid active trading pair on Binance."
 
     if interval not in _ALLOWED_INTERVALS:
@@ -163,6 +175,15 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
         if (now - cached_time) < _KLINES_CACHE_TTL_S:
             return json.dumps(cached_result, indent=2)
 
+    # Pre-flight shared-budget gate: refuse BEFORE issuing a new request while the recorded
+    # 1-minute weight is at/over the cap (the recorded weight is refreshed on every response).
+    global _LAST_USED_WEIGHT, _LAST_WEIGHT_AT
+    if _LAST_USED_WEIGHT >= _WEIGHT_LIMIT and (now - _LAST_WEIGHT_AT) < _WEIGHT_WINDOW_S:
+        return (
+            f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} >= {_WEIGHT_LIMIT} "
+            f"within the current 1-minute window). Request skipped before sending."
+        )
+
     try:
         import httpx
         # Fetch slightly extra candles in case the last candle is still open
@@ -170,21 +191,28 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
         params = {"symbol": clean_symbol, "interval": interval, "limit": fetch_limit}
         resp = httpx.get("https://api.binance.com/api/v3/klines", params=params, timeout=10.0)
 
+        # Record the shared-budget weight from every response so the NEXT call pre-flights.
         used_weight_str = resp.headers.get("X-MBX-USED-WEIGHT-1M") or resp.headers.get("x-mbx-used-weight-1m")
         if used_weight_str:
             try:
-                weight = int(used_weight_str)
-                if weight > 3000:
-                    return f"Error: Rate limit protection triggered (weight {weight} > 3000). Request rejected."
+                _LAST_USED_WEIGHT = int(used_weight_str)
+                _LAST_WEIGHT_AT = time.time()
             except ValueError:
                 pass
 
+        # 429/418 first: Retry-After is the actionable guidance and must not be masked by the
+        # weight gate below.
         if resp.status_code in (429, 418):
             retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after") or "60"
             return f"Error: Rate limited by Binance API (HTTP {resp.status_code}). Retry-After: {retry_after}s."
 
         if resp.status_code != 200:
             return f"Binance API returned status {resp.status_code}: {resp.text}"
+
+        # Post-response gate for a served-but-over-budget request (kept so a 200 that pushed the
+        # budget over the cap still fails closed).
+        if _LAST_USED_WEIGHT > _WEIGHT_LIMIT:
+            return f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} > 3000). Request rejected."
 
         raw_klines = resp.json()
         now_ms = int(time.time() * 1000)
