@@ -64,3 +64,31 @@ Lint & formatting:
 - Scope bounded strictly to F19 (`client.py`, tests, docs).
 - Did **NOT** modify compose files, DB schemas, live ingestion, Brain files (PR #46/#50), or D6 files (PR #49).
 - Zero live deploy, zero main merge.
+
+---
+
+## 6. Review-Fix Round (stacked PR, task `01a12206-f46c-7063-be38-6296fbe47af6`)
+
+Independent review of the F19 PR (task `01a121fd`) found **no critical** issues, plus robustness gaps addressed here on an isolated stacked branch (`review/k1-ingest-rate-limit-hardening`, based on the exact PR #52 head `d9d31b92`). **No author-branch edits, no merge, no deploy.**
+
+### 6.1 Fixes in `services/ingest/cryptonite_ingest/client.py`
+
+- **418 (IP ban) now fails fast:** raises `httpx.HTTPStatusError(418)` immediately — exactly one request, no retries, no repeated sleeps. Retrying into a ban prolongs it and wastes requests; the error surfaces the server's suggested `Retry-After` when present.
+- **Robust `Retry-After` parsing + bounded, fail-closed sleep budget:** `_parse_retry_after` now returns `int | None` and handles **both RFC 7231 forms** — delay-seconds and HTTP-date (past dates clamp to 1s; malformed/absent returns `None` for a caller default). A 429 wait above the per-wait cap (`_RETRY_AFTER_MAX_S = 30`) or one that would exceed the total budget for a single call (`_RETRY_TOTAL_BUDGET_S = 60`) **fails closed immediately** (raises) instead of sleeping unboundedly or hammering before the limit/ban expires.
+- **Deterministic 4xx (400/404/415/451…) are never retried:** only transport errors (`httpx.TransportError`) and 5xx get the bounded 1s/2s/3s backoff; other 4xx raise immediately.
+- **Weight policy no longer cosmetic** → bounded, window-aware pacing:
+  - `_update_weight` also records the reading time; `_current_weight()` resets the reading after Binance's 1-minute window, so a client idle >60s no longer inherits a stale high-weight backlog.
+  - The pacing gate is tiered (1s at ≥1000, 3s at ≥3000 — both below the 6000/min IP cap), fires **at most one bounded sleep per call**, and still sends the request: recovery shaves pace near the cap but never stalls. Protection policy documented in code and justified versus the 6000/min cap.
+- `get_exchange_info` and the public `last_used_weight_1m` attribute keep their F19 behavior.
+
+### 6.2 Tests (`tests/test_ingest_rate_limiting.py`)
+
+Extended to **14 deterministic tests** (MockTransport + `asyncio.sleep` patch). Added: 418 → exactly one request / immediate raise; 429 then recovery; huge `Retry-After` (86400) → fail closed, one request; HTTP-date `Retry-After` (future honored ~delta, past → 1s); total-budget exhaustion → fail closed; 400 → exactly one request / no retry; critical weight paces 3s; stale (>60s) weight reading skips pacing.
+
+**Verification at the stacked head:** `pytest tests/test_ingest_rate_limiting.py test_gap_recovery.py` → **20 passed** (14 + 6); `ruff check` clean; `git diff --check` clean; CI green on the exact head (pytest / web / e2e-smoke / ruff / verify).
+
+### 6.3 Scope
+
+- Confined to `client.py`, `tests/test_ingest_rate_limiting.py`, and this status note.
+- **No** Phase2.4 storage/backfill changes, **no** PR #45 compose touch, **no** live systems touched.
+- Stacked PR targets `feat/k1-ingest-rate-limit-hardening` (PR #52 branch); requires PR #52 first. Adoption: merge PR #52 then this stacked PR, or squash both onto the ingest main track after review.
