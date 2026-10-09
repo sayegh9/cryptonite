@@ -49,12 +49,14 @@ Run result: `uv run pytest tests/test_e1_feed_timeframes.py tests/test_compose_s
 
 ## 4. K1 plan conflict (tracked forward)
 
-`docs/symbol-onboarding-plan-v2.md` (K1, task `01a1206e-f436-7dd1-9604-ef91a0a76481`) assumes a
-global feed of `1m,1h` bars for every onboarded symbol. With four feed timeframes
-(`1m, 15m, 1h, 4h`) the plan must be revised: per-symbol bar volumes rise (~2× more kline
-subscriptions and analytics-lake rows per symbol), reconciliation/backfill covers the extra
-intervals, and the "top N symbols" capacity estimate must be recomputed against the
-four-timeframe feed before any quarantine/re-onboard batch.
+`/home/samx/Documents/projects/cryptonite/symbol-onboarding-plan-v2.md` (K1, task
+`01a1206e-f436-7dd1-9604-ef91a0a76481`) assumes a global feed of `1m,1h` bars for every
+onboarded symbol. With four feed timeframes (`1m, 15m, 1h, 4h`) the plan must be revised:
+kline WS subscriptions per symbol double (2 → 4), while daily analytics-lake kline rows per
+symbol rise only 1,464 → 1,566 (~+7%: 1m 1440 + 15m 96 + 1h 24 + 4h 6) — modest storage
+growth, but reconciliation/backfill now covers the extra intervals and the "top N symbols"
+capacity estimate must be recomputed against the four-timeframe feed before any
+quarantine/re-onboard batch.
 
 ## 5. Operator next step (after merge; not performed here)
 
