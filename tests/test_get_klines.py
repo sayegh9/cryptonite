@@ -43,7 +43,7 @@ def test_get_klines_successful_fetch_and_closed_filter(mock_http, mock_valid):
     now_ms = 1_700_000_000_000
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.headers = {"X-MBX-USED-WEIGHT-1M": "100"}
+    mock_response.headers = {"X-MBX-USED-WEIGHT-1M": "100", "Date": "Tue, 14 Nov 2023 22:13:20 GMT"}
     mock_response.json.return_value = [
         [now_ms - 7200000, "150.0", "155.0", "149.0", "154.0", "1000.0", now_ms - 3600001, "150000.0", 50, "500.0", "75000.0", "0"],
         [now_ms - 3600000, "154.0", "160.0", "153.0", "158.0", "1200.0", now_ms - 1, "190000.0", 60, "600.0", "95000.0", "0"],
@@ -72,7 +72,7 @@ def test_get_klines_caching_behavior(mock_http, mock_valid):
     now_ms = 1_700_000_000_000
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.headers = {"X-MBX-USED-WEIGHT-1M": "50"}
+    mock_response.headers = {"X-MBX-USED-WEIGHT-1M": "50", "Date": "Tue, 14 Nov 2023 22:13:20 GMT"}
     mock_response.json.return_value = [
         [now_ms - 3600000, "50000.0", "51000.0", "49500.0", "50800.0", "500.0", now_ms - 1, "25000000.0", 1000, "250.0", "12500000.0", "0"],
     ]
