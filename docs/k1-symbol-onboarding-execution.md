@@ -74,9 +74,9 @@ Tested via throwaway separate client connection using the exact ingest combined 
 | **K1 Phase 1 Web Chart States** | PR #48 (`feat/k1-web-price-chart-states`) | `main` | [`e940279`](https://github.com/sayegh9/cryptonite/commit/e940279d0ec5ef5477daeec4653609804b8ba26e) | **CODE COMPLETE (OPEN)** | Empty and stale card states for `PriceChartCard`. All CI checks green. **NOT merged or deployed**. |
 | **D6 Universe Precision** | PR #49 (`feat/d6-universe-precision`) | `main` | [`34e7d78`](https://github.com/sayegh9/cryptonite/commit/34e7d78013d8a70c360da84f2231b67f13b63198) | **OPEN** | Scanner precision handling for symbols under $1. D6 prerequisite. **NOT merged or deployed**. |
 | **PR #46 Hardening Review** | PR #50 (`review/k1-get-klines-hardening`) | `feat/k1-brain-klines` | [`8e9ce1e`](https://github.com/sayegh9/cryptonite/commit/8e9ce1e8c8febedf2bd4c6d14aa98aa618e21d2c) | **MERGED** | Stacked review for PR #46 (server time boundary, Redis universe parse/expiry, bounded cache). Merged into author branch via `51eea480`. |
-| **E1 Preflight Status Report** | PR #51 (`docs/e1-pr45-preflight`) | `main` | [`d9d8383`](https://github.com/sayegh9/cryptonite/commit/d9d8383) | **OPEN** | Corrected preflight report documenting Conditional GO, rollback baseline, and restore drill requirements. |
+| **E1 Preflight Status Report** | PR #51 (`docs/e1-pr45-preflight`) | `main` | [`9c8f111`](https://github.com/sayegh9/cryptonite/commit/9c8f11161e5c10b4618ed2f8b398b9da27f6e9df) | **OPEN** | Corrected preflight report documenting Conditional GO, rollback baseline, and restore drill requirements. |
 | **K1 Phase 2.3 Ingest Rate Limiting** | PR #52 (`feat/k1-ingest-rate-limit-hardening`) | `main` | [`c1cd52ed`](https://github.com/sayegh9/cryptonite/commit/c1cd52edafb0a168326335dd379ffbd050fe3f8d) | **OPEN** | F19 429/418 handling and weight tracking. Stacked review PR #54 merged into branch via `c1cd52ed` (CI rerunning). **NOT merged or deployed**. |
-| **K1 Phase 2.4 History Coordinator** | PR #53 (`feat/k1-history-coordinator`) | `main` | [`01de154`](https://github.com/sayegh9/cryptonite/commit/01de154101e4bb2e8798bfd3c690186c757c61bf) | **OPEN (UNDER REVIEW)** | `commit_history_batch` and `missing_runs` in `packages/storage`. Under independent safety review by OpenCode. **NOT merged or deployed**. |
+| **K1 Phase 2.4 History Coordinator** | PR #53 (`feat/k1-history-coordinator`) | `main` | [`01de154`](https://github.com/sayegh9/cryptonite/commit/01de154101e4bb2e8798bfd3c690186c757c61bf) | **OPEN (BLOCKED - STACKED FIX IN PROGRESS)** | `commit_history_batch` and `missing_runs` in `packages/storage`. Independent safety review identified production blockers: F1 span-masked interior missing bars, F2 pooled history reconcile loses history flag, F3 offline no-pool path does not update `ingest_batches`/`ingest_checkpoints`. **NOT production-backfill ready**. OpenCode stacked hardening PR in progress. **NOT merged or deployed**. |
 | **PR #52 Hardening Review** | PR #54 (`review/k1-ingest-rate-limit-hardening`) | `feat/k1-ingest-rate-limit-hardening` | [`dba269d`](https://github.com/sayegh9/cryptonite/commit/dba269d2cdc3e42a542c8de42cf26fa256749f36) | **MERGED** | Stacked review for PR #52 (immediate 418 fail-closed, robust Retry-After date parsing, rate-budget pacing). Merged into PR #52 branch via `c1cd52ed`. |
 
 > [!IMPORTANT]
@@ -91,12 +91,12 @@ Tested via throwaway separate client connection using the exact ingest combined 
 
 | Phase | Description | Implementation Status | Unresolved Gaps / Next Steps |
 |---|---|---|---|
-| **Phase 0** | Baseline measurements & operator decisions | **COMPLETE** | Live DB041 inventory recorded; WebSocket spike latency confirmed; Postgres payload measured; active `WLDUSDT` mandate noted. |
+| **Phase 0** | Baseline measurements & operator decisions | **MEASUREMENTS COMPLETE (UNRESOLVED TOP-10 DECISION)** | Live DB041 inventory recorded; WebSocket spike latency confirmed; Postgres payload measured; active `WLDUSDT` mandate noted. **GAP**: Operator decision #8 (exact top-10 symbols) remains unresolved; **strictly no live onboarding**. |
 | **Phase 1** | Any-symbol chat tool & web chart states | **CODE COMPLETE (OPEN)** | PR #46 (Brain `get_klines`) and PR #48 (web states) tested and validated. Deployment held for release window. |
 | **Phase 2.1** | E1 release & 4-timeframe feed | **PROPOSED (CONDITIONAL GO)** | PR #45 ready. Live deploy requires fresh DB/Redis backup and local restore drill (PR #51). |
 | **Phase 2.2** | D6 universe precision | **OPEN** | PR #49 ready for review/merge. |
 | **Phase 2.3** | Ingest rate limiting (F19) & gap recovery (F4) | **PARTIALLY COMPLETE (OPEN)** | PR #52 (F19 429/418 handling, header weight tracking) complete and hardened via PR #54.<br>**GAP**: **Reconnect gap recovery (F4)** is NOT yet implemented. |
-| **Phase 2.4** | Historical backfill coordinator | **OPEN (UNDER REVIEW)** | PR #53 implemented; independent safety review in progress (`01a12214-3ea9-7743-b5e3-d0305c326596`). |
+| **Phase 2.4** | Historical backfill coordinator | **OPEN (BLOCKED - STACKED FIX IN PROGRESS)** | PR #53 implemented; independent safety review identified production blockers: F1 catalog file spans mask interior missing bars, F2 pooled history reconcile loses history flag on restart, F3 offline no-pool path does not update `ingest_batches`/`ingest_checkpoints` (the current offline consumer does not update Postgres checkpoints). **NOT production-backfill ready**. Stacked hardening PR in progress. |
 | **Phase 2.5** | Feed check at order time (`require_fed`) | **NOT STARTED** | **GAP**: Not yet implemented. |
 | **Phase 3** | Persisted universe (`ingest_universe` migration) | **NOT STARTED** | Migration and recorder integration not started. |
 | **Phase 4** | Onboarding job engine S1–S6 | **NOT STARTED** | API routes and ingest job runner not started. |
@@ -156,6 +156,6 @@ Under proposed PR #45, `INGEST_TIMEFRAMES` is updated from `1m,1h` to `1m,15m,1h
 
 ---
 
-## 8. Unresolved Operator Decisions (§11)
-1. **Exact Top-10 Symbol List Selection**: Operator specified "top 10 symbols" for post-quarantine re-onboarding (§11 Decision 8); exact symbol identifiers must be approved before initiating live onboarding.
-2. **Legacy Asset Quarantine Policy**: Presence of active `WLDUSDT` mandate blocks blind quarantine/cleanup of legacy symbol references in Phase 0.
+## 8. Unresolved Operator Decisions (§11) & Operational Gates
+1. **Phase 0 Baseline Measurements vs Decision #8**: Phase 0 empirical measurements (DB counts, schema baseline DB041, storage per bar, WebSocket combined URL spike) are **complete**. However, Operator Decision #8 (exact top-10 symbol list selection for post-quarantine onboarding) remains **unresolved**. **Strictly no live onboarding** is permitted.
+2. **Legacy Asset Quarantine Policy**: Presence of active `WLDUSDT` mandate blocks blind quarantine/cleanup of legacy symbol references in Phase 0. Coordinate mandate retirement before legacy tables/checkpoints can be archived.
