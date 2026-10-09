@@ -216,15 +216,8 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
     if not _SYMBOL_REGEX.match(clean_symbol):
         return f"Error: Invalid symbol format '{symbol}'. Symbol must be alphanumeric (3-20 chars)."
 
-    valid_symbols = _get_valid_symbols()
-    if not valid_symbols:
-        return (
-            f"Error: Cannot verify symbol '{clean_symbol}' against Binance exchangeInfo "
-            f"(symbol lookup unavailable); refusing unverified symbol lookup."
-        )
-    if clean_symbol not in valid_symbols:
-        return f"Error: Symbol '{clean_symbol}' is not a valid active trading pair on Binance."
-
+    # Deterministic parameter validation runs BEFORE the network-dependent membership lookup, so
+    # interval/limit errors surface identically whether or not Binance is reachable.
     if interval not in _ALLOWED_INTERVALS:
         return f"Error: Invalid interval '{interval}'. Allowed intervals: {sorted(_ALLOWED_INTERVALS)}"
 
@@ -235,6 +228,17 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
 
     if not (1 <= limit_val <= 500):
         return f"Error: Limit must be between 1 and 500, got {limit_val}."
+
+    # M2 fail-closed membership: an empty/unavailable exchangeInfo lookup => refusal, no unverified
+    # symbol lookup is ever issued (stale cache is still honored on refresh failure).
+    valid_symbols = _get_valid_symbols()
+    if not valid_symbols:
+        return (
+            f"Error: Cannot verify symbol '{clean_symbol}' against Binance exchangeInfo "
+            f"(symbol lookup unavailable); refusing unverified symbol lookup."
+        )
+    if clean_symbol not in valid_symbols:
+        return f"Error: Symbol '{clean_symbol}' is not a valid active trading pair on Binance."
 
     now = time.time()
     cache_key = (clean_symbol, interval, limit_val)

@@ -87,6 +87,21 @@ def test_exchangeinfo_unavailable_fails_closed():
     m.assert_not_called()
 
 
+def test_parameter_validation_precedes_membership_when_exchangeinfo_down():
+    """Parameter errors are deterministic even with a network-unavailable membership lookup.
+
+    Regression: M2 fail-closed membership must not shadow interval/limit validation (a CI/offline
+    run previously surfaced 'Cannot verify symbol' instead of 'Invalid interval' / 'Limit must be').
+    """
+    with patch.object(tools, "_get_valid_symbols", return_value=set()), patch("httpx.get") as m:
+        assert "Error: Invalid interval '2h'" in tools.get_klines("BTCUSDT", interval="2h")
+        assert "Error: Limit must be" in tools.get_klines("BTCUSDT", limit=0)
+        assert "Error: Limit must be" in tools.get_klines("BTCUSDT", limit=501)
+        # A well-formed request still fails closed on the unavailable lookup.
+        assert "Cannot verify symbol 'BTCUSDT' against Binance exchangeInfo" in tools.get_klines("BTCUSDT", limit=5)
+    m.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # C1: server-time closed-candle boundary
 # ---------------------------------------------------------------------------
