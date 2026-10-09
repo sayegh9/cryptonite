@@ -2,7 +2,7 @@
 
 **Reviewer:** OpenCode (slot `01a112ce-9b06-7142-8401-a7fb6b8b5c50`)
 **Tasks:** `01a121a6-d2bb-7861-b70f-122244188f5d` (review PR #46) · `01a121ba-fbcf-7ad1-8edd-c4c22524182b` (harden before PR #46 integration — extends the same branch)
-**Date:** 2026-10-09 · **Status:** findings + minimal-fix proposal delivered on branch `review/k1-get-klines-hardening`; **stacked hardening PR combining M1 M2 C1 T1 C2** targets `feat/k1-brain-klines` (no edits to the author's branch).
+**Date:** 2026-10-09 · **Status:** findings + minimal-fix proposal delivered on branch `review/k1-get-klines-hardening`; **stacked hardening PR #50** (M1 M2 C1 T1 C2, head `c80ae9b0`) targets `feat/k1-brain-klines` — all CI green, mergeable · no edits to the author's branch.
 
 ## 0. Exact tested heads
 
