@@ -25,6 +25,28 @@ class BinanceRestClient:
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
         self._rate_delay = 0.05  # minimum delay between requests to stay well within limits
+        self.last_used_weight_1m: int = 0
+
+    def _update_weight(self, resp: httpx.Response) -> None:
+        """Track X-MBX-USED-WEIGHT-1M header safely."""
+        weight_header = resp.headers.get("X-MBX-USED-WEIGHT-1M")
+        if weight_header is not None:
+            try:
+                self.last_used_weight_1m = int(weight_header.strip())
+            except ValueError:
+                logger.warning("Malformed X-MBX-USED-WEIGHT-1M header: %r", weight_header)
+
+    def _parse_retry_after(self, resp: httpx.Response, default: int = 5) -> int:
+        """Parse Retry-After header safely, returning integer seconds."""
+        raw = resp.headers.get("Retry-After")
+        if not raw:
+            return default
+        try:
+            val = int(raw.strip())
+            return max(1, val)
+        except ValueError:
+            logger.warning("Malformed Retry-After header: %r", raw)
+            return default
 
     async def __aenter__(self) -> "BinanceRestClient":
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
@@ -46,11 +68,12 @@ class BinanceRestClient:
         params = {}
         if symbol:
             params["symbol"] = symbol.upper()
-        
+
         resp = await client.get("/api/v3/exchangeInfo", params=params)
+        self._update_weight(resp)
         resp.raise_for_status()
         data = resp.json()
-        
+
         symbols_info = data.get("symbols", [])
         parsed_results = []
         for s in symbols_info:
@@ -106,21 +129,45 @@ class BinanceRestClient:
             params["endTime"] = end_time_ms
 
         await asyncio.sleep(self._rate_delay)
+        if self.last_used_weight_1m >= 1000:
+            logger.warning("Binance REST weight high (%d). Backing off 1s.", self.last_used_weight_1m)
+            await asyncio.sleep(1.0)
+
+        raw_rows: list[Any] | None = None
+        last_error: Exception | None = None
+
         for attempt in range(3):
             try:
                 resp = await client.get("/api/v3/klines", params=params)
+                self._update_weight(resp)
+
                 if resp.status_code == 429:
-                    retry_after = int(resp.headers.get("Retry-After", "5"))
-                    logger.warning("Rate limited (429). Sleeping %d seconds", retry_after)
+                    retry_after = self._parse_retry_after(resp, default=5)
+                    logger.warning("Rate limited (429) on attempt %d/3. Sleeping %d seconds", attempt + 1, retry_after)
                     await asyncio.sleep(retry_after)
+                    last_error = httpx.HTTPStatusError("Rate limited (429)", request=resp.request, response=resp)
                     continue
+
+                if resp.status_code == 418:
+                    retry_after = self._parse_retry_after(resp, default=60)
+                    logger.error("IP banned (418) on attempt %d/3. Sleeping %d seconds", attempt + 1, retry_after)
+                    await asyncio.sleep(retry_after)
+                    last_error = httpx.HTTPStatusError("IP banned (418)", request=resp.request, response=resp)
+                    continue
+
                 resp.raise_for_status()
                 raw_rows = resp.json()
                 break
-            except (httpx.HTTPError, httpx.TimeoutException):
+            except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                last_error = exc
                 if attempt == 2:
-                    raise
+                    break
                 await asyncio.sleep(1.0 * (attempt + 1))
+
+        if raw_rows is None:
+            if last_error:
+                raise last_error
+            raise httpx.HTTPError("Failed to fetch klines after 3 attempts")
 
         # The last kline of a range ending "now" is still forming; never report it as closed. The margin
         # covers this host's clock running ahead of Binance's (a partial bar would block the real one).
