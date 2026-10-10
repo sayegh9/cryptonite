@@ -57,6 +57,30 @@ def missing_runs(
     return runs
 
 
+def split_contiguous_runs(bars: list[EnrichedBar], step_ns: int) -> list[list[EnrichedBar]]:
+    """Split already-validated bars into maximal runs whose close stamps are consecutive on the grid.
+
+    Callers must have already enforced the grid contract (sorted, on-grid, no sub-cadence); every
+    returned run is internally contiguous (``next.ts_event_ns - prev.ts_event_ns == step_ns``), so a
+    ``write_bars`` of one run produces a catalog file whose span exactly equals its contents. Combined
+    with the ``commit_history_batch`` validation and fail-closed coverage filter, a catalog file span
+    can never mask an interior missing bar after a partial write: re-runs of ``missing_runs`` keep
+    seeing every genuine gap.
+    """
+    runs: list[list[EnrichedBar]] = []
+    if not bars:
+        return runs
+    run = [bars[0]]
+    for bar in bars[1:]:
+        if bar.ts_event_ns - run[-1].ts_event_ns == step_ns:
+            run.append(bar)
+        else:
+            runs.append(run)
+            run = [bar]
+    runs.append(run)
+    return runs
+
+
 class IngestionConflictError(Exception):
     """Raised when another recorder process already owns the advisory lock."""
 
@@ -181,27 +205,113 @@ class TwoStoreCoordinator:
         symbol: str = "BTCUSDT",
         timeframe: str = "1m",
     ) -> str:
-        """Commit a historical backfill batch.
+        """Commit a historical backfill batch (crash-recoverable, idempotent, contiguity-safe).
 
         Enforces:
-        - Covered bars in the catalog are never rewritten.
+        - Covered bars in the catalog are never rewritten, and coverage is fail-closed: if the
+          catalog's intervals cannot be queried, the batch is refused instead of written unfiltered.
+        - Write contiguity: bars are validated to lie on the timeframe grid (rejecting duplicates /
+          sub-cadence) and are split into strictly contiguous runs before writing, so every catalog
+          file produced is a complete contiguous sequence. A catalog file span can therefore never
+          mask an interior missing bar after a partial write; re-runs of ``missing_runs`` keep seeing
+          every genuine gap.
         - Pre-checkpoint history can be written (checkpoint boundary check bypassed).
         - No outbox events or live closed-bar stream events are emitted.
         - Checkpoint first_timestamp_ns is widened via LEAST while preserving GREATEST last_timestamp_ns.
-        - Batch record in ingest_batches is created and committed.
+        - Batch record in ``ingest_batches`` is created and committed.
+
+        Modes:
+        - With a Postgres pool, each written run is recorded in ``ingest_batches`` tagged
+          ``origin='history'`` (with its real ``timeframe``) and the checkpoint is LEAST/GREATEST
+          widened; ``reconcile_pending_batches`` replays such rows as history (guard bypassed, right
+          timeframe / bar_type / outbox suppression), so pre-checkpoint history is restart-safe.
+        - Offline (``pg_pool=None``, as ``scripts/backfill_history.py`` intentionally runs): NO
+          ``ingest_batches`` row and NO checkpoint update are made because there is no PostgreSQL
+          connection; the Nautilus catalog is the history source of truth.
         """
         if not bars:
             return ""
 
-        return await self._execute_commit(
-            bars=bars,
-            bar_type=bar_type,
-            venue=venue,
-            market_type=market_type,
-            symbol=symbol,
-            timeframe=timeframe,
-            is_history=True,
-        )
+        step_ns = self._timeframe_to_ns(timeframe)
+        sorted_bars = sorted(bars, key=lambda b: b.ts_event_ns)
+        self._assert_history_grid(sorted_bars, step_ns, bar_type)
+        uncovered = await self._uncovered_history_bars(sorted_bars, bar_type)
+        if not uncovered:
+            logger.info(
+                "commit_history_batch: all %d bar(s) already covered for %s",
+                len(sorted_bars),
+                str(bar_type),
+            )
+            return ""
+
+        last_id = ""
+        for piece in split_contiguous_runs(uncovered, step_ns):
+            piece_id = await self._execute_commit(
+                bars=piece,
+                bar_type=bar_type,
+                venue=venue,
+                market_type=market_type,
+                symbol=symbol,
+                timeframe=timeframe,
+                is_history=True,
+            )
+            if piece_id:
+                last_id = piece_id
+        return last_id
+
+    def _assert_history_grid(
+        self, bars: list[EnrichedBar], step_ns: int, bar_type: BarType
+    ) -> None:
+        """Fail closed unless every bar is on the timeframe grid with no duplicates / sub-cadence.
+
+        History bars are stamped at their CLOSE, so a valid bar's ``ts_event_ns`` is a multiple of
+        ``step_ns``. Off-grid or sub-cadence bars indicate malformed input (or a filtered batch whose
+        remainder would otherwise be written as a file whose span masks genuinely missing bars).
+        """
+        prev_ts: int | None = None
+        for bar in bars:
+            ts = bar.ts_event_ns
+            if ts % step_ns != 0:
+                raise ValueError(
+                    f"commit_history_batch: bar ts_event_ns={ts} is off the {step_ns}-ns "
+                    f"grid for {str(bar_type)}; refusing to write"
+                )
+            if prev_ts is not None:
+                diff = ts - prev_ts
+                if diff < step_ns:
+                    raise ValueError(
+                        f"commit_history_batch: duplicate or sub-cadence bar at ts_event_ns={ts} "
+                        f"(diff={diff} ns < step {step_ns} ns) for {str(bar_type)}"
+                    )
+            prev_ts = ts
+
+    async def _uncovered_history_bars(
+        self, bars: list[EnrichedBar], bar_type: BarType
+    ) -> list[EnrichedBar]:
+        """Filter out bars already covered by the catalog, failing closed on coverage-query errors."""
+        if not self.nautilus or not hasattr(self.nautilus, "get_intervals"):
+            return bars
+        try:
+            intervals = self.nautilus.get_intervals("bars", str(bar_type))
+        except Exception as e:
+            # Fail closed: a covered-bar guarantee that silently stops being enforced would let
+            # backfill rewrite bars the live stream already owns.
+            raise RuntimeError(
+                f"commit_history_batch: could not query catalog coverage for {str(bar_type)}; "
+                f"refusing to write unfiltered: {e}"
+            ) from e
+        if not intervals:
+            return bars
+        uncovered = [
+            b for b in bars if not any(a <= b.ts_event_ns <= c for a, c in intervals)
+        ]
+        if len(uncovered) < len(bars):
+            logger.info(
+                "commit_history_batch: filtered %d already-covered bar(s) for %s",
+                len(bars) - len(uncovered),
+                str(bar_type),
+            )
+        return uncovered
 
     async def _execute_commit(
         self,
@@ -218,27 +328,8 @@ class TwoStoreCoordinator:
             # Sort bars strictly by timestamp
             sorted_bars = sorted(bars, key=lambda b: b.ts_event_ns)
 
-            # If historical batch, enforce that already-covered bars in catalog are never rewritten
-            if is_history and self.nautilus and hasattr(self.nautilus, "get_intervals"):
-                try:
-                    intervals = self.nautilus.get_intervals("bars", str(bar_type))
-                    if intervals:
-                        uncovered = [
-                            b for b in sorted_bars
-                            if not any(a <= b.ts_event_ns <= c for a, c in intervals)
-                        ]
-                        if len(uncovered) < len(sorted_bars):
-                            logger.info(
-                                "commit_history_batch: filtered %d already-covered bar(s) for %s",
-                                len(sorted_bars) - len(uncovered),
-                                str(bar_type),
-                            )
-                            sorted_bars = uncovered
-                except Exception as e:
-                    logger.warning("Could not query catalog intervals for %s: %s", bar_type, e)
-
             if not sorted_bars:
-                logger.info("No uncovered bars to commit for %s", bar_type)
+                logger.info("No bars to commit for %s", bar_type)
                 return ""
 
             batch_id = str(uuid.uuid4())
@@ -284,6 +375,8 @@ class TwoStoreCoordinator:
                     bar_count=bar_count,
                     payload_checksum=payload_checksum,
                     canonical_payload_json=payload_json,
+                    timeframe=timeframe,
+                    origin="history" if is_history else "live",
                 )
                 if actual_batch_id:
                     batch_id = actual_batch_id
@@ -365,17 +458,23 @@ class TwoStoreCoordinator:
         bar_count: int,
         payload_checksum: str,
         canonical_payload_json: list[dict[str, Any]],
-    ) -> None:
+        timeframe: str = "1m",
+        origin: str = "live",
+    ) -> str:
         if not self.pool:
             return
         query = """
         INSERT INTO ingest_batches (
             batch_id, venue, market_type, symbol, bar_type,
             start_ns, end_ns, bar_count, payload_checksum,
-            canonical_payload_json, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
+            canonical_payload_json, status, timeframe, origin
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12)
         ON CONFLICT (venue, market_type, bar_type, start_ns, end_ns, payload_checksum)
-        DO UPDATE SET status = 'pending', canonical_payload_json = EXCLUDED.canonical_payload_json
+        DO UPDATE SET
+            status = 'pending',
+            canonical_payload_json = EXCLUDED.canonical_payload_json,
+            timeframe = EXCLUDED.timeframe,
+            origin = EXCLUDED.origin
         RETURNING batch_id;
         """
         row = await self.pool.fetchval(
@@ -390,6 +489,8 @@ class TwoStoreCoordinator:
             bar_count,
             payload_checksum,
             json.dumps(canonical_payload_json),
+            timeframe,
+            origin,
         )
         return str(row) if row else batch_id
 
@@ -542,7 +643,15 @@ class TwoStoreCoordinator:
                             )
 
     async def reconcile_pending_batches(self, bar_type: BarType) -> int:
-        """Scan and reconcile uncommitted batches on startup."""
+        """Scan and reconcile uncommitted batches on startup.
+
+        Each pending row carries its own ``timeframe`` and ``origin`` (added with migration 042), so
+        a pre-checkpoint history batch is replayed with ``is_history=True``: the live checkpoint
+        guard stays bypassed, no outbox events are emitted, and the row's real timeframe / bar_type
+        are used even when more than one timeframe produced pending rows. Rows whose replay returns no
+        batch id (e.g. an already-covered history batch) are settled to ``committed`` so they never
+        linger as ``pending`` forever.
+        """
         if not self.pool:
             return 0
 
@@ -557,8 +666,8 @@ class TwoStoreCoordinator:
             logger.warning("Failed to clean up temporary artifacts: %s", e)
 
         rows = await self.pool.fetch(
-            "SELECT batch_id, venue, market_type, symbol, bar_type, canonical_payload_json "
-            "FROM ingest_batches WHERE status = 'pending';"
+            "SELECT batch_id, venue, market_type, symbol, bar_type, timeframe, origin, "
+            "canonical_payload_json FROM ingest_batches WHERE status = 'pending';"
         )
         reconciled = 0
         for row in rows:
@@ -566,16 +675,48 @@ class TwoStoreCoordinator:
             if isinstance(raw_payload, str):
                 raw_payload = json.loads(raw_payload)
             bars = [EnrichedBar.model_validate(item) for item in raw_payload]
-            logger.info("Reconciling uncommitted batch %s (%d bars)", row["batch_id"], len(bars))
+            is_history = row["origin"] == "history"
+            timeframe = row["timeframe"] or "1m"
+            # Replay under the row's own bar type so multi-timeframe pending batches are correct.
+            row_bar_type = bar_type
+            try:
+                row_bar_type = BarType.from_str(row["bar_type"])
+            except Exception:
+                logger.warning(
+                    "Could not parse bar_type %r for pending batch %s; using caller bar_type %s",
+                    row["bar_type"],
+                    row["batch_id"],
+                    bar_type,
+                )
+            logger.info(
+                "Reconciling uncommitted %sbatch %s (%d bars, timeframe=%s)",
+                "history " if is_history else "",
+                row["batch_id"],
+                len(bars),
+                timeframe,
+            )
             # Replay commit sequence
-            await self._execute_commit(
+            replayed_id = await self._execute_commit(
                 bars=bars,
-                bar_type=bar_type,
+                bar_type=row_bar_type,
                 venue=row["venue"],
                 market_type=row["market_type"],
                 symbol=row["symbol"],
-                timeframe=row.get("timeframe", "1m"),  # fallback if timeframe missing
+                timeframe=timeframe,
+                is_history=is_history,
             )
+            # Restart-safety: a history batch whose bars are all already covered re-plays to "" (the
+            # data is present in the stores); do not leave a permanently-pending row behind.
+            if is_history and not replayed_id:
+                await self.pool.execute(
+                    "UPDATE ingest_batches SET status = 'committed', committed_at = now() "
+                    "WHERE batch_id = $1 AND status = 'pending';",
+                    row["batch_id"],
+                )
+                logger.info(
+                    "Settled already-covered history batch %s as committed (replay wrote nothing)",
+                    row["batch_id"],
+                )
             reconciled += 1
         return reconciled
 
