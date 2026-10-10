@@ -100,7 +100,7 @@ Tested via throwaway separate client connection using the exact ingest combined 
 |---|---|---|---|
 | **Phase 0** | Baseline measurements & operator decisions | **MEASUREMENTS COMPLETE (UNRESOLVED TOP-10 DECISION)** | Live DB041 inventory recorded; WebSocket spike latency confirmed; Postgres payload measured; active `WLDUSDT` mandate noted. **GAP**: Operator decision #8 (exact top-10 symbols) remains unresolved; **strictly no live onboarding**. |
 | **Phase 1** | Any-symbol chat tool & web chart states | **CODE COMPLETE (OPEN)** | PR #46 (Brain `get_klines`) and PR #48 (web states) tested and validated. Deployment held for release window. |
-| **Phase 2.1** | E1 core (live) and 4-timeframe feed (PR #45) | **E1 core LIVE; PR #45 MERGED and DEPLOYED 2026-10-10** | Fresh PG/Redis backups and local restore drill passed (`docs/e1-feed-timeframes-deploy-2026-10-10.md`). A3 remains open. |
+| **Phase 2.1** | E1 core (live) and 4-timeframe feed (PR #45) | **E1 core LIVE; PR #45 MERGED and DEPLOYED 2026-10-10** | Fresh PG/Redis backups and local restore drill passed (`docs/e1-feed-timeframes-deploy-2026-10-10.md`). A3 remains open. The wider E1 checklist remains open (§7.4). |
 | **Phase 2.2** | D6 universe precision | **OPEN** | PR #49 ready for review/merge. |
 | **Phase 2.3** | Ingest rate limiting (F19) & gap recovery (F4) | **PARTIALLY COMPLETE (OPEN)** | PR #52 (F19 429/418 handling, header weight tracking) complete and hardened via PR #54.<br>**F4 reconnect gap recovery** is implemented in open PR #55 (head `232499e0`), under independent review. Not merged, not live. |
 | **Phase 2.4** | Historical backfill coordinator | **OPEN (BLOCKED; PR #56 MERGED INTO PR #53 BRANCH; PR #53 CI RUNNING)** | PR #53 implemented; independent safety review identified production blockers: F1 catalog file spans mask interior missing bars, F2 pooled history reconcile loses history flag on restart, F3 offline no-pool path does not update `ingest_batches`/`ingest_checkpoints` (the current offline consumer does not update Postgres checkpoints). **NOT production-backfill ready**. Stacked fix PR #56 (head `4a974368`) was merged into the PR #53 feature branch at 2026-10-10T09:15:25Z (PR #53 head `50e248b0`). Exact-head CI for `50e248b0` was still running at the last check, so do not treat it as green. PR #53 is still open against `main`: not merged to main, not live (see §7.3). |
@@ -174,6 +174,13 @@ Under PR #45 (merged `893fb49`, deployed 2026-10-10), `INGEST_TIMEFRAMES` is upd
 - The PR #56 feature-branch merge does not change the steps above. PR #53 is still open against `main`, not merged to main or deployed, and migration `042` is not applied to any database.
 
 ---
+
+### 7.4 E1 Wider Checklist (open)
+Recorded per `finalize-instructions.md` §3.6. The 2026-10-10 ingest timeframe deploy is **done**. The wider E1 checklist is **open**. Do not describe E1 as complete.
+- **DONE (2026-10-10)**: E1 ingest timeframe deploy. PR #45 merged as `893fb49`; ingest `23b96abe86d1` healthy on `1m,15m,1h,4h`; evidence doc on `main` via docs PR #57 (`99adceb`).
+- **OPEN, G3 (operator only)**: scanner preset gate (E1 runbook §2, checklist §3.5–3.6). Carried from `finalize-instructions.md` §2, not re-verified here: the 5 active scan spec versions contain no `crosses_above` / `crosses_below` operators.
+- **OPEN, G4 (operator only)**: migration `042` (PR #53, with PR #56 merged into its branch) is not on `main` and not applied. Live DB is at `041`. Apply only after a fresh backup and a `main` checkout at the merged head.
+- **OPEN, legacy workers**: scanner, debate worker, orchestrator and strategy sandbox images were built 2026-10-09 02:03 local, before the `893fb49` merge. Rebuilding them is operator-gated after G3. The agent worker was rebuilt from `main` and recreated on 2026-10-10 (`restarts=0`, healthy).
 
 ## 8. Unresolved Operator Decisions (§11) & Operational Gates
 1. **Phase 0 Baseline Measurements vs Decision #8**: Phase 0 empirical measurements (DB counts, schema baseline DB041, storage per bar, WebSocket combined URL spike) are **complete**. However, Operator Decision #8 (exact top-10 symbol list selection for post-quarantine onboarding) remains **unresolved**. **Strictly no live onboarding** is permitted.
