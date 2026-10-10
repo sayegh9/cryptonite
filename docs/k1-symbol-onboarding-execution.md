@@ -13,6 +13,8 @@
 - **Live Ingest Image Digest**: `sha256:bee2d23192d45ba2ea316a1c53b2211987fdc703e1532b24b413a49c3b864d34`.
 - **Live Ingest Feed Timeframes**: `INGEST_TIMEFRAMES=1m,1h` (production runtime baseline).
 - **Redis Stream State**: `cryptonite:stream:closed_bar_committed`, consumer lag = 0 across all groups (`scanner-worker`, `api-fanout`).
+- **E1 Core (live)**: main `fbc80f5` with DB `041`, D5 web, and the scanner backlog fast-forward are deployed (E1 deploy record, 2026-10-09). **Only PR #45** (`INGEST_TIMEFRAMES=1m,15m,1h,4h`) is unreleased; live ingest still runs `1m,1h`.
+- **Migration state**: live DB is at `041`. Migration `042` exists only in PR #56 and has NOT been applied to any database.
 
 ---
 
@@ -54,13 +56,16 @@ Tested via throwaway separate client connection using the exact ingest combined 
 ## 3. Storage Assessment & Onboarding Guardrails
 
 ### 3.1 Storage Measurement
-- **Available Disk Space**: **13 GB** available on `/` (`/dev/nvme0n1p3`, 95% utilization).
-- **Required Storage Floor**: **15 GB** free disk space after estimated growth (§11 Decision 6).
+- **Available Disk Space (dated snapshots, `/dev/nvme0n1p3`)**:
+  - 2026-10-09: **13 GB** available (95% used). Snapshot from the Phase 0 baseline.
+  - 2026-10-10, before operator expansion: **11 GB** available (96% used).
+  - 2026-10-10, after operator expansion (`df -h /`): **259 GiB** available on a 494G root (46% used).
+- **Required Storage Floor**: **15 GB** free disk space after estimated growth (§11 Decision 6). The floor is met on current free space. It still must be checked after estimated job growth before any job runs.
 
 ### 3.2 Live Onboarding Decision
-> [!CAUTION]
-> **ONBOARDING BLOCK**: Available disk space (13 GB) is strictly below the 15 GB floor.
-> **No live symbol onboarding** may take place until disk space is expanded or cleaned to $\ge 15\text{ GB}$ available free space and release readiness checks pass.
+> [!NOTE]
+> **Disk floor (2026-10-10)**: met on current free space (259 GiB). The post-estimate ≥15 GB check is still required per job.
+> **Onboarding remains blocked** by the unresolved top-10 decision (§8, item 1), the E1 / PR #45 release gates (§7.1), and the post-estimate disk check. **No live symbol onboarding** may take place until all of these pass.
 
 ---
 
@@ -70,19 +75,21 @@ Tested via throwaway separate client connection using the exact ingest combined 
 |---|---|---|---|---|---|
 | **E1 Feed Timeframes Fix** | PR #45 (`fix/d3-feed-timeframes`) | `main` | [`7418022`](https://github.com/sayegh9/cryptonite/commit/741802213705b1484a1288b94a8e5b87cbe94be6) | **PROPOSED (CONDITIONAL GO)** | Config change `INGEST_TIMEFRAMES=1m,15m,1h,4h`. Independent preflight report (PR #51) verified Conditional GO. **NOT merged or deployed**. Live runtime remains `1m,1h`. |
 | **K1 Phase 1 Brain Klines Tool** | PR #46 (`feat/k1-brain-klines`) | `main` | [`51eea480`](https://github.com/sayegh9/cryptonite/commit/51eea48011f4c1dbe4a9c05a771b31fb5c3f705b) | **CODE COMPLETE (OPEN)** | Implements `get_klines` read-only tool in Brain. Stacked review PR #50 merged into author branch at `51eea480`. 6 CI checks green. **NOT merged or deployed**. |
-| **K1 Execution Ledger** | PR #47 (`docs/k1-execution-ledger`) | `main` | [`55d07f1`](https://github.com/sayegh9/cryptonite/commit/55d07f1488c0b3339ab8da2130e7df8c84a8bdb1) | **IN PROGRESS** | Execution ledger tracking implementation status, gates, and metrics. |
+| **K1 Execution Ledger** | PR #47 (`docs/k1-execution-ledger`) | `main` | see PR #47 head (not pinned here) | **OPEN (CI green, merge CLEAN)** | Execution ledger tracking implementation status, gates, and metrics. |
 | **K1 Phase 1 Web Chart States** | PR #48 (`feat/k1-web-price-chart-states`) | `main` | [`e940279`](https://github.com/sayegh9/cryptonite/commit/e940279d0ec5ef5477daeec4653609804b8ba26e) | **CODE COMPLETE (OPEN)** | Empty and stale card states for `PriceChartCard`. All CI checks green. **NOT merged or deployed**. |
 | **D6 Universe Precision** | PR #49 (`feat/d6-universe-precision`) | `main` | [`34e7d78`](https://github.com/sayegh9/cryptonite/commit/34e7d78013d8a70c360da84f2231b67f13b63198) | **OPEN** | Scanner precision handling for symbols under $1. D6 prerequisite. **NOT merged or deployed**. |
 | **PR #46 Hardening Review** | PR #50 (`review/k1-get-klines-hardening`) | `feat/k1-brain-klines` | [`8e9ce1e`](https://github.com/sayegh9/cryptonite/commit/8e9ce1e8c8febedf2bd4c6d14aa98aa618e21d2c) | **MERGED** | Stacked review for PR #46 (server time boundary, Redis universe parse/expiry, bounded cache). Merged into author branch via `51eea480`. |
 | **E1 Preflight Status Report** | PR #51 (`docs/e1-pr45-preflight`) | `main` | [`9c8f111`](https://github.com/sayegh9/cryptonite/commit/9c8f11161e5c10b4618ed2f8b398b9da27f6e9df) | **OPEN** | Corrected preflight report documenting Conditional GO, rollback baseline, and restore drill requirements. |
 | **K1 Phase 2.3 Ingest Rate Limiting** | PR #52 (`feat/k1-ingest-rate-limit-hardening`) | `main` | [`c1cd52ed`](https://github.com/sayegh9/cryptonite/commit/c1cd52edafb0a168326335dd379ffbd050fe3f8d) | **OPEN** | F19 429/418 handling and weight tracking. Stacked review PR #54 merged into branch via `c1cd52ed` (all 6 CI checks green: pytest, e2e-smoke, web, ruff, verify, CodeRabbit). **NOT merged or deployed**. |
-| **K1 Phase 2.4 History Coordinator** | PR #53 (`feat/k1-history-coordinator`) | `main` | [`01de154`](https://github.com/sayegh9/cryptonite/commit/01de154101e4bb2e8798bfd3c690186c757c61bf) | **OPEN (BLOCKED - STACKED FIX IN PROGRESS)** | `commit_history_batch` and `missing_runs` in `packages/storage`. Independent safety review identified production blockers: F1 span-masked interior missing bars, F2 pooled history reconcile loses history flag, F3 offline no-pool path does not update `ingest_batches`/`ingest_checkpoints`. **NOT production-backfill ready**. OpenCode stacked hardening PR in progress. **NOT merged or deployed**. |
+| **K1 Phase 2.4 History Coordinator** | PR #53 (`feat/k1-history-coordinator`) | `main` | [`01de154`](https://github.com/sayegh9/cryptonite/commit/01de154101e4bb2e8798bfd3c690186c757c61bf) | **OPEN (BLOCKED; FIX PR #56 UNDER REVIEW)** | `commit_history_batch` and `missing_runs` in `packages/storage`. Independent safety review identified production blockers: F1 span-masked interior missing bars, F2 pooled history reconcile loses history flag, F3 offline no-pool path does not update `ingest_batches`/`ingest_checkpoints`. **NOT production-backfill ready**. stacked fix PR #56 (head `4a974368`) is open and under independent review. **NOT merged or deployed**. |
 | **PR #52 Hardening Review** | PR #54 (`review/k1-ingest-rate-limit-hardening`) | `feat/k1-ingest-rate-limit-hardening` | [`dba269d`](https://github.com/sayegh9/cryptonite/commit/dba269d2cdc3e42a542c8de42cf26fa256749f36) | **MERGED** | Stacked review for PR #52 (immediate 418 fail-closed, robust Retry-After date parsing, rate-budget pacing). Merged into PR #52 branch via `c1cd52ed`. |
+| **K1 Phase 2.3 Reconnect Gap Recovery (F4)** | PR #55 (`feat/k1-ingest-reconnect-gap-recovery`) | `feat/k1-ingest-rate-limit-hardening` (PR #52 branch) | [`232499e0`](https://github.com/sayegh9/cryptonite/commit/232499e0e8ab992ba6827f5bd55990f0724f6bda) | **OPEN (under independent review)** | Implements F4 reconnect gap recovery and dynamic SUBSCRIBE. CI: six SUCCESS; merge CLEAN. **Implemented; independent review not yet passed; NOT merged, NOT deployed.** |
+| **K1 Phase 2.4 History Coordinator Fix** | PR #56 (`review/k1-history-coordinator-hardening`) | `feat/k1-history-coordinator` (PR #53 branch) | [`4a974368`](https://github.com/sayegh9/cryptonite/commit/4a974368fac88e368d2cf46f726a5262bd7262ff) | **OPEN (under independent review)** | Stacked fix for PR #53 covering F1–F6 per the author's report; adds migration `042` (see §7.3). CI: six SUCCESS; merge CLEAN. **NOT reviewed-as-passed, NOT merged, NOT deployed.** |
 
 > [!IMPORTANT]
 > **Strict Distinction Between Ready Code & Live Runtime**:
 > - Merged stacked reviews (PR #50 into PR #46, PR #54 into PR #52) integrate code into **isolated feature branches only**.
-> - **Zero code from PRs #45–#54 is merged to `main` or deployed to live production containers.**
+> - **Zero code from PRs #45–#56 is merged to `main` or deployed to live production containers.**
 > - Live runtime services continue running exact production main (`fbc80f5`) with `1m,1h` feed until operator release procedures are executed.
 
 ---
@@ -93,10 +100,10 @@ Tested via throwaway separate client connection using the exact ingest combined 
 |---|---|---|---|
 | **Phase 0** | Baseline measurements & operator decisions | **MEASUREMENTS COMPLETE (UNRESOLVED TOP-10 DECISION)** | Live DB041 inventory recorded; WebSocket spike latency confirmed; Postgres payload measured; active `WLDUSDT` mandate noted. **GAP**: Operator decision #8 (exact top-10 symbols) remains unresolved; **strictly no live onboarding**. |
 | **Phase 1** | Any-symbol chat tool & web chart states | **CODE COMPLETE (OPEN)** | PR #46 (Brain `get_klines`) and PR #48 (web states) tested and validated. Deployment held for release window. |
-| **Phase 2.1** | E1 release & 4-timeframe feed | **PROPOSED (CONDITIONAL GO)** | PR #45 ready. Live deploy requires fresh DB/Redis backup and local restore drill (PR #51). |
+| **Phase 2.1** | E1 core (live) and 4-timeframe feed (PR #45) | **E1 core LIVE; PR #45 PROPOSED (CONDITIONAL GO)** | PR #45 ready for release only. Live deploy requires fresh DB/Redis backup and local restore drill (PR #51). |
 | **Phase 2.2** | D6 universe precision | **OPEN** | PR #49 ready for review/merge. |
-| **Phase 2.3** | Ingest rate limiting (F19) & gap recovery (F4) | **PARTIALLY COMPLETE (OPEN)** | PR #52 (F19 429/418 handling, header weight tracking) complete and hardened via PR #54.<br>**GAP**: **Reconnect gap recovery (F4)** is NOT yet implemented. |
-| **Phase 2.4** | Historical backfill coordinator | **OPEN (BLOCKED - STACKED FIX IN PROGRESS)** | PR #53 implemented; independent safety review identified production blockers: F1 catalog file spans mask interior missing bars, F2 pooled history reconcile loses history flag on restart, F3 offline no-pool path does not update `ingest_batches`/`ingest_checkpoints` (the current offline consumer does not update Postgres checkpoints). **NOT production-backfill ready**. Stacked hardening PR in progress. |
+| **Phase 2.3** | Ingest rate limiting (F19) & gap recovery (F4) | **PARTIALLY COMPLETE (OPEN)** | PR #52 (F19 429/418 handling, header weight tracking) complete and hardened via PR #54.<br>**F4 reconnect gap recovery** is implemented in open PR #55 (head `232499e0`), under independent review. Not merged, not live. |
+| **Phase 2.4** | Historical backfill coordinator | **OPEN (BLOCKED; FIX PR #56 UNDER REVIEW)** | PR #53 implemented; independent safety review identified production blockers: F1 catalog file spans mask interior missing bars, F2 pooled history reconcile loses history flag on restart, F3 offline no-pool path does not update `ingest_batches`/`ingest_checkpoints` (the current offline consumer does not update Postgres checkpoints). **NOT production-backfill ready**. Stacked fix PR #56 is open and under independent review (see §7.3 for migration order). |
 | **Phase 2.5** | Feed check at order time (`require_fed`) | **NOT STARTED** | **GAP**: Not yet implemented. |
 | **Phase 3** | Persisted universe (`ingest_universe` migration) | **NOT STARTED** | Migration and recorder integration not started. |
 | **Phase 4** | Onboarding job engine S1–S6 | **NOT STARTED** | API routes and ingest job runner not started. |
@@ -150,9 +157,21 @@ Under proposed PR #45, `INGEST_TIMEFRAMES` is updated from `1m,1h` to `1m,15m,1h
   - Config-only rollback: Revert `infra/docker-compose.yml` to `INGEST_TIMEFRAMES=1m,1h` and recreate container `cryptonite_ingest`.
 
 ### 7.2 Onboarding Disk Headroom Gate
-- Root disk available space: **13 GB** (95% full).
+- Root disk available space (dated snapshots):
+  - 2026-10-09: **13 GB** (95% full).
+  - 2026-10-10, before operator expansion: **11 GB** (96% full).
+  - 2026-10-10, after operator expansion: **259 GiB** free on a 494G root (46% used), per `df -h /`.
 - Storage floor: strictly $\ge 15\text{ GB}$ available space after estimated job growth.
-- **Gating Status**: **HARD BLOCK**. Live onboarding is prohibited until disk expansion or cleanup restores $\ge 15\text{ GB}$ headroom.
+- **Gating Status (2026-10-10)**: free-space floor met. The post-estimate check is still required per job. Onboarding also stays blocked by the top-10 decision (§8) and the E1 / PR #45 gates (§7.1).
+
+### 7.3 Migration 042 Deployment Order (PR #56)
+- PR #56 adds `infra/migrations/versions/042_ingest_batch_origin_timeframe.py` (revision `042`, `down_revision` `041`).
+- Live DB is at `041`. Migration `042` has NOT been applied anywhere.
+- Required order, all gated and approved separately:
+  1. Independent review of PR #56 at its exact head, then integration into the PR #53 branch.
+  2. Apply `042` to the live DB as its own approved migration step.
+  3. Only then deploy any binary that reads the new columns.
+- No migration, deployment, or merge has been performed for PR #56.
 
 ---
 
