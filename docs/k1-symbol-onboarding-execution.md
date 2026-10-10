@@ -13,7 +13,7 @@
 - **Live Ingest Image Digest**: `sha256:bee2d23192d45ba2ea316a1c53b2211987fdc703e1532b24b413a49c3b864d34` (unchanged by PR #45, which is config-only).
 - **Live Ingest Feed Timeframes**: 2026-10-09 baseline `1m,1h`. **[2026-10-10] now `1m,15m,1h,4h`** after PR #45 (merge `893fb49`).
 - **Redis Stream State**: `cryptonite:stream:closed_bar_committed`, consumer lag = 0 across all groups (`scanner-worker`, `api-fanout`).
-- **E1 Core (live)**: main `fbc80f5` with DB `041`, D5 web, and the scanner backlog fast-forward are deployed (E1 deploy record, 2026-10-09). **[2026-10-10] PR #45** (`INGEST_TIMEFRAMES=1m,15m,1h,4h`) is merged as `893fb49` and deployed to ingest. Evidence: `docs/e1-feed-timeframes-deploy-2026-10-10.md` (local `main` commit `c55b5b7`, not yet on `origin/main`).
+- **E1 Core (live)**: main `fbc80f5` with DB `041`, D5 web, and the scanner backlog fast-forward are deployed (E1 deploy record, 2026-10-09). **[2026-10-10] PR #45** (`INGEST_TIMEFRAMES=1m,15m,1h,4h`) is merged as `893fb49` and deployed to ingest. Evidence: `docs/e1-feed-timeframes-deploy-2026-10-10.md` (commit `c55b5b7`; docs PR #57 merged as `99adceb`, so the evidence doc is on `main`).
 - **Migration state**: live DB is at `041`. Migration `042` is in PR #56, which was merged into the PR #53 feature branch on 2026-10-10 (feature-branch merge only). It has NOT been applied to any database.
 
 ---
