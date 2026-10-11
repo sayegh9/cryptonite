@@ -2,20 +2,8 @@
 
 import asyncio
 import json
-import math
-
-def _sanitize_floats(obj):
-    if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            return 0.0
-        return obj
-    elif isinstance(obj, dict):
-        return {k: _sanitize_floats(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [_sanitize_floats(i) for i in obj]
-    return obj
-
 import logging
+import math
 import os
 import socket
 import time
@@ -32,6 +20,18 @@ from cryptonite_backtester.storage import BacktestArtifactStore
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 
 logger = logging.getLogger("cryptonite.backtester.worker")
+
+
+def _sanitize_floats(obj):
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return 0.0
+        return obj
+    elif isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_sanitize_floats(i) for i in obj]
+    return obj
 
 
 def is_permanent_failure(exc: BaseException, attempt_count: int, max_attempts: int) -> bool:

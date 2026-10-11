@@ -1,7 +1,6 @@
 """Retry policy: data-integrity errors fail a backtest run at once; other errors retry until attempts run out."""
 
 import pytest
-
 from cryptonite_backtester import DataGapError, DataIntegrityError
 from cryptonite_backtester_service.worker import is_permanent_failure
 
