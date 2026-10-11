@@ -25,12 +25,19 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from cryptonite_backtester import DataIntegrityError
 from cryptonite_backtester.runner import BacktestRunner, BacktestRunRequest
 from cryptonite_backtester.sandbox import DEFAULT_JOBS_DIR, run_in_sandbox
 from cryptonite_backtester.storage import BacktestArtifactStore
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
 
 logger = logging.getLogger("cryptonite.backtester.worker")
+
+
+def is_permanent_failure(exc: BaseException, attempt_count: int, max_attempts: int) -> bool:
+    """Fail the run now (no further attempts) when retrying cannot succeed: a data gap or cadence break
+    in the requested window, or the attempts are used up."""
+    return isinstance(exc, DataIntegrityError) or attempt_count >= max_attempts
 
 DEFAULT_DB_URL = "postgresql://cryptonite_backtester:backtester_dev_pass@127.0.0.1:5432/cryptonite"
 DEFAULT_CATALOG_PATH = "data/nautilus_catalog"
@@ -448,7 +455,8 @@ class BacktestWorker:
         except Exception as exc:
             logger.exception("Backtest %s execution failed: %s", run_id_str, exc)
             attempt_count = run_dict.get("attempt_count", 1)
-            if attempt_count >= self.max_attempts:
+            # A data gap or cadence break in the requested window cannot be fixed by retrying: fail at once
+            if is_permanent_failure(exc, attempt_count, self.max_attempts):
                 await self._mark_failed(run_id, str(exc))
             else:
                 # Release lease to allow retry
