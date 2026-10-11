@@ -14,6 +14,7 @@ Labels: **VERIFIED** = checked in this pass with the command evidence below. **C
   scheduled entry for the night of 10-09 (`2026-10-09T23:15Z`, 02:15 local on 10-10).
 - The scheduled drill that passed is `drill-2026-10-08T2345Z` (`2026-10-08T23:46Z`, 02:46 local on 10-09). No scheduled drill ran at 02:45 local on 10-10.
 - The 10-10 backup (`2026-10-10T10:17:56Z`) and drill (`drill-2026-10-10T1019Z`) were manual.
+- The scheduled drill at 02:45 local on 2026-10-11 passed (`drill-2026-10-10T2345Z`, `2026-10-10T23:47Z`).
 
 ## 2. Postgres and Redis restarted at boot; not recreated — VERIFIED
 
@@ -37,10 +38,16 @@ Data was preserved. Neither container was recreated.
 - PR #54 (`review/k1-ingest-rate-limit-hardening`) is MERGED at `2026-10-09T19:15:58Z`, base `feat/k1-ingest-rate-limit-hardening`.
 - PR #52 is still open against `main`. It is the only remaining merge in that stack.
 
-## 5. Scanner preset gate is not applied — CARRIED (UNVERIFIED in this pass)
+## 5. Scanner preset gate — VERIFIED satisfied (2026-10-11; correction of earlier "not applied")
 
-- `finalize-instructions.md` §2 says the 5 active scan spec versions contain no `crosses_above` / `crosses_below` operators.
-- Not re-checked here. The gate remains open (G3, owner: operator).
+- The earlier claim that the presets were not upgraded was based on the runbook's operator names (`crosses_above` /
+  `crosses_below`). The code emits `cross_above` with `lookback: 1`, which the engine evaluates as an event crossover
+  (`packages/scanner/cryptonite_scanner/engine.py`, `is_cross_above`).
+- The upgrade script's dry run (`scripts/upgrade_scanner_presets.py`, run inside the API container, no `--apply`)
+  reports `CURRENT / NOOP` for all five active presets: `rsi-oversold-reversal`, `trend-pullback`,
+  `bollinger-breakout`, `macd-momentum-shift`, `scalp-multi-tf`. Active count is 5 of 10. No database change was made.
+- Runbook `docs/runbooks/e1_preset_upgrade.md` step 3.3 still expects `crosses_above` / `crosses_below` literally. That
+  text is stale and should be corrected to `cross_above` with `lookback: 1`.
 
 ## 6. Scanner, workers and orchestrator were built before the 10-10 ingest deploy — VERIFIED
 
@@ -58,6 +65,31 @@ Data was preserved. Neither container was recreated.
 
 ## Not verified in this pass
 
-- Migration `042` not applied; live database at `041` — CARRIED from `finalize-instructions.md` §2.
-- A3 remains open, including the scheduled-drill count and the off-machine copy — see `finalize-instructions.md` §4 G1.
-- No runtime, data, compose or `main` change was made in this pass.
+- Migration `042` not applied; live database at `041` — confirmed by `alembic_version` on 2026-10-11.
+- No runtime, data, compose or `main` change was made by this document.
+
+## 7. A3 backup and restore gate — CLOSED BY OPERATOR WAIVER (2026-10-11). Not a PASS.
+
+The operator (the repository owner) closed A3 on 2026-10-11 and waived the remaining gate items below for release
+purposes. This is recorded as a waiver. It is not evidence that the gate criteria were met.
+
+Evidence that exists:
+
+- Database backups and restore drills: `cryptonite-2026-10-11T0957Z`, `…1006Z` and `…1620Z`, each drill `OK` (`pg_restore` exit 0,
+  row counts and Alembic hash matched, scratch database removed).
+- Scheduled drills: `drill-2026-10-08T2345Z` passed (02:45 local on 2026-10-09). `drill-2026-10-10T2345Z` passed (02:45 local on
+  2026-10-11). The 2026-10-10 02:45 local run was missed during the host outage.
+- Redis snapshot `redis-2026-10-11T1624Z.rdb` with SHA-256 manifest (manual; no scheduled Redis backup exists).
+- Data backup `data-2026-10-10T2330Z.tar.zst` and secrets archive `secrets-2026-10-10T2335Z.tar.gpg`.
+- Recovery set copied to `/media/samx/Mac/cryptonite-offmachine-2026-10-11/` with `SHA256SUMS` verified and a restore
+  from the copy verified (table counts match, Alembic `041`).
+
+Waived items, with the reason as recorded by the operator:
+
+- Three consecutive scheduled drills. Only one scheduled drill has passed since the outage. Waived.
+- Off-machine copy. The `/media/samx/Mac` target is partition `nvme0n1p5` on the same physical SSD as the root filesystem,
+  so it is **not** off-machine. The operator chose to defer the off-machine copy. Waived. It remains an open risk.
+- Automated Redis backup. None is scheduled. Waived.
+
+Operator action still open, not blocking A3 closure: move one copy of the recovery set to a separate physical device. The
+passphrase must be stored apart from the encrypted archive.
