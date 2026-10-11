@@ -1,13 +1,15 @@
 """Strategy registry endpoints."""
 
+import hashlib
 import json
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_csrf, require_operator
 from cryptonite_strategies.registry import STRATEGY_REGISTRY, list_strategies
 from cryptonite_strategies.validation import resolve_imports, validate_strategy_source
-from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])
 
@@ -54,13 +56,22 @@ async def ensure_strategies_seeded(pool: Any) -> None:
 
 
 
-from pydantic import BaseModel
-import hashlib
-
 class CreateStrategyRequest(BaseModel):
     name: str
     description: str
     python_code: str
+
+class ValidateStrategyRequest(BaseModel):
+    python_code: str
+
+
+@router.post("/validate", dependencies=OPERATOR_WRITE)
+async def validate_strategy(req: ValidateStrategyRequest) -> dict[str, Any]:
+    """The create check without saving: lets the research loop fix a draft before asking the operator to approve it."""
+    validation = validate_strategy_source(req.python_code)
+    violations = validation.violations if not validation.ok else resolve_imports(req.python_code)
+    return {"ok": not violations, "violations": violations}
+
 
 @router.post("", dependencies=OPERATOR_WRITE)
 async def create_strategy(req: CreateStrategyRequest, request: Request):

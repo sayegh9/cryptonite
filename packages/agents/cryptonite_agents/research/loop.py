@@ -102,6 +102,19 @@ class ResearchSpec:
     holdout: tuple[int, int, int] | None = None  # final window, scored once for PROMOTE candidates only
 
 
+def spec_to_payload(spec: ResearchSpec) -> dict[str, Any]:
+    """A spec as JSON for an approval payload (the windows are the ones the operator approved)."""
+    return asdict(spec)
+
+
+def spec_from_payload(data: dict[str, Any]) -> ResearchSpec:
+    kwargs = dict(data)
+    for key in ("in_sample", "out_of_sample", "holdout"):
+        if kwargs.get(key) is not None:
+            kwargs[key] = tuple(kwargs[key])
+    return ResearchSpec(**kwargs)
+
+
 @dataclass
 class ResearchReport:
     id: str
@@ -168,24 +181,20 @@ class ResearchLoop:
         self.client = client
         self.reports_dir = reports_dir
 
-    async def _draft(self, spec: ResearchSpec, report: ResearchReport) -> tuple[StrategyDraft, dict[str, Any]] | None:
+    async def _draft(self, spec: ResearchSpec, report: ResearchReport) -> StrategyDraft | None:
+        """The drafter's strategy, checked by the API's code validator but not saved or backtested: the
+        operator approves a draft before anything runs on it. Violations go back to the drafter."""
         prompt = (f"Trading idea: {spec.idea}\nInstrument: {spec.instrument_id}, timeframe {spec.timeframe}.\n"
                   "Write the strategy.")
         for attempt in range(MAX_DRAFT_ATTEMPTS):
             result = await DRAFTER.run(self.gateway, prompt)
             report.cost_usd += float(result.cost_usd)
             draft: StrategyDraft = result.output
-            try:
-                # The API validates the code (allow-list, imports) and returns the violations; the
-                # baseline backtest then loads and runs it in the sandbox with default parameters
-                saved = await self.client.save_strategy(draft.name, draft.description, draft.python_code)
-                report.baseline = await self.client.backtest(
-                    saved["slug"], spec.instrument_id, spec.bar_type, spec.timeframe, {}, spec.in_sample
-                )
-            except ResearchApiError as e:
-                prompt += f"\n\nAttempt {attempt + 1} failed: {e}\nFix it and return the full strategy again."
+            violations = await self.client.validate_strategy(draft.python_code)
+            if violations:
+                prompt += f"\n\nAttempt {attempt + 1} failed: {'; '.join(violations)}\nFix it and return the full strategy again."
                 continue
-            return draft, saved
+            return draft
         return None
 
     async def _optimize(self, spec: ResearchSpec, draft: StrategyDraft, slug: str,
@@ -261,53 +270,89 @@ class ResearchLoop:
                              "worst_retention": round(worst, 4) if worst is not None else None,
                              "fragile": worst is not None and worst < ROBUSTNESS_MIN_RETENTION}
 
+    @staticmethod
+    def _new_report(spec: ResearchSpec, report_id: str | None = None) -> ResearchReport:
+        return ResearchReport(id=report_id or str(uuid.uuid4()), idea=spec.idea, status="FAILED", reason="",
+                              instrument_id=spec.instrument_id, timeframe=spec.timeframe)
+
     async def run(self, spec: ResearchSpec) -> ResearchReport:
-        report = ResearchReport(id=str(uuid.uuid4()), idea=spec.idea, status="FAILED", reason="",
-                                instrument_id=spec.instrument_id, timeframe=spec.timeframe)
+        """Draft the strategy and ask the operator to approve it. Nothing is saved or backtested here: the
+        report waits as PENDING_APPROVAL until the approval is granted (``resume``)."""
+        report = self._new_report(spec)
         try:
             await self._history_guard(spec)
-            drafted = await self._draft(spec, report)
-            if drafted is None:
+            draft = await self._draft(spec, report)
+            if draft is None:
                 report.reason = f"no valid draft after {MAX_DRAFT_ATTEMPTS} attempts"
                 return await self._save(report)
-            draft, saved = drafted
-            report.strategy_slug, report.strategy_name = saved["slug"], draft.name
-
-            report.best_parameters, report.in_sample = await self._optimize(spec, draft, saved["slug"], report)
-            report.out_of_sample = await self.client.backtest(
-                saved["slug"], spec.instrument_id, spec.bar_type, spec.timeframe, report.best_parameters, spec.out_of_sample
-            )
-            report.overfitting_flags = overfitting_flags(report.in_sample, report.out_of_sample)
-            if report.overfitting_flags:
-                report.status, report.reason = "REJECT", "overfitting guard: " + "; ".join(report.overfitting_flags)
-                return await self._save(report)
-
-            await self._deflated_sharpe(spec, report)
-            if report.dsr is not None and report.dsr < DSR_MIN:
-                report.status = "REJECT"
-                report.reason = (f"deflated Sharpe ratio {report.dsr:.2f} < {DSR_MIN} over {report.trials_tested} "
-                                 "trials: the best result is what that many tries give by chance")
-                return await self._save(report)
-
-            await self._robustness(spec, draft, saved["slug"], report)
-
-            review = await REVIEWER.run(self.gateway, self._review_prompt(draft, report))
-            report.cost_usd += float(review.cost_usd)
-            report.review = review.output.model_dump()
-            report.status, report.reason = review.output.verdict, review.output.summary
-
-            if report.status == "PROMOTE" and spec.holdout:  # scored once, never fed back into anything
-                report.holdout = await self.client.backtest(
-                    saved["slug"], spec.instrument_id, spec.bar_type, spec.timeframe, report.best_parameters, spec.holdout
-                )
-                failure = holdout_failure(report.holdout)
-                if failure:
-                    report.status, report.reason = "REJECT", f"holdout: {failure} (review: {report.reason})"
+            report.strategy_name = draft.name
+            report.status = "PENDING_APPROVAL"
+            approval_id = await self.client.request_approval(
+                "DRAFT_STRATEGY", f"Draft '{draft.name}' for: {spec.idea[:300]}",
+                {"report_id": report.id, "spec": spec_to_payload(spec), "draft": draft.model_dump()})
+            report.reason = f"waiting for the operator to approve the draft (approval {approval_id})"
         except InsufficientHistory as e:
             report.status, report.reason = "FAILED", str(e)
         except (GatewayError, BudgetExceeded, ResearchApiError) as e:
             report.status, report.reason = "FAILED", str(e)
         return await self._save(report)
+
+    async def resume(self, approval: dict[str, Any]) -> ResearchReport:
+        """The operator approved the draft: save it, run its baseline and the whole evaluation. Same report id
+        as the pending one, so the stored report is finished in place."""
+        payload = approval["payload"]
+        spec = spec_from_payload(payload["spec"])
+        draft = StrategyDraft.model_validate(payload["draft"])
+        report = self._new_report(spec, report_id=str(payload["report_id"]))
+        try:
+            await self._history_guard(spec)
+            saved = await self.client.save_strategy(draft.name, draft.description, draft.python_code)
+            report.strategy_slug, report.strategy_name = saved["slug"], draft.name
+            report.baseline = await self.client.backtest(
+                saved["slug"], spec.instrument_id, spec.bar_type, spec.timeframe, {}, spec.in_sample
+            )
+            await self._evaluate(spec, draft, saved, report)
+        except InsufficientHistory as e:
+            report.status, report.reason = "FAILED", str(e)
+        except (GatewayError, BudgetExceeded, ResearchApiError) as e:
+            report.status, report.reason = "FAILED", str(e)
+        return await self._save(report)
+
+    async def _evaluate(self, spec: ResearchSpec, draft: StrategyDraft, saved: dict[str, Any],
+                        report: ResearchReport) -> None:
+        """Optimization, out-of-sample and the guards, review, holdout. Sets the report's status and reason;
+        the caller saves it."""
+
+        report.best_parameters, report.in_sample = await self._optimize(spec, draft, saved["slug"], report)
+        report.out_of_sample = await self.client.backtest(
+            saved["slug"], spec.instrument_id, spec.bar_type, spec.timeframe, report.best_parameters, spec.out_of_sample
+        )
+        report.overfitting_flags = overfitting_flags(report.in_sample, report.out_of_sample)
+        if report.overfitting_flags:
+            report.status, report.reason = "REJECT", "overfitting guard: " + "; ".join(report.overfitting_flags)
+            return
+
+        await self._deflated_sharpe(spec, report)
+        if report.dsr is not None and report.dsr < DSR_MIN:
+            report.status = "REJECT"
+            report.reason = (f"deflated Sharpe ratio {report.dsr:.2f} < {DSR_MIN} over {report.trials_tested} "
+                             "trials: the best result is what that many tries give by chance")
+            return
+
+        await self._robustness(spec, draft, saved["slug"], report)
+
+        review = await REVIEWER.run(self.gateway, self._review_prompt(draft, report))
+        report.cost_usd += float(review.cost_usd)
+        report.review = review.output.model_dump()
+        report.status, report.reason = review.output.verdict, review.output.summary
+
+        if report.status == "PROMOTE" and spec.holdout:  # scored once, never fed back into anything
+            report.holdout = await self.client.backtest(
+                saved["slug"], spec.instrument_id, spec.bar_type, spec.timeframe, report.best_parameters, spec.holdout
+            )
+            failure = holdout_failure(report.holdout)
+            if failure:
+                report.status, report.reason = "REJECT", f"holdout: {failure} (review: {report.reason})"
 
     @staticmethod
     def _review_prompt(draft: StrategyDraft, report: ResearchReport) -> str:

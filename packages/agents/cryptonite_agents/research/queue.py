@@ -18,6 +18,8 @@ from typing import Any
 
 from cryptonite_agents.research.loop import REPORTS_DIR, ResearchLoop, ResearchSpec
 
+logger = logging.getLogger("cryptonite.agents.research.queue")
+
 QUEUE_KEY = "research:queue"
 DIGEST_CHANNEL = "channel:system_alerts"
 TIMEFRAME_BAR = {"1m": "1-MINUTE", "5m": "5-MINUTE", "15m": "15-MINUTE", "30m": "30-MINUTE",
@@ -62,11 +64,20 @@ async def enqueue(redis, idea: str, instrument_id: str, timeframe: str, **option
 
 
 async def work_once(redis, loop: ResearchLoop, block_s: int = 5) -> str | None:
-    """Run the next queued idea, if any; returns the report id."""
+    """Work off the next queue item, if any; returns the report id. Two kinds of item reach the queue, and
+    both come only from an approval: an approved queued idea (run it), or an approved draft
+    (``resume_approval``: the approval is re-read from the API, and only an APPROVED one is resumed)."""
     popped = await redis.blpop(QUEUE_KEY, timeout=block_s)
     if not popped:
         return None
     item = json.loads(popped[1])
+    if "resume_approval" in item:
+        approval = await loop.client.get_approval(item["resume_approval"])
+        if approval.get("status") != "APPROVED" or approval.get("kind") != "DRAFT_STRATEGY":
+            logger.warning("Skipping draft approval %s: status %s", item["resume_approval"], approval.get("status"))
+            return None
+        report = await loop.resume(approval)
+        return report.id
     report = await loop.run(spec_from(item))
     return report.id
 

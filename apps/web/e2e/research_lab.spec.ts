@@ -343,4 +343,34 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("Alpha vs Hold")).toBeVisible();
     await expect(page.getByText("+1.40%")).toBeVisible();
   });
+  test("research approvals: a waiting draft is shown and approving it sends the operator's decision", async ({ page }) => {
+    const decisions: string[] = [];
+    let pending = [{
+      id: "ap-draft-1",
+      kind: "DRAFT_STRATEGY",
+      status: "PENDING",
+      summary: "Draft 'EMA Trend' for: buy dips",
+      payload: { report_id: "rep-1", draft: { name: "EMA Trend", description: "trend", python_code: "class X: pass" } },
+      requested_by: "machine:research",
+      created_at: "2026-10-11T10:00:00Z",
+    }];
+    await page.route("**/api/v1/research/approvals?*", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ approvals: pending }) });
+    });
+    await page.route("**/api/v1/research/approvals/*/decision", async (route) => {
+      decisions.push(JSON.parse(route.request().postData() ?? "{}").decision);
+      pending = [];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "APPROVED" }) });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByRole("button", { name: "Approvals", exact: true }).click();
+
+    await expect(page.getByText("Draft 'EMA Trend' for: buy dips")).toBeVisible();
+    await page.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect.poll(() => decisions.length).toBe(1);
+    expect(decisions[0]).toBe("APPROVE");
+    await expect(page.getByText("No research waiting for approval.")).toBeVisible();
+  });
 });
