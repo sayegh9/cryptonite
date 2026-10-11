@@ -85,6 +85,6 @@ def test_perp_quote_and_spot_configuration_are_preserved():
     assert INGEST_ENV["INGEST_PERP_SYMBOLS"] == "BTCUSDT,ETHUSDT"
     # Spot quote throttling and the spot symbol set stay as-is.
     assert INGEST_ENV["INGEST_SPOT_QUOTE_HZ"] == "50"
-    assert INGEST_ENV["INGEST_SYMBOLS"] == "BTCUSDT,ETHUSDT"
+    assert INGEST_ENV["INGEST_SYMBOLS"] == "BTCUSDT,ETHUSDT,XRPUSDT,WLDUSDT"
     # The perp quote series is quotes-only (no bars), unchanged by the kline timeframe list.
     assert INGEST_ENV["REDIS_URL"].endswith("/0")
