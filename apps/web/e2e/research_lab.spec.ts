@@ -343,4 +343,32 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("Alpha vs Hold")).toBeVisible();
     await expect(page.getByText("+1.40%")).toBeVisible();
   });
+  test("strategy manager creates a strategy and shows the validator's violations", async ({ page }) => {
+    // The validator rejects the code: the create form must show the violations and not close
+    const posted: string[] = [];
+    await page.route("**/api/v1/strategies", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      posted.push(route.request().postData() ?? "");
+      await route.fulfill({
+        status: 422,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: { error: "STRATEGY_CODE_REJECTED", violations: ["import os is not allowed"] } }),
+      });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByTitle("Manage, inspect and delete registered strategies").click();
+    await page.getByRole("button", { name: "New", exact: true }).click();
+
+    await page.getByLabel("Name", { exact: true }).fill("Test strategy");
+    await page.getByLabel("Python code", { exact: true }).fill("import os\n");
+    await page.getByRole("button", { name: "Save strategy" }).click();
+
+    await expect(page.getByText("The code was rejected:")).toBeVisible();
+    await expect(page.getByText("import os is not allowed")).toBeVisible();
+    await expect(page.getByLabel("New strategy")).toBeVisible();
+    expect(posted).toHaveLength(1);
+    expect(JSON.parse(posted[0]).python_code).toBe("import os\n");
+  });
 });

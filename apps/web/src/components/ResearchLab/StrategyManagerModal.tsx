@@ -9,6 +9,7 @@ import {
   Copy,
   Check,
   RefreshCw,
+  Plus,
   } from "lucide-react";
 import { Strategy } from "@/lib/types";
 
@@ -28,6 +29,13 @@ export function StrategyManagerModal({
   const [codeLoading, setCodeLoading] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [newCode, setNewCode] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [violations, setViolations] = useState<string[]>([]);
 
   const fetchStrategies = async () => {
     setLoading(true);
@@ -49,6 +57,7 @@ export function StrategyManagerModal({
   };
 
   const loadStrategyDetails = async (slug: string) => {
+    setCreating(false);
     setSelectedStrategySlug(slug);
     setCodeLoading(true);
     try {
@@ -97,6 +106,45 @@ export function StrategyManagerModal({
     }
   };
 
+  // Saves through the same validated endpoint the research loop uses; the API rejects disallowed code with
+  // the violations, which are shown here. Security review of user-written code is pending (future release).
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setSaveError(null);
+    setViolations([]);
+    try {
+      const res = await fetch("/api/v1/strategies", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "" },
+        body: JSON.stringify({ name: newName.trim(), description: newDescription.trim(), python_code: newCode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = data.detail;
+        if (detail && typeof detail === "object" && Array.isArray(detail.violations)) {
+          setSaveError("The code was rejected:");
+          setViolations(detail.violations.map(String));
+        } else {
+          setSaveError(typeof detail === "string" ? detail : `Save failed (HTTP ${res.status})`);
+        }
+        return;
+      }
+      setCreating(false);
+      setNewName("");
+      setNewDescription("");
+      setNewCode("");
+      onStrategiesChanged();
+      await fetchStrategies();
+      if (data.slug) loadStrategyDetails(data.slug);
+    } catch (err: any) {
+      setSaveError("Could not reach the API: " + (err?.message ?? "unknown error"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleCopyCode = () => {
     if (!detailedStrategy?.python_code) return;
     navigator.clipboard.writeText(detailedStrategy.python_code);
@@ -122,7 +170,7 @@ export function StrategyManagerModal({
             <div>
               <h2 className="font-bold text-white text-sm">STRATEGY REGISTRY & MANAGEMENT</h2>
               <p className="text-2xs text-zinc-400">
-                Inspect code, review parameters, and delete custom/AI-generated strategies.
+                Inspect code, review parameters, create, and delete custom/AI-generated strategies.
               </p>
             </div>
           </div>
@@ -149,7 +197,20 @@ export function StrategyManagerModal({
           <div className="w-full md:w-80 border-r border-zinc-800 flex flex-col bg-zinc-950/50">
             <div className="p-3 border-b border-zinc-800/80 bg-zinc-900/30 text-2xs font-bold text-zinc-400 uppercase tracking-wider flex justify-between items-center">
               <span>Registered Strategies</span>
-              <span className="text-zinc-500 font-normal">({strategies.length})</span>
+              <span className="flex items-center space-x-2">
+                <span className="text-zinc-500 font-normal">({strategies.length})</span>
+                <button
+                  onClick={() => {
+                    setCreating(true);
+                    setSaveError(null);
+                    setViolations([]);
+                  }}
+                  className="px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-700/60 text-cyan-300 normal-case font-bold flex items-center space-x-1"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>New</span>
+                </button>
+              </span>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
               {strategies.map((strat) => {
@@ -205,7 +266,80 @@ export function StrategyManagerModal({
 
           {/* Right: Strategy Inspection Details */}
           <div className="flex-1 flex flex-col bg-zinc-950 overflow-hidden">
-            {detailedStrategy ? (
+            {creating ? (
+              <form onSubmit={handleCreate} className="flex-1 overflow-y-auto p-5 space-y-4" aria-label="New strategy">
+                <div className="text-lg font-bold text-white">New strategy</div>
+                <p className="text-2xs text-zinc-500 font-sans">
+                  The code is checked on save: allowed imports only, exactly one strategy class and one config class.
+                  A saved strategy is not backtested until you run one.
+                </p>
+                <label className="block text-2xs text-zinc-400 uppercase font-bold">
+                  Name
+                  <input
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    required
+                    maxLength={120}
+                    className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-xs text-zinc-200 normal-case font-normal"
+                  />
+                </label>
+                <label className="block text-2xs text-zinc-400 uppercase font-bold">
+                  Description
+                  <input
+                    value={newDescription}
+                    onChange={(e) => setNewDescription(e.target.value)}
+                    maxLength={500}
+                    className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-xs text-zinc-200 normal-case font-normal"
+                  />
+                </label>
+                <label className="block text-2xs text-zinc-400 uppercase font-bold">
+                  Python code
+                  <textarea
+                    value={newCode}
+                    onChange={(e) => setNewCode(e.target.value)}
+                    required
+                    rows={16}
+                    spellCheck={false}
+                    className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1.5 text-xs text-zinc-200 font-mono normal-case font-normal"
+                  />
+                </label>
+                {saveError && (
+                  <div role="alert" className="bg-rose-950/40 border border-rose-900/50 text-rose-300 text-xs p-3 rounded space-y-1">
+                    <div>{saveError}</div>
+                    {violations.length > 0 && (
+                      <ul className="list-disc pl-5">
+                        {violations.map((v) => (
+                          <li key={v}>{v}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                <div className="flex justify-end space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreating(false);
+                      setSaveError(null);
+                      setViolations([]);
+                    }}
+                    className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 rounded text-xs font-bold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={saving || !newName.trim() || !newCode.trim()}
+                    className="px-3 py-1.5 bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 text-white rounded text-xs font-bold"
+                  >
+                    {saving ? "Saving..." : "Save strategy"}
+                  </button>
+                </div>
+                <p className="text-2xs text-zinc-600 font-sans">
+                  Security review pending: user-written code runs in the strategy sandbox. Review before this is opened to other users.
+                </p>
+              </form>
+            ) : detailedStrategy ? (
               <div className="flex-1 overflow-y-auto p-5 space-y-5">
                 {/* Strategy Header Info */}
                 <div className="flex items-start justify-between border-b border-zinc-800/80 pb-4">
