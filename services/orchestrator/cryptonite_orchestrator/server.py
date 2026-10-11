@@ -1103,8 +1103,14 @@ async def rehydrate_dispatcher_state(pool, engine):
             "AND instrument_id NOT LIKE '%-PERP.%'",
             engine.account_id,
         )
+        # Several OPEN rows can share one instrument (e.g. a manual position and a mandate-owned one).
+        # The dispatcher tracks a single account-level quantity per instrument, so sum the rows:
+        # assigning each row in turn keeps only the last one and wrongly shrinks the sellable position.
+        spot_totals: dict[str, Decimal] = {}
         for pr in pos_rows:
-            engine.dispatcher.positions[pr["instrument_id"]] = Decimal(str(pr["quantity"]))
+            inst = pr["instrument_id"]
+            spot_totals[inst] = spot_totals.get(inst, Decimal("0")) + Decimal(str(pr["quantity"]))
+        engine.dispatcher.positions.update(spot_totals)
         logger.info("Rehydrated %d open positions from database", len(pos_rows))
     except Exception as e:
         logger.warning("Error rehydrating state: %s", e)
