@@ -19,13 +19,29 @@ WINDOWS = ((0, 10, 20), (15, 25, 35))
 
 
 class FakeApi:
-    """Sharpe = 2 - |period - 20| / 10 in sample; out of sample scaled by ``oos_factor``."""
+    """Sharpe = 2 - |period - 20| / 10 in sample; out of sample scaled by ``oos_factor``. The code check
+    rejects ``import os``; approvals are kept in ``approvals`` and decided by the test."""
 
-    def __init__(self, oos_factor: float = 0.8, reject_first: bool = True):
-        self.oos_factor, self.reject_first = oos_factor, reject_first
+    def __init__(self, oos_factor: float = 0.8):
+        self.oos_factor = oos_factor
         self.saved, self.backtests = [], []
         self.history = {"bar_type": "bt", "start_ns": 0, "end_ns": 10**18}
         self.earlier_trials = 0
+        self.approvals: dict[str, dict] = {}
+
+    async def validate_strategy(self, python_code):
+        return ["Line 1: import of 'os' is not allowed"] if "import os" in python_code else []
+
+    async def request_approval(self, kind, summary, payload):
+        aid = f"ap{len(self.approvals) + 1}"
+        self.approvals[aid] = {"id": aid, "kind": kind, "status": "PENDING", "summary": summary, "payload": payload}
+        return aid
+
+    async def get_approval(self, approval_id):
+        return self.approvals[approval_id]
+
+    def approve(self, approval_id):
+        self.approvals[approval_id]["status"] = "APPROVED"
 
     async def coverage(self, bar_type):
         return self.history
@@ -34,9 +50,6 @@ class FakeApi:
         return self.earlier_trials
 
     async def save_strategy(self, name, description, python_code):
-        if self.reject_first and not self.saved:
-            self.saved.append(None)
-            raise ResearchApiError('POST /strategies -> 422: {"violations": ["Line 3: import of \'os\' is not allowed"]}')
         self.saved.append(name)
         return {"slug": "ai-gen-abc123", "version_id": "v1"}
 
@@ -59,8 +72,9 @@ def scripted(verdict="PROMOTE"):
             calls["draft"] += 1
             calls["draft_prompts"].append(" ".join(str(p.content) for m in messages if isinstance(m, ModelRequest)
                                                    for p in m.parts if hasattr(p, "content")))
+            code = "import os\nclass X: pass" if calls["draft"] == 1 else "class X: pass"
             return ModelResponse(parts=[ToolCallPart(tool.name, {
-                "name": "EMA Trend", "description": "trend", "python_code": "class X: pass",
+                "name": "EMA Trend", "description": "trend", "python_code": code,
                 "parameter_space": [{"name": "period", "kind": "int", "low": 5, "high": 40}],
             })])
         calls["review"] += 1
@@ -74,9 +88,19 @@ def spec(trials=16):
                         WINDOWS[0], WINDOWS[1], n_trials=trials)
 
 
+async def approve_and_resume(api, loop, report):
+    """The operator approves the pending draft; the worker then resumes it (same report id)."""
+    if report.status != "PENDING_APPROVAL":
+        return report
+    approval_id = report.reason.rsplit("approval ", 1)[1].rstrip(")")
+    api.approve(approval_id)
+    return await loop.resume(await api.get_approval(approval_id))
+
+
 async def run(api, model, tmp_path, trials=16):
     with override_model(FLASH, model), override_model(PRO, model):
-        return await ResearchLoop(Gateway(), api, reports_dir=tmp_path).run(spec(trials))
+        loop = ResearchLoop(Gateway(), api, reports_dir=tmp_path)
+        return await approve_and_resume(api, loop, await loop.run(spec(trials)))
 
 
 async def test_full_loop_feeds_back_violations_optimizes_and_promotes(tmp_path):
@@ -112,8 +136,8 @@ async def test_overfitting_is_rejected_before_paying_for_a_review(tmp_path):
 
 async def test_no_valid_draft_fails_cleanly(tmp_path):
     class AlwaysReject(FakeApi):
-        async def save_strategy(self, *a):
-            raise ResearchApiError("422 rejected")
+        async def validate_strategy(self, python_code):
+            return ["rejected"]
 
     model, _ = scripted()
     report = await run(AlwaysReject(), model, tmp_path)
@@ -189,7 +213,9 @@ def test_unsupported_timeframes_are_refused(tf):
 
 
 
-async def test_sandbox_load_errors_are_fed_back_to_the_drafter(tmp_path):
+async def test_sandbox_load_errors_after_approval_fail_the_report(tmp_path):
+    # The baseline backtest runs after the operator approved the draft, so a sandbox error fails the report
+    # with the error instead of re-drafting (a draft that was approved is not replaced behind the operator's back)
     class FailsFirstRun(FakeApi):
         async def backtest(self, slug, instrument_id, bar_type, timeframe, parameters, window):
             if not self.backtests:
@@ -198,9 +224,9 @@ async def test_sandbox_load_errors_are_fed_back_to_the_drafter(tmp_path):
             return await super().backtest(slug, instrument_id, bar_type, timeframe, parameters, window)
 
     model, calls = scripted()
-    report = await run(FailsFirstRun(reject_first=False), model, tmp_path, trials=4)
-    assert report.status == "PROMOTE"
-    assert calls["draft"] == 2 and "name 'type' is not defined" in calls["draft_prompts"][1]
+    report = await run(FailsFirstRun(), model, tmp_path, trials=4)
+    assert report.status == "FAILED" and "name 'type' is not defined" in report.reason
+    assert calls["draft"] == 2  # the model drafted twice before approval (the code check), never after it
 
 
 # --- Phase 5: research validation ----------------------------------------------------------------
@@ -212,12 +238,13 @@ REAL = rq.spec_from({"idea": "x", "instrument_id": "BTCUSDT.BINANCE", "timeframe
 
 async def run_spec(api, model, tmp_path, s):
     with override_model(FLASH, model), override_model(PRO, model):
-        return await ResearchLoop(Gateway(), api, reports_dir=tmp_path).run(s)
+        loop = ResearchLoop(Gateway(), api, reports_dir=tmp_path)
+        return await approve_and_resume(api, loop, await loop.run(s))
 
 
 async def test_a_spec_longer_than_the_history_is_refused_before_any_call(tmp_path):
     """R5.0: 10 + 90 + 30 + 30 = 160 days needed, 120 available -> a clear FAILED, no model or backtest call."""
-    api = FakeApi(reject_first=False)
+    api = FakeApi()
     api.history = {"bar_type": REAL.bar_type, "start_ns": 880 * D, "end_ns": 1_000 * D}
     model, calls = scripted()
     report = await run_spec(api, model, tmp_path, REAL)
@@ -234,7 +261,7 @@ class RandomEntryApi(FakeApi):
     """Every parameter set is a coin flip: per-fold Sharpe is noise around 0, whatever the parameters."""
 
     def __init__(self, seed=0, holdout_return=0.03):
-        super().__init__(reject_first=False)
+        super().__init__()
         import random
         self.rng, self.holdout_return = random.Random(seed), holdout_return
 
@@ -286,7 +313,7 @@ def test_anchored_folds_cover_the_in_sample_window_after_the_first_segment():
 
 class StablePromotable(FakeApi):
     def __init__(self, holdout_return):
-        super().__init__(reject_first=False)
+        super().__init__()
         self.holdout_return = holdout_return
 
     async def backtest(self, slug, instrument_id, bar_type, timeframe, parameters, window):
@@ -335,6 +362,98 @@ async def test_a_fragile_optimum_is_flagged_for_the_review(tmp_path):
             return params, full
 
         loop._optimize = remember_best
-        report = await loop.run(REAL)
+        report = await approve_and_resume(api, loop, await loop.run(REAL))
     assert report.robustness["fragile"] is True and report.robustness["worst_retention"] < 0.5
     assert len(report.robustness["results"]) == 2
+
+
+# --- Research approvals: a draft waits for the operator before anything is saved or backtested ----------
+
+async def test_a_draft_waits_for_approval_before_any_save_or_backtest(tmp_path):
+    api = FakeApi()
+    model, _ = scripted()
+    with override_model(FLASH, model), override_model(PRO, model):
+        report = await ResearchLoop(Gateway(), api, reports_dir=tmp_path).run(spec())
+    assert report.status == "PENDING_APPROVAL" and "approval ap1" in report.reason
+    assert api.saved == [] and api.backtests == []  # nothing ran on the draft yet
+    (approval,) = api.approvals.values()
+    assert approval["kind"] == "DRAFT_STRATEGY" and approval["status"] == "PENDING"
+    assert approval["payload"]["report_id"] == report.id and approval["payload"]["draft"]["name"] == "EMA Trend"
+    assert approval["payload"]["spec"]["instrument_id"] == "BTCUSDT.BINANCE"
+
+
+async def test_approval_finishes_the_same_report_in_place(tmp_path):
+    api = FakeApi()
+    model, calls = scripted()
+    with override_model(FLASH, model), override_model(PRO, model):
+        loop = ResearchLoop(Gateway(), api, reports_dir=tmp_path)
+        pending = await loop.run(spec())
+        done = await approve_and_resume(api, loop, pending)
+    assert done.id == pending.id and done.status == "PROMOTE"
+    assert api.saved == ["EMA Trend"] and calls["draft"] == 2  # the drafter ran once per attempt, not after approval
+    assert json.loads((tmp_path / f"{pending.id}.json").read_text())["status"] == "PROMOTE"
+
+
+async def test_a_rejected_approval_never_reaches_the_backtester(tmp_path):
+    import cryptonite_agents.research.queue as queue_mod
+
+    api = FakeApi()
+    model, _ = scripted()
+    with override_model(FLASH, model), override_model(PRO, model):
+        loop = ResearchLoop(Gateway(), api, reports_dir=tmp_path)
+        await loop.run(spec())
+    api.approvals["ap1"]["status"] = "REJECTED"
+
+    class OneItem:
+        def __init__(self, item):
+            self.item = item
+
+        async def blpop(self, key, timeout):
+            return (key, json.dumps(self.item).encode())
+
+    assert await queue_mod.work_once(OneItem({"resume_approval": "ap1"}), loop, block_s=0) is None
+    assert api.saved == [] and api.backtests == []
+
+
+async def test_work_once_resumes_an_approved_draft(tmp_path):
+    import cryptonite_agents.research.queue as queue_mod
+
+    api = FakeApi()
+    model, _ = scripted()
+    with override_model(FLASH, model), override_model(PRO, model):
+        loop = ResearchLoop(Gateway(), api, reports_dir=tmp_path)
+        pending = await loop.run(spec())
+        api.approve("ap1")
+
+        class OneItem:
+            async def blpop(self, key, timeout):
+                return (key, json.dumps({"resume_approval": "ap1"}).encode())
+
+        assert await queue_mod.work_once(OneItem(), loop, block_s=0) == pending.id
+    assert api.saved == ["EMA Trend"]
+
+
+async def test_the_brain_request_waits_for_approval(monkeypatch):
+    import cryptonite_agents.research.tools as tools
+
+    seen = {}
+
+    class Resp:
+        status_code = 201
+
+        def json(self):
+            return {"id": "ap9"}
+
+    def fake_post(url, json, headers, timeout):
+        seen.update(url=url, body=json, headers=headers)
+        return Resp()
+
+    monkeypatch.setenv("CRYPTONITE_AGENT_API_TOKEN", "machine-token")
+    monkeypatch.setattr(tools.httpx, "post", fake_post)
+    out = tools.queue_strategy_research("buy dips", "BTCUSDT.BINANCE", "1h")
+    assert "approval ap9" in out and "nothing is queued" in out
+    assert seen["url"].endswith("/api/v1/research/approvals")
+    assert seen["body"]["kind"] == "QUEUE_RESEARCH"
+    assert seen["body"]["payload"] == {"idea": "buy dips", "instrument_id": "BTCUSDT.BINANCE", "timeframe": "1h"}
+    assert seen["headers"] == {"X-API-Token": "machine-token"}
+
