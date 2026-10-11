@@ -16,16 +16,18 @@ from uuid import uuid4
 import asyncpg
 import pytest
 import redis.asyncio as aioredis
+from connections import DB_URL, REDIS_URL
 from cryptonite_api.main import app
 from cryptonite_backtester_service.worker import BacktestWorker
 from cryptonite_outbox.relay import OutboxRelay
-from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_nautilus_instrument_id, to_spot_instrument_id
+from cryptonite_schemas.identifiers import (
+    to_nautilus_bar_type,
+    to_nautilus_instrument_id,
+    to_spot_instrument_id,
+)
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from httpx import ASGITransport, AsyncClient
 from nautilus_trader.model import Bar, Currency, CurrencyPair, Price, Quantity
-from connections import DB_URL, REDIS_URL
-
-
 
 
 @pytest.mark.asyncio
