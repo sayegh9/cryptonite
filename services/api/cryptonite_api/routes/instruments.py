@@ -9,6 +9,7 @@ from typing import Any
 import asyncpg
 import httpx
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_csrf, require_operator
+from cryptonite_backtester.coverage import instrument_defined
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
 from cryptonite_storage.coordinator import TwoStoreCoordinator
@@ -60,8 +61,9 @@ class OnboardRequest(BaseModel):
     symbol: str
 
 @router.get("")
-async def get_instruments(request: Request) -> list[dict[str, Any]]:
-    """List active trading instruments with precision and metadata."""
+async def get_instruments(request: Request, catalog_only: bool = False) -> list[dict[str, Any]]:
+    """List active trading instruments with precision and metadata. ``catalog_only`` keeps only the ones the
+    backtester can run (the catalog holds their instrument definition)."""
     pool = request.app.state.pool
     rows = await pool.fetch(
         """
@@ -72,6 +74,9 @@ async def get_instruments(request: Request) -> list[dict[str, Any]]:
         ORDER BY raw_symbol ASC;
         """
     )
+    if catalog_only:
+        catalog = os.environ.get("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog")
+        rows = [r for r in rows if instrument_defined(catalog, r["instrument_id"])]
 
     return [
         {

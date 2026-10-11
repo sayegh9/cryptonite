@@ -29,8 +29,9 @@ from connections import DB_URL, REDIS_URL
 
 
 @pytest.mark.asyncio
-async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path, operator_auth):
+async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path, operator_auth, monkeypatch):
     cat_dir = tmp_path / "nautilus_catalog"
+    monkeypatch.setenv("NAUTILUS_CATALOG_PATH", str(cat_dir))  # the API's window check reads this catalog
     art_dir = tmp_path / "backtest_artifacts"
     mgr = NautilusCatalogManager(cat_dir)
 
