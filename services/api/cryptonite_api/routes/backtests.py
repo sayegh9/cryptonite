@@ -1,5 +1,6 @@
 """Backtest execution, results inspection, paginated trades, and comparison endpoints."""
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ from uuid import UUID, uuid4
 
 import duckdb
 from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE
+from cryptonite_backtester.coverage import instrument_defined, window_problem
 from cryptonite_backtester.execution_profiles import VALID_PROFILES, resolve_execution_profile
 from cryptonite_backtester.runner import BacktestRunRequest, compute_run_config_hash
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -66,6 +68,10 @@ async def create_backtest_run(
             status_code=400,
             detail="evaluation_start_ns must be strictly less than evaluation_end_ns",
         )
+
+    problem = await asyncio.to_thread(window_check, req)
+    if problem:
+        raise HTTPException(status_code=422, detail=f"No data for this window: {problem}")
 
     # Locate active strategy version
     strat_row = await pool.fetchrow(
@@ -287,6 +293,34 @@ async def compare_backtest_runs(
 _BAR_STEP_S = {"MINUTE": 60, "HOUR": 3_600, "DAY": 86_400}
 
 
+def catalog_history(bar_type: str) -> tuple[tuple[int, int] | None, int]:
+    """Contiguous catalog history and bar step (ns) of a bar type; raises 400 for an unsupported bar type."""
+    from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
+
+    parts = bar_type.rsplit("-", 4)  # <instrument>-<n>-<UNIT>-LAST-EXTERNAL
+    if len(parts) != 5 or not parts[1].isdigit() or parts[2] not in _BAR_STEP_S:
+        raise HTTPException(status_code=400, detail=f"Unsupported bar_type '{bar_type}'.")
+    step_ns = int(parts[1]) * _BAR_STEP_S[parts[2]] * 1_000_000_000
+    mgr = NautilusCatalogManager(os.environ.get("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog"))
+    try:
+        intervals = [(int(s), int(e)) for s, e in mgr.get_intervals(identifier=bar_type)]
+    except Exception:  # no data for this bar type yet
+        intervals = []
+    return contiguous_history(intervals, step_ns), step_ns
+
+
+def window_check(req: "CreateBacktestRequest") -> str | None:
+    """The 422 reason for a window the catalog cannot supply, or None (runs in a worker thread: catalog I/O)."""
+    catalog = os.environ.get("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog")
+    history, step_ns = catalog_history(req.bar_type)
+    return window_problem(
+        instrument_id=req.instrument_id, bar_type=req.bar_type,
+        instrument_defined=instrument_defined(catalog, req.instrument_id),
+        history=history, step_ns=step_ns,
+        window_start_ns=req.warmup_start_ns, window_end_ns=req.evaluation_end_ns,
+    )
+
+
 def contiguous_history(intervals: list[tuple[int, int]], step_ns: int) -> tuple[int, int] | None:
     """(start, end) of the run of catalog intervals that ends at the newest bar, joining intervals whose
     gap is at most one bar step. File-level only: gaps inside a file are the backtest cadence check's job."""
@@ -305,18 +339,7 @@ def contiguous_history(intervals: list[tuple[int, int]], step_ns: int) -> tuple[
 async def catalog_coverage(bar_type: str = Query(..., min_length=1, max_length=128)) -> dict[str, Any]:
     """Contiguous Nautilus catalog history of a bar type (R5.0: the research loop refuses a spec that
     needs more history than this before it spends anything)."""
-    from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
-
-    parts = bar_type.rsplit("-", 4)  # <instrument>-<n>-<UNIT>-LAST-EXTERNAL
-    if len(parts) != 5 or not parts[1].isdigit() or parts[2] not in _BAR_STEP_S:
-        raise HTTPException(status_code=400, detail=f"Unsupported bar_type '{bar_type}'.")
-    step_ns = int(parts[1]) * _BAR_STEP_S[parts[2]] * 1_000_000_000
-    mgr = NautilusCatalogManager(os.environ.get("NAUTILUS_CATALOG_PATH", "/app/data/nautilus_catalog"))
-    try:
-        intervals = [(int(s), int(e)) for s, e in mgr.get_intervals(identifier=bar_type)]
-    except Exception:  # no data for this bar type yet
-        intervals = []
-    merged = contiguous_history(intervals, step_ns)
+    merged, _ = catalog_history(bar_type)
     return {"bar_type": bar_type, "start_ns": merged[0] if merged else None, "end_ns": merged[1] if merged else None,
             "days": round((merged[1] - merged[0]) / 86_400e9, 2) if merged else 0.0}
 

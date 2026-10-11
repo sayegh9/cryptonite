@@ -147,6 +147,15 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     // 4. Centralized Mock for all /api/v1/backtests* endpoints using regex
     await page.route(/\/api\/v1\/backtests/, async (route) => {
       const url = route.request().url();
+      if (url.includes("/coverage")) {
+        // Catalog history of the bar type: the run window ends at its newest bar
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ bar_type: "BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL", start_ns: 0, end_ns: Date.UTC(2026, 9, 11) * 1_000_000, days: 1 }),
+        });
+        return;
+      }
       if (url.includes("/compare")) {
         await route.fulfill({
           status: 200,
@@ -370,5 +379,29 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByLabel("New strategy")).toBeVisible();
     expect(posted).toHaveLength(1);
     expect(JSON.parse(posted[0]).python_code).toBe("import os\n");
+  });
+  test("backtest window ends at the newest catalog bar, not at now", async ({ page }) => {
+    // The catalog's newest bar is well before today: a run must end there, or the API refuses the window
+    const catalogEndNs = Date.UTC(2026, 9, 1) * 1_000_000;
+    await page.route("**/api/v1/backtests/coverage*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ bar_type: "BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL", start_ns: 0, end_ns: catalogEndNs, days: 1 }),
+      });
+    });
+    const payloads: any[] = [];
+    await page.route("**/api/v1/backtests", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      payloads.push(JSON.parse(route.request().postData() ?? "{}"));
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: "run-coverage" }) });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByRole("button", { name: /Run Quantitative Backtest/ }).click();
+
+    await expect.poll(() => payloads.length).toBe(1);
+    expect(payloads[0].evaluation_end_ns).toBe(catalogEndNs);
   });
 });

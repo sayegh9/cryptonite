@@ -20,8 +20,9 @@ def db_url():
         yield url
 
 
-async def test_generated_strategy_is_validated_saved_and_backtested_in_the_sandbox(tmp_path: Path, db_url, operator_auth):
+async def test_generated_strategy_is_validated_saved_and_backtested_in_the_sandbox(tmp_path: Path, db_url, operator_auth, monkeypatch):
     cat_dir, art_dir = tmp_path / "nautilus_catalog", tmp_path / "artifacts"
+    monkeypatch.setenv("NAUTILUS_CATALOG_PATH", str(cat_dir))  # the API's window check reads this catalog
     inst, bar_type, warmup, start, end = _setup_warmup_test_catalog(cat_dir)
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=4)
     app.state.pool = pool
