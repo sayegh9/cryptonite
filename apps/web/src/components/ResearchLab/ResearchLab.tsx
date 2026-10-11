@@ -13,6 +13,7 @@ import { TradesTable } from "./TradesTable";
 import { MultiRunComparator } from "./MultiRunComparator";
 import { ManifestModal } from "./ManifestModal";
 import { StrategyManagerModal } from "./StrategyManagerModal";
+import { ResearchReportsModal } from "./ResearchReportsModal";
 import { LiveVsBacktestPanel } from "./LiveVsBacktestPanel";
 import {
   Play,
@@ -50,6 +51,7 @@ export const ResearchLab: React.FC = () => {
   const [selectedTrade, setSelectedTrade] = useState<BacktestTrade | null>(null);
   const [isManifestOpen, setIsManifestOpen] = useState<boolean>(false);
   const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
+  const [isReportsOpen, setIsReportsOpen] = useState<boolean>(false);
 
   const [instruments, setInstruments] = useState<any[]>([]);
 
@@ -284,6 +286,14 @@ export const ResearchLab: React.FC = () => {
               <label className="text-2xs text-zinc-400 uppercase tracking-wider font-bold">
                 Target Strategy
               </label>
+              <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => setIsReportsOpen(true)}
+                className="text-2xs text-zinc-300 hover:text-white font-mono bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded px-2 py-0.5"
+              >
+                Reports
+              </button>
               <button
                 type="button"
                 onClick={() => setIsManagerOpen(true)}
@@ -293,6 +303,7 @@ export const ResearchLab: React.FC = () => {
                 <Layers className="w-3 h-3" />
                 <span>Manage</span>
               </button>
+              </div>
             </div>
             <select
               value={selectedSlug}
@@ -704,6 +715,9 @@ export const ResearchLab: React.FC = () => {
           artifactManifest={activeRun.results.artifact_manifest || {}}
         />
       )}
+
+      {/* Research Reports Modal */}
+      {isReportsOpen && <ResearchReportsModal onClose={() => setIsReportsOpen(false)} />}
 
       {/* Strategy Manager Modal */}
       {isManagerOpen && (

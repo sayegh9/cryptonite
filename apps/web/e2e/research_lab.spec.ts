@@ -352,6 +352,40 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("Alpha vs Hold")).toBeVisible();
     await expect(page.getByText("+1.40%")).toBeVisible();
   });
+  test("research reports list shows status and expands to the reviewer's reason", async ({ page }) => {
+    await page.route("**/api/v1/research/reports*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          reports: [{
+            id: "rep-1",
+            idea: "Buy XRP dips when RSI recovers",
+            status: "REJECT",
+            reason: "overfitting guard: in-sample Sharpe far above out-of-sample",
+            strategy_slug: "ai-gen-0001",
+            strategy_name: "XRP dip buyer",
+            in_sample: { total_return: 0.12, sharpe_ratio: 1.8 },
+            out_of_sample: { total_return: -0.02, sharpe_ratio: -0.3 },
+            cost_usd: 0.42,
+            created_at: "2026-10-11T10:00:00Z",
+            dsr: 0.2,
+            holdout: null,
+            robustness: { worst_retention: 0.4 },
+          }],
+        }),
+      });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByRole("button", { name: "Reports", exact: true }).click();
+
+    await expect(page.getByText("Buy XRP dips when RSI recovers")).toBeVisible();
+    await expect(page.getByText("REJECT", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: /Buy XRP dips when RSI recovers/ }).click();
+    await expect(page.getByText("overfitting guard: in-sample Sharpe far above out-of-sample")).toBeVisible();
+  });
   test("backtest window ends at the newest catalog bar, not at now", async ({ page }) => {
     // The catalog's newest bar is well before today: a run must end there, or the API refuses the window
     const catalogEndNs = Date.UTC(2026, 9, 1) * 1_000_000;
