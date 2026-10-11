@@ -343,11 +343,11 @@ export const ResearchLab: React.FC = () => {
           {/* Settings Grid */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Instrument</label>
+              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Backtest instrument</label>
               {instruments.length > 0 ? (
                 <select
                   value={instrumentId}
-                  aria-label="Instrument"
+                  aria-label="Backtest instrument"
                   onChange={(e) => setInstrumentId(e.target.value)}
                   className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
                 >
@@ -361,7 +361,7 @@ export const ResearchLab: React.FC = () => {
                 <input
                   type="text"
                   value={instrumentId}
-                  aria-label="Instrument"
+                  aria-label="Backtest instrument"
                   onChange={(e) => setInstrumentId(e.target.value)}
                   placeholder="e.g. BTCUSDT.BINANCE"
                   className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
