@@ -147,6 +147,15 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     // 4. Centralized Mock for all /api/v1/backtests* endpoints using regex
     await page.route(/\/api\/v1\/backtests/, async (route) => {
       const url = route.request().url();
+      if (url.includes("/coverage")) {
+        // Catalog history of the bar type: the run window ends at its newest bar
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ bar_type: "BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL", start_ns: 0, end_ns: Date.UTC(2026, 9, 11) * 1_000_000, days: 1 }),
+        });
+        return;
+      }
       if (url.includes("/compare")) {
         await route.fulfill({
           status: 200,
