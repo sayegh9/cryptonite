@@ -58,6 +58,20 @@ class ResearchApiClient:
         """Contiguous catalog history for a bar type: {"bar_type", "start_ns", "end_ns"} (R5.0)."""
         return await self._request("GET", "/backtests/coverage", params={"bar_type": bar_type})
 
+    async def validate_strategy(self, python_code: str) -> list[str]:
+        """The API's code check without saving: the violations (empty when the code is allowed)."""
+        body = await self._request("POST", "/strategies/validate", json={"python_code": python_code})
+        return [str(v) for v in body.get("violations", [])]
+
+    async def request_approval(self, kind: str, summary: str, payload: dict[str, Any]) -> str:
+        """Ask the operator to approve a draft or a queued idea; returns the approval id."""
+        body = await self._request("POST", "/research/approvals", json={
+            "kind": kind, "summary": summary, "payload": payload})
+        return str(body["id"])
+
+    async def get_approval(self, approval_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/research/approvals/{approval_id}")
+
     async def save_strategy(self, name: str, description: str, python_code: str) -> dict[str, Any]:
         return await self._request("POST", "/strategies", json={
             "name": name, "description": description, "python_code": python_code,

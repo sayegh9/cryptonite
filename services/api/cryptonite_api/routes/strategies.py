@@ -61,6 +61,18 @@ class CreateStrategyRequest(BaseModel):
     description: str
     python_code: str
 
+class ValidateStrategyRequest(BaseModel):
+    python_code: str
+
+
+@router.post("/validate", dependencies=OPERATOR_WRITE)
+async def validate_strategy(req: ValidateStrategyRequest) -> dict[str, Any]:
+    """The create check without saving: lets the research loop fix a draft before asking the operator to approve it."""
+    validation = validate_strategy_source(req.python_code)
+    violations = validation.violations if not validation.ok else resolve_imports(req.python_code)
+    return {"ok": not violations, "violations": violations}
+
+
 @router.post("", dependencies=OPERATOR_WRITE)
 async def create_strategy(req: CreateStrategyRequest, request: Request):
     pool = request.app.state.pool

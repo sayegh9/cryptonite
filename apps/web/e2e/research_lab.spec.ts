@@ -352,6 +352,94 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByText("Alpha vs Hold")).toBeVisible();
     await expect(page.getByText("+1.40%")).toBeVisible();
   });
+  test("research approvals: a waiting draft is shown and approving it sends the operator's decision", async ({ page }) => {
+    const decisions: string[] = [];
+    let pending = [{
+      id: "ap-draft-1",
+      kind: "DRAFT_STRATEGY",
+      status: "PENDING",
+      summary: "Draft 'EMA Trend' for: buy dips",
+      payload: { report_id: "rep-1", draft: { name: "EMA Trend", description: "trend", python_code: "class X: pass" } },
+      requested_by: "machine:research",
+      created_at: "2026-10-11T10:00:00Z",
+    }];
+    await page.route("**/api/v1/research/approvals?*", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ approvals: pending }) });
+    });
+    await page.route("**/api/v1/research/approvals/*/decision", async (route) => {
+      decisions.push(JSON.parse(route.request().postData() ?? "{}").decision);
+      pending = [];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "APPROVED" }) });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByRole("button", { name: "Approvals", exact: true }).click();
+
+    await expect(page.getByText("Draft 'EMA Trend' for: buy dips")).toBeVisible();
+    await page.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect.poll(() => decisions.length).toBe(1);
+    expect(decisions[0]).toBe("APPROVE");
+    await expect(page.getByText("No research waiting for approval.")).toBeVisible();
+  });
+  test("backtest window ends at the newest catalog bar, not at now", async ({ page }) => {
+    // The catalog's newest bar is well before today: a run must end there, or the API refuses the window
+    const catalogEndNs = Date.UTC(2026, 9, 1) * 1_000_000;
+    await page.route("**/api/v1/backtests/coverage*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ bar_type: "BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL", start_ns: 0, end_ns: catalogEndNs, days: 1 }),
+      });
+    });
+    const payloads: any[] = [];
+    await page.route("**/api/v1/backtests", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      payloads.push(JSON.parse(route.request().postData() ?? "{}"));
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: "run-coverage" }) });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByRole("button", { name: /Run Quantitative Backtest/ }).click();
+
+    await expect.poll(() => payloads.length).toBe(1);
+    expect(payloads[0].evaluation_end_ns).toBe(catalogEndNs);
+  });
+  test("research reports list shows status and expands to the reviewer's reason", async ({ page }) => {
+    await page.route("**/api/v1/research/reports*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          reports: [{
+            id: "rep-1",
+            idea: "Buy XRP dips when RSI recovers",
+            status: "REJECT",
+            reason: "overfitting guard: in-sample Sharpe far above out-of-sample",
+            strategy_slug: "ai-gen-0001",
+            strategy_name: "XRP dip buyer",
+            in_sample: { total_return: 0.12, sharpe_ratio: 1.8 },
+            out_of_sample: { total_return: -0.02, sharpe_ratio: -0.3 },
+            cost_usd: 0.42,
+            created_at: "2026-10-11T10:00:00Z",
+            dsr: 0.2,
+            holdout: null,
+            robustness: { worst_retention: 0.4 },
+          }],
+        }),
+      });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByRole("button", { name: "Reports", exact: true }).click();
+
+    await expect(page.getByText("Buy XRP dips when RSI recovers")).toBeVisible();
+    await expect(page.getByText("REJECT", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: /Buy XRP dips when RSI recovers/ }).click();
+    await expect(page.getByText("overfitting guard: in-sample Sharpe far above out-of-sample")).toBeVisible();
+  });
   test("strategy manager creates a strategy and shows the validator's violations", async ({ page }) => {
     // The validator rejects the code: the create form must show the violations and not close
     const posted: string[] = [];
@@ -379,29 +467,5 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     await expect(page.getByLabel("New strategy")).toBeVisible();
     expect(posted).toHaveLength(1);
     expect(JSON.parse(posted[0]).python_code).toBe("import os\n");
-  });
-  test("backtest window ends at the newest catalog bar, not at now", async ({ page }) => {
-    // The catalog's newest bar is well before today: a run must end there, or the API refuses the window
-    const catalogEndNs = Date.UTC(2026, 9, 1) * 1_000_000;
-    await page.route("**/api/v1/backtests/coverage*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ bar_type: "BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL", start_ns: 0, end_ns: catalogEndNs, days: 1 }),
-      });
-    });
-    const payloads: any[] = [];
-    await page.route("**/api/v1/backtests", async (route) => {
-      if (route.request().method() !== "POST") return route.fallback();
-      payloads.push(JSON.parse(route.request().postData() ?? "{}"));
-      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: "run-coverage" }) });
-    });
-
-    await page.goto("/");
-    await page.getByRole("button", { name: "Research Lab" }).click();
-    await page.getByRole("button", { name: /Run Quantitative Backtest/ }).click();
-
-    await expect.poll(() => payloads.length).toBe(1);
-    expect(payloads[0].evaluation_end_ns).toBe(catalogEndNs);
   });
 });
