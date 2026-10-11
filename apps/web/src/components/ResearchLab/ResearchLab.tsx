@@ -81,7 +81,8 @@ export const ResearchLab: React.FC = () => {
     // Fetch available instruments
     const fetchInstruments = async () => {
       try {
-        const res = await fetch("/api/v1/instruments");
+        // Only instruments the backtester can run: the catalog holds their definition
+        const res = await fetch("/api/v1/instruments?catalog_only=true");
         if (res.ok) {
           const data = await res.json();
           setInstruments(data);
@@ -156,14 +157,6 @@ export const ResearchLab: React.FC = () => {
     setRunError(null);
     setSelectedTrade(null);
 
-    const nowMs = Date.now();
-    const evalEndNs = nowMs * 1_000_000;
-    // Evaluation is the lookback window, warmup is an extra 30% before it
-    const lookbackMs = lookbackDays * 24 * 3600 * 1000;
-    const warmupMs = Math.max(lookbackMs * 0.3, 4 * 3600 * 1000); 
-    const evalStartNs = (nowMs - lookbackMs) * 1_000_000;
-    const warmupStartNs = (nowMs - lookbackMs - warmupMs) * 1_000_000;
-
     const timeframeMap: Record<string, string> = {
       "1m": "1-MINUTE",
       "5m": "5-MINUTE",
@@ -175,6 +168,30 @@ export const ResearchLab: React.FC = () => {
     };
     const barTypeSuffix = timeframeMap[timeframe] || "1-MINUTE";
     const bar_type = `${instrumentId}-${barTypeSuffix}-LAST-EXTERNAL`;
+
+    // The window ends at the newest bar the catalog holds (not "now": a window past the data has nothing to run on)
+    let endMs = Date.now();
+    try {
+      const covRes = await fetch(`/api/v1/backtests/coverage?bar_type=${encodeURIComponent(bar_type)}`, { credentials: "include" });
+      if (covRes.ok) {
+        const cov = await covRes.json();
+        if (cov.end_ns == null) {
+          setRunError(`The catalog has no bars for ${bar_type}.`);
+          setRunning(false);
+          return;
+        }
+        endMs = Math.min(endMs, Math.floor(cov.end_ns / 1_000_000));
+      }
+    } catch {
+      // Coverage unknown: the API still checks the window when the run is submitted
+    }
+    const nowMs = endMs;
+    const evalEndNs = nowMs * 1_000_000;
+    // Evaluation is the lookback window, warmup is an extra 30% before it
+    const lookbackMs = lookbackDays * 24 * 3600 * 1000;
+    const warmupMs = Math.max(lookbackMs * 0.3, 4 * 3600 * 1000);
+    const evalStartNs = (nowMs - lookbackMs) * 1_000_000;
+    const warmupStartNs = (nowMs - lookbackMs - warmupMs) * 1_000_000;
 
     const payload = {
       strategy_slug: selectedSlug,
@@ -458,7 +475,7 @@ export const ResearchLab: React.FC = () => {
                 <AlertTriangle className="w-3.5 h-3.5 flex-none mt-0.5" />
                 <span>{runError}</span>
               </div>
-              {runError.includes("No bar data found") && (
+              {(runError.includes("No bar data found") || runError.includes("No data for this window")) && (
                 <button
                   onClick={async () => {
                     try {
