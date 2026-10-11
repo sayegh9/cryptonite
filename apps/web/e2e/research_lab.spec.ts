@@ -373,4 +373,28 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     expect(decisions[0]).toBe("APPROVE");
     await expect(page.getByText("No research waiting for approval.")).toBeVisible();
   });
+  test("backtest window ends at the newest catalog bar, not at now", async ({ page }) => {
+    // The catalog's newest bar is well before today: a run must end there, or the API refuses the window
+    const catalogEndNs = Date.UTC(2026, 9, 1) * 1_000_000;
+    await page.route("**/api/v1/backtests/coverage*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ bar_type: "BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL", start_ns: 0, end_ns: catalogEndNs, days: 1 }),
+      });
+    });
+    const payloads: any[] = [];
+    await page.route("**/api/v1/backtests", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      payloads.push(JSON.parse(route.request().postData() ?? "{}"));
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ id: "run-coverage" }) });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: "Research Lab" }).click();
+    await page.getByRole("button", { name: /Run Quantitative Backtest/ }).click();
+
+    await expect.poll(() => payloads.length).toBe(1);
+    expect(payloads[0].evaluation_end_ns).toBe(catalogEndNs);
+  });
 });
