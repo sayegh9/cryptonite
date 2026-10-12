@@ -11,9 +11,12 @@ async function openLanding(page: Page) {
   await expect(page.getByRole("heading", { name: "Execution Kill-Switch · PAPER" })).toBeVisible();
 }
 
-test("an unreadable PAPER kill switch shows UNKNOWN, never ARMED", async ({ page }) => {
+test("a missing PAPER kill-switch row shows UNKNOWN, never ARMED", async ({ page }) => {
   // Everything else the page asks for fails fast, so only the kill-switch status matters here
   await page.route("**/api/v1/**", (route) => route.fulfill({ status: 503, json: { detail: "offline" } }));
+  await page.route("**/api/v1/control/kill-switch/status*", (route) =>
+    route.fulfill({ status: 503, json: { detail: "No kill-switch row for PAPER/PAPER-ACCOUNT-001: its state is unknown" } }),
+  );
   await openLanding(page);
   await expect(page.getByText("UNKNOWN", { exact: true })).toBeVisible();
   await expect(page.getByText("ARMED", { exact: true })).toHaveCount(0);

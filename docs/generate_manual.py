@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 
 docs_dir = Path(__file__).parent.resolve()
