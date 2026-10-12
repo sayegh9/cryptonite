@@ -1,6 +1,6 @@
 # ADR 0007: Settings module: scope, change tiers, versioning
 
-- Status: Accepted (2026-10-12, operator decisions below). Design only: the build has not started.
+- Status: Accepted (2026-10-12, operator decisions below). Phase 1 (read-only registry API, PR #72) is built. The Settings UI, per-cycle reads and writes are not.
 - Context: [ADR 0004](0004-mandates-and-autonomy.md) (mandates, autonomy, approvals), [ADR 0006](0006-cross-mandate-exposure-and-configurable-limits.md) (tighten-only risk overrides), [ADR 0002](0002-debate-cost-controls.md) (LLM budget and exit rules), [ADR 0005](0005-local-tier-and-learning.md) (embedding model), [UI critique](../ui-ux-critique-2026-10-12.md) (Settings layout). The universe work is the onboarding plan (`symbol-onboarding-plan-v2.md`, kept outside the repo). Today Settings edits five agents and shows read-only health; the rest sits in env vars, code constants and other screens.
 
 ## Decisions
