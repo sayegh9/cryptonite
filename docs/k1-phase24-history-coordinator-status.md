@@ -28,7 +28,7 @@ Phase 2.4 resolves these limitations by introducing `commit_history_batch` and m
    - **Contiguity-Safe Writes (span-masking fix)**: Bars are validated to lie on the timeframe grid (duplicates / sub-cadence / off-grid close stamps are rejected with `ValueError`) and split into strictly contiguous runs (`split_contiguous_runs`). Each run is committed as its own batch/file, so a catalog file span always exactly equals its contents. Combined with live ingest's single-bar writes, **no catalog span can ever mask an interior missing bar after a partial write**; re-runs of `missing_runs` keep seeing every genuine gap (verified empirically and by regression tests).
    - **Zero Outbox Emission**: Suppresses outbox insertions into `outbox_events` (neither `closed_bar_committed` nor `nautilus:stream:bus` `Bar` events are inserted), preventing live scanner cascades and chart resets.
    - **Safe Checkpoint Widening (pool mode only)**: With a Postgres pool, updates `ingest_checkpoints` using `first_timestamp_ns = LEAST(...)` and `last_timestamp_ns = GREATEST(...)`, cleanly extending the historical boundary backward without rolling back the live watermark.
-   - **Durability & Batch Tracking (pool mode only)**: With a Postgres pool, records and commits batch metadata in `ingest_batches` with payload checksums, tagging each row `origin='history'` and its real `timeframe` (migration 042) so a later `reconcile_pending_batches` replays it through the history path (guard bypassed, right bar type / timeframe / outbox suppression) and settles fully-covered re-runs instead of leaving permanently-pending rows.
+   - **Durability & Batch Tracking (pool mode only)**: With a Postgres pool, records and commits batch metadata in `ingest_batches` with payload checksums, tagging each row `origin='history'` and its real `timeframe` (migration 043) so a later `reconcile_pending_batches` replays it through the history path (guard bypassed, right bar type / timeframe / outbox suppression) and settles fully-covered re-runs instead of leaving permanently-pending rows.
    - **Offline / Pool-Free Support**: `scripts/backfill_history.py` intentionally constructs the coordinator with `pg_pool=None` — it runs without any Postgres connection, so **no `ingest_batches` row and no checkpoint update are made** in that mode. The Nautilus catalog is the source of truth for history; live startup recovery plus a future pooled run keep the checkpoint consistent when the operator chooses to wire Postgres in.
 
 3. **CLI Script Migration (`scripts/backfill_history.py`)**:
@@ -76,7 +76,7 @@ Phase 2.4 resolves these limitations by introducing `commit_history_batch` and m
   - Unchanged: skips generation of `outbox_event_id`/`event_payload` and both outbox inserts when
     `is_history=True`; performs `ingest_batches` status update and `ingest_checkpoints` upsert
     (GREATEST/LEAST) in a single transaction.
-- **Migration `042` (`infra/migrations/versions/042_ingest_batch_origin_timeframe.py`)**:
+- **Migration `043` (`infra/migrations/versions/043_ingest_batch_origin_timeframe.py`)**:
   - Adds `ingest_batches.timeframe TEXT NOT NULL DEFAULT '1m'` and
     `ingest_batches.origin TEXT NOT NULL DEFAULT 'live'` (CHECK `origin IN ('live','history')`).
   - Required for pooled pre-checkpoint history reconciliation to be restart-safe and correct for
@@ -121,7 +121,7 @@ timeframes, mid-grid `missing_runs`):
 ### 3.2 Regression Test Execution
 - **Focused Suite**: `uv run pytest tests/test_history_coordinator.py tests/test_two_store_commit.py tests/test_closed_bar_event.py -v`
   - **Result**: `30 passed` (18 history-coordinator + 12 adjacent coordinator/live-bar tests)
-- **Linter Check**: `uvx "ruff@0.11.10" check packages/storage scripts/backfill_history.py tests/test_history_coordinator.py infra/migrations/versions/042_ingest_batch_origin_timeframe.py`
+- **Linter Check**: `uvx "ruff@0.11.10" check packages/storage scripts/backfill_history.py tests/test_history_coordinator.py infra/migrations/versions/043_ingest_batch_origin_timeframe.py`
   - **Result**: `All checks passed!`
 - **Whitespace / Diff Check**: `git diff --check`
   - **Result**: Clean (zero whitespace or indentation warnings).
@@ -157,7 +157,7 @@ the hardening stacked PR. Findings F1–F7 and dispositions:
 - **F2 — pooled pre-checkpoint history batch stuck `pending` forever (Moderate, latent)**: the live
   recorder's startup `reconcile_pending_batches` replayed history rows through the live path
   (`is_history` never set) under the caller's iteration bar type and hard-coded `1m`. **Fixed**:
-  migration 042 persists `origin` (`'live'|'history'`) and the real `timeframe` on `ingest_batches`;
+  migration 043 persists `origin` (`'live'|'history'`) and the real `timeframe` on `ingest_batches`;
   reconcile replays each row with its own parsed bar type, its own timeframe, and `is_history`
   derived from `origin`; an all-covered history replay returns `""` and is **settled to `committed`**
   instead of lingering. Byproduct live-path fix: pending 1h/15m/4h rows now replay as their own
@@ -178,7 +178,7 @@ the hardening stacked PR. Findings F1–F7 and dispositions:
 
 **Unresolved risks (accepted, outside this PR)**: (a) a reconciled **live** pending row skipped by the
 checkpoint guard still stays `pending` (pre-existing semantics; live behavior intentionally preserved);
-(b) old `pending` rows written before migration 042 take the `DEFAULT 1m/live` — correct for existing
-live ingest, and any pre-042 history rows would not exist yet (history origin ships with this PR);
-(c) operators must apply migration 042 before deploying the new ingest binary so `reconcile_pending_batches`
+(b) old `pending` rows written before migration 043 take the `DEFAULT 1m/live` — correct for existing
+live ingest, and any pre-043 history rows would not exist yet (history origin ships with this PR);
+(c) operators must apply migration 043 before deploying the new ingest binary so `reconcile_pending_batches`
 can read the new columns — standard migration-before-deploy sequencing.

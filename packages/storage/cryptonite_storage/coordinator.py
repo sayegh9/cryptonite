@@ -645,7 +645,7 @@ class TwoStoreCoordinator:
     async def reconcile_pending_batches(self, bar_type: BarType) -> int:
         """Scan and reconcile uncommitted batches on startup.
 
-        Each pending row carries its own ``timeframe`` and ``origin`` (added with migration 042), so
+        Each pending row carries its own ``timeframe`` and ``origin`` (added with migration 043), so
         a pre-checkpoint history batch is replayed with ``is_history=True``: the live checkpoint
         guard stays bypassed, no outbox events are emitted, and the row's real timeframe / bar_type
         are used even when more than one timeframe produced pending rows. Rows whose replay returns no
