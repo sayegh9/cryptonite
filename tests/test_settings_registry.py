@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import pytest
 from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD
 from cryptonite_api.routes import settings as settings_route
-from cryptonite_api.routes.settings import RegistryWriteRequest, get_settings_registry, update_registry_setting
+from cryptonite_api.routes.settings import (
+    RegistryWriteRequest,
+    get_settings_registry,
+    update_registry_setting,
+)
 from cryptonite_api.settings_registry import (
     REGISTRY,
     WRITABLE_TIERS,
@@ -22,7 +26,6 @@ from cryptonite_api.settings_registry import (
     validate_value,
     write_needs_totp,
 )
-from fastapi import HTTPException
 from cryptonite_execution.risk_limits import (
     ACCOUNT_BACKSTOP_DRAWDOWN_PCT,
     DEFAULTS,
@@ -32,6 +35,7 @@ from cryptonite_execution.risk_limits import (
 from cryptonite_orchestrator import ops_monitor
 from cryptonite_scanner.models import MAX_ACTIVE_SPECS
 from cryptonite_scanner_service import exit_monitor as em
+from fastapi import HTTPException
 
 
 def by_key(key):
