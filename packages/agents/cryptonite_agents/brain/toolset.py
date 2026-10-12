@@ -16,6 +16,7 @@ from typing import Annotated, Literal
 
 from cryptonite_agents.brain.widgets import MAX_ALLOCATION_PCT, MIN_ALLOCATION_PCT, OrderProposal
 from cryptonite_agents.gateway import RiskClass, tool
+from cryptonite_agents.research.tools import QUEUE_RESEARCH
 from cryptonite_agents.tools import (
     COMPARE_LIVE_VS_BACKTEST,
     LIVE_MARKET_DATA,
@@ -75,5 +76,6 @@ BRAIN_TOOLS = (
     show_price_chart,
     explain_backtest,
     STAGE_DEBATE_PROPOSAL,
+    QUEUE_RESEARCH,
     propose_order,
 )

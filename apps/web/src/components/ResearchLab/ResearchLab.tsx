@@ -13,6 +13,8 @@ import { TradesTable } from "./TradesTable";
 import { MultiRunComparator } from "./MultiRunComparator";
 import { ManifestModal } from "./ManifestModal";
 import { StrategyManagerModal } from "./StrategyManagerModal";
+import { ResearchApprovalsModal } from "./ResearchApprovalsModal";
+import { ResearchReportsModal } from "./ResearchReportsModal";
 import { LiveVsBacktestPanel } from "./LiveVsBacktestPanel";
 import {
   Play,
@@ -50,6 +52,8 @@ export const ResearchLab: React.FC = () => {
   const [selectedTrade, setSelectedTrade] = useState<BacktestTrade | null>(null);
   const [isManifestOpen, setIsManifestOpen] = useState<boolean>(false);
   const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
+  const [isApprovalsOpen, setIsApprovalsOpen] = useState<boolean>(false);
+  const [isReportsOpen, setIsReportsOpen] = useState<boolean>(false);
 
   const [instruments, setInstruments] = useState<any[]>([]);
 
@@ -81,7 +85,8 @@ export const ResearchLab: React.FC = () => {
     // Fetch available instruments
     const fetchInstruments = async () => {
       try {
-        const res = await fetch("/api/v1/instruments");
+        // Only instruments the backtester can run: the catalog holds their definition
+        const res = await fetch("/api/v1/instruments?catalog_only=true");
         if (res.ok) {
           const data = await res.json();
           setInstruments(data);
@@ -156,14 +161,6 @@ export const ResearchLab: React.FC = () => {
     setRunError(null);
     setSelectedTrade(null);
 
-    const nowMs = Date.now();
-    const evalEndNs = nowMs * 1_000_000;
-    // Evaluation is the lookback window, warmup is an extra 30% before it
-    const lookbackMs = lookbackDays * 24 * 3600 * 1000;
-    const warmupMs = Math.max(lookbackMs * 0.3, 4 * 3600 * 1000); 
-    const evalStartNs = (nowMs - lookbackMs) * 1_000_000;
-    const warmupStartNs = (nowMs - lookbackMs - warmupMs) * 1_000_000;
-
     const timeframeMap: Record<string, string> = {
       "1m": "1-MINUTE",
       "5m": "5-MINUTE",
@@ -175,6 +172,30 @@ export const ResearchLab: React.FC = () => {
     };
     const barTypeSuffix = timeframeMap[timeframe] || "1-MINUTE";
     const bar_type = `${instrumentId}-${barTypeSuffix}-LAST-EXTERNAL`;
+
+    // The window ends at the newest bar the catalog holds (not "now": a window past the data has nothing to run on)
+    let endMs = Date.now();
+    try {
+      const covRes = await fetch(`/api/v1/backtests/coverage?bar_type=${encodeURIComponent(bar_type)}`, { credentials: "include" });
+      if (covRes.ok) {
+        const cov = await covRes.json();
+        if (cov.end_ns == null) {
+          setRunError(`The catalog has no bars for ${bar_type}.`);
+          setRunning(false);
+          return;
+        }
+        endMs = Math.min(endMs, Math.floor(cov.end_ns / 1_000_000));
+      }
+    } catch {
+      // Coverage unknown: the API still checks the window when the run is submitted
+    }
+    const nowMs = endMs;
+    const evalEndNs = nowMs * 1_000_000;
+    // Evaluation is the lookback window, warmup is an extra 30% before it
+    const lookbackMs = lookbackDays * 24 * 3600 * 1000;
+    const warmupMs = Math.max(lookbackMs * 0.3, 4 * 3600 * 1000);
+    const evalStartNs = (nowMs - lookbackMs) * 1_000_000;
+    const warmupStartNs = (nowMs - lookbackMs - warmupMs) * 1_000_000;
 
     const payload = {
       strategy_slug: selectedSlug,
@@ -267,6 +288,21 @@ export const ResearchLab: React.FC = () => {
               <label className="text-2xs text-zinc-400 uppercase tracking-wider font-bold">
                 Target Strategy
               </label>
+              <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => setIsApprovalsOpen(true)}
+                className="text-2xs text-zinc-300 hover:text-white font-mono bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded px-2 py-0.5"
+              >
+                Approvals
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsReportsOpen(true)}
+                className="text-2xs text-zinc-300 hover:text-white font-mono bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded px-2 py-0.5"
+              >
+                Reports
+              </button>
               <button
                 type="button"
                 onClick={() => setIsManagerOpen(true)}
@@ -276,6 +312,7 @@ export const ResearchLab: React.FC = () => {
                 <Layers className="w-3 h-3" />
                 <span>Manage</span>
               </button>
+              </div>
             </div>
             <select
               value={selectedSlug}
@@ -343,11 +380,11 @@ export const ResearchLab: React.FC = () => {
           {/* Settings Grid */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Instrument</label>
+              <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Backtest instrument</label>
               {instruments.length > 0 ? (
                 <select
                   value={instrumentId}
-                  aria-label="Instrument"
+                  aria-label="Backtest instrument"
                   onChange={(e) => setInstrumentId(e.target.value)}
                   className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
                 >
@@ -361,7 +398,7 @@ export const ResearchLab: React.FC = () => {
                 <input
                   type="text"
                   value={instrumentId}
-                  aria-label="Instrument"
+                  aria-label="Backtest instrument"
                   onChange={(e) => setInstrumentId(e.target.value)}
                   placeholder="e.g. BTCUSDT.BINANCE"
                   className="w-full bg-zinc-900 border border-white/5 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-cyan-500 transition-colors"
@@ -458,7 +495,7 @@ export const ResearchLab: React.FC = () => {
                 <AlertTriangle className="w-3.5 h-3.5 flex-none mt-0.5" />
                 <span>{runError}</span>
               </div>
-              {runError.includes("No bar data found") && (
+              {(runError.includes("No bar data found") || runError.includes("No data for this window")) && (
                 <button
                   onClick={async () => {
                     try {
@@ -687,6 +724,11 @@ export const ResearchLab: React.FC = () => {
           artifactManifest={activeRun.results.artifact_manifest || {}}
         />
       )}
+
+      {/* Research Approvals Modal */}
+      {isApprovalsOpen && <ResearchApprovalsModal onClose={() => setIsApprovalsOpen(false)} />}
+      {/* Research Reports Modal */}
+      {isReportsOpen && <ResearchReportsModal onClose={() => setIsReportsOpen(false)} />}
 
       {/* Strategy Manager Modal */}
       {isManagerOpen && (

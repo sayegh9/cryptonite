@@ -217,4 +217,30 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
     // Verify Active chart target reflects BTCUSDT 1m
     await expect(page.locator("text=Active: BTCUSDT (1m)")).toBeVisible();
   });
+  test("order form follows the chart symbol, not the backtest instrument selector", async ({ page }) => {
+    // The operator sidebar hosts the order form; open it before the page loads
+    await page.addInitScript(() => {
+      localStorage.setItem("cryptonite:panel-operator", "true");
+    });
+    const orders: string[] = [];
+    await page.route("**/api/v1/paper/orders", async (route) => {
+      // Only submissions count; list reads (GET) pass through to the app
+      if (route.request().method() !== "POST") return route.continue();
+      orders.push(route.request().postData() ?? "");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ command_id: "test" }) });
+    });
+
+    await page.goto("/?ws=terminal");
+    // Watchlist row opens the profile; "Open Chart" makes ETHUSDT the active chart
+    await page.locator("aside").getByText("Ethereum / Tether").first().click();
+    await page.getByText("Open Chart").first().click();
+    await expect(page.locator("text=Active: ETHUSDT (1m)")).toBeVisible();
+
+    // The order form names the instrument it will submit: the active chart symbol
+    await expect(page.getByLabel("Order instrument")).toHaveText("ETHUSDT.BINANCE");
+    // The backtest selector is a different control with its own name
+    await expect(page.getByLabel("Backtest instrument").first()).toBeAttached();
+    // Nothing was submitted by selecting a symbol
+    expect(orders).toHaveLength(0);
+  });
 });

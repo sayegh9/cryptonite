@@ -16,21 +16,24 @@ from uuid import uuid4
 import asyncpg
 import pytest
 import redis.asyncio as aioredis
+from connections import DB_URL, REDIS_URL
 from cryptonite_api.main import app
 from cryptonite_backtester_service.worker import BacktestWorker
 from cryptonite_outbox.relay import OutboxRelay
-from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_nautilus_instrument_id, to_spot_instrument_id
+from cryptonite_schemas.identifiers import (
+    to_nautilus_bar_type,
+    to_nautilus_instrument_id,
+    to_spot_instrument_id,
+)
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from httpx import ASGITransport, AsyncClient
 from nautilus_trader.model import Bar, Currency, CurrencyPair, Price, Quantity
-from connections import DB_URL, REDIS_URL
-
-
 
 
 @pytest.mark.asyncio
-async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path, operator_auth):
+async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path, operator_auth, monkeypatch):
     cat_dir = tmp_path / "nautilus_catalog"
+    monkeypatch.setenv("NAUTILUS_CATALOG_PATH", str(cat_dir))  # the API's window check reads this catalog
     art_dir = tmp_path / "backtest_artifacts"
     mgr = NautilusCatalogManager(cat_dir)
 

@@ -86,11 +86,11 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
-      INGEST_SYMBOLS: BTCUSDT,ETHUSDT
+      INGEST_SYMBOLS: BTCUSDT,ETHUSDT,XRPUSDT,WLDUSDT
       INGEST_PERP_SYMBOLS: BTCUSDT,ETHUSDT  # futures bookTicker quotes -> <SYM>-PERP.BINANCE (perp order checks/fills)
       # Coalesce spot quotes too: unthrottled BTC spot (~160/s x 3 Redis writes) starved the ingest event loop
       INGEST_SPOT_QUOTE_HZ: "50"
-      INGEST_TIMEFRAMES: 1m,1h
+      INGEST_TIMEFRAMES: 1m,15m,1h,4h
       PORT: 8080
     volumes:
       - ../data:/app/data

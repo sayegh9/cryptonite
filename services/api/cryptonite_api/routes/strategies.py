@@ -1,13 +1,15 @@
 """Strategy registry endpoints."""
 
+import hashlib
 import json
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
+from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_csrf, require_operator
 from cryptonite_strategies.registry import STRATEGY_REGISTRY, list_strategies
 from cryptonite_strategies.validation import resolve_imports, validate_strategy_source
-from cryptonite_api.routes.auth import AUTHED_READ, OPERATOR_WRITE, require_operator, require_csrf
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])
 
@@ -54,13 +56,22 @@ async def ensure_strategies_seeded(pool: Any) -> None:
 
 
 
-from pydantic import BaseModel
-import hashlib
-
 class CreateStrategyRequest(BaseModel):
     name: str
     description: str
     python_code: str
+
+class ValidateStrategyRequest(BaseModel):
+    python_code: str
+
+
+@router.post("/validate", dependencies=OPERATOR_WRITE)
+async def validate_strategy(req: ValidateStrategyRequest) -> dict[str, Any]:
+    """The create check without saving: lets the research loop fix a draft before asking the operator to approve it."""
+    validation = validate_strategy_source(req.python_code)
+    violations = validation.violations if not validation.ok else resolve_imports(req.python_code)
+    return {"ok": not violations, "violations": violations}
+
 
 @router.post("", dependencies=OPERATOR_WRITE)
 async def create_strategy(req: CreateStrategyRequest, request: Request):
@@ -184,23 +195,67 @@ async def get_strategy_by_slug(slug: str, request: Request) -> dict[str, Any]:
     }
 
 
+# Tables whose rows tie a paper instance to its history: an instance with any of these cannot be removed
+INSTANCE_HISTORY_TABLES = ("paper_orders", "paper_positions", "paper_trades", "paper_risk_events")
+
+
+def instance_delete_blockers(instances: list[dict[str, Any]], history: dict[str, int]) -> list[str]:
+    """Why these paper instances cannot be removed with their strategy. ``instances`` are rows with
+    ``instance_id`` and ``status``; ``history`` maps an instance id to its count of trading-history rows.
+    An instance can go only when it is STOPPED and has no history."""
+    blockers = []
+    for inst in instances:
+        iid = inst["instance_id"]
+        if inst["status"] != "STOP":
+            blockers.append(f"instance {iid} is {inst['status']}: stop it first")
+        elif history.get(iid, 0):
+            blockers.append(f"instance {iid} has trading history: it cannot be removed")
+    return blockers
+
+
 @router.delete("/{slug}")
 async def delete_strategy(slug: str, request: Request, _op=Depends(require_operator), _csrf=Depends(require_csrf)):
-    """Delete a custom/AI-generated strategy and its versions."""
+    """Delete a custom/AI-generated strategy and its versions. A stopped paper instance with no trading history
+    that runs this strategy is removed with it (the instance row must go before the version it points to);
+    anything else that still uses the strategy is refused with the reason, nothing is deleted."""
     pool = request.app.state.pool
-    
+
     # Protect built-in core strategies
     if slug in ("rsi-reversal", "ema-cross", "supertrend"):
         raise HTTPException(status_code=400, detail="Cannot delete core system strategies.")
-        
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow("SELECT id FROM strategies WHERE slug = $1", slug)
             if not row:
                 raise HTTPException(status_code=404, detail=f"Strategy '{slug}' not found.")
-                
+
             strat_id = row["id"]
+            version_ids = [r["id"] for r in await conn.fetch(
+                "SELECT id FROM strategy_versions WHERE strategy_id = $1", strat_id)]
+            runs = await conn.fetchval(
+                "SELECT count(*) FROM backtest_runs WHERE strategy_version_id = ANY($1::uuid[])", version_ids)
+            if runs:
+                raise HTTPException(status_code=409, detail=(
+                    f"Strategy '{slug}' has {runs} backtest run(s); they are its history, so it is kept."))
+
+            instances = [dict(r) for r in await conn.fetch(
+                "SELECT instance_id, status FROM paper_strategy_instances WHERE strategy_version_id = ANY($1::uuid[])",
+                version_ids)]
+            history: dict[str, int] = {}
+            for inst in instances:
+                for table in INSTANCE_HISTORY_TABLES:
+                    history[inst["instance_id"]] = history.get(inst["instance_id"], 0) + await conn.fetchval(
+                        f"SELECT count(*) FROM {table} WHERE instance_id = $1", inst["instance_id"])
+            blockers = instance_delete_blockers(instances, history)
+            if blockers:
+                raise HTTPException(status_code=409, detail="; ".join(blockers))
+
+            removed = [inst["instance_id"] for inst in instances]
+            if removed:
+                await conn.execute("DELETE FROM paper_strategy_instances WHERE instance_id = ANY($1::text[])", removed)
             await conn.execute("DELETE FROM strategy_versions WHERE strategy_id = $1", strat_id)
             await conn.execute("DELETE FROM strategies WHERE id = $1", strat_id)
-            
-    return {"status": "success", "message": f"Strategy '{slug}' deleted successfully."}
+
+    return {"status": "success", "message": f"Strategy '{slug}' deleted successfully.",
+            "removed_instances": removed}

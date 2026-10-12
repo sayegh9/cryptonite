@@ -143,7 +143,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
         </button>
       </div>
 
-      <p className="text-2xs font-mono font-bold text-zinc-300">{instrumentId}</p>
+      <p aria-label="Order instrument" className="text-2xs font-mono font-bold text-zinc-300">{instrumentId}</p>
 
       {error && <div className="bg-rose-950/40 border border-rose-900/50 text-rose-400 text-2xs font-mono p-2 rounded" role="alert">{error}</div>}
       {notice && <div className="bg-emerald-950/40 border border-emerald-900/50 text-emerald-400 text-2xs font-mono p-2 rounded" role="status">{notice}</div>}
