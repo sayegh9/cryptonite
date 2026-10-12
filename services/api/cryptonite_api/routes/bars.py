@@ -1,13 +1,31 @@
 """Historical bars serving route using DuckDB and strict 1m-derived resampler."""
 
+import asyncio
 from typing import Any
 
+import polars as pl
 from cryptonite_scanner.resampler import resample_1m_bars
 from cryptonite_storage.queries import AnalyticsQueryEngine
-from cryptonite_api.routes.auth import require_operator, require_csrf
 from fastapi import APIRouter, HTTPException, Query, Request
 
 router = APIRouter(prefix="/api/v1/bars", tags=["bars"])
+
+
+def load_resampled_bars(
+    engine: AnalyticsQueryEngine,
+    symbol: str,
+    timeframe: str,
+    start_ns: int | None,
+    end_ns: int | None,
+) -> pl.DataFrame:
+    """Blocking lake read and resample, run in a worker thread by ``get_bars``.
+
+    Run on the event loop, this read stalled every other request for seconds. redis-py's 5 s socket timeout then
+    failed the session and price reads. A window is filtered by timestamp over every file in the lake: a file's
+    date is its batch's first bar, so the date cannot select files.
+    """
+    df_1m = engine.query_bars_df(symbol=symbol, timeframe="1m", start_ns=start_ns, end_ns=end_ns)
+    return resample_1m_bars(df_1m, timeframe) if not df_1m.is_empty() else df_1m
 
 
 @router.get("")
@@ -27,14 +45,10 @@ async def get_bars(
     start_ns = start_time_ms * 1_000_000 if start_time_ms is not None else None
     end_ns = end_time_ms * 1_000_000 if end_time_ms is not None else None
 
-    # Single-source rule: query 1m base bars from Analytics Lake
-    df_1m = engine.query_bars_df(symbol=sym, timeframe="1m", start_ns=start_ns, end_ns=end_ns)
-    if df_1m.is_empty():
-        return []
-
-    # Resample to target timeframe with strict completeness validation
+    # Single-source rule: query 1m base bars from Analytics Lake, resampled with strict completeness validation.
+    # The read is synchronous, so it runs in a worker thread, off the event loop.
     try:
-        resampled_df = resample_1m_bars(df_1m, tf)
+        resampled_df = await asyncio.to_thread(load_resampled_bars, engine, sym, tf, start_ns, end_ns)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

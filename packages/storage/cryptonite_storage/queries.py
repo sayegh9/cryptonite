@@ -101,11 +101,16 @@ class AnalyticsQueryEngine:
                 END ASC,
                 ts_event_ns DESC, received_at_ns DESC, ingest_batch_id DESC, payload_checksum DESC
         """
+        # One cursor per call: DuckDB connections are not safe for concurrent use, and the API calls this from
+        # worker threads (routes/bars.py).
+        con = self._con.cursor()
         try:
-            arrow_table = self._con.execute(query).to_arrow_table()
+            arrow_table = con.execute(query).to_arrow_table()
             return pl.from_arrow(arrow_table)  # type: ignore
         except duckdb.IOException:
             return pl.DataFrame()
+        finally:
+            con.close()
 
     def count_bars(self, symbol: str, timeframe: str = "1m") -> int:
         """Count total bars present in the Analytics Lake for a symbol/timeframe."""
