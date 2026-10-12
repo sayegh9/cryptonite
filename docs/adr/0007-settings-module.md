@@ -1,6 +1,6 @@
 # ADR 0007: Settings module: scope, change tiers, versioning
 
-- Status: Accepted (2026-10-12, operator decisions below). Built: the read-only registry API (PR #72) and the LLM daily budget write with tier enforcement (`PUT /api/v1/settings/registry/LLM_DAILY_BUDGET_USD`, TOTP to raise). Not built: the Settings UI, per-cycle reads for exit, alert and scanner values, and writes for any other key.
+- Status: Accepted (2026-10-12, operator decisions below). Built: the read-only registry API (PR #72); the LLM daily budget write with tier enforcement and its $1 floor (PR #73); the Platform tab with health warnings (PR #73); and the exit thresholds, stored in the database and read every cycle, with their write path (decision 10). Not built: per-cycle reads for the alert and scanner values, the scanner preset and alert-routing settings, a risk-limit editor in Settings (still in Operator), and writes for the other keys.
 - Context: [ADR 0004](0004-mandates-and-autonomy.md) (mandates, autonomy, approvals), [ADR 0006](0006-cross-mandate-exposure-and-configurable-limits.md) (tighten-only risk overrides), [ADR 0002](0002-debate-cost-controls.md) (LLM budget and exit rules), [ADR 0005](0005-local-tier-and-learning.md) (embedding model), [UI critique](../ui-ux-critique-2026-10-12.md) (Settings layout). The universe work is the onboarding plan (`symbol-onboarding-plan-v2.md`, kept outside the repo). Today Settings edits five agents and shows read-only health; the rest sits in env vars, code constants and other screens.
 
 ## Decisions
@@ -20,6 +20,13 @@
 7. **Fixed guardrails** are shown read-only, each with its source (and never editable): the 25% per-order equity clamp, the 20% account backstop, the 1% minimum order, the mandate ceilings (25% position, 20% hard stop, 5× leverage, perps only at L3), the mandate check before the dispatcher, FAIL_CLOSED for protected trade roles, add-risk approvals timing out to no, reduce-risk approvals proceeding, operator-only kill-switch reset, and gateway-only model access.
 8. **Never editable in the module:** API keys and bot tokens, `ENVIRONMENT`, `ACCOUNT_ID`, cookie flags, and the dev-TOTP bypass flags. The module shows the bypass flags read-only and warns if one is on in PROD.
 9. **No global autonomy switch.** `DEBATE_EXECUTION_MODE` was deleted (ADR 0004 §10). Autonomy is per mandate.
+10. **Exit thresholds are stored and read every cycle.** The five values are rows in `system_settings` (keys `exit.stop_loss_pct`, `exit.trail_activate_pct`, `exit.trail_pct`, `exit.debate_drawdown_pct`, `exit.funding_spike`). The exit monitor reads them at the start of each cycle (every `EXIT_MONITOR_INTERVAL_S`). The `EXIT_*` env vars set only the default for a key with no row. The rules live in `cryptonite_schemas.exit_thresholds`, shared by the monitor and the API:
+    - Bounds per key, and funding has four decimal places; the others have two.
+    - As a set: `trail_pct` must not exceed `trail_activate_pct`, and `debate_drawdown_pct` must be below `stop_loss_pct`. A write that breaks a rule answers 422, and the set is checked with the other keys as stored.
+    - A stored value that does not parse, or a stored set that breaks a rule, is refused as a whole. The monitor keeps the last valid set and logs the problem. A failed read does the same.
+    - For every exit key a lower value makes exits fire sooner, so lowering is free and raising needs TOTP.
+    - The monitor publishes the set it applies in its heartbeat. The registry shows it as "applied now", so a refused write is visible.
+    - Known limitation: the API checks writes against the code defaults, and the monitor falls back to the env defaults. If the two differ, a write can pass the API and be refused by the monitor. The "applied now" value shows that.
 
 ## Phase 1 registry (proposed bounds; current values from code)
 
@@ -29,11 +36,11 @@
 | `risk.max_daily_loss_pct` | 5 | 0 < x ≤ 5 (code ceiling) | hot (ops monitor, ≤ 60 s) | T/L | `risk_limit_overrides`; `RiskLimitsForm` in Operator |
 | `risk.max_order_equity_pct` | 25 | 1 ≤ x ≤ 25 | hot (≤ 60 s) | T/L | same |
 | `risk.cross_mandate_exposure_pct` | 25 | 1 ≤ x ≤ 25 | hot (≤ 60 s) | T/L | same |
-| `exit.stop_loss_pct` | 5 | 0 < x ≤ 20 | restart (hot once the per-cycle read ships) | T/L | env `EXIT_STOP_LOSS_PCT`, read at import |
-| `exit.trail_activate_pct` | 3 | > 0 | restart (hot once the per-cycle read ships) | T/L | env `EXIT_TRAIL_ACTIVATE_PCT`, read at import |
-| `exit.trail_pct` | 2 | 0 < x ≤ trail_activate_pct | restart (hot once the per-cycle read ships) | T/L | env `EXIT_TRAIL_PCT`, read at import |
-| `exit.debate_drawdown_pct` | 2 | 0 < x < stop_loss_pct | restart (hot once the per-cycle read ships) | T/L | env `EXIT_DEBATE_DRAWDOWN_PCT`, read at import |
-| `exit.funding_spike` | 0.0005 | 0 < x ≤ 0.01 | restart (hot once the per-cycle read ships) | T/L | env `EXIT_FUNDING_SPIKE`, read at import |
+| `exit.stop_loss_pct` | 5 | 0.01 ≤ x ≤ 20; above `debate_drawdown_pct` (decision 10) | hot (read each cycle, ≤ 30 s) | T/L | `system_settings` row; env `EXIT_STOP_LOSS_PCT` sets the default |
+| `exit.trail_activate_pct` | 3 | 0.01 ≤ x ≤ 20 | hot (read each cycle, ≤ 30 s) | T/L | `system_settings` row; env `EXIT_TRAIL_ACTIVATE_PCT` sets the default |
+| `exit.trail_pct` | 2 | 0.01 ≤ x ≤ 20; not above `trail_activate_pct` | hot (read each cycle, ≤ 30 s) | T/L | `system_settings` row; env `EXIT_TRAIL_PCT` sets the default |
+| `exit.debate_drawdown_pct` | 2 | 0.01 ≤ x ≤ 20; below `stop_loss_pct` | hot (read each cycle, ≤ 30 s) | T/L | `system_settings` row; env `EXIT_DEBATE_DRAWDOWN_PCT` sets the default |
+| `exit.funding_spike` | 0.0005 | 0.0001 ≤ x ≤ 0.01, four decimals | hot (read each cycle, ≤ 30 s) | T/L | `system_settings` row; env `EXIT_FUNDING_SPIKE` sets the default |
 | `exit.monitor_interval_s` | 30 | 5–300 | restart | Session | env `EXIT_MONITOR_INTERVAL_S` |
 | `alerts.heartbeat_grace_s` | 300 | 60–3600 | restart (hot once read per pass) | T/L | env `HEARTBEAT_ALERT_GRACE_S`, read at import |
 | `alerts.sentiment_stale_s` | 86400 | ≥ 3600 | restart (hot once read per pass) | Session | env `SENTIMENT_STALE_ALERT_S`, read at import |
@@ -43,7 +50,7 @@
 | `universe.*` | `INGEST_*` env | view only | n/a | R | env (see decision 5) |
 
 Notes:
-- Exit and alert values are read at import today. Making them hot means reading them per cycle, which is a small change per service.
+- The exit thresholds are read every cycle (decision 10). The alert and scanner values are still read at import, so they stay `restart` until their readers move.
 - Where a value is marked "to confirm", the build needs to check current behaviour first.
 - The apply modes above match the registry (`settings_registry.py`). The alert-routing and scanner-preset rows are not in the registry yet.
 
@@ -65,7 +72,7 @@ Notes:
 
 ## Consequences
 
-- Phase 1 adds registry endpoints, UI in Settings, and per-cycle reads for the exit and alert values. It adds no migration unless the registry needs one.
+- Phase 1 adds the registry endpoints, the Platform tab, and per-cycle reads for the exit thresholds (done in this PR). Per-cycle reads for the alert and scanner values remain. It adds no migration: the exit values use the existing `system_settings` table.
 - Phase 2's paper-parameter versions need a migration. The next free number is after the migrations in open PRs (the K1 PR takes 043).
 - Every `hot` setting needs a reader that re-reads its value. Every `restart` setting says so in the UI.
 - Tests must cover each tier: the server refuses a loosening without TOTP, and an unversioned paper change.
