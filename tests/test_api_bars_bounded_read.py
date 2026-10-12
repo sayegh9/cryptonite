@@ -132,14 +132,15 @@ def test_the_route_serves_the_newest_bars_and_rejects_an_unsupported_timeframe(l
 
 
 def test_a_batch_that_spans_days_after_an_outage_is_served_in_full_by_a_window(tmp_path):
-    # Recovery can merge a REST page with buffered live bars: a file dated day 0 can hold bars three days later.
-    # A window over those later bars must still return them, so reads cannot prune by the file's date.
-    _write_batch(tmp_path, "BTCUSDT", DAY0, 1000, "btc-long")
-    _write_batch(tmp_path, "BTCUSDT", DAY0 + 3 * DAY, 120, "btc-late")
+    # Recovery can merge a REST page with buffered live bars, so ONE batch can start on day 0 and run three days on.
+    # A window over its late bars must still return them: the read cannot select files by their date.
+    minutes = 3 * 24 * 60 + 121
+    _write_batch(tmp_path, "BTCUSDT", DAY0, minutes, "btc-span")
     engine = AnalyticsQueryEngine(tmp_path)
     start, end = DAY0 + 3 * DAY, DAY0 + 3 * DAY + 120 * MIN
     unpruned = engine.query_bars_df(symbol="BTCUSDT", timeframe="1m")
     expected = unpruned.filter((pl.col("ts_event_ns") >= start) & (pl.col("ts_event_ns") <= end))
     windowed = engine.query_bars_df(symbol="BTCUSDT", timeframe="1m", start_ns=start, end_ns=end)
-    assert windowed.height == expected.height > 0
+    assert expected.height == 121
+    assert windowed.height == expected.height
     _assert_same_bars(windowed.to_dicts(), expected.to_dicts())

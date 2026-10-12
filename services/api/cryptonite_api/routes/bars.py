@@ -21,7 +21,8 @@ def load_resampled_bars(
     """Blocking lake read and resample, run in a worker thread by ``get_bars``.
 
     Run on the event loop, this read stalled every other request for seconds. redis-py's 5 s socket timeout then
-    failed the session and price reads. A window reads only the partitions that can hold it.
+    failed the session and price reads. A window is filtered by timestamp over every file in the lake: a file's
+    date is its batch's first bar, so the date cannot select files.
     """
     df_1m = engine.query_bars_df(symbol=symbol, timeframe="1m", start_ns=start_ns, end_ns=end_ns)
     return resample_1m_bars(df_1m, timeframe) if not df_1m.is_empty() else df_1m
