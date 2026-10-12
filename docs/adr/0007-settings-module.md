@@ -1,6 +1,6 @@
 # ADR 0007: Settings module: scope, change tiers, versioning
 
-- Status: Accepted (2026-10-12, operator decisions below). Phase 1 is built. Built: the read-only registry API (PR #72); the LLM daily budget write with its $1 floor, the Platform tab and the health warnings (PR #73); the exit thresholds, stored and read every cycle (PR #74); and the alert, spec-cap and monitor-interval values, read every cycle (this PR, decision 11). Two Phase 1 rows were settled differently from the plan: scanner presets are managed as scan specs, and alert routing is shown read-only (decisions 12 and 13). Not built: writes for the other keys, and the risk-limit editor (still in Operator, linked from Settings).
+- Status: Accepted (2026-10-12, operator decisions below). Phase 1 is built (PRs #72–#75). Phase 2 is partly built: the per-role model routing editor and the operator session and login policy (this PR, decisions 14 and 15). Not built, and why, in the Phase 2 list: paper parameters (need a migration number, held by the open K1 PR), per-symbol precision (overlaps D6, PR #49), retention and the free-disk threshold (operator decisions), and the universe write path (onboarding PRs).
 - Context: [ADR 0004](0004-mandates-and-autonomy.md) (mandates, autonomy, approvals), [ADR 0006](0006-cross-mandate-exposure-and-configurable-limits.md) (tighten-only risk overrides), [ADR 0002](0002-debate-cost-controls.md) (LLM budget and exit rules), [ADR 0005](0005-local-tier-and-learning.md) (embedding model), [UI critique](../ui-ux-critique-2026-10-12.md) (Settings layout). The universe work is the onboarding plan (`symbol-onboarding-plan-v2.md`, kept outside the repo). Today Settings edits five agents and shows read-only health; the rest sits in env vars, code constants and other screens.
 
 ## Decisions
@@ -31,6 +31,9 @@
 12. **Scanner presets are not a separate setting.** A preset is on when its scan spec is active. The operator turns one on or off in Scanner (`POST /scanners/presets/{slug}/activate`, archive). The active count is held to `scanner.max_active_specs`, which Settings shows and sets. A second switch in Settings would be a duplicate with two sources of truth.
 13. **Alert routing is read-only for now.** Critical alerts (the notifier's severity CRITICAL, and the daily breaker) go to Telegram and ntfy. Every other system alert stays in the app. A toggle for the non-critical ones needs `SELECT` on `system_settings` for the notifier role, which is a migration. The next free migration number is claimed by the open K1 PR (043), so the toggle waits until that merges, rather than taking a number now.
 
+14. **Model routes are editable, with limits.** An operator can set a role's primary model, fallback model, fallback policy, daily cap, output limit and thinking budget (`PUT /api/v1/settings/routes/{role}`). Every change needs TOTP. A blank field takes the code default, as the gateway's NULL rule does. Priority, the certified-primary flag and the shadow fields are not editable here. The protected trade roles (`debate.verdict`, `debate.cro`, `exit.verdict`) are locked. A model must be one the gateway can call (a priced Gemini model, or a local tag). Retired models are refused. Local models are allowed only for triage, summarize and the embedder (ADR 0005). The gateway applies a change within its 30 s route cache.
+15. **The operator session and login policy is read every minute.** Four values in `system_settings`: the absolute session length, the idle timeout, the failed-login window and the failed-login count. They are applied to the auth manager without a restart, under the same rule as the other runtime values. Their ceilings are the current defaults, so a session can only be shortened without TOTP. A longer failed-login window is the tighter one, so the registry records that direction: `Tighter.HIGHER` in the write rule. Open sessions are checked against the new values on their next request.
+
 ## Phase 1 registry (proposed bounds; current values from code)
 
 | Key | Current value | Bounds (proposed) | Apply | Tier | Stored today |
@@ -57,14 +60,13 @@ Notes:
 - The "to confirm" rows of the first draft are settled: routing is decision 13, presets are decision 12.
 - The apply modes above match the registry (`settings_registry.py`). The scanner-preset row is not a registry entry, by decision 12.
 
-## Phase 2 (after Phase 1 lands)
+## Phase 2
 
-- Paper parameters, versioned (decision 4).
-- Per-role model routing editor for `ai_model_routes`. Protected roles stay locked, as the gateway already enforces for them.
-- Session and lockout bounds for `auth.py` (12 h absolute, 30 min idle, 5 min lockout), with floors and ceilings.
-- Per-symbol price and size precision from instrument metadata (F3, F20; D6).
-- Data retention and free-disk threshold (open in the onboarding plan).
-- Universe write path, only through onboarding (decision 5).
+- **Done:** the per-role model routing editor (decision 14). The session and login policy (decision 15).
+- **Not built: paper parameters, versioned (decision 4).** A versioned table needs a migration. The next free number is 043, which the open K1 PR (#53) takes, so this waits for K1 to merge. Until then the paper fee, slippage, collar and starting capital stay in code.
+- **Not built: per-symbol price and size precision (F3, F20; D6).** PR #49 (D6) is open and owns this design. Building it here would duplicate it.
+- **Not built: data retention and the free-disk threshold.** The onboarding plan leaves both as operator decisions. There is no number to set yet.
+- **Not built: the universe write path.** It goes through symbol onboarding (decision 5), whose PRs are open.
 
 ## Phase 3 (ADR-gated, not toggles)
 
