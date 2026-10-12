@@ -74,7 +74,7 @@ export interface Approval {
 }
 
 export interface AiStatus {
-  kill_switch: { latched: boolean; reason: string | null; latched_by: string | null };
+  kill_switch: { latched: boolean; known?: boolean; reason: string | null; latched_by: string | null };
   halted_mandates: { id: string; name: string; reason: string | null; halted_at: string | null }[];
   account: { equity: string | null; hwm: string | null; drawdown_pct: string | null; backstop_pct: string } | null;
   exit_monitor_up: boolean;

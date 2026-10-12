@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 
 docs_dir = Path(__file__).parent.resolve()
@@ -1244,7 +1243,7 @@ FROM (
     <tr>
       <td><strong>Kill-Switch tripped (HTTP 423 Locked)</strong></td>
       <td>Circuit breaker tripped due to drawdown or operator manual trip.</td>
-      <td><code>curl -X GET http://localhost:8000/api/v1/control/kill-switch/status</code></td>
+      <td><code>curl -X GET 'http://localhost:8000/api/v1/control/kill-switch/status?environment=PAPER&amp;account_id=PAPER-ACCOUNT-001'</code></td>
       <td>Authenticate as operator and submit step-up password to reset latch generation.</td>
     </tr>
   </tbody>
