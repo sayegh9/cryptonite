@@ -25,7 +25,7 @@
 
 | Key | Current value | Bounds (proposed) | Apply | Tier | Stored today |
 |---|---|---|---|---|---|
-| `LLM_DAILY_BUDGET_USD` | 25.00 | ≥ 0 | hot (the guard re-reads every 10 s) | T/L | `system_settings` row; written by `PUT /api/v1/settings/registry/LLM_DAILY_BUDGET_USD` (TOTP to raise), no UI yet |
+| `LLM_DAILY_BUDGET_USD` | 25.00 | ≥ 1.00 (floor: 0 would stop every non-critical AI call; pause with the mandate or kill switch) | hot (the guard re-reads every 10 s) | T/L | `system_settings` row; written by `PUT /api/v1/settings/registry/LLM_DAILY_BUDGET_USD` (TOTP to raise), no UI yet |
 | `risk.max_daily_loss_pct` | 5 | 0 < x ≤ 5 (code ceiling) | hot (ops monitor, ≤ 60 s) | T/L | `risk_limit_overrides`; `RiskLimitsForm` in Operator |
 | `risk.max_order_equity_pct` | 25 | 1 ≤ x ≤ 25 | hot (≤ 60 s) | T/L | same |
 | `risk.cross_mandate_exposure_pct` | 25 | 1 ≤ x ≤ 25 | hot (≤ 60 s) | T/L | same |

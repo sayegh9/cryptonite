@@ -118,11 +118,12 @@ def test_keys_without_a_write_path_or_a_writable_tier_are_refused():
         write_needs_totp(replace(by_key("LLM_DAILY_BUDGET_USD"), key="universe.symbols"), Decimal("1"), Decimal("2"))
 
 
-def test_budget_bounds_reject_negative_and_non_finite_values():
+def test_budget_floor_is_above_zero_and_rejects_non_finite_values():
     budget = by_key("LLM_DAILY_BUDGET_USD")
-    validate_value(budget, Decimal("0"))
+    assert budget.minimum == Decimal("1.00")  # 0 would stop every non-critical AI call
+    validate_value(budget, Decimal("1.00"))
     validate_value(budget, Decimal("500.00"))
-    for bad in (Decimal("-0.01"), Decimal("NaN"), Decimal("Infinity")):
+    for bad in (Decimal("0"), Decimal("0.99"), Decimal("-0.01"), Decimal("NaN"), Decimal("Infinity")):
         with pytest.raises(ValueError):
             validate_value(budget, bad)
 
@@ -312,7 +313,8 @@ async def test_unchanged_budget_writes_nothing():
 async def test_refusals_change_nothing():
     cases = [
         ("LLM_DAILY_BUDGET_USD", "10", "wrong-token", 403),   # CSRF
-        ("LLM_DAILY_BUDGET_USD", "-1", "tok", 422),           # below the minimum
+        ("LLM_DAILY_BUDGET_USD", "-1", "tok", 422),           # below the floor
+        ("LLM_DAILY_BUDGET_USD", "0", "tok", 422),            # zero would pause all non-critical AI
         ("exit.stop_loss_pct", "6", "tok", 403),              # no write path (env-owned)
         ("guard.position_clamp_pct", "30", "tok", 403),       # fixed guardrail
         ("no.such.key", "1", "tok", 404),                     # unknown

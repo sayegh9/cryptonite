@@ -84,8 +84,9 @@ class Setting:
 
 
 REGISTRY: tuple[Setting, ...] = (
-    Setting("LLM_DAILY_BUDGET_USD", "LLM daily budget (USD)", Decimal("25.00"), Decimal("0"), None,
-            Apply.HOT, Tier.T_L, "0002", "system_settings", "the budget guard re-reads it every 10 s"),
+    Setting("LLM_DAILY_BUDGET_USD", "LLM daily budget (USD)", Decimal("25.00"), Decimal("1.00"), None,
+            Apply.HOT, Tier.T_L, "0002", "system_settings",
+            "the budget guard re-reads it every 10 s; floor $1: 0 would stop every non-critical AI call (pause with the mandate or kill switch)"),
     Setting("risk.max_daily_loss_pct", "Max daily loss (% of equity)", Decimal("5"), Decimal("0"), Decimal("5"),
             Apply.HOT, Tier.T_L, "0006", "risk_limit_overrides", "the code default is the ceiling; PAPER account shown"),
     Setting("risk.max_order_equity_pct", "Max single order (% of equity)", Decimal("25"), Decimal("1"), Decimal("25"),
