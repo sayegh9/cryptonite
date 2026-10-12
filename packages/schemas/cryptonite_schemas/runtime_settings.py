@@ -24,6 +24,12 @@ RUNTIME_BOUNDS: dict[str, Bound] = {
     "alerts.sentiment_stale_s": Bound(86400, 3600, 604800),
     "scanner.max_active_specs": Bound(10, 1, 50),
     "exit.monitor_interval_s": Bound(30, 5, 300),
+    # Operator session and login policy (ADR 0007, Phase 2). The ceilings are the current defaults, so a session
+    # can only be made shorter from the default; the lockout window is the one whose higher value is the tighter.
+    "auth.session_ttl_s": Bound(43200, 900, 43200),
+    "auth.idle_timeout_s": Bound(1800, 300, 1800),
+    "auth.lockout_s": Bound(300, 60, 3600),
+    "auth.max_login_attempts": Bound(5, 3, 10),
 }
 
 
