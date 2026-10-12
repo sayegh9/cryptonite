@@ -327,6 +327,190 @@ export const SettingsRegistry: React.FC = () => {
           </section>
         );
       })}
+      <RoutingSection />
     </div>
+  );
+};
+
+/* ---- AI model routing (ADR 0007, Phase 2): one row per role; every change needs TOTP; protected roles are locked. */
+
+interface RouteFields {
+  primary_model: string | null;
+  fallback_model: string | null;
+  fallback_policy: string | null;
+  daily_cap_usd: string | null;
+  max_output_tokens: number | null;
+  thinking_budget: number | null;
+}
+
+interface RouteView {
+  role: string;
+  protected: boolean;
+  editable: boolean;
+  local_allowed: boolean;
+  default: RouteFields;
+  effective: RouteFields;
+  stored: RouteFields | null;
+  overridden: boolean;
+}
+
+const ROUTE_FALLBACK_POLICIES = ["", "FAIL_CLOSED", "DEGRADE"];
+
+const RouteEditor: React.FC<{ route: RouteView; onSaved: () => void }> = ({ route, onSaved }) => {
+  const stored = route.stored;
+  const [primary, setPrimary] = useState(stored?.primary_model ?? "");
+  const [fallback, setFallback] = useState(stored?.fallback_model ?? "");
+  const [policy, setPolicy] = useState(stored?.fallback_policy ?? "");
+  const [cap, setCap] = useState(stored?.daily_cap_usd ?? "");
+  const [tokens, setTokens] = useState(stored?.max_output_tokens?.toString() ?? "");
+  const [thinking, setThinking] = useState(stored?.thinking_budget?.toString() ?? "");
+  const [reason, setReason] = useState("");
+  const [totp, setTotp] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const blankToNull = (text: string) => (text.trim() === "" ? null : text.trim());
+  const canSave = reason.trim().length >= MIN_REASON_CHARS && /^\d{6}$/.test(totp) && !saving;
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await fetchApi(`/settings/routes/${route.role}`, {
+        method: "PUT",
+        headers: { "X-CSRF-Token": localStorage.getItem("csrf_token") || "" },
+        body: JSON.stringify({
+          primary_model: blankToNull(primary),
+          fallback_model: blankToNull(fallback),
+          fallback_policy: blankToNull(policy),
+          daily_cap_usd: blankToNull(cap),
+          max_output_tokens: blankToNull(tokens) === null ? null : Number(tokens),
+          thinking_budget: blankToNull(thinking) === null ? null : Number(thinking),
+          reason: reason.trim(),
+          totp_code: totp,
+        }),
+      });
+      toast.success(`${route.role} route saved`);
+      setTotp("");
+      setReason("");
+      onSaved();
+    } catch (err: any) {
+      setError(String(err?.message || "The route was not saved.").replace(/^TOTP_REQUIRED:\s*/, ""));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const hint = (value: string | number | null) => (value === null ? "default" : `default ${value}`);
+  return (
+    <div className="mt-2 space-y-2 rounded border border-white/10 bg-zinc-900/40 p-3">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <label className="text-[11px] text-zinc-400">
+          Primary model ({hint(route.default.primary_model)})
+          <input value={primary} onChange={(e) => setPrimary(e.target.value)} placeholder={route.default.primary_model ?? ""} className={`${INPUT_CLASS} w-full`} />
+        </label>
+        <label className="text-[11px] text-zinc-400">
+          Fallback model ({hint(route.default.fallback_model)})
+          <input value={fallback} onChange={(e) => setFallback(e.target.value)} placeholder={route.default.fallback_model ?? ""} className={`${INPUT_CLASS} w-full`} />
+        </label>
+        <label className="text-[11px] text-zinc-400">
+          Fallback policy ({hint(route.default.fallback_policy)})
+          <select value={policy} onChange={(e) => setPolicy(e.target.value)} className={`${INPUT_CLASS} w-full`}>
+            {ROUTE_FALLBACK_POLICIES.map((p) => (
+              <option key={p} value={p}>{p === "" ? "default" : p}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-[11px] text-zinc-400">
+          Daily cap, USD ({hint(route.default.daily_cap_usd)})
+          <input type="number" step="0.0001" min="0" value={cap} onChange={(e) => setCap(e.target.value)} className={`${INPUT_CLASS} w-full`} />
+        </label>
+        <label className="text-[11px] text-zinc-400">
+          Max output tokens ({hint(route.default.max_output_tokens)})
+          <input type="number" step="1" min="1" value={tokens} onChange={(e) => setTokens(e.target.value)} className={`${INPUT_CLASS} w-full`} />
+        </label>
+        <label className="text-[11px] text-zinc-400">
+          Thinking budget ({hint(route.default.thinking_budget)})
+          <input type="number" step="1" min="0" value={thinking} onChange={(e) => setThinking(e.target.value)} className={`${INPUT_CLASS} w-full`} />
+        </label>
+      </div>
+      <p className="text-[11px] text-zinc-500">Leave a field blank to use its default. Local models are allowed only for triage, summarize and the embedder.</p>
+      <label className="block text-[11px] text-zinc-400">
+        Reason (audited, at least {MIN_REASON_CHARS} characters)
+        <input type="text" maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} className={`${INPUT_CLASS} w-full`} />
+      </label>
+      <label className="block text-[11px] text-amber-200">
+        Your TOTP code (every route change needs it)
+        <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={totp} onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))} className={`${INPUT_CLASS} w-32`} />
+      </label>
+      {error && <p role="alert" className="text-[11px] text-red-300">{error}</p>}
+      <Button onClick={() => void save()} disabled={!canSave} className="bg-cyan-600 text-xs font-bold uppercase tracking-wider text-zinc-950 hover:bg-cyan-500 disabled:opacity-40">
+        {saving ? "Saving…" : "Save with TOTP"}
+      </Button>
+    </div>
+  );
+};
+
+const RoutingSection: React.FC = () => {
+  const [routes, setRoutes] = useState<RouteView[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [openRole, setOpenRole] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const out = await fetchApi("/settings/routes", { timeoutMs: TIMEOUT_MS });
+      setRoutes(out?.routes ?? []);
+      setLoadError(null);
+    } catch (err: any) {
+      setLoadError(err?.timeout ? "The request timed out." : err?.message || "The routes could not be loaded.");
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  return (
+    <section className="space-y-2">
+      <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-300">AI model routing</h3>
+      <p className="text-[11px] text-zinc-500">
+        Which model answers each role, its fallback and its limits. The gateway applies a change within 30 s. Protected trade roles are locked.
+      </p>
+      {loadError && (
+        <div className="flex items-center gap-3 text-sm text-amber-200" role="status">
+          Could not load routes: {loadError}
+          <Button onClick={() => void load()} className="bg-zinc-800 text-xs uppercase tracking-wider text-zinc-100 hover:bg-zinc-700">Retry</Button>
+        </div>
+      )}
+      {!routes && !loadError && <p className="text-sm text-zinc-400">Loading routes…</p>}
+      {routes && (
+        <ul>
+          {routes.map((route) => (
+            <li key={route.role} className="border-b border-white/5 py-2 last:border-0">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <div>
+                  <span className="font-mono text-sm text-zinc-100">{route.role}</span>
+                  {route.overridden && <span className="ml-2 rounded border border-cyan-900/60 px-1.5 text-[10px] text-cyan-300">overridden</span>}
+                  {route.protected && <span className="ml-2 rounded border border-red-900/60 px-1.5 text-[10px] text-red-300">locked</span>}
+                </div>
+                <div className="text-right font-mono text-[11px] text-zinc-400">
+                  {route.effective.primary_model}
+                  {route.effective.fallback_model ? ` → ${route.effective.fallback_model}` : ""}
+                  {route.effective.fallback_policy ? ` · ${route.effective.fallback_policy}` : ""}
+                </div>
+              </div>
+              {route.editable && (
+                <Button onClick={() => setOpenRole(openRole === route.role ? null : route.role)} className="mt-1 bg-zinc-800 text-[11px] uppercase tracking-wider text-zinc-100 hover:bg-zinc-700">
+                  {openRole === route.role ? "Close" : "Edit"}
+                </Button>
+              )}
+              {openRole === route.role && (
+                <RouteEditor route={route} onSaved={() => { setOpenRole(null); void load(); }} />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 };

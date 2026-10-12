@@ -34,6 +34,13 @@ class Tier(StrEnum):
     FIXED = "Fixed"      # not configurable
 
 
+class Tighter(StrEnum):
+    """Which direction of a T/L value is the tighter one: lowering the budget or an exit threshold makes the system
+    stricter (LOWER); lengthening a lockout does (HIGHER)."""
+    LOWER = "lower"
+    HIGHER = "higher"
+
+
 class Apply(StrEnum):
     HOT = "hot"
     RESTART = "restart"
@@ -64,6 +71,8 @@ def write_needs_totp(setting: "Setting", current: Decimal, new: Decimal) -> bool
         return True
     if setting.tier is Tier.SESSION:
         return False
+    if setting.tighter is Tighter.HIGHER:
+        return new < current  # the higher value is the tighter one: lowering loosens and needs TOTP
     return new > current  # T/L: tightening is free; loosening needs TOTP
 
 
@@ -96,17 +105,19 @@ class Setting:
     store: str
     note: str = ""
     decimals: int = 2  # decimal places a value may have
+    tighter: Tighter = Tighter.LOWER  # which direction is the tighter one (T/L keys)
 
     @property
     def writable(self) -> bool:
         return self.tier in WRITABLE_TIERS
 
 
-def _runtime_setting(key: str, label: str, tier: Tier, adr: str, note: str) -> Setting:
+def _runtime_setting(key: str, label: str, tier: Tier, adr: str, note: str,
+                     tighter: Tighter = Tighter.LOWER) -> Setting:
     """A value the services read every cycle (ADR 0007): stored in system_settings, whole numbers, hot."""
     bound = RUNTIME_BOUNDS[key]
     return Setting(key, label, int(bound.default), int(bound.low), int(bound.high), Apply.HOT, tier, adr,
-                   SYSTEM_STORE, note, decimals=0)
+                   SYSTEM_STORE, note, decimals=0, tighter=tighter)
 
 
 def _exit_setting(key: str, label: str, default: Decimal | int | float, field: str, note: str) -> Setting:
@@ -144,6 +155,15 @@ REGISTRY: tuple[Setting, ...] = (
     _runtime_setting("scanner.max_active_specs", "Max active scanner specs", Tier.SESSION, "0004",
                      "read on every spec change and scan cycle; MAX_ACTIVE_SPECS sets the default. "
                      "Presets turn on and off as scan specs in Scanner."),
+    _runtime_setting("auth.session_ttl_s", "Operator session, absolute (s)", Tier.T_L, "0007",
+                     "a session ends this long after sign-in; the ceiling is the current 12 h, so this can only shorten it"),
+    _runtime_setting("auth.idle_timeout_s", "Operator session, idle (s)", Tier.T_L, "0007",
+                     "a session ends after this long without a request; the ceiling is the current 30 min"),
+    _runtime_setting("auth.lockout_s", "Failed-login window (s)", Tier.T_L, "0007",
+                     "failed logins are counted over this window; a longer window is the tighter one",
+                     tighter=Tighter.HIGHER),
+    _runtime_setting("auth.max_login_attempts", "Failed logins before lockout", Tier.T_L, "0007",
+                     "a lower count locks out sooner"),
     Setting("alerts.routing", "Alert routing", "critical only", None, None, Apply.DEPLOY, Tier.R, "0004",
             "code: notifier/bot.py",
             "Critical alerts go to Telegram and ntfy; every other alert stays in the app. A toggle needs a read grant "
