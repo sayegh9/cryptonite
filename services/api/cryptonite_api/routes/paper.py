@@ -5,10 +5,11 @@ import logging
 import uuid
 from typing import Any, Literal
 
+from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
 from cryptonite_api.routes.auth import require_csrf, require_operator
 from cryptonite_api.universe import require_fed
 from cryptonite_schemas.marks import read_marks, resolve_mark, unrealized_pnl
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("cryptonite.api.paper")
@@ -178,14 +179,11 @@ async def get_risk_events(request: Request, limit: int = 50, auth: dict = Depend
 
 @router.get("/kill-switch")
 async def get_kill_switch(request: Request, auth: dict = Depends(require_operator)) -> dict[str, Any]:
-    pool = request.app.state.pool
-    # The paper engine's durable latch (written by the orchestrator); id = 1 is the DEMO executor's row
-    row = await pool.fetchrow(
-        "SELECT * FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = 'PAPER-ACCOUNT-001';"
-    )
-    if not row:
-        return {"id": 1, "is_latched": False}
-    return dict(row)
+    # The paper engine's durable latch (written by the orchestrator), read the same way as the AI status
+    row = await read_kill_switch(request.app.state.pool, PAPER_ENVIRONMENT, PAPER_ACCOUNT_ID)
+    if row is None:
+        raise HTTPException(status_code=503, detail="PAPER kill-switch row is missing: its state is unknown")
+    return row
 
 
 @router.get("/commands")

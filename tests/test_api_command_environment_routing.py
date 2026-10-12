@@ -44,7 +44,7 @@ async def test_kill_switch_status_reads_the_paper_row():
     request, pool = fake_request()
     pool.fetchrow = AsyncMock(return_value={"environment": "PAPER", "is_latched": True})
     assert (await paper.get_kill_switch(request=request, auth={}))["is_latched"] is True
-    assert "environment = 'PAPER'" in pool.fetchrow.await_args.args[0]
+    assert pool.fetchrow.await_args.args[1:] == ("PAPER", "PAPER-ACCOUNT-001")
 
 
 async def test_control_reset_request_is_enqueued_for_the_requested_environment(monkeypatch):

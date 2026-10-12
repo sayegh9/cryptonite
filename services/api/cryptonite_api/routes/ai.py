@@ -21,6 +21,7 @@ from typing import Any, Literal
 from cryptonite_agents.gateway.local_tier import HEALTH_KEY as LOCAL_TIER_HEALTH
 from cryptonite_agents.gateway.local_tier import read_published as read_local_tier
 from cryptonite_api import shadow as shadow_report
+from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.similar import similar_or_none
 from cryptonite_api.universe import require_fed
@@ -501,13 +502,14 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         except Exception:
             pass
     async with request.app.state.pool.acquire() as conn:
-        ks = await conn.fetchrow(
-            "SELECT is_latched, reason, latched_by, latched_at FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = 'PAPER-ACCOUNT-001'")
+        ks = await read_kill_switch(conn, PAPER_ENVIRONMENT, PAPER_ACCOUNT_ID)
         halted = await conn.fetch("SELECT id, name, halted_reason, halted_at FROM ai_mandates WHERE status = 'HALTED' ORDER BY halted_at DESC")
         backstop = await conn.fetchrow(
             "SELECT equity, hwm, drawdown_pct, ts FROM ai_mandate_equity WHERE mandate_id IS NULL ORDER BY ts DESC, id DESC LIMIT 1")
     degraded: list[str] = []
-    if ks and ks["is_latched"]:
+    if ks is None:
+        degraded.append("PAPER kill-switch row is missing: its state is unknown")
+    elif ks["is_latched"]:
         degraded.append(f"PAPER kill switch latched: {ks['reason']}")
     if not exit_up:
         degraded.append("Exit monitor down: AI positions have no deterministic stops and new AI orders are refused")
@@ -518,8 +520,8 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
     if local_tier and not local_tier.get("healthy"):
         degraded.append("Local model tier down: local roles fall back to the cloud model; trade decisions fail closed")
     return {
-        "kill_switch": {"latched": bool(ks and ks["is_latched"]), "reason": ks["reason"] if ks else None,
-                        "latched_by": ks["latched_by"] if ks else None},
+        "kill_switch": {"known": ks is not None, "latched": bool(ks and ks["is_latched"]),
+                        "reason": ks["reason"] if ks else None, "latched_by": ks["latched_by"] if ks else None},
         "halted_mandates": [{"id": str(h["id"]), "name": h["name"], "reason": h["halted_reason"],
                              "halted_at": h["halted_at"].isoformat() if h["halted_at"] else None} for h in halted],
         "account": {"equity": _dec(backstop["equity"]), "hwm": _dec(backstop["hwm"]), "drawdown_pct": _dec(backstop["drawdown_pct"]),

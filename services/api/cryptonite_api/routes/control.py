@@ -14,6 +14,7 @@ import uuid
 from decimal import Decimal
 
 from cryptonite_api.auth import OperatorAuthManager
+from cryptonite_api.kill_switch import read_kill_switch
 from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import get_auth_manager, require_operator
 from cryptonite_execution.risk_limits import (
@@ -72,38 +73,28 @@ def verify_csrf(session: dict, x_csrf_token: str | None) -> None:
 @router.get("/kill-switch/status")
 async def get_kill_switch_status(
     request: Request,
-    environment: str = "DEMO",
-    account_id: str = "DEMO-ACCOUNT-001",
+    environment: str,
+    account_id: str,
     auth: dict = Depends(require_operator),
 ):
-    """Retrieve the current state and latch generation of the execution kill switch."""
+    """Retrieve the current state and latch generation of one (environment, account) kill switch.
+
+    Both parameters are required: a status read must name the row it means. A missing row is a 503, never armed.
+    """
     async with request.app.state.pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT is_latched, latch_generation, updated_at
-            FROM execution_kill_switch
-            WHERE environment = $1 AND account_id = $2;
-            """,
-            environment,
-            account_id,
+        row = await read_kill_switch(conn, environment, account_id)
+    if row is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No kill-switch row for {environment}/{account_id}: its state is unknown",
         )
-        if not row:
-            # If no row exists, assume armed (unlatched) but log a warning? 
-            # Migration 007 backfilled this row.
-            return {
-                "environment": environment,
-                "account_id": account_id,
-                "is_latched": False,
-                "latch_generation": 0,
-                "updated_at": None,
-            }
-        return {
-            "environment": environment,
-            "account_id": account_id,
-            "is_latched": row["is_latched"],
-            "latch_generation": row["latch_generation"],
-            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
-        }
+    return {
+        "environment": environment,
+        "account_id": account_id,
+        "is_latched": row["is_latched"],
+        "latch_generation": row["latch_generation"],
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
 
 @router.post("/kill-switch/trip")
 async def trip_kill_switch(
