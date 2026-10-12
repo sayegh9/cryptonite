@@ -99,7 +99,8 @@ export function computeModeBanner(input: ModeBannerInput): ModeBanner {
   const { mandates, status, denied, now } = input;
   const ks = freshness(input.statusOk, input.statusAt, now);
   const md = freshness(input.mandatesOk, input.mandatesAt, now);
-  const ksKnown = ks === "ok" && status != null;
+  // The API says known: false when the PAPER kill-switch row is missing: that is unknown, never armed
+  const ksKnown = ks === "ok" && status != null && status.kill_switch.known !== false;
   const mandatesKnown = md === "ok";
 
   // A latched kill switch outranks everything we know about mandates

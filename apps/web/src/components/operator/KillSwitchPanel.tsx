@@ -87,7 +87,9 @@ export function KillSwitchPanel({
 
   if (loading) return <div className="text-zinc-500 font-mono animate-pulse">Loading Kill-Switch status...</div>;
 
-  const isLatched = status?.is_latched;
+  // A status that is missing or not a boolean is unknown. It must never render as ARMED.
+  const stateKnown = typeof status?.is_latched === "boolean";
+  const isLatched = stateKnown && status?.is_latched === true;
 
   return (
     <div className="bg-zinc-950 border border-white/5 rounded p-6">
@@ -109,7 +111,13 @@ export function KillSwitchPanel({
       {error && <div className="bg-rose-950/50 text-rose-400 text-2xs font-mono px-3 py-2 rounded mb-4">{error}</div>}
 
       <div className="flex items-center justify-center p-6 border border-dashed border-white/5 rounded mb-6 bg-zinc-950">
-        {isLatched ? (
+        {!stateKnown ? (
+          <div className="flex flex-col items-center text-amber-300">
+            <AlertTriangle className="w-12 h-12 mb-2" />
+            <span className="text-xl font-black tracking-widest">UNKNOWN</span>
+            <span className="text-2xs font-mono mt-1 text-zinc-500">STATUS NOT CONFIRMED</span>
+          </div>
+        ) : isLatched ? (
           <div className="flex flex-col items-center text-rose-500 animate-pulse">
             <ShieldAlert className="w-12 h-12 mb-2" />
             <span className="text-xl font-black tracking-widest">LATCHED</span>
