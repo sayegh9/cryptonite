@@ -1,6 +1,6 @@
 # ADR 0007: Settings module: scope, change tiers, versioning
 
-- Status: Accepted (2026-10-12, operator decisions below). Phase 1 (read-only registry API, PR #72) is built. The Settings UI, per-cycle reads and writes are not.
+- Status: Accepted (2026-10-12, operator decisions below). Built: the read-only registry API (PR #72) and the LLM daily budget write with tier enforcement (`PUT /api/v1/settings/registry/LLM_DAILY_BUDGET_USD`, TOTP to raise). Not built: the Settings UI, per-cycle reads for exit, alert and scanner values, and writes for any other key.
 - Context: [ADR 0004](0004-mandates-and-autonomy.md) (mandates, autonomy, approvals), [ADR 0006](0006-cross-mandate-exposure-and-configurable-limits.md) (tighten-only risk overrides), [ADR 0002](0002-debate-cost-controls.md) (LLM budget and exit rules), [ADR 0005](0005-local-tier-and-learning.md) (embedding model), [UI critique](../ui-ux-critique-2026-10-12.md) (Settings layout). The universe work is the onboarding plan (`symbol-onboarding-plan-v2.md`, kept outside the repo). Today Settings edits five agents and shows read-only health; the rest sits in env vars, code constants and other screens.
 
 ## Decisions
@@ -25,18 +25,18 @@
 
 | Key | Current value | Bounds (proposed) | Apply | Tier | Stored today |
 |---|---|---|---|---|---|
-| `LLM_DAILY_BUDGET_USD` | 25.00 | ≥ 0 | hot (the guard re-reads every 10 s) | T/L | `system_settings` row, no UI |
+| `LLM_DAILY_BUDGET_USD` | 25.00 | ≥ 0 | hot (the guard re-reads every 10 s) | T/L | `system_settings` row; written by `PUT /api/v1/settings/registry/LLM_DAILY_BUDGET_USD` (TOTP to raise), no UI yet |
 | `risk.max_daily_loss_pct` | 5 | 0 < x ≤ 5 (code ceiling) | hot (ops monitor, ≤ 60 s) | T/L | `risk_limit_overrides`; `RiskLimitsForm` in Operator |
 | `risk.max_order_equity_pct` | 25 | 1 ≤ x ≤ 25 | hot (≤ 60 s) | T/L | same |
 | `risk.cross_mandate_exposure_pct` | 25 | 1 ≤ x ≤ 25 | hot (≤ 60 s) | T/L | same |
-| `exit.stop_loss_pct` | 5 | 0 < x ≤ 20 | hot (read each cycle) | T/L | env `EXIT_STOP_LOSS_PCT`, read at import |
-| `exit.trail_activate_pct` | 3 | > 0 | hot | T/L | env `EXIT_TRAIL_ACTIVATE_PCT` |
-| `exit.trail_pct` | 2 | 0 < x ≤ trail_activate_pct | hot | T/L | env `EXIT_TRAIL_PCT` |
-| `exit.debate_drawdown_pct` | 2 | 0 < x < stop_loss_pct | hot | T/L | env `EXIT_DEBATE_DRAWDOWN_PCT` |
-| `exit.funding_spike` | 0.0005 | 0 < x ≤ 0.01 | hot | T/L | env `EXIT_FUNDING_SPIKE` |
+| `exit.stop_loss_pct` | 5 | 0 < x ≤ 20 | restart (hot once the per-cycle read ships) | T/L | env `EXIT_STOP_LOSS_PCT`, read at import |
+| `exit.trail_activate_pct` | 3 | > 0 | restart (hot once the per-cycle read ships) | T/L | env `EXIT_TRAIL_ACTIVATE_PCT`, read at import |
+| `exit.trail_pct` | 2 | 0 < x ≤ trail_activate_pct | restart (hot once the per-cycle read ships) | T/L | env `EXIT_TRAIL_PCT`, read at import |
+| `exit.debate_drawdown_pct` | 2 | 0 < x < stop_loss_pct | restart (hot once the per-cycle read ships) | T/L | env `EXIT_DEBATE_DRAWDOWN_PCT`, read at import |
+| `exit.funding_spike` | 0.0005 | 0 < x ≤ 0.01 | restart (hot once the per-cycle read ships) | T/L | env `EXIT_FUNDING_SPIKE`, read at import |
 | `exit.monitor_interval_s` | 30 | 5–300 | restart | Session | env `EXIT_MONITOR_INTERVAL_S` |
-| `alerts.heartbeat_grace_s` | 300 | 60–3600 | hot (once read per pass) | T/L | env `HEARTBEAT_ALERT_GRACE_S`, read at import |
-| `alerts.sentiment_stale_s` | 86400 | ≥ 3600 | hot | Session | env `SENTIMENT_STALE_ALERT_S` |
+| `alerts.heartbeat_grace_s` | 300 | 60–3600 | restart (hot once read per pass) | T/L | env `HEARTBEAT_ALERT_GRACE_S`, read at import |
+| `alerts.sentiment_stale_s` | 86400 | ≥ 3600 | restart (hot once read per pass) | Session | env `SENTIMENT_STALE_ALERT_S`, read at import |
 | `alerts.routing.<severity>` | to confirm in the notifier | Critical fixed to Telegram and ntfy | hot | Session (non-critical) | code |
 | `scanner.preset.<slug>.enabled` | five built-in presets | boolean | to confirm per scan cycle | Session | code, `presets.py` |
 | `scanner.max_active_specs` | 10 | 1–50 | restart | Session | env `MAX_ACTIVE_SPECS`, read at import |
@@ -45,6 +45,7 @@
 Notes:
 - Exit and alert values are read at import today. Making them hot means reading them per cycle, which is a small change per service.
 - Where a value is marked "to confirm", the build needs to check current behaviour first.
+- The apply modes above match the registry (`settings_registry.py`). The alert-routing and scanner-preset rows are not in the registry yet.
 
 ## Phase 2 (after Phase 1 lands)
 
