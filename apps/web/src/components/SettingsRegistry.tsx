@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
+import { dispatchSwitchWorkspace } from "@/lib/navigation";
 
 /** Platform settings (ADR 0007): every setting with its tier, apply mode and where it lives, and the health
  *  warnings. The server enforces the tier rules; this panel shows them and sends each change to the server. */
@@ -40,9 +41,14 @@ interface EnvHealth {
   warnings: Warning[];
 }
 
-const GROUPS: { title: string; hint?: string; match: (key: string) => boolean }[] = [
+const GROUPS: { title: string; hint?: string; opens?: "operator"; match: (key: string) => boolean }[] = [
   { title: "AI spend", match: (k) => k === "LLM_DAILY_BUDGET_USD" },
-  { title: "Risk limits", hint: "Edited in Operator → Risk limits (ADR 0006).", match: (k) => k.startsWith("risk.") },
+  {
+    title: "Risk limits",
+    hint: "Edited in Operator → Risk limits (ADR 0006).",
+    opens: "operator",
+    match: (k) => k.startsWith("risk."),
+  },
   {
     title: "Exit rules",
     hint: "Read by the exit monitor every cycle. Lower is tighter: lowering is free, raising needs TOTP.",
@@ -78,7 +84,8 @@ const WARNING_CLASS: Record<Warning["severity"], string> = {
 const INPUT_CLASS = "mt-1 block rounded border border-white/10 bg-zinc-950 px-2 py-1 font-mono text-sm text-zinc-100";
 
 /** A value with at most `decimals` decimal places, no sign. The server enforces the same rule. */
-const decimalPattern = (decimals: number) => new RegExp(`^\\d+(\\.\\d{1,${decimals}})?$`);
+const decimalPattern = (decimals: number) =>
+  decimals === 0 ? /^\d+$/ : new RegExp(`^\\d+(\\.\\d{1,${decimals}})?$`);
 const stepFor = (decimals: number) => (1 / 10 ** decimals).toFixed(decimals);
 
 function sourceText(entry: RegistryEntry): string {
@@ -304,6 +311,14 @@ export const SettingsRegistry: React.FC = () => {
           <section key={group.title} className="space-y-1">
             <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-300">{group.title}</h3>
             {group.hint && <p className="text-[11px] text-zinc-500">{group.hint}</p>}
+            {group.opens === "operator" && (
+              <Button
+                onClick={() => dispatchSwitchWorkspace({ mode: "operator" })}
+                className="bg-zinc-800 text-xs uppercase tracking-wider text-zinc-100 hover:bg-zinc-700"
+              >
+                Open Operator
+              </Button>
+            )}
             <ul>
               {rows.map((entry) => (
                 <SettingRow key={entry.key} entry={entry} onSaved={() => void load()} />

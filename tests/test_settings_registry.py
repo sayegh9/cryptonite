@@ -36,6 +36,7 @@ from cryptonite_orchestrator import ops_monitor
 from cryptonite_scanner.models import MAX_ACTIVE_SPECS
 from cryptonite_scanner_service import exit_monitor as em
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS
 from fastapi import HTTPException
 
 
@@ -93,7 +94,7 @@ def test_budget_default_is_the_budget_guard_default():
 
 
 def test_only_keys_with_a_write_path_report_writable():
-    assert WRITE_PATHS == {"LLM_DAILY_BUDGET_USD", *SETTING_KEYS}
+    assert WRITE_PATHS == {"LLM_DAILY_BUDGET_USD", *SETTING_KEYS, *RUNTIME_BOUNDS}
     out = {s.key: entry_view(s, None)["writable"] for s in REGISTRY}
     assert {key for key, writable in out.items() if writable} == WRITE_PATHS
 
@@ -117,7 +118,7 @@ def test_tier_rules_for_a_write_path_are_applied_by_tier():
 
 def test_keys_without_a_write_path_or_a_writable_tier_are_refused():
     with pytest.raises(WriteRefused):
-        write_needs_totp(by_key("exit.monitor_interval_s"), Decimal("30"), Decimal("60"))  # Session tier, no write path
+        write_needs_totp(by_key("alerts.routing"), Decimal("1"), Decimal("2"))  # read-only: no write path
     with pytest.raises(WriteRefused):
         write_needs_totp(by_key("guard.account_backstop_pct"), Decimal("20"), Decimal("19"))
     with pytest.raises(WriteRefused):
@@ -141,8 +142,8 @@ def test_fixed_guardrails_match_the_risk_module():
 
 
 def test_entry_view_marks_service_owned_values_as_service_not_api():
-    interval = entry_view(by_key("exit.monitor_interval_s"), None)
-    assert (interval["value"], interval["value_source"], interval["apply"], interval["writable"]) == (None, "service", "restart", False)
+    symbols = entry_view(by_key("universe.symbols"), None)
+    assert (symbols["value"], symbols["value_source"], symbols["apply"], symbols["writable"]) == (None, "service", "restart", False)
     budget = entry_view(by_key("LLM_DAILY_BUDGET_USD"), "30.00")
     assert (budget["value"], budget["value_source"]) == ("30.00", "api")
 
@@ -207,7 +208,7 @@ async def test_registry_endpoint_lists_every_setting_with_its_tier_and_value():
     by = {s["key"]: s for s in out["settings"]}
     assert by["LLM_DAILY_BUDGET_USD"]["value"] is None and by["LLM_DAILY_BUDGET_USD"]["value_source"] == "default"
     assert by["exit.stop_loss_pct"]["value_source"] == "default" and by["exit.stop_loss_pct"]["effective"] is None
-    assert by["exit.monitor_interval_s"]["value_source"] == "service"
+    assert by["exit.monitor_interval_s"]["value_source"] == "default" and by["exit.monitor_interval_s"]["writable"] is True
     assert by["universe.symbols"]["writable"] is False
 
 
@@ -352,7 +353,8 @@ async def test_refusals_change_nothing():
         ("LLM_DAILY_BUDGET_USD", "10", "wrong-token", 403),   # CSRF
         ("LLM_DAILY_BUDGET_USD", "-1", "tok", 422),           # below the floor
         ("LLM_DAILY_BUDGET_USD", "0", "tok", 422),            # zero would pause all non-critical AI
-        ("exit.monitor_interval_s", "60", "tok", 403),        # Session tier: no write path
+        ("universe.symbols", "1", "tok", 403),                # read-only (service-owned)
+        ("alerts.routing", "1", "tok", 403),                  # read-only (code-owned)
         ("guard.position_clamp_pct", "30", "tok", 403),       # fixed guardrail
         ("no.such.key", "1", "tok", 404),                     # unknown
     ]
@@ -487,3 +489,43 @@ async def test_funding_spike_takes_four_decimals_and_no_more():
     assert refused.value.status_code == 422 and "4 decimal places" in refused.value.detail[0]["msg"]
     out = await put("exit.funding_spike", "0.0004", pool=pool, auth_mgr=auth_mgr)  # lowering: free
     assert out["value"] == "0.0004" and pool.inserts() == [("exit.funding_spike", '"0.0004"')]
+
+
+# --- runtime settings (ADR 0007): the values the services read every cycle -------------------------------------
+
+def test_runtime_bounds_are_the_registry_bounds_and_are_whole_numbers():
+    for key, bound in RUNTIME_BOUNDS.items():
+        entry = by_key(key)
+        assert entry.store == "system_settings" and entry.apply is Apply.HOT and entry.decimals == 0, key
+        assert (float(entry.minimum), float(entry.maximum)) == (bound.low, bound.high), key
+
+
+def test_heartbeat_grace_lower_is_free_and_raising_needs_totp():
+    grace = by_key("alerts.heartbeat_grace_s")
+    assert write_needs_totp(grace, Decimal("300"), Decimal("120")) is False
+    assert write_needs_totp(grace, Decimal("300"), Decimal("900")) is True
+
+
+def test_session_runtime_values_need_no_totp():
+    for key in ("exit.monitor_interval_s", "alerts.sentiment_stale_s", "scanner.max_active_specs"):
+        assert write_needs_totp(by_key(key), Decimal("10"), Decimal("20")) is False, key
+
+
+def test_whole_number_values_refuse_decimals_and_bounds():
+    grace = by_key("alerts.heartbeat_grace_s")
+    validate_value(grace, Decimal("120"))
+    for bad in (Decimal("300.5"), Decimal("59"), Decimal("3601")):
+        with pytest.raises(ValueError):
+            validate_value(grace, bad)
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_value_is_written_as_a_whole_number_json_string(monkeypatch):
+    async def no_totp(*args, **kwargs):
+        raise AssertionError("lowering the grace must not ask for TOTP")
+
+    monkeypatch.setattr(settings_route, "require_totp", no_totp)
+    pool, auth_mgr = WritePool({"alerts.heartbeat_grace_s": '"300"'}), FakeAuthMgr()
+    out = await put("alerts.heartbeat_grace_s", "120", pool=pool, auth_mgr=auth_mgr)
+    assert out["previous"] == "300" and out["value"] == "120"
+    assert pool.inserts() == [("alerts.heartbeat_grace_s", '"120"')]

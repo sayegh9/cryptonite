@@ -22,6 +22,7 @@ from cryptonite_schemas.exit_thresholds import (
     ExitThresholds,
     violations,
 )
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS
 
 
 class Tier(StrEnum):
@@ -43,7 +44,7 @@ WRITABLE_TIERS = frozenset({Tier.T_L, Tier.TOTP, Tier.SESSION})
 SERVICE_STORE = "env"  # values read from the environment at import, outside the API
 SYSTEM_STORE = "system_settings"
 # Keys with a write endpoint. Everything else stays read-only until its write path exists.
-WRITE_PATHS = frozenset({"LLM_DAILY_BUDGET_USD", *SETTING_KEYS})
+WRITE_PATHS = frozenset({"LLM_DAILY_BUDGET_USD", *SETTING_KEYS, *RUNTIME_BOUNDS})
 EXIT_MONITOR_HEARTBEAT = "exit_monitor:heartbeat"  # the monitor publishes the set it applies here
 
 
@@ -101,6 +102,13 @@ class Setting:
         return self.tier in WRITABLE_TIERS
 
 
+def _runtime_setting(key: str, label: str, tier: Tier, adr: str, note: str) -> Setting:
+    """A value the services read every cycle (ADR 0007): stored in system_settings, whole numbers, hot."""
+    bound = RUNTIME_BOUNDS[key]
+    return Setting(key, label, int(bound.default), int(bound.low), int(bound.high), Apply.HOT, tier, adr,
+                   SYSTEM_STORE, note, decimals=0)
+
+
 def _exit_setting(key: str, label: str, default: Decimal | int | float, field: str, note: str) -> Setting:
     low, high = BOUNDS[field]
     return Setting(key, label, default, Decimal(low), Decimal(high), Apply.HOT, Tier.T_L, "0002", SYSTEM_STORE,
@@ -127,14 +135,19 @@ REGISTRY: tuple[Setting, ...] = (
                   "must stay below exit.stop_loss_pct"),
     _exit_setting("exit.funding_spike", "Funding spike trigger (per interval)", 0.0005, "funding_spike",
                   "funding per interval against the position"),
-    Setting("exit.monitor_interval_s", "Exit monitor interval (s)", 30, 5, 300, Apply.RESTART, Tier.SESSION, "0002",
-            SERVICE_STORE, "EXIT_MONITOR_INTERVAL_S"),
-    Setting("alerts.heartbeat_grace_s", "Heartbeat alert grace (s)", 300, 60, 3600, Apply.RESTART, Tier.T_L, "0004",
-            SERVICE_STORE, "HEARTBEAT_ALERT_GRACE_S, read at import"),
-    Setting("alerts.sentiment_stale_s", "Sentiment stale alert (s)", 86400, 3600, None, Apply.RESTART, Tier.SESSION,
-            "0004", SERVICE_STORE, "SENTIMENT_STALE_ALERT_S, read at import"),
-    Setting("scanner.max_active_specs", "Max active scanner specs", 10, 1, 50, Apply.RESTART, Tier.SESSION, "0004",
-            SERVICE_STORE, "MAX_ACTIVE_SPECS, read at import"),
+    _runtime_setting("exit.monitor_interval_s", "Exit monitor interval (s)", Tier.SESSION, "0002",
+                     "read at the start of every cycle; EXIT_MONITOR_INTERVAL_S sets the default"),
+    _runtime_setting("alerts.heartbeat_grace_s", "Heartbeat alert grace (s)", Tier.T_L, "0004",
+                     "read on every ops-monitor pass; a lower value raises the alert sooner"),
+    _runtime_setting("alerts.sentiment_stale_s", "Sentiment stale alert (s)", Tier.SESSION, "0004",
+                     "read on every ops-monitor pass; SENTIMENT_STALE_ALERT_S sets the default"),
+    _runtime_setting("scanner.max_active_specs", "Max active scanner specs", Tier.SESSION, "0004",
+                     "read on every spec change and scan cycle; MAX_ACTIVE_SPECS sets the default. "
+                     "Presets turn on and off as scan specs in Scanner."),
+    Setting("alerts.routing", "Alert routing", "critical only", None, None, Apply.DEPLOY, Tier.R, "0004",
+            "code: notifier/bot.py",
+            "Critical alerts go to Telegram and ntfy; every other alert stays in the app. A toggle needs a read grant "
+            "on system_settings for the notifier role (a later migration)."),
     Setting("universe.symbols", "Ingested symbols", "", None, None, Apply.RESTART, Tier.R, "onboarding plan",
             SERVICE_STORE, "INGEST_SYMBOLS; changed through onboarding only"),
     Setting("guard.position_clamp_pct", "Single-order equity clamp (%)", 25, None, None, Apply.DEPLOY, Tier.FIXED, "0004",
@@ -179,7 +192,7 @@ def current_values(stored: Mapping[str, Any], row: Any) -> dict[str, Any]:
     values: dict[str, Any] = {}
     budget = stored.get("LLM_DAILY_BUDGET_USD")
     values["LLM_DAILY_BUDGET_USD"] = None if budget is None else str(parse_cap(budget, DEFAULT_DAILY_CAP_USD))
-    for key in SETTING_KEYS:
+    for key in (*SETTING_KEYS, *RUNTIME_BOUNDS):
         values[key] = stored_text(stored.get(key))
     effective_limits = effective(RiskLimitValues.from_row(row)).as_dict()
     for key, field in _RISK_KEYS.items():
