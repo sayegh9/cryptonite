@@ -1,10 +1,13 @@
 import logging
 import os
-from cryptonite_api.routes.auth import require_operator, require_csrf
-from fastapi import APIRouter, HTTPException, Request, Depends
-from pydantic import BaseModel, Field
-from typing import Any, Dict
 import uuid
+from typing import Any
+
+from cryptonite_api.routes.auth import require_csrf, require_operator
+from cryptonite_api.routes.control import _OVERRIDE_SQL
+from cryptonite_api.settings_registry import REGISTRY, current_values, entry_view
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +19,7 @@ class AgentConfigUpdate(BaseModel):
     system_instructions: str | None = Field(default=None, max_length=5000)
 
 @router.get("/agents")
-async def get_all_agent_configs(request: Request, auth: dict = Depends(require_operator)) -> Dict[str, Any]:
+async def get_all_agent_configs(request: Request, auth: dict = Depends(require_operator)) -> dict[str, Any]:
     pool = request.app.state.pool
     rows = await pool.fetch("SELECT agent_name, model_name, temperature, system_instructions FROM agent_configs")
     configs = {}
@@ -93,7 +96,7 @@ async def update_agent_config(agent_name: str, body: AgentConfigUpdate, request:
     return {"status": "success"}
 
 @router.get("/environment")
-async def get_environment_health(auth: dict = Depends(require_operator)) -> Dict[str, Any]:
+async def get_environment_health(auth: dict = Depends(require_operator)) -> dict[str, Any]:
     gemini_key = os.getenv("GEMINI_API_KEY")
     binance_key = os.getenv("BINANCE_DEMO_API_KEY")
     env_mode = os.getenv("ENVIRONMENT", "DEMO")
@@ -108,3 +111,13 @@ async def get_environment_health(auth: dict = Depends(require_operator)) -> Dict
         "environment_mode": env_mode,
         "kill_switch_active": kill_switch_active
     }
+
+
+@router.get("/registry")
+async def get_settings_registry(request: Request, auth: dict = Depends(require_operator)) -> dict[str, Any]:
+    """The settings registry (ADR 0007): every setting with its tier and apply mode, and the value the API can read."""
+    async with request.app.state.pool.acquire() as conn:
+        budget_value = await conn.fetchval("SELECT value FROM system_settings WHERE key = 'LLM_DAILY_BUDGET_USD'")
+        row = await conn.fetchrow(_OVERRIDE_SQL, "PAPER", "PAPER-ACCOUNT-001")
+    values = current_values(budget_value, row)
+    return {"settings": [entry_view(setting, values.get(setting.key)) for setting in REGISTRY]}
