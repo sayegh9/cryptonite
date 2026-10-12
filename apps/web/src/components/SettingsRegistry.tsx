@@ -22,8 +22,10 @@ interface RegistryEntry {
   adr: string;
   store: string;
   note: string;
+  decimals: number;
   value: string | null;
-  value_source: "api" | "service" | "code";
+  value_source: "api" | "service" | "code" | "default";
+  effective: string | null; // what the service reports it applies, when it reports one
 }
 
 interface Warning {
@@ -41,7 +43,11 @@ interface EnvHealth {
 const GROUPS: { title: string; hint?: string; match: (key: string) => boolean }[] = [
   { title: "AI spend", match: (k) => k === "LLM_DAILY_BUDGET_USD" },
   { title: "Risk limits", hint: "Edited in Operator → Risk limits (ADR 0006).", match: (k) => k.startsWith("risk.") },
-  { title: "Exit rules", match: (k) => k.startsWith("exit.") },
+  {
+    title: "Exit rules",
+    hint: "Read by the exit monitor every cycle. Lower is tighter: lowering is free, raising needs TOTP.",
+    match: (k) => k.startsWith("exit."),
+  },
   { title: "Alerts", match: (k) => k.startsWith("alerts.") },
   { title: "Scanner", match: (k) => k.startsWith("scanner.") },
   { title: "Universe", hint: "Changed through symbol onboarding, not here.", match: (k) => k.startsWith("universe.") },
@@ -71,8 +77,13 @@ const WARNING_CLASS: Record<Warning["severity"], string> = {
 
 const INPUT_CLASS = "mt-1 block rounded border border-white/10 bg-zinc-950 px-2 py-1 font-mono text-sm text-zinc-100";
 
+/** A value with at most `decimals` decimal places, no sign. The server enforces the same rule. */
+const decimalPattern = (decimals: number) => new RegExp(`^\\d+(\\.\\d{1,${decimals}})?$`);
+const stepFor = (decimals: number) => (1 / 10 ** decimals).toFixed(decimals);
+
 function sourceText(entry: RegistryEntry): string {
   if (entry.value !== null) return entry.value;
+  if (entry.value_source === "default") return "not set";
   return entry.value_source === "service" ? "read by the service" : "set in code";
 }
 
@@ -100,7 +111,7 @@ const NumericEditor: React.FC<{ entry: RegistryEntry; onSaved: () => void }> = (
 
   const next = Number(amount);
   const inBounds =
-    /^\d+(\.\d{1,2})?$/.test(amount.trim()) &&
+    decimalPattern(entry.decimals).test(amount.trim()) &&
     (entry.minimum === null || next >= Number(entry.minimum)) &&
     (entry.maximum === null || next <= Number(entry.maximum));
   const changed = inBounds && next !== Number(current);
@@ -136,7 +147,7 @@ const NumericEditor: React.FC<{ entry: RegistryEntry; onSaved: () => void }> = (
           <input
             type="number"
             inputMode="decimal"
-            step="0.01"
+            step={stepFor(entry.decimals)}
             min={entry.minimum ?? undefined}
             max={entry.maximum ?? undefined}
             value={amount}
@@ -146,7 +157,7 @@ const NumericEditor: React.FC<{ entry: RegistryEntry; onSaved: () => void }> = (
         </label>
         {raising && (
           <label className="text-[11px] text-amber-200">
-            Your TOTP code (raising needs it)
+            Your TOTP code (a higher value needs it)
             <input
               inputMode="numeric"
               autoComplete="one-time-code"
@@ -170,7 +181,8 @@ const NumericEditor: React.FC<{ entry: RegistryEntry; onSaved: () => void }> = (
       </label>
       {amount.trim() !== "" && !inBounds && (
         <p className="text-[11px] text-red-300">
-          Enter a number{boundsText(entry) ? ` (${boundsText(entry)})` : ""} with at most two decimals.
+          Enter a number{boundsText(entry) ? ` (${boundsText(entry)})` : ""} with at most {entry.decimals} decimal
+          places.
         </p>
       )}
       {error && (
@@ -183,7 +195,7 @@ const NumericEditor: React.FC<{ entry: RegistryEntry; onSaved: () => void }> = (
         disabled={!canSave}
         className="bg-cyan-600 text-xs font-bold uppercase tracking-wider text-zinc-950 hover:bg-cyan-500 disabled:opacity-40"
       >
-        {saving ? "Saving…" : raising ? "Raise with TOTP" : "Save"}
+        {saving ? "Saving…" : raising ? "Save with TOTP" : "Save"}
       </Button>
     </div>
   );
@@ -202,6 +214,11 @@ const SettingRow: React.FC<{ entry: RegistryEntry; onSaved: () => void }> = ({ e
           default {entry.default}
           {boundsText(entry) ? ` · ${boundsText(entry)}` : ""}
         </div>
+        {entry.effective !== null && (
+          <div className="text-[11px] text-zinc-500" title="The value the service reported it applies">
+            applied now {entry.effective}
+          </div>
+        )}
       </div>
     </div>
     <div className="mt-2 flex flex-wrap gap-2 text-[11px]">

@@ -5,22 +5,27 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD, parse_cap
 from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import get_auth_manager, require_csrf, require_operator
 from cryptonite_api.routes.control import _OVERRIDE_SQL, verify_csrf
 from cryptonite_api.settings_registry import (
+    EXIT_MONITOR_HEARTBEAT,
     PROD_ENVS,
     REGISTRY,
     WRITE_PATHS,
     WriteRefused,
     current_values,
     entry_view,
+    exit_rule_violations,
     health_warnings,
+    heartbeat_exit_values,
+    quantum,
+    stored_decimal,
     validate_value,
     write_needs_totp,
 )
+from cryptonite_schemas.exit_thresholds import SETTING_KEYS
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -139,18 +144,31 @@ async def get_environment_health(auth: dict = Depends(require_operator)) -> dict
     }
 
 
+async def _exit_monitor_heartbeat(request: Request) -> Any:
+    """The exit monitor's heartbeat (the set it applies), or None when the API cannot read it."""
+    redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
+    if redis is None:
+        return None
+    try:
+        return await redis.get(EXIT_MONITOR_HEARTBEAT)
+    except Exception:
+        return None
+
+
 @router.get("/registry")
 async def get_settings_registry(request: Request, auth: dict = Depends(require_operator)) -> dict[str, Any]:
-    """The settings registry (ADR 0007): every setting with its tier and apply mode, and the value the API can read."""
+    """The settings registry (ADR 0007): every setting with its tier and apply mode, the value stored for it, and for
+    the exit thresholds the value the monitor reports it applies."""
     async with request.app.state.pool.acquire() as conn:
-        budget_value = await conn.fetchval("SELECT value FROM system_settings WHERE key = 'LLM_DAILY_BUDGET_USD'")
+        rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key = ANY($1)", list(WRITE_PATHS))
         row = await conn.fetchrow(_OVERRIDE_SQL, "PAPER", "PAPER-ACCOUNT-001")
-    values = current_values(budget_value, row)
-    return {"settings": [entry_view(setting, values.get(setting.key)) for setting in REGISTRY]}
+    values = current_values({r["key"]: r["value"] for r in rows}, row)
+    applied = heartbeat_exit_values(await _exit_monitor_heartbeat(request))
+    return {"settings": [entry_view(setting, values.get(setting.key), applied.get(setting.key)) for setting in REGISTRY]}
 
 
 class RegistryWriteRequest(BaseModel):
-    value: Decimal = Field(max_digits=12, decimal_places=2)
+    value: Decimal = Field(max_digits=12)
     reason: str = Field(..., min_length=5, max_length=300, description="Audited reason for the change")
     totp_code: str | None = Field(default=None, description="Operator TOTP; required only to raise the value")
 
@@ -164,9 +182,10 @@ async def update_registry_setting(
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
     x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ):
-    """Write one registry setting (ADR 0007). Lowering the LLM budget is free; raising it needs the operator's TOTP.
-    Refusals: 404 unknown key, 403 no write path or tier, 422 out of bounds, 401 TOTP missing or wrong. A refusal
-    changes nothing."""
+    """Write one registry setting (ADR 0007). Lowering a value is free and raising it needs the operator's TOTP (for
+    every T/L key, lower is tighter). The exit thresholds must also pass their cross-field rules as a set.
+    Refusals: 404 unknown key, 403 no write path or tier, 422 out of bounds, decimals or a rule, 401 TOTP missing or
+    wrong. A refusal changes nothing."""
     verify_csrf(auth, x_csrf_token)
     setting = next((s for s in REGISTRY if s.key == key), None)
     if setting is None:
@@ -178,19 +197,25 @@ async def update_registry_setting(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=[
             {"loc": ["body", "value"], "msg": f"{key}: {e}", "type": "registry_bounds"}])
-    new = body.value.quantize(Decimal("0.01"))
+    new = body.value.quantize(quantum(setting))
     username = auth.get("username") or f"machine:{auth.get('role', 'operator')}"
     client_ip = request.client.host if request.client else None
 
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
-            # One writer per key: the TOTP decision is made against the stored value
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"system_settings:{key}")
-            stored = await conn.fetchval("SELECT value FROM system_settings WHERE key = $1", key)
-            current = parse_cap(stored, DEFAULT_DAILY_CAP_USD).quantize(Decimal("0.01"))
+            # One writer for the whole registry: the TOTP and the cross-field rules are decided against stored values
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", "system_settings:registry")
+            rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key = ANY($1)", list(WRITE_PATHS))
+            stored = {r["key"]: r["value"] for r in rows}
+            current = stored_decimal(stored.get(key), setting)
             if new == current:
                 return {"success": True, "key": key, "changed": False, "previous": format(current, "f"),
                         "value": format(current, "f"), "totp_verified": False}
+            if key in SETTING_KEYS:
+                found = exit_rule_violations(stored, setting, new)
+                if found:
+                    raise HTTPException(status_code=422, detail=[
+                        {"loc": ["body", "value"], "msg": msg, "type": "registry_rule"} for msg in found])
             try:
                 needs_totp = write_needs_totp(setting, current, new)
             except WriteRefused as e:  # the policy's own refusal, kept here so the rule lives in one place
