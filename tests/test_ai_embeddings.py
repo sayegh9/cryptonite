@@ -14,9 +14,16 @@ from cryptonite_agents.gateway import BudgetGuard, Gateway, ModelUnavailable
 from cryptonite_agents.gateway.local_tier import LocalTierHealth
 from cryptonite_agents.gateway.providers import pydantic_ai_backend as backend
 from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
+from cryptonite_agents.gateway.routes import DEFAULT_ROUTES
 from migrated_db import migrated_database
 
 LOCAL = "ollama:embeddinggemma"
+
+
+def test_embed_default_is_the_local_model_not_the_retired_one():
+    # The live value is the embed row in ai_model_routes. This default is what the gateway uses when no row
+    # loads (missing row, or a failed read), so it must never be the retired text-embedding-004.
+    assert DEFAULT_ROUTES["embed"].primary_model == LOCAL
 
 
 class FakeEmbedder:

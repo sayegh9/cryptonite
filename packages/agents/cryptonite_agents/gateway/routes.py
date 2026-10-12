@@ -31,7 +31,7 @@ class BudgetPriority(StrEnum):
 FLASH_LITE = "google:gemini-2.5-flash-lite"
 FLASH = "google:gemini-2.5-flash"
 PRO = "google:gemini-2.5-pro"
-EMBED = "google:text-embedding-004"  # existing reflections.embedding vectors come from this model
+EMBED = "ollama:embeddinggemma"  # default only: the live value is the embed row in ai_model_routes; vectors are tagged per model (migration 027)
 
 
 @dataclass(frozen=True)

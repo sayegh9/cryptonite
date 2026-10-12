@@ -6,11 +6,13 @@ import sys
 from pathlib import Path
 
 import asyncpg
+import httpx
 import polars as pl
 import pytest
 from cryptonite_agents.gateway import BudgetGuard, Gateway
+from cryptonite_agents.gateway.local_tier import LocalTierHealth
 from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
-from cryptonite_agents.gateway.routes import FLASH
+from cryptonite_agents.gateway.routes import EMBED, FLASH
 from migrated_db import migrated_database
 from pydantic_ai.models.test import TestModel
 
@@ -57,6 +59,13 @@ class FakeLake:
         return df.filter((pl.col("ts_event_ns") >= (start_ns or 0)) & (pl.col("ts_event_ns") <= (end_ns or 2**63)))
 
 
+def _local_tier_up() -> LocalTierHealth:
+    """The local tier answers as healthy, so the ollama embed route is used."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"models": [{"name": "embeddinggemma:latest"}]})
+    return LocalTierHealth(base_url="http://ollama:11434/v1", transport=httpx.MockTransport(handler))
+
+
 class FakeEmbedder:
     async def embed_texts(self, texts):
         return [[0.1] * 768 for _ in texts], 1
@@ -90,15 +99,15 @@ async def test_labels_elapsed_horizons_then_reflects_on_the_24h_outcome(db_url):
             got = {r["horizon"]: float(r["return_pct"]) for r in await conn.fetch("SELECT horizon, return_pct FROM ai_decision_outcomes")}
         assert set(got) == {"1h", "4h", "24h"} and got["24h"] == pytest.approx(0.024)
 
-        gw = Gateway(budget=BudgetGuard())
+        gw = Gateway(budget=BudgetGuard(), local_tier=_local_tier_up())
         with override_model(FLASH, TestModel(custom_output_text="Trend-aligned buys with room to target worked.")), \
-                override_model("google:text-embedding-004", FakeEmbedder()):
+                override_model(EMBED, FakeEmbedder()):
             assert await reflection.ReflectionEngine(pool, lake, gw).process_pending_reflections() == 1
             assert await reflection.ReflectionEngine(pool, lake, gw).process_pending_reflections() == 0
         async with pool.acquire() as conn:
             r = await conn.fetchrow("SELECT actual_outcome_pnl, alpha_vs_benchmark, outcome, embedding_model, timeframe FROM reflections")
         assert float(r["actual_outcome_pnl"]) == pytest.approx(0.024)
         assert float(r["alpha_vs_benchmark"]) == pytest.approx(0.012, abs=1e-4)  # 2.4% vs BTC's 1.2%
-        assert (r["outcome"], r["embedding_model"], r["timeframe"]) == ("WIN", "google:text-embedding-004", "24h")
+        assert (r["outcome"], r["embedding_model"], r["timeframe"]) == ("WIN", EMBED, "24h")
     finally:
         await pool.close()
