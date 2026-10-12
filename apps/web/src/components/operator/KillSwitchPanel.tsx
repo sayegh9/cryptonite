@@ -26,6 +26,8 @@ export function KillSwitchPanel({
       setStatus(data);
       setError("");
     } catch (err: any) {
+      // A failed read is unknown, so drop the last status: it must never keep showing ARMED under the error
+      setStatus(null);
       setError(err.message || "Failed to load kill-switch status");
     } finally {
       setLoading(false);

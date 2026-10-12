@@ -1,8 +1,10 @@
-"""The PAPER kill switch, read from one place.
+"""The PAPER kill switch, as the API reads it.
 
-The AI status, the paper endpoint and the control endpoint all read the same row: ``execution_kill_switch``, keyed
-by (environment, account_id). This module holds that key and the read, so the three cannot disagree about which
-row they mean. A missing row is reported as missing, never as armed: a kill switch fails closed.
+The AI status, the paper endpoints and the control endpoints read the same row, ``execution_kill_switch`` keyed by
+(environment, account_id), through this module. A missing row is reported as missing, never as armed.
+
+Not covered yet: the executor's order fence (packages/execution kill_switch.py), the orchestrator and the debate
+gate still read the row themselves, and they still treat a missing row as unlatched. Fixing those is a follow-up.
 """
 
 from typing import Any

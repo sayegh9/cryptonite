@@ -178,16 +178,14 @@ async def reset_kill_switch(
 
     # 3. Check current latch generation and enqueue KILL_SWITCH_RESET_REQUEST
     async with request.app.state.pool.acquire() as conn:
-        ks_row = await conn.fetchrow(
-            """
-            SELECT is_latched, latch_generation
-            FROM execution_kill_switch
-            WHERE environment = $1 AND account_id = $2;
-            """,
-            req.environment,
-            req.account_id,
-        )
-        if not ks_row or not ks_row["is_latched"]:
+        ks_row = await read_kill_switch(conn, req.environment, req.account_id)
+        if ks_row is None:
+            # A missing row is unknown, not unlatched: refuse the reset rather than report it as already done
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"No kill-switch row for {req.environment}/{req.account_id}: its state is unknown; reset refused",
+            )
+        if not ks_row["is_latched"]:
             return {
                 "success": True,
                 "status": "ALREADY_UNLATCHED",
