@@ -115,7 +115,7 @@ def entry_view(setting: Setting, value: Any) -> dict[str, Any]:
         "maximum": None if setting.maximum is None else str(setting.maximum),
         "apply": setting.apply.value,
         "tier": setting.tier.value,
-        "writable": setting.writable,
+        "writable": False,  # no write path until phase 2; the tier says what a write will need
         "adr": setting.adr,
         "store": setting.store,
         "note": setting.note,

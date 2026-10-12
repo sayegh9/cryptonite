@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD
 from cryptonite_api.routes.settings import get_settings_registry
 from cryptonite_api.settings_registry import (
     REGISTRY,
@@ -72,6 +73,15 @@ def test_exit_and_alert_defaults_match_the_services():
     assert by_key("scanner.max_active_specs").default == MAX_ACTIVE_SPECS
 
 
+def test_budget_default_is_the_budget_guard_default():
+    assert by_key("LLM_DAILY_BUDGET_USD").default == DEFAULT_DAILY_CAP_USD
+
+
+def test_nothing_reports_writable_until_a_write_path_exists():
+    out = [entry_view(s, None) for s in REGISTRY]
+    assert all(entry["writable"] is False for entry in out)
+
+
 def test_fixed_guardrails_match_the_risk_module():
     assert by_key("guard.position_clamp_pct").default == MAX_POSITION_PCT_CAP
     assert by_key("guard.account_backstop_pct").default == ACCOUNT_BACKSTOP_DRAWDOWN_PCT
@@ -80,7 +90,7 @@ def test_fixed_guardrails_match_the_risk_module():
 
 def test_entry_view_marks_service_owned_values_as_service_not_api():
     stop = entry_view(by_key("exit.stop_loss_pct"), None)
-    assert (stop["value"], stop["value_source"], stop["apply"], stop["writable"]) == (None, "service", "restart", True)
+    assert (stop["value"], stop["value_source"], stop["apply"], stop["writable"]) == (None, "service", "restart", False)
     budget = entry_view(by_key("LLM_DAILY_BUDGET_USD"), "30.00")
     assert (budget["value"], budget["value_source"]) == ("30.00", "api")
 
