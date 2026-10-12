@@ -155,3 +155,27 @@ def entry_view(setting: Setting, value: Any) -> dict[str, Any]:
         "value": value,
         "value_source": "api" if value is not None else ("service" if setting.store == SERVICE_STORE else "code"),
     }
+
+
+PROD_ENVS = frozenset({"PROD", "PRODUCTION"})  # the same names the login gate checks (auth.py)
+
+
+def health_warnings(*, environment: str, dev_totp_login: bool, dev_totp_approvals: bool, secure_cookie: bool,
+                    kill_switch_active: bool) -> list[dict[str, str]]:
+    """Warnings for the Settings health panel. Each flag is computed from the environment by the route, so the
+    panel says what the running process will do, not what the .env file says."""
+    warnings: list[dict[str, str]] = []
+    if dev_totp_approvals:
+        warnings.append({"code": "DEV_TOTP_APPROVALS", "severity": "critical",
+                         "text": "AI_ALLOW_DEV_TOTP is on: risk-adding AI approvals accept the 000000 code. Turn it off."})
+    if dev_totp_login:
+        warnings.append({"code": "DEV_TOTP_LOGIN", "severity": "warn",
+                         "text": f"The operator login accepts the 000000 code (ALLOW_DEV_TOTP on, ENVIRONMENT={environment}). "
+                                 "It is refused only when ENVIRONMENT is PROD."})
+    if environment in PROD_ENVS and not secure_cookie:
+        warnings.append({"code": "INSECURE_COOKIE", "severity": "warn",
+                         "text": "SECURE_COOKIE is off in PROD: the session cookie is not marked Secure."})
+    if kill_switch_active:
+        warnings.append({"code": "KILL_SWITCH_LATCHED", "severity": "warn",
+                         "text": "The kill switch is latched: new trades are halted until it is reset."})
+    return warnings

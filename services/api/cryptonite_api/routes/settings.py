@@ -11,11 +11,13 @@ from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import get_auth_manager, require_csrf, require_operator
 from cryptonite_api.routes.control import _OVERRIDE_SQL, verify_csrf
 from cryptonite_api.settings_registry import (
+    PROD_ENVS,
     REGISTRY,
     WRITE_PATHS,
     WriteRefused,
     current_values,
     entry_view,
+    health_warnings,
     validate_value,
     write_needs_totp,
 )
@@ -118,11 +120,22 @@ async def get_environment_health(auth: dict = Depends(require_operator)) -> dict
     kill_switch_path = os.getenv("EMERGENCY_MARKER_PATH", "/data/executor_state/demo/emergency_kill_switch.marker")
     kill_switch_active = os.path.exists(kill_switch_path)
     
+    # The same env names and defaults the gates read: the login (auth.py), the AI approvals (ai.py), the cookie (routes/auth.py)
+    gate_env = os.getenv("ENVIRONMENT", "DEV").upper()
+    dev_totp_login = os.getenv("ALLOW_DEV_TOTP", "true").lower() in ("true", "1", "yes") and gate_env not in PROD_ENVS
+    dev_totp_approvals = os.getenv("AI_ALLOW_DEV_TOTP", "false").lower() in ("true", "1", "yes")
+    secure_cookie = os.getenv("SECURE_COOKIE", "false").lower() in ("true", "1", "yes")
     return {
         "gemini_key_set": bool(gemini_key and len(gemini_key) > 10),
         "binance_key_set": bool(binance_key and len(binance_key) > 10),
         "environment_mode": env_mode,
-        "kill_switch_active": kill_switch_active
+        "kill_switch_active": kill_switch_active,
+        "dev_totp_login": dev_totp_login,
+        "dev_totp_approvals": dev_totp_approvals,
+        "secure_cookie": secure_cookie,
+        "warnings": health_warnings(
+            environment=gate_env, dev_totp_login=dev_totp_login, dev_totp_approvals=dev_totp_approvals,
+            secure_cookie=secure_cookie, kill_switch_active=kill_switch_active),
     }
 
 

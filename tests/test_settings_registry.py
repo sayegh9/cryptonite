@@ -18,6 +18,7 @@ from cryptonite_api.settings_registry import (
     WriteRefused,
     current_values,
     entry_view,
+    health_warnings,
     validate_value,
     write_needs_totp,
 )
@@ -325,3 +326,57 @@ async def test_refusals_change_nothing():
             await put(key, value, pool=pool, auth_mgr=auth_mgr, csrf=csrf)
         assert refused.value.status_code == code, key
         assert pool.inserts() == [] and auth_mgr.events == [], key
+
+
+# --- health panel: the flags the gates read, and the warnings they produce -------------------------------------
+
+def _codes(warnings):
+    return [w["code"] for w in warnings]
+
+
+def test_health_warnings_name_each_risky_flag_once():
+    assert _codes(health_warnings(environment="DEMO", dev_totp_login=True, dev_totp_approvals=True,
+                                  secure_cookie=False, kill_switch_active=True)) == [
+        "DEV_TOTP_APPROVALS", "DEV_TOTP_LOGIN", "KILL_SWITCH_LATCHED"]  # PROD-only cookie warning is absent outside PROD
+
+
+def test_insecure_cookie_is_a_warning_only_in_prod():
+    assert _codes(health_warnings(environment="PROD", dev_totp_login=False, dev_totp_approvals=False,
+                                  secure_cookie=False, kill_switch_active=False)) == ["INSECURE_COOKIE"]
+    assert _codes(health_warnings(environment="DEMO", dev_totp_login=False, dev_totp_approvals=False,
+                                  secure_cookie=False, kill_switch_active=False)) == []
+
+
+def test_approval_dev_code_is_critical():
+    (warning,) = health_warnings(environment="DEMO", dev_totp_login=False, dev_totp_approvals=True,
+                                 secure_cookie=True, kill_switch_active=False)
+    assert warning["code"] == "DEV_TOTP_APPROVALS" and warning["severity"] == "critical"
+
+
+@pytest.mark.asyncio
+async def test_environment_flags_follow_the_gate_env_vars(monkeypatch, tmp_path):
+    from cryptonite_api.routes.settings import get_environment_health
+
+    marker = tmp_path / "kill.marker"
+    marker.write_text("latched")
+    monkeypatch.setenv("EMERGENCY_MARKER_PATH", str(marker))
+
+    # Defaults on an unconfigured host: the login accepts 000000 (ALLOW_DEV_TOTP defaults on, ENVIRONMENT is not PROD)
+    for var in ("ENVIRONMENT", "ALLOW_DEV_TOTP", "AI_ALLOW_DEV_TOTP", "SECURE_COOKIE"):
+        monkeypatch.delenv(var, raising=False)
+    health = await get_environment_health(auth={})
+    assert health["dev_totp_login"] is True and health["dev_totp_approvals"] is False and health["secure_cookie"] is False
+    assert "DEV_TOTP_LOGIN" in _codes(health["warnings"]) and "KILL_SWITCH_LATCHED" in _codes(health["warnings"])
+
+    # PROD refuses the login code whatever ALLOW_DEV_TOTP says, and an insecure cookie is then a warning
+    monkeypatch.setenv("ENVIRONMENT", "PROD")
+    monkeypatch.setenv("ALLOW_DEV_TOTP", "true")
+    health = await get_environment_health(auth={})
+    assert health["dev_totp_login"] is False
+    assert _codes(health["warnings"]) == ["INSECURE_COOKIE", "KILL_SWITCH_LATCHED"]
+
+    # A configured PROD host with nothing risky on: no warnings
+    marker.unlink()
+    monkeypatch.setenv("ALLOW_DEV_TOTP", "false")
+    monkeypatch.setenv("SECURE_COOKIE", "true")
+    assert (await get_environment_health(auth={}))["warnings"] == []
