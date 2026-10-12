@@ -1,18 +1,27 @@
-"""The settings registry (ADR 0007), Phase 1: read-only, with drift guards against the code it describes."""
+"""The settings registry (ADR 0007), Phase 1: the read endpoint, the LLM budget write with its tier rule, and drift
+guards against the code the registry describes."""
 
+from dataclasses import replace
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD
-from cryptonite_api.routes.settings import get_settings_registry
+from cryptonite_api.routes import settings as settings_route
+from cryptonite_api.routes.settings import RegistryWriteRequest, get_settings_registry, update_registry_setting
 from cryptonite_api.settings_registry import (
     REGISTRY,
     WRITABLE_TIERS,
+    WRITE_PATHS,
     Apply,
     Tier,
+    WriteRefused,
     current_values,
     entry_view,
+    validate_value,
+    write_needs_totp,
 )
+from fastapi import HTTPException
 from cryptonite_execution.risk_limits import (
     ACCOUNT_BACKSTOP_DRAWDOWN_PCT,
     DEFAULTS,
@@ -77,9 +86,45 @@ def test_budget_default_is_the_budget_guard_default():
     assert by_key("LLM_DAILY_BUDGET_USD").default == DEFAULT_DAILY_CAP_USD
 
 
-def test_nothing_reports_writable_until_a_write_path_exists():
-    out = [entry_view(s, None) for s in REGISTRY]
-    assert all(entry["writable"] is False for entry in out)
+def test_only_keys_with_a_write_path_report_writable():
+    assert WRITE_PATHS == {"LLM_DAILY_BUDGET_USD"}
+    out = {s.key: entry_view(s, None)["writable"] for s in REGISTRY}
+    assert {key for key, writable in out.items() if writable} == WRITE_PATHS
+
+
+def test_lowering_the_budget_is_free_and_raising_it_needs_totp():
+    budget = by_key("LLM_DAILY_BUDGET_USD")
+    assert write_needs_totp(budget, Decimal("25.00"), Decimal("10.00")) is False
+    assert write_needs_totp(budget, Decimal("25.00"), Decimal("30.00")) is True
+
+
+def test_unchanged_budget_needs_no_totp():
+    budget = by_key("LLM_DAILY_BUDGET_USD")
+    assert write_needs_totp(budget, Decimal("25.00"), Decimal("25.00")) is False
+
+
+def test_tier_rules_for_a_write_path_are_applied_by_tier():
+    budget = by_key("LLM_DAILY_BUDGET_USD")
+    assert write_needs_totp(replace(budget, tier=Tier.TOTP), Decimal("1"), Decimal("1")) is True
+    assert write_needs_totp(replace(budget, tier=Tier.SESSION), Decimal("1"), Decimal("9")) is False
+
+
+def test_keys_without_a_write_path_or_a_writable_tier_are_refused():
+    with pytest.raises(WriteRefused):
+        write_needs_totp(by_key("exit.stop_loss_pct"), Decimal("5"), Decimal("6"))
+    with pytest.raises(WriteRefused):
+        write_needs_totp(by_key("guard.account_backstop_pct"), Decimal("20"), Decimal("19"))
+    with pytest.raises(WriteRefused):
+        write_needs_totp(replace(by_key("LLM_DAILY_BUDGET_USD"), key="universe.symbols"), Decimal("1"), Decimal("2"))
+
+
+def test_budget_bounds_reject_negative_and_non_finite_values():
+    budget = by_key("LLM_DAILY_BUDGET_USD")
+    validate_value(budget, Decimal("0"))
+    validate_value(budget, Decimal("500.00"))
+    for bad in (Decimal("-0.01"), Decimal("NaN"), Decimal("Infinity")):
+        with pytest.raises(ValueError):
+            validate_value(budget, bad)
 
 
 def test_fixed_guardrails_match_the_risk_module():
@@ -148,3 +193,133 @@ async def test_registry_endpoint_lists_every_setting_with_its_tier_and_value():
     assert by["LLM_DAILY_BUDGET_USD"]["value"] == "25.00" and by["LLM_DAILY_BUDGET_USD"]["value_source"] == "api"
     assert by["exit.stop_loss_pct"]["value_source"] == "service"
     assert by["universe.symbols"]["writable"] is False
+
+
+class WriteConn:
+    """Records what the write path executes. ``stored`` is the system_settings value the read returns."""
+
+    def __init__(self, stored):
+        self.stored, self.executed = stored, []
+
+    async def execute(self, sql, *args):
+        self.executed.append((sql, args))
+
+    async def fetchval(self, sql, *args):
+        return self.stored
+
+    def transaction(self):
+        return _Ctx()
+
+
+class _Ctx:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class WritePool:
+    def __init__(self, stored=None):
+        self.conn = WriteConn(stored)
+
+    def acquire(self):
+        conn = self.conn
+
+        class _Acquire:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Acquire()
+
+    def inserts(self):
+        return [args for sql, args in self.conn.executed if "INSERT INTO system_settings" in sql]
+
+
+class FakeAuthMgr:
+    def __init__(self):
+        self.events = []
+
+    async def log_audit_event(self, **event):
+        self.events.append(event)
+
+
+OPERATOR = {"username": "op", "user_id": "00000000-0000-0000-0000-000000000001", "role": "operator", "csrf_token": "tok"}
+
+
+async def put(key, value, *, pool, auth_mgr, totp=None, csrf="tok"):
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool)), client=SimpleNamespace(host="127.0.0.1"))
+    body = RegistryWriteRequest(value=Decimal(value), reason="budget change for the test", totp_code=totp)
+    return await update_registry_setting(key, body, request, auth=OPERATOR, auth_mgr=auth_mgr, x_csrf_token=csrf)
+
+
+@pytest.mark.asyncio
+async def test_lowering_the_budget_writes_without_totp_and_is_audited(monkeypatch):
+    async def no_totp(*args, **kwargs):
+        raise AssertionError("lowering must not ask for TOTP")
+
+    monkeypatch.setattr(settings_route, "require_totp", no_totp)
+    pool, auth_mgr = WritePool(stored=None), FakeAuthMgr()  # no row: the default 25.00 is current
+    out = await put("LLM_DAILY_BUDGET_USD", "10", pool=pool, auth_mgr=auth_mgr)
+    assert out == {"success": True, "key": "LLM_DAILY_BUDGET_USD", "changed": True, "previous": "25.00",
+                   "value": "10.00", "totp_verified": False, "applies_within_s": 10}
+    assert pool.inserts() == [("LLM_DAILY_BUDGET_USD", '"10.00"')]  # JSON string, which parse_cap reads
+    assert [e["action"] for e in auth_mgr.events] == ["SETTING_UPDATE"]
+    assert auth_mgr.events[0]["details"]["before"] == "25.00" and auth_mgr.events[0]["details"]["after"] == "10.00"
+
+
+@pytest.mark.asyncio
+async def test_raising_the_budget_without_totp_is_refused_and_writes_nothing(monkeypatch):
+    async def missing_totp(request, auth, code):
+        raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
+
+    monkeypatch.setattr(settings_route, "require_totp", missing_totp)
+    pool, auth_mgr = WritePool(stored='"25.00"'), FakeAuthMgr()
+    with pytest.raises(HTTPException) as refused:
+        await put("LLM_DAILY_BUDGET_USD", "30", pool=pool, auth_mgr=auth_mgr)
+    assert refused.value.status_code == 401 and "TOTP_REQUIRED" in refused.value.detail
+    assert pool.inserts() == []
+    assert [e["action"] for e in auth_mgr.events] == ["SETTING_UPDATE_FAILED_AUTH"]
+
+
+@pytest.mark.asyncio
+async def test_raising_the_budget_with_totp_writes_and_records_it(monkeypatch):
+    seen = {}
+
+    async def good_totp(request, auth, code):
+        seen["code"] = code
+
+    monkeypatch.setattr(settings_route, "require_totp", good_totp)
+    pool, auth_mgr = WritePool(stored='"25.00"'), FakeAuthMgr()
+    out = await put("LLM_DAILY_BUDGET_USD", "30", pool=pool, auth_mgr=auth_mgr, totp="123456")
+    assert seen["code"] == "123456"
+    assert out["changed"] is True and out["totp_verified"] is True and out["value"] == "30.00"
+    assert pool.inserts() == [("LLM_DAILY_BUDGET_USD", '"30.00"')]
+    assert auth_mgr.events[0]["action"] == "SETTING_UPDATE" and auth_mgr.events[0]["details"]["totp_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_unchanged_budget_writes_nothing():
+    pool, auth_mgr = WritePool(stored='"25.00"'), FakeAuthMgr()
+    out = await put("LLM_DAILY_BUDGET_USD", "25", pool=pool, auth_mgr=auth_mgr)
+    assert out["changed"] is False and pool.inserts() == [] and auth_mgr.events == []
+
+
+@pytest.mark.asyncio
+async def test_refusals_change_nothing():
+    cases = [
+        ("LLM_DAILY_BUDGET_USD", "10", "wrong-token", 403),   # CSRF
+        ("LLM_DAILY_BUDGET_USD", "-1", "tok", 422),           # below the minimum
+        ("exit.stop_loss_pct", "6", "tok", 403),              # no write path (env-owned)
+        ("guard.position_clamp_pct", "30", "tok", 403),       # fixed guardrail
+        ("no.such.key", "1", "tok", 404),                     # unknown
+    ]
+    for key, value, csrf, code in cases:
+        pool, auth_mgr = WritePool(stored='"25.00"'), FakeAuthMgr()
+        with pytest.raises(HTTPException) as refused:
+            await put(key, value, pool=pool, auth_mgr=auth_mgr, csrf=csrf)
+        assert refused.value.status_code == code, key
+        assert pool.inserts() == [] and auth_mgr.events == [], key

@@ -1,8 +1,9 @@
 """The settings registry (ADR 0007): one entry per platform setting, with its tier, apply mode and owning ADR.
 
-Phase 1 is read-only. The registry says where each value lives and what a change costs. Writes come with the tier
-enforcement in the next phase. ``apply`` describes what the code does today: a value read at import is ``restart``
-until its reader moves to a per-cycle read, so the UI never promises a hot apply the code cannot deliver.
+The registry says where each value lives and what a change costs. A key is writable only when it is in ``WRITE_PATHS``
+and its tier allows writes; the server applies the tier (``write_needs_totp``), never the UI. ``apply`` describes what
+the code does today: a value read at import is ``restart`` until its reader moves to a per-cycle read, so the UI never
+promises a hot apply the code cannot deliver.
 """
 
 from dataclasses import dataclass
@@ -31,6 +32,37 @@ class Apply(StrEnum):
 
 WRITABLE_TIERS = frozenset({Tier.T_L, Tier.TOTP, Tier.SESSION})
 SERVICE_STORE = "env"  # values read from the environment at import, outside the API
+# Keys with a write endpoint. Everything else stays read-only until its write path (and its direction of "tighter") exists.
+WRITE_PATHS = frozenset({"LLM_DAILY_BUDGET_USD"})
+
+
+class WriteRefused(Exception):
+    """A change no tier allows: the key has no write path, or its tier never takes a write."""
+
+
+def write_needs_totp(setting: "Setting", current: Decimal, new: Decimal) -> bool:
+    """Whether a change needs the operator's TOTP (ADR 0007 tiers). Raises WriteRefused for a change no tier allows.
+
+    T/L is written for the LLM budget only, where lower is tighter (less spend). Any other T/L key needs its own
+    direction before it joins WRITE_PATHS.
+    """
+    if setting.key not in WRITE_PATHS or setting.tier not in WRITABLE_TIERS:
+        raise WriteRefused(f"{setting.key} is not writable")
+    if setting.tier is Tier.TOTP:
+        return True
+    if setting.tier is Tier.SESSION:
+        return False
+    return new > current  # T/L: tightening (lowering the budget) is free; loosening needs TOTP
+
+
+def validate_value(setting: "Setting", value: Decimal) -> None:
+    """Raise ValueError when ``value`` is outside the setting's bounds."""
+    if not value.is_finite():
+        raise ValueError("must be a finite number")
+    if setting.minimum is not None and value < Decimal(str(setting.minimum)):
+        raise ValueError(f"must be at least {setting.minimum}")
+    if setting.maximum is not None and value > Decimal(str(setting.maximum)):
+        raise ValueError(f"must be at most {setting.maximum}")
 
 
 @dataclass(frozen=True)
@@ -115,7 +147,7 @@ def entry_view(setting: Setting, value: Any) -> dict[str, Any]:
         "maximum": None if setting.maximum is None else str(setting.maximum),
         "apply": setting.apply.value,
         "tier": setting.tier.value,
-        "writable": False,  # no write path until phase 2; the tier says what a write will need
+        "writable": setting.writable and setting.key in WRITE_PATHS,  # the tier allows it and a write path exists
         "adr": setting.adr,
         "store": setting.store,
         "note": setting.note,
