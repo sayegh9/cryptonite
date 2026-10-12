@@ -1,4 +1,4 @@
-"""The bars route reads the lake off the event loop, and a window reads only the partitions that can hold it.
+"""The bars route reads the lake off the event loop; windowed reads return exactly the bars in the window.
 
 Every served result must equal the full-history read: the same bars, in the same order. The lake is written
 through the production path (Binance kline -> ``EnrichedBar`` -> ``AnalyticsLakeWriter``).
@@ -89,15 +89,6 @@ def test_a_request_without_a_window_serves_what_the_full_history_serves(lake, tf
     assert _served(loaded, limit) == _full_history(engine, "BTCUSDT", tf, limit)
 
 
-def test_a_window_read_only_opens_the_partitions_that_can_hold_it(lake):
-    engine = AnalyticsQueryEngine(lake)
-    start = DAY0 + DAY + 12 * 60 * MIN  # day 1, 12:00 UTC
-    files = engine._lake_files("BTCUSDT", "1m", start, start + 30 * MIN)
-    dates = {Path(f).parent.name for f in files}
-    # The day-0 batch can run past midnight, so day 0 stays in; day 2 starts after the window and is skipped.
-    assert dates == {"date=2026-10-01", "date=2026-10-02"}
-
-
 @pytest.mark.parametrize("tf", ["15m", "1h"])
 def test_a_window_that_starts_inside_a_batch_dated_the_day_before_matches_the_unpruned_read(lake, tf):
     engine = AnalyticsQueryEngine(lake)
@@ -138,3 +129,17 @@ def test_the_route_serves_the_newest_bars_and_rejects_an_unsupported_timeframe(l
 
     resp = client.get("/api/v1/bars", params={"symbol": "BTCUSDT", "timeframe": "2h"})
     assert resp.status_code == 400
+
+
+def test_a_batch_that_spans_days_after_an_outage_is_served_in_full_by_a_window(tmp_path):
+    # Recovery can merge a REST page with buffered live bars: a file dated day 0 can hold bars three days later.
+    # A window over those later bars must still return them, so reads cannot prune by the file's date.
+    _write_batch(tmp_path, "BTCUSDT", DAY0, 1000, "btc-long")
+    _write_batch(tmp_path, "BTCUSDT", DAY0 + 3 * DAY, 120, "btc-late")
+    engine = AnalyticsQueryEngine(tmp_path)
+    start, end = DAY0 + 3 * DAY, DAY0 + 3 * DAY + 120 * MIN
+    unpruned = engine.query_bars_df(symbol="BTCUSDT", timeframe="1m")
+    expected = unpruned.filter((pl.col("ts_event_ns") >= start) & (pl.col("ts_event_ns") <= end))
+    windowed = engine.query_bars_df(symbol="BTCUSDT", timeframe="1m", start_ns=start, end_ns=end)
+    assert windowed.height == expected.height > 0
+    _assert_same_bars(windowed.to_dicts(), expected.to_dicts())

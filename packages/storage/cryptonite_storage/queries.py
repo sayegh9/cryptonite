@@ -1,7 +1,6 @@
 """DuckDB analytical query engine over the date-partitioned Analytics Lake."""
 
 import re
-from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -11,9 +10,6 @@ _UNIT_NS = {"m": 60 * 10**9, "h": 3600 * 10**9, "d": 86400 * 10**9, "w": 7 * 864
 # A live kline arrives a few hundred ms before its rounded close; one recorded more than this before
 # its close was still open when written.
 EARLY_RECEIPT_TOLERANCE_NS = 5 * 10**9
-# A parquet file is dated by its batch's FIRST bar, so a batch can run past its date. The coordinator caps a batch
-# at 1000 bars (about 17 h); two days of pad covers that with room to spare.
-LAKE_BATCH_PAD_DAYS = 2
 
 
 def timeframe_ns(timeframe: str) -> int:
@@ -27,17 +23,6 @@ def timeframe_ns(timeframe: str) -> int:
     if not m or int(m.group(1)) <= 0:
         raise ValueError(f"Unsupported timeframe: {timeframe!r}")
     return int(m.group(1)) * _UNIT_NS[m.group(2)]
-
-
-def _utc_day(ns: int) -> str:
-    """UTC ``YYYY-MM-DD`` of a nanosecond timestamp, the lake's ``date=`` partition key."""
-    return datetime.fromtimestamp(ns // 1_000_000_000, tz=UTC).strftime("%Y-%m-%d")
-
-
-def _parquet_source(files: list[str]) -> str:
-    """A DuckDB ``read_parquet`` over an explicit file list (quotes escaped)."""
-    quoted = ", ".join("'" + f.replace("'", "''") + "'" for f in files)
-    return f"read_parquet([{quoted}])"
 
 
 def open_stamped_receipt_lag_ns(tf_ns: int) -> int:
@@ -75,38 +60,6 @@ class AnalyticsQueryEngine:
         )
         return str(pattern)
 
-    def _lake_dir(self, symbol: str, timeframe: str, venue: str = "binance", market_type: str = "spot") -> Path:
-        if symbol.upper().endswith(f".{venue.upper()}"):
-            symbol = symbol.split(".")[0]
-        return self.base_dir / "binance_klines_enriched" / venue.lower() / market_type.lower() / timeframe / symbol.upper()
-
-    def _lake_files(
-        self,
-        symbol: str,
-        timeframe: str = "1m",
-        start_ns: int | None = None,
-        end_ns: int | None = None,
-    ) -> list[str]:
-        """Parquet files whose partition date can hold a bar in ``[start_ns, end_ns]``.
-
-        A batch dated after ``end_ns`` starts after it, so it is skipped. A batch dated more than
-        ``LAKE_BATCH_PAD_DAYS`` before ``start_ns`` ends before it, so it is skipped too.
-        """
-        root = self._lake_dir(symbol, timeframe)
-        if not root.is_dir():
-            return []
-        lo = _utc_day(start_ns - LAKE_BATCH_PAD_DAYS * 86_400 * 1_000_000_000) if start_ns is not None else None
-        hi = _utc_day(end_ns) if end_ns is not None else None
-        files: list[str] = []
-        for day_dir in sorted(root.iterdir()):
-            if not day_dir.name.startswith("date="):
-                continue
-            day = day_dir.name[len("date="):]
-            if (lo is not None and day < lo) or (hi is not None and day > hi):
-                continue
-            files.extend(str(p) for p in sorted(day_dir.glob("*.parquet")))
-        return files
-
     def query_bars_df(
         self,
         symbol: str,
@@ -128,13 +81,7 @@ class AnalyticsQueryEngine:
         ``scripts/repair_lake_open_stamped_rows.py``), then the latest receipt, then batch and checksum.
         """
         tf_ns = timeframe_ns(timeframe)
-        if start_ns is None and end_ns is None:
-            source = f"read_parquet('{self._get_glob_path(symbol, timeframe)}')"
-        else:
-            files = self._lake_files(symbol, timeframe, start_ns, end_ns)
-            if not files:
-                return pl.DataFrame()
-            source = _parquet_source(files)
+        glob_path = self._get_glob_path(symbol, timeframe)
         where_clauses = []
         if start_ns is not None:
             where_clauses.append(f"ts_event_ns >= {start_ns}")
@@ -144,7 +91,7 @@ class AnalyticsQueryEngine:
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         query = f"""
             SELECT DISTINCT ON (ts_init_ns) *, ts_event_ns::BIGINT - {tf_ns} AS bar_open_ns
-            FROM {source}
+            FROM read_parquet('{glob_path}')
             {where_sql}
             ORDER BY ts_init_ns ASC,
                 CASE
