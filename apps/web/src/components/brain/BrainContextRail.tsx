@@ -55,7 +55,8 @@ export function BrainContextRail() {
   const [positions, setPositions] = useState<RailPosition[] | null>(null);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [spend, setSpend] = useState<{ spent: number; cap: number } | null>(null);
-  const [sessions, setSessions] = useState<BrainSessionSummary[] | null>([]);
+  // undefined: not answered yet; null: the load failed. Neither is "no conversations".
+  const [sessions, setSessions] = useState<BrainSessionSummary[] | null | undefined>(undefined);
   const [mandates, setMandates] = useState<Mandate[] | null>(null);
   const [steps, setSteps] = useState<Record<string, string>>({});
   const sessionId = useBrainStore((s) => s.sessionId);
@@ -197,7 +198,9 @@ export function BrainContextRail() {
       </RailSection>
 
       <RailSection icon={<History className="h-3 w-3 text-zinc-400" />} title="Conversations">
-        {sessions === null ? (
+        {sessions === undefined ? (
+          <p className="text-zinc-500">Loading conversations…</p>
+        ) : sessions === null ? (
           <p className="text-amber-200">Conversations could not be loaded.</p>
         ) : sessions.length === 0 ? (
           <p className="text-zinc-500">No saved conversations.</p>
