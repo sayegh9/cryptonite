@@ -1,15 +1,34 @@
 "use client";
 
 import { History, PanelRightClose, PanelRightOpen, Plus } from "lucide-react";
+import { useSyncExternalStore } from "react";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { BrainContextRail } from "./BrainContextRail";
 import { BrainHistoryPanel } from "./BrainHistoryPanel";
 import { BrainConversation } from "./BrainConversation";
 
+const WIDE = "(min-width: 1024px)";
+
+/** Whether the screen is wide enough to keep History open beside the conversation (false on the server) */
+function useWideScreen(): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      const mq = window.matchMedia(WIDE);
+      mq.addEventListener("change", onChange);
+      return () => mq.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia(WIDE).matches,
+    () => false,
+  );
+}
+
 /** Brain Home (blueprint §7.1): one conversation with inline widgets, its history, and a context rail. */
 export function BrainHome({ active = true }: { active?: boolean }) {
   const railOpen = useBrainStore((s) => s.railOpen);
-  const historyOpen = useBrainStore((s) => s.historyOpen);
+  const historyChoice = useBrainStore((s) => s.historyOpen);
+  const wide = useWideScreen();
+  // Until the operator opens or closes it, History is open where there is room for it
+  const historyOpen = historyChoice ?? wide;
   const setHistoryOpen = useBrainStore((s) => s.setHistoryOpen);
   const setRailOpen = useBrainStore((s) => s.setRailOpen);
   const newConversation = useBrainStore((s) => s.newConversation);
@@ -65,7 +84,7 @@ export function BrainHome({ active = true }: { active?: boolean }) {
           </div>
         </div>
         <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
-          <BrainConversation />
+          <BrainConversation onShowHistory={() => setHistoryOpen(true)} />
         </div>
       </main>
       {railOpen && active && ( /* the rail polls positions/spend only while Brain Home is on screen */
