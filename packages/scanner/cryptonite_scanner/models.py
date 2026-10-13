@@ -3,17 +3,33 @@
 import hashlib
 import json
 import os
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Self
 from uuid import UUID
 
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
 from pydantic import BaseModel, Field, model_validator
 
 MAX_ACTIVE_SPECS: int = int(os.getenv("MAX_ACTIVE_SPECS", "10"))
 ALLOWED_AUTOMATIC_TIMEFRAMES: tuple[str, ...] = ("15m", "1h", "4h")
 MIN_RISK_REWARD_RATIO: float = 1.5
+
+
+async def active_spec_cap(db: Any) -> int:
+    """The cap on active scan specs (ADR 0007): the stored ``scanner.max_active_specs``, else the env default.
+    ``db`` is an asyncpg pool or connection. A failed read or a refused value falls back to the default, so a
+    missing grant or a bad row never stops scanning."""
+    default = int(MAX_ACTIVE_SPECS)
+    try:
+        raw = await db.fetchval("SELECT value FROM system_settings WHERE key = 'scanner.max_active_specs'")
+    except Exception:
+        return default
+    bound = replace(RUNTIME_BOUNDS["scanner.max_active_specs"], default=default)
+    value, _ = read_number(raw, bound, last_good=default)
+    return int(value)
 
 
 class RuleOperator(StrEnum):

@@ -32,11 +32,12 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import asyncpg
 import redis.asyncio as redis
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS, ExitThresholds, settled
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("exit_monitor")
@@ -68,6 +69,22 @@ def default_thresholds() -> ExitThresholds:
         stop_loss_pct=STOP_LOSS_PCT, trail_activate_pct=TRAIL_ACTIVATE_PCT, trail_pct=TRAIL_PCT,
         debate_drawdown_pct=DEBATE_DRAWDOWN_PCT, funding_spike=FUNDING_SPIKE,
     )
+
+
+async def load_interval(pool, last_good: float) -> float:
+    """The seconds between exit checks, read every cycle (ADR 0007): the stored exit.monitor_interval_s, else the
+    EXIT_MONITOR_INTERVAL_S default. A failed read or a refused value keeps the last valid one."""
+    try:
+        async with pool.acquire() as conn:
+            raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = 'exit.monitor_interval_s'")
+    except Exception as e:
+        logger.warning("Exit monitor interval not re-read (%s); keeping %ss", e, last_good)
+        return last_good
+    bound = replace(RUNTIME_BOUNDS["exit.monitor_interval_s"], default=INTERVAL_S)
+    value, problem = read_number(raw, bound, last_good)
+    if problem:
+        logger.error("Exit monitor interval refused, keeping the last valid value: %s", problem)
+    return value
 
 
 async def load_thresholds(pool, last_good: ExitThresholds) -> ExitThresholds:
@@ -301,6 +318,7 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
 
 async def monitor_loop():
     state = default_thresholds()
+    interval = INTERVAL_S
     logger.info("Starting exit monitor with %s", state)
     redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=30)  # redis-py 8 times a blocking read out at exactly its block time (LE-3)
     pool = await asyncpg.create_pool(DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"), min_size=1, max_size=2)
@@ -311,6 +329,7 @@ async def monitor_loop():
             logger.error("Quote follower stopped (%s); restarting", follower.exception() if not follower.cancelled() else "cancelled")
             follower = asyncio.create_task(quotes.follow(redis_client))
         try:
+            interval = await load_interval(pool, last_good=interval)
             applied = await load_thresholds(pool, last_good=state)
             if applied != state:
                 logger.info("Exit thresholds now %s", applied)
@@ -318,10 +337,10 @@ async def monitor_loop():
             await monitor_once(pool, redis_client, quotes, state)
             # Brain order approvals are refused unless this is fresh: AI-owned positions rely on it for stops.
             # The payload carries the set in force, so the registry can show what the monitor actually applies.
-            await redis_client.set(HEARTBEAT_KEY, json.dumps(asdict(state)), ex=int(max(90, 3 * INTERVAL_S)))
+            await redis_client.set(HEARTBEAT_KEY, json.dumps(asdict(state)), ex=int(max(90, 3 * interval)))
         except Exception as e:
             logger.error(f"Error in exit monitor loop: {e}")
-        await asyncio.sleep(INTERVAL_S)
+        await asyncio.sleep(interval)
 
 
 if __name__ == "__main__":

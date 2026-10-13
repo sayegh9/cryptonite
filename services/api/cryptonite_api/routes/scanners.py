@@ -9,6 +9,7 @@ from cryptonite_scanner.models import (
     ScanSpecCreate,
     ScanSpecRead,
     ScanSpecVersionRead,
+    active_spec_cap,
     compute_spec_hash,
 )
 from cryptonite_scanner.presets import BUILTIN_PRESETS
@@ -61,6 +62,7 @@ async def ensure_presets_seeded(pool: Any) -> None:
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
+            cap = await active_spec_cap(conn)
             count = await conn.fetchval("SELECT count(*) FROM scan_specs;")
             if count and count > 0:
                 return
@@ -73,7 +75,7 @@ async def ensure_presets_seeded(pool: Any) -> None:
 
                 spec_id = uuid4()
                 version_id = uuid4()
-                should_activate = active_count < MAX_ACTIVE_SPECS
+                should_activate = active_count < cap
                 await conn.execute(
                     """
                     INSERT INTO scan_specs (id, slug, name, description, active_version_id, is_archived)
@@ -178,8 +180,9 @@ async def create_scanner(spec_in: ScanSpecCreate, request: Request) -> ScanSpecR
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Serialise concurrent spec creations to avoid racing MAX_ACTIVE_SPECS limit
+            # Serialise concurrent spec creations to avoid racing the active-spec cap
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
+            cap = await active_spec_cap(conn)
 
             # Check unique slug
             existing = await conn.fetchval("SELECT id FROM scan_specs WHERE slug = $1;", spec_in.slug)
@@ -189,10 +192,10 @@ async def create_scanner(spec_in: ScanSpecCreate, request: Request) -> ScanSpecR
             active_count = await conn.fetchval(
                 "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
             )
-            if active_count >= MAX_ACTIVE_SPECS:
+            if active_count >= cap:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Cannot create active spec: maximum active specs limit ({MAX_ACTIVE_SPECS}) reached. Archive an existing spec first.",
+                    detail=f"Cannot create active spec: maximum active specs limit ({cap}) reached. Archive an existing spec first.",
                 )
 
             await conn.execute(
@@ -437,6 +440,7 @@ async def upgrade_presets(
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext('scan_specs:active_limit'));")
+            cap = await active_spec_cap(conn)
             active_count = await conn.fetchval(
                 "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
             )
@@ -459,7 +463,7 @@ async def upgrade_presets(
                 )
 
                 if not spec_row:
-                    should_activate = active_count < MAX_ACTIVE_SPECS
+                    should_activate = active_count < cap
                     action = "would_seed" if dry_run else "missing_seeded"
                     detail = (
                         f"Preset '{preset.slug}' not present in DB; {'would seed' if dry_run else 'seeded'} "
@@ -624,7 +628,7 @@ async def upgrade_presets(
     return PresetUpgradeResponse(
         dry_run=dry_run,
         active_count=active_count,
-        max_active_specs=MAX_ACTIVE_SPECS,
+        max_active_specs=cap,
         items=items,
     )
 
@@ -656,10 +660,11 @@ async def activate_preset_version(slug: str, request: Request) -> ScanSpecRead:
                 active_count = await conn.fetchval(
                     "SELECT count(*) FROM scan_specs WHERE is_archived = false AND active_version_id IS NOT NULL;"
                 )
-                if active_count >= MAX_ACTIVE_SPECS:
+                cap = await active_spec_cap(conn)
+                if active_count >= cap:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Cannot activate preset: maximum active specs limit ({MAX_ACTIVE_SPECS}) reached. Archive an existing spec first.",
+                        detail=f"Cannot activate preset: maximum active specs limit ({cap}) reached. Archive an existing spec first.",
                     )
 
             spec_id = spec_row["id"]
