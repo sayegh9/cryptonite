@@ -20,6 +20,8 @@ interface BrainState {
   sessionId: string | null;
   draft: string;
   railOpen: boolean;
+  /** The conversation history column on Brain Home */
+  historyOpen: boolean;
   workspaceView: "brain" | "debates";
 
   messages: BrainMessage[];
@@ -29,6 +31,7 @@ interface BrainState {
 
   setDraft: (draft: string) => void;
   setRailOpen: (open: boolean) => void;
+  setHistoryOpen: (open: boolean) => void;
   setWorkspaceView: (view: "brain" | "debates") => void;
   setSessionId: (id: string | null) => void;
   newConversation: () => void;
@@ -58,6 +61,7 @@ export const useBrainStore = create<BrainState>()(
       sessionId: null,
       draft: "",
       railOpen: true,
+      historyOpen: false,
       workspaceView: "brain",
 
       messages: [],
@@ -67,6 +71,7 @@ export const useBrainStore = create<BrainState>()(
 
       setDraft: (draft) => set({ draft }),
       setRailOpen: (railOpen) => set({ railOpen }),
+      setHistoryOpen: (historyOpen) => set({ historyOpen }),
       setWorkspaceView: (workspaceView) => set({ workspaceView }),
       setSessionId: (sessionId) => set({ sessionId }),
       newConversation: () => set({ sessionId: null, messages: [], historyLoadedFor: null, streaming: false }),
@@ -160,7 +165,13 @@ export const useBrainStore = create<BrainState>()(
     {
       name: "cryptonite-brain",
       skipHydration: true,
-      partialize: (s) => ({ sessionId: s.sessionId, draft: s.draft, railOpen: s.railOpen, workspaceView: s.workspaceView }),
+      partialize: (s) => ({
+        sessionId: s.sessionId,
+        draft: s.draft,
+        railOpen: s.railOpen,
+        historyOpen: s.historyOpen,
+        workspaceView: s.workspaceView,
+      }),
     },
   ),
 );

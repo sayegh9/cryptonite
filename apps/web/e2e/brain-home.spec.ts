@@ -75,7 +75,7 @@ async function mockBackend(page: Page) {
   });
   await page.route("**/api/v1/paper/positions*", (route) => route.fulfill({ json: [] }));
   await page.route("**/agent-api/brain/spend", (route) => route.fulfill({ json: { spent_usd: "3.10", cap_usd: "25.00" } }));
-  await page.route("**/agent-api/brain/sessions", (route) =>
+  await page.route(/\/agent-api\/brain\/sessions(\?.*)?$/, (route) =>
     route.fulfill({ json: { sessions: [{ id: SESSION, title: "Analyze BTC", created_at: "2026-09-25T10:00:00Z", updated_at: "2026-09-25T10:01:00Z" }] } }),
   );
   await page.route(`**/agent-api/brain/sessions/${SESSION}`, (route) => {

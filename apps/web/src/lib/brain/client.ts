@@ -1,6 +1,6 @@
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { readSse } from "./sse";
-import type { BrainSessionSummary, DecisionTrace, OrderCardWidget, StoredBrainMessage } from "./types";
+import type { BrainSessionPage, BrainSessionSummary, DecisionTrace, OrderCardWidget, StoredBrainMessage } from "./types";
 
 /**
  * Brain client: one conversation shared by Brain Home and the Copilot drawer.
@@ -86,11 +86,59 @@ export async function loadBrainHistory(sessionId: string): Promise<boolean> {
   }
 }
 
-export async function listBrainSessions(): Promise<BrainSessionSummary[]> {
-  const res = await fetch("/agent-api/brain/sessions", { credentials: "include" });
-  if (!res.ok) return [];
+/** A history request that failed; `status` tells a refused session (401/403) from an unavailable Brain */
+export class BrainHistoryError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+export interface BrainSessionQuery {
+  query?: string;
+  archived?: boolean;
+  limit?: number;
+  before?: string | null;
+  signal?: AbortSignal;
+}
+
+/** One page of the operator's conversations, newest activity first. Throws on failure: a failed load is not "no conversations". */
+export async function listBrainSessions(opts: BrainSessionQuery = {}): Promise<BrainSessionPage> {
+  const params = new URLSearchParams();
+  if (opts.query?.trim()) params.set("q", opts.query.trim());
+  if (opts.archived) params.set("archived", "true");
+  if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.before) params.set("before", opts.before);
+  const qs = params.toString();
+  const res = await fetch(`/agent-api/brain/sessions${qs ? `?${qs}` : ""}`, { credentials: "include", signal: opts.signal });
   const body = await res.json().catch(() => ({}));
-  return Array.isArray(body.sessions) ? body.sessions : [];
+  if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  return {
+    sessions: Array.isArray(body.sessions) ? body.sessions : [],
+    next_cursor: typeof body.next_cursor === "string" ? body.next_cursor : null,
+  };
+}
+
+/** Rename a conversation or move it in or out of the archive */
+export async function updateBrainSession(
+  sessionId: string,
+  patch: { title?: string; archived?: boolean },
+): Promise<BrainSessionSummary> {
+  const res = await fetch(`/agent-api/brain/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf() },
+    body: JSON.stringify(patch),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  return body.session as BrainSessionSummary;
+}
+
+/** Continue an earlier conversation: it becomes the current one and its messages come back from the server */
+export async function openBrainSession(sessionId: string): Promise<boolean> {
+  if (isBrainStreaming()) return false;
+  useBrainStore.getState().setSessionId(sessionId);
+  return loadBrainHistory(sessionId);
 }
 
 export async function fetchBrainSpend(): Promise<{ spent_usd: string; cap_usd: string } | null> {

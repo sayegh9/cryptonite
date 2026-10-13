@@ -133,3 +133,42 @@ export async function GET(
     );
   }
 }
+
+/** Small JSON writes (rename or archive a Brain conversation): cookie and CSRF token forwarded as for POST */
+export async function PATCH(
+  request: NextRequest,
+  context: { params: Promise<{ slug: string[] }> }
+) {
+  const { slug } = await context.params;
+  const targetUrl = `${API_ORIGIN}/api/v1/agents/${slug.join("/")}`;
+
+  const headers = new Headers();
+  const cookie = request.headers.get("cookie");
+  if (cookie) headers.set("cookie", cookie);
+  const csrf = request.headers.get("x-csrf-token");
+  if (csrf) headers.set("x-csrf-token", csrf);
+  headers.set("content-type", request.headers.get("content-type") || "application/json");
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const backendRes = await fetch(targetUrl, {
+      method: "PATCH",
+      headers,
+      body: await request.text(),
+      signal: controller.signal,
+    });
+    return new NextResponse(await backendRes.text(), {
+      status: backendRes.status,
+      headers: { "content-type": backendRes.headers.get("content-type") || "application/json" },
+    });
+  } catch (error: any) {
+    console.error(`[Agent Route Proxy] PATCH Error forwarding to ${targetUrl}:`, error);
+    return NextResponse.json(
+      { detail: error.name === "AbortError" ? "Agent request timed out" : error.message },
+      { status: 504 }
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}

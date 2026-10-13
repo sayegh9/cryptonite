@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Coins, History, Landmark, RefreshCw, ShieldCheck } from "lucide-react";
 import { fetchApi } from "@/lib/api";
 import { useSessionStore } from "@/lib/stores/useSessionStore";
-import { fetchBrainSpend, listBrainSessions, loadBrainHistory } from "@/lib/brain/client";
+import { fetchBrainSpend, listBrainSessions, openBrainSession } from "@/lib/brain/client";
 import type { BrainSessionSummary } from "@/lib/brain/types";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { listMandates } from "@/lib/mission/client";
@@ -55,7 +55,7 @@ export function BrainContextRail() {
   const [positions, setPositions] = useState<RailPosition[] | null>(null);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [spend, setSpend] = useState<{ spent: number; cap: number } | null>(null);
-  const [sessions, setSessions] = useState<BrainSessionSummary[]>([]);
+  const [sessions, setSessions] = useState<BrainSessionSummary[] | null>([]);
   const [mandates, setMandates] = useState<Mandate[] | null>(null);
   const [steps, setSteps] = useState<Record<string, string>>({});
   const sessionId = useBrainStore((s) => s.sessionId);
@@ -84,7 +84,7 @@ export function BrainContextRail() {
     }
     const s = await fetchBrainSpend().catch(() => null);
     setSpend(s ? { spent: Number(s.spent_usd), cap: Number(s.cap_usd) } : null);
-    setSessions(await listBrainSessions().catch(() => []));
+    setSessions(await listBrainSessions({ limit: 5 }).then((p) => p.sessions).catch(() => null));
     setMandates(await listMandates().catch(() => null));
   }, [session]);
 
@@ -197,19 +197,18 @@ export function BrainContextRail() {
       </RailSection>
 
       <RailSection icon={<History className="h-3 w-3 text-zinc-400" />} title="Conversations">
-        {sessions.length === 0 ? (
+        {sessions === null ? (
+          <p className="text-amber-200">Conversations could not be loaded.</p>
+        ) : sessions.length === 0 ? (
           <p className="text-zinc-500">No saved conversations.</p>
         ) : (
           <ul className="space-y-1">
-            {sessions.slice(0, 10).map((s) => (
+            {sessions.slice(0, 5).map((s) => (
               <li key={s.id}>
                 <button
                   type="button"
                   disabled={streaming}
-                  onClick={() => {
-                    useBrainStore.getState().setSessionId(s.id);
-                    void loadBrainHistory(s.id);
-                  }}
+                  onClick={() => void openBrainSession(s.id)}
                   className={`w-full truncate text-left hover:text-cyan-300 ${s.id === sessionId ? "text-cyan-400" : "text-zinc-400"}`}
                   title={s.title ?? s.id}
                 >
@@ -219,6 +218,13 @@ export function BrainContextRail() {
             ))}
           </ul>
         )}
+        <button
+          type="button"
+          onClick={() => useBrainStore.getState().setHistoryOpen(true)}
+          className="mt-2 text-2xs text-cyan-400 hover:text-cyan-300"
+        >
+          All conversations
+        </button>
       </RailSection>
     </aside>
   );

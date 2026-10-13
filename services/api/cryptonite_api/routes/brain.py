@@ -35,7 +35,7 @@ from cryptonite_execution.mandate_store import (
 )
 from cryptonite_schemas.mandate import MIN_HOLDING_QTY, MIN_MANDATE_ENTRY_PCT, canonical_instrument
 from cryptonite_schemas.marks import read_marks
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -120,9 +120,50 @@ async def brain_stream(req: BrainAskRequest, auth: dict = Depends(require_operat
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+async def _worker_send(method: str, path: str, body: dict[str, Any]) -> Any:
+    """A signed JSON call to the worker for a body-carrying request (the signature covers the body)."""
+    raw = json.dumps(body).encode()
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request(method, f"{AGENT_WORKER_URL}{path}", content=raw,
+                                        headers=_signed(method, path, raw))
+    except httpx.HTTPError as e:
+        logger.error("Brain worker unreachable (%s): %s", path, e)
+        raise HTTPException(status_code=503, detail="Brain unavailable")
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if resp.status_code == 422:
+        raise HTTPException(status_code=422, detail=resp.json().get("detail", "Invalid request"))
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail="Brain worker error")
+    return resp.json()
+
+
 @router.get("/sessions")
-async def brain_sessions(auth: dict = Depends(require_operator)):
-    return await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions")
+async def brain_sessions(
+    auth: dict = Depends(require_operator),
+    q: str | None = Query(default=None, max_length=200),
+    archived: bool = False,
+    limit: int = Query(default=30, ge=1, le=100),
+    before: str | None = Query(default=None, max_length=120),
+):
+    """The operator's conversation history, newest activity first, searchable, one page at a time."""
+    return await _worker_send("POST", f"/api/v1/brain/operators/{operator_id(auth)}/sessions/search",
+                              {"query": q, "archived": archived, "limit": limit, "before": before})
+
+
+class BrainSessionPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    archived: bool | None = None
+
+
+@router.patch("/sessions/{sid}", dependencies=OPERATOR_WRITE)
+async def brain_session_patch(sid: uuid.UUID, req: BrainSessionPatch, auth: dict = Depends(require_operator)):
+    """Rename a conversation, or archive it (an archived one comes back when it gets a new message)."""
+    if req.title is None and req.archived is None:
+        raise HTTPException(status_code=422, detail="Nothing to change")
+    body = {k: v for k, v in {"title": req.title, "archived": req.archived}.items() if v is not None}
+    return await _worker_send("PATCH", f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}", body)
 
 
 @router.get("/sessions/{sid}")  # not ``session_id``: that name is the auth cookie parameter
