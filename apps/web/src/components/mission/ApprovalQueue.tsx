@@ -52,6 +52,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
   const offset = useMandateStore((s) => s.clockOffsetMs);
   const markDecided = useMandateStore((s) => s.markDecided);
   const mandates = useMandateStore((s) => s.mandates);
+  const approvalsOk = useMandateStore((s) => s.approvalsOk);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ id: string; decision: "APPROVE" | "VETO" } | null>(null);
@@ -109,7 +110,10 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
       <p aria-live="polite" className="sr-only" data-testid="approval-announcer">
         {announcement}
       </p>
-      {shown.length === 0 && <p className="text-zinc-500">Nothing waiting for you.</p>}
+      {shown.length === 0 && approvalsOk === false && (
+        <p role="status" className="text-amber-200">Approvals could not be loaded, so whether anything is waiting is unknown.</p>
+      )}
+      {shown.length === 0 && approvalsOk === true && <p className="text-zinc-500">Nothing waiting for you.</p>}
       <ul className="space-y-2">
         {shown.map((a) => {
           const add = a.action_class === "ADD_RISK";

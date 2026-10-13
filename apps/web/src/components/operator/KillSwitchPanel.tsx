@@ -93,7 +93,7 @@ export function KillSwitchPanel({
     <div className="bg-zinc-950 border border-white/5 rounded p-6" data-testid={`kill-switch-${environment.toLowerCase()}`}>
       <div className="flex items-center justify-between mb-6">
         <div className="min-w-0">
-          <h2 className="text-sm font-bold flex items-center space-x-2 uppercase tracking-wider text-zinc-200">
+          <h2 aria-label={`Execution Kill-Switch · ${environment}`} className="text-sm font-bold flex items-center space-x-2 uppercase tracking-wider text-zinc-200">
             <Power className="w-4 h-4 text-cyan-400" aria-hidden="true" />
             <span>Execution Kill-Switch</span>
             <span className={`rounded border px-1.5 py-0.5 font-mono text-2xs ${ENV_PILL[environment]}`}>{environment}</span>
