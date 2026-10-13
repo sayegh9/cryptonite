@@ -1,7 +1,7 @@
 """agent_safe_ai_holdings: what the AI holds per instrument, for the Brain's SELL check
 
 Revision ID: 044
-Revises: 042
+Revises: 043
 Create Date: 2026-10-13 00:00:00.000000
 
 The Brain refuses a SELL card for something no AI mandate holds (spot cannot be shorted). It reads that holding as
@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "044"
-down_revision: str | None = "042"
+down_revision: str | None = "043"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
