@@ -19,7 +19,12 @@ export interface TearsheetWidget {
   metrics: Record<string, unknown>;
 }
 
-export type OrderCardStatus = "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | "FAILED";
+/**
+ * PENDING_APPROVAL → APPROVED (your decision) → what the order did: WORKING (a resting limit), FILLED, or NOT_EXECUTED
+ * (refused, failed or cancelled with nothing filled). REJECTED is you saying no; FAILED is the approval not queued.
+ */
+export type OrderCardStatus =
+  | "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | "FAILED" | "WORKING" | "FILLED" | "NOT_EXECUTED";
 
 export interface OrderCardWidget {
   kind: "order_card";
@@ -38,6 +43,20 @@ export interface OrderCardWidget {
   status: OrderCardStatus;
   trace_id: string | null;
   command_id: string | null;
+  /** Why the order was not executed (or a note on a partial fill), from the server */
+  execution_reason?: string | null;
+  filled_qty?: string | null;
+  avg_fill_price?: string | null;
+}
+
+/** What an approved card's order did, from /brain/sessions/{id}/cards/{card}/outcome */
+export interface CardOutcome {
+  status: OrderCardStatus | null;
+  state: "QUEUED" | "WORKING" | "FILLED" | "NOT_EXECUTED" | null;
+  reason?: string | null;
+  filled_qty?: string | null;
+  avg_fill_price?: string | null;
+  limit_price?: string | null;
 }
 
 export interface DebateSummaryWidget {

@@ -277,3 +277,115 @@ def test_rejected_cards_and_non_operators_cannot_approve(client, card_worker):
     card["status"] = "REJECTED"
     assert _approve(c, uuid.uuid4()).status_code == 409
     assert app.state.pool.rows == {}
+
+
+# --- What an approved card's order did (2026-10-13: a refused order kept reading "Approved") ----------------------
+
+from cryptonite_api.brain_outcomes import card_patch, client_order_id, command_outcome  # noqa: E402
+
+CMD = "6dd7c0ed-f5f4-4b9d-b3f4-2745c3f194fa"
+
+
+class _OutcomeConn:
+    """execution_commands and paper_orders for one command."""
+
+    def __init__(self, command=None, order=None):
+        self.command = command
+        self.order = order
+        self.order_ids: list[str] = []
+
+    async def fetchrow(self, sql, *args):
+        if "FROM execution_commands" in sql:
+            return self.command
+        if "FROM paper_orders" in sql:
+            self.order_ids.append(args[0])
+            return self.order
+        return None
+
+
+class _OutcomePool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.conn
+
+
+def _cmd(status, error=None):
+    return {"status": status, "error_message": error, "payload": json.dumps({"side": "BUY"})}
+
+
+def _order(status, filled="0", avg=None, price="1.3825", reason=None):
+    return {"status": status, "quantity": Decimal("361.8"), "filled_qty": Decimal(filled),
+            "avg_fill_price": Decimal(avg) if avg else None, "price": Decimal(price), "reject_reason": reason}
+
+
+@pytest.mark.parametrize("command, order, expected", [
+    (_cmd("PENDING"), None, {"state": "QUEUED"}),
+    (_cmd("REJECTED", "MANDATE_SIZING_CONFLICT"), None, {"state": "NOT_EXECUTED", "reason": "MANDATE_SIZING_CONFLICT"}),
+    (_cmd("FAILED"), None, {"state": "NOT_EXECUTED", "reason": "command failed"}),
+    (_cmd("COMPLETED"), None, {"state": "QUEUED"}),
+    (_cmd("COMPLETED"), _order("FILLED", "361.8", "1.3821"),
+     {"state": "FILLED", "filled_qty": "361.8", "avg_fill_price": "1.3821"}),
+    (_cmd("COMPLETED"), _order("ACCEPTED"), {"state": "WORKING", "limit_price": "1.3825", "filled_qty": None,
+                                              "avg_fill_price": None}),
+    (_cmd("COMPLETED"), _order("CANCELED", reason="PRICE_COLLAR_REJECT"),
+     {"state": "NOT_EXECUTED", "reason": "PRICE_COLLAR_REJECT"}),
+])
+async def test_an_approved_cards_order_maps_to_one_state(command, order, expected):
+    conn = _OutcomeConn(command, order)
+    assert await command_outcome(conn, CMD) == expected
+    if command["status"] == "COMPLETED":
+        assert conn.order_ids == ["AI-6DD7C0EDF5F4"]  # the orchestrator's client order id for an AI command
+
+
+async def test_a_partly_filled_then_cancelled_order_is_a_position():
+    out = await command_outcome(_OutcomeConn(_cmd("COMPLETED"), _order("CANCELED", "100", "1.38")), CMD)
+    assert out["state"] == "FILLED" and out["filled_qty"] == "100" and "partly filled" in out["reason"]
+
+
+def test_a_card_moves_forward_once_and_never_back():
+    card = {"id": "card-1", "side": "BUY", "instrument_id": "XRPUSDT.BINANCE", "command_id": CMD, "status": "APPROVED"}
+    note = card_patch(card, {"state": "NOT_EXECUTED", "reason": "MANDATE_SIZING_CONFLICT"})
+    assert note["status"] == "NOT_EXECUTED" and note["expect_status"] == "APPROVED"
+    assert "NOT EXECUTED: MANDATE_SIZING_CONFLICT" in note["content"] and "No position was opened" in note["content"]
+    assert card_patch(card, {"state": "QUEUED"}) is None  # nothing to say yet
+    assert card_patch({**card, "status": "WORKING"}, {"state": "WORKING"}) is None  # unchanged
+    assert client_order_id(CMD, {"client_order_id": "X-1"}) == "X-1"
+
+
+def test_loading_a_conversation_marks_a_refused_order_not_executed_once(client, card_worker):
+    c, app = client
+    card, notes = card_worker
+    card.update(status="APPROVED", command_id=CMD)
+    app.state.pool = _OutcomePool(_OutcomeConn(_cmd("REJECTED", "MANDATE_SIZING_CONFLICT")))
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    sid = str(uuid.uuid4())
+
+    assert c.get(f"/api/v1/agents/brain/sessions/{sid}").status_code == 200
+    assert card["status"] == "NOT_EXECUTED"
+    (note,) = notes
+    assert note["expect_status"] == "APPROVED" and note["execution_reason"] == "MANDATE_SIZING_CONFLICT"
+    assert "NOT EXECUTED" in note["content"]
+
+    c.get(f"/api/v1/agents/brain/sessions/{sid}")
+    assert len(notes) == 1  # a final state is recorded once
+
+
+def test_the_card_outcome_endpoint_follows_a_working_limit_to_its_fill(client, card_worker):
+    c, app = client
+    card, notes = card_worker
+    card.update(status="APPROVED", command_id=CMD)
+    conn = _OutcomeConn(_cmd("COMPLETED"), _order("ACCEPTED"))
+    app.state.pool = _OutcomePool(conn)
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    url = f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/{card['id']}/outcome"
+
+    first = c.get(url).json()
+    assert first["status"] == "WORKING" and first["state"] == "WORKING" and card["status"] == "WORKING"
+    conn.order = _order("FILLED", "361.8", "1.3821")
+    second = c.get(url).json()
+    assert second["status"] == "FILLED" and second["filled_qty"] == "361.8"
+    assert [n["status"] for n in notes] == ["WORKING", "FILLED"]
+    assert c.get(f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/nope/outcome").status_code == 404

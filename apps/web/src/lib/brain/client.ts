@@ -1,6 +1,6 @@
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { readSse } from "./sse";
-import type { BrainSessionPage, BrainSessionSummary, DecisionTrace, OrderCardWidget, StoredBrainMessage } from "./types";
+import type { BrainSessionPage, BrainSessionSummary, CardOutcome, DecisionTrace, OrderCardWidget, StoredBrainMessage } from "./types";
 
 /**
  * Brain client: one conversation shared by Brain Home and the Copilot drawer.
@@ -132,6 +132,17 @@ export async function updateBrainSession(
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
   return body.session as BrainSessionSummary;
+}
+
+/** What an approved card's order did. The server also records a change in the conversation, so the Brain knows. */
+export async function fetchCardOutcome(sessionId: string, widgetId: string, signal?: AbortSignal): Promise<CardOutcome> {
+  const res = await fetch(
+    `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(widgetId)}/outcome`,
+    { credentials: "include", signal },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  return body as CardOutcome;
 }
 
 /** Continue an earlier conversation: it becomes the current one and its messages come back from the server */

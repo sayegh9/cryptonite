@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, BarChart3, CheckCircle2, FileText, GitBranch, Loader2, ScrollText, XCircle } from "lucide-react";
-import { approveOrderCard, rejectOrderCard } from "@/lib/brain/client";
+import { approveOrderCard, fetchCardOutcome, rejectOrderCard } from "@/lib/brain/client";
+import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { createMandate } from "@/lib/mission/client";
 import type {
@@ -50,6 +51,110 @@ function WidgetFrame({ icon, title, children, testId }: { icon: React.ReactNode;
       {children}
     </section>
   );
+}
+
+/** Plain words for the usual reasons an approved order is not executed; the code stays visible beside them */
+const NOT_EXECUTED_REASON: [prefix: string, text: string][] = [
+  ["MANDATE_SIZING_CONFLICT", "the system could not size it inside the mandate (a system fault, not counted against the AI)"],
+  ["MANDATE_POSITION_LIMIT_REACHED", "the mandate has no room left in this instrument"],
+  ["MANDATE_POSITION_PCT_EXCEEDED", "it would go over the mandate's position limit"],
+  ["MANDATE_BUDGET_EXCEEDED", "it would go over the mandate's budget"],
+  ["MANDATE_HALTED", "the mandate is paused or halted"],
+  ["MANDATE_INSTRUMENT_CONFLICT", "another mandate or a manual trade holds this instrument"],
+  ["PRICE_COLLAR_REJECT", "the limit price is too far from the market"],
+  ["NO_LIVE_QUOTE_FOR_SIZING", "there was no live price to size it"],
+  ["KILL_SWITCH", "the kill switch is latched"],
+];
+
+export function notExecutedText(reason: string | null | undefined): string {
+  if (!reason) return "the order was refused";
+  const known = NOT_EXECUTED_REASON.find(([code]) => reason.startsWith(code));
+  return known ? known[1] : reason;
+}
+
+/**
+ * Follows an approved card's order until it is filled or refused: the server records the change in the conversation
+ * (so the Brain knows), and the card shows it. Fast at first (an order is placed or refused within seconds), then
+ * slower; a resting limit is checked every 30 s.
+ */
+function useCardOutcome(widget: OrderCardWidget, sessionId: string | null) {
+  const updateOrderCard = useBrainStore((s) => s.updateOrderCard);
+  // One loop per approved card: moving from APPROVED to WORKING continues it (slower), it does not restart it
+  const followed = widget.status === "APPROVED" || widget.status === "WORKING";
+  const working = useRef(widget.status === "WORKING");
+  useEffect(() => {
+    if (!followed || !sessionId || !widget.command_id) return;
+    const ctrl = new AbortController();
+    const started = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const out = await fetchCardOutcome(sessionId, widget.id, ctrl.signal);
+        if (out.state === "WORKING" || out.state === "FILLED" || out.state === "NOT_EXECUTED") {
+          working.current = out.state === "WORKING";
+          updateOrderCard(widget.id, {
+            status: out.state,
+            execution_reason: out.reason ?? null,
+            filled_qty: out.filled_qty ?? null,
+            avg_fill_price: out.avg_fill_price ?? null,
+          });
+          if (out.state !== "WORKING") return;
+        }
+      } catch {
+        if (ctrl.signal.aborted) return;
+      }
+      const wait = working.current ? 30_000 : Date.now() - started < 60_000 ? 3_000 : 15_000;
+      timer = setTimeout(poll, wait);
+    };
+    void poll();
+    return () => {
+      ctrl.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [followed, sessionId, widget.id, widget.command_id, updateOrderCard]);
+}
+
+/** What happened after you approved: sending, working, filled, or not executed with the reason */
+function OrderOutcome({ widget }: { widget: OrderCardWidget }) {
+  const cmd = widget.command_id ? <span className="text-zinc-600"> · paper command {widget.command_id}</span> : null;
+  switch (widget.status) {
+    case "APPROVED":
+      return (
+        <p role="status" className="mt-2 flex items-center gap-1 text-zinc-300" data-testid="card-outcome">
+          <Loader2 className="h-3 w-3 motion-safe:animate-spin" /> Approved · sending the order{cmd}
+        </p>
+      );
+    case "WORKING":
+      return (
+        <p role="status" className="mt-2 flex items-center gap-1 text-cyan-300" data-testid="card-outcome">
+          <Loader2 className="h-3 w-3 motion-safe:animate-spin" /> Working · limit {widget.side} at {widget.limit_price}, not
+          filled yet{cmd}
+        </p>
+      );
+    case "FILLED":
+      return (
+        <p role="status" className="mt-2 flex items-center gap-1 text-emerald-400" data-testid="card-outcome">
+          <CheckCircle2 className="h-3 w-3" /> Filled · {widget.filled_qty} at {widget.avg_fill_price}
+          {widget.execution_reason ? ` (${widget.execution_reason})` : ""}
+          {cmd}
+        </p>
+      );
+    case "NOT_EXECUTED":
+      return (
+        <div role="alert" className="mt-2 text-rose-300" data-testid="card-outcome">
+          <p className="flex items-center gap-1">
+            <AlertTriangle className="h-3 w-3 flex-none" /> Not executed: {notExecutedText(widget.execution_reason)}. No
+            position was opened.
+          </p>
+          <p className="mt-0.5 font-mono text-zinc-500">
+            {widget.execution_reason}
+            {cmd}
+          </p>
+        </div>
+      );
+    default:
+      return null;
+  }
 }
 
 function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
@@ -207,6 +312,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [totp, setTotp] = useState("");
   const pending = widget.status === "PENDING_APPROVAL";
   const buy = widget.side === "BUY";
+  const sessionId = useBrainStore((s) => s.sessionId);
+  useCardOutcome(widget, sessionId);
 
   const approve = async () => {
     setBusy(true);
@@ -381,11 +488,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           </div>
         </div>
       )}
-      {widget.status === "APPROVED" && (
-        <p role="status" className="mt-2 flex items-center gap-1 text-emerald-400">
-          <CheckCircle2 className="h-3 w-3" /> Approved · paper command {widget.command_id}
-        </p>
-      )}
+      <OrderOutcome widget={widget} />
       {widget.status === "REJECTED" && (
         <p role="status" className="mt-2 flex items-center gap-1 text-zinc-400">
           <XCircle className="h-3 w-3" /> Rejected by you
