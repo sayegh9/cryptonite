@@ -16,7 +16,6 @@ import redis.asyncio as aioredis
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.mandate_store import load_mandate
-from cryptonite_execution.mandates import max_entry_quantity
 from cryptonite_execution.matching import PaperFill, match_order, match_working_orders
 from cryptonite_execution.risk import OrderIntent
 from cryptonite_schemas.debate import verdict_direction
@@ -34,7 +33,7 @@ from cryptonite_orchestrator.mandate_gate import (
     gate_ai_order,
     instance_spot_holdings,
     is_ai_command,
-    mandate_exposure,
+    mandate_entry_room,
 )
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from cryptonite_orchestrator.marks import start_mark_to_market
@@ -920,10 +919,14 @@ async def command_poller(pool, engine, quote_cache=None):
                                     # An entry adds to what the mandate already holds: size it down to the
                                     # room left under its position limit and budget (an approval is an upper
                                     # bound), so it passes the mandate check instead of being refused as a breach
+                                    # Valued exactly as the mandate check will value it (mandate_entry_room): the
+                                    # limit price for a limit order, the live ask otherwise
                                     order_type_for_size = str(payload.get("order_type", "MARKET")).upper()
-                                    exposure = await mandate_exposure(conn, engine, mandate, canonical_inst, {canonical_inst: mark_px})
-                                    room_qty = max_entry_quantity(mandate, exposure, mark_px, order_type=order_type_for_size) * SIZING_MARGIN
-                                    if room_qty * mark_px < mandate.capital_budget_usd * MIN_MANDATE_ENTRY_PCT / Decimal("100"):
+                                    limit_px = Decimal(str(payload["price"])) if payload.get("price") else None
+                                    room_qty, room_px, exposure = await mandate_entry_room(
+                                        conn, engine, mandate, canonical_inst, side, limit_px, quote, order_type_for_size)
+                                    room_qty = room_qty * SIZING_MARGIN
+                                    if room_qty * room_px < mandate.capital_budget_usd * MIN_MANDATE_ENTRY_PCT / Decimal("100"):
                                         reason = (f"{MandateReject.POSITION_LIMIT_REACHED.value}: the mandate holds "
                                                   f"${exposure.instrument_usd:,.0f} of {canonical_inst} (limit "
                                                   f"{mandate.max_position_pct}% of ${mandate.capital_budget_usd:,.0f})")
@@ -995,6 +998,7 @@ async def command_poller(pool, engine, quote_cache=None):
                             if ai_order:
                                 mandate_reject = await gate_ai_order(
                                     conn, engine, row, payload, intent, mandate, quote_cache.quote(canonical_inst),
+                                    system_sized=not payload.get("quantity"),
                                 )
                                 if mandate_reject:
                                     await conn.execute(

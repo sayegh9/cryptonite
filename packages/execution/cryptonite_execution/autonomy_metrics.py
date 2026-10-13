@@ -71,8 +71,13 @@ async def gate_metrics(conn, mandate: Mandate, now: datetime.datetime | None = N
         mandate.instance_id, since)
     max_dd = await conn.fetchval(
         "SELECT max(drawdown_pct) FROM ai_mandate_equity WHERE mandate_id = $1 AND ts >= $2", mandate.id, since)
+    # A breach set aside by a BREACH_VOIDED event (migration 045) stays in the audit log but does not count
     breaches = await conn.fetchval(
-        "SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'BREACH' AND created_at >= $2",
+        """SELECT count(*) FROM ai_autonomy_events b
+           WHERE b.mandate_id = $1 AND b.kind = 'BREACH' AND b.created_at >= $2
+             AND NOT EXISTS (SELECT 1 FROM ai_autonomy_events v
+                             WHERE v.mandate_id = b.mandate_id AND v.kind = 'BREACH_VOIDED'
+                               AND v.detail->>'voids' = b.id::text)""",
         mandate.id, since)
     daily = await conn.fetch(
         """SELECT DISTINCT ON (ts::date) ts::date AS day, equity, benchmark_price FROM ai_mandate_equity

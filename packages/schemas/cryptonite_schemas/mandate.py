@@ -84,6 +84,9 @@ class MandateReject(StrEnum):
     APPROVAL_REQUIRED = "MANDATE_APPROVAL_REQUIRED"  # ADD_RISK below L3 without a valid approval
     NO_REFERENCE_PRICE = "MANDATE_NO_REFERENCE_PRICE"
     INSTANCE_UNAVAILABLE = "MANDATE_INSTANCE_UNAVAILABLE"
+    # The orchestrator sized the entry itself and the check still found it over a limit: a system fault (sizing
+    # and the check disagreeing), not the AI overstepping. Refused, logged as an error, never a breach.
+    SIZING_CONFLICT = "MANDATE_SIZING_CONFLICT"
 
 
 # Rejections that mean the AI tried to act outside its limits (§4.5: any breach demotes one level).

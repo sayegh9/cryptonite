@@ -55,7 +55,9 @@ How to work:
    for the same idea. Spot cannot be shorted: propose a SELL only to close a position the mandate already holds.
    An approved SELL sells that whole holding, not allocation_pct of the budget.
 6. The conversation summary and recent turns are context. System lines report what the operator did
-   (for example an approved card and its paper command id).
+   (for example an approved card and its paper command id) and what the order then did: FILLED, WORKING
+   (a resting limit) or NOT EXECUTED with the reason. Approval is not execution: never say an order is placed,
+   working or filled unless a system line says so, and when one says NOT EXECUTED, tell the operator why.
 """
 
 BRAIN = Persona(name="brain", role=BRAIN_PLAN, instructions=BRAIN_INSTRUCTIONS, tools=BRAIN_TOOLS)

@@ -174,7 +174,7 @@ test.describe("Brain Home", () => {
     await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("sized at 5% of the mandate");
     await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("exit monitor");
     await card.getByRole("button", { name: "Confirm paper order" }).click();
-    await expect(card.getByRole("status")).toContainText("Approved · paper command cmd-12345678");
+    await expect(card.getByRole("status")).toContainText("Approved · sending the order · paper command cmd-12345678");
     // One server-side call: the API claims the card, queues the order and records the note itself
     expect(calls.orders).toEqual([{ url: `/agent-api/brain/sessions/${SESSION}/cards/call-1/approve`, csrf: "csrf-test" }]);
     expect(calls.notes).toEqual([]);
@@ -237,7 +237,7 @@ test.describe("Brain Home", () => {
     await expect(create).toBeEnabled();
     await create.click();
 
-    await expect(card.getByRole("status")).toContainText("Approved · paper command cmd-12345678");
+    await expect(card.getByRole("status")).toContainText("Approved · sending the order · paper command cmd-12345678");
     // The API checks the TOTP code; the mandate starts at L1 with the editor's defaults, on this instrument only
     expect(mandateBodies).toEqual([
       {

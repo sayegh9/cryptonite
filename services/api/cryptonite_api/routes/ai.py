@@ -569,7 +569,7 @@ async def _autonomy_view(conn, m: Mandate) -> dict[str, Any]:
            WHERE mandate_id = $1 AND kind = 'PROPOSED' AND proposal_status = 'PENDING'""", m.id)
     events = await conn.fetch(
         """SELECT id, kind, from_level, to_level, reason, actor, proposal_status, created_at FROM ai_autonomy_events
-           WHERE mandate_id = $1 AND kind IN ('PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'BACKSTOP', 'RESUMED', 'PAUSED', 'BREACH', 'CREATED')
+           WHERE mandate_id = $1 AND kind IN ('PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'BACKSTOP', 'RESUMED', 'PAUSED', 'BREACH', 'BREACH_VOIDED', 'CREATED')
            ORDER BY id DESC LIMIT 50""", m.id)
     since = await conn.fetchval("SELECT level_since FROM ai_mandates WHERE id = $1", m.id)
     return {

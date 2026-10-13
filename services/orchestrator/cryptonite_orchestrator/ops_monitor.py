@@ -179,13 +179,26 @@ async def check_heartbeats(pool, redis, watch: HeartbeatWatch, now_s: float | No
     return events
 
 
+# One statement: the approval is cancelled with the reason, and the operator is told (Telegram), once per approval
+# (the dedupe key), whichever way it was approved: chat card, Mission Control or Telegram.
 RECONCILE_APPROVALS_SQL = """
-    UPDATE ai_approvals a
-    SET status = 'CANCELLED', decided_via = 'system', decided_by = 'system', decided_at = now(),
-        summary = COALESCE(a.summary, '') || ' · NOT EXECUTED: ' || c.status || COALESCE(' (' || c.error_message || ')', '')
-    FROM execution_commands c
-    WHERE a.command_id = c.command_id AND a.status = 'APPROVED' AND c.status IN ('REJECTED', 'FAILED')
-    RETURNING a.id
+    WITH cancelled AS (
+        UPDATE ai_approvals a
+        SET status = 'CANCELLED', decided_via = 'system', decided_by = 'system', decided_at = now(),
+            summary = COALESCE(a.summary, '') || ' · NOT EXECUTED: ' || c.status || COALESCE(' (' || c.error_message || ')', '')
+        FROM execution_commands c
+        WHERE a.command_id = c.command_id AND a.status = 'APPROVED' AND c.status IN ('REJECTED', 'FAILED')
+        RETURNING a.id, a.summary, c.command_id
+    ), told AS (
+        INSERT INTO notifications_outbox (tier, kind, title, body, payload, dedupe_key)
+        SELECT 'INFO', 'APPROVED_NOT_EXECUTED', 'Approved order was not executed',
+               summary || '. No position was opened.',
+               jsonb_build_object('approval_id', id::text, 'command_id', command_id::text),
+               'not-executed:' || id::text
+        FROM cancelled
+        ON CONFLICT (dedupe_key) DO NOTHING
+    )
+    SELECT id FROM cancelled
 """
 
 

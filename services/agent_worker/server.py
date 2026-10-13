@@ -270,9 +270,14 @@ class BrainNoteRequest(BaseModel):
     operator_id: str = Field(min_length=1, max_length=128)
     content: str = Field(min_length=1, max_length=2000)
     widget_id: str | None = Field(default=None, max_length=128)
-    status: str | None = Field(default=None, pattern="^(APPROVED|REJECTED|FAILED)$")
+    # After APPROVED, a card follows its order: WORKING (a resting limit), FILLED, or NOT_EXECUTED (refused, failed
+    # or cancelled with nothing filled). Approval is the operator's decision; these are what the order did.
+    status: str | None = Field(default=None, pattern="^(APPROVED|REJECTED|FAILED|WORKING|FILLED|NOT_EXECUTED)$")
     command_id: str | None = Field(default=None, max_length=128)
-    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED)$")
+    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED|WORKING)$")
+    execution_reason: str | None = Field(default=None, max_length=300)
+    filled_qty: str | None = Field(default=None, max_length=40)
+    avg_fill_price: str | None = Field(default=None, max_length=40)
 
 
 def sse(event: str, data: dict) -> str:
@@ -346,7 +351,9 @@ async def brain_session(operator_id: str, session_id: str, request: Request):
 @app.post("/api/v1/brain/sessions/{session_id}/notes")
 async def brain_note(session_id: str, request: Request, req: BrainNoteRequest):
     """Record an operator action (e.g. an approved order card) in the conversation."""
-    patch = {k: v for k, v in {"status": req.status, "command_id": req.command_id}.items() if v is not None}
+    patch = {k: v for k, v in {"status": req.status, "command_id": req.command_id,
+                               "execution_reason": req.execution_reason, "filled_qty": req.filled_qty,
+                               "avg_fill_price": req.avg_fill_price}.items() if v is not None}
     try:
         applied = await request.app.state.brain.note(req.operator_id, session_id, req.content, req.widget_id,
                                                      patch or None, req.expect_status)

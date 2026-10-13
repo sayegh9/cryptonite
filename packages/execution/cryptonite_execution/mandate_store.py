@@ -39,6 +39,28 @@ async def record_event(conn, mandate_id: uuid.UUID, kind: str, *, from_level: in
     )
 
 
+class BreachVoidError(ValueError):
+    """The event cannot be voided: not a BREACH of this mandate, or voided already."""
+
+
+async def void_breach(conn, mandate_id: uuid.UUID, breach_event_id: int, *, reason: str, actor: str) -> int:
+    """Set a breach aside (migration 045): a BREACH_VOIDED event that names it. The BREACH row is never edited or
+    deleted. For breaches the system caused (a sizing fault), not for the AI overstepping. Returns the event id."""
+    if not reason.strip():
+        raise BreachVoidError("a reason is required")
+    row = await conn.fetchrow("SELECT mandate_id, kind, reason, detail FROM ai_autonomy_events WHERE id = $1",
+                              breach_event_id)
+    if row is None or row["mandate_id"] != mandate_id or row["kind"] != "BREACH":
+        raise BreachVoidError(f"event {breach_event_id} is not a BREACH of mandate {mandate_id}")
+    if await conn.fetchval("SELECT 1 FROM ai_autonomy_events WHERE kind = 'BREACH_VOIDED' AND detail->>'voids' = $1",
+                           str(breach_event_id)):
+        raise BreachVoidError(f"breach {breach_event_id} is already voided")
+    detail = row["detail"] if isinstance(row["detail"], dict) else json.loads(row["detail"] or "{}")
+    return await record_event(conn, mandate_id, "BREACH_VOIDED", reason=reason.strip(), actor=actor,
+                              detail={"voids": str(breach_event_id), "breach_reason": row["reason"],
+                                      "command_id": detail.get("command_id")})
+
+
 async def apply_transition(conn, mandate_id: uuid.UUID, t: Transition, *, actor: str = "system",
                            detail: dict[str, Any] | None = None) -> int | None:
     """Persist a transition. A NOOP writes nothing. Returns the event id."""

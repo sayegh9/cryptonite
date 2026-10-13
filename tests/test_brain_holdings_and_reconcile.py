@@ -106,6 +106,19 @@ async def test_an_approval_whose_command_was_refused_is_cancelled_with_the_reaso
     assert row["summary"] == "BUY BTC · NOT EXECUTED: REJECTED (MANDATE_POSITION_NOT_OWNED)"
 
 
+async def test_the_operator_is_told_once_that_an_approved_order_was_not_executed(h):
+    m = await h.mandate(instruments=(BTC,))
+    refused = await approval(h.pool, m.id, "REJECTED", "MANDATE_SIZING_CONFLICT")
+
+    assert await reconcile_approvals(h.pool) == 1
+    assert await reconcile_approvals(h.pool) == 0
+    rows = await h.pool.fetch("SELECT tier, kind, body, payload FROM notifications_outbox WHERE dedupe_key = $1",
+                              f"not-executed:{refused}")
+    assert len(rows) == 1
+    assert (rows[0]["tier"], rows[0]["kind"]) == ("INFO", "APPROVED_NOT_EXECUTED")
+    assert "NOT EXECUTED: REJECTED (MANDATE_SIZING_CONFLICT)" in rows[0]["body"]
+
+
 async def test_a_failed_command_is_reconciled_too(h):
     m = await h.mandate(instruments=(BTC,))
     failed = await approval(h.pool, m.id, "FAILED", "exchange timeout")

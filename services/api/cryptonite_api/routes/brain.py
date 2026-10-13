@@ -25,6 +25,7 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+from cryptonite_api.brain_outcomes import card_patch, command_outcome, followed_cards
 from cryptonite_api.routes.agents import sign_request
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
@@ -87,8 +88,15 @@ async def _worker_get(path: str) -> Any:
 
 
 @router.post("/stream", dependencies=OPERATOR_WRITE)
-async def brain_stream(req: BrainAskRequest, auth: dict = Depends(require_operator)):
+async def brain_stream(req: BrainAskRequest, request: Request, auth: dict = Depends(require_operator)):
     """Proxy one Brain turn as Server-Sent Events. Closing the request cancels the turn upstream."""
+    # The Brain reads its conversation as context: bring approved cards up to what their orders did first, so it
+    # never builds on an order that was refused, or misses one that filled
+    try:
+        if req.session_id:
+            await sync_session_cards(request, operator_id(auth), uuid.UUID(req.session_id))
+    except ValueError:
+        pass  # not a session id; the worker answers SESSION_NOT_FOUND
     path = "/api/v1/brain/stream"
     body = json.dumps({"operator_id": operator_id(auth), "message": req.message,
                        "session_id": req.session_id}).encode()
@@ -166,9 +174,58 @@ async def brain_session_patch(sid: uuid.UUID, req: BrainSessionPatch, auth: dict
     return await _worker_send("PATCH", f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}", body)
 
 
+async def sync_session_cards(request: Request, op: str, sid: uuid.UUID, session: dict[str, Any] | None = None) -> int:
+    """Move every approved order card of the conversation to what its order did (WORKING, FILLED, NOT_EXECUTED) and
+    record the change as a system line, once. Returns how many cards changed. Never raises: an outcome that cannot
+    be read now is read on the next load or turn."""
+    try:
+        if session is None:
+            session = await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}")
+        cards = followed_cards(session)
+        if not cards:
+            return 0
+        changed = 0
+        async with request.app.state.pool.acquire() as conn:
+            outcomes = [(c, await command_outcome(conn, c["command_id"])) for c in cards]
+        for card, out in outcomes:
+            note = card_patch(card, out) if out else None
+            if note and await _worker_note(sid, {"operator_id": op, **{k: v for k, v in note.items() if v is not None}}) == 200:
+                changed += 1
+        return changed
+    except Exception as e:  # the conversation still loads; the next load or turn tries again
+        logger.warning("Brain card outcome sync failed for session %s: %s", sid, e)
+        return 0
+
+
 @router.get("/sessions/{sid}")  # not ``session_id``: that name is the auth cookie parameter
-async def brain_session(sid: uuid.UUID, auth: dict = Depends(require_operator)):
-    return await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}")
+async def brain_session(sid: uuid.UUID, request: Request, auth: dict = Depends(require_operator)):
+    """A conversation, with every approved card brought up to what its order did."""
+    path = f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}"
+    session = await _worker_get(path)
+    if await sync_session_cards(request, operator_id(auth), sid, session):
+        session = await _worker_get(path)
+    return session
+
+
+@router.get("/sessions/{sid}/cards/{widget_id}/outcome")
+async def brain_card_outcome(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator)):
+    """What an approved card's order did, for a card waiting on screen. Records a change in the conversation."""
+    session = await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}")
+    card = next((w for m in session.get("messages", []) for w in (m.get("widgets") or [])
+                 if w.get("id") == widget_id and w.get("kind") == "order_card"), None)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    if not card.get("command_id"):
+        return {"status": card.get("status"), "state": None}
+    async with request.app.state.pool.acquire() as conn:
+        out = await command_outcome(conn, card["command_id"])
+    if out is None:
+        return {"status": card.get("status"), "state": None}
+    note = card_patch(card, out) if card.get("status") in ("APPROVED", "WORKING") else None
+    status = card.get("status")
+    if note and await _worker_note(sid, {"operator_id": operator_id(auth), **{k: v for k, v in note.items() if v is not None}}) == 200:
+        status = note["status"]
+    return {"status": status, **out}
 
 
 async def _worker_note(sid: uuid.UUID, body: dict[str, Any]) -> int:
