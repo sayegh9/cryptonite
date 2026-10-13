@@ -1,6 +1,6 @@
 # HANDOFF
 
-Current state of Cryptonite and what is left to do. Updated 2026-10-13 (main `107a8e6`).
+Current state of Cryptonite and what is left to do. Updated 2026-10-13 evening (main `c378285`).
 Earlier handovers, status reports and review plans were removed from the tree on 2026-10-13; they are in git
 history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
@@ -8,7 +8,7 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
 - **Code:** everything is on `main`; no pull requests are open. CI on GitHub does not run (see Operator items),
   so every merge since #78 was verified locally with the commands below.
-- **Database:** dev DB `cryptonite` at Alembic `044` (single head).
+- **Database:** dev DB `cryptonite` at Alembic `045` (single head).
 - **Services (Docker Compose, project `infra`):** all running and healthy. `api`, `agent_worker`, `orchestrator`,
   `ingest`, `scanner`, `learner`, `debate_worker` ×3, `backtester`, `strategy_sandbox` and `web` run `main`'s code;
   `research_worker`, `exit_monitor`, `derivatives_feed`, `outbox` and `notifier` differ from `main` only in shared
@@ -22,8 +22,19 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 - **Web:** the 2026-10-12 UI critique is implemented ([docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md), #81):
   unknown states never read as healthy or empty, one session store, one kill-switch poller per account,
   PAPER and DEMO kill switches told apart.
-- **Mandates:** `BTC-ETH spot L1` and `WLDUSDT.BINANCE` are PAUSED; the XRP mandate is ARCHIVED. No mandate is
-  ACTIVE, so the AI cannot place orders until one is resumed in Mission Control.
+- **Mandates:** `Brain XRPUSDT.BINANCE` is ACTIVE at L1 (created 2026-10-13 from a Brain order card; $10,000
+  budget, 10% position limit, one open XRP position). `BTC-ETH spot L1` and `WLDUSDT.BINANCE` are PAUSED
+  (reduce-only); the older XRP mandate is ARCHIVED. Every risk-adding order waits for the operator's approval.
+- **Order outcomes (#86):** an approved Brain card follows its order to WORKING (a resting limit), FILLED or NOT
+  EXECUTED with the reason, and writes the change into the conversation once, so the Brain knows. Whatever path
+  approved it, an approved order that is not executed also sends an INFO notification (Telegram).
+- **Mandate sizing (#86):** sizing and the mandate check value an order at the same price (its limit, else the
+  live ask/bid). If they ever disagree, the order is refused as `MANDATE_SIZING_CONFLICT` and logged as an error,
+  never recorded as the AI's breach. Root cause of the 2026-10-13 18:47 UTC refusal of a limit buy above the ask.
+- **Breaches:** none count. The four on record (#2–#4 from 2026-10-04, #18 from 2026-10-13) were all
+  system-sized and were voided by the operator on 2026-10-13 (`BREACH_VOIDED` events #19–#22, migration 045);
+  the BREACH rows stay in the audit log. Voiding: `scripts/void_mandate_breach.py` (dry run by default), only for
+  breaches the system caused.
 - **DEMO account:** the 10 SUBMIT_ORDER commands from 2026-09-24/25 that never reached Binance were settled on
   2026-10-13, and all 62 stale DEMO reservations were released (`OPERATOR_ABORTED_UNSENT`). Script and the backup
   taken before it: `~/backups/cryptonite/settle_demo_unsent-2026-10-13.sql`, `db/cryptonite-2026-10-13T1407Z.dump`.
@@ -77,7 +88,7 @@ API_ORIGIN=http://127.0.0.1:8999 API_BASE=http://127.0.0.1:8999/api/v1 pnpm buil
 pnpm exec playwright test -c playwright.local.config.ts
 ```
 
-Last full results (2026-10-13): pytest 1917 passed / 0 failed plus 2 destructive; Playwright 146/146.
+Last full results (2026-10-13, #86): pytest 1957 passed / 0 failed plus 2 destructive; Playwright 148/148.
 
 ## Operator items (only the operator can do these)
 
@@ -100,8 +111,8 @@ Last full results (2026-10-13): pytest 1917 passed / 0 failed plus 2 destructive
 
 ## Waiting on time
 
-- Gate 5: 14 days of L1 paper trading with 0 breaches. Three BREACH events from 2026-10-04 (a sizing bug, fixed)
-  are still recorded; whether they count is the operator's call.
+- Gate 5: 14 days of L1 paper trading with 0 breaches. The 2026-10-04 breaches were voided on 2026-10-13, so the
+  breach count is 0; the time requirement still applies.
 - L2 candidacy of `BTC-ETH spot L1`: earliest 2026-10-31, needs 30 closed trades (`scripts/gate_status.py`).
 
 ## Known risks to watch
