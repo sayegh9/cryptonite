@@ -31,7 +31,7 @@ function sse(events: [string, unknown][]): string {
   return events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
 }
 
-const TURN = sse([
+const turnWith = (card: Record<string, unknown>) => sse([
   ["session", { session_id: SESSION, trace_id: TRACE }],
   ["tool_call", { id: "call-0", tool: "show_price_chart", args: { symbol: "BTCUSDT", timeframe: "4h" }, phase: "start", status: "RUNNING" }],
   ["tool_call", { id: "call-0", tool: "show_price_chart", phase: "end", status: "OK" }],
@@ -39,7 +39,7 @@ const TURN = sse([
   ["token", { text: "BTC reclaimed 60k on the 4H. " }],
   ["tool_call", { id: "call-1", tool: "propose_order", args: {}, phase: "start", status: "RUNNING" }],
   ["tool_call", { id: "call-1", tool: "propose_order", phase: "end", status: "DENIED" }],
-  ["widget", { widget: ORDER_CARD }],
+  ["widget", { widget: card }],
   ["token", { text: "The order card is waiting for your approval." }],
   [
     "done",
@@ -53,6 +53,7 @@ const TURN = sse([
     },
   ],
 ]);
+const TURN = turnWith(ORDER_CARD);
 
 /** Fail the test on React render/hydration errors (backend-offline network noise is ignored). */
 function collectReactErrors(page: Page): string[] {
@@ -194,6 +195,127 @@ test.describe("Brain Home", () => {
     await expect.poll(() => calls.stream.length).toBe(2);
     expect(calls.stream[1]).toEqual({ message: "thanks", session_id: SESSION });
 
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("an entry with no mandate: the card creates one inline with TOTP, then approves it", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockBackend(page);
+    const mandateBodies: any[] = [];
+    const orderBodies: any[] = [];
+    await page.route("**/api/v1/ai/mandates", (route) => {
+      if (route.request().method() !== "POST") return route.fulfill({ json: { mandates: [] } });
+      mandateBodies.push(route.request().postDataJSON());
+      return route.fulfill({ status: 201, json: { id: "mandate-1", name: "Brain BTCUSDT.BINANCE", instruments: ["BTCUSDT.BINANCE"], status: "ACTIVE" } });
+    });
+    // Registered after mockBackend, so it takes precedence: without a mandate the API refuses (409) before claiming the card
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) => {
+      const body = route.request().postDataJSON();
+      orderBodies.push(body);
+      if (!body?.mandate_id) {
+        return route.fulfill({
+          status: 409,
+          json: { detail: "NO_MANDATE: approve this card inside an ACTIVE mandate that allows BTCUSDT.BINANCE (Mission Control → Mandates)" },
+        });
+      }
+      return route.fulfill({ json: { command_id: "cmd-12345678", status: "APPROVED", mandate_id: body.mandate_id } });
+    });
+    await openBrainHome(page);
+    await page.getByRole("textbox", { name: "Message the Brain" }).fill("Analyze BTC and propose a trade");
+    await page.getByRole("button", { name: "Send to the Brain" }).click();
+
+    const card = page.getByTestId("brain-assistant-message").last().getByTestId("brain-widget-order-card");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+
+    // The refusal turns into the mandate form on the same card, not a trip to Mission Control
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group).toContainText("No ACTIVE mandate allows BTCUSDT.BINANCE yet");
+    const create = group.getByRole("button", { name: "Create mandate and confirm" });
+    await expect(create).toBeDisabled();
+    await group.getByLabel("TOTP code").fill("123456");
+    await expect(create).toBeEnabled();
+    await create.click();
+
+    await expect(card.getByRole("status")).toContainText("Approved · paper command cmd-12345678");
+    // The API checks the TOTP code; the mandate starts at L1 with the editor's defaults, on this instrument only
+    expect(mandateBodies).toEqual([
+      {
+        name: "Brain BTCUSDT.BINANCE", capital_budget_usd: "10000", instruments: ["BTCUSDT.BINANCE"], max_position_pct: 10,
+        max_drawdown_pct: 20, veto_window_s: 600, allow_perps: false, totp_code: "123456",
+      },
+    ]);
+    expect(orderBodies).toHaveLength(2);
+    expect(orderBodies[0]?.mandate_id).toBeUndefined();
+    expect(orderBodies[1]).toEqual({ mandate_id: "mandate-1" });
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a paused mandate on the instrument: the API refuses the inline mandate and the card says why", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockBackend(page);
+    const mandateBodies: any[] = [];
+    await page.route("**/api/v1/ai/mandates", (route) => {
+      if (route.request().method() !== "POST") return route.fulfill({ json: { mandates: [] } });
+      mandateBodies.push(route.request().postDataJSON());
+      return route.fulfill({
+        status: 409,
+        json: { detail: "MANDATE_PAUSED: BTC paused already covers BTCUSDT.BINANCE; resume or edit it instead" },
+      });
+    });
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
+      route.fulfill({
+        status: 409,
+        json: { detail: "NO_MANDATE: approve this card inside an ACTIVE mandate that allows BTCUSDT.BINANCE (Mission Control → Mandates)" },
+      }),
+    );
+    await openBrainHome(page);
+    await page.getByRole("textbox", { name: "Message the Brain" }).fill("Analyze BTC and propose a trade");
+    await page.getByRole("button", { name: "Send to the Brain" }).click();
+
+    const card = page.getByTestId("brain-assistant-message").last().getByTestId("brain-widget-order-card");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await group.getByLabel("TOTP code").fill("123456");
+    await group.getByRole("button", { name: "Create mandate and confirm" }).click();
+
+    // The server refuses (one source of truth); the card shows its reason and nothing is queued
+    await expect(card.getByRole("alert")).toContainText("MANDATE_PAUSED: BTC paused already covers BTCUSDT.BINANCE");
+    expect(mandateBodies).toHaveLength(1);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a SELL card says it closes the holding, and a sell the mandate cannot cover says to reject it", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockBackend(page);
+    const sellCard = { ...ORDER_CARD, side: "SELL", rationale: "Taking profit on the BTC holding." };
+    await page.route("**/agent-api/brain/stream", (route: Route) =>
+      route.fulfill({ status: 200, headers: { "content-type": "text/event-stream" }, body: turnWith(sellCard) }),
+    );
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
+      route.fulfill({
+        status: 409,
+        json: { detail: "SPOT_SELL_NOT_HELD: mandate Brain holds no BTCUSDT.BINANCE, and a spot sell only closes a holding; reject this card" },
+      }),
+    );
+    await openBrainHome(page);
+    await page.getByRole("textbox", { name: "Message the Brain" }).fill("Take profit on BTC");
+    await page.getByRole("button", { name: "Send to the Brain" }).click();
+
+    const card = page.getByTestId("brain-assistant-message").last().getByTestId("brain-widget-order-card");
+    await expect(card).toContainText("CLOSES HOLDING · PAPER");
+    await expect(card).not.toContainText("ADDS RISK");
+    await expect(card).toContainText("Whole holding");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText("whole holding the mandate has in it");
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+
+    // refused before anything is queued: the card names the reason and stays pending for the operator to reject
+    await expect(card.getByRole("alert")).toContainText("SPOT_SELL_NOT_HELD");
+    await expect(card.getByRole("alert")).toContainText("reject this card");
+    await card.getByRole("button", { name: "Cancel" }).click();
+    await expect(card.getByRole("button", { name: "Reject" })).toBeVisible();
     expect(reactErrors).toEqual([]);
   });
 

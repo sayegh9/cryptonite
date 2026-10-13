@@ -107,3 +107,20 @@ async def entry_room_pct(conn, mandate: Mandate, instrument_id: str, marks: dict
            WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0""",
         mandate.instance_id)
     return room_at_marks(mandate.capital_budget_usd, mandate.max_position_pct, rows, instrument_id, marks)
+
+
+async def instance_spot_holdings(conn, instance_id: str) -> dict[str, tuple[Decimal, Decimal]]:
+    """Net filled spot quantity (and average fill price) per instrument for one instance, from
+    ``paper_orders``. The orchestrator writes those rows inside the claim transaction of every fill and
+    close, so unlike ``paper_positions`` (written later by the event bridge) they are never stale."""
+    rows = await conn.fetch(
+        """SELECT instrument_id,
+                  SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE -filled_qty END) AS net,
+                  SUM(CASE WHEN side = 'BUY' THEN filled_qty * COALESCE(avg_fill_price, price, 0) ELSE 0 END)
+                      / NULLIF(SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE 0 END), 0) AS avg_px
+           FROM paper_orders
+           WHERE instance_id = $1 AND filled_qty > 0 AND instrument_id NOT LIKE '%-PERP.%'
+           GROUP BY instrument_id""",
+        instance_id,
+    )
+    return {r["instrument_id"]: (max(Decimal(str(r["net"] or 0)), Decimal("0")), Decimal(str(r["avg_px"] or 0))) for r in rows}

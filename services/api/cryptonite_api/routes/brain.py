@@ -28,8 +28,12 @@ import httpx
 from cryptonite_api.routes.agents import sign_request
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
-from cryptonite_execution.mandate_store import entry_room_pct, resolve_mandate_for
-from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT
+from cryptonite_execution.mandate_store import (
+    entry_room_pct,
+    instance_spot_holdings,
+    resolve_mandate_for,
+)
+from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, canonical_instrument
 from cryptonite_schemas.marks import read_marks
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -193,6 +197,17 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         raise HTTPException(status_code=409, detail=f"{why}: approve this card inside an ACTIVE mandate that allows "
                             f"{card['instrument_id']} (Mission Control → Mandates)")
 
+    # Spot is long-only: a SELL closes what the mandate holds, sized to that holding as a debate SELL is, never to the
+    # budget. Refused before the card is claimed, so the operator rejects it here instead of finding a failed order later
+    held = Decimal("0")
+    if card["side"] == "SELL":
+        async with pool.acquire() as conn:
+            held = (await instance_spot_holdings(conn, mandate.instance_id)).get(
+                canonical_instrument(card["instrument_id"]), (Decimal("0"), Decimal("0")))[0]
+        if held <= 0:
+            raise HTTPException(status_code=409, detail=f"SPOT_SELL_NOT_HELD: mandate {mandate.name} holds no "
+                                f"{card['instrument_id']}, and a spot sell only closes a holding; reject this card")
+
     # One Brain decision, one order (D4): the Brain can emit the same order as several cards in one turn
     # (3 XRP cards of one trace were approved within 6 s); a twin of an approved card is refused, unclaimed
     trace = card.get("trace_id")
@@ -215,8 +230,11 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
                 f"{mandate.max_position_pct}% in {card['instrument_id']}; nothing was queued"))
         allocation = min(allocation, room.quantize(Decimal("0.01")))
     budget = mandate.capital_budget_usd * allocation / 100
-    summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {allocation:g}% of mandate "
-               f"{mandate.name} (${budget:,.0f})")
+    if card["side"] == "SELL":
+        summary = f"SELL {card['instrument_id']} {card['order_type']} the whole holding of {held:g} in mandate {mandate.name}"
+    else:
+        summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {allocation:g}% of mandate "
+                   f"{mandate.name} (${budget:,.0f})")
     if card.get("status") == "PENDING_APPROVAL":  # claim it first: a concurrent reject can no longer win
         claimed = await _worker_note(sid, {
             "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "expect_status": "PENDING_APPROVAL",
@@ -236,6 +254,8 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     }
     if card["order_type"] == "LIMIT":
         payload["price"] = card["limit_price"]
+    if card["side"] == "SELL":
+        payload["quantity"] = float(held)  # the orchestrator sells this quantity, not a share of the budget
     payload["mandate_id"] = str(mandate.id)
     key = f"brain-card:{sid}:{widget_id}"
     try:
