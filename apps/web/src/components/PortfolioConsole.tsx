@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ShieldAlert,
   ShieldCheck,
   AlertTriangle,
+  HelpCircle,
   XCircle,
   Plus,
   TrendingUp,
@@ -20,12 +21,30 @@ import { ExecutionLedger } from "@/components/portfolio/ExecutionLedger";
 import { ExposureBreakdown } from "@/components/portfolio/ExposureBreakdown";
 import { DrawdownMeter } from "@/components/portfolio/DrawdownMeter";
 
+/** A guard reading older than this is no longer a reading of the current state */
+const GUARD_FRESH_MS = 15_000;
+
+type GuardState = "checking" | "unknown" | "latched" | "armed";
+
+/** The clock, ticking every few seconds, so a reading that stops updating goes stale on screen */
+function useNow(intervalMs = 5_000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(t);
+  }, [intervalMs]);
+  return now;
+}
+
 function MetricCards() {
   const account = usePortfolioStore((s) => s.account);
   const positions = usePortfolioStore((s) => s.positions);
   const latched = usePortfolioStore((s) => s.killSwitch.is_latched);
   const positionsKnown = usePortfolioStore((s) => s.positionsAt !== null);
-  const killSwitchKnown = usePortfolioStore((s) => s.killSwitchAt !== null);
+  const killSwitchAt = usePortfolioStore((s) => s.killSwitchAt);
+  const now = useNow();
+  const guard: GuardState =
+    killSwitchAt === null ? "checking" : now - killSwitchAt > GUARD_FRESH_MS ? "unknown" : latched ? "latched" : "armed";
   const open = positions.filter(isHeldPosition);
   const longs = open.filter((p) => p.side !== "SHORT").length;
   const daily = account ? Number(account.daily_realized_pnl) : null;
@@ -69,9 +88,14 @@ function MetricCards() {
       <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded">
         <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Execution Guard</div>
         <div className="text-lg font-black mt-1 flex items-center space-x-1.5">
-          {!killSwitchKnown ? (
-            <span className="text-zinc-400">UNKNOWN</span>
-          ) : latched ? (
+          {guard === "checking" ? (
+            <span className="text-zinc-400">Checking…</span>
+          ) : guard === "unknown" ? (
+            <span className="text-amber-300 flex items-center space-x-1">
+              <HelpCircle className="w-4 h-4" aria-hidden="true" />
+              <span>UNKNOWN</span>
+            </span>
+          ) : guard === "latched" ? (
             <span className="text-red-400 flex items-center space-x-1">
               <ShieldAlert className="w-4 h-4" />
               <span>LATCHED</span>
@@ -79,12 +103,20 @@ function MetricCards() {
           ) : (
             <span className="text-emerald-400 flex items-center space-x-1">
               <ShieldCheck className="w-4 h-4" />
-              <span>ACTIVE</span>
+              <span>ARMED</span>
             </span>
           )}
         </div>
         <div className="text-2xs text-zinc-400 mt-0.5">
-          {!account ? "Account status unavailable" : account.daily_loss_latched ? "Daily Drawdown Tripped" : "Daily loss latch not tripped"}
+          {guard === "checking"
+            ? "Waiting for the first guard reading"
+            : guard === "unknown"
+              ? "Last guard reading is too old to trust"
+              : !account
+                ? "Account status unavailable"
+                : account.daily_loss_latched
+                  ? "Daily Drawdown Tripped"
+                  : "Daily loss latch not tripped"}
         </div>
       </div>
     </div>
@@ -219,23 +251,32 @@ export function PortfolioConsole() {
           </button>
 
           {!killSwitch.is_latched ? (
-            <>
-              <button
-                onClick={() => setShowFlattenModal(true)}
-                className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white font-bold tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                disabled={openPositions.length === 0}
-              >
-                <XCircle className="w-4 h-4" />
-                <span>Emergency Flatten All</span>
-              </button>
-              <button
-                onClick={() => setShowKillModal(true)}
-                className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white font-bold tracking-wide transition-colors"
-              >
-                <ShieldAlert className="w-4 h-4" />
-                <span>Trip Kill Switch</span>
-              </button>
-            </>
+            // The two destructive actions sit apart from Deploy, in their own group, with what each one does written out
+            <div role="group" aria-label="Emergency controls" className="flex flex-col items-end gap-1 border-l border-white/10 pl-3">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowFlattenModal(true)}
+                  className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white font-bold tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  disabled={openPositions.length === 0}
+                  title={openPositions.length === 0 ? "Off: there are no open positions to close" : "Close every open position at market"}
+                >
+                  <XCircle className="w-4 h-4" />
+                  <span>Emergency Flatten All</span>
+                </button>
+                <button
+                  onClick={() => setShowKillModal(true)}
+                  className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-white font-bold tracking-wide transition-colors"
+                  title="Halt all paper trading until an operator resets the switch"
+                >
+                  <ShieldAlert className="w-4 h-4" />
+                  <span>Trip Kill Switch</span>
+                </button>
+              </div>
+              <p className="text-right text-2xs text-zinc-500">
+                Flatten closes every open position at market
+                {openPositions.length === 0 ? " (none open now)" : ""}. Trip halts all trading until reset.
+              </p>
+            </div>
           ) : (
             <button
               onClick={handleResetKillSwitch}

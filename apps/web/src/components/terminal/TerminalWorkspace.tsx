@@ -10,6 +10,7 @@ import { MarginRiskHUD } from "./MarginRiskHUD";
 import { OrderEntryPanel } from "./OrderEntryPanel";
 import { usePerpetualPositionsPoll } from "@/lib/stores/usePerpetualStore";
 import { hasBrackets, toPerpInstrumentId } from "@/lib/perp/margin";
+import { CHART_LAYOUT_EVENT } from "@/components/MultiChartGrid";
 
 interface TerminalWorkspaceProps {
   chartComponent: React.ReactNode;
@@ -20,6 +21,8 @@ interface TerminalWorkspaceProps {
   showWatchlist?: boolean;
   onToggleWatchlist?: (val: boolean) => void;
   onTriggerDebate?: () => void;
+  /** The Scanner view: the scanner takes the workspace and the charts step aside (they stay mounted) */
+  scannerFocus?: boolean;
 }
 
 /** Order ticket + perp margin HUD; polls positions only while mounted (operator sidebar open). */
@@ -49,8 +52,10 @@ export function TerminalWorkspace({
   showWatchlist = true,
   onToggleWatchlist,
   onTriggerDebate,
+  scannerFocus = false,
 }: TerminalWorkspaceProps) {
   const blotterPanelRef = useRef<PanelImperativeHandle>(null);
+  const chartsPanelRef = useRef<PanelImperativeHandle>(null);
   const [isBlotterCollapsed, setIsBlotterCollapsed] = useState(false);
 
   // Panel visibility state with localStorage persistence
@@ -123,6 +128,27 @@ export function TerminalWorkspace({
     toggleDebate(true);
   };
 
+  // Scanner view: the charts collapse out of the way and come back when the view changes. They stay mounted,
+  // so the chart grid's layout and each chart's data survive the trip.
+  useEffect(() => {
+    const charts = chartsPanelRef.current;
+    if (!charts) return;
+    if (scannerFocus) charts.collapse();
+    else if (charts.isCollapsed()) charts.expand();
+  }, [scannerFocus]);
+
+  // A 2x2 grid has no room for side panels, so they step aside. Turning them back on stays the operator's choice.
+  useEffect(() => {
+    const onLayout = (e: Event) => {
+      if ((e as CustomEvent<{ layout?: string }>).detail?.layout === "2x2") {
+        toggleOrderbook(false);
+        toggleDebate(false);
+      }
+    };
+    window.addEventListener(CHART_LAYOUT_EVENT, onLayout);
+    return () => window.removeEventListener(CHART_LAYOUT_EVENT, onLayout);
+  }, []);
+
   // Calculate panel sizes based on active panels
   const chartDefaultSize = (!showOrderbook && !showDebateSidebar && !showOperatorSidebar) ? 100 : ((showOrderbook && showDebateSidebar) || showOperatorSidebar) ? 55 : 75;
 
@@ -140,7 +166,7 @@ export function TerminalWorkspace({
           {onToggleWatchlist && (
             <button
               onClick={() => onToggleWatchlist(!showWatchlist)}
-              className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-cyan-500/50 outline-none ${
+              className={`px-2 min-h-6 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-cyan-500/50 outline-none ${
                 showWatchlist 
                   ? "bg-cyan-950/40 border-cyan-800/60 text-cyan-400 font-bold" 
                   : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
@@ -156,7 +182,7 @@ export function TerminalWorkspace({
           {/* Orderbook Toggle */}
           <button
             onClick={() => toggleOrderbook(!showOrderbook)}
-            className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-cyan-500/50 outline-none ${
+            className={`px-2 min-h-6 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-cyan-500/50 outline-none ${
               showOrderbook 
                 ? "bg-cyan-950/50 border-cyan-800/60 text-cyan-400 font-bold" 
                 : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
@@ -171,7 +197,7 @@ export function TerminalWorkspace({
           {/* AI Debate Toggle */}
           <button
             onClick={() => toggleDebate(!showDebateSidebar)}
-            className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-purple-500/50 outline-none ${
+            className={`px-2 min-h-6 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-purple-500/50 outline-none ${
               showDebateSidebar 
                 ? "bg-purple-950/50 border-purple-800/60 text-purple-400 font-bold" 
                 : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
@@ -186,7 +212,7 @@ export function TerminalWorkspace({
           {/* Trade Toggle: order ticket, perp margin HUD, and kill switch (operator sidebar) */}
           <button
             onClick={() => toggleOperator(!showOperatorSidebar)}
-            className={`px-2 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-rose-500/50 outline-none ${
+            className={`px-2 min-h-6 py-0.5 rounded border transition-colors flex items-center space-x-1.5 focus-visible:ring-1 focus-visible:ring-rose-500/50 outline-none ${
               showOperatorSidebar
                 ? "bg-rose-950/50 border-rose-800/60 text-rose-400 font-bold"
                 : "bg-zinc-900/60 border-white/5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
@@ -211,7 +237,7 @@ export function TerminalWorkspace({
 
       <PanelGroup id="cryptonite-workspace-v2" orientation="vertical">
         {/* Upper Section */}
-        <Panel defaultSize={70} minSize={30}>
+        <Panel panelRef={chartsPanelRef} defaultSize={70} minSize={30} collapsible collapsedSize={0}>
           <PanelGroup id="cryptonite-workspace-v2-upper" orientation="horizontal">
             {/* Left: Chart Area */}
             <Panel defaultSize={chartDefaultSize} minSize={30} className="flex flex-col min-h-0 min-w-0">
@@ -305,10 +331,13 @@ export function TerminalWorkspace({
                       <X className="w-3 h-3" />
                     </button>
                   </div>
-                  <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
-                    {/* The Trade sidebar trades on the paper engine, so its kill switch must stop that engine */}
-                    <KillSwitchPanel environment="PAPER" accountId="PAPER-ACCOUNT-001" />
-                    <TradingControls symbol={selectedSymbol} />
+                  <div className="flex-1 min-h-0 overflow-auto p-4">
+                    {/* A minimum width keeps the order buttons whole; a narrow pane scrolls rather than clipping them */}
+                    <div className="min-w-[15rem] space-y-4">
+                      {/* The Trade sidebar trades on the paper engine, so its kill switch must stop that engine */}
+                      <KillSwitchPanel environment="PAPER" accountId="PAPER-ACCOUNT-001" />
+                      <TradingControls symbol={selectedSymbol} />
+                    </div>
                   </div>
                 </Panel>
               </>

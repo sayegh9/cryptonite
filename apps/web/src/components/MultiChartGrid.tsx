@@ -6,6 +6,9 @@ import { LayoutGrid, Square, Columns } from "lucide-react";
 
 export type GridLayout = "1x1" | "1x2" | "2x2";
 
+/** Dispatched on every layout choice; the Terminal listens so a 2x2 grid gets the room it needs */
+export const CHART_LAYOUT_EVENT = "cryptonite:chart-layout";
+
 export interface ChartConfig {
   id: string;
   symbol: string;
@@ -24,6 +27,11 @@ interface Props {
 export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSelect }) => {
   const [layout, setLayout] = useState<GridLayout>("1x2");
   const [focusedId, setFocusedId] = useState<string>("chart-0");
+
+  const chooseLayout = (next: GridLayout) => {
+    setLayout(next);
+    window.dispatchEvent(new CustomEvent(CHART_LAYOUT_EVENT, { detail: { layout: next } }));
+  };
 
   const [charts, setCharts] = useState<ChartConfig[]>([
     { id: "chart-0", symbol: "BTCUSDT", timeframe: "1m" },
@@ -86,9 +94,9 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
         {/* Layout Switcher Buttons */}
         <div className="flex items-center space-x-1 bg-zinc-900 border border-zinc-800 p-0.5 rounded">
           <button
-            onClick={() => setLayout("1x1")}
+            onClick={() => chooseLayout("1x1")}
             title="Single Chart (1x1)"
-            className={`p-1 rounded text-xs transition-colors flex items-center space-x-1 ${
+            className={`min-h-6 px-1.5 py-1 rounded text-xs transition-colors flex items-center space-x-1 ${
               layout === "1x1" ? "bg-cyan-500 text-zinc-950 font-bold" : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
@@ -96,9 +104,9 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
             <span className="text-2xs">1x1</span>
           </button>
           <button
-            onClick={() => setLayout("1x2")}
+            onClick={() => chooseLayout("1x2")}
             title="Split Charts (1x2)"
-            className={`p-1 rounded text-xs transition-colors flex items-center space-x-1 ${
+            className={`min-h-6 px-1.5 py-1 rounded text-xs transition-colors flex items-center space-x-1 ${
               layout === "1x2" ? "bg-cyan-500 text-zinc-950 font-bold" : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
@@ -106,9 +114,9 @@ export const MultiChartGrid: React.FC<Props> = ({ activeTarget, onActiveChartSel
             <span className="text-2xs">1x2</span>
           </button>
           <button
-            onClick={() => setLayout("2x2")}
-            title="Quad Grid (2x2)"
-            className={`p-1 rounded text-xs transition-colors flex items-center space-x-1 ${
+            onClick={() => chooseLayout("2x2")}
+            title="Quad Grid (2x2). Side panels step aside to make room."
+            className={`min-h-6 px-1.5 py-1 rounded text-xs transition-colors flex items-center space-x-1 ${
               layout === "2x2" ? "bg-cyan-500 text-zinc-950 font-bold" : "text-zinc-400 hover:text-zinc-200"
             }`}
           >

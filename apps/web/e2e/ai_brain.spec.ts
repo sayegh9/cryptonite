@@ -117,7 +117,7 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
 
     // 6. Verify Zone 3: Action Inbox
     await expect(page.locator("text=Action & Decision Inbox")).toBeVisible();
-    await expect(page.locator("text=Sample Action Card (Interactive Guide)")).toBeVisible();
+    await expect(page.locator("text=Example card · not a real proposal")).toBeVisible();
 
     // 7. Test Starter Prompt Chip execution
     const riskChip = page.locator("button", { hasText: "Audit Capital & Risk" });

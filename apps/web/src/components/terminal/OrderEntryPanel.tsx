@@ -3,6 +3,8 @@
 import { useId, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, Info } from "lucide-react";
 import { fetchApi } from "@/lib/api";
+import { useSessionStore, type SessionStatus } from "@/lib/stores/useSessionStore";
+import { useKillSwitch, type KillSwitchView } from "@/lib/stores/useKillSwitchStore";
 import { usePerpetualStore } from "@/lib/stores/usePerpetualStore";
 import {
   MAX_PERP_LEVERAGE,
@@ -35,6 +37,17 @@ function projectPosition(current: { signed: number; entry: number } | null, orde
   return { signed: q, entry: Math.sign(q) === Math.sign(q0) ? (current?.entry ?? price) : price };
 }
 
+/** Why orders cannot be sent right now, or null when they can. Unknown is blocked, never assumed safe. */
+function orderGateReason(session: SessionStatus, killSwitch: KillSwitchView): string | null {
+  if (session === "anonymous") return "Sign in as operator to place orders.";
+  if (session === "checking") return "Verifying your operator session before orders can be placed.";
+  if (session === "unreachable") return "Could not verify the operator session: orders are blocked.";
+  if (killSwitch === "latched") return "Kill switch latched: trading is halted.";
+  if (killSwitch === "checking") return "Checking the kill switch before orders can be placed.";
+  if (killSwitch === "unknown" || killSwitch === "signed-out") return "Kill-switch status unknown: orders are blocked until it is confirmed.";
+  return null;
+}
+
 export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symbol?: string; onOrderSubmitted?: () => void }) {
   const perpInstrument = toPerpInstrumentId(symbol);
   const perpAvailable = hasBrackets(perpInstrument);
@@ -46,6 +59,11 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // The paper engine takes orders only from a confirmed operator session and never while the kill switch is
+  // latched or its state is unconfirmed. The reason is shown, so a disabled button is never a mystery.
+  const session = useSessionStore((s) => s.status);
+  const killSwitch = useKillSwitch("PAPER", "PAPER-ACCOUNT-001");
+  const gateReason = orderGateReason(session, killSwitch.view);
   const reduceOnlyHelpId = useId();
 
   const leverage = usePerpetualStore((s) => s.leverage);
@@ -91,7 +109,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (reduceOnlyError) return;
+    if (reduceOnlyError || gateReason) return;
     setLoading(true);
     setError("");
     setNotice("");
@@ -265,13 +283,19 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
 
       <button
         type="submit"
-        disabled={loading || !!reduceOnlyError || !(qty > 0)}
+        disabled={loading || !!reduceOnlyError || !!gateReason || !(qty > 0)}
         className={`w-full py-2.5 font-black text-sm tracking-widest uppercase transition-colors rounded disabled:opacity-50 disabled:cursor-not-allowed ${
-          side === "BUY" ? "bg-emerald-600 hover:bg-emerald-500 text-white" : "bg-rose-600 hover:bg-rose-500 text-white"
+          // emerald-700 keeps the white label above 4.5:1 (emerald-600 was 3.8:1)
+          side === "BUY" ? "bg-emerald-700 hover:bg-emerald-600 text-white" : "bg-rose-600 hover:bg-rose-500 text-white"
         }`}
       >
         {loading ? "SUBMITTING..." : `SUBMIT ${side}${isPerp ? ` ${leverage}x` : ""}`}
       </button>
+      {gateReason && (
+        <p role="status" className="text-2xs font-mono text-amber-200">
+          {gateReason}
+        </p>
+      )}
     </form>
   );
 }

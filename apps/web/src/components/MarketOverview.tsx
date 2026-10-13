@@ -4,6 +4,10 @@ import React, { useEffect, useState } from "react";
 import { TrendingUp, TrendingDown, RefreshCw } from "lucide-react";
 import { MarketOverviewTicker } from "@/lib/types";
 import { fetchApi } from "@/lib/api";
+import { useSlowFlag } from "@/lib/hooks/useSlowFlag";
+
+/** The overview is a heavy request; past this it is reported as not loaded */
+const MARKETS_TIMEOUT_MS = 15_000;
 
 interface Props {
   onSelectSymbol: (symbol: string) => void;
@@ -13,14 +17,15 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
   const [tickers, setTickers] = useState<MarketOverviewTicker[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const slow = useSlowFlag(loading && tickers.length === 0);
 
   const loadData = async () => {
     try {
-      const data = await fetchApi("/market/overview");
+      const data = await fetchApi("/market/overview", { timeoutMs: MARKETS_TIMEOUT_MS });
       setTickers(data);
       setError(null);
     } catch (err: any) {
-      setError(err.message || "Failed to load market data");
+      setError(err?.timeout ? "Market data did not load in time." : err?.message || "Failed to load market data");
     } finally {
       setLoading(false);
     }
@@ -34,10 +39,15 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
 
   if (loading && tickers.length === 0) {
     return (
-      <div className="h-full flex flex-col bg-zinc-950 p-4 space-y-6 animate-pulse">
-        <div className="h-48 bg-zinc-900 rounded"></div>
-        <div className="h-32 bg-zinc-900 rounded"></div>
-        <div className="flex-1 bg-zinc-900 rounded"></div>
+      <div role="status" className="h-full flex flex-col bg-zinc-950 p-4 space-y-6">
+        <p className="font-mono text-2xs text-zinc-500">
+          {slow ? "Still loading market data… the feed is slower than usual." : "Loading market data…"}
+        </p>
+        <div className="space-y-6 animate-pulse" aria-hidden="true">
+          <div className="h-48 bg-zinc-900 rounded"></div>
+          <div className="h-32 bg-zinc-900 rounded"></div>
+          <div className="flex-1 bg-zinc-900 rounded"></div>
+        </div>
       </div>
     );
   }

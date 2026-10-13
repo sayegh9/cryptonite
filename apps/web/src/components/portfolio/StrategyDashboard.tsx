@@ -172,7 +172,7 @@ export function StrategyDashboard({ onSelect }: { onSelect: (instanceId: string)
         )}
       </div>
       {!loaded ? (
-        <div className="p-3 space-y-2" aria-busy="true" aria-label="Loading strategies">
+        <div className="p-3 space-y-2" role="status" aria-busy="true" aria-label="Loading strategies">
           {[0, 1].map((i) => <div key={i} className="h-10 rounded bg-zinc-800/40 animate-pulse" />)}
         </div>
       ) : visible.length === 0 ? (

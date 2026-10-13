@@ -2,6 +2,22 @@ import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
 
 const PERP = "BTCUSDT-PERP.BINANCE";
 
+/**
+ * A confirmed operator session. The session is shared app-wide, and an operator-only endpoint that answers 401
+ * (the mandate refresh does) marks it signed out, so the AI endpoints answer as signed in too.
+ */
+async function mockOperatorSession(page: Page) {
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ status: 200, json: { authenticated: true, username: "op", csrf_token: "csrf-test" } }));
+  await page.route("**/api/v1/ai/mandates", (route) => route.fulfill({ status: 200, json: { mandates: [] } }));
+  await page.route("**/api/v1/ai/approvals*", (route) =>
+    route.fulfill({ status: 200, json: { approvals: [], now: new Date().toISOString() } }));
+  await page.route("**/api/v1/ai/status", (route) =>
+    route.fulfill({ status: 200, json: { kill_switch: { latched: false, reason: null, latched_by: null }, halted_mandates: [], account: null } }));
+  await page.route("**/api/v1/control/kill-switch/status*", (route) =>
+    route.fulfill({ status: 200, json: { environment: "PAPER", account_id: "PAPER-ACCOUNT-001", is_latched: false, latch_generation: 1 } }));
+}
+
 /** Fail the test on React render/hydration errors (backend-offline network noise is ignored). */
 function collectReactErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -32,6 +48,8 @@ test.describe("Perpetuals cockpit: order ticket and margin HUD", () => {
       orderBody = route.request().postDataJSON();
       await route.fulfill({ status: 200, json: { command_id: "cmd-12345678", command_type: "MANUAL_ORDER", status: "PENDING" } });
     });
+    // The ticket only sends orders from a confirmed operator session, with the kill switch known and not latched
+    await mockOperatorSession(page);
 
     const { ticket } = await openTradeSidebar(page);
 
@@ -156,6 +174,7 @@ test.describe("Perpetuals cockpit: order ticket and margin HUD", () => {
   test("trade sidebar kill switch targets the PAPER engine", async ({ page }) => {
     const statusQueries: string[] = [];
     let tripBody: Record<string, unknown> | null = null;
+    await mockOperatorSession(page);
     await page.route("**/api/v1/control/kill-switch/status*", (route) => {
       statusQueries.push(new URL(route.request().url()).search);
       route.fulfill({ status: 200, json: { environment: "PAPER", account_id: "PAPER-ACCOUNT-001", is_latched: tripBody !== null } });
@@ -167,7 +186,7 @@ test.describe("Perpetuals cockpit: order ticket and margin HUD", () => {
     page.on("dialog", (dialog) => dialog.accept());
 
     await openTradeSidebar(page);
-    await expect(page.getByText("Execution Kill-Switch · PAPER")).toBeVisible();
+    await expect(page.getByTestId("kill-switch-paper")).toBeVisible();
     expect(statusQueries[0]).toContain("environment=PAPER");
     expect(statusQueries[0]).toContain("account_id=PAPER-ACCOUNT-001");
 

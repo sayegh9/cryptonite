@@ -103,7 +103,7 @@ export default function ShadowPanel() {
                     {r.active ? (
                       <span className="rounded border border-emerald-800 px-1 text-emerald-300">active</span>
                     ) : (
-                      <span className="rounded border border-zinc-700 px-1 text-zinc-400" title={r.shadow_paid && !report.allow_paid ? "Paid shadow models need AI_SHADOW_ALLOW_PAID" : "Sample rate is 0"}>
+                      <span className="rounded border border-zinc-700 px-1 text-zinc-400" title={r.shadow_paid && !report.allow_paid ? "Paid shadow models are switched off on this server" : "Sample rate is 0"}>
                         {r.shadow_paid && !report.allow_paid ? "inactive: paid not allowed" : "inactive"}
                       </span>
                     )}
@@ -169,7 +169,7 @@ export default function ShadowPanel() {
       )}
       {loading && !report && <p className="text-zinc-500">Loading…</p>}
       <p className="mt-2 text-2xs text-zinc-500">
-        Shadow answers are logged only, never acted on. Routes are edited in SQL (ai_model_routes.shadow_model, shadow_sample_rate 0–1); paid shadow models also need AI_SHADOW_ALLOW_PAID.
+        Shadow models answer alongside the primary model. Their answers are logged and never acted on. Paid shadow models are switched off on this server unless an administrator enables them.
       </p>
     </section>
   );

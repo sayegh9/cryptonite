@@ -115,15 +115,17 @@ export function computeModeBanner(input: ModeBannerInput): ModeBanner {
   }
 
   if (!ksKnown && !mandatesKnown) {
+    // Loading is not a failure: say so, so the header never reads "unknown" while the first answer is on its way
     if (ks === "pending" && md === "pending") {
-      return banner("pending", [warn("status unknown")], "", "Loading mandates and kill-switch state.");
+      return banner("pending", [], "loading", "Loading mandates and kill-switch state.");
     }
     const detail = denied
       ? "Sign in as operator to see mandates and the kill switch. Until then the AI's authority is unknown here."
       : ks === md
         ? `Mandates and kill-switch state ${why(ks, true)}. The AI's authority is unknown here, not zero.`
         : `Mandates ${why(md, true)} and kill-switch state ${why(ks)}. The AI's authority is unknown here, not zero.`;
-    return banner("unknown", [warn("status unknown")], "", detail);
+    // A refused request means "sign in", which is a different fix from a failed or stale one
+    return banner("unknown", [warn(denied ? "sign in to see status" : "status unknown")], "", detail);
   }
 
   // Unknowns lead, so a narrow header can never cut the qualifier that weakens the claim

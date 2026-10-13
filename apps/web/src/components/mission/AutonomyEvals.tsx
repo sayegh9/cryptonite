@@ -7,6 +7,7 @@ import { confirmPromotion, declinePromotion, evaluateAutonomy } from "@/lib/miss
 import { dispatchMandateUpdated } from "@/lib/mission/events";
 import type { GateCheck, Mandate } from "@/lib/mission/types";
 import { useAutonomyStore } from "@/lib/stores/useAutonomyStore";
+import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import OutcomesByRegime from "./OutcomesByRegime";
 import ReliabilityChart from "./ReliabilityChart";
 import { fmtGateActual } from "@/lib/format";
@@ -54,7 +55,20 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
     }
   };
 
-  if (!mandates.length) return <p className="p-4 font-mono text-2xs text-zinc-500">Create a mandate first.</p>;
+  if (!mandates.length) {
+    return (
+      <div className="p-4 font-mono text-xs text-zinc-400 space-y-3">
+        <p>No mandates yet. The autonomy gate and the shadow results are about a mandate, so create one first.</p>
+        <button
+          type="button"
+          onClick={() => dispatchSwitchWorkspace({ mode: "mission", view: "mandates" })}
+          className="rounded bg-cyan-600 px-3 py-1.5 text-2xs font-bold uppercase tracking-wider text-zinc-950 hover:bg-cyan-500"
+        >
+          Open the mandate editor
+        </button>
+      </div>
+    );
+  }
 
   return (
     <section aria-label="Autonomy and evals" className="space-y-3 font-mono text-2xs text-zinc-300">

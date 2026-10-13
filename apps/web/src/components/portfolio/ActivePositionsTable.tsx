@@ -8,6 +8,7 @@ import { closePosition, reducePosition, reversePosition } from "@/lib/portfolio/
 import { fmtPrice, fmtQty, fmtSignedUsd, isHeldPosition, isPerp, liqDistanceOf, markOf, notionalOf } from "@/lib/portfolio/metrics";
 import { LiquidationGauge } from "./LiquidationGauge";
 import { FreshnessBadge } from "./FreshnessBadge";
+import { useSlowFlag } from "@/lib/hooks/useSlowFlag";
 
 const actionBtn =
   "inline-flex items-center gap-1 px-1.5 py-1 rounded border text-2xs font-bold transition-colors outline-none focus-visible:ring-2 disabled:opacity-40 disabled:cursor-not-allowed";
@@ -125,7 +126,9 @@ const PositionRow = React.memo(function PositionRow({ pos, latched, onSelect }: 
 
 export function ActivePositionsTable({ onSelect }: { onSelect: (positionId: string) => void }) {
   const positions = usePortfolioStore((s) => s.positions);
-  const loaded = usePortfolioStore((s) => s.loaded);
+  // The same condition as the "N Active" count above it: the table never shows skeleton bars beside a count
+  const positionsKnown = usePortfolioStore((s) => s.positionsAt !== null);
+  const slow = useSlowFlag(!positionsKnown);
   const latched = usePortfolioStore((s) => s.killSwitch.is_latched);
   const open = useMemo(
     () => positions.filter(isHeldPosition).sort((a, b) => notionalOf(b) - notionalOf(a) || a.position_id.localeCompare(b.position_id)),
@@ -148,10 +151,10 @@ export function ActivePositionsTable({ onSelect }: { onSelect: (positionId: stri
         <FreshnessBadge />
       </div>
       <div className="p-3 overflow-x-auto">
-        {!loaded ? (
-          <div className="space-y-2" aria-busy="true" aria-label="Loading positions">
-            {[0, 1, 2].map((i) => <div key={i} className="h-8 rounded bg-zinc-800/40 animate-pulse" />)}
-          </div>
+        {!positionsKnown ? (
+          <p role="status" aria-busy="true" className="py-6 text-center text-2xs font-mono text-zinc-500">
+            {slow ? "Still loading positions… this is taking longer than usual." : "Loading positions…"}
+          </p>
         ) : open.length === 0 ? (
           <div className="text-center py-8 text-zinc-500 italic">No open positions.</div>
         ) : (

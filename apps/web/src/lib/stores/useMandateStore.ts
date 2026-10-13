@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { fetchAiStatus, listApprovals, listMandates } from "@/lib/mission/client";
 import type { AiStatus, Approval, Mandate } from "@/lib/mission/types";
+import { useSessionStore } from "@/lib/stores/useSessionStore";
 
 /**
  * Mission Control state (blueprint §7.1). Persisted: the view, the selected mandate and the editor's
@@ -99,6 +100,11 @@ export const useMandateStore = create<MandateState>()(
                 ? "Mission Control data unavailable."
                 : null,
           }));
+          // An answer is evidence of a session. A refusal is not proof of a sign-out: one endpoint can refuse on its
+          // own, so the session is re-checked with /auth/me, which decides.
+          const session = useSessionStore.getState();
+          if (denied) void session.check();
+          else if (s.status === "fulfilled") session.markAuthenticated();
         };
         const promise = run().finally(() => {
           if (inflight?.id === id) inflight = null;

@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import { useDebateStore, DebateRun, type DebateActionError } from "@/lib/stores/useDebateStore";
+import { useSessionStore, type SessionStatus } from "@/lib/stores/useSessionStore";
+import { fetchApi } from "@/lib/api";
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
 import { usePaperEquity, EQUITY_MAX_AGE_MS } from "@/lib/portfolio/usePaperEquity";
 import { Fresh } from "@/components/Fresh";
@@ -34,6 +36,24 @@ type FilterTab = "pending" | "completed" | "rejected" | "no_trade" | "all";
 /** Local-only run ids from older builds (injected demo debates, optimistic placeholders): never server data. */
 const LOCAL_ONLY_PREFIXES = ["demo-", "sim-", "pending-"];
 
+/** A proposals request that has not answered by then is reported as not loaded, not waited on forever */
+const INBOX_TIMEOUT_MS = 10_000;
+
+/** The inbox could not load: say so, and never show "nothing to approve" in its place */
+function InboxLoadError({ syncError, session, onRetry }: { syncError: string; session: SessionStatus; onRetry: () => void }) {
+  return (
+    <div role="alert" className="p-4 bg-rose-950/30 border border-rose-900/50 rounded-lg text-center space-y-2" data-testid="inbox-load-failed">
+      <div className="font-bold text-xs text-rose-200">Can&apos;t load proposals</div>
+      <p className="text-2xs text-rose-300/80 leading-relaxed">{syncError} Nothing here is confirmed as current.</p>
+      {session !== "anonymous" && (
+        <Button size="sm" onClick={onRetry} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-mono text-xs h-7 px-3 mx-auto">
+          Retry
+        </Button>
+      )}
+    </div>
+  );
+}
+
 const clampPct = (v: number) => Math.min(25, Math.max(1, Math.round(v)));
 
 const fmtUsd = (v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
@@ -62,17 +82,20 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
   const [pendingRunId, setPendingRunId] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<Record<string, string>>({});
+  const session = useSessionStore((s) => s.status);
+  // Bumped by Retry to run the sync again
+  const [syncNonce, setSyncNonce] = useState(0);
   const equity = usePaperEquity();
 
-  // Sync real debate runs from API and remove local-only leftovers
+  // Sync real debate runs from API and remove local-only leftovers. Not while the session is known to be signed out.
   useEffect(() => {
-    fetch("/api/v1/agents/debates?limit=50", { credentials: "include" })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`debates unavailable: ${res.status}`);
-        return res.json();
-      })
+    if (session === "anonymous") {
+      setSyncError("Sign in as operator to see proposals.");
+      return;
+    }
+    fetchApi("/agents/debates?limit=50", { timeoutMs: INBOX_TIMEOUT_MS })
       .then(data => {
-        if (!Array.isArray(data)) throw new Error("debates unavailable: unexpected response");
+        if (!Array.isArray(data)) throw new Error("unexpected response");
         setSyncError(null);
         useDebateStore.setState(state => {
           const next = { ...state.activeDebates };
@@ -112,8 +135,15 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
           return { activeDebates: next };
         });
       })
-      .catch((err) => setSyncError(err instanceof Error && err.message.startsWith("debates") ? err.message : "debates unavailable: network error"));
-  }, []);
+      .catch((err: any) => {
+        if (err?.status === 401 || err?.status === 403) {
+          void useSessionStore.getState().check();
+          setSyncError("Proposals were refused. Your operator session may have ended.");
+        } else {
+          setSyncError(err?.timeout ? "Proposals did not load in time." : "Proposals could not be loaded.");
+        }
+      });
+  }, [session, syncNonce]);
 
   // Compute counts for filter tabs
   const { pendingCount, completedCount, rejectedCount, noTradeCount, totalCount } = useMemo(() => {
@@ -123,7 +153,8 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
     let noTrade = 0;
 
     for (const run of debatesList) {
-      if (run.status === "NO_TRADE") {
+      // NO_PRICE is a finished debate with nothing to approve (it had no price), so it counts as no trade
+      if (run.status === "NO_TRADE" || run.status === "NO_PRICE") {
         noTrade++;
       } else if (run.status === "COMPLETED") {
         if (run.decision === "REJECTED") rejected++;
@@ -158,10 +189,11 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
     // Filter by tab
     if (activeTab === "pending") {
       list = list.filter(
-        (r) => r.status !== "COMPLETED" && r.status !== "REJECTED" && r.status !== "FAILED" && r.status !== "NO_TRADE"
+        (r) =>
+          r.status !== "COMPLETED" && r.status !== "REJECTED" && r.status !== "FAILED" && r.status !== "NO_TRADE" && r.status !== "NO_PRICE"
       );
     } else if (activeTab === "no_trade") {
-      list = list.filter((r) => r.status === "NO_TRADE");
+      list = list.filter((r) => r.status === "NO_TRADE" || r.status === "NO_PRICE");
     } else if (activeTab === "completed") {
       list = list.filter((r) => r.status === "COMPLETED" && r.decision !== "REJECTED");
     } else if (activeTab === "rejected") {
@@ -321,11 +353,11 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
       </div>
 
       {/* Filter Tabs Bar */}
-      <div className="flex-none px-3 py-1.5 bg-zinc-900/40 border-b border-zinc-800/80 flex items-center justify-between text-2xs font-mono">
-        <div className="flex items-center space-x-1">
+      <div className="flex-none px-3 py-1.5 bg-zinc-900/40 border-b border-zinc-800/80 flex flex-wrap items-center justify-between gap-y-1 text-2xs font-mono">
+        <div className="flex flex-wrap items-center gap-1">
           <button
             onClick={() => setActiveTab("pending")}
-            className={`px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
+            className={`whitespace-nowrap px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
               activeTab === "pending"
                 ? "bg-amber-950/80 text-amber-300 border border-amber-800/80 font-bold"
                 : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
@@ -341,7 +373,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
           <button
             onClick={() => setActiveTab("completed")}
-            className={`px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
+            className={`whitespace-nowrap px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
               activeTab === "completed"
                 ? "bg-emerald-950/80 text-emerald-300 border border-emerald-800/80 font-bold"
                 : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
@@ -357,7 +389,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
           <button
             onClick={() => setActiveTab("rejected")}
-            className={`px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
+            className={`whitespace-nowrap px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
               activeTab === "rejected"
                 ? "bg-zinc-800 text-zinc-200 border border-zinc-700 font-bold"
                 : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
@@ -373,7 +405,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
           <button
             onClick={() => setActiveTab("no_trade")}
-            className={`px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
+            className={`whitespace-nowrap px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
               activeTab === "no_trade"
                 ? "bg-sky-950/80 text-sky-300 border border-sky-800/80 font-bold"
                 : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
@@ -390,7 +422,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
           <button
             onClick={() => setActiveTab("all")}
-            className={`px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
+            className={`whitespace-nowrap px-2 py-0.5 rounded transition-colors flex items-center space-x-1 ${
               activeTab === "all"
                 ? "bg-cyan-950/80 text-cyan-300 border border-cyan-800/80 font-bold"
                 : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
@@ -415,9 +447,14 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
       {/* Decision Cards Stream */}
       <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 space-y-3 overscroll-contain">
         {filteredDebates.length === 0 ? (
-          /* Empty States based on Active Tab */
-          activeTab === "pending" ? (
+          /* Empty States. A failed load is never shown as "nothing to approve": that would read as all clear. */
+          syncError && activeTab !== "pending" ? (
+            <InboxLoadError syncError={syncError} session={session} onRetry={() => setSyncNonce((n) => n + 1)} />
+          ) : activeTab === "pending" ? (
             <div className="space-y-4">
+              {syncError ? (
+                <InboxLoadError syncError={syncError} session={session} onRetry={() => setSyncNonce((n) => n + 1)} />
+              ) : (
               <div className="p-4 bg-zinc-900/40 border border-zinc-800 rounded-lg text-center space-y-2">
                 <div className="w-8 h-8 rounded-full bg-emerald-950/80 border border-emerald-800/60 text-emerald-400 flex items-center justify-center mx-auto">
                   <CheckCircle2 className="w-4 h-4" />
@@ -437,11 +474,12 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                   </Button>
                 )}
               </div>
+              )}
 
-              {/* Annotated Sample Preview Card (Guide) */}
+              {/* Annotated example of what a real card looks like. Its controls are not buttons. */}
               <div className="p-3.5 rounded-lg border-2 border-dashed border-cyan-900/40 bg-zinc-900/30 space-y-3 relative">
                 <div className="flex items-center justify-between text-2xs font-mono text-cyan-400 font-bold uppercase tracking-wider">
-                  <span>Sample Action Card (Interactive Guide)</span>
+                  <span>Example card · not a real proposal</span>
                   <span className="px-1.5 py-0.5 rounded bg-cyan-950 border border-cyan-800 text-cyan-300">
                     Preview
                   </span>
@@ -509,6 +547,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
             const isFailed = run.status === "FAILED";
             const isRejected = run.status === "REJECTED" || (run.status === "COMPLETED" && run.decision === "REJECTED");
             const isNoTrade = run.status === "NO_TRADE";
+            const isNoPrice = run.status === "NO_PRICE";
             // Only a run the server holds in PENDING_APPROVAL can be approved
             const isActionable = run.status === "PENDING_APPROVAL";
             const symbolDisplay = resolveInstrument(run);
@@ -567,12 +606,12 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                           ? "bg-zinc-800 text-zinc-400 border-zinc-700"
                           : isRunning
                           ? "bg-purple-950 text-purple-300 border-purple-800"
-                          : isNoTrade
+                          : isNoTrade || isNoPrice
                           ? "bg-sky-950 text-sky-300 border-sky-800"
                           : "bg-amber-950 text-amber-300 border-amber-800"
                       }`}
                     >
-                      {isRejected ? "REJECTED" : isNoTrade ? "NO TRADE" : run.status}
+                      {isRejected ? "REJECTED" : isNoTrade ? "NO TRADE" : isNoPrice ? "NO PRICE DATA" : run.status}
                     </span>
 
                     {/* Individual Dismiss Button */}
@@ -598,7 +637,13 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                       <strong>Notice:</strong> Debate run failed or timed out during execution.
                     </div>
                   ) : (
-                    <div className="text-zinc-500">No verdict yet.</div>
+                    <div className="text-zinc-500">
+                      {isRunning
+                        ? "Debate running: no verdict yet."
+                        : isNoPrice
+                          ? "No verdict: the debate had no price data to decide on."
+                          : "No verdict recorded."}
+                    </div>
                   )}
                 </div>
 

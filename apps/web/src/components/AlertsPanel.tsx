@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useId, useState } from "react";
+import { useSlowFlag } from "@/lib/hooks/useSlowFlag";
 import { Bell, Trash2, Plus, X, TrendingUp, TrendingDown } from "lucide-react";
 import { getStreamClient } from "@/lib/ws";
 import { fetchApi } from "@/lib/api";
@@ -10,6 +11,13 @@ export const AlertsPanel: React.FC = () => {
   const [alerts, setAlerts] = useState<UserAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const symbolId = useId();
+  const conditionId = useId();
+  const priceId = useId();
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const slow = useSlowFlag(loading);
+  /** A request that has not answered by then is reported as not loaded, not waited on forever */
+  const ALERTS_TIMEOUT_MS = 10_000;
   const [newSymbol, setNewSymbol] = useState("");
   const [newCondition, setNewCondition] = useState<"above" | "below">("above");
   const [newThreshold, setNewThreshold] = useState("");
@@ -19,10 +27,12 @@ export const AlertsPanel: React.FC = () => {
   const loadAlerts = async () => {
     setLoading(true);
     try {
-      const data = await fetchApi("/alerts");
+      const data = await fetchApi("/alerts", { timeoutMs: ALERTS_TIMEOUT_MS });
       setAlerts(data);
-    } catch (err) {
-      console.error("Failed to load alerts", err);
+      setLoadError(null);
+    } catch (err: any) {
+      // A failed load is not an empty list: "No alerts set" here would tell the operator nothing is armed
+      setLoadError(err?.timeout ? "Alerts did not load in time." : "Alerts could not be loaded.");
     } finally {
       setLoading(false);
     }
@@ -104,32 +114,44 @@ export const AlertsPanel: React.FC = () => {
       {showCreateForm && (
         <div className="p-4 border-b border-white/5 bg-zinc-900/30 shrink-0">
           <form onSubmit={handleCreate} className="space-y-4">
-            <div className="flex space-x-2">
-              <input
-                type="text"
-                placeholder="BTCUSDT"
-                value={newSymbol}
-                onChange={(e) => setNewSymbol(e.target.value)}
-                className="flex-1 bg-zinc-900 border border-white/10 rounded px-3 py-1.5 text-xs focus:outline-none focus:border-cyan-500"
-                required
-              />
-              <select
-                value={newCondition}
-                onChange={(e) => setNewCondition(e.target.value as "above" | "below")}
-                className="bg-zinc-900 border border-white/10 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-cyan-500"
-              >
-                <option value="above">&gt; ABOVE</option>
-                <option value="below">&lt; BELOW</option>
-              </select>
-              <input
-                type="number"
-                step="any"
-                placeholder="Price"
-                value={newThreshold}
-                onChange={(e) => setNewThreshold(e.target.value)}
-                className="flex-1 bg-zinc-900 border border-white/10 rounded px-3 py-1.5 text-xs focus:outline-none focus:border-cyan-500"
-                required
-              />
+            <div className="flex items-end gap-2">
+              <div className="flex-1 min-w-0 space-y-1">
+                <label htmlFor={symbolId} className="block text-2xs font-mono uppercase tracking-wider text-zinc-400">Symbol</label>
+                <input
+                  id={symbolId}
+                  type="text"
+                  placeholder="e.g. BTCUSDT"
+                  value={newSymbol}
+                  onChange={(e) => setNewSymbol(e.target.value)}
+                  className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-1.5 text-xs placeholder:text-zinc-500 focus:outline-none focus:border-cyan-500"
+                  required
+                />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor={conditionId} className="block text-2xs font-mono uppercase tracking-wider text-zinc-400">When price is</label>
+                <select
+                  id={conditionId}
+                  value={newCondition}
+                  onChange={(e) => setNewCondition(e.target.value as "above" | "below")}
+                  className="bg-zinc-900 border border-white/10 rounded px-2 py-1.5 text-xs focus:outline-none focus:border-cyan-500"
+                >
+                  <option value="above">above</option>
+                  <option value="below">below</option>
+                </select>
+              </div>
+              <div className="flex-1 min-w-0 space-y-1">
+                <label htmlFor={priceId} className="block text-2xs font-mono uppercase tracking-wider text-zinc-400">Price (USD)</label>
+                <input
+                  id={priceId}
+                  type="number"
+                  step="any"
+                  placeholder="e.g. 85000"
+                  value={newThreshold}
+                  onChange={(e) => setNewThreshold(e.target.value)}
+                  className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-1.5 text-xs placeholder:text-zinc-500 focus:outline-none focus:border-cyan-500"
+                  required
+                />
+              </div>
             </div>
             {createError && <div className="text-red-400 text-xs">{createError}</div>}
             <button
@@ -145,14 +167,30 @@ export const AlertsPanel: React.FC = () => {
 
       <div className="flex-1 overflow-y-auto p-4 space-y-2">
         {loading ? (
-          <div className="animate-pulse space-y-2">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-12 bg-zinc-900 rounded"></div>
-            ))}
+          <div role="status" className="space-y-2">
+            <p className="font-mono text-2xs text-zinc-500">
+              {slow ? "Still loading your alerts… this is taking longer than usual." : "Loading alerts…"}
+            </p>
+            <div className="animate-pulse space-y-2" aria-hidden="true">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-12 bg-zinc-900 rounded"></div>
+              ))}
+            </div>
+          </div>
+        ) : loadError ? (
+          <div role="alert" className="p-4 bg-rose-950/30 border border-rose-900/50 rounded text-center space-y-2 font-mono text-xs text-rose-200">
+            <p>{loadError} Your alerts may still be armed; this list is not current.</p>
+            <button
+              type="button"
+              onClick={() => void loadAlerts()}
+              className="rounded border border-rose-800 px-3 py-1 text-2xs uppercase tracking-wider hover:bg-rose-950/60"
+            >
+              Retry
+            </button>
           </div>
         ) : alerts.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-zinc-500 space-y-2">
-            <Bell className="w-8 h-8 opacity-20" />
+            <Bell className="w-8 h-8 opacity-20" aria-hidden="true" />
             <p className="text-xs">No alerts set. Create one above.</p>
           </div>
         ) : (

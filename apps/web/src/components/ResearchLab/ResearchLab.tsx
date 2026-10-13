@@ -355,7 +355,7 @@ export const ResearchLab: React.FC = () => {
                 {
                   id: "optimistic",
                   label: "Optimistic: no costs – not for decisions",
-                  desc: "Zero slippage, zero fees, DefaultFillModel",
+                  desc: "Zero slippage, zero fees. Results are not realistic.",
                   color: "border-rose-800 text-rose-400",
                 },
               ].map((p) => (
@@ -378,8 +378,8 @@ export const ResearchLab: React.FC = () => {
           </div>
 
           {/* Settings Grid */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
+          <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-3">
+            <div className="min-w-0">
               <label className="block text-2xs text-zinc-400 uppercase mb-2 font-bold">Backtest instrument</label>
               {instruments.length > 0 ? (
                 <select
@@ -536,7 +536,7 @@ export const ResearchLab: React.FC = () => {
         <div className="p-4 border-t border-white/5 bg-zinc-950">
           <button
             onClick={handleRunBacktest}
-            disabled={running}
+            disabled={running || !selectedSlug}
             className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded bg-cyan-600 hover:bg-cyan-500 disabled:bg-zinc-800 disabled:text-zinc-500 font-bold text-xs text-zinc-950 transition-colors"
           >
             {running ? (
@@ -551,6 +551,11 @@ export const ResearchLab: React.FC = () => {
               </>
             )}
           </button>
+          {!selectedSlug && !running && (
+            <p role="status" className="mt-2 text-2xs text-amber-200">
+              {strategies.length === 0 ? "No strategies yet: create one with Manage." : "Choose a target strategy to run a backtest."}
+            </p>
+          )}
         </div>
       </aside>
 
@@ -558,7 +563,7 @@ export const ResearchLab: React.FC = () => {
       <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-zinc-950">
         {/* Navigation Tabs Header */}
         <header className="h-12 flex-none border-b border-white/5 bg-zinc-950 flex items-center justify-between px-4 font-mono text-xs">
-          <div className="flex items-center space-x-1">
+          <div className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
             {[
               { id: "tearsheet", label: "Tearsheet & Curves", icon: LineChart },
               { id: "trades", label: "Trades Log", icon: Table },
@@ -571,7 +576,7 @@ export const ResearchLab: React.FC = () => {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id as any)}
-                  className={`flex items-center space-x-1.5 px-3 py-1.5 rounded transition-colors ${
+                  className={`flex flex-none items-center space-x-1.5 whitespace-nowrap px-3 py-1.5 rounded transition-colors ${
                     activeTab === tab.id
                       ? "bg-zinc-900 text-cyan-400 font-bold border border-white/5"
                       : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50 border border-transparent"
