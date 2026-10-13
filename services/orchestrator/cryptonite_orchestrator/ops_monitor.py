@@ -19,10 +19,12 @@ import json
 import logging
 import os
 import time
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
 from cryptonite_schemas.mandate import ACCOUNT_BACKSTOP_DRAWDOWN_PCT
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
 
 from cryptonite_orchestrator import risk_overrides
 from cryptonite_orchestrator.mandate_monitor import alert
@@ -82,7 +84,30 @@ def _text(raw) -> str | None:
     return raw.decode() if isinstance(raw, bytes) else raw
 
 
-async def heartbeat_states(redis, now_s: float) -> dict[str, bool | None]:
+ALERT_KEYS = ("alerts.heartbeat_grace_s", "alerts.sentiment_stale_s")
+
+
+async def load_alert_settings(pool, last_good: tuple[float, float]) -> tuple[float, float]:
+    """The heartbeat grace and the sentiment staleness for this pass (ADR 0007): the stored values, read every pass.
+    A failed read, or a refused value, keeps the last valid one."""
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key = ANY($1)", list(ALERT_KEYS))
+    except Exception as e:
+        logger.warning("Alert settings not re-read (%s); keeping the last valid values", e)
+        return last_good
+    stored = {r["key"]: r["value"] for r in rows}
+    grace_bound = replace(RUNTIME_BOUNDS["alerts.heartbeat_grace_s"], default=HEARTBEAT_GRACE_S)
+    stale_bound = replace(RUNTIME_BOUNDS["alerts.sentiment_stale_s"], default=SENTIMENT_STALE_S)
+    grace, grace_problem = read_number(stored.get(ALERT_KEYS[0]), grace_bound, last_good[0])
+    stale, stale_problem = read_number(stored.get(ALERT_KEYS[1]), stale_bound, last_good[1])
+    for key, problem in zip(ALERT_KEYS, (grace_problem, stale_problem)):
+        if problem:
+            logger.error("Alert setting refused, keeping the last valid value: %s: %s", key, problem)
+    return grace, stale
+
+
+async def heartbeat_states(redis, now_s: float, sentiment_stale_s: float = SENTIMENT_STALE_S) -> dict[str, bool | None]:
     """name -> True (up), False (down) or None (unknown: never published)."""
     learner = await redis.get(LEARNER_HEARTBEAT)  # both expire when their loop stops
     exit_monitor = await redis.get(EXIT_MONITOR_HEARTBEAT)
@@ -94,7 +119,7 @@ async def heartbeat_states(redis, now_s: float) -> dict[str, bool | None]:
         states["local_tier"] = None
     last_ok = _text(await redis.get(SENTIMENT_LAST_OK))
     try:
-        states["sentiment"] = (now_s - float(last_ok)) <= SENTIMENT_STALE_S if last_ok else None
+        states["sentiment"] = (now_s - float(last_ok)) <= sentiment_stale_s if last_ok else None
     except (TypeError, ValueError):
         states["sentiment"] = None
     return states
@@ -133,11 +158,12 @@ class HeartbeatWatch:
         return events
 
 
-async def check_heartbeats(pool, redis, watch: HeartbeatWatch, now_s: float | None = None) -> list[tuple[str, str]]:
+async def check_heartbeats(pool, redis, watch: HeartbeatWatch, now_s: float | None = None,
+                           sentiment_stale_s: float = SENTIMENT_STALE_S) -> list[tuple[str, str]]:
     if redis is None:
         return []
     now_s = now_s if now_s is not None else time.time()
-    events = watch.step(await heartbeat_states(redis, now_s), now_s)
+    events = watch.step(await heartbeat_states(redis, now_s, sentiment_stale_s), now_s)
     for name, what in events:
         episode = str(int(watch.down_since.get(name, now_s))) if what == "down" else str(int(now_s))
         detail = {"heartbeat": name, "episode": episode}
@@ -157,7 +183,10 @@ async def ops_monitor(engine, pool, redis, interval_s: float = OPS_EVERY_S) -> N
     """Start-up publish, then every ``interval_s``: risk-limit overrides (F7) and betas (F4, hourly),
     effective limits and heartbeat alerts."""
     watch = HeartbeatWatch()
+    alert_values = (HEARTBEAT_GRACE_S, SENTIMENT_STALE_S)
     while True:
+        alert_values = await load_alert_settings(pool, alert_values)  # ADR 0007: the stored grace and staleness
+        watch.grace_s = alert_values[0]
         await risk_overrides.refresh_risk_limits(engine, pool)  # logs and keeps what is applied on failure
         try:
             await risk_overrides.refresh_betas(pool)
@@ -172,7 +201,7 @@ async def ops_monitor(engine, pool, redis, interval_s: float = OPS_EVERY_S) -> N
         except Exception as e:
             logger.error("Could not publish %s: %s", EFFECTIVE_LIMITS_KEY, e)
         try:
-            await check_heartbeats(pool, redis, watch)
+            await check_heartbeats(pool, redis, watch, sentiment_stale_s=alert_values[1])
         except asyncio.CancelledError:
             raise
         except Exception as e:

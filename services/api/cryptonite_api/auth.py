@@ -93,6 +93,24 @@ class OperatorAuthManager:
         self._max_login_attempts = max_login_attempts
         self._lockout_secs = lockout_secs
 
+    # --- Session and login policy (ADR 0007, Phase 2): changed at runtime from system_settings ---
+
+    @property
+    def policy(self) -> dict[str, int]:
+        return {
+            "session_ttl_s": self._session_ttl_secs,
+            "idle_timeout_s": self._idle_timeout_secs,
+            "lockout_s": self._lockout_secs,
+            "max_login_attempts": self._max_login_attempts,
+        }
+
+    def apply_policy(self, *, session_ttl_s: int, idle_timeout_s: int, lockout_s: int, max_login_attempts: int) -> None:
+        """Used by the next login and the next request: sessions already open are checked against the new values."""
+        self._session_ttl_secs = int(session_ttl_s)
+        self._idle_timeout_secs = int(idle_timeout_s)
+        self._lockout_secs = int(lockout_s)
+        self._max_login_attempts = int(max_login_attempts)
+
     # --- Password Hashing ---
 
     def hash_password(self, password: str) -> str:

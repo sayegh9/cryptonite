@@ -20,6 +20,10 @@ operator and never trigger an automatic close.
 Exit debates (paid) run only on events: the loss first crossing ``DEBATE_DRAWDOWN_PCT`` (once per
 drawdown episode, re-armed after the loss recovers to half that), or a funding spike against the
 position; debounced per instrument.
+
+The five thresholds are read from ``system_settings`` at the start of every cycle (ADR 0007). The ``EXIT_*``
+env vars set only the defaults, used for any key with no stored value. A stored set that does not parse or
+breaks a rule is refused, and the last valid set stays in force.
 """
 
 import asyncio
@@ -28,10 +32,12 @@ import logging
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 
 import asyncpg
 import redis.asyncio as redis
+from cryptonite_schemas.exit_thresholds import SETTING_KEYS, ExitThresholds, settled
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("exit_monitor")
@@ -55,6 +61,45 @@ DEBATE_DEBOUNCE_S = 4 * 3600
 REARM_FRACTION = 0.5  # a drawdown episode ends when the loss recovers to half the trigger
 CLOSE_RETRY_AFTER_S = 60
 ALERT_DEBOUNCE_S = 3600
+
+
+def default_thresholds() -> ExitThresholds:
+    """The env-or-code defaults: what applies when no operator value is stored for a key."""
+    return ExitThresholds(
+        stop_loss_pct=STOP_LOSS_PCT, trail_activate_pct=TRAIL_ACTIVATE_PCT, trail_pct=TRAIL_PCT,
+        debate_drawdown_pct=DEBATE_DRAWDOWN_PCT, funding_spike=FUNDING_SPIKE,
+    )
+
+
+async def load_interval(pool, last_good: float) -> float:
+    """The seconds between exit checks, read every cycle (ADR 0007): the stored exit.monitor_interval_s, else the
+    EXIT_MONITOR_INTERVAL_S default. A failed read or a refused value keeps the last valid one."""
+    try:
+        async with pool.acquire() as conn:
+            raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = 'exit.monitor_interval_s'")
+    except Exception as e:
+        logger.warning("Exit monitor interval not re-read (%s); keeping %ss", e, last_good)
+        return last_good
+    bound = replace(RUNTIME_BOUNDS["exit.monitor_interval_s"], default=INTERVAL_S)
+    value, problem = read_number(raw, bound, last_good)
+    if problem:
+        logger.error("Exit monitor interval refused, keeping the last valid value: %s", problem)
+    return value
+
+
+async def load_thresholds(pool, last_good: ExitThresholds) -> ExitThresholds:
+    """The thresholds for this cycle: the stored set, read every cycle. If the read fails, or the stored set is
+    refused, the last valid set stays in force (the same rule the budget guard follows)."""
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key = ANY($1)", list(SETTING_KEYS))
+    except Exception as e:
+        logger.warning("Exit thresholds not re-read (%s); keeping the last valid set", e)
+        return last_good
+    applied, problems = settled({r["key"]: r["value"] for r in rows}, default_thresholds(), last_good)
+    for problem in problems:
+        logger.error("Exit thresholds refused, keeping the last valid set: %s", problem)
+    return applied
 
 
 @dataclass(frozen=True)
@@ -86,24 +131,27 @@ class ExitAction:
     reason: str
 
 
-def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawdown_episode: bool = False) -> list[ExitAction]:
+def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawdown_episode: bool = False,
+                  t: ExitThresholds | None = None) -> list[ExitAction]:
     """Pure exit rules. ``best_price``: most favourable price since the position opened.
     ``debate_armed``: no exit debate within the debounce window. ``in_drawdown_episode``: a drawdown
-    debate already ran and the loss has not recovered since."""
+    debate already ran and the loss has not recovered since. ``t``: the thresholds to apply (default: the
+    env-or-code defaults)."""
+    t = t or default_thresholds()
     long = pos.side == "LONG"
     stop_reason = None
-    if pos.pnl_pct <= -STOP_LOSS_PCT:
+    if pos.pnl_pct <= -t.stop_loss_pct:
         stop_reason = "HARD_STOP"
     elif pos.entry_price and best_price:
         best_gain = (best_price - pos.entry_price) / pos.entry_price * 100 * (1 if long else -1)
         give_back = (best_price - pos.current_price) / best_price * 100 * (1 if long else -1)
-        if best_gain >= TRAIL_ACTIVATE_PCT and give_back >= TRAIL_PCT:
+        if best_gain >= t.trail_activate_pct and give_back >= t.trail_pct:
             stop_reason = "TRAILING_STOP"
     if stop_reason:
         return [ExitAction("CLOSE", stop_reason)] if pos.ai_owned else [ExitAction("ALERT", stop_reason)]
 
-    funding_against = pos.funding_rate is not None and (pos.funding_rate if long else -pos.funding_rate) >= FUNDING_SPIKE
-    drawdown = pos.pnl_pct <= -DEBATE_DRAWDOWN_PCT and not in_drawdown_episode
+    funding_against = pos.funding_rate is not None and (pos.funding_rate if long else -pos.funding_rate) >= t.funding_spike
+    drawdown = pos.pnl_pct <= -t.debate_drawdown_pct and not in_drawdown_episode
     if debate_armed and (drawdown or funding_against):
         return [ExitAction("EXIT_DEBATE", "DRAWDOWN" if drawdown else "FUNDING_SPIKE")]
     return []
@@ -252,23 +300,26 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
         }))
 
 
-async def monitor_once(pool, redis_client, quotes: QuoteBook) -> None:
+async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds | None = None) -> None:
+    t = t or default_thresholds()
     async with pool.acquire() as conn:
         for pos in await load_positions(conn, redis_client, quotes):
             best = await best_price_since_open(redis_client, pos)
             episode_key = f"exit:dd_episode:{pos.key}"
-            if pos.pnl_pct > -DEBATE_DRAWDOWN_PCT * REARM_FRACTION:
+            if pos.pnl_pct > -t.debate_drawdown_pct * REARM_FRACTION:
                 await redis_client.delete(episode_key)
             armed = not await redis_client.exists(f"debounce:exit:{pos.instrument_id}")
             in_episode = bool(await redis_client.exists(episode_key))
-            for action in evaluate_exit(pos, best, armed, in_episode):
+            for action in evaluate_exit(pos, best, armed, in_episode, t):
                 if action.reason == "DRAWDOWN":
                     await redis_client.set(episode_key, "1", ex=30 * 86400)
                 await act(conn, redis_client, pos, action)
 
 
 async def monitor_loop():
-    logger.info("Starting exit monitor (stop %.1f%%, trail %.1f%% after +%.1f%%)", STOP_LOSS_PCT, TRAIL_PCT, TRAIL_ACTIVATE_PCT)
+    state = default_thresholds()
+    interval = INTERVAL_S
+    logger.info("Starting exit monitor with %s", state)
     redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=30)  # redis-py 8 times a blocking read out at exactly its block time (LE-3)
     pool = await asyncpg.create_pool(DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"), min_size=1, max_size=2)
     quotes = QuoteBook()
@@ -278,14 +329,18 @@ async def monitor_loop():
             logger.error("Quote follower stopped (%s); restarting", follower.exception() if not follower.cancelled() else "cancelled")
             follower = asyncio.create_task(quotes.follow(redis_client))
         try:
-            await monitor_once(pool, redis_client, quotes)
-            # Brain order approvals are refused unless this is fresh: AI-owned positions rely on it for stops
-            await redis_client.set(HEARTBEAT_KEY, json.dumps({
-                "stop_loss_pct": STOP_LOSS_PCT, "trail_activate_pct": TRAIL_ACTIVATE_PCT, "trail_pct": TRAIL_PCT,
-            }), ex=int(max(90, 3 * INTERVAL_S)))
+            interval = await load_interval(pool, last_good=interval)
+            applied = await load_thresholds(pool, last_good=state)
+            if applied != state:
+                logger.info("Exit thresholds now %s", applied)
+            state = applied
+            await monitor_once(pool, redis_client, quotes, state)
+            # Brain order approvals are refused unless this is fresh: AI-owned positions rely on it for stops.
+            # The payload carries the set in force, so the registry can show what the monitor actually applies.
+            await redis_client.set(HEARTBEAT_KEY, json.dumps(asdict(state)), ex=int(max(90, 3 * interval)))
         except Exception as e:
             logger.error(f"Error in exit monitor loop: {e}")
-        await asyncio.sleep(INTERVAL_S)
+        await asyncio.sleep(interval)
 
 
 if __name__ == "__main__":

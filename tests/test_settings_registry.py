@@ -35,6 +35,8 @@ from cryptonite_execution.risk_limits import (
 from cryptonite_orchestrator import ops_monitor
 from cryptonite_scanner.models import MAX_ACTIVE_SPECS
 from cryptonite_scanner_service import exit_monitor as em
+from cryptonite_schemas.exit_thresholds import SETTING_KEYS
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS
 from fastapi import HTTPException
 
 
@@ -92,7 +94,7 @@ def test_budget_default_is_the_budget_guard_default():
 
 
 def test_only_keys_with_a_write_path_report_writable():
-    assert WRITE_PATHS == {"LLM_DAILY_BUDGET_USD"}
+    assert WRITE_PATHS == {"LLM_DAILY_BUDGET_USD", *SETTING_KEYS, *RUNTIME_BOUNDS}
     out = {s.key: entry_view(s, None)["writable"] for s in REGISTRY}
     assert {key for key, writable in out.items() if writable} == WRITE_PATHS
 
@@ -116,7 +118,7 @@ def test_tier_rules_for_a_write_path_are_applied_by_tier():
 
 def test_keys_without_a_write_path_or_a_writable_tier_are_refused():
     with pytest.raises(WriteRefused):
-        write_needs_totp(by_key("exit.stop_loss_pct"), Decimal("5"), Decimal("6"))
+        write_needs_totp(by_key("alerts.routing"), Decimal("1"), Decimal("2"))  # read-only: no write path
     with pytest.raises(WriteRefused):
         write_needs_totp(by_key("guard.account_backstop_pct"), Decimal("20"), Decimal("19"))
     with pytest.raises(WriteRefused):
@@ -140,15 +142,22 @@ def test_fixed_guardrails_match_the_risk_module():
 
 
 def test_entry_view_marks_service_owned_values_as_service_not_api():
-    stop = entry_view(by_key("exit.stop_loss_pct"), None)
-    assert (stop["value"], stop["value_source"], stop["apply"], stop["writable"]) == (None, "service", "restart", False)
+    symbols = entry_view(by_key("universe.symbols"), None)
+    assert (symbols["value"], symbols["value_source"], symbols["apply"], symbols["writable"]) == (None, "service", "restart", False)
     budget = entry_view(by_key("LLM_DAILY_BUDGET_USD"), "30.00")
     assert (budget["value"], budget["value_source"]) == ("30.00", "api")
 
 
-def test_current_values_fall_back_to_the_default_budget_and_the_dispatcher_limits():
-    values = current_values(None, None)
-    assert values["LLM_DAILY_BUDGET_USD"] == "25.00"
+def test_a_key_with_no_stored_value_says_the_default_applies():
+    stop = entry_view(by_key("exit.stop_loss_pct"), None, "5")
+    assert (stop["value"], stop["value_source"], stop["effective"], stop["writable"]) == (None, "default", "5", True)
+    assert stop["apply"] == "hot" and stop["store"] == "system_settings"
+
+
+def test_current_values_are_none_until_stored_except_the_risk_overrides():
+    values = current_values({}, None)
+    assert values["LLM_DAILY_BUDGET_USD"] is None
+    assert values["exit.stop_loss_pct"] is None
     assert float(values["risk.max_daily_loss_pct"]) == 5
     assert float(values["risk.max_order_equity_pct"]) == 25
 
@@ -156,26 +165,27 @@ def test_current_values_fall_back_to_the_default_budget_and_the_dispatcher_limit
 def test_current_values_apply_a_stored_override_and_keep_the_rest_at_default():
     row = {"max_daily_loss_pct": 3, "max_order_equity_pct": None, "cross_mandate_exposure_pct": None,
            "updated_by": "op", "updated_at": None, "reason": "tighten", "override_version": 1}
-    values = current_values("40.00", row)
+    values = current_values({"LLM_DAILY_BUDGET_USD": '"40.00"', "exit.stop_loss_pct": '"4.00"'}, row)
     assert values["LLM_DAILY_BUDGET_USD"] == "40.00"
+    assert values["exit.stop_loss_pct"] == "4.00"
     assert float(values["risk.max_daily_loss_pct"]) == 3
     assert float(values["risk.cross_mandate_exposure_pct"]) == 25
 
 
 class FakeConn:
-    def __init__(self, budget, row):
-        self.budget, self.row = budget, row
+    def __init__(self, stored, row):
+        self.stored, self.row = stored, row
 
-    async def fetchval(self, sql, *args):
-        return self.budget
+    async def fetch(self, sql, *args):
+        return [{"key": k, "value": v} for k, v in self.stored.items() if k in args[0]]
 
     async def fetchrow(self, sql, *args):
         return self.row
 
 
 class FakePool:
-    def __init__(self, budget, row):
-        self.conn = FakeConn(budget, row)
+    def __init__(self, stored, row):
+        self.conn = FakeConn(stored, row)
 
     def acquire(self):
         conn = self.conn
@@ -192,17 +202,40 @@ class FakePool:
 
 @pytest.mark.asyncio
 async def test_registry_endpoint_lists_every_setting_with_its_tier_and_value():
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=FakePool(None, None))))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=FakePool({}, None))))
     out = await get_settings_registry(request, auth={})
     assert {s["key"] for s in out["settings"]} == {s.key for s in REGISTRY}
     by = {s["key"]: s for s in out["settings"]}
-    assert by["LLM_DAILY_BUDGET_USD"]["value"] == "25.00" and by["LLM_DAILY_BUDGET_USD"]["value_source"] == "api"
-    assert by["exit.stop_loss_pct"]["value_source"] == "service"
+    assert by["LLM_DAILY_BUDGET_USD"]["value"] is None and by["LLM_DAILY_BUDGET_USD"]["value_source"] == "default"
+    assert by["exit.stop_loss_pct"]["value_source"] == "default" and by["exit.stop_loss_pct"]["effective"] is None
+    assert by["exit.monitor_interval_s"]["value_source"] == "default" and by["exit.monitor_interval_s"]["writable"] is True
     assert by["universe.symbols"]["writable"] is False
 
 
+class FakeRedis:
+    def __init__(self, raw):
+        self.raw = raw
+
+    async def get(self, key):
+        return self.raw
+
+
+@pytest.mark.asyncio
+async def test_registry_endpoint_shows_what_the_exit_monitor_applies():
+    stored = {"exit.stop_loss_pct": '"4.00"', "LLM_DAILY_BUDGET_USD": '"20.00"'}
+    heartbeat = ('{"stop_loss_pct": 4.0, "trail_activate_pct": 3.0, "trail_pct": 2.0, '
+                 '"debate_drawdown_pct": 2.0, "funding_spike": 0.0005}')
+    hub = SimpleNamespace(redis=FakeRedis(heartbeat))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=FakePool(stored, None), stream_hub=hub)))
+    out = await get_settings_registry(request, auth={})
+    by = {s["key"]: s for s in out["settings"]}
+    assert (by["exit.stop_loss_pct"]["value"], by["exit.stop_loss_pct"]["effective"]) == ("4.00", "4")
+    assert by["exit.funding_spike"]["effective"] == "0.0005"
+    assert by["LLM_DAILY_BUDGET_USD"]["value"] == "20.00"
+
+
 class WriteConn:
-    """Records what the write path executes. ``stored`` is the system_settings value the read returns."""
+    """Records what the write path executes. ``stored`` maps system_settings keys to the values the read returns."""
 
     def __init__(self, stored):
         self.stored, self.executed = stored, []
@@ -210,8 +243,8 @@ class WriteConn:
     async def execute(self, sql, *args):
         self.executed.append((sql, args))
 
-    async def fetchval(self, sql, *args):
-        return self.stored
+    async def fetch(self, sql, *args):
+        return [{"key": k, "value": v} for k, v in self.stored.items() if k in args[0]]
 
     def transaction(self):
         return _Ctx()
@@ -226,7 +259,7 @@ class _Ctx:
 
 
 class WritePool:
-    def __init__(self, stored=None):
+    def __init__(self, stored):
         self.conn = WriteConn(stored)
 
     def acquire(self):
@@ -268,7 +301,7 @@ async def test_lowering_the_budget_writes_without_totp_and_is_audited(monkeypatc
         raise AssertionError("lowering must not ask for TOTP")
 
     monkeypatch.setattr(settings_route, "require_totp", no_totp)
-    pool, auth_mgr = WritePool(stored=None), FakeAuthMgr()  # no row: the default 25.00 is current
+    pool, auth_mgr = WritePool({}), FakeAuthMgr()  # no row: the default 25.00 is current
     out = await put("LLM_DAILY_BUDGET_USD", "10", pool=pool, auth_mgr=auth_mgr)
     assert out == {"success": True, "key": "LLM_DAILY_BUDGET_USD", "changed": True, "previous": "25.00",
                    "value": "10.00", "totp_verified": False, "applies_within_s": 10}
@@ -283,7 +316,7 @@ async def test_raising_the_budget_without_totp_is_refused_and_writes_nothing(mon
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
 
     monkeypatch.setattr(settings_route, "require_totp", missing_totp)
-    pool, auth_mgr = WritePool(stored='"25.00"'), FakeAuthMgr()
+    pool, auth_mgr = WritePool({"LLM_DAILY_BUDGET_USD": '"25.00"'}), FakeAuthMgr()
     with pytest.raises(HTTPException) as refused:
         await put("LLM_DAILY_BUDGET_USD", "30", pool=pool, auth_mgr=auth_mgr)
     assert refused.value.status_code == 401 and "TOTP_REQUIRED" in refused.value.detail
@@ -299,7 +332,7 @@ async def test_raising_the_budget_with_totp_writes_and_records_it(monkeypatch):
         seen["code"] = code
 
     monkeypatch.setattr(settings_route, "require_totp", good_totp)
-    pool, auth_mgr = WritePool(stored='"25.00"'), FakeAuthMgr()
+    pool, auth_mgr = WritePool({"LLM_DAILY_BUDGET_USD": '"25.00"'}), FakeAuthMgr()
     out = await put("LLM_DAILY_BUDGET_USD", "30", pool=pool, auth_mgr=auth_mgr, totp="123456")
     assert seen["code"] == "123456"
     assert out["changed"] is True and out["totp_verified"] is True and out["value"] == "30.00"
@@ -309,7 +342,7 @@ async def test_raising_the_budget_with_totp_writes_and_records_it(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unchanged_budget_writes_nothing():
-    pool, auth_mgr = WritePool(stored='"25.00"'), FakeAuthMgr()
+    pool, auth_mgr = WritePool({"LLM_DAILY_BUDGET_USD": '"25.00"'}), FakeAuthMgr()
     out = await put("LLM_DAILY_BUDGET_USD", "25", pool=pool, auth_mgr=auth_mgr)
     assert out["changed"] is False and pool.inserts() == [] and auth_mgr.events == []
 
@@ -320,12 +353,13 @@ async def test_refusals_change_nothing():
         ("LLM_DAILY_BUDGET_USD", "10", "wrong-token", 403),   # CSRF
         ("LLM_DAILY_BUDGET_USD", "-1", "tok", 422),           # below the floor
         ("LLM_DAILY_BUDGET_USD", "0", "tok", 422),            # zero would pause all non-critical AI
-        ("exit.stop_loss_pct", "6", "tok", 403),              # no write path (env-owned)
+        ("universe.symbols", "1", "tok", 403),                # read-only (service-owned)
+        ("alerts.routing", "1", "tok", 403),                  # read-only (code-owned)
         ("guard.position_clamp_pct", "30", "tok", 403),       # fixed guardrail
         ("no.such.key", "1", "tok", 404),                     # unknown
     ]
     for key, value, csrf, code in cases:
-        pool, auth_mgr = WritePool(stored='"25.00"'), FakeAuthMgr()
+        pool, auth_mgr = WritePool({"LLM_DAILY_BUDGET_USD": '"25.00"'}), FakeAuthMgr()
         with pytest.raises(HTTPException) as refused:
             await put(key, value, pool=pool, auth_mgr=auth_mgr, csrf=csrf)
         assert refused.value.status_code == code, key
@@ -384,3 +418,114 @@ async def test_environment_flags_follow_the_gate_env_vars(monkeypatch, tmp_path)
     monkeypatch.setenv("ALLOW_DEV_TOTP", "false")
     monkeypatch.setenv("SECURE_COOKIE", "true")
     assert (await get_environment_health(auth={}))["warnings"] == []
+
+
+# --- exit thresholds (ADR 0007): stored, read every cycle, rules checked as a set ----------------------------------
+
+def test_exit_lowering_is_free_and_raising_needs_totp():
+    stop = by_key("exit.stop_loss_pct")
+    assert write_needs_totp(stop, Decimal("5.00"), Decimal("4.00")) is False
+    assert write_needs_totp(stop, Decimal("5.00"), Decimal("6.00")) is True
+
+
+@pytest.mark.asyncio
+async def test_exit_lowering_writes_without_totp(monkeypatch):
+    async def no_totp(*args, **kwargs):
+        raise AssertionError("lowering an exit threshold must not ask for TOTP")
+
+    monkeypatch.setattr(settings_route, "require_totp", no_totp)
+    pool, auth_mgr = WritePool({}), FakeAuthMgr()
+    out = await put("exit.stop_loss_pct", "4", pool=pool, auth_mgr=auth_mgr)
+    assert out["changed"] is True and out["previous"] == "5.00" and out["value"] == "4.00"
+    assert pool.inserts() == [("exit.stop_loss_pct", '"4.00"')]
+
+
+@pytest.mark.asyncio
+async def test_exit_raising_without_totp_writes_nothing(monkeypatch):
+    async def missing_totp(request, auth, code):
+        raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
+
+    monkeypatch.setattr(settings_route, "require_totp", missing_totp)
+    pool, auth_mgr = WritePool({}), FakeAuthMgr()
+    with pytest.raises(HTTPException) as refused:
+        await put("exit.trail_activate_pct", "4", pool=pool, auth_mgr=auth_mgr)
+    assert refused.value.status_code == 401 and pool.inserts() == []
+
+
+@pytest.mark.asyncio
+async def test_exit_rules_are_checked_as_a_set_before_any_totp_question(monkeypatch):
+    async def must_not_be_asked(*args, **kwargs):
+        raise AssertionError("a rule breach is refused before the TOTP question")
+
+    monkeypatch.setattr(settings_route, "require_totp", must_not_be_asked)
+    pool, auth_mgr = WritePool({}), FakeAuthMgr()
+    with pytest.raises(HTTPException) as refused:  # give-back 4 above the default activation 3
+        await put("exit.trail_pct", "4", pool=pool, auth_mgr=auth_mgr)
+    assert refused.value.status_code == 422
+    assert refused.value.detail[0]["msg"] == "exit.trail_pct must not exceed exit.trail_activate_pct"
+    with pytest.raises(HTTPException) as refused:  # the exit debate at the hard stop, not below it
+        await put("exit.debate_drawdown_pct", "6", pool=pool, auth_mgr=auth_mgr)
+    assert refused.value.status_code == 422
+    assert pool.inserts() == [] and auth_mgr.events == []
+
+
+@pytest.mark.asyncio
+async def test_exit_rules_use_the_stored_partner_values(monkeypatch):
+    async def lowering_is_free(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(settings_route, "require_totp", lowering_is_free)
+    pool = WritePool({"exit.trail_activate_pct": '"1.00"'})  # the partner is stored at 1, not the default 3
+    with pytest.raises(HTTPException) as refused:
+        await put("exit.trail_pct", "1.50", pool=pool, auth_mgr=FakeAuthMgr())  # lower than 2, but above 1
+    assert refused.value.status_code == 422 and pool.inserts() == []
+
+
+@pytest.mark.asyncio
+async def test_funding_spike_takes_four_decimals_and_no_more():
+    pool, auth_mgr = WritePool({}), FakeAuthMgr()
+    with pytest.raises(HTTPException) as refused:
+        await put("exit.funding_spike", "0.00051", pool=pool, auth_mgr=auth_mgr)
+    assert refused.value.status_code == 422 and "4 decimal places" in refused.value.detail[0]["msg"]
+    out = await put("exit.funding_spike", "0.0004", pool=pool, auth_mgr=auth_mgr)  # lowering: free
+    assert out["value"] == "0.0004" and pool.inserts() == [("exit.funding_spike", '"0.0004"')]
+
+
+# --- runtime settings (ADR 0007): the values the services read every cycle -------------------------------------
+
+def test_runtime_bounds_are_the_registry_bounds_and_are_whole_numbers():
+    for key, bound in RUNTIME_BOUNDS.items():
+        entry = by_key(key)
+        assert entry.store == "system_settings" and entry.apply is Apply.HOT and entry.decimals == 0, key
+        assert (float(entry.minimum), float(entry.maximum)) == (bound.low, bound.high), key
+
+
+def test_heartbeat_grace_lower_is_free_and_raising_needs_totp():
+    grace = by_key("alerts.heartbeat_grace_s")
+    assert write_needs_totp(grace, Decimal("300"), Decimal("120")) is False
+    assert write_needs_totp(grace, Decimal("300"), Decimal("900")) is True
+
+
+def test_session_runtime_values_need_no_totp():
+    for key in ("exit.monitor_interval_s", "alerts.sentiment_stale_s", "scanner.max_active_specs"):
+        assert write_needs_totp(by_key(key), Decimal("10"), Decimal("20")) is False, key
+
+
+def test_whole_number_values_refuse_decimals_and_bounds():
+    grace = by_key("alerts.heartbeat_grace_s")
+    validate_value(grace, Decimal("120"))
+    for bad in (Decimal("300.5"), Decimal("59"), Decimal("3601")):
+        with pytest.raises(ValueError):
+            validate_value(grace, bad)
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_value_is_written_as_a_whole_number_json_string(monkeypatch):
+    async def no_totp(*args, **kwargs):
+        raise AssertionError("lowering the grace must not ask for TOTP")
+
+    monkeypatch.setattr(settings_route, "require_totp", no_totp)
+    pool, auth_mgr = WritePool({"alerts.heartbeat_grace_s": '"300"'}), FakeAuthMgr()
+    out = await put("alerts.heartbeat_grace_s", "120", pool=pool, auth_mgr=auth_mgr)
+    assert out["previous"] == "300" and out["value"] == "120"
+    assert pool.inserts() == [("alerts.heartbeat_grace_s", '"120"')]

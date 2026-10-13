@@ -734,7 +734,7 @@ async def test_worker_active_specs_deterministic_order_and_visible_error(db_url,
         assert len(executed_specs) == 12
         # Verify visible error log
         assert any(
-            "exceeds MAX_ACTIVE_SPECS (10)" in record.message and "Processing all 12 active specs" in record.message
+            "exceeds the active-spec cap (10)" in record.message and "Processing all 12 active specs" in record.message
             for record in caplog.records
             if record.levelno == logging.ERROR
         )

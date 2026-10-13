@@ -27,13 +27,13 @@ from cryptonite_scanner.brief import brief_data, build_brief
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import (
     ALLOWED_AUTOMATIC_TIMEFRAMES,
-    MAX_ACTIVE_SPECS,
     MIN_RISK_REWARD_RATIO,
     RiskConfig,
     RuleCondition,
     RuleGroup,
     RuleOperator,
     SignalCandidateRead,
+    active_spec_cap,
     deduplicate_candidates,
 )
 from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
@@ -373,13 +373,14 @@ class ScannerWorker:
             """
         )
 
-        if len(rows) > MAX_ACTIVE_SPECS:
+        cap = await active_spec_cap(self.pool)
+        if len(rows) > cap:
             logger.error(
-                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d)! "
+                "Active specs count (%d) exceeds the active-spec cap (%d)! "
                 "Processing all %d active specs to avoid dropping trading signals, "
                 "but operator action is required to archive excess specs.",
                 len(rows),
-                MAX_ACTIVE_SPECS,
+                cap,
                 len(rows),
             )
 
@@ -514,13 +515,14 @@ class ScannerWorker:
             """
         )
 
-        if len(active_specs) > MAX_ACTIVE_SPECS:
+        cap = await active_spec_cap(self.pool)
+        if len(active_specs) > cap:
             logger.error(
-                "Active specs count (%d) exceeds MAX_ACTIVE_SPECS (%d)! "
+                "Active specs count (%d) exceeds the active-spec cap (%d)! "
                 "Processing all %d active specs to avoid dropping trading signals, "
                 "but operator action is required to archive excess specs.",
                 len(active_specs),
-                MAX_ACTIVE_SPECS,
+                cap,
                 len(active_specs),
             )
 

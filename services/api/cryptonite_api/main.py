@@ -63,6 +63,8 @@ async def lifespan(app: FastAPI):
         db_pool=app.state.pool,
         redis_client=app.state.stream_hub.redis,
     )
+    from cryptonite_api.auth_policy import run_auth_policy
+    app.state.auth_policy_task = asyncio.create_task(run_auth_policy(app.state))
 
     # Ensure default admin operator exists in dev/demo environments
     env = os.getenv("ENVIRONMENT", "DEV").upper()
@@ -105,6 +107,12 @@ async def lifespan(app: FastAPI):
         app.state.alert_task.cancel()
         try:
             await app.state.alert_task
+        except asyncio.CancelledError:
+            pass
+    if hasattr(app.state, 'auth_policy_task') and app.state.auth_policy_task:
+        app.state.auth_policy_task.cancel()
+        try:
+            await app.state.auth_policy_task
         except asyncio.CancelledError:
             pass
 

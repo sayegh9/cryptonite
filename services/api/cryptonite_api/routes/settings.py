@@ -5,22 +5,29 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD, parse_cap
+from cryptonite_agents.gateway.routes import DEFAULT_ROUTES, PROTECTED_ROLES
 from cryptonite_api.auth import OperatorAuthManager
 from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import get_auth_manager, require_csrf, require_operator
 from cryptonite_api.routes.control import _OVERRIDE_SQL, verify_csrf
+from cryptonite_api.routing_policy import EDITABLE, route_view, route_violations, same_value
 from cryptonite_api.settings_registry import (
+    EXIT_MONITOR_HEARTBEAT,
     PROD_ENVS,
     REGISTRY,
     WRITE_PATHS,
     WriteRefused,
     current_values,
     entry_view,
+    exit_rule_violations,
     health_warnings,
+    heartbeat_exit_values,
+    quantum,
+    stored_decimal,
     validate_value,
     write_needs_totp,
 )
+from cryptonite_schemas.exit_thresholds import SETTING_KEYS
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
@@ -139,18 +146,31 @@ async def get_environment_health(auth: dict = Depends(require_operator)) -> dict
     }
 
 
+async def _exit_monitor_heartbeat(request: Request) -> Any:
+    """The exit monitor's heartbeat (the set it applies), or None when the API cannot read it."""
+    redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
+    if redis is None:
+        return None
+    try:
+        return await redis.get(EXIT_MONITOR_HEARTBEAT)
+    except Exception:
+        return None
+
+
 @router.get("/registry")
 async def get_settings_registry(request: Request, auth: dict = Depends(require_operator)) -> dict[str, Any]:
-    """The settings registry (ADR 0007): every setting with its tier and apply mode, and the value the API can read."""
+    """The settings registry (ADR 0007): every setting with its tier and apply mode, the value stored for it, and for
+    the exit thresholds the value the monitor reports it applies."""
     async with request.app.state.pool.acquire() as conn:
-        budget_value = await conn.fetchval("SELECT value FROM system_settings WHERE key = 'LLM_DAILY_BUDGET_USD'")
+        rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key = ANY($1)", list(WRITE_PATHS))
         row = await conn.fetchrow(_OVERRIDE_SQL, "PAPER", "PAPER-ACCOUNT-001")
-    values = current_values(budget_value, row)
-    return {"settings": [entry_view(setting, values.get(setting.key)) for setting in REGISTRY]}
+    values = current_values({r["key"]: r["value"] for r in rows}, row)
+    applied = heartbeat_exit_values(await _exit_monitor_heartbeat(request))
+    return {"settings": [entry_view(setting, values.get(setting.key), applied.get(setting.key)) for setting in REGISTRY]}
 
 
 class RegistryWriteRequest(BaseModel):
-    value: Decimal = Field(max_digits=12, decimal_places=2)
+    value: Decimal = Field(max_digits=12)
     reason: str = Field(..., min_length=5, max_length=300, description="Audited reason for the change")
     totp_code: str | None = Field(default=None, description="Operator TOTP; required only to raise the value")
 
@@ -164,9 +184,10 @@ async def update_registry_setting(
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
     x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ):
-    """Write one registry setting (ADR 0007). Lowering the LLM budget is free; raising it needs the operator's TOTP.
-    Refusals: 404 unknown key, 403 no write path or tier, 422 out of bounds, 401 TOTP missing or wrong. A refusal
-    changes nothing."""
+    """Write one registry setting (ADR 0007). Lowering a value is free and raising it needs the operator's TOTP (for
+    every T/L key, lower is tighter). The exit thresholds must also pass their cross-field rules as a set.
+    Refusals: 404 unknown key, 403 no write path or tier, 422 out of bounds, decimals or a rule, 401 TOTP missing or
+    wrong. A refusal changes nothing."""
     verify_csrf(auth, x_csrf_token)
     setting = next((s for s in REGISTRY if s.key == key), None)
     if setting is None:
@@ -178,19 +199,25 @@ async def update_registry_setting(
     except ValueError as e:
         raise HTTPException(status_code=422, detail=[
             {"loc": ["body", "value"], "msg": f"{key}: {e}", "type": "registry_bounds"}])
-    new = body.value.quantize(Decimal("0.01"))
+    new = body.value.quantize(quantum(setting))
     username = auth.get("username") or f"machine:{auth.get('role', 'operator')}"
     client_ip = request.client.host if request.client else None
 
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
-            # One writer per key: the TOTP decision is made against the stored value
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"system_settings:{key}")
-            stored = await conn.fetchval("SELECT value FROM system_settings WHERE key = $1", key)
-            current = parse_cap(stored, DEFAULT_DAILY_CAP_USD).quantize(Decimal("0.01"))
+            # One writer for the whole registry: the TOTP and the cross-field rules are decided against stored values
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", "system_settings:registry")
+            rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key = ANY($1)", list(WRITE_PATHS))
+            stored = {r["key"]: r["value"] for r in rows}
+            current = stored_decimal(stored.get(key), setting)
             if new == current:
                 return {"success": True, "key": key, "changed": False, "previous": format(current, "f"),
                         "value": format(current, "f"), "totp_verified": False}
+            if key in SETTING_KEYS:
+                found = exit_rule_violations(stored, setting, new)
+                if found:
+                    raise HTTPException(status_code=422, detail=[
+                        {"loc": ["body", "value"], "msg": msg, "type": "registry_rule"} for msg in found])
             try:
                 needs_totp = write_needs_totp(setting, current, new)
             except WriteRefused as e:  # the policy's own refusal, kept here so the rule lives in one place
@@ -217,3 +244,89 @@ async def update_registry_setting(
                  "totp_verified": needs_totp})
     return {"success": True, "key": key, "changed": True, "previous": format(current, "f"),
             "value": format(new, "f"), "totp_verified": needs_totp, "applies_within_s": 10}  # BudgetGuard re-reads every 10 s
+
+
+@router.get("/routes")
+async def get_model_routes(request: Request, auth: dict = Depends(require_operator)) -> dict[str, Any]:
+    """Every role's route (ADR 0007, Phase 2): the code default, what the gateway applies now, and what is stored."""
+    async with request.app.state.pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM ai_model_routes")
+    stored = {r["role"]: dict(r) for r in rows}
+    return {"routes": [route_view(role, DEFAULT_ROUTES[role], stored.get(role)) for role in sorted(DEFAULT_ROUTES)]}
+
+
+class RouteWriteRequest(BaseModel):
+    """The editable fields of one route. A null field takes the code default (the gateway's NULL rule), so a PUT sets
+    the whole editable set."""
+
+    primary_model: str | None = Field(default=None, max_length=128)
+    fallback_model: str | None = Field(default=None, max_length=128)
+    fallback_policy: str | None = Field(default=None, max_length=16)
+    daily_cap_usd: Decimal | None = Field(default=None, max_digits=12, decimal_places=4)
+    max_output_tokens: int | None = None
+    thinking_budget: int | None = None
+    reason: str = Field(..., min_length=5, max_length=300, description="Audited reason for the change")
+    totp_code: str | None = Field(default=None, description="Operator TOTP; every route change needs it")
+
+
+@router.put("/routes/{role}")
+async def update_model_route(
+    role: str,
+    body: RouteWriteRequest,
+    request: Request,
+    auth: dict = Depends(require_operator),
+    auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+):
+    """Write one role's route (ADR 0007, Phase 2). Every change needs the operator's TOTP. Refusals: 404 unknown role,
+    403 protected role (locked), 422 a model, policy or limit the gateway may not use, 401 TOTP missing or wrong. A
+    refusal changes nothing; the gateway picks a change up within its route cache (30 s)."""
+    verify_csrf(auth, x_csrf_token)
+    if role not in DEFAULT_ROUTES:
+        raise HTTPException(status_code=404, detail="Unknown role")
+    if role in PROTECTED_ROLES:
+        raise HTTPException(status_code=403, detail=f"{role} is locked: a protected trade role keeps its certified route")
+    values = {field: getattr(body, field) for field in EDITABLE}
+    problems = route_violations(role, values)
+    if problems:
+        raise HTTPException(status_code=422, detail=[{"loc": ["body"], "msg": f"{role}: {m}", "type": "route_rule"}
+                                                     for m in problems])
+    username = auth.get("username") or f"machine:{auth.get('role', 'operator')}"
+    client_ip = request.client.host if request.client else None
+
+    async with request.app.state.pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", "ai_model_routes:write")
+            row = await conn.fetchrow("SELECT * FROM ai_model_routes WHERE role = $1", role)
+            before = {field: (row[field] if row is not None else None) for field in EDITABLE}
+            if all(same_value(before[field], values[field]) for field in EDITABLE):
+                return {"success": True, "role": role, "changed": False}
+            try:
+                await require_totp(request, auth, body.totp_code)
+            except HTTPException as e:
+                await auth_mgr.log_audit_event(
+                    username=username, action="ROUTE_UPDATE_FAILED_AUTH", ip_address=client_ip,
+                    details={"role": role, "status": e.status_code})
+                if e.status_code == status.HTTP_401_UNAUTHORIZED:
+                    raise HTTPException(status_code=401, detail="TOTP_REQUIRED: changing a model route needs your current TOTP code")
+                raise
+            await conn.execute(
+                """INSERT INTO ai_model_routes (role, primary_model, fallback_model, fallback_policy, max_output_tokens,
+                       thinking_budget, daily_cap_usd, updated_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+                   ON CONFLICT (role) DO UPDATE SET
+                       primary_model = EXCLUDED.primary_model, fallback_model = EXCLUDED.fallback_model,
+                       fallback_policy = EXCLUDED.fallback_policy, max_output_tokens = EXCLUDED.max_output_tokens,
+                       thinking_budget = EXCLUDED.thinking_budget, daily_cap_usd = EXCLUDED.daily_cap_usd,
+                       updated_at = now()""",
+                role, values["primary_model"], values["fallback_model"], values["fallback_policy"],
+                values["max_output_tokens"], values["thinking_budget"], values["daily_cap_usd"])
+
+    def text(d: dict[str, Any]) -> dict[str, Any]:
+        return {field: (None if d[field] is None else str(d[field])) for field in EDITABLE}
+
+    await auth_mgr.log_audit_event(
+        username=username, action="ROUTE_UPDATE", ip_address=client_ip,
+        details={"role": role, "before": text(before), "after": text(values), "reason": body.reason, "totp_verified": True})
+    return {"success": True, "role": role, "changed": True, "applies_within_s": 30}
+
