@@ -304,6 +304,35 @@ async def test_fetch_klines_retry_after_past_date_form_waits_1s(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_klines_retry_after_date_without_zone_is_utc(monkeypatch):
+    """An HTTP-date ending in -0000 parses as a naive datetime; it is read as UTC, not a crash."""
+    sleep_calls: list[float] = []
+    attempt = 0
+    past = datetime.now(UTC) - timedelta(minutes=5)
+    date_header = past.strftime("%a, %d %b %Y %H:%M:%S -0000")
+
+    async def fake_sleep(seconds: float):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    def handle_req(request: httpx.Request) -> httpx.Response:
+        nonlocal attempt
+        attempt += 1
+        if attempt == 1:
+            return httpx.Response(429, json={"code": -1003}, headers={"Retry-After": date_header})
+        return httpx.Response(200, json=[sample_kline_row()], headers={"X-MBX-USED-WEIGHT-1M": "30"})
+
+    client = make_client(handle_req)
+
+    klines = await client.fetch_klines("BTCUSDT", "1m")
+    await client._client.aclose()
+
+    assert len(klines) == 1
+    assert 1.0 in sleep_calls
+
+
+@pytest.mark.asyncio
 async def test_fetch_klines_total_retry_budget_fails_closed(monkeypatch):
     """The total sleep budget caps one call: a 3rd 429 that would blow the budget raises instead."""
     sleep_calls: list[float] = []
