@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import UTC
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -89,7 +89,7 @@ class BinanceRestClient:
             logger.warning("Malformed Retry-After header: %r", raw)
             return None
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.UTC)
+            dt = dt.replace(tzinfo=UTC)
         return max(1, int(dt.timestamp() - time.time()))
 
     async def __aenter__(self) -> "BinanceRestClient":
