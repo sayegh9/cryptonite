@@ -355,6 +355,8 @@ class ScannerWorker:
         if self.pool:
             await self.pool.close()
             self.pool = None
+        logger.info("ScannerWorker stopped")
+
     async def _load_instrument_precisions(self, instrument_ids: list[str]) -> dict[str, int]:
         """Fetch validated price_precision for a list of canonical instrument IDs from the DB.
 
