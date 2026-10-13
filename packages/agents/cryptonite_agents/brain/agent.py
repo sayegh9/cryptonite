@@ -51,7 +51,8 @@ How to work:
    for their approval. An approved order is sized by allocation_pct, and the position is protected by the exit
    monitor's deterministic hard and trailing stops, not by your stop price: say so, and if your stop is much
    tighter than a few percent, say the position will not be stopped there. Never propose more than one card
-   for the same idea.
+   for the same idea. Spot cannot be shorted: propose a SELL only to close a position the mandate already holds.
+   An approved SELL sells that whole holding, not allocation_pct of the budget.
 6. The conversation summary and recent turns are context. System lines report what the operator did
    (for example an approved card and its paper command id).
 """

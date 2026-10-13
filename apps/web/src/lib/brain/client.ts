@@ -124,12 +124,14 @@ async function postCard(path: string, body?: unknown): Promise<any> {
  * Operator approval of an order card, decided server-side: the API claims the card, queues one PAPER
  * order for GuardedOrderDispatcher (1–25% clamp, kill switch…) sized by the card's allocation, and
  * refuses while the exit monitor (the position's stop) is down. Repeating it never queues a second order.
+ * `mandateId` names the mandate the order trades in; omitted, the API uses the single ACTIVE mandate that allows the instrument.
  */
-export async function approveOrderCard(card: OrderCardWidget): Promise<string> {
+export async function approveOrderCard(card: OrderCardWidget, mandateId?: string): Promise<string> {
   const sessionId = useBrainStore.getState().sessionId;
   if (!sessionId) throw new Error("No Brain session");
   const res = await postCard(
     `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(card.id)}/approve`,
+    mandateId ? { mandate_id: mandateId } : undefined,
   );
   const commandId = String(res.command_id);
   useBrainStore.getState().updateOrderCard(card.id, { status: "APPROVED", command_id: commandId });

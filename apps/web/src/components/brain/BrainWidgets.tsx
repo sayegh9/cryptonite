@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, BarChart3, CheckCircle2, FileText, GitBranch, Loader2, ScrollText, XCircle } from "lucide-react";
 import { approveOrderCard, rejectOrderCard } from "@/lib/brain/client";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
+import { createMandate } from "@/lib/mission/client";
 import type {
   BrainWidget,
   DebateSummaryWidget,
@@ -13,6 +14,7 @@ import type {
 } from "@/lib/brain/types";
 
 const fmt = (n: number, digits = 2) => n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const cardInput = "rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 focus:border-amber-600 focus:outline-none";
 
 function WidgetFrame({ icon, title, children, testId }: { icon: React.ReactNode; title: string; children: React.ReactNode; testId: string }) {
   return (
@@ -144,6 +146,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // An entry on an instrument no ACTIVE mandate allows: the card creates the mandate inline (TOTP, checked by the API)
+  const [needsMandate, setNeedsMandate] = useState(false);
+  const [mandateName, setMandateName] = useState(`Brain ${widget.instrument_id}`);
+  const [mandateBudget, setMandateBudget] = useState("10000");
+  const [totp, setTotp] = useState("");
   const pending = widget.status === "PENDING_APPROVAL";
   const buy = widget.side === "BUY";
 
@@ -151,10 +158,28 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
     setBusy(true);
     setError(null);
     try {
-      await approveOrderCard(widget);
+      let mandateId: string | undefined;
+      if (needsMandate) {
+        // A mandate gives the AI room, so creating one needs the current TOTP code (the same rule as the Mandate editor).
+        // The API also refuses an instrument a paused or halted mandate holds (MANDATE_PAUSED / MANDATE_HALTED).
+        mandateId = (await createMandate({
+          name: mandateName.trim(),
+          capital_budget_usd: mandateBudget,
+          instruments: [widget.instrument_id],
+          max_position_pct: 10,
+          max_drawdown_pct: 20,
+          veto_window_s: 600,
+          allow_perps: false,
+          totp_code: totp,
+        })).id;
+        setNeedsMandate(false);
+      }
+      await approveOrderCard(widget, mandateId);
       setConfirming(false);
     } catch (e: any) {
-      setError(e?.message || "Order rejected");
+      const msg: string = e?.message || "Order rejected";
+      if (buy && msg.startsWith("NO_MANDATE")) setNeedsMandate(true);
+      else setError(msg);
     } finally {
       setBusy(false);
     }
@@ -163,14 +188,16 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   return (
     <section
       data-testid="brain-widget-order-card"
-      aria-label={`Order proposal: ${widget.side} ${widget.allocation_pct}% of mandate ${widget.instrument_id}`}
+      aria-label={buy
+        ? `Order proposal: BUY ${widget.allocation_pct}% of mandate ${widget.instrument_id}`
+        : `Order proposal: SELL the whole holding of ${widget.instrument_id}`}
       className="mt-2 rounded-lg border border-amber-700/60 bg-amber-950/10 p-3 font-mono text-2xs text-zinc-300"
     >
       <header className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <AlertTriangle className="h-3 w-3 text-amber-400" aria-hidden />
           <span className="rounded border border-amber-600 bg-amber-500/10 px-1.5 py-0.5 text-2xs font-black tracking-wider text-amber-300">
-            ADDS RISK · PAPER
+            {buy ? "ADDS RISK · PAPER" : "CLOSES HOLDING · PAPER"}
           </span>
           <span className="text-2xs font-bold uppercase text-zinc-400">Order proposal</span>
         </div>
@@ -199,9 +226,13 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       <dl className="mt-1 grid grid-cols-3 gap-2 text-2xs">
         <div>
           <dt className="text-zinc-500">Size</dt>
-          <dd className="text-zinc-100" title="Sized at approval from the live price; capped at the room left under the mandate's position limit">
-            {widget.allocation_pct}% of mandate
-          </dd>
+          {buy ? (
+            <dd className="text-zinc-100" title="Sized at approval from the live price; capped at the room left under the mandate's position limit">
+              {widget.allocation_pct}% of mandate
+            </dd>
+          ) : (
+            <dd className="text-zinc-100" title="A spot sell closes the mandate's whole holding of this instrument">Whole holding</dd>
+          )}
         </div>
         <div>
           <dt className="text-zinc-500">Proposed stop</dt>
@@ -234,20 +265,56 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       )}
       {pending && confirming && (
         <div className="mt-3 rounded border border-amber-700 bg-zinc-950 p-2" role="group" aria-label="Confirm paper order">
-          <p className="mb-2 text-zinc-300">
-            Send a PAPER {widget.side} {widget.instrument_id} {widget.order_type} order sized at {widget.allocation_pct}% of the mandate
-            budget? It trades inside the ACTIVE mandate that allows this instrument; the mandate check, the 1–25% equity clamp and
-            the kill switch still apply. The position is stopped out by the exit
-            monitor&apos;s hard and trailing stops, not by the proposed stop price; approval is refused while the exit monitor is down.
-          </p>
+          {needsMandate ? (
+            <>
+              <p className="mb-2 text-zinc-300">
+                No ACTIVE mandate allows {widget.instrument_id} yet. Confirming creates one with the budget below, at L1 Copilot
+                (every order still needs your approval), then queues this order.
+              </p>
+              <div className="mb-2 grid grid-cols-2 gap-2 text-2xs">
+                <label className="col-span-2 flex flex-col gap-1 text-zinc-400">
+                  Mandate name
+                  <input className={cardInput} value={mandateName} maxLength={80} onChange={(e) => setMandateName(e.target.value)} />
+                </label>
+                <label className="flex flex-col gap-1 text-zinc-400">
+                  Budget (USD)
+                  <input className={cardInput} type="number" min="1" step="any" value={mandateBudget} onChange={(e) => setMandateBudget(e.target.value)} />
+                </label>
+                <label className="flex flex-col gap-1 text-zinc-400">
+                  TOTP code
+                  <input
+                    className={cardInput}
+                    aria-label="TOTP code"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    value={totp}
+                    onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
+                  />
+                </label>
+              </div>
+            </>
+          ) : !buy ? (
+            <p className="mb-2 text-zinc-300">
+              Send a PAPER SELL {widget.instrument_id} {widget.order_type} order for the whole holding the mandate has in it? It only
+              closes a position the mandate already holds; spot cannot be shorted.
+            </p>
+          ) : (
+            <p className="mb-2 text-zinc-300">
+              Send a PAPER {widget.side} {widget.instrument_id} {widget.order_type} order sized at {widget.allocation_pct}% of the mandate
+              budget? It trades inside the ACTIVE mandate that allows this instrument; the mandate check, the 1–25% equity clamp and
+              the kill switch still apply. The position is stopped out by the exit
+              monitor&apos;s hard and trailing stops, not by the proposed stop price; approval is refused while the exit monitor is down.
+            </p>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || (needsMandate && (totp.length !== 6 || !mandateName.trim() || !(Number(mandateBudget) > 0)))}
               onClick={approve}
               className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-zinc-950 hover:bg-amber-500 disabled:opacity-50"
             >
-              {busy ? "Sending…" : "Confirm paper order"}
+              {busy ? "Sending…" : needsMandate ? "Create mandate and confirm" : "Confirm paper order"}
             </button>
             <button
               type="button"
@@ -274,6 +341,9 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
         <p role="alert" className="mt-2 flex items-center gap-1 text-rose-400">
           <XCircle className="h-3 w-3" /> Order not queued{error ? `: ${error}` : ""}
         </p>
+      )}
+      {!buy && error?.startsWith("NO_MANDATE") && (
+        <p className="mt-1 text-zinc-500">A spot sell can only sell what a mandate already holds; spot shorts are refused. Reject this card.</p>
       )}
     </section>
   );

@@ -284,6 +284,20 @@ async def get_mandate(mandate_id: uuid.UUID, request: Request, auth: dict = Depe
     return view
 
 
+async def _stopped_mandate_on(conn, instruments: list[str], *, except_id: uuid.UUID | None = None) -> str | None:
+    """Why ``instruments`` cannot be given to a mandate, or None. A PAUSED or HALTED mandate that already holds one
+    of them was stopped by the operator; another mandate taking the instrument would route around that stop."""
+    row = await conn.fetchrow(
+        """SELECT name, status, instruments FROM ai_mandates
+           WHERE status IN ('PAUSED', 'HALTED') AND instruments && $1::text[] AND ($2::uuid IS NULL OR id <> $2)
+           ORDER BY created_at LIMIT 1""",
+        instruments, except_id)
+    if row is None:
+        return None
+    instrument = sorted(set(row["instruments"]) & set(instruments))[0]
+    return f"MANDATE_{row['status']}: {row['name']} already covers {instrument}; resume or edit it instead"
+
+
 @router.post("/mandates", dependencies=OPERATOR_WRITE, status_code=201)
 async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(require_human_operator)):
     """A new mandate always starts at L1 Copilot; creating one gives the AI room, so it needs TOTP."""
@@ -297,6 +311,8 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
         raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
+            if stopped := await _stopped_mandate_on(conn, m.instruments):
+                raise HTTPException(status_code=409, detail=stopped)
             try:
                 await conn.execute(
                     """INSERT INTO ai_mandates (id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct,
@@ -335,6 +351,8 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
             if added := sorted(set(new.instruments) - set(old.instruments)):
                 await require_fed(request, added)  # D4: an edit cannot add an un-fed instrument either
+                if stopped := await _stopped_mandate_on(conn, added, except_id=mandate_id):
+                    raise HTTPException(status_code=409, detail=stopped)
             if risk_adding_change(old, new):
                 await require_totp(request, auth, req.totp_code)
             await conn.execute(
