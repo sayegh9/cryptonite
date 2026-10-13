@@ -2,7 +2,7 @@
 
 The plan is [ai-first-blueprint.md](ai-first-blueprint.md). This page describes what actually runs, as of
 2026-10-04 (branch `feat/ai-first-phase6`, Alembic head `031`). Day-to-day state, open items and evidence
-are in [HANDOFF.md](../HANDOFF.md); the backlog is in [AUDIT_STATUS.md](../AUDIT_STATUS.md).
+are in [HANDOFF.md](../HANDOFF.md).
 
 The three rules did not change: **AI and UI propose, deterministic rules and risk controls decide,
 NautilusTrader executes.** Every order still goes through `GuardedOrderDispatcher`, and the 1–25% equity
