@@ -8,6 +8,7 @@ import { sendBrainMessage, stopBrain } from "@/lib/brain/client";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import type { BrainMessage } from "@/lib/brain/types";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
+import { BrainRecentConversations } from "./BrainRecentConversations";
 import { BrainWidgetView } from "./BrainWidgets";
 
 const STARTERS = [
@@ -121,7 +122,7 @@ function MessageView({ message }: { message: BrainMessage }) {
   );
 }
 
-export function BrainConversation({ compact = false }: { compact?: boolean }) {
+export function BrainConversation({ compact = false, onShowHistory }: { compact?: boolean; onShowHistory?: () => void }) {
   const messages = useBrainStore((s) => s.messages);
   const streaming = useBrainStore((s) => s.streaming);
   const draft = useBrainStore((s) => s.draft);
@@ -173,6 +174,7 @@ export function BrainConversation({ compact = false }: { compact?: boolean }) {
                 </button>
               ))}
             </div>
+            <BrainRecentConversations onShowAll={onShowHistory} />
           </div>
         )}
         {messages.map((m) => (

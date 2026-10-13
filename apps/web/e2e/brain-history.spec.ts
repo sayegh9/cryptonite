@@ -93,9 +93,8 @@ async function openHistory(page: Page) {
   await page.goto("/");
   await page.getByRole("button", { name: "AI Brain", exact: true }).click();
   await expect(page.getByTestId("brain-home")).toBeVisible();
-  await page.getByRole("button", { name: "History" }).click();
   const panel = page.getByTestId("brain-history");
-  await expect(panel).toBeVisible();
+  await expect(panel).toBeVisible(); // open by default on a wide screen
   return panel;
 }
 
@@ -154,6 +153,45 @@ test.describe("Brain conversation history", () => {
     await panel.getByRole("button", { name: 'Restore "Weekly BTC review"' }).click();
     await expect(panel.getByTestId("brain-history-empty")).toContainText("Nothing archived.");
     expect(calls.patches[2]).toEqual({ id: OLD, body: { archived: false }, csrf: "csrf-test" });
+  });
+
+  test("History is open by default on a wide screen, and closing it is remembered", async ({ page }) => {
+    await mockHistory(page);
+    const panel = await openHistory(page);
+    const toggle = page.getByRole("button", { name: "History", exact: true });
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await toggle.click();
+    await expect(panel).toHaveCount(0);
+    await page.reload();
+    await page.getByRole("button", { name: "AI Brain", exact: true }).click();
+    await expect(page.getByTestId("brain-home")).toBeVisible();
+    await expect(page.getByTestId("brain-history")).toHaveCount(0);
+    await page.getByRole("button", { name: "History", exact: true }).click();
+    await expect(page.getByTestId("brain-history")).toBeVisible();
+  });
+
+  test("on a phone, History stays closed until asked for", async ({ page }) => {
+    await mockHistory(page);
+    await page.setViewportSize({ width: 390, height: 800 });
+    await page.addInitScript(() => localStorage.setItem("csrf_token", "csrf-test"));
+    await page.goto("/?ws=brain&view=home");
+    await expect(page.getByTestId("brain-home")).toBeVisible();
+    await expect(page.getByTestId("brain-history")).toHaveCount(0);
+  });
+
+  test("the empty Brain screen offers the latest conversations to continue", async ({ page }) => {
+    const calls = await mockHistory(page);
+    await openHistory(page);
+    await page.getByRole("button", { name: "History", exact: true }).click(); // close it: the shortcut stands alone
+    const recent = page.getByTestId("brain-recent");
+    await expect(recent).toContainText("ETH funding check");
+    await expect(recent).toContainText("BTC breakout plan");
+    await recent.getByRole("button", { name: /^BTC breakout plan/ }).click();
+    await expect(page.getByText("Wait for a 4H close above 60k.")).toBeVisible();
+    const input = page.getByPlaceholder(/Ask the Brain/i);
+    await input.fill("Still valid?");
+    await input.press("Enter");
+    await expect.poll(() => calls.stream[0]?.session_id).toBe(OLD);
   });
 
   test("a failed load is reported with a retry, never as no conversations", async ({ page }) => {

@@ -20,8 +20,8 @@ interface BrainState {
   sessionId: string | null;
   draft: string;
   railOpen: boolean;
-  /** The conversation history column on Brain Home */
-  historyOpen: boolean;
+  /** The conversation history column on Brain Home; null = automatic (open on wide screens, closed on phones) */
+  historyOpen: boolean | null;
   workspaceView: "brain" | "debates";
 
   messages: BrainMessage[];
@@ -61,7 +61,7 @@ export const useBrainStore = create<BrainState>()(
       sessionId: null,
       draft: "",
       railOpen: true,
-      historyOpen: false,
+      historyOpen: null,
       workspaceView: "brain",
 
       messages: [],
@@ -164,6 +164,12 @@ export const useBrainStore = create<BrainState>()(
     }),
     {
       name: "cryptonite-brain",
+      // v1: History became open by default on wide screens; a "closed" saved before that was never a choice
+      version: 1,
+      migrate: (persisted: any, version) => {
+        if (version < 1 && persisted && typeof persisted === "object") persisted.historyOpen = null;
+        return persisted;
+      },
       skipHydration: true,
       partialize: (s) => ({
         sessionId: s.sessionId,
