@@ -19,6 +19,7 @@ from cryptonite_agents.gateway import RiskClass, tool
 from cryptonite_agents.research.tools import QUEUE_RESEARCH
 from cryptonite_agents.tools import (
     COMPARE_LIVE_VS_BACKTEST,
+    GET_KLINES,
     LIVE_MARKET_DATA,
     QUERY_PARQUET,
     QUERY_POSTGRES,
@@ -69,6 +70,7 @@ def propose_order(
 
 BRAIN_TOOLS = (
     LIVE_MARKET_DATA,
+    GET_KLINES,
     SCANNER_CONTEXT,
     QUERY_POSTGRES,
     QUERY_PARQUET,
