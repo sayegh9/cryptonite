@@ -473,6 +473,74 @@ async def test_approved_entry_on_top_of_a_position_is_sized_to_the_room_not_brea
     assert qty * D("50010") > room * D("0.95")  # it uses the room, minus the 1% sizing margin and the buffer
 
 
+async def test_a_limit_entry_above_the_ask_is_sized_at_its_limit_price_not_breached():
+    """2026-10-13: a LIMIT buy 0.8% above the ask on a mandate already half-way to its position limit. Sizing valued
+    the room at the ask, the check valued the order and the holding at the limit price, so the sized-down entry
+    was refused as MANDATE_POSITION_PCT_EXCEEDED and recorded a BREACH. Both now use the same price."""
+    m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
+    held = [{"instance_id": mandate_instance_id(m.id), "instrument_id": SPOT, "side": "LONG",
+             "quantity": D("0.01"), "current_price": D("50000")}]  # ~$500 of a $1,000 limit
+    approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED"}
+    limit = D("50400")  # the ask is 50010
+    payload = {"instrument_id": "BTCUSDT", "side": "BUY", "order_type": "LIMIT", "price": str(limit),
+               "allocation_pct": 5, "mandate_id": str(m.id), "approval_id": str(uuid.uuid4())}
+    conn, engine = await run_ai_command(payload, mandate_row=mandate_row(m), positions=held, approval=approval)
+    assert conn.outcome() == ("COMPLETED", None)
+    assert conn.events == []  # no BREACH
+    qty = D(str(engine.dispatcher.get_position_qty(SPOT)))  # a limit above the ask fills at once
+    assert D("0") < qty and qty * limit + D("0.01") * limit <= D("1000")  # inside the limit at the check's price
+
+
+@pytest.mark.parametrize("held_btc", [D("0"), D("0.005"), D("0.01"), D("0.015")])
+@pytest.mark.parametrize("limit_vs_ask", [D("-0.02"), D("0"), D("0.004"), D("0.008"), D("0.03"), D("0.10")])
+async def test_a_system_sized_entry_never_breaches_its_mandate(held_btc, limit_vs_ask):
+    """Whatever the limit price and the holding, an entry the orchestrator sizes itself is placed or refused as
+    POSITION_LIMIT_REACHED; it is never a BREACH (a breach means the AI asked for more than its mandate allows)."""
+    m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
+    held = [{"instance_id": mandate_instance_id(m.id), "instrument_id": SPOT, "side": "LONG",
+             "quantity": held_btc, "current_price": D("50000")}] if held_btc else []
+    approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED"}
+    payload = {"instrument_id": "BTCUSDT", "side": "BUY", "order_type": "LIMIT",
+               "price": str((D("50010") * (1 + limit_vs_ask)).quantize(D("0.01"))),
+               "allocation_pct": 5, "mandate_id": str(m.id), "approval_id": str(uuid.uuid4())}
+    conn, _ = await run_ai_command(payload, mandate_row=mandate_row(m), positions=held, approval=approval)
+    status, reason = conn.outcome()
+    assert conn.events == [], reason
+    # Placed, or refused for a reason that is not the AI's: no room left, or the dispatcher's price collar
+    assert status == "COMPLETED" or reason.startswith(("MANDATE_POSITION_LIMIT_REACHED", "PRICE_COLLAR_REJECT")), reason
+
+
+async def test_sizing_that_disagrees_with_the_check_is_a_sizing_conflict_never_a_breach(monkeypatch):
+    """The backstop: if sizing ever disagrees with the check again, the order is refused as SIZING_CONFLICT (a system
+    fault, logged as an error) and the mandate records no BREACH."""
+    from cryptonite_orchestrator import mandate_gate
+
+    real = mandate_gate.max_entry_quantity
+    monkeypatch.setattr(mandate_gate, "max_entry_quantity", lambda *a, **k: real(*a, **k) * D("3"))
+    m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
+    held = [{"instance_id": mandate_instance_id(m.id), "instrument_id": SPOT, "side": "LONG",
+             "quantity": D("0.01"), "current_price": D("50000")}]
+    approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED"}
+    payload = {"instrument_id": "BTCUSDT", "side": "BUY", "allocation_pct": 9, "mandate_id": str(m.id),
+               "approval_id": str(uuid.uuid4())}
+    conn, engine = await run_ai_command(payload, mandate_row=mandate_row(m), positions=held, approval=approval)
+    assert conn.outcome() == ("REJECTED", MandateReject.SIZING_CONFLICT.value)
+    assert conn.events == [] and engine.dispatcher.open_orders == {}
+    assert MandateReject.SIZING_CONFLICT not in BREACH_CODES
+
+
+async def test_an_ai_quantity_over_the_limit_is_still_a_breach():
+    """Only the system's own sizing is exempt: an order that names a quantity over the position limit is the AI
+    overstepping, and stays a BREACH."""
+    m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
+    approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED"}
+    payload = {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.05", "mandate_id": str(m.id),
+               "approval_id": str(uuid.uuid4())}  # ~$2,500 against a $1,000 limit
+    conn, _ = await run_ai_command(payload, mandate_row=mandate_row(m), approval=approval)
+    assert conn.outcome() == ("REJECTED", MandateReject.POSITION_PCT_EXCEEDED.value)
+    assert conn.events == ["BREACH"] or "BREACH" in conn.events
+
+
 async def test_entry_with_no_room_left_is_refused_without_a_breach():
     m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
     held = [{"instance_id": mandate_instance_id(m.id), "instrument_id": SPOT, "side": "LONG",

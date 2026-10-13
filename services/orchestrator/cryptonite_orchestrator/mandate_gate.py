@@ -26,6 +26,7 @@ from cryptonite_execution.mandates import (
     MandateOrder,
     action_class,
     check_mandate,
+    max_entry_quantity,
     same_instrument,
 )
 from cryptonite_schemas.mandate import (
@@ -130,6 +131,29 @@ async def mandate_exposure(conn, engine, mandate: Mandate, instrument_id: str, r
     return MandateExposure(gross, inst_usd, max(inst_qty, Decimal("0")), inst_side, other_owner)
 
 
+def mandate_ref_price(limit_price: Decimal | None, side: str, quote) -> Decimal | None:
+    """The one price a mandate values an order at, for sizing and for the check alike: its limit price, else the
+    live ask (buy) or bid (sell). Sizing at one price and checking at another refused entries the orchestrator had
+    just sized to fit (2026-10-13: a limit above the ask)."""
+    if limit_price is not None and limit_price > 0:
+        return limit_price
+    if quote is None:
+        return None
+    return Decimal(str(quote.ask_price if side.upper() == "BUY" else quote.bid_price))
+
+
+async def mandate_entry_room(conn, engine, mandate: Mandate, instrument_id: str, side: str,
+                             limit_price: Decimal | None, quote,
+                             order_type: str) -> tuple[Decimal, Decimal | None, MandateExposure | None]:
+    """The largest entry quantity the mandate check will accept, the price it was valued at and the exposure: the
+    same reference price and the same exposure valuation that ``gate_ai_order`` uses."""
+    ref = mandate_ref_price(limit_price, side, quote)
+    if ref is None:
+        return Decimal("0"), None, None
+    exposure = await mandate_exposure(conn, engine, mandate, instrument_id, {instrument_id: ref})
+    return max_entry_quantity(mandate, exposure, ref, order_type=order_type), ref, exposure
+
+
 async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate) -> bool:
     """ADD_RISK below L3 needs an operator approval bound to exactly this command: an ``ai_approvals``
     row for this mandate, ADD_RISK, APPROVED (or, at L2, a veto window that ran out with policy
@@ -153,14 +177,17 @@ async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate) -> b
     return a["status"] == ApprovalStatus.EXPIRED_PROCEEDED and mandate.autonomy_level >= AutonomyLevel.L2
 
 
-async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: Mandate | None, quote) -> str | None:
-    """None when the AI order may go on to the dispatcher, else the reject reason for the command."""
+async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: Mandate | None, quote, *,
+                        system_sized: bool = False) -> str | None:
+    """None when the AI order may go on to the dispatcher, else the reject reason for the command.
+
+    ``system_sized``: the orchestrator chose the quantity (from the allocation, sized to the room). A budget or
+    position-limit rejection of such an order means sizing and the check disagree: a system fault, so it is refused
+    as ``SIZING_CONFLICT`` and logged as an error, and never recorded as the AI's breach."""
     if mandate is None:
         return MandateReject.REQUIRED if not command_mandate_id(row, payload) else MandateReject.NOT_FOUND
     side = intent.side.upper()
-    ref = intent.price
-    if ref is None and quote is not None:
-        ref = Decimal(str(quote.ask_price if side == "BUY" else quote.bid_price))
+    ref = mandate_ref_price(intent.price, side, quote)
     ref_prices = {intent.instrument_id: ref} if ref else {}
     order = MandateOrder(
         instrument_id=intent.instrument_id, side=side, quantity=intent.quantity, ref_price=ref,
@@ -179,6 +206,11 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
             return cross
     if reject is None and not await ensure_mandate_instance(conn, mandate, getattr(engine, "account_id", "PAPER-ACCOUNT-001")):
         reject = MandateReject.INSTANCE_UNAVAILABLE
+    if reject in (MandateReject.BUDGET_EXCEEDED, MandateReject.POSITION_PCT_EXCEEDED) and system_sized:
+        logger.error("AI order %s: the orchestrator sized it but mandate %s refused it (%s); sizing and the check "
+                     "disagree. Refused as %s, not recorded as a breach", _row_get(row, "command_id"), mandate.name,
+                     reject, MandateReject.SIZING_CONFLICT)
+        return MandateReject.SIZING_CONFLICT.value
     if reject is not None:
         logger.warning("AI order %s rejected by mandate %s: %s", _row_get(row, "command_id"), mandate.name, reject)
         if reject in BREACH_CODES:
