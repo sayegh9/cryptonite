@@ -106,6 +106,17 @@ export interface BrainSessionSummary {
   title: string | null;
   created_at: string;
   updated_at: string;
+  archived?: boolean;
+  /** Operator and Brain turns (system lines such as approved cards are not counted) */
+  message_count?: number;
+  /** The last thing said, one line, clipped by the server */
+  preview?: { role: "user" | "assistant"; content: string } | null;
+}
+
+/** One page of conversation history; `next_cursor` is null on the last page */
+export interface BrainSessionPage {
+  sessions: BrainSessionSummary[];
+  next_cursor: string | null;
 }
 
 export interface DecisionTraceRow {

@@ -58,8 +58,11 @@ def worker(monkeypatch):
             return httpx.Response(401)
         if request.url.path == "/api/v1/brain/stream":
             return httpx.Response(200, content=SSE, headers={"content-type": "text/event-stream"})
-        if request.url.path.endswith("/sessions"):
-            return httpx.Response(200, json={"sessions": []})
+        if request.url.path.endswith("/sessions/search"):
+            return httpx.Response(200, json={"sessions": [], "next_cursor": None})
+        if request.method == "PATCH" and "/sessions/" in request.url.path:
+            return httpx.Response(200, json={"session": {"id": request.url.path.rsplit("/", 1)[-1],
+                                                         **json.loads(request.content)}})
         if "/notes" in request.url.path:
             return httpx.Response(200, json={"status": "ok"})
         return httpx.Response(404)
@@ -100,9 +103,43 @@ def test_stream_relays_sse_signed_with_the_operator_identity(client, worker):
 def test_sessions_are_scoped_to_the_logged_in_operator(client, worker):
     c, _ = client
     c.cookies.set(COOKIE_NAME, OPERATOR_SID)
-    assert c.get("/api/v1/agents/brain/sessions").json() == {"sessions": []}
-    assert worker[-1].url.path == "/api/v1/brain/operators/u-op/sessions"
+    assert c.get("/api/v1/agents/brain/sessions").json() == {"sessions": [], "next_cursor": None}
+    assert worker[-1].url.path == "/api/v1/brain/operators/u-op/sessions/search"
     assert c.get("/api/v1/agents/brain/sessions/not-a-uuid").status_code == 422
+
+
+def test_history_filters_travel_in_the_signed_body(client, worker):
+    c, _ = client
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    res = c.get("/api/v1/agents/brain/sessions", params={"q": "btc", "archived": "true", "limit": 5, "before": "x|y"})
+    assert res.status_code == 200
+    sent = worker[-1]
+    assert sent.method == "POST" and not sent.url.query  # nothing outside the signature
+    assert json.loads(sent.content) == {"query": "btc", "archived": True, "limit": 5, "before": "x|y"}
+    assert c.get("/api/v1/agents/brain/sessions", params={"limit": 500}).status_code == 422
+
+
+def test_rename_and_archive_need_an_operator_and_csrf(client, worker):
+    c, _ = client
+    sid = str(uuid.uuid4())
+    url = f"/api/v1/agents/brain/sessions/{sid}"
+    assert c.patch(url, json={"title": "BTC plan"}).status_code == 401
+    c.cookies.set(COOKIE_NAME, VIEWER_SID)
+    assert c.patch(url, json={"title": "BTC plan"}, headers={"X-CSRF-Token": CSRF}).status_code == 403
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    assert c.patch(url, json={"title": "BTC plan"}).status_code == 403  # no CSRF
+    assert worker == []
+
+    res = c.patch(url, json={"title": "BTC plan"}, headers={"X-CSRF-Token": CSRF})
+    assert res.status_code == 200 and res.json()["session"]["title"] == "BTC plan"
+    assert worker[-1].method == "PATCH"
+    assert worker[-1].url.path == f"/api/v1/brain/operators/u-op/sessions/{sid}"
+    assert json.loads(worker[-1].content) == {"title": "BTC plan"}
+
+    assert c.patch(url, json={"archived": True}, headers={"X-CSRF-Token": CSRF}).json()["session"]["archived"] is True
+    assert c.patch(url, json={}, headers={"X-CSRF-Token": CSRF}).status_code == 422
+    assert c.patch(url, json={"title": ""}, headers={"X-CSRF-Token": CSRF}).status_code == 422
+    assert c.patch(url, json={"title": "x" * 121}, headers={"X-CSRF-Token": CSRF}).status_code == 422
 
 
 def test_note_forwards_only_display_fields(client, worker):

@@ -16,6 +16,7 @@ from cryptonite_agents.brain import (
     brain_gateway_routes,
 )
 from cryptonite_agents.brain.holdings import ai_spot_holding
+from cryptonite_agents.brain.store import session_cursor
 from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
@@ -252,6 +253,19 @@ class BrainStreamRequest(BaseModel):
     session_id: str | None = Field(default=None, max_length=64)
 
 
+class BrainSessionSearch(BaseModel):
+    """History list filters. Sent as a signed body: the internal signature covers the body, not a query string."""
+    query: str | None = Field(default=None, max_length=200)
+    archived: bool = False
+    limit: int = Field(default=30, ge=1, le=100)
+    before: str | None = Field(default=None, max_length=120)
+
+
+class BrainSessionUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    archived: bool | None = None
+
+
 class BrainNoteRequest(BaseModel):
     operator_id: str = Field(min_length=1, max_length=128)
     content: str = Field(min_length=1, max_length=2000)
@@ -290,6 +304,32 @@ async def brain_stream(request: Request, req: BrainStreamRequest):
 @app.get("/api/v1/brain/operators/{operator_id}/sessions")
 async def brain_sessions(operator_id: str, request: Request):
     return {"sessions": await request.app.state.brain.store.list_sessions(operator_id)}
+
+
+@app.post("/api/v1/brain/operators/{operator_id}/sessions/search")
+async def brain_session_search(operator_id: str, request: Request, req: BrainSessionSearch):
+    """One page of the operator's conversation history; ``next_cursor`` is null on the last page."""
+    store = request.app.state.brain.store
+    rows = await store.list_sessions(operator_id, req.limit + 1, query=req.query, archived=req.archived,
+                                     before=req.before)
+    page = rows[: req.limit]
+    return {"sessions": page,
+            "next_cursor": session_cursor(page[-1]) if len(rows) > req.limit and page else None}
+
+
+@app.patch("/api/v1/brain/operators/{operator_id}/sessions/{session_id}")
+async def brain_session_update(operator_id: str, session_id: str, request: Request, req: BrainSessionUpdate):
+    """Rename and/or archive one of the operator's conversations."""
+    if req.title is None and req.archived is None:
+        raise HTTPException(status_code=422, detail="Nothing to change")
+    title = " ".join(req.title.split()) if req.title is not None else None
+    if title == "":
+        raise HTTPException(status_code=422, detail="A title cannot be blank")
+    session = await request.app.state.brain.store.update_session(session_id, operator_id, title=title,
+                                                                  archived=req.archived)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"session": session}
 
 
 @app.get("/api/v1/brain/operators/{operator_id}/sessions/{session_id}")

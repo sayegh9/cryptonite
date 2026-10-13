@@ -29,6 +29,7 @@ from cryptonite_agents.brain import (
     brain_gateway_routes,
     memory,
 )
+from cryptonite_agents.brain.store import session_cursor
 from cryptonite_agents.brain.toolset import propose_order, show_price_chart
 from cryptonite_agents.brain.widgets import describe_widget, widget_for_tool
 from cryptonite_agents.evals import runner as eval_runner
@@ -397,6 +398,115 @@ def test_brain_stream_endpoint_emits_typed_sse_events():
         assert unsigned.status_code == 401
 
 
+# --- Conversation history (search, archive, paging) -----------------------------------------------
+
+async def _history(store):
+    """Three conversations for op-1 (oldest first) and one for op-2."""
+    a = await store.create_session("op-1", "BTC breakout plan")
+    await store.append_message(a, "user", "analyze BTC")
+    await store.append_message(a, "assistant", "BTC is at the top of its range")
+    b = await store.create_session("op-1", "ETH funding")
+    await store.append_message(b, "user", "what is 100% of ETH funding_rate?")
+    await store.append_message(b, "system", "Operator approved card c1")
+    c = await store.create_session("op-1", "XRP dip")
+    await store.append_message(c, "user", "  watch\n XRP   for a dip  ")
+    other = await store.create_session("op-2", "BTC elsewhere")
+    await store.append_message(other, "user", "analyze BTC")
+    return a, b, c
+
+
+async def test_history_lists_newest_first_with_counts_and_previews():
+    store = MemorySessionStore()
+    a, b, c = await _history(store)
+    rows = await store.list_sessions("op-1")
+    assert [r["id"] for r in rows] == [c, b, a]
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[a]["message_count"] == 2
+    assert by_id[a]["preview"] == {"role": "assistant", "content": "BTC is at the top of its range"}
+    assert by_id[b]["message_count"] == 1  # the system line is not part of the conversation
+    assert by_id[b]["preview"]["role"] == "user"
+    assert by_id[c]["preview"]["content"] == "watch XRP for a dip"
+    assert all(r["archived"] is False for r in rows)
+
+
+async def test_history_search_matches_titles_and_messages_for_one_operator():
+    store = MemorySessionStore()
+    a, b, _ = await _history(store)
+    assert [r["id"] for r in await store.list_sessions("op-1", query="btc")] == [a]
+    assert [r["id"] for r in await store.list_sessions("op-1", query="TOP OF ITS")] == [a]  # message text
+    assert [r["id"] for r in await store.list_sessions("op-1", query="100%")] == [b]
+    assert await store.list_sessions("op-1", query="nothing like this") == []
+
+
+async def test_history_pages_with_a_cursor():
+    store = MemorySessionStore()
+    a, b, c = await _history(store)
+    first = await store.list_sessions("op-1", limit=2)
+    assert [r["id"] for r in first] == [c, b]
+    rest = await store.list_sessions("op-1", limit=2, before=session_cursor(first[-1]))
+    assert [r["id"] for r in rest] == [a]
+    assert [r["id"] for r in await store.list_sessions("op-1", before="not-a-cursor")] == [c, b, a]
+
+
+async def test_archive_hides_a_conversation_until_it_gets_a_new_message():
+    store = MemorySessionStore()
+    a, b, c = await _history(store)
+    archived = await store.update_session(a, "op-1", archived=True)
+    assert archived["archived"] is True
+    assert [r["id"] for r in await store.list_sessions("op-1")] == [c, b]
+    assert [r["id"] for r in await store.list_sessions("op-1", archived=True)] == [a]
+    assert await store.get_session(a, "op-1") is not None  # still readable, so it can be opened
+    await store.append_message(a, "user", "one more question")
+    assert [r["id"] for r in await store.list_sessions("op-1")][0] == a
+    assert await store.list_sessions("op-1", archived=True) == []
+
+
+async def test_rename_keeps_the_activity_order_and_the_owner():
+    store = MemorySessionStore()
+    a, b, c = await _history(store)
+    renamed = await store.update_session(a, "op-1", title="Weekly BTC review")
+    assert renamed["title"] == "Weekly BTC review"
+    assert [r["id"] for r in await store.list_sessions("op-1")] == [c, b, a]
+    assert await store.update_session(a, "op-2", title="hijack") is None
+    assert (await store.get_session(a, "op-1"))["title"] == "Weekly BTC review"
+
+
+def test_history_endpoints_page_rename_and_archive():
+    from fastapi.testclient import TestClient  # noqa: PLC0415
+    from server import app  # noqa: PLC0415
+    from test_agent_worker_and_fleet import _generate_hmac_headers  # noqa: PLC0415
+
+    store = MemorySessionStore()
+    with TestClient(app) as client:
+        app.state.brain = brain(store)
+        a, b, c = asyncio.run(_history(store))
+
+        def post(path, payload):
+            raw = json.dumps(payload).encode()
+            return client.post(path, content=raw, headers=_generate_hmac_headers("POST", path, raw))
+
+        def patch(path, payload):
+            raw = json.dumps(payload).encode()
+            return client.patch(path, content=raw, headers=_generate_hmac_headers("PATCH", path, raw))
+
+        search = "/api/v1/brain/operators/op-1/sessions/search"
+        page = post(search, {"limit": 2}).json()
+        assert [s["id"] for s in page["sessions"]] == [c, b] and page["next_cursor"]
+        last = post(search, {"limit": 2, "before": page["next_cursor"]}).json()
+        assert [s["id"] for s in last["sessions"]] == [a] and last["next_cursor"] is None
+        assert [s["id"] for s in post(search, {"query": "eth"}).json()["sessions"]] == [b]
+
+        path = f"/api/v1/brain/operators/op-1/sessions/{a}"
+        assert patch(path, {"title": "  Weekly   BTC  "}).json()["session"]["title"] == "Weekly BTC"
+        assert patch(path, {"title": "   "}).status_code == 422
+        assert patch(path, {}).status_code == 422
+        assert patch(path, {"archived": True}).json()["session"]["archived"] is True
+        assert [s["id"] for s in post(search, {"archived": True}).json()["sessions"]] == [a]
+        assert patch(f"/api/v1/brain/operators/op-2/sessions/{a}", {"archived": False}).status_code == 404
+        unsigned = client.post(search, content=b"{}", headers={"Content-Type": "application/json"})
+        assert unsigned.status_code == 401
+
+
 # --- Migration 024 against a real database -----------------------------------------------------
 
 @pytest.fixture(scope="module")
@@ -428,6 +538,44 @@ async def test_session_store_runs_as_the_telemetry_role(db_url):
         assert [s["id"] for s in await store.list_sessions("op-1")] == [sid]
         with pytest.raises(asyncpg.InsufficientPrivilegeError):  # history is never deleted by the service
             await pool.execute("DELETE FROM ai_messages")
+    finally:
+        await pool.close()
+
+
+async def test_history_queries_run_as_the_telemetry_role(db_url):
+    pool = await asyncpg.create_pool(as_role(db_url, "cryptonite_ai_telemetry", "ai_telemetry_dev_pass"),
+                                     min_size=1, max_size=2)
+    try:
+        store = PgSessionStore(pool)
+        op = f"op-hist-{uuid.uuid4().hex[:6]}"
+        a = await store.create_session(op, "BTC breakout plan")
+        await store.append_message(a, "user", "analyze BTC")
+        await store.append_message(a, "assistant", "BTC is at the top of its range")
+        b = await store.create_session(op, "ETH 100% funding_rate")
+        await store.append_message(b, "user", "what is 100% of ETH funding_rate?")
+        await store.append_message(b, "system", "Operator approved card c1")
+
+        rows = await store.list_sessions(op)
+        assert [r["id"] for r in rows] == [b, a]
+        assert rows[0]["message_count"] == 1 and rows[0]["preview"]["role"] == "user"
+        assert rows[1]["preview"] == {"role": "assistant", "content": "BTC is at the top of its range"}
+
+        assert [r["id"] for r in await store.list_sessions(op, query="top of ITS")] == [a]
+        assert [r["id"] for r in await store.list_sessions(op, query="100%")] == [b]
+        assert await store.list_sessions(op, query="1_0%") == []  # _ and % are literal, not wildcards
+
+        first = await store.list_sessions(op, limit=1)
+        assert [r["id"] for r in await store.list_sessions(op, limit=1, before=session_cursor(first[0]))] == [a]
+
+        before = (await store.get_session(a, op))["updated_at"]
+        assert (await store.update_session(a, op, title="Weekly BTC"))["title"] == "Weekly BTC"
+        assert (await store.get_session(a, op))["updated_at"] == before  # a rename is not activity
+        assert (await store.update_session(a, op, archived=True))["archived"] is True
+        assert [r["id"] for r in await store.list_sessions(op)] == [b]
+        assert [r["id"] for r in await store.list_sessions(op, archived=True)] == [a]
+        assert await store.update_session(a, "someone-else", archived=False) is None
+        await store.append_message(a, "user", "back to this one")
+        assert [r["id"] for r in await store.list_sessions(op)] == [a, b]
     finally:
         await pool.close()
 
