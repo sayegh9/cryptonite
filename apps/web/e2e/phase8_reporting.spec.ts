@@ -165,6 +165,10 @@ async function mockResearch(page: Page, opts: { regimeBreakdown?: unknown; liveV
   const run = backtestRun(opts.regimeBreakdown);
   await page.route(/\/api\/v1\/backtests/, (route) => {
     const url = route.request().url();
+    // The run button reads the catalog's coverage first; without bars it never submits the run
+    if (url.includes("/coverage")) {
+      return route.fulfill({ json: { bar_type: "BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL", start_ns: 0, end_ns: Date.now() * 1_000_000, days: 30 } });
+    }
     if (url.includes(`/${RUN_ID}`)) return route.fulfill({ json: run });
     if (route.request().method() === "POST") return route.fulfill({ json: { id: RUN_ID, status: "PENDING" } });
     return route.fulfill({ json: [run] });
