@@ -2,10 +2,11 @@
 
 import React, { useEffect, useState } from "react";
 import { fetchApi } from "@/lib/api";
-import { Save, Cpu, ShieldAlert, Key } from "lucide-react";
+import { Save, Cpu, ShieldAlert, Key, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
+import { SettingsRegistry } from "./SettingsRegistry";
 
 interface AgentConfig {
   model_name: string | null;
@@ -21,7 +22,7 @@ interface EnvHealth {
 }
 
 export const SettingsPanel: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<"agents" | "security">("agents");
+  const [activeTab, setActiveTab] = useState<"agents" | "security" | "platform">("agents");
   const [agents, setAgents] = useState<Record<string, AgentConfig>>({});
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [envHealth, setEnvHealth] = useState<EnvHealth | null>(null);
@@ -170,6 +171,15 @@ export const SettingsPanel: React.FC = () => {
           >
             <ShieldAlert className="w-4 h-4" />
             Security & Env
+          </button>
+          <button
+            onClick={() => setActiveTab("platform")}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition-colors ${
+              activeTab === "platform" ? "bg-cyan-900/40 text-cyan-400" : "hover:bg-white/5"
+            }`}
+          >
+            <SlidersHorizontal className="w-4 h-4" />
+            Platform
           </button>
         </div>
       </div>
@@ -326,6 +336,12 @@ export const SettingsPanel: React.FC = () => {
             <div className="p-4 bg-blue-900/20 border border-blue-900/30 rounded-lg text-sm text-blue-300">
               <span className="font-bold">Note:</span> Modifying these environment variables requires editing the `.env` file on the host machine and restarting the Docker containers.
             </div>
+          </div>
+        )}
+
+        {activeTab === "platform" && (
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <SettingsRegistry />
           </div>
         )}
       </div>

@@ -64,6 +64,7 @@ INLINE_CSRF_WRITES = {
     ("POST", "/api/v1/control/kill-switch/trip"),
     ("POST", "/api/v1/control/kill-switch/reset"),
     ("POST", "/api/v1/control/risk-limits"),
+    ("PUT", "/api/v1/settings/registry/{key}"),  # ADR 0007 write path: refuses any caller without the session's CSRF token
 }
 
 # Machine-to-machine writes authenticated by an HMAC signature + single-use nonce instead of an
