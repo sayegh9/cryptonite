@@ -273,9 +273,9 @@ def test_tearsheet_and_debate_widgets():
 
 # --- The Brain: one conversation ------------------------------------------------------------------
 
-def brain(store=None, **kw) -> Brain:
+def brain(store=None, holdings=None, **kw) -> Brain:
     persona = replace(BRAIN, tools=(show_price_chart, propose_order))  # no network/DB tools in unit tests
-    return Brain(gw(**kw), store or MemorySessionStore(), persona)
+    return Brain(gw(**kw), store or MemorySessionStore(), persona, holdings=holdings)
 
 
 async def test_analyze_propose_approve_in_one_conversation():
@@ -487,3 +487,62 @@ async def test_brain_eval_counts_a_held_proposal_as_requested(monkeypatch):
         res = await eval_runner.run_case(Gateway(routes=routes(), budget=BudgetGuard()), case, PLANNER)
     assert res.checks == {"called_required_tools": True, "answered": True, "requested_approval_tools": True}
     assert res.passed
+
+
+# --- A SELL card needs something to sell: spot cannot be shorted ----------------------------------------------
+
+SELL_ORDER = {**GOOD_ORDER, "side": "SELL"}
+
+
+async def _sell_turn(holdings, order=SELL_ORDER):
+    turn = Script([("propose_order", order)], ["Shorting the breakdown below 1.40."])
+    with override_model(PLANNER, turn.model()):
+        return await collect(brain(MemorySessionStore(), holdings=holdings).turn("op-1", "Short XRP"))
+
+
+def _cards(events):
+    return [e.data["widget"] for e in events if e.type == "widget" and e.data["widget"]["kind"] == "order_card"]
+
+
+async def test_a_sell_card_is_refused_when_nothing_is_held_and_the_reply_says_why():
+    async def nothing(instrument):
+        return Decimal("0")
+
+    events = await _sell_turn(nothing)
+    assert _cards(events) == []
+    assert events[-1].type == "done" and "spot cannot be shorted" in events[-1].data["content"]
+
+
+async def test_a_sell_card_is_refused_when_the_holding_cannot_be_read():
+    async def broken(instrument):
+        raise RuntimeError("database unavailable")
+
+    events = await _sell_turn(broken)
+    assert _cards(events) == []  # fails closed
+
+
+async def test_dust_is_not_a_holding():
+    async def dust(instrument):
+        return Decimal("0.0000000001")  # below MIN_HOLDING_QTY
+
+    assert _cards(await _sell_turn(dust)) == []
+
+
+async def test_a_sell_card_is_made_for_a_real_holding():
+    async def held(instrument):
+        return Decimal("0.5")
+
+    events = await _sell_turn(held)
+    cards = _cards(events)
+    assert len(cards) == 1 and cards[0]["side"] == "SELL"
+    assert "spot cannot be shorted" not in events[-1].data["content"]
+
+
+async def test_a_buy_card_needs_no_holding():
+    async def nothing(instrument):
+        return Decimal("0")
+
+    with override_model(PLANNER, Script([("propose_order", GOOD_ORDER)], ["ok"]).model()):
+        events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Buy BTC"))
+    assert [c["side"] for c in _cards(events)] == ["BUY"]
+

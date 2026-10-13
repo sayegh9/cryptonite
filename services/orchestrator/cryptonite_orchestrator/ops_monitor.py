@@ -179,6 +179,26 @@ async def check_heartbeats(pool, redis, watch: HeartbeatWatch, now_s: float | No
     return events
 
 
+RECONCILE_APPROVALS_SQL = """
+    UPDATE ai_approvals a
+    SET status = 'CANCELLED', decided_via = 'system', decided_by = 'system', decided_at = now(),
+        summary = COALESCE(a.summary, '') || ' · NOT EXECUTED: ' || c.status || COALESCE(' (' || c.error_message || ')', '')
+    FROM execution_commands c
+    WHERE a.command_id = c.command_id AND a.status = 'APPROVED' AND c.status IN ('REJECTED', 'FAILED')
+    RETURNING a.id
+"""
+
+
+async def reconcile_approvals(pool) -> int:
+    """An approved card whose paper command was refused or failed was not executed. Mark the approval CANCELLED with
+    the reason in its summary, so it no longer reads as an executed order."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(RECONCILE_APPROVALS_SQL)
+    if rows:
+        logger.warning("Reconciled %d approved card(s) whose command was not executed", len(rows))
+    return len(rows)
+
+
 async def ops_monitor(engine, pool, redis, interval_s: float = OPS_EVERY_S) -> None:
     """Start-up publish, then every ``interval_s``: risk-limit overrides (F7) and betas (F4, hourly),
     effective limits and heartbeat alerts."""
@@ -187,6 +207,12 @@ async def ops_monitor(engine, pool, redis, interval_s: float = OPS_EVERY_S) -> N
     while True:
         alert_values = await load_alert_settings(pool, alert_values)  # ADR 0007: the stored grace and staleness
         watch.grace_s = alert_values[0]
+        try:
+            await reconcile_approvals(pool)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Approval reconcile failed: %s", e)
         await risk_overrides.refresh_risk_limits(engine, pool)  # logs and keeps what is applied on failure
         try:
             await risk_overrides.refresh_betas(pool)

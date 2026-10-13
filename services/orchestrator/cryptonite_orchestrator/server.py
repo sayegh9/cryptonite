@@ -901,7 +901,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                 mandate = await load_mandate(conn, mandate_ref)
 
                             # Determine quantity
-                            qty_val = payload.get("quantity")
+                            qty_val = Decimal(str(payload["quantity"])) if payload.get("quantity") else None
                             if not qty_val:
                                 alloc_pct = Decimal(str(payload.get("allocation_pct", 5.0)))
                                 quote = quote_cache.quote(canonical_inst)
