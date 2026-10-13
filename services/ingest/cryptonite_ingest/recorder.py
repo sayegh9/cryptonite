@@ -80,12 +80,14 @@ class IngestRecorder:
         self._universe_task: asyncio.Task | None = None
         self._symbol_metadata: dict[str, dict[str, Any]] = {}
         self.last_closed_bar_ts: dict[str, int] = {}
+        self._recovery_lock = asyncio.Lock()
+        self._pending_recovery_symbols: set[str] = set()
 
     async def initialize(self) -> None:
         """Connect database and initialize coordinator with process lock."""
         if self.database_url:
             self.pool = await asyncpg.create_pool(self.database_url, min_size=2, max_size=10)
-        
+
         if self.redis_url:
             self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
 
@@ -120,14 +122,15 @@ class IngestRecorder:
                 bar_type = to_nautilus_bar_type(inst_id, tf)
                 await self.coordinator.reconcile_pending_batches(bar_type)
 
-    async def sync_instruments(self) -> None:
+    async def sync_instruments(self, symbols: list[str] | None = None) -> None:
         """Fetch instrument definitions, write to Nautilus catalog and PostgreSQL."""
-        logger.info("Syncing instrument definitions from Binance...")
+        sym_list = [s.upper() for s in symbols] if symbols is not None else self.symbols
+        logger.info("Syncing instrument definitions from Binance for %s...", sym_list)
         all_info = await self.rest_client.get_exchange_info()
         info_map = {item["symbol"]: item for item in all_info}
 
         instruments_to_write = []
-        for sym in self.symbols:
+        for sym in sym_list:
             meta = info_map.get(sym)
             if not meta:
                 logger.warning("Symbol %s not found in Binance exchangeInfo", sym)
@@ -203,31 +206,122 @@ class IngestRecorder:
         """Callback invoked whenever the WebSocket stream yields a closed kline."""
         if not self.coordinator:
             return
-        meta = self._symbol_metadata.get(symbol, {})
-        p_prec = meta.get("price_precision", 2)
-        s_prec = meta.get("size_precision", 6)
 
-        inst_id = to_spot_instrument_id(symbol)
-        bar_type = to_nautilus_bar_type(inst_id, timeframe)
+        async with self._recovery_lock:
+            meta = self._symbol_metadata.get(symbol, {})
+            p_prec = meta.get("price_precision", 2)
+            s_prec = meta.get("size_precision", 6)
 
-        bar = EnrichedBar.from_binance_raw(
-            raw=raw,
-            instrument_id=inst_id,
-            bar_type=str(bar_type),
-            price_precision=p_prec,
-            size_precision=s_prec,
-            received_at_ns=arrival_ns,
+            inst_id = to_spot_instrument_id(symbol)
+            bar_type = to_nautilus_bar_type(inst_id, timeframe)
+
+            bar = EnrichedBar.from_binance_raw(
+                raw=raw,
+                instrument_id=inst_id,
+                bar_type=str(bar_type),
+                price_precision=p_prec,
+                size_precision=s_prec,
+                received_at_ns=arrival_ns,
+            )
+
+            await self.coordinator.commit_batch(
+                bars=[bar],
+                bar_type=bar_type,
+                venue="BINANCE",
+                market_type="SPOT",
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+            self.last_closed_bar_ts[f"{symbol}:{timeframe}"] = bar.ts_event_ns
+
+    async def _on_stream_reconnect(self) -> None:
+        """Callback invoked when BinanceStreamClient reconnects after a drop."""
+        logger.warning(
+            "Stream reconnected (reconnect_count=%d)! Triggering full gap recovery for all fed symbols: %s",
+            self.stream_client.reconnect_count if self.stream_client else 0,
+            self.symbols,
         )
+        await self.trigger_recovery(self.symbols)
 
-        await self.coordinator.commit_batch(
-            bars=[bar],
-            bar_type=bar_type,
-            venue="BINANCE",
-            market_type="SPOT",
-            symbol=symbol,
-            timeframe=timeframe,
-        )
-        self.last_closed_bar_ts[f"{symbol}:{timeframe}"] = bar.ts_event_ns
+    async def trigger_recovery(self, symbols: list[str] | None = None) -> None:
+        """Trigger bounded, idempotent gap recovery for specified symbols (or all fed symbols)."""
+        if not self.recovery_manager or not self.stream_client:
+            return
+
+        target_syms = set(s.upper() for s in (symbols or self.symbols))
+        self._pending_recovery_symbols.update(target_syms)
+
+        if self._recovery_lock.locked():
+            logger.info("Gap recovery already in progress; queued symbols: %s", target_syms)
+            return
+
+        async with self._recovery_lock:
+            recovered_in_session: set[str] = set()
+            while self._pending_recovery_symbols:
+                batch = sorted(self._pending_recovery_symbols - recovered_in_session)
+                self._pending_recovery_symbols.clear()
+                if not batch:
+                    break
+                recovered_in_session.update(batch)
+                logger.info(
+                    "Running gap recovery for symbols: %s across timeframes: %s",
+                    batch,
+                    self.timeframes,
+                )
+                for s in batch:
+                    if s not in self._symbol_metadata:
+                        await self.sync_instruments(symbols=[s])
+                    meta = self._symbol_metadata.get(s, {})
+                    p_prec = meta.get("price_precision", 2)
+                    s_prec = meta.get("size_precision", 6)
+
+                    for tf in self.timeframes:
+                        inst_id = to_spot_instrument_id(s)
+                        bar_type = to_nautilus_bar_type(inst_id, tf)
+                        try:
+                            await self.recovery_manager.heal_empty_files(
+                                symbol=s,
+                                timeframe=tf,
+                                bar_type=bar_type,
+                                price_precision=p_prec,
+                                size_precision=s_prec,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                "Empty-file healing failed during recovery for %s %s: %s", s, tf, e
+                            )
+                        try:
+                            await self.recovery_manager.recover_gaps_for_stream(
+                                symbol=s,
+                                timeframe=tf,
+                                bar_type=bar_type,
+                                price_precision=p_prec,
+                                size_precision=s_prec,
+                                stream_client=self.stream_client,
+                            )
+                        except Exception as e:
+                            logger.error("Gap recovery failed for %s %s: %s", s, tf, e)
+
+    async def add_symbol(self, symbol: str) -> None:
+        """Dynamically add a new symbol to the live ingestion recorder."""
+        sym = symbol.upper()
+        if sym not in self.symbols:
+            self.symbols.append(sym)
+        # Ensure metadata and instruments are persisted
+        await self.sync_instruments(symbols=[sym])
+
+        dynamic_subscribed = False
+        if self.stream_client:
+            dynamic_subscribed = await self.stream_client.add_symbol(sym)
+
+        await self.publish_universe()
+
+        # If dynamic SUBSCRIBE succeeded on an open socket without reconnect,
+        # run gap recovery specifically for this new symbol.
+        # If dynamic SUBSCRIBE failed and fell back to closing the socket for a full reconnect,
+        # self._on_stream_reconnect will be called upon connection and recover all symbols.
+        if dynamic_subscribed:
+            await self.trigger_recovery([sym])
 
     def universe(self) -> IngestUniverse:
         """What this recorder streams now, runtime-onboarded symbols included (D4)."""
@@ -238,8 +332,12 @@ class IngestRecorder:
         if not self.redis:
             return
         try:
-            await self.redis.set(INGEST_UNIVERSE_KEY, self.universe().model_dump_json(), ex=UNIVERSE_TTL_S)
-        except Exception as e:  # the key expiring makes creation fail closed, so a miss here is safe
+            await self.redis.set(
+                INGEST_UNIVERSE_KEY, self.universe().model_dump_json(), ex=UNIVERSE_TTL_S
+            )
+        except (
+            Exception
+        ) as e:  # the key expiring makes creation fail closed, so a miss here is safe
             logger.warning("Could not publish the ingest universe: %s", e)
 
     async def _universe_publisher(self) -> None:
@@ -257,6 +355,7 @@ class IngestRecorder:
             symbols=self.symbols,
             timeframes=self.timeframes,
             on_closed_bar=self._on_closed_bar_event,
+            on_reconnect=self._on_stream_reconnect,
             redis=self.redis,
             min_quote_interval_ms=1000.0 / self.spot_quote_hz if self.spot_quote_hz > 0 else 0,
         )
@@ -278,9 +377,10 @@ class IngestRecorder:
 
         # Give socket 1s to open connection, then run subscribe-before-backfill gap recovery
         await asyncio.sleep(1.0)
-        
+
         # Subscribe to new instrument onboarding events
         if self.redis:
+
             async def _listen_for_new_instruments():
                 pubsub = self.redis.pubsub()
                 await pubsub.subscribe("CHANNEL_INSTRUMENTS_UPDATED")
@@ -288,35 +388,13 @@ class IngestRecorder:
                 async for message in pubsub.listen():
                     if message["type"] == "message":
                         new_sym = message["data"]
-                        logger.info(f"Received onboarding event for {new_sym}")
-                        if new_sym not in self.symbols:
-                            self.symbols.append(new_sym)
-                        if self.stream_client:
-                            self.stream_client.add_symbol(new_sym)
-                        await self.publish_universe()
+                        logger.info("Received onboarding event for %s", new_sym)
+                        await self.add_symbol(new_sym)
+
             asyncio.create_task(_listen_for_new_instruments())
 
         if self.recovery_manager:
-            for s in self.symbols:
-                for tf in self.timeframes:
-                    meta = self._symbol_metadata.get(s, {})
-                    bar_type = to_nautilus_bar_type(to_spot_instrument_id(s), tf)
-                    try:  # empty files from a killed writer hide their interval from gap recovery
-                        await self.recovery_manager.heal_empty_files(
-                            symbol=s, timeframe=tf, bar_type=bar_type,
-                            price_precision=meta.get("price_precision", 2),
-                            size_precision=meta.get("size_precision", 6),
-                        )
-                    except Exception as e:  # never block start-up; recovery below still runs
-                        logger.error("Empty-file healing failed for %s %s: %s", s, tf, e)
-                    await self.recovery_manager.recover_gaps_for_stream(
-                        symbol=s,
-                        timeframe=tf,
-                        bar_type=bar_type,
-                        price_precision=meta.get("price_precision", 2),
-                        size_precision=meta.get("size_precision", 6),
-                        stream_client=self.stream_client,
-                    )
+            await self.trigger_recovery(self.symbols)
 
         await ws_task
 

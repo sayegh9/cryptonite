@@ -31,17 +31,22 @@ class BinanceStreamClient:
         self,
         symbols: list[str],
         timeframes: list[str],
-        on_closed_bar: Callable[[str, str, RawBinanceKline, int], Coroutine[Any, Any, None]] | None = None,
+        on_closed_bar: Callable[[str, str, RawBinanceKline, int], Coroutine[Any, Any, None]]
+        | None = None,
+        on_reconnect: Callable[[], Coroutine[Any, Any, None]] | None = None,
         base_ws_url: str = BINANCE_WS_STREAM_URL,
         redis: aioredis.Redis | None = None,
         enable_quotes: bool = True,
         quote_ws_url: str | None = None,
         instrument_suffix: str = "",
         min_quote_interval_ms: float = 0,
+        reconnect_delay: float = 1.0,
     ) -> None:
         self.symbols = [s.upper() for s in symbols]
         self.timeframes = [t.lower() for t in timeframes]
         self.on_closed_bar = on_closed_bar
+        self.on_reconnect = on_reconnect
+        self.reconnect_delay = reconnect_delay
         self.base_ws_url = base_ws_url
         self.redis = redis
         self.enable_quotes = enable_quotes
@@ -65,18 +70,68 @@ class BinanceStreamClient:
         # Monotonic quote sequence per symbol
         self.quote_sequences: dict[str, int] = {}
         # Buffer for closed bars that arrive while reconnecting or backfilling
-        self.closed_bar_buffer: asyncio.Queue[tuple[str, str, RawBinanceKline, int]] = asyncio.Queue()
+        self.closed_bar_buffer: asyncio.Queue[tuple[str, str, RawBinanceKline, int]] = (
+            asyncio.Queue()
+        )
         self.reconnect_count = 0
         self.last_received_ts = 0
 
-    def add_symbol(self, symbol: str) -> None:
-        """Add a new symbol to the active subscriptions and force a reconnect."""
+    async def add_symbol(self, symbol: str) -> bool:
+        """Add a new symbol to the active subscriptions.
+
+        Attempts dynamic WebSocket SUBSCRIBE on open connection without dropping existing feeds.
+        Falls back to closing sockets to force reconnect with full gap recovery if dynamic subscribe fails.
+        Returns True if dynamically subscribed, False if forced reconnect fallback.
+        """
         sym = symbol.upper()
         if sym not in self.symbols:
             self.symbols.append(sym)
-            logger.info("Dynamically added %s to live stream. Triggering reconnect...", sym)
+
+        new_streams = [f"{sym.lower()}@kline_{tf}" for tf in self.timeframes]
+        if self.enable_quotes:
+            new_streams.append(f"{sym.lower()}@bookTicker")
+
+        subscribed = False
+        if self._sockets and new_streams and self.quote_ws_url is None:
+            sub_msg = json.dumps(
+                {
+                    "method": "SUBSCRIBE",
+                    "params": new_streams,
+                    "id": int(time.time() * 1000),
+                }
+            )
             for ws in list(self._sockets):
-                asyncio.create_task(ws.close())
+                try:
+                    is_open = getattr(ws, "open", True)
+                    if is_open:
+                        await ws.send(sub_msg)
+                        subscribed = True
+                except Exception as e:
+                    logger.warning("Dynamic SUBSCRIBE failed on socket for %s: %s", sym, e)
+
+        if subscribed:
+            logger.info(
+                "Dynamically subscribed %s (%s) on open WebSocket without reconnect",
+                sym,
+                new_streams,
+            )
+            return True
+
+        logger.info(
+            "No open socket available for SUBSCRIBE or send failed; triggering reconnect for %s...",
+            sym,
+        )
+        for ws in list(self._sockets):
+            asyncio.create_task(ws.close())
+        return False
+
+    def add_symbol_sync(self, symbol: str) -> None:
+        """Synchronous fallback to trigger reconnect for new symbol."""
+        sym = symbol.upper()
+        if sym not in self.symbols:
+            self.symbols.append(sym)
+        for ws in list(self._sockets):
+            asyncio.create_task(ws.close())
 
     @property
     def stream_names(self) -> list[str]:
@@ -111,7 +166,7 @@ class BinanceStreamClient:
         await asyncio.gather(*(self._listen(i) for i in range(len(self.stream_urls))))
 
     async def _listen(self, url_index: int) -> None:
-        backoff = 1.0
+        backoff = self.reconnect_delay
         while self._running:
             try:
                 url = self.stream_urls[url_index]
@@ -119,8 +174,15 @@ class BinanceStreamClient:
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
                     self._sockets.add(ws)
                     try:
-                        backoff = 1.0  # Reset backoff on successful connect
-                        logger.info("Connected to Binance WebSocket stream")
+                        backoff = self.reconnect_delay  # Reset backoff on successful connect
+                        is_reconnect = self.reconnect_count > 0
+                        logger.info(
+                            "Connected to Binance WebSocket stream (reconnect=%s, count=%d)",
+                            is_reconnect,
+                            self.reconnect_count,
+                        )
+                        if is_reconnect and self.on_reconnect:
+                            asyncio.create_task(self._safe_on_reconnect())
                         while self._running:
                             msg = await ws.recv()
                             arrival_ns = time.time_ns()
@@ -143,6 +205,13 @@ class BinanceStreamClient:
             except Exception as e:
                 logger.exception("Unexpected error in WebSocket loop: %s", e)
                 await asyncio.sleep(5.0)
+
+    async def _safe_on_reconnect(self) -> None:
+        if self.on_reconnect:
+            try:
+                await self.on_reconnect()
+            except Exception as e:
+                logger.exception("Error in stream on_reconnect callback: %s", e)
 
     async def _handle_book_ticker(self, payload: dict[str, Any], arrival_ns: int) -> None:
         try:
@@ -203,12 +272,24 @@ class BinanceStreamClient:
                     }
                     async with self.redis.pipeline(transaction=False) as pipe:
                         pipe.xadd("nautilus:stream:bus", bus_record, maxlen=5000, approximate=True)
-                        pipe.xadd("cryptonite:stream:ingress_health", {"data": json.dumps(health_record)}, maxlen=5000, approximate=True)
-                        pipe.xadd("cryptonite:stream:ui_quote_tick", {"data": json.dumps(ui_record)}, maxlen=1000, approximate=True)
+                        pipe.xadd(
+                            "cryptonite:stream:ingress_health",
+                            {"data": json.dumps(health_record)},
+                            maxlen=5000,
+                            approximate=True,
+                        )
+                        pipe.xadd(
+                            "cryptonite:stream:ui_quote_tick",
+                            {"data": json.dumps(ui_record)},
+                            maxlen=1000,
+                            approximate=True,
+                        )
                         # B5: per-instrument latest-quote snapshot from the same tick, same pipeline:
                         # constant-time reads that cannot be evicted by other symbols' volume. The TTL
                         # only bounds garbage; freshness is always the arrival_ns check in the reader.
-                        pipe.setex(quote_tick_key(inst_str), QUOTE_TICK_TTL_S, json.dumps(ui_record))
+                        pipe.setex(
+                            quote_tick_key(inst_str), QUOTE_TICK_TTL_S, json.dumps(ui_record)
+                        )
                         await pipe.execute()
                 except Exception as ex:
                     logger.debug("Failed to publish QuoteTick pipeline: %s", ex)
@@ -222,7 +303,12 @@ class BinanceStreamClient:
             if not isinstance(payload, dict):
                 return
 
-            if payload.get("b") is not None and payload.get("a") is not None and payload.get("s") is not None and "k" not in payload:
+            if (
+                payload.get("b") is not None
+                and payload.get("a") is not None
+                and payload.get("s") is not None
+                and "k" not in payload
+            ):
                 await self._handle_book_ticker(payload, arrival_ns)
                 return
 
@@ -296,7 +382,12 @@ class BinanceStreamClient:
                     logger.debug("Failed to publish open tick to Redis: %s", ex)
 
             if is_closed:
-                logger.debug("Received closed kline for %s (%s) close_time=%d", symbol, timeframe, raw_kline.close_time_ms)
+                logger.debug(
+                    "Received closed kline for %s (%s) close_time=%d",
+                    symbol,
+                    timeframe,
+                    raw_kline.close_time_ms,
+                )
                 # Put in internal queue
                 await self.closed_bar_buffer.put((symbol, timeframe, raw_kline, arrival_ns))
                 if self.on_closed_bar:
