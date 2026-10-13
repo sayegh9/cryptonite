@@ -151,5 +151,5 @@ scanner/workers. `postgres` and `redis` stay untouched throughout.
 
 ---
 
-Reference: `docs/HANDOVER-2026-10-08.md` (current status), `docs/HANDOVER-2026-10-06.md` (historical run),
-`docs/runbooks/backup.md`, `docs/runbooks/e1_preset_upgrade.md`, `docs/run-and-deployment-changes.md`.
+Reference: `HANDOFF.md` (current status, deploy and test commands), `docs/runbooks/backup.md`,
+`docs/runbooks/e1_preset_upgrade.md`.

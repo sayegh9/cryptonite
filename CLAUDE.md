@@ -37,4 +37,4 @@
 ## Exploration Protocol
 1. Read `graphify-out/GRAPH_REPORT.md` (God Nodes, Communities) first.
 2. Run `graphify query "<question>"` before grep/read; run `graphify update .` if HEAD ≠ graph commit.
-3. Read `HANDOFF.md` for current state and `AUDIT_STATUS.md` for gaps. Open only files the graph points to.
+3. Read `HANDOFF.md` for current state and open items. Open only files the graph points to.

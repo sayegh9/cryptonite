@@ -196,16 +196,15 @@ Tests run against a throwaway database (one test downgrades the schema); the com
 | [docs/runbooks/](docs/runbooks/) | Kill switch, token rotation, DB bootstrap, local AI tier, [backups](docs/runbooks/backup.md) |
 | [docs/remediation-plan.md](docs/remediation-plan.md) | Review findings (2026-10-04) and the plan fixing them |
 | [docs/perpetuals-architecture.md](docs/perpetuals-architecture.md) | Perpetual futures paper trading |
-| [HANDOFF.md](HANDOFF.md) · [AUDIT_STATUS.md](AUDIT_STATUS.md) | Current status, open items, backlog |
+| [HANDOFF.md](HANDOFF.md) | Current status, how to deploy and test, open items |
+| [docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md) | The web UI review and the redesign that answered it |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | Release notes from before the AI-First program |
 
-`docs/USER_MANUAL.md` is the current manual. `docs/Cryptonite_User_Manual.{html,pdf}`, `docs/user_manual.html`
-and `docs/PROJECT_DOCUMENTATION.md` are older snapshots kept for reference; they predate the AI-First program.
+`docs/USER_MANUAL.md` is the current manual (`docs/generate_manual.py` renders HTML/PDF copies from it on demand).
 
 ## Status
 
-All AI-First phases (0–7) are on `main`. A mandate is running at L1 on paper; promotion to L2 depends on
-30 closed trades and 30 days at the level. A distilled triage model has passed certification and is
-waiting for an Ollama upgrade to be deployed. See [HANDOFF.md](HANDOFF.md) for the live state.
-
-**Product-review plan run (2026-10-05 → 2026-10-07 / Cairo 10:30 +0300, 07:30 UTC):** all five in-flight PRs (#34 docs, #32 B3, #29 D4, #30 D1, #31 B4) and C4 final refresh (#35) were merged into `origin/review-plan` (tip `b937f50f82f48e1af6e72de4f4d2640f5269d2a7`) and landed to `main` via operator PR #36 (merge commit `28bd28b4f3572a90a675b20be71d4278b14a9ca5` on 2026-10-07T07:25:57Z) with 5/5 CI checks green (`ruff`, `web`, `pytest`, `e2e-smoke`, `verify`), Lead code review PASS, and linear migrations `038→039→040` offline. The code landing to `main` is **DONE**. The running stack remains unchanged on pre-remediation images — **deploy hold D5 active; nothing from this run is deployed** (dev DB at Alembic `036`, stack last audited 2026-10-06 and explicitly not rechecked). Operator security notice: credential rotation recommended via reviewed maintenance; never log secrets. Status matrix, completed PR ledger, and hold-release gates: [docs/HANDOVER-2026-10-06.md](docs/HANDOVER-2026-10-06.md).
+All AI-First phases (0–7) and the product-review fixes are on `main` and deployed. Mandates run at L1 on
+paper (currently paused); promotion to L2 depends on 30 closed trades and 30 days at the level. A distilled
+triage model has passed certification and is waiting for an Ollama upgrade. See [HANDOFF.md](HANDOFF.md) for
+the live state.
