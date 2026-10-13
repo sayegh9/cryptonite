@@ -2,17 +2,25 @@
 
 For each symbol and timeframe, asks the catalog which intervals of the last ``--days`` are missing,
 fetches only those from Binance REST (closed klines only, 1000 per page) and commits every page
-through the production ``TwoStoreCoordinator`` (cadence check, catalog + lake). It runs without the
-checkpoint database on purpose: the ingest checkpoint guard skips anything older than the live
-checkpoint, which is exactly the history this fills.
+through ``TwoStoreCoordinator.commit_history_batch`` (cadence check, catalog + lake, no live outbox events,
+checkpoint-guard bypass, contiguous-run writes so catalog spans can never mask genuinely missing bars).
+
+Supported timeframes come from the shared ``timeframe_ns`` validator (1m/15m/1h/4h/1d/1w); Binance's
+calendar-month "1M" is rejected.
 
 Stop the live recorder first so only one process writes the catalog; its startup recovery fills the
 minutes it missed:
 
     docker stop cryptonite_ingest
-    docker compose -f infra/docker-compose.yml run --rm --no-deps test \\
-        uv run python scripts/backfill_history.py --days 120
+    docker compose -f infra/docker-compose.yml run --rm --no-deps test \
+        uv run python scripts/backfill_history.py --days 120 --timeframes 15m,1h,4h,1m
     docker start cryptonite_ingest
+
+This script intentionally constructs the coordinator with ``pg_pool=None`` (offline): history batches
+are only written to the two stores and no ``ingest_batches`` row or ``ingest_checkpoints`` update is
+made. The Nautilus catalog is the source of truth for history; the live recorder's startup
+reconciliation fills the minutes it was stopped, and pooled history commits (when a pool is provided)
+are restart-safe via ``origin='history'``.
 
 Re-running is safe: a second pass only fetches what is still missing (exchange outages stay as gaps).
 """
@@ -27,42 +35,18 @@ from cryptonite_ingest.client import BinanceRestClient
 from cryptonite_schemas.bar import EnrichedBar
 from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_spot_instrument_id
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
-from cryptonite_storage.coordinator import TwoStoreCoordinator
+from cryptonite_storage.coordinator import TwoStoreCoordinator, missing_runs
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
+from cryptonite_storage.queries import timeframe_ns
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("cryptonite.backfill_history")
 
-TF_MS = {"1m": 60_000, "1h": 3_600_000}
 LIVE_MARGIN_MS = 10 * 60_000  # never touch the last minutes: the live recorder owns them
 
 
 def _fmt(ns: int) -> str:
     return datetime.fromtimestamp(ns / 1e9, tz=UTC).strftime("%Y-%m-%d %H:%M")
-
-
-def missing_runs(intervals: list[tuple[int, int]], start_ns: int, end_ns: int, step_ns: int) -> list[list[int]]:
-    """Bar close-stamps on the grid in [start, end] that no catalog file covers, as contiguous runs.
-
-    The catalog's own interval API cannot be used for this: live ingest writes one file per bar, a
-    single point [t, t], so it reports a "gap" between every two consecutive bars."""
-    covered: set[int] = set()
-    for a, b in intervals:
-        t = max(a, start_ns)
-        t += (-t) % step_ns
-        while t <= min(b, end_ns):
-            covered.add(t)
-            t += step_ns
-    runs: list[list[int]] = []
-    t = start_ns + (-start_ns) % step_ns
-    while t <= end_ns:
-        if t not in covered:
-            if runs and runs[-1][-1] == t - step_ns:
-                runs[-1].append(t)
-            else:
-                runs.append([t])
-        t += step_ns
-    return runs
 
 
 async def backfill(rest: BinanceRestClient, coordinator: TwoStoreCoordinator, catalog: NautilusCatalogManager,
@@ -72,7 +56,7 @@ async def backfill(rest: BinanceRestClient, coordinator: TwoStoreCoordinator, ca
     # an empty file from a killed writer claims its interval; move it aside so the gap shows
     if quarantined := catalog.quarantine_empty_bar_files(str(bar_type)):
         logger.warning("%s %s: quarantined %d empty catalog file(s): %s", symbol, timeframe, len(quarantined), quarantined)
-    step = TF_MS[timeframe]
+    step = timeframe_ns(timeframe) // 1_000_000
     end_ms = (int(time.time() * 1000) - LIVE_MARGIN_MS) // step * step
     start_ms = end_ms - days * 86_400_000
     runs = missing_runs(catalog.get_intervals("bars", str(bar_type)), start_ms * 1_000_000, end_ms * 1_000_000,
@@ -94,9 +78,13 @@ async def backfill(rest: BinanceRestClient, coordinator: TwoStoreCoordinator, ca
                     if b.ts_event_ns in wanted]  # never rewrite a bar the catalog already has
             if bars:
                 try:
-                    await coordinator.commit_batch(bars=bars, bar_type=bar_type, venue="BINANCE", market_type="SPOT",
-                                                   symbol=symbol, timeframe=timeframe)
-                    written += len(bars)
+                    batch_id = await coordinator.commit_history_batch(bars=bars, bar_type=bar_type,
+                                                                      venue="BINANCE", market_type="SPOT",
+                                                                      symbol=symbol, timeframe=timeframe)
+                    # Only count bars that the coordinator actually wrote (it returns "" when the whole
+                    # batch turned out to be already covered).
+                    if batch_id:
+                        written += len(bars)
                 except Exception as e:  # e.g. a cadence break inside the page (exchange outage)
                     logger.warning("  %d bars from %s rejected: %s", len(bars), _fmt(bars[0].ts_event_ns), str(e)[:200])
             next_cursor = klines[-1].open_time_ms + step

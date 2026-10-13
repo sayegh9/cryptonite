@@ -25,6 +25,62 @@ logger = logging.getLogger("cryptonite.coordinator")
 INGEST_ADVISORY_LOCK_ID = 82491735
 
 
+def missing_runs(
+    intervals: list[tuple[int, int]],
+    start_ns: int,
+    end_ns: int,
+    step_ns: int,
+) -> list[list[int]]:
+    """Bar close-stamps on the grid in [start, end] that no catalog file covers, as contiguous runs.
+
+    The catalog's own interval API cannot be used for this: live ingest writes one file per bar, a
+    single point [t, t], so it reports a "gap" between every two consecutive bars.
+    """
+    if step_ns <= 0:
+        raise ValueError(f"step_ns must be positive, got {step_ns}")
+    covered: set[int] = set()
+    for a, b in intervals:
+        t = max(a, start_ns)
+        t += (-t) % step_ns
+        while t <= min(b, end_ns):
+            covered.add(t)
+            t += step_ns
+    runs: list[list[int]] = []
+    t = start_ns + (-start_ns) % step_ns
+    while t <= end_ns:
+        if t not in covered:
+            if runs and runs[-1][-1] == t - step_ns:
+                runs[-1].append(t)
+            else:
+                runs.append([t])
+        t += step_ns
+    return runs
+
+
+def split_contiguous_runs(bars: list[EnrichedBar], step_ns: int) -> list[list[EnrichedBar]]:
+    """Split already-validated bars into maximal runs whose close stamps are consecutive on the grid.
+
+    Callers must have already enforced the grid contract (sorted, on-grid, no sub-cadence); every
+    returned run is internally contiguous (``next.ts_event_ns - prev.ts_event_ns == step_ns``), so a
+    ``write_bars`` of one run produces a catalog file whose span exactly equals its contents. Combined
+    with the ``commit_history_batch`` validation and fail-closed coverage filter, a catalog file span
+    can never mask an interior missing bar after a partial write: re-runs of ``missing_runs`` keep
+    seeing every genuine gap.
+    """
+    runs: list[list[EnrichedBar]] = []
+    if not bars:
+        return runs
+    run = [bars[0]]
+    for bar in bars[1:]:
+        if bar.ts_event_ns - run[-1].ts_event_ns == step_ns:
+            run.append(bar)
+        else:
+            runs.append(run)
+            run = [bar]
+    runs.append(run)
+    return runs
+
+
 class IngestionConflictError(Exception):
     """Raised when another recorder process already owns the advisory lock."""
 
@@ -140,6 +196,123 @@ class TwoStoreCoordinator:
                     batch_ids.append(b_id)
         return batch_ids
 
+    async def commit_history_batch(
+        self,
+        bars: list[EnrichedBar],
+        bar_type: BarType,
+        venue: str = "BINANCE",
+        market_type: str = "SPOT",
+        symbol: str = "BTCUSDT",
+        timeframe: str = "1m",
+    ) -> str:
+        """Commit a historical backfill batch (crash-recoverable, idempotent, contiguity-safe).
+
+        Enforces:
+        - Covered bars in the catalog are never rewritten, and coverage is fail-closed: if the
+          catalog's intervals cannot be queried, the batch is refused instead of written unfiltered.
+        - Write contiguity: bars are validated to lie on the timeframe grid (rejecting duplicates /
+          sub-cadence) and are split into strictly contiguous runs before writing, so every catalog
+          file produced is a complete contiguous sequence. A catalog file span can therefore never
+          mask an interior missing bar after a partial write; re-runs of ``missing_runs`` keep seeing
+          every genuine gap.
+        - Pre-checkpoint history can be written (checkpoint boundary check bypassed).
+        - No outbox events or live closed-bar stream events are emitted.
+        - Checkpoint first_timestamp_ns is widened via LEAST while preserving GREATEST last_timestamp_ns.
+        - Batch record in ``ingest_batches`` is created and committed.
+
+        Modes:
+        - With a Postgres pool, each written run is recorded in ``ingest_batches`` tagged
+          ``origin='history'`` (with its real ``timeframe``) and the checkpoint is LEAST/GREATEST
+          widened; ``reconcile_pending_batches`` replays such rows as history (guard bypassed, right
+          timeframe / bar_type / outbox suppression), so pre-checkpoint history is restart-safe.
+        - Offline (``pg_pool=None``, as ``scripts/backfill_history.py`` intentionally runs): NO
+          ``ingest_batches`` row and NO checkpoint update are made because there is no PostgreSQL
+          connection; the Nautilus catalog is the history source of truth.
+        """
+        if not bars:
+            return ""
+
+        step_ns = self._timeframe_to_ns(timeframe)
+        sorted_bars = sorted(bars, key=lambda b: b.ts_event_ns)
+        self._assert_history_grid(sorted_bars, step_ns, bar_type)
+        uncovered = await self._uncovered_history_bars(sorted_bars, bar_type)
+        if not uncovered:
+            logger.info(
+                "commit_history_batch: all %d bar(s) already covered for %s",
+                len(sorted_bars),
+                str(bar_type),
+            )
+            return ""
+
+        last_id = ""
+        for piece in split_contiguous_runs(uncovered, step_ns):
+            piece_id = await self._execute_commit(
+                bars=piece,
+                bar_type=bar_type,
+                venue=venue,
+                market_type=market_type,
+                symbol=symbol,
+                timeframe=timeframe,
+                is_history=True,
+            )
+            if piece_id:
+                last_id = piece_id
+        return last_id
+
+    def _assert_history_grid(
+        self, bars: list[EnrichedBar], step_ns: int, bar_type: BarType
+    ) -> None:
+        """Fail closed unless every bar is on the timeframe grid with no duplicates / sub-cadence.
+
+        History bars are stamped at their CLOSE, so a valid bar's ``ts_event_ns`` is a multiple of
+        ``step_ns``. Off-grid or sub-cadence bars indicate malformed input (or a filtered batch whose
+        remainder would otherwise be written as a file whose span masks genuinely missing bars).
+        """
+        prev_ts: int | None = None
+        for bar in bars:
+            ts = bar.ts_event_ns
+            if ts % step_ns != 0:
+                raise ValueError(
+                    f"commit_history_batch: bar ts_event_ns={ts} is off the {step_ns}-ns "
+                    f"grid for {str(bar_type)}; refusing to write"
+                )
+            if prev_ts is not None:
+                diff = ts - prev_ts
+                if diff < step_ns:
+                    raise ValueError(
+                        f"commit_history_batch: duplicate or sub-cadence bar at ts_event_ns={ts} "
+                        f"(diff={diff} ns < step {step_ns} ns) for {str(bar_type)}"
+                    )
+            prev_ts = ts
+
+    async def _uncovered_history_bars(
+        self, bars: list[EnrichedBar], bar_type: BarType
+    ) -> list[EnrichedBar]:
+        """Filter out bars already covered by the catalog, failing closed on coverage-query errors."""
+        if not self.nautilus or not hasattr(self.nautilus, "get_intervals"):
+            return bars
+        try:
+            intervals = self.nautilus.get_intervals("bars", str(bar_type))
+        except Exception as e:
+            # Fail closed: a covered-bar guarantee that silently stops being enforced would let
+            # backfill rewrite bars the live stream already owns.
+            raise RuntimeError(
+                f"commit_history_batch: could not query catalog coverage for {str(bar_type)}; "
+                f"refusing to write unfiltered: {e}"
+            ) from e
+        if not intervals:
+            return bars
+        uncovered = [
+            b for b in bars if not any(a <= b.ts_event_ns <= c for a, c in intervals)
+        ]
+        if len(uncovered) < len(bars):
+            logger.info(
+                "commit_history_batch: filtered %d already-covered bar(s) for %s",
+                len(bars) - len(uncovered),
+                str(bar_type),
+            )
+        return uncovered
+
     async def _execute_commit(
         self,
         bars: list[EnrichedBar],
@@ -148,11 +321,17 @@ class TwoStoreCoordinator:
         market_type: str,
         symbol: str,
         timeframe: str,
+        is_history: bool = False,
     ) -> str:
         """Execute the crash-recoverable two-store commit protocol."""
         async with self._lock:
             # Sort bars strictly by timestamp
             sorted_bars = sorted(bars, key=lambda b: b.ts_event_ns)
+
+            if not sorted_bars:
+                logger.info("No bars to commit for %s", bar_type)
+                return ""
+
             batch_id = str(uuid.uuid4())
             for b in sorted_bars:
                 b.ingest_batch_id = batch_id
@@ -172,7 +351,7 @@ class TwoStoreCoordinator:
             self._verify_cadence(sorted_bars, timeframe)
 
             # 2.5 Load and validate checkpoint boundary
-            if self.pool:
+            if not is_history and self.pool:
                 checkpoint_row = await self.pool.fetchrow(
                     "SELECT last_timestamp_ns FROM ingest_checkpoints WHERE venue = $1 AND market_type = $2 AND symbol = $3 AND timeframe = $4",
                     venue, market_type, symbol, timeframe
@@ -196,6 +375,8 @@ class TwoStoreCoordinator:
                     bar_count=bar_count,
                     payload_checksum=payload_checksum,
                     canonical_payload_json=payload_json,
+                    timeframe=timeframe,
+                    origin="history" if is_history else "live",
                 )
                 if actual_batch_id:
                     batch_id = actual_batch_id
@@ -232,10 +413,12 @@ class TwoStoreCoordinator:
                     analytics_file_checksum=analytics_file_checksum,
                     payload_checksum=payload_checksum,
                     bars=sorted_bars,
+                    is_history=is_history,
                 )
 
             logger.info(
-                "Committed batch %s for %s (%d bars, start=%d, end=%d)",
+                "Committed %sbatch %s for %s (%d bars, start=%d, end=%d)",
+                "history " if is_history else "",
                 batch_id,
                 bar_type_str,
                 bar_count,
@@ -275,17 +458,23 @@ class TwoStoreCoordinator:
         bar_count: int,
         payload_checksum: str,
         canonical_payload_json: list[dict[str, Any]],
-    ) -> None:
+        timeframe: str = "1m",
+        origin: str = "live",
+    ) -> str:
         if not self.pool:
             return
         query = """
         INSERT INTO ingest_batches (
             batch_id, venue, market_type, symbol, bar_type,
             start_ns, end_ns, bar_count, payload_checksum,
-            canonical_payload_json, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
+            canonical_payload_json, status, timeframe, origin
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, $12)
         ON CONFLICT (venue, market_type, bar_type, start_ns, end_ns, payload_checksum)
-        DO UPDATE SET status = 'pending', canonical_payload_json = EXCLUDED.canonical_payload_json
+        DO UPDATE SET
+            status = 'pending',
+            canonical_payload_json = EXCLUDED.canonical_payload_json,
+            timeframe = EXCLUDED.timeframe,
+            origin = EXCLUDED.origin
         RETURNING batch_id;
         """
         row = await self.pool.fetchval(
@@ -300,6 +489,8 @@ class TwoStoreCoordinator:
             bar_count,
             payload_checksum,
             json.dumps(canonical_payload_json),
+            timeframe,
+            origin,
         )
         return str(row) if row else batch_id
 
@@ -320,42 +511,47 @@ class TwoStoreCoordinator:
         analytics_file_checksum: str,
         payload_checksum: str = "",
         bars: list[EnrichedBar] | None = None,
+        is_history: bool = False,
     ) -> None:
         if not self.pool:
             return
-        outbox_event_id = str(uuid.uuid4())
-        step_ns = self._timeframe_to_ns(timeframe)
-        # Bars are stamped at their CLOSE: start_ns / end_ns are the first and last bar's close. The event
-        # names the batch by the resampler's contract (and the open_kline ticks'): the first bar's OPEN,
-        # the last bar's close as the exclusive end. It used to send the first close as bar_open_ns and
-        # end one step late, so the chart never matched its provisional candle (B1 / F-C1 follow-up).
-        # schema_version 2 marks the corrected meaning, so consumers can ignore version-1 events from a
-        # producer not yet redeployed instead of misreading their times.
-        last = bars[-1] if bars else None
-        event_payload = {
-            "schema_version": 2,
-            "producer": "cryptonite-ingest",
-            "occurred_at_ns": time.time_ns(),
-            "event_id": outbox_event_id,
-            "event_type": "closed_bar_committed",
-            "batch_id": batch_id,
-            "venue": venue,
-            "market_type": market_type,
-            "symbol": symbol,
-            "instrument_id": f"{symbol.upper()}.{venue.upper()}",
-            "timeframe": timeframe,
-            "bar_type": bar_type,
-            "bar_open_ns": start_ns - step_ns,
-            "bar_close_inclusive_ns": end_ns - 1_000_000,
-            "interval_end_exclusive_ns": end_ns,
-            "last_bar_open_ns": end_ns - step_ns,
-            "bar_count": bar_count,
-            # final values of the last bar, so a consumer never depends on having seen its last tick
-            **({f: str(getattr(last, f)) for f in ("open", "high", "low", "close", "volume")} if last else {}),
-            "payload_checksum": payload_checksum,
-            "analytics_file_checksum": analytics_file_checksum,
-            "nautilus_file_checksum": nautilus_file_checksum,
-        }
+
+        outbox_event_id = None
+        event_payload = None
+        if not is_history:
+            outbox_event_id = str(uuid.uuid4())
+            step_ns = self._timeframe_to_ns(timeframe)
+            # Bars are stamped at their CLOSE: start_ns / end_ns are the first and last bar's close. The event
+            # names the batch by the resampler's contract (and the open_kline ticks'): the first bar's OPEN,
+            # the last bar's close as the exclusive end. It used to send the first close as bar_open_ns and
+            # end one step late, so the chart never matched its provisional candle (B1 / F-C1 follow-up).
+            # schema_version 2 marks the corrected meaning, so consumers can ignore version-1 events from a
+            # producer not yet redeployed instead of misreading their times.
+            last = bars[-1] if bars else None
+            event_payload = {
+                "schema_version": 2,
+                "producer": "cryptonite-ingest",
+                "occurred_at_ns": time.time_ns(),
+                "event_id": outbox_event_id,
+                "event_type": "closed_bar_committed",
+                "batch_id": batch_id,
+                "venue": venue,
+                "market_type": market_type,
+                "symbol": symbol,
+                "instrument_id": f"{symbol.upper()}.{venue.upper()}",
+                "timeframe": timeframe,
+                "bar_type": bar_type,
+                "bar_open_ns": start_ns - step_ns,
+                "bar_close_inclusive_ns": end_ns - 1_000_000,
+                "interval_end_exclusive_ns": end_ns,
+                "last_bar_open_ns": end_ns - step_ns,
+                "bar_count": bar_count,
+                # final values of the last bar, so a consumer never depends on having seen its last tick
+                **({f: str(getattr(last, f)) for f in ("open", "high", "low", "close", "volume")} if last else {}),
+                "payload_checksum": payload_checksum,
+                "analytics_file_checksum": analytics_file_checksum,
+                "nautilus_file_checksum": nautilus_file_checksum,
+            }
 
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -405,48 +601,57 @@ class TwoStoreCoordinator:
                     uuid.UUID(batch_id),
                 )
 
-                # 3. Insert outbox event for closed_bar_committed
-                await conn.execute(
-                    """
-                    INSERT INTO outbox_events (
-                        event_id, stream_name, event_type, producer, payload,
-                        status, attempt_count, next_attempt_at, created_at
-                    ) VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', 0, now(), now());
-                    """,
-                    outbox_event_id,
-                    "cryptonite:stream:closed_bar_committed",
-                    "closed_bar_committed",
-                    "cryptonite-ingest",
-                    json.dumps(event_payload),
-                )
+                if not is_history and event_payload and outbox_event_id:
+                    # 3. Insert outbox event for closed_bar_committed
+                    await conn.execute(
+                        """
+                        INSERT INTO outbox_events (
+                            event_id, stream_name, event_type, producer, payload,
+                            status, attempt_count, next_attempt_at, created_at
+                        ) VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', 0, now(), now());
+                        """,
+                        outbox_event_id,
+                        "cryptonite:stream:closed_bar_committed",
+                        "closed_bar_committed",
+                        "cryptonite-ingest",
+                        json.dumps(event_payload),
+                    )
 
-                # 4. Insert native Bar outbox events for nautilus:stream:bus
-                if bars:
-                    parsed_bt = BarType.from_str(bar_type)
-                    for b in bars:
-                        naut_bar = bar_to_nautilus(b, parsed_bt)
-                        bar_payload = {
-                            "topic": f"data.bars.{bar_type}",
-                            "type": "Bar",
-                            "payload": naut_bar.to_json_bytes().decode("utf-8"),
-                            "encoding": "JSON",
-                        }
-                        await conn.execute(
-                            """
-                            INSERT INTO outbox_events (
-                                event_id, stream_name, event_type, producer, payload,
-                                status, attempt_count, next_attempt_at, created_at
-                            ) VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', 0, now(), now());
-                            """,
-                            str(uuid.uuid4()),
-                            "nautilus:stream:bus",
-                            "Bar",
-                            "cryptonite-ingest",
-                            json.dumps(bar_payload),
-                        )
+                    # 4. Insert native Bar outbox events for nautilus:stream:bus
+                    if bars:
+                        parsed_bt = BarType.from_str(bar_type)
+                        for b in bars:
+                            naut_bar = bar_to_nautilus(b, parsed_bt)
+                            bar_payload = {
+                                "topic": f"data.bars.{bar_type}",
+                                "type": "Bar",
+                                "payload": naut_bar.to_json_bytes().decode("utf-8"),
+                                "encoding": "JSON",
+                            }
+                            await conn.execute(
+                                """
+                                INSERT INTO outbox_events (
+                                    event_id, stream_name, event_type, producer, payload,
+                                    status, attempt_count, next_attempt_at, created_at
+                                ) VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', 0, now(), now());
+                                """,
+                                str(uuid.uuid4()),
+                                "nautilus:stream:bus",
+                                "Bar",
+                                "cryptonite-ingest",
+                                json.dumps(bar_payload),
+                            )
 
     async def reconcile_pending_batches(self, bar_type: BarType) -> int:
-        """Scan and reconcile uncommitted batches on startup."""
+        """Scan and reconcile uncommitted batches on startup.
+
+        Each pending row carries its own ``timeframe`` and ``origin`` (added with migration 043), so
+        a pre-checkpoint history batch is replayed with ``is_history=True``: the live checkpoint
+        guard stays bypassed, no outbox events are emitted, and the row's real timeframe / bar_type
+        are used even when more than one timeframe produced pending rows. Rows whose replay returns no
+        batch id (e.g. an already-covered history batch) are settled to ``committed`` so they never
+        linger as ``pending`` forever.
+        """
         if not self.pool:
             return 0
 
@@ -461,8 +666,8 @@ class TwoStoreCoordinator:
             logger.warning("Failed to clean up temporary artifacts: %s", e)
 
         rows = await self.pool.fetch(
-            "SELECT batch_id, venue, market_type, symbol, bar_type, canonical_payload_json "
-            "FROM ingest_batches WHERE status = 'pending';"
+            "SELECT batch_id, venue, market_type, symbol, bar_type, timeframe, origin, "
+            "canonical_payload_json FROM ingest_batches WHERE status = 'pending';"
         )
         reconciled = 0
         for row in rows:
@@ -470,16 +675,48 @@ class TwoStoreCoordinator:
             if isinstance(raw_payload, str):
                 raw_payload = json.loads(raw_payload)
             bars = [EnrichedBar.model_validate(item) for item in raw_payload]
-            logger.info("Reconciling uncommitted batch %s (%d bars)", row["batch_id"], len(bars))
+            is_history = row["origin"] == "history"
+            timeframe = row["timeframe"] or "1m"
+            # Replay under the row's own bar type so multi-timeframe pending batches are correct.
+            row_bar_type = bar_type
+            try:
+                row_bar_type = BarType.from_str(row["bar_type"])
+            except Exception:
+                logger.warning(
+                    "Could not parse bar_type %r for pending batch %s; using caller bar_type %s",
+                    row["bar_type"],
+                    row["batch_id"],
+                    bar_type,
+                )
+            logger.info(
+                "Reconciling uncommitted %sbatch %s (%d bars, timeframe=%s)",
+                "history " if is_history else "",
+                row["batch_id"],
+                len(bars),
+                timeframe,
+            )
             # Replay commit sequence
-            await self._execute_commit(
+            replayed_id = await self._execute_commit(
                 bars=bars,
-                bar_type=bar_type,
+                bar_type=row_bar_type,
                 venue=row["venue"],
                 market_type=row["market_type"],
                 symbol=row["symbol"],
-                timeframe=row.get("timeframe", "1m"),  # fallback if timeframe missing
+                timeframe=timeframe,
+                is_history=is_history,
             )
+            # Restart-safety: a history batch whose bars are all already covered re-plays to "" (the
+            # data is present in the stores); do not leave a permanently-pending row behind.
+            if is_history and not replayed_id:
+                await self.pool.execute(
+                    "UPDATE ingest_batches SET status = 'committed', committed_at = now() "
+                    "WHERE batch_id = $1 AND status = 'pending';",
+                    row["batch_id"],
+                )
+                logger.info(
+                    "Settled already-covered history batch %s as committed (replay wrote nothing)",
+                    row["batch_id"],
+                )
             reconciled += 1
         return reconciled
 
