@@ -128,6 +128,8 @@ Last full results (2026-10-13, #86): pytest 1957 passed / 0 failed plus 2 destru
 ## Where things are
 
 - `repo/`: the main checkout, on `main`, clean. `deploy-main/`: deploy worktree.
+- Browser QA: [docs/runbooks/browser-qa-agent.md](docs/runbooks/browser-qa-agent.md) (instructions for an agent that
+  tests every page, places paper trades and runs a strategy instance; reports go to `~/Documents/projects/cryptonite/qa/`).
 - Backups: `~/backups/cryptonite/` (`db/`, `data/`, `redis/`, `secrets/`, drill logs, `backup.log`); runbook
   [docs/runbooks/backup.md](docs/runbooks/backup.md).
 - Reference: [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), [docs/ai-first-program.md](docs/ai-first-program.md),
