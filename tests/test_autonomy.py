@@ -9,6 +9,7 @@ import uuid
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+import asyncpg
 import pytest
 from ai_api_harness import close_harness, make_harness
 from cryptonite_execution.autonomy import (
@@ -234,6 +235,36 @@ async def test_a_stale_gate_blocks_the_confirmation(h):
         res = await c.post(f"/api/v1/ai/mandates/{m.id}/autonomy/confirm", json={"proposal_id": pid, "totp_code": "000000"},
                            headers=h.headers)
     assert res.status_code == 409 and res.json()["detail"] == "GATE_NOT_PASSED"
+
+
+async def test_a_voided_breach_stays_in_the_log_but_no_longer_counts(h):
+    """Migration 045: a breach the system caused is set aside by a BREACH_VOIDED event; the BREACH row is kept."""
+    from cryptonite_execution.mandate_store import BreachVoidError, void_breach
+
+    m = await h.mandate(level=1)
+    other = await h.mandate(level=1)
+    bid = await h.pool.fetchval(
+        """INSERT INTO ai_autonomy_events (mandate_id, kind, reason, detail)
+           VALUES ($1, 'BREACH', 'MANDATE_POSITION_PCT_EXCEEDED', '{"command_id": "c-1"}') RETURNING id""", m.id)
+    async with h.pool.acquire() as conn:
+        assert (await gate_metrics(conn, m)).breaches == 1
+        with pytest.raises(BreachVoidError):
+            await void_breach(conn, m.id, bid, reason="  ", actor="operator:t")  # a reason is required
+        with pytest.raises(BreachVoidError):
+            await void_breach(conn, other.id, bid, reason="wrong mandate", actor="operator:t")
+        vid = await void_breach(conn, m.id, bid, reason="orchestrator sizing conflict", actor="operator:t")
+        assert (await gate_metrics(conn, m)).breaches == 0
+        with pytest.raises(BreachVoidError):
+            await void_breach(conn, m.id, bid, reason="again", actor="operator:t")
+        with pytest.raises(BreachVoidError):  # only a BREACH can be voided
+            await void_breach(conn, m.id, vid, reason="not a breach", actor="operator:t")
+    kinds = [r["kind"] for r in await h.pool.fetch(
+        "SELECT kind FROM ai_autonomy_events WHERE mandate_id = $1 ORDER BY id", m.id)]
+    assert "BREACH" in kinds and kinds[-1] == "BREACH_VOIDED"
+    with pytest.raises(asyncpg.UniqueViolationError):  # the database refuses a second voiding too
+        await h.pool.execute(
+            """INSERT INTO ai_autonomy_events (mandate_id, kind, reason, detail)
+               VALUES ($1, 'BREACH_VOIDED', 'x', jsonb_build_object('voids', $2::text))""", m.id, str(bid))
 
 
 async def test_a_breach_in_the_order_path_demotes_one_level(h):
