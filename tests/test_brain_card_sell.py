@@ -134,7 +134,8 @@ async def test_an_approved_sell_closes_the_holding_and_completes(h, sell_card):
 
     cmd = await h.pool.fetchrow("SELECT * FROM execution_commands WHERE command_id = $1", uuid.UUID(body["command_id"]))
     payload = json.loads(cmd["payload"])
-    assert payload["side"] == "SELL" and payload["quantity"] == 0.005
+    # the exact decimal string: a float here is what left 1e-18 of dust after the sell
+    assert payload["side"] == "SELL" and Decimal(payload["quantity"]) == Decimal("0.005")
     assert str(cmd["mandate_id"]) == str(m.id)
 
     row, engine = await run_seeded_poller(h.pool, cmd["command_id"], Decimal("0.005"))

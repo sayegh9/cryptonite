@@ -33,7 +33,7 @@ from cryptonite_execution.mandate_store import (
     instance_spot_holdings,
     resolve_mandate_for,
 )
-from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, canonical_instrument
+from cryptonite_schemas.mandate import MIN_HOLDING_QTY, MIN_MANDATE_ENTRY_PCT, canonical_instrument
 from cryptonite_schemas.marks import read_marks
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -204,7 +204,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         async with pool.acquire() as conn:
             held = (await instance_spot_holdings(conn, mandate.instance_id)).get(
                 canonical_instrument(card["instrument_id"]), (Decimal("0"), Decimal("0")))[0]
-        if held <= 0:
+        if held < MIN_HOLDING_QTY:
             raise HTTPException(status_code=409, detail=f"SPOT_SELL_NOT_HELD: mandate {mandate.name} holds no "
                                 f"{card['instrument_id']}, and a spot sell only closes a holding; reject this card")
 
@@ -255,7 +255,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     if card["order_type"] == "LIMIT":
         payload["price"] = card["limit_price"]
     if card["side"] == "SELL":
-        payload["quantity"] = float(held)  # the orchestrator sells this quantity, not a share of the budget
+        payload["quantity"] = format(held, "f")  # exact: a float drops the last digits of a fill-sized holding  # the orchestrator sells this quantity, not a share of the budget
     payload["mandate_id"] = str(mandate.id)
     key = f"brain-card:{sid}:{widget_id}"
     try:

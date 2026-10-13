@@ -16,8 +16,9 @@ goes to the operator, whose approval uses the existing paper manual-order API.
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 from cryptonite_agents.brain import memory
@@ -27,6 +28,7 @@ from cryptonite_agents.brain.toolset import BRAIN_TOOLS
 from cryptonite_agents.brain.widgets import widget_for_tool
 from cryptonite_agents.gateway import BudgetExceeded, CallContext, Gateway, GatewayError
 from cryptonite_agents.persona import Persona
+from cryptonite_schemas.mandate import MIN_HOLDING_QTY
 
 logger = logging.getLogger("cryptonite.agents.brain")
 
@@ -73,10 +75,23 @@ class SessionNotFound(Exception):
 
 
 class Brain:
-    def __init__(self, gateway: Gateway, store: SessionStore, persona: Persona = BRAIN) -> None:
+    def __init__(self, gateway: Gateway, store: SessionStore, persona: Persona = BRAIN,
+                 holdings: Callable[[str], Awaitable[Decimal]] | None = None) -> None:
         self.gateway = gateway
         self.store = store
         self.persona = persona
+        # What the AI holds of an instrument. A SELL card needs a holding; without a reader, no SELL card is made.
+        self._holdings = holdings
+
+    async def _holds(self, instrument_id: str) -> bool:
+        """Whether the AI holds something of ``instrument_id`` to sell. Fails closed: a failed read means no card."""
+        if self._holdings is None:
+            return False
+        try:
+            return (await self._holdings(instrument_id)) >= MIN_HOLDING_QTY
+        except Exception:
+            logger.exception("Could not read the holding of %s; no SELL card", instrument_id)
+            return False
 
     async def open_session(self, operator_id: str, session_id: str | None, first_message: str) -> str:
         if session_id:
@@ -100,6 +115,7 @@ class Brain:
 
         text: list[str] = []
         widgets: list[dict[str, Any]] = []
+        notes: list[str] = []  # what the Brain could not stage, said to the operator in the reply
         calls: dict[str, dict[str, Any]] = {}
         trace_id: str | None = None
         finished = False
@@ -130,6 +146,13 @@ class Brain:
                         yield BrainEvent("tool_call", {"id": call_id, "tool": ev.data["tool"], "phase": "end",
                                                        "status": status})
                         args = (calls.get(call_id) or {}).get("args") or {}
+                        if ev.data["tool"] == "propose_order" and args.get("side") == "SELL":
+                            instrument = str(args.get("instrument_id", ""))
+                            if not await self._holds(instrument):
+                                # Spot cannot be shorted: no card. The reply says why, so the operator is not left guessing
+                                notes.append(f"No order card for {instrument}: spot cannot be shorted, and no AI mandate "
+                                             "holds it to sell.")
+                                continue
                         widget = widget_for_tool(ev.data["tool"], args, call_id=call_id, status=status,
                                                  content=ev.data.get("content"), trace_id=trace_id)
                         if widget is not None:
@@ -138,6 +161,8 @@ class Brain:
                     elif ev.kind == "done" and ev.result is not None:
                         res = ev.result
                         content = "".join(text).strip() or str(res.output)
+                        if notes:
+                            content = "\n\n".join([content, *notes])
                         msg_id = await self.store.append_message(sid, "assistant", content, widgets, str(res.trace_id))
                         finished = True
                         yield BrainEvent("done", {

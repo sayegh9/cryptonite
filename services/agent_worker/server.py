@@ -1,24 +1,28 @@
+import hashlib
+import hmac
 import json
 import logging
 import os
-import hmac
-import hashlib
 import time
-import asyncpg
-import redis.asyncio as redis
-from typing import Optional, Callable
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.routing import APIRoute
-from pydantic import BaseModel, Field
-
-from cryptonite_agents.brain import Brain, MemorySessionStore, PgSessionStore, SessionNotFound, brain_gateway_routes
+import asyncpg
+import redis.asyncio as redis
+from cryptonite_agents.brain import (
+    Brain,
+    MemorySessionStore,
+    PgSessionStore,
+    SessionNotFound,
+    brain_gateway_routes,
+)
+from cryptonite_agents.brain.holdings import ai_spot_holding
 from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
 from cryptonite_agents.persona import Persona
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -113,7 +117,8 @@ async def startup_event():
                                                    spend_unknown=app.state.telemetry_pool is None))
     # Brain sessions live with the gateway's telemetry role (migration 024), never with agent_ro
     store = PgSessionStore(app.state.telemetry_pool) if app.state.telemetry_pool else MemorySessionStore()
-    app.state.brain = Brain(app.state.gateway, store)
+    app.state.brain = Brain(app.state.gateway, store,
+                            holdings=lambda instrument: ai_spot_holding(app.state.pool, instrument))
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -155,7 +160,7 @@ async def verify_hmac(request: Request):
     
     method = request.method
     path = request.url.path
-    msg = f"{method}:{path}:{body_digest}:{ts}:{nonce}".encode("utf-8")
+    msg = f"{method}:{path}:{body_digest}:{ts}:{nonce}".encode()
     expected_sig = hmac.new(INTERNAL_HMAC_SECRET.encode("utf-8"), msg, hashlib.sha256).hexdigest()
     
     if not hmac.compare_digest(expected_sig, signature):
@@ -185,7 +190,7 @@ class ExplainRequest(BaseModel):
 
 class StrategistRequest(BaseModel):
     message: str
-    instructions: Optional[str] = None
+    instructions: str | None = None
 
 @app.post("/api/v1/agents/chat")
 async def chat_with_researcher(request: Request, req: ChatRequest):

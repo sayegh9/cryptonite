@@ -25,6 +25,8 @@ DEFAULT_REDUCE_VETO_S = 300  # a model-proposed exit at L1 waits 5 minutes for a
 # Smallest entry worth placing, as % of the mandate budget. An entry is sized down to the room left under
 # the position limit and the budget; below this the order is not placed (a refusal, not a breach).
 MIN_MANDATE_ENTRY_PCT = Decimal("1")
+# A holding below this is dust (a fill rounding leftover), not something to sell. A SELL card needs at least this much.
+MIN_HOLDING_QTY = Decimal("0.000000001")
 
 MANDATE_INSTANCE_PREFIX = "AI_MANDATE_"
 LEGACY_AI_INSTANCE = "AI_DEBATE_WORKER"  # pre-mandate AI instance; its positions still get AI exits
