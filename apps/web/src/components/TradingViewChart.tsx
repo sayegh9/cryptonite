@@ -15,11 +15,9 @@ import {
 } from "lightweight-charts";
 import { SignalCandidate } from "@/lib/types";
 import { getStreamClient } from "@/lib/ws";
-import { BrainCircuit } from "lucide-react";
-import { toast } from "sonner";
 
 import { crosshairEmitter } from "@/lib/crosshairEmitter";
-import { dispatchSwitchWorkspace } from "@/lib/navigation";
+import { useSlowFlag } from "@/lib/hooks/useSlowFlag";
 import { TickerPriceCell } from "@/components/terminal/TickerPriceCell";
 import {
   CHART_STYLES,
@@ -77,6 +75,7 @@ export function TradingViewChart({
 
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const slowLoad = useSlowFlag(loading);
   const [currentPrice, setCurrentPrice] = useState<number | null>(null);
   /** 24h change from /market/prices; unknown (null) until that call answers */
   const [priceChangePct, setPriceChangePct] = useState<number | null>(null);
@@ -93,8 +92,6 @@ export function TradingViewChart({
   const provisionalCandleRef = useRef<ProvisionalBar | null>(null);
   // The provisional candle just replaced by the next bar's first tick (its commit may still be in flight)
   const previousProvisionalRef = useRef<ProvisionalBar | null>(null);
-
-  const [triggeringDebate, setTriggeringDebate] = useState(false);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 2000);
@@ -117,30 +114,6 @@ export function TradingViewChart({
     }
   };
 
-  // Queues a real debate; the run appears in the AI Brain inbox once the worker reports it
-  const handleTriggerDebate = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setTriggeringDebate(true);
-    try {
-      const res = await fetch("/agent-api/debates/trigger", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": typeof window !== "undefined" ? localStorage.getItem("csrf_token") || "" : "",
-        },
-        body: JSON.stringify({ symbol, timeframe }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || data.message || `Server responded with ${res.status}`);
-      toast.success(`Debate queued: ${symbol}`, { description: "Its card appears in the AI Brain inbox when the worker reports it." });
-      dispatchSwitchWorkspace({ mode: "debates", view: "debates" });
-    } catch (err: any) {
-      toast.error(`Debate trigger error: ${err.message}`);
-    } finally {
-      setTriggeringDebate(false);
-    }
-  };
 
   const updateIndicators = (bars: any[], list: ChartIndicator[] = indicators) => {
     const chart = chartRef.current;
@@ -457,24 +430,13 @@ export function TradingViewChart({
         </div>
 
         <div className="flex items-center space-x-2">
-          <button
-            onClick={handleTriggerDebate}
-            disabled={triggeringDebate}
-            className="flex items-center space-x-1.5 px-2 py-0.5 text-2xs font-medium rounded text-purple-400 hover:text-purple-200 bg-purple-950/20 hover:bg-purple-950/50 transition-colors border border-purple-800/40 hover:border-purple-600/60 focus-visible:ring-1 focus-visible:ring-purple-500 outline-none"
-            title={`Trigger AI Consensus Debate on ${symbol}`}
-            aria-label={`Trigger AI Consensus Debate on ${symbol}`}
-          >
-            <BrainCircuit className="w-3 h-3" aria-hidden="true" />
-            <span>{triggeringDebate ? "Queuing..." : "Run Debate"}</span>
-          </button>
-
           <select
             value={chartStyle}
             onChange={(e) => {
               e.stopPropagation();
               handleStyleChange(e.target.value as ChartStyle);
             }}
-            className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 rounded px-2 py-0.5 text-2xs font-medium focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer transition-colors"
+            className="min-h-6 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-300 rounded px-2 py-0.5 text-2xs font-medium focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer transition-colors"
             title="Select Chart Style"
             aria-label="Select Chart Style"
           >
@@ -502,7 +464,7 @@ export function TradingViewChart({
                 onTimeframeChange?.(tf);
               }}
               aria-pressed={timeframe === tf}
-              className={`px-2 py-0.5 text-2xs font-medium rounded transition-colors ${
+              className={`min-h-6 px-2 py-0.5 text-2xs font-medium rounded transition-colors ${
                 timeframe === tf ? "bg-cyan-500 text-zinc-950 font-bold shadow-sm" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60"
               }`}
             >
@@ -516,7 +478,9 @@ export function TradingViewChart({
       <div className="relative flex-1 w-full h-full min-h-0">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-zinc-950/60 z-20 backdrop-blur-xs">
-            <span className="text-xs font-mono text-zinc-400 animate-pulse">Loading market data...</span>
+            <span role="status" className="text-xs font-mono text-zinc-400 animate-pulse">
+              {slowLoad ? "Still loading the chart… the bars request is slow." : "Loading market data…"}
+            </span>
           </div>
         )}
         {error && (

@@ -51,6 +51,11 @@ export interface NavItem {
   /** Visible tab text: e2e specs click these by name, keep them stable. */
   label: string;
   view?: string;
+  /**
+   * Secondary destinations. Below the header's overflow breakpoint they move into the "More" menu, so the
+   * primary tabs fit a narrow pane instead of scrolling.
+   */
+  overflow?: boolean;
 }
 
 /** Header groups. Labels are the visible tab texts. */
@@ -62,16 +67,16 @@ export const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
   ] },
   { id: "research", label: "Research", items: [
     { mode: "research", label: "Research Lab" },
-    { mode: "terminal", label: "Scanner", view: "scanner" },
+    { mode: "terminal", label: "Scanner", view: "scanner", overflow: true },
   ] },
   { id: "ai", label: "AI", items: [
     { mode: "debates", label: "AI Brain" },
     { mode: "mission", label: "Mission Control" },
   ] },
   { id: "system", label: "System", items: [
-    { mode: "operator", label: "Operator" },
-    { mode: "alerts", label: "Alerts" },
-    { mode: "settings", label: "Settings" },
+    { mode: "operator", label: "Operator", overflow: true },
+    { mode: "alerts", label: "Alerts", overflow: true },
+    { mode: "settings", label: "Settings", overflow: true },
   ] },
 ];
 

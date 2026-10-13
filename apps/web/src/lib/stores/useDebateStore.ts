@@ -14,7 +14,8 @@ export interface DebateRun {
   runId: string;
   instrumentId: string;
   // NO_TRADE: the verdict was HOLD, so there is nothing to approve
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PENDING_APPROVAL' | 'FAILED' | 'REJECTED' | 'NO_TRADE';
+  // NO_PRICE: the debate ended before a verdict because it had no usable quote (a terminal outcome)
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PENDING_APPROVAL' | 'FAILED' | 'REJECTED' | 'NO_TRADE' | 'NO_PRICE';
   decision?: string;
   timestamp?: number;
   turns: DebateTurn[];
@@ -90,7 +91,7 @@ export const useDebateStore = create<DebateState>()(persist((set) => ({
   clearCompleted: () => set((state) => {
     const next: Record<string, DebateRun> = {};
     for (const [id, run] of Object.entries(state.activeDebates)) {
-      if (run.status !== 'COMPLETED' && run.status !== 'REJECTED' && run.status !== 'FAILED' && run.status !== 'NO_TRADE') {
+      if (run.status !== 'COMPLETED' && run.status !== 'REJECTED' && run.status !== 'FAILED' && run.status !== 'NO_TRADE' && run.status !== 'NO_PRICE') {
         next[id] = run;
       }
     }
@@ -188,7 +189,7 @@ export const useDebateStore = create<DebateState>()(persist((set) => ({
 import { useEffect } from 'react';
 import { CryptoniteStreamClient } from '../ws';
 
-const RUN_STATUSES: DebateRun['status'][] = ['PENDING', 'RUNNING', 'COMPLETED', 'PENDING_APPROVAL', 'FAILED', 'REJECTED', 'NO_TRADE'];
+const RUN_STATUSES: DebateRun['status'][] = ['PENDING', 'RUNNING', 'COMPLETED', 'PENDING_APPROVAL', 'FAILED', 'REJECTED', 'NO_TRADE', 'NO_PRICE'];
 
 /** Status of a run from its DEBATE_COMPLETED event: the worker's status when sent, else from the verdict. */
 export function completedStatus(msg: { status?: string; decision?: unknown }): DebateRun['status'] {

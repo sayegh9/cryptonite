@@ -29,7 +29,7 @@ let hydrated = false;
  * states, one PAPER kill switch; plus the Mandate editor and Autonomy & Evals views.
  */
 export function MissionControl({ isActive }: { isActive: boolean }) {
-  const { view, mandates, approvals, status, loaded, error, refresh, selectedMandateId, selectMandate } = useMandateStore();
+  const { view, mandates, mandatesOk, approvals, status, loaded, error, refresh, selectedMandateId, selectMandate } = useMandateStore();
 
   useEffect(() => {
     if (!hydrated) {
@@ -95,7 +95,12 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
         {view === "overview" && (
           <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-12">
             <div className="space-y-3 xl:col-span-7">
-              {loaded && mandates.length === 0 && (
+              {loaded && mandatesOk === false && mandates.length === 0 && (
+                <p role="status" className="rounded border border-amber-800/60 p-3 font-mono text-2xs text-amber-200">
+                  Mandates could not be loaded, so the AI's authority is unknown here, not zero.
+                </p>
+              )}
+              {loaded && mandatesOk === true && mandates.length === 0 && (
                 <p className="rounded border border-zinc-800 p-3 font-mono text-2xs text-zinc-500">
                   No mandates. The AI cannot place any order until you create one (Mandate editor); every mandate starts at L1 Copilot.
                 </p>

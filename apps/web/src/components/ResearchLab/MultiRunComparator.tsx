@@ -7,13 +7,25 @@ import { fmtSignedPct, isLegacyMetrics, metricNum, metricsVersion, versionsOf, t
 const VersionBadge = ({ metrics }: { metrics?: VersionedMetrics | null }) => {
   const v = metricsVersion(metrics);
   return isLegacyMetrics(metrics) ? (
-    <span className="px-1.5 py-0.5 rounded border border-amber-700 bg-amber-950/50 text-amber-300 text-2xs font-bold"
+    <span className="whitespace-nowrap px-1.5 py-0.5 rounded border border-amber-700 bg-amber-950/50 text-amber-300 text-2xs font-bold"
       title={v === null ? "Computed before mark-to-market equity" : `Metrics v${v}: before profile fees and round-trip trades`}>
       legacy metrics{v === null ? "" : ` (v${v})`}
     </span>
   ) : (
     <span className="text-2xs text-zinc-500">v{v}</span>
   );
+};
+
+/**
+ * A readable strategy name: the run's own name when it has one, otherwise the slug in words
+ * (rsi-reversal → RSI reversal). The raw slug stays in the tooltip.
+ */
+const strategyLabel = (r: { strategy_name?: string; strategy_slug?: string }): string => {
+  if (r.strategy_name) return r.strategy_name;
+  const words = (r.strategy_slug ?? "").replace(/[-_]+/g, " ").trim();
+  if (!words) return "Unnamed strategy";
+  const spelled = words.replace(/\brsi\b/i, "RSI");
+  return spelled.charAt(0).toUpperCase() + spelled.slice(1);
 };
 
 interface RunItem {
@@ -131,7 +143,8 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
               <th className="py-2 px-3">Status</th>
               <th className="py-2 px-3">Metrics</th>
               <th className="py-2 px-3 text-right">Total Return</th>
-              <th className="py-2 px-3 text-center">Action</th>
+              {/* Sticky: Inspect stays in view when a narrow pane scrolls the table sideways */}
+              <th className="sticky right-0 bg-zinc-900 py-2 px-3 text-center shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.6)]">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-800">
@@ -150,7 +163,7 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
                       </button>
                     </td>
                     <td className="py-2 px-3 font-mono text-zinc-300">{r.id.slice(0, 8)}</td>
-                    <td className="py-2 px-3 font-bold text-zinc-200">{r.strategy_slug}</td>
+                    <td className="py-2 px-3 font-bold text-zinc-200" title={r.strategy_slug}>{strategyLabel(r)}</td>
                     <td className="py-2 px-3 text-cyan-400">{r.execution_profile}</td>
                     <td className="py-2 px-3">
                       <span className={`px-2 py-0.5 rounded text-2xs font-bold ${r.status === 'COMPLETED' ? 'bg-emerald-950 text-emerald-400' : 'bg-zinc-800 text-zinc-400'}`}>
@@ -165,7 +178,7 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
                         </span>
                       ) : "-"}
                     </td>
-                    <td className="py-2 px-3 text-center">
+                    <td className="sticky right-0 bg-zinc-950 py-2 px-3 text-center shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.6)]">
                       <button
                         onClick={() => onSelectRun(r.id)}
                         className="text-2xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded transition-colors"
@@ -187,7 +200,7 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
           <div className="p-8 text-center text-zinc-500">Loading scenario comparison...</div>
         ) : comparisonData.length === 0 ? (
           <div className="p-8 text-center text-zinc-500">
-            Select at least one completed backtest above to inspect metrics.
+            Select at least one completed run in the table to compare its metrics.
           </div>
         ) : (
           <>
@@ -207,7 +220,7 @@ export const MultiRunComparator: React.FC<Props> = ({ onSelectRun }) => {
                 <th className="py-2 px-3">Metric</th>
                 {comparisonData.map((r) => (
                   <th key={r.id} className="py-2 px-3 text-center border-l border-zinc-900">
-                    <div className="font-bold text-zinc-200">{r.strategy_slug}</div>
+                    <div className="font-bold text-zinc-200">{strategyLabel(r)}</div>
                     <div className="text-2xs uppercase text-cyan-400 font-semibold">{r.execution_profile}</div>
                     <button
                       onClick={() => onSelectRun(r.id)}

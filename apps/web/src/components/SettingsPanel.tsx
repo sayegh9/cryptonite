@@ -7,6 +7,11 @@ import { toast } from "sonner";
 import { Button } from "./ui/button";
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
 import { SettingsRegistry } from "./SettingsRegistry";
+import { useSessionStore } from "@/lib/stores/useSessionStore";
+import { useSlowFlag } from "@/lib/hooks/useSlowFlag";
+
+/** A settings request that has not answered by then is reported, not waited on forever */
+const SETTINGS_TIMEOUT_MS = 10_000;
 
 interface AgentConfig {
   model_name: string | null;
@@ -26,54 +31,48 @@ export const SettingsPanel: React.FC = () => {
   const [agents, setAgents] = useState<Record<string, AgentConfig>>({});
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [envHealth, setEnvHealth] = useState<EnvHealth | null>(null);
-  const [isUnauthorized, setIsUnauthorized] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const session = useSessionStore((s) => s.status);
+  const agentsSlow = useSlowFlag(loading && Object.keys(agents).length === 0);
   
   // Edit state
   const [editModel, setEditModel] = useState<string>("");
   const [editTemp, setEditTemp] = useState<number>(0.7);
   const [editPrompt, setEditPrompt] = useState<string>("");
 
+  /** Runs only with a confirmed operator session. A refusal is the session's to show, not a guess made here. */
   const loadData = async () => {
+    setLoading(true);
+    setLoadError(null);
     try {
       const [agentData, envData] = await Promise.all([
-        fetchApi("/settings/agents"),
-        fetchApi("/settings/environment")
+        fetchApi("/settings/agents", { timeoutMs: SETTINGS_TIMEOUT_MS }),
+        fetchApi("/settings/environment", { timeoutMs: SETTINGS_TIMEOUT_MS }),
       ]);
-      setAgents(agentData);
+      setAgents(agentData ?? {});
       setEnvHealth(envData);
-      setIsUnauthorized(false);
-      setShowLoginModal(false);
-      if (!selectedAgent && Object.keys(agentData).length > 0) {
+      if (!selectedAgent && Object.keys(agentData ?? {}).length > 0) {
         handleSelectAgent("research", agentData);
       }
     } catch (err: any) {
-      if (
-        err?.status === 401 || 
-        err?.message === "Invalid session" || 
-        err?.message === "Authentication required" || 
-        err?.message?.toLowerCase().includes("session")
-      ) {
-        console.warn("Operator authentication required to view Settings");
-        setIsUnauthorized(true);
+      if (err?.status === 401 || err?.status === 403) {
+        // Ask /auth/me whether the session is really gone; if it is, the sign-in gate shows
+        void useSessionStore.getState().check();
+        setLoadError("The settings were refused. Your operator session may have ended.");
       } else {
-        console.error("Failed to load settings:", err);
-        toast.error("Failed to load settings");
+        setLoadError(err?.timeout ? "The request timed out." : err?.message || "The settings could not be loaded.");
       }
+    } finally {
+      setLoading(false);
     }
   };
 
+  // Load unless the session is known to be signed out; a refusal turns the session anonymous, which shows the gate
   useEffect(() => {
-    loadData();
-
-    const handleAuthSuccess = () => {
-      loadData();
-    };
-    window.addEventListener("cryptonite:auth-success" as any, handleAuthSuccess);
-    return () => {
-      window.removeEventListener("cryptonite:auth-success" as any, handleAuthSuccess);
-    };
-  }, []);
+    if (session !== "anonymous") void loadData();
+  }, [session]);
 
   const handleSelectAgent = (name: string, data = agents) => {
     setSelectedAgent(name);
@@ -100,16 +99,16 @@ export const SettingsPanel: React.FC = () => {
       toast.success(`${selectedAgent} config saved!`);
       loadData();
     } catch (err: any) {
-      if (err?.status === 401 || err?.message === "Invalid session") {
-        setIsUnauthorized(true);
-        toast.error("Session expired. Please log in as operator.");
+      if (err?.status === 401 || err?.status === 403) {
+        void useSessionStore.getState().check();
+        toast.error("The save was refused. Your operator session may have ended.");
       } else {
         toast.error(err?.message || "Failed to save config");
       }
     }
   };
 
-  if (isUnauthorized) {
+  if (session === "anonymous") {
     return (
       <div className="flex flex-col items-center justify-center h-full min-h-[450px] bg-zinc-950 text-white rounded-lg border border-white/10 p-8">
         <div className="max-w-md w-full flex flex-col items-center text-center space-y-4">
@@ -134,11 +133,7 @@ export const SettingsPanel: React.FC = () => {
 
         {showLoginModal && (
           <OperatorLoginModal
-            onSuccess={() => {
-              setShowLoginModal(false);
-              setIsUnauthorized(false);
-              loadData();
-            }}
+            onSuccess={() => setShowLoginModal(false)}
             onClose={() => setShowLoginModal(false)}
           />
         )}
@@ -205,10 +200,26 @@ export const SettingsPanel: React.FC = () => {
             
             {/* Editor: only for a configuration that actually loaded (no default values shown as settings) */}
             {!selectedAgent || !agents[selectedAgent] ? (
-              <div className="flex-1 p-6 text-sm text-zinc-400" role="status" data-testid="agent-config-unavailable">
-                {Object.keys(agents).length === 0
-                  ? "Agent configurations unavailable (not loaded). Sign in as operator or check the API."
-                  : "Select an agent to edit its configuration."}
+              <div className="flex-1 p-6 text-sm text-zinc-400 space-y-3" role="status" data-testid="agent-config-unavailable">
+                {loading && Object.keys(agents).length === 0 ? (
+                  <p>{agentsSlow ? "Still loading agent configurations… this is taking longer than usual." : "Loading agent configurations…"}</p>
+                ) : loadError ? (
+                  <>
+                    <p className="text-amber-200">Could not load agent configurations: {loadError}</p>
+                    <Button onClick={() => void loadData()} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs uppercase tracking-wider">
+                      Retry
+                    </Button>
+                  </>
+                ) : Object.keys(agents).length === 0 ? (
+                  <>
+                    <p>The API returned no agent configurations, so there is nothing to edit yet.</p>
+                    <Button onClick={() => void loadData()} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs uppercase tracking-wider">
+                      Check again
+                    </Button>
+                  </>
+                ) : (
+                  <p>Select an agent to edit its configuration.</p>
+                )}
               </div>
             ) : (
             <div className="flex-1 p-6 flex flex-col gap-6 overflow-y-auto">
@@ -272,6 +283,23 @@ export const SettingsPanel: React.FC = () => {
           </div>
         )}
 
+        {activeTab === "security" && !envHealth && (
+          <div role="status" className="p-6 text-sm text-zinc-400 space-y-3 max-w-2xl">
+            {loading ? (
+              <p>Loading environment health…</p>
+            ) : (
+              <>
+                <p className={loadError ? "text-amber-200" : undefined}>
+                  {loadError ? `Could not load environment health: ${loadError}` : "Environment health has not been loaded yet."}
+                </p>
+                <Button onClick={() => void loadData()} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs uppercase tracking-wider">
+                  Retry
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+
         {activeTab === "security" && envHealth && (
           <div className="p-6 space-y-6 max-w-2xl">
             <div>
@@ -324,11 +352,12 @@ export const SettingsPanel: React.FC = () => {
                   <ShieldAlert className="w-5 h-5 text-red-400" />
                   <div>
                     <div className="font-medium">Emergency Kill Switch</div>
-                    <div className="text-xs text-zinc-500">Hardware-level execution halt</div>
+                    <div className="text-xs text-zinc-500">Halts all execution when latched</div>
                   </div>
                 </div>
-                <div className={`px-3 py-1 rounded-full text-xs font-bold ${envHealth.kill_switch_active ? 'bg-red-900/30 text-red-400 border border-red-900/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700'}`}>
-                  {envHealth.kill_switch_active ? "ACTIVE (TRADING HALTED)" : "STANDBY"}
+                {/* The same words the operator console uses: ARMED (not latched) or LATCHED (trading halted) */}
+                <div className={`px-3 py-1 rounded-full text-xs font-bold ${envHealth.kill_switch_active ? 'bg-red-900/30 text-red-400 border border-red-900/50' : 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/50'}`}>
+                  {envHealth.kill_switch_active ? "LATCHED · TRADING HALTED" : "ARMED"}
                 </div>
               </div>
             </div>

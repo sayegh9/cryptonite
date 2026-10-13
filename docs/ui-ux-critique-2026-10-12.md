@@ -130,7 +130,17 @@ Measured with read-only DOM inspection:
 
 ## Changes made (2026-10-12)
 
-All changes are in the working tree on `main`, uncommitted. `pnpm typecheck` and `pnpm lint` pass. The Playwright suite (129 specs, run locally against a dev server on the live API) passes 127. The two that fail, the phase-8 regime tests in `phase8_reporting.spec.ts`, also fail on the untouched `HEAD`.
+Written uncommitted in the `main` checkout on 2026-10-12; saved to branch `wip/web-ui-redesign` and finished on
+2026-10-13 against main `8ccae28` (after #70, #72–#77, #76/#78). `pnpm typecheck`, `pnpm lint` and `pnpm build` pass.
+The full Playwright suite (139 tests) passes against a production build whose API proxy points at a closed port, as in CI.
+
+Finishing changes (2026-10-13):
+- The kill-switch store treats a status without a boolean `is_latched` as UNKNOWN, keeping #70's rule.
+- The kill-switch heading keeps the accessible name "Execution Kill-Switch · PAPER" that #70's tests use.
+- Mission Control: a failed mandate or approval load says "could not be loaded" instead of "No mandates" or
+  "Nothing waiting for you"; the store records the approvals outcome (`approvalsOk`). New spec:
+  `e2e/mission_unknown_not_empty.spec.ts`.
+- `research_lab.spec.ts` looks for the "Strategy" column header by role, since strategy names now show in headers.
 
 ### Unknown never looks healthy
 - Kill-switch panels show ARMED or LATCHED only from a confirmed answer. A failed or timed-out request shows UNKNOWN, with the reason, the last confirmed time, and a retry (`KillSwitchPanel.tsx`, `lib/stores/useKillSwitchStore.ts`).

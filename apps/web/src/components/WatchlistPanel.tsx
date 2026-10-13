@@ -90,7 +90,7 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
     try {
       const res = await fetch(`/api/v1/market/prices?symbols=${encodeURIComponent(watchlistSymbols)}`);
       if (!res.ok) {
-        setPriceError(`prices unavailable: ${res.status}`);
+        setPriceError(`Prices are not updating (server error ${res.status}). Last values are kept and it will retry.`);
         return;
       }
       const stats: Array<{
@@ -102,7 +102,7 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
         volume: number | string | null;
       }> = await res.json();
       if (!Array.isArray(stats)) {
-        setPriceError("prices unavailable: unexpected response");
+        setPriceError("Prices are not updating (unexpected response). Last values are kept and it will retry.");
         return;
       }
       setPriceError(null);
@@ -125,7 +125,7 @@ export const WatchlistPanel: React.FC<Props> = ({ selectedSymbol, onSelectSymbol
         })
       );
     } catch {
-      setPriceError("prices unavailable: network error");
+      setPriceError("Prices are not updating (network error). Last values are kept and it will retry.");
     }
   }, []);
 

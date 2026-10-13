@@ -230,7 +230,7 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     await expect(page.locator("text=1 Active")).toBeVisible();
 
     await expect(page.locator("text=Execution Guard")).toBeVisible();
-    await expect(page.getByText("ACTIVE", { exact: true })).toBeVisible();
+    await expect(page.getByText("ARMED", { exact: true })).toBeVisible();
   });
 
   test("displays active positions and executes flatten action", async ({ page }) => {

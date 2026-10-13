@@ -26,6 +26,7 @@ import { WorkspaceNav } from "@/components/WorkspaceNav";
 import { dispatchBrainAsk } from "@/lib/brain/events";
 import { useBrainSetup } from "@/lib/brain/useBrainSetup";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
+import { useSessionStore } from "@/lib/stores/useSessionStore";
 import { useDebateStream, useDebateStore } from "@/lib/stores/useDebateStore";
 import { usePerpetualStream } from "@/lib/stores/usePerpetualStore";
 import { TerminalWorkspace } from "@/components/terminal/TerminalWorkspace";
@@ -35,7 +36,6 @@ import { ResearchLab } from "@/components/ResearchLab/ResearchLab";
 import { useBacktestStore } from "@/lib/stores/useBacktestStore";
 import { PortfolioConsole } from "@/components/PortfolioConsole";
 import { getStreamClient } from "@/lib/ws";
-import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
 import {
   Radio,
@@ -95,7 +95,8 @@ function Workstation() {
   }, [workspaceMode, urlView]);
 
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
-  const [operatorAuthenticated, setOperatorAuthenticated] = useState(false);
+  // One session answer for the whole app (see useSessionStore): "checking" is not "signed out"
+  const sessionStatus = useSessionStore((s) => s.status);
   const [showScannerBuilder, setShowScannerBuilder] = useState(false);
   const [selectedSymbol, setSelectedSymbol] = useState<string>("BTCUSDT");
   const [activeChartTarget, setActiveChartTarget] = useState<{
@@ -126,28 +127,9 @@ function Workstation() {
 
   const activeBacktestRun = useBacktestStore((state) => state.activeRun);
 
-  // Check active operator session on mount and sync across components
+  // Verify the operator session once on load; every component reads the answer from the session store
   useEffect(() => {
-    fetchApi("/auth/me")
-      .then((res) => {
-        if (res?.authenticated) {
-          setOperatorAuthenticated(true);
-          if (res.csrf_token) {
-            localStorage.setItem("csrf_token", res.csrf_token);
-          }
-        }
-      })
-      .catch(() => {
-        setOperatorAuthenticated(false);
-      });
-
-    const handleAuthSuccess = () => {
-      setOperatorAuthenticated(true);
-    };
-    window.addEventListener("cryptonite:auth-success" as any, handleAuthSuccess);
-    return () => {
-      window.removeEventListener("cryptonite:auth-success" as any, handleAuthSuccess);
-    };
+    void useSessionStore.getState().check();
   }, []);
 
   // Initialize global WebSocket stream connection
@@ -310,15 +292,18 @@ function Workstation() {
           summaryClassName="md:max-w-40 lg:max-w-56 xl:max-w-xs 2xl:max-w-md"
         />
 
-        <button
-          onClick={() => setIsAgentChatOpen(true)}
-          aria-label="Brain"
-          title="Brain"
-          className="flex flex-none items-center space-x-1.5 ml-2 md:ml-4 px-2 sm:px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-cyan-400 rounded transition-colors font-mono text-xs font-bold"
-        >
-          <BrainCircuit className="w-3.5 h-3.5" aria-hidden="true" />
-          <span className="hidden sm:inline">Brain</span>
-        </button>
+        {/* On the AI Brain page the Brain chat is already on screen; the drawer would only duplicate it */}
+        {workspaceMode !== "debates" && (
+          <button
+            onClick={() => setIsAgentChatOpen(true)}
+            aria-label="Brain"
+            title="Brain"
+            className="flex flex-none items-center space-x-1.5 ml-2 md:ml-4 px-2 sm:px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-white/5 text-cyan-400 rounded transition-colors font-mono text-xs font-bold"
+          >
+            <BrainCircuit className="w-3.5 h-3.5" aria-hidden="true" />
+            <span className="hidden sm:inline">Brain</span>
+          </button>
+        )}
       </header>
 
       {/* Persistent Terminal Workspace */}
@@ -335,6 +320,7 @@ function Workstation() {
 
         <TerminalWorkspace
           selectedSymbol={selectedSymbol}
+          scannerFocus={urlView === "scanner"}
           showWatchlist={showWatchlist}
           onToggleWatchlist={(val) => {
             setShowWatchlist(val);
@@ -417,7 +403,8 @@ function Workstation() {
       )}
       {workspaceMode === "operator" && (
         <div className="flex-1 min-h-0 min-w-0 bg-zinc-950 p-6 overflow-y-auto">
-          {operatorAuthenticated ? (
+          {/* Only a known sign-out hides the console. While the session is checked, each panel shows its own state. */}
+          {sessionStatus !== "anonymous" ? (
             <div className="max-w-7xl mx-auto space-y-6">
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Left Column (35%) */}
@@ -434,8 +421,8 @@ function Workstation() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-center h-full text-zinc-500 font-mono">
-              Waiting for operator authentication...
+            <div role="status" className="flex items-center justify-center h-full text-zinc-500 font-mono">
+              Sign in as operator to see the operator console.
             </div>
           )}
         </div>
@@ -477,11 +464,8 @@ function Workstation() {
         onClose={() => setProfileSymbol(null)} 
       />
 
-      {workspaceMode === "operator" && !operatorAuthenticated && (
-        <OperatorLoginModal
-          onSuccess={() => setOperatorAuthenticated(true)}
-        />
-      )}
+      {/* Shown only once the session is confirmed anonymous: never over a page that is still verifying */}
+      {workspaceMode === "operator" && sessionStatus === "anonymous" && <OperatorLoginModal />}
     </div>
   );
 }

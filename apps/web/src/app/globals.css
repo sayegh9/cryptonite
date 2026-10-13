@@ -68,12 +68,13 @@
 
 /*
  * Readability tokens (R6.5).
- * - text-2xs (11px) is the floor for any data or label text; the old 8-10.5px sizes map to it.
+ * - text-2xs (12px) is the floor for any data or label text; the old 8-11.5px sizes map to it.
+ *   It was 11px, and most of the workstation's labels and figures were set at that size.
  * - zinc-500/600 are lifted so secondary text keeps a contrast of at least 4.5:1 on the
  *   zinc-950/900 surfaces (stock zinc-500 was about 4.1:1, zinc-600 about 2.6:1).
  */
 @theme {
-  --text-2xs: 0.6875rem;
+  --text-2xs: 0.75rem;
   --text-2xs--line-height: 1rem;
   --color-zinc-500: #8f8f99;
   --color-zinc-600: #82828c;

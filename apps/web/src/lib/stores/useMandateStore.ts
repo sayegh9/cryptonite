@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { fetchAiStatus, listApprovals, listMandates } from "@/lib/mission/client";
 import type { AiStatus, Approval, Mandate } from "@/lib/mission/types";
+import { useSessionStore } from "@/lib/stores/useSessionStore";
 
 /**
  * Mission Control state (blueprint §7.1). Persisted: the view, the selected mandate and the editor's
@@ -31,6 +32,8 @@ interface MandateState {
   error: string | null;
   /** Outcome of the latest fetch of each source (null: not fetched yet), for the mode banner (G1) */
   mandatesOk: boolean | null;
+  /** Approvals have their own outcome: an empty list after a failed fetch is unknown, not "nothing waiting" */
+  approvalsOk: boolean | null;
   statusOk: boolean | null;
   /** Date.now() of each source's last successful fetch: the banner treats old data as unknown */
   mandatesAt: number | null;
@@ -62,6 +65,7 @@ export const useMandateStore = create<MandateState>()(
       loaded: false,
       error: null,
       mandatesOk: null,
+      approvalsOk: null,
       statusOk: null,
       mandatesAt: null,
       statusAt: null,
@@ -89,6 +93,7 @@ export const useMandateStore = create<MandateState>()(
             status: s.status === "fulfilled" ? s.value : prev.status,
             loaded: true,
             mandatesOk: m.status === "fulfilled",
+            approvalsOk: a.status === "fulfilled",
             statusOk: s.status === "fulfilled",
             mandatesAt: m.status === "fulfilled" ? at : prev.mandatesAt,
             statusAt: s.status === "fulfilled" ? at : prev.statusAt,
@@ -99,6 +104,11 @@ export const useMandateStore = create<MandateState>()(
                 ? "Mission Control data unavailable."
                 : null,
           }));
+          // An answer is evidence of a session. A refusal is not proof of a sign-out: one endpoint can refuse on its
+          // own, so the session is re-checked with /auth/me, which decides.
+          const session = useSessionStore.getState();
+          if (denied) void session.check();
+          else if (s.status === "fulfilled") session.markAuthenticated();
         };
         const promise = run().finally(() => {
           if (inflight?.id === id) inflight = null;

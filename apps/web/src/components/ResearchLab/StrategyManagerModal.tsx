@@ -184,6 +184,7 @@ export function StrategyManagerModal({
             </button>
             <button
               onClick={onClose}
+              aria-label="Close"
               className="text-zinc-500 hover:text-white transition-colors p-1 rounded hover:bg-zinc-900"
             >
               <XCircle className="w-5 h-5" />

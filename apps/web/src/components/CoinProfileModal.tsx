@@ -86,7 +86,7 @@ export const CoinProfileModal: React.FC<Props> = ({ symbol, onClose }) => {
               <div className="text-xs text-zinc-500 font-mono">{symbol}</div>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 hover:bg-zinc-800 rounded transition-colors text-zinc-400 hover:text-white">
+          <button onClick={onClose} aria-label="Close" className="p-1 hover:bg-zinc-800 rounded transition-colors text-zinc-400 hover:text-white">
             <X className="w-4 h-4" />
           </button>
         </div>

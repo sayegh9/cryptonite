@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Coins, History, Landmark, RefreshCw, ShieldCheck } from "lucide-react";
 import { fetchApi } from "@/lib/api";
+import { useSessionStore } from "@/lib/stores/useSessionStore";
 import { fetchBrainSpend, listBrainSessions, loadBrainHistory } from "@/lib/brain/client";
 import type { BrainSessionSummary } from "@/lib/brain/types";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
@@ -45,7 +46,12 @@ function RailSection({ icon, title, children }: { icon: React.ReactNode; title: 
   );
 }
 
+/** A rail request that has not answered by then is reported, not waited on */
+const RAIL_TIMEOUT_MS = 10_000;
+
 export function BrainContextRail() {
+  // Re-runs the refresh when the operator session is confirmed, so a rail opened before sign-in fills in
+  const session = useSessionStore((s) => s.status);
   const [positions, setPositions] = useState<RailPosition[] | null>(null);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [spend, setSpend] = useState<{ spent: number; cap: number } | null>(null);
@@ -56,21 +62,31 @@ export function BrainContextRail() {
   const streaming = useBrainStore((s) => s.streaming);
 
   const refresh = useCallback(async () => {
-    try {
-      // Step sizes only refine the display: never block positions (or spend) on /instruments
-      void fetchSizeSteps().then(setSteps);
-      const rows = await fetchApi("/paper/positions");
-      setPositions(Array.isArray(rows) ? rows : []);
-      setPositionsError(null);
-    } catch (e: any) {
+    // Step sizes only refine the display: never block positions (or spend) on /instruments
+    void fetchSizeSteps().then(setSteps);
+    if (session === "anonymous") {
       setPositions(null);
-      setPositionsError(e?.status === 401 || e?.status === 403 ? "Sign in as operator to see positions." : "Positions unavailable.");
+      setPositionsError("Sign in as operator to see positions.");
+    } else {
+      try {
+        const rows = await fetchApi("/paper/positions", { timeoutMs: RAIL_TIMEOUT_MS });
+        setPositions(Array.isArray(rows) ? rows : []);
+        setPositionsError(null);
+      } catch (e: any) {
+        setPositions(null);
+        if (e?.status === 401 || e?.status === 403) {
+          void useSessionStore.getState().check();
+          setPositionsError("Positions were refused. Your operator session may have ended.");
+        } else {
+          setPositionsError(e?.timeout ? "Positions did not load in time." : "Positions unavailable.");
+        }
+      }
     }
     const s = await fetchBrainSpend().catch(() => null);
     setSpend(s ? { spent: Number(s.spent_usd), cap: Number(s.cap_usd) } : null);
     setSessions(await listBrainSessions().catch(() => []));
     setMandates(await listMandates().catch(() => null));
-  }, []);
+  }, [session]);
 
   // Mission Control edits (cryptonite:mandate-updated) show up here without a reload
   useEffect(() => {

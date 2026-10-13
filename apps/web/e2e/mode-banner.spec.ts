@@ -93,7 +93,7 @@ const STATES: [string, Reply, Reply, string, string][] = [
     "PAPER · kill switch unknown · approvals required · 1 mandate at L1", "unknown"],
   ["mandates 500", { status: 500 }, { json: status() }, "PAPER · mandates unknown", "unknown"],
   ["both 502", { status: 502 }, { status: 502 }, "PAPER · status unknown", "unknown"],
-  ["signed out 401", { status: 401 }, { status: 401 }, "PAPER · status unknown", "unknown"],
+  ["signed out 401", { status: 401 }, { status: 401 }, "PAPER · sign in to see status", "unknown"],
 ];
 
 test.describe("Mode banner (G1)", () => {

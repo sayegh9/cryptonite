@@ -84,6 +84,7 @@ export const TradesTable: React.FC<Props> = ({
           </span>
           <button
             onClick={handlePrev}
+            aria-label="Previous page"
             disabled={page <= 1 || loading}
             className="p-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
@@ -91,6 +92,7 @@ export const TradesTable: React.FC<Props> = ({
           </button>
           <button
             onClick={handleNext}
+            aria-label="Next page"
             disabled={page >= totalPages || loading}
             className="p-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >

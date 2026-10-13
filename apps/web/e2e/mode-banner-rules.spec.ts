@@ -64,9 +64,9 @@ test.describe("mode banner rules", () => {
     expect(computeModeBanner(input({ status: st(true), statusAt: now - STALE_MS })).tone).toBe("latched");
   });
 
-  test("not fetched yet is a neutral loading state", () => {
+  test("not fetched yet is a neutral loading state, not an unknown one", () => {
     const b = computeModeBanner(input({ mandatesOk: null, statusOk: null, mandatesAt: null, statusAt: null }));
-    expect(b.text).toBe("PAPER · status unknown");
+    expect(b.text).toBe("PAPER · loading");
     expect(b.tone).toBe("pending");
   });
 

@@ -163,15 +163,15 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
           <input className={input} type="number" min="0.1" max="20" step="0.1" value={form.max_drawdown_pct} onChange={set("max_drawdown_pct")} required />
         </label>
         <label className="space-y-1">
-          <span className="text-zinc-400">Active hours UTC (HH:MM-HH:MM; empty = L2 timeouts mean no)</span>
+          <span className="text-zinc-400">Active hours, UTC (HH:MM-HH:MM). Empty: no hours window, so an L2 veto timeout counts as no.</span>
           <input className={input} value={form.active_hours_utc} onChange={set("active_hours_utc")} placeholder="08:00-22:00" pattern="\d{2}:\d{2}-\d{2}:\d{2}" />
         </label>
         <label className="space-y-1">
-          <span className="text-zinc-400">L2 veto window (seconds)</span>
+          <span className="text-zinc-400">Veto window, seconds (L2): an order goes ahead if you do not veto it within this time</span>
           <input className={input} type="number" min="60" max="3600" value={form.veto_window_s} onChange={set("veto_window_s")} />
         </label>
         <fieldset className="space-y-1 md:col-span-2" disabled={!current || current.autonomy_level < 3}>
-          <legend className="text-zinc-400">Perpetuals (O1: only after the mandate earned L3, max 5×)</legend>
+          <legend className="text-zinc-400">Perpetual futures: only once the mandate reaches L3, with up to 5× leverage</legend>
           <label className="mr-4 inline-flex items-center gap-1.5">
             <input type="checkbox" checked={form.allow_perps} onChange={set("allow_perps")} /> allow perps
           </label>
@@ -181,10 +181,10 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
         </fieldset>
 
         {needsTotp && (
-          <div className="rounded border border-amber-700 bg-amber-950/20 p-2 md:col-span-2" data-testid="mandate-totp">
-            <p className="mb-1 text-amber-200">Adds risk ({reasons.join(", ")}): enter your TOTP code.</p>
+          <div className="rounded border border-zinc-700 bg-zinc-900/60 p-2 md:col-span-2" data-testid="mandate-totp">
+            <p className="mb-1 text-zinc-200">Adds risk ({reasons.join(", ")}), so it needs your current TOTP code.</p>
             <label className="inline-flex items-center gap-2">
-              <span>TOTP</span>
+              <span>TOTP code</span>
               <input
                 aria-label="TOTP code"
                 inputMode="numeric"
@@ -206,10 +206,13 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
           <button
             type="submit"
             disabled={busy || (needsTotp && totp.length !== 6)}
-            className="rounded bg-cyan-600 px-3 py-1.5 text-2xs font-bold text-zinc-950 disabled:opacity-50"
+            className="rounded bg-cyan-600 px-4 py-2 text-xs font-bold text-zinc-950 disabled:opacity-50"
           >
             {current ? "Save mandate" : "Create mandate (starts at L1)"}
           </button>
+          {needsTotp && totp.length !== 6 && (
+            <span className="self-center text-2xs text-zinc-400">Enter the 6-digit code to enable this.</span>
+          )}
           {current && current.autonomy_level > 1 && (
             <button
               type="button"

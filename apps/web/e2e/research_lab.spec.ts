@@ -320,7 +320,7 @@ test.describe("Research Lab & Nautilus Backtesting Engine E2E", () => {
     // 8. Switch to Multi-Run Comparator tab
     await page.getByRole("button", { name: "History & Compare" }).click();
     await expect(page.getByText("SCENARIO & RUN COMPARATOR")).toBeVisible();
-    await expect(page.locator("th:has-text('Strategy')")).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Strategy", exact: true })).toBeVisible();
 
     // 9. Inspect Reproducibility Manifest modal
     const manifestBtn = page.getByRole("button", { name: "Manifest" });
