@@ -21,14 +21,15 @@
 #   CRYPTONITE_PROFILES   compose profiles to start (default: "monitoring notifier"). Opt-in services
 #                         that were running when cryptonite-down.sh stopped them (e.g. research_worker)
 #                         are restarted as they are even if their profile is not listed.
-#   CRYPTONITE_HELD_SERVICES  overrides HELD_SERVICES below (set it to "" to start everything)
+#   CRYPTONITE_HELD_SERVICES  services to leave on their existing container (default: none)
 #   CRYPTONITE_NO_BROWSER set to 1 to skip opening the window
 #   --pause-on-error      keep the terminal open on failure (used by the desktop launcher)
 set -Eeuo pipefail
 
-# Services under the deploy hold (until the L2 review): the launcher never creates or recreates them,
-# so they stay on their current image and config. Clear this (HELD_SERVICES="") once the hold ends.
-HELD_SERVICES="${CRYPTONITE_HELD_SERVICES-orchestrator scanner debate_worker learner}"
+# Services the launcher must never create or recreate (a deploy hold). The 2026-10 hold on orchestrator,
+# scanner, debate_worker and learner ended on 2026-10-13, so none by default; set CRYPTONITE_HELD_SERVICES
+# to hold some again.
+HELD_SERVICES="${CRYPTONITE_HELD_SERVICES-}"
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
 COMPOSE_FILE="$REPO/infra/docker-compose.yml"
@@ -38,6 +39,8 @@ API_HEALTH="http://127.0.0.1:8000/health"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cryptonite"
 WEB_PID="$STATE_DIR/web.pid"  # host `pnpm start` from launchers before A4
 RUNNING_BEFORE_STOP="$STATE_DIR/running-services"  # written by cryptonite-down.sh
+LOG="$STATE_DIR/launcher.log"
+HEALTH_WAIT_S="${CRYPTONITE_HEALTH_WAIT_S:-240}"  # how long every service may take to report healthy
 
 PAUSE_ON_ERROR=0
 [[ "${1:-}" == "--pause-on-error" ]] && PAUSE_ON_ERROR=1
@@ -74,15 +77,21 @@ serving() { curl -fs -o /dev/null --max-time 2 "$1"; }
 listed() { [[ " ${services[*]} " == *" $1 "* ]]; }
 
 mkdir -p "$STATE_DIR"
+# Everything shown in the window also goes to the log, so a failed double-click can be read afterwards
+exec > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
+printf '\n===== start %s =====\n' "$(date '+%F %T %Z')"
 
 step "Checking Docker and Ollama"
 docker info >/dev/null 2>&1 || fail "Docker is not running (sudo systemctl start docker)"
 ok "Docker is up"
-if curl -fs -o /dev/null --max-time 2 http://127.0.0.1:11434/api/version; then
-  ok "Ollama is up"
-else
-  warn "Ollama is not responding: local AI routes will fall back to the cloud tiers"
-fi
+# Ollama listens where its systemd unit says (OLLAMA_HOST, here the Docker bridge 172.17.0.1, so only the
+# containers reach it), not necessarily on 127.0.0.1
+ollama_host="$(systemctl show ollama -p Environment 2>/dev/null | grep -oE 'OLLAMA_HOST=[^ ]+' | cut -d= -f2)"
+ollama_up=0
+for h in ${ollama_host:-} 127.0.0.1:11434; do
+  if curl -fs -o /dev/null --max-time 2 "http://$h/api/version"; then ollama_up=1; ok "Ollama is up ($h)"; break; fi
+done
+(( ollama_up )) || warn "Ollama is not responding: local AI routes will fall back to the paid cloud tiers"
 
 # A misspelled held name would silently release the real service into `up`: refuse instead.
 all_services=" $(docker compose -f "$COMPOSE_FILE" --profile '*' config --services | tr '\n' ' ') "
@@ -150,6 +159,7 @@ for svc in $HELD_SERVICES; do
 done
 # Opt-in services outside the active profiles that were running before cryptonite-down.sh: restart
 # their existing container as it is (never create one).
+optins=()
 if [[ -f "$RUNNING_BEFORE_STOP" ]]; then
   while read -r svc; do
     [[ -n "$svc" ]] || continue
@@ -158,6 +168,7 @@ if [[ -f "$RUNNING_BEFORE_STOP" ]]; then
     if [[ -n "$(docker compose -f "$COMPOSE_FILE" --profile '*' ps -a -q "$svc" 2>/dev/null)" ]] \
         && docker compose -f "$COMPOSE_FILE" --profile '*' start "$svc" >/dev/null; then
       ok "opt-in: $svc restarted (it was running before the last stop)"
+      optins+=("$svc")
     else
       warn "opt-in: $svc was running before the last stop but could not be restarted"
     fi
@@ -166,6 +177,27 @@ if [[ -f "$RUNNING_BEFORE_STOP" ]]; then
 fi
 wait_http "$API_HEALTH" 90 "API"
 ok "API healthy"
+
+step "Waiting for every service to report healthy (up to ${HEALTH_WAIT_S} s)"
+# Exactly the services started above (stopped ones included): one with a health check must be healthy,
+# one without must be running.
+expected=" ${services[*]} $HELD_SERVICES ${optins[*]} "
+status_table() {  # service, container, state, health; only the expected services
+  docker compose -f "$COMPOSE_FILE" --profile '*' ps -a --format '{{.Service}}\t{{.Name}}\t{{.State}}\t{{.Health}}' 2>/dev/null |
+    while IFS=$'\t' read -r svc name state health; do
+      if [[ "$expected" == *" $svc "* ]]; then printf '%s\t%s\t%s\t%s\n' "$svc" "$name" "$state" "$health"; fi
+    done
+  return 0  # a filter, never a failure (errexit and the ERR trap)
+}
+not_ready() { status_table | awk -F'\t' '$3 != "running" || ($4 != "" && $4 != "healthy")'; }
+for ((i = 0; i < HEALTH_WAIT_S; i += 5)); do
+  [[ -z "$(not_ready | awk -F'\t' '$3 == "running" && $4 == "starting"')" ]] && break
+  sleep 5
+done
+status_table | sort | awk -F'\t' '{printf "    %-34s %-8s %s\n", $2, $3, ($4 == "" ? "-" : $4)}'
+bad="$(not_ready)"
+[[ -z "$bad" ]] || fail "not healthy: $(awk -F'\t' '{printf "%s (%s%s) ", $2, $3, ($4 == "" ? "" : ", " $4)}' <<<"$bad")"
+ok "every service is up"
 
 step "Waiting for the web UI"
 if listed web; then

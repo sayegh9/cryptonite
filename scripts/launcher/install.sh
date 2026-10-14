@@ -27,7 +27,7 @@ EOF
 write_launcher "$APPS/cryptonite.desktop" "Cryptonite" \
   "Start the Cryptonite stack and open the terminal" cryptonite-up.sh --pause-on-error
 write_launcher "$APPS/cryptonite-stop.desktop" "Stop Cryptonite" \
-  "Stop the web UI and the Docker stack" cryptonite-down.sh ""
+  "Stop the web UI and the Docker stack" cryptonite-down.sh --pause-on-error
 
 if [[ -d "$DESKTOP" ]]; then
   for f in cryptonite.desktop cryptonite-stop.desktop; do

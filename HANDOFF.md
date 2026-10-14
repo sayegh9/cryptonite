@@ -40,6 +40,15 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
   taken before it: `~/backups/cryptonite/settle_demo_unsent-2026-10-13.sql`, `db/cryptonite-2026-10-13T1407Z.dump`.
   The DEMO kill switch for `BINANCE-SPOT-DEMO` is still latched; the executor is not running.
 
+## Start and stop
+
+Desktop icons **Cryptonite** (start) and **Stop Cryptonite** (`scripts/launcher/`, installed by
+`scripts/launcher/install.sh`; re-run it after moving the repo). Start brings up Postgres and Redis, checks the schema
+(never migrates), starts every service without recreating any, waits until each reports healthy, lists them, and opens
+the web UI. Stop gives each service up to 30 s to shut down cleanly and confirms nothing is left running; data is
+kept. Both keep their window open on an error and log to `~/.local/state/cryptonite/launcher.log`. The launchers run
+the scripts in `repo/`, so keep `repo/` on `main`.
+
 ## Deploy
 
 Deploys run from the `deploy-main` worktree (detached at `main`; `.env` and `data/` are symlinks into `repo/`).
