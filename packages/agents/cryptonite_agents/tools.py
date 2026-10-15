@@ -126,9 +126,9 @@ _LAST_WEIGHT_AT: float = 0.0
 _WEIGHT_WINDOW_S: float = 60.0
 
 # in_feed truthfulness (T1): the authoritative *live* ingest universe is Redis `ingest:universe`
-# (published by the ingest service, TTL 180s). Cached 60s here; an empty/unreachable/unreadable key
-# means "unknown" and callers must report in_feed="unknown" rather than guess.
-_IN_FEED_CACHE: tuple[float, frozenset[str]] | None = None
+# (published by the ingest service, TTL 180s). Cached 60s here; a missing/unreachable/unreadable key
+# is an unknown universe (None) and callers must report in_feed="unknown" rather than guess.
+_IN_FEED_CACHE: tuple[float, frozenset[str] | None] | None = None
 _IN_FEED_TTL_S: float = 60.0
 
 
@@ -172,17 +172,18 @@ def _parse_server_date_ms(raw: str | None) -> int | None:
     return int(dt.timestamp() * 1000)
 
 
-def _fed_symbols() -> frozenset[str]:
+def _fed_symbols() -> frozenset[str] | None:
     """The authoritative live ingest universe (Redis ``ingest:universe``), cached for 60s (T1).
 
-    Returns an EMPTY set when the key is missing, unreadable, or Redis is unreachable: callers must
-    then report ``in_feed="unknown"`` rather than guess. Never raises.
+    Returns ``None`` (unknown) when the key is missing, unreadable, or Redis is unreachable: callers
+    must then report ``in_feed="unknown"`` rather than guess. A readable universe is returned even
+    when it is empty, so the caller can tell "not fed" from "unknown". Never raises.
     """
     global _IN_FEED_CACHE
     now = time.time()
     if _IN_FEED_CACHE is not None and (now - _IN_FEED_CACHE[0]) < _IN_FEED_TTL_S:
         return _IN_FEED_CACHE[1]
-    universe: frozenset[str] = frozenset()
+    universe: frozenset[str] | None = None
     try:
         import redis  # local import: Redis is a service runtime dep (agent_worker), not a package dep
         client = redis.Redis.from_url(
@@ -206,6 +207,11 @@ def _fed_symbols() -> frozenset[str]:
 
 def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
     """Fetches historical klines/candles for any valid trading symbol on Binance.
+
+    The result includes ``in_feed``, which says whether the live ingest feed streams the symbol:
+        "fed": the published ingest universe contains the symbol.
+        "not_fed": the ingest universe is known and does not contain the symbol.
+        "unknown": the ingest universe could not be read (missing key or Redis unreachable).
 
     Parameters:
         symbol: Trading pair symbol (e.g. 'BTCUSDT', 'SOLUSDT', 'WLDUSDT').
@@ -315,7 +321,13 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
 
             fetched_at_iso = datetime.datetime.now(datetime.UTC).isoformat()
             last_closed_close_time_iso = datetime.datetime.fromtimestamp(trimmed[-1][6] / 1000, tz=datetime.UTC).isoformat()
-            in_feed = "fed" if clean_symbol in _fed_symbols() else "unknown"
+            feed_universe = _fed_symbols()
+            if feed_universe is None:
+                in_feed = "unknown"
+            elif clean_symbol in feed_universe:
+                in_feed = "fed"
+            else:
+                in_feed = "not_fed"
 
             candles = [
                 {

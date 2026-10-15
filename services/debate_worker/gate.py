@@ -16,8 +16,9 @@ Automatic (scanner) triggers pass, in order, before any model is called:
   6. triage (Flash-Lite, one cheap call on the market brief) -> worth a full debate?
 Brain-started debates (``brain_on_demand``, WS-1E) run only the account checks, kill switch, daily loss and
 position cap, then pass as ``BRAIN_TRIGGER``: no triage call and no dedupe, stale, brief or cooldown check. The
-API's per-day cap bounds how many there are. Operator-triggered debates (dashboard, chat) skip the gate: that
-spend is an explicit choice.
+API's per-day cap bounds how many there are. Debates staged by an AI tool (the Brain and the research chat,
+``trigger_source = "brain_on_demand"``) pass the account safety checks and count toward the daily Brain debate cap.
+Only debates the operator starts from the dashboard skip the gate: that spend is an explicit choice.
 """
 
 import datetime
