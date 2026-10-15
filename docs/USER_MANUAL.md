@@ -207,6 +207,21 @@ now depends on the **mandate** that owns the instrument and its **autonomy level
 executes at all, including an order card you approved yourself. All AI orders remain bounded by the
 pre-trade risk checks (25.0% concentration ceiling, daily loss limit with kill-switch latching).
 
+#### 3. Order card for a symbol that is not fed
+When the Brain proposes a BUY for a symbol the live data feed does not cover, the card shows an amber notice, for
+example: "SOLUSDT is not in the live data feed, so this order cannot be approved yet. Onboard it first; the card
+unlocks once SOLUSDT is streaming." The card then shows an **Onboard SOLUSDT** button. While the card is
+locked, the mandate form and the TOTP field are hidden and **Approve** is disabled. **Reject** still works.
+
+- Press the button to add the symbol, the same as onboarding it from the Watchlist. The button reads *Onboarding…*
+  while it runs.
+- The card checks whether the symbol is streaming every five seconds, for up to three minutes. When it streams, the
+  card unlocks and the usual approval steps (mandate form, and TOTP where needed) appear.
+- If the symbol is still not streaming after three minutes, the card says so. Try again later, or check the Watchlist.
+
+The server applies the same rule: approving an un-fed BUY is refused, and approval is also refused while the feed status
+is unknown. SELL cards are never locked by the feed, because a SELL closes a position you already hold.
+
 ---
 
 ## 7. Operator Control Plane & Emergency Governance
