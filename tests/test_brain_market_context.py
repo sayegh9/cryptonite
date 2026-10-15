@@ -8,8 +8,10 @@ real 1h lake (the production writer and reader) under a temporary directory.
 
 import datetime
 import json
+import sys
 import uuid
 from decimal import Decimal
+from pathlib import Path
 
 import asyncpg
 import httpx
@@ -29,6 +31,7 @@ from cryptonite_schemas.identifiers import (
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
+REPO = Path(__file__).resolve().parents[1]
 AGENT_URL = role_db_url("cryptonite_agent_ro", "agent_ro_dev_pass")
 UNREACHABLE_PG = "postgresql://cryptonite_agent_ro:agent_ro_dev_pass@localhost:1/cryptonite_ci_ws2c"
 UNREACHABLE_REDIS = "redis://localhost:1/11"
@@ -194,7 +197,15 @@ def test_the_symbol_is_normalised_to_the_feed_symbol_and_instrument(monkeypatch)
     assert calls[0][1] == {"instrument_id": "BTCUSDT-PERP.BINANCE"}
 
 
-def test_the_symbol_is_a_bound_parameter_never_sql_text(monkeypatch):
+def test_a_hostile_symbol_is_refused_before_redis_or_sql(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tools, "_readonly_rows", lambda statement, params=None: calls.append(statement))
+    monkeypatch.setattr(tools, "_redis_get", lambda key: calls.append(key))
+    assert _context("BTC'USDT") == {"error": "invalid symbol"}
+    assert calls == []
+
+
+def test_the_funding_query_binds_the_instrument_as_a_parameter(monkeypatch):
     calls = []
 
     def fake_rows(statement, params=None):
@@ -203,21 +214,11 @@ def test_the_symbol_is_a_bound_parameter_never_sql_text(monkeypatch):
 
     monkeypatch.setattr(tools, "_readonly_rows", fake_rows)
     monkeypatch.setattr(tools, "_redis_get", lambda key: None)
-    hostile = "BTC'USDT"
-    out = _context(hostile)
-    assert len(calls) == 1
-    statement, params = calls[0]
-    assert statement.lstrip().upper().startswith("SELECT")
-    assert ":instrument_id" in statement and "BTC'USDT" not in statement
-    assert params == {"instrument_id": "BTC'USDT-PERP.BINANCE"}
-    assert out["funding"] == []
-
-
-async def test_a_quote_in_the_symbol_matches_nothing_and_is_not_an_error(perp):
-    await perp.seed_funding(2)
-    out = _context("BTC' OR '1'='1")
-    assert out["funding"] == []
-    assert "funding_rates could not be read" not in (out["note"] or "")
+    _context("BTCUSDT")
+    (statement, params), = calls
+    assert statement.lstrip().upper().startswith("SELECT") and "LIMIT 6" in statement
+    assert ":instrument_id" in statement and "BTCUSDT" not in statement
+    assert params == {"instrument_id": "BTCUSDT-PERP.BINANCE"}
 
 
 # --- get_market_regime ----------------------------------------------------------------------------------------------
@@ -257,6 +258,11 @@ def test_the_regime_is_the_learners_label_on_the_lake_hours_with_the_bar_time(tm
     monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))
     out = json.loads(tools.get_market_regime("BTCUSDT"))
     assert out == {"symbol": "BTCUSDT", "regime": "TREND_UP", "bar_time": now.isoformat(timespec="seconds")}
+    # Parity with the learner: regime_at on the same lake, at the same decision time, gives the same label
+    sys.path.insert(0, str(REPO / "services" / "debate_worker"))
+    import outcomes  # noqa: PLC0415 - the learner's module, importable as in tests/test_regime_tags.py
+    learner = outcomes.regime_at(AnalyticsQueryEngine(tmp_path), "BTCUSDT", int(now.timestamp() * 10**9))
+    assert learner == out["regime"] == "TREND_UP"
 
 
 def test_no_bars_is_a_null_regime_with_a_reason(tmp_path, monkeypatch):
@@ -279,7 +285,7 @@ def test_an_unreadable_lake_is_a_null_regime_with_a_reason(tmp_path, monkeypatch
     monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", broken)
     monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))
     out = json.loads(tools.get_market_regime("BTCUSDT"))
-    assert out["regime"] is None and "lake offline" in out["reason"]
+    assert out == {"regime": None, "reason": "lake read failed"}  # the detail is logged, not returned
 
 
 # --- Registration and the prompt -------------------------------------------------------------------------------------

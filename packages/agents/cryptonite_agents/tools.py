@@ -944,7 +944,7 @@ def _perp_payload(key_template: str, symbol: str, label: str, ttl: str, notes: l
 
 
 def _funding_history(symbol: str, notes: list[str]) -> list[dict[str, Any]] | None:
-    """The last FUNDING_ROWS settlements of the perpetual, newest first. None when the table cannot be read."""
+    """The last six settlements of the perpetual, newest first. None when the table cannot be read."""
     instrument = to_perp_instrument_id(symbol)
     try:
         rows = _readonly_rows(
@@ -988,6 +988,8 @@ def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
         symbol: Base symbol, e.g. 'BTCUSDT' (the perpetual is BTCUSDT-PERP.BINANCE).
     """
     sym = _feed_symbol(symbol)
+    if not _SYMBOL_REGEX.fullmatch(sym):
+        return json.dumps({"error": "invalid symbol"})
     notes: list[str] = []
     mark = _perp_payload(PERP_MARK_KEY, sym, "mark", "15 s", notes)
     open_interest = _perp_payload(PERP_OI_KEY, sym, "open interest", "90 s", notes)
@@ -1017,15 +1019,18 @@ def get_market_regime(symbol: str = "BTCUSDT") -> str:
     from cryptonite_storage.queries import AnalyticsQueryEngine
 
     sym = _feed_symbol(symbol)
+    if not _SYMBOL_REGEX.fullmatch(sym):
+        return json.dumps({"error": "invalid symbol"})
     # The same trailing window the learner reads (services/debate_worker/outcomes.REGIME_LOOKBACK_S)
     lookback_ns = (HIGH_VOL_WINDOW_BARS + MIN_BARS) * 3600 * 10**9
     end_ns = time.time_ns()
     try:
         lake = AnalyticsQueryEngine(Path(os.getenv("ANALYTICS_LAKE_PATH", "/app/data/analytics_lake")))
         bars = lake.query_bars_df(symbol=sym, timeframe="1h", start_ns=end_ns - lookback_ns, end_ns=end_ns)
-    except Exception as e:
-        logger.warning("Regime unavailable for %s: %s", sym, e)
-        return json.dumps({"regime": None, "reason": f"analytics lake unreadable: {e}"})
+    except Exception:
+        # The detail (DuckDB text, file paths) stays in the log; the model gets a short reason
+        logger.warning("Regime lake read failed for %s", sym, exc_info=True)
+        return json.dumps({"regime": None, "reason": "lake read failed"})
     if bars is None or bars.is_empty() or "ts_event_ns" not in bars.columns:
         return json.dumps({"regime": None, "reason": f"no 1h bars in the analytics lake for {sym}"})
     bars = bars.filter(bars["ts_event_ns"] <= end_ns).sort("ts_event_ns")
