@@ -14,10 +14,14 @@ import json
 import logging
 import os
 import re
+import secrets
+import time
 import uuid
 from decimal import Decimal
+from enum import Enum
 from typing import Any, Literal
 
+import pyotp
 from cryptonite_agents.gateway.local_tier import HEALTH_KEY as LOCAL_TIER_HEALTH
 from cryptonite_agents.gateway.local_tier import read_published as read_local_tier
 from cryptonite_api import shadow as shadow_report
@@ -59,6 +63,7 @@ from cryptonite_schemas.mandate import (
     ActionClass,
     Mandate,
     MandateStatus,
+    canonical_instrument,
     risk_adding_change,
 )
 from cryptonite_schemas.marks import LiveMark, read_marks, resolve_mark, summarize, unrealized_pnl
@@ -126,10 +131,33 @@ def actor(auth: dict) -> str:
     return str(auth.get("username") or auth.get("user_id") or f"machine:{auth.get('role', 'operator')}")
 
 
-async def verify_totp(request: Request, code: str | None, *, user_id: Any = None, username: str | None = None) -> bool:
+class TotpOutcome(Enum):
+    VALID = "valid"
+    WRONG = "wrong"
+    REUSED = "reused"  # a correct code whose time step this operator already used: each code works once
+
+
+def _matched_totp_step(secret: str, code: str) -> int | None:
+    """The time step ``code`` matches, within the same +-1 step window ``AuthManager.verify_totp_code`` accepts."""
+    totp = pyotp.TOTP(secret)
+    now = time.time()
+    for offset in (0, -1, 1):
+        if secrets.compare_digest(totp.at(now + offset * 30), str(code)):
+            return int(now / 30) + offset
+    return None
+
+
+async def _totp_step_used(request: Request, user_id: Any, step: int) -> bool:
+    async with request.app.state.pool.acquire() as conn:
+        return bool(await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM totp_replay_cache WHERE user_id = $1 AND totp_time_step = $2)", user_id, step))
+
+
+async def verify_totp(request: Request, code: str | None, *, user_id: Any = None,
+                      username: str | None = None) -> TotpOutcome:
     """The operator's current TOTP code (replay-protected; the dev-only 000000 follows the login policy)."""
     if not code or not TOTP_RE.match(code):
-        return False
+        return TotpOutcome.WRONG
     auth_mgr = request.app.state.auth_manager
     async with request.app.state.pool.acquire() as conn:
         if user_id:
@@ -141,56 +169,65 @@ async def verify_totp(request: Request, code: str | None, *, user_id: Any = None
                 "SELECT id, totp_secret_ciphertext, totp_secret_nonce, totp_secret_auth_tag FROM v_operator_auth "
                 "WHERE username = $1 AND is_active = true", username)
         else:
-            return False
+            return TotpOutcome.WRONG
     if row is None:
-        return False
+        return TotpOutcome.WRONG
     if code == "000000":
         # The login's dev bypass is on by default outside PROD; approving AI risk never inherits it
         if os.getenv("AI_ALLOW_DEV_TOTP", "false").lower() not in ("true", "1", "yes"):
-            return False
-        return await auth_mgr.verify_totp_code(row["id"], "", code)
+            return TotpOutcome.WRONG
+        return TotpOutcome.VALID if await auth_mgr.verify_totp_code(row["id"], "", code) else TotpOutcome.WRONG
     if not row["totp_secret_ciphertext"]:
-        return False
+        return TotpOutcome.WRONG
     try:
         secret = auth_mgr.decrypt_totp_secret(row["totp_secret_ciphertext"], row["totp_secret_nonce"], row["totp_secret_auth_tag"])
     except Exception:
         logger.exception("Could not decrypt the TOTP secret")
-        return False
-    return await auth_mgr.verify_totp_code(row["id"], secret, code)
+        return TotpOutcome.WRONG
+    # A correct code whose step is already in the replay cache is reported as reused; auth records no second use of it
+    step = _matched_totp_step(secret, code)
+    if step is not None and await _totp_step_used(request, row["id"], step):
+        return TotpOutcome.REUSED
+    return TotpOutcome.VALID if await auth_mgr.verify_totp_code(row["id"], secret, code) else TotpOutcome.WRONG
 
 
 TOTP_MAX_FAILURES = 5
 TOTP_LOCKOUT_S = 900
 
 
-async def checked_totp(request: Request, code: str | None, throttle_key: str, **who: Any) -> bool:
+async def checked_totp(request: Request, code: str | None, throttle_key: str, **who: Any) -> TotpOutcome:
     """``verify_totp`` with a lockout: 5 wrong codes in 15 min lock the key out for 15 min (a 6-digit
-    code must not be brute-forceable). Fails closed when Redis is unavailable."""
+    code must not be brute-forceable). A correct or reused code is not a failed guess and is not counted.
+    Fails closed when Redis is unavailable."""
     r = _redis(request)
     key = f"ai:totp_failures:{throttle_key}"
     if r is None:
-        return False
+        return TotpOutcome.WRONG
     try:  # count the attempt before checking it, so parallel guesses cannot overshoot the limit
         attempts = int(await r.incr(key))
         if attempts == 1:
             await r.expire(key, TOTP_LOCKOUT_S)
     except Exception:
-        return False
+        return TotpOutcome.WRONG
     if attempts > TOTP_MAX_FAILURES:
         raise HTTPException(status_code=429, detail="TOTP_LOCKED: too many wrong codes; try again in 15 minutes")
-    if await verify_totp(request, code, **who):
+    outcome = await verify_totp(request, code, **who)
+    if outcome is not TotpOutcome.WRONG:
         try:
             await r.decr(key)  # a correct code is not a failure
         except Exception:
             pass
-        return True
-    return False
+    return outcome
 
 
 async def require_totp(request: Request, auth: dict, code: str | None) -> None:
     if not auth.get("user_id"):
         raise HTTPException(status_code=403, detail="TOTP_REQUIRED: a machine token cannot add risk")
-    if not await checked_totp(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"]):
+    outcome = await checked_totp(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"])
+    if outcome is TotpOutcome.REUSED:
+        raise HTTPException(status_code=401, detail="TOTP_REUSED: this code was already used (each code works once); "
+                            "wait for the next code from your authenticator")
+    if outcome is not TotpOutcome.VALID:
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED: this change gives the AI more room; enter your current TOTP code")
 
 
@@ -306,6 +343,11 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
     if req.allow_perps:
         raise HTTPException(status_code=422, detail="MANDATE_PERPS_NOT_ALLOWED: perps can be enabled only after L3 (O1)")
     await require_fed(request, req.instruments)  # D4: no mandate on an instrument ingest does not feed
+    # A stopped mandate on one of these instruments refuses the request whatever the code: refuse first, so the
+    # operator's code is not spent on it (the same check runs again inside the transaction below, against a race)
+    async with request.app.state.pool.acquire() as conn:
+        if stopped := await _stopped_mandate_on(conn, [canonical_instrument(i) for i in req.instruments]):
+            raise HTTPException(status_code=409, detail=stopped)
     await require_totp(request, auth, req.totp_code)
     try:
         m = Mandate(id=uuid.uuid4(), **req.model_dump(exclude={"totp_code"}))
@@ -496,7 +538,10 @@ async def decide_from_telegram(approval_id: uuid.UUID, request: Request):
             raise HTTPException(status_code=404, detail="Approval not found")
         if action == ActionClass.ADD_RISK:
             operator = os.getenv("NOTIFIER_OPERATOR_USERNAME", "")
-            if not operator or not await checked_totp(request, req.totp_code, f"telegram:{operator}", username=operator):
+            outcome = None
+            if operator:
+                outcome = await checked_totp(request, req.totp_code, f"telegram:{operator}", username=operator)
+            if outcome is not TotpOutcome.VALID:
                 raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
     return await _decide(request, approval_id, approve, "telegram", f"telegram:{req.chat_id}")
 

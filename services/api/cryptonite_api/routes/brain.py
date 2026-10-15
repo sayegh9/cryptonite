@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 from cryptonite_api.brain_outcomes import card_patch, command_outcome, followed_cards
 from cryptonite_api.routes.agents import sign_request
+from cryptonite_api.routes.ai import _stopped_mandate_on
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.universe import require_fed
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
@@ -296,6 +297,14 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     pool = request.app.state.pool
     async with pool.acquire() as conn:
         mandate, why = await resolve_mandate_for(conn, card["instrument_id"], req.mandate_id if req else None)
+    if mandate is None and why == "NO_MANDATE" and card["side"] == "BUY":
+        # A PAUSED or HALTED mandate on the instrument is the real reason: the operator stopped it. Say so, not "no
+        # mandate", which would send the operator to create one inline, where the same stop refuses it
+        async with pool.acquire() as conn:
+            stopped = await _stopped_mandate_on(conn, [canonical_instrument(card["instrument_id"])])
+        if stopped is not None:
+            raise HTTPException(status_code=409, detail=f"{stopped.removesuffix('; resume or edit it instead')}; "
+                                "resume it on the Mandates page, then approve this card")
     if mandate is None:
         raise HTTPException(status_code=409, detail=f"{why}: approve this card inside an ACTIVE mandate that allows "
                             f"{card['instrument_id']} (Mission Control → Mandates)")
