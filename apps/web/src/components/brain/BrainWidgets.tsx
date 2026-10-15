@@ -6,6 +6,7 @@ import { approveOrderCard, fetchCardOutcome, rejectOrderCard } from "@/lib/brain
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { createMandate } from "@/lib/mission/client";
+import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import type {
   BrainWidget,
   DebateSummaryWidget,
@@ -443,6 +444,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [error, setError] = useState<string | null>(null);
   // An entry on an instrument no ACTIVE mandate allows: the card creates the mandate inline (TOTP, checked by the API)
   const [needsMandate, setNeedsMandate] = useState(false);
+  // A paused or halted mandate already covers the instrument: the server's reason, and resuming it is the fix (no TOTP form)
+  const [mandateBlock, setMandateBlock] = useState<string | null>(null);
   const [mandateName, setMandateName] = useState(`Brain ${widget.instrument_id}`);
   const [mandateBudget, setMandateBudget] = useState("10000");
   const [totp, setTotp] = useState("");
@@ -460,6 +463,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const approve = async () => {
     setBusy(true);
     setError(null);
+    setMandateBlock(null);
     try {
       let mandateId: string | undefined;
       if (needsMandate) {
@@ -481,9 +485,19 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       setConfirming(false);
     } catch (e: any) {
       const msg: string = e?.message || "Order rejected";
-      if (buy && msg.startsWith("NO_MANDATE")) setNeedsMandate(true);
-      else setError(msg);
+      if (buy && msg.startsWith("NO_MANDATE")) {
+        setNeedsMandate(true);
+      } else if (msg.startsWith("MANDATE_PAUSED") || msg.startsWith("MANDATE_HALTED")) {
+        // Nothing was queued. Resuming the mandate is the fix, so no mandate form; Approve stays for a retry after resuming
+        setNeedsMandate(false);
+        setConfirming(false);
+        setMandateBlock(msg);
+      } else {
+        setError(msg);
+      }
     } finally {
+      // A used code is never re-sent: the TOTP box is emptied after every submit, success or failure
+      setTotp("");
       setBusy(false);
     }
   };
@@ -646,9 +660,26 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <XCircle className="h-3 w-3" /> Rejected by you
         </p>
       )}
+      {mandateBlock && (
+        <p role="alert" className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-amber-300">
+          <AlertTriangle className="h-3 w-3" aria-hidden /> Order not queued: {mandateBlock}
+          <a
+            href={`/${buildQuery("mission", "mandates")}`}
+            onClick={(e) => {
+              e.preventDefault();
+              dispatchSwitchWorkspace({ mode: "mission", view: "mandates" });
+            }}
+            className="font-bold text-cyan-400 underline hover:text-cyan-300"
+          >
+            Open Mandates
+          </a>
+        </p>
+      )}
       {(widget.status === "FAILED" || error) && (
         <p role="alert" className="mt-2 flex items-center gap-1 text-rose-400">
-          <XCircle className="h-3 w-3" /> Order not queued{error ? `: ${error}` : ""}
+          <XCircle className="h-3 w-3" />{" "}
+          {/* A reused code says what to do next (wait for the next code), so it is shown exactly as the API wrote it */}
+          {error?.startsWith("TOTP_REUSED") ? error : `Order not queued${error ? `: ${error}` : ""}`}
         </p>
       )}
       {!buy && error?.startsWith("NO_MANDATE") && (
