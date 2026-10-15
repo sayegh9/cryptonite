@@ -134,6 +134,14 @@ async def test_view_exposes_exactly_the_contract_columns(conn, view):
 @pytest.mark.parametrize("table", BASE_TABLES)
 async def test_the_agent_role_has_no_select_on_the_base_table(conn, table):
     assert not await conn.fetchval("SELECT has_table_privilege('cryptonite_agent_ro', $1, 'SELECT')", table)
+    # Column-level grants would also leak the table, so check every column too
+    assert not await conn.fetchval("SELECT has_any_column_privilege('cryptonite_agent_ro', $1, 'SELECT')", table)
+
+
+@pytest.mark.parametrize("view", sorted(VIEWS))
+async def test_view_runs_with_security_barrier(conn, view):
+    options = await conn.fetchval("SELECT reloptions FROM pg_class WHERE oid = to_regclass($1)", view)
+    assert options is not None and "security_barrier=true" in options
 
 
 async def test_views_run_as_the_agent_role(conn):
@@ -208,7 +216,8 @@ async def test_debate_runs_older_than_30_days_are_absent(conn):
 
 async def test_only_pending_approvals_appear(conn):
     m = await mandate(conn)
-    for status in ("PENDING", "APPROVED", "VETOED", "EXPIRED", "CANCELLED"):
+    # Every value of the ai_approvals chk_ai_approvals_status CHECK constraint
+    for status in ("PENDING", "APPROVED", "VETOED", "EXPIRED", "EXPIRED_PROCEEDED", "CANCELLED"):
         await approval(conn, m, status)
     rows = await conn.fetch("SELECT * FROM agent_safe_open_approvals WHERE mandate_id = $1", m)
     assert len(rows) == 1

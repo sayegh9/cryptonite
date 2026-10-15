@@ -34,7 +34,7 @@ VIEWS = (
 def upgrade() -> None:
     # Live (not archived) mandates, with the latest equity row of each
     op.execute("""
-        CREATE OR REPLACE VIEW agent_safe_mandate_health AS
+        CREATE OR REPLACE VIEW agent_safe_mandate_health WITH (security_barrier) AS
         SELECT m.id, m.name, m.status, m.autonomy_level, m.level_since, m.instruments, m.capital_budget_usd,
                m.max_position_pct, m.max_drawdown_pct, m.halted_reason, m.halted_at,
                e.equity, e.hwm, e.drawdown_pct, e.ts AS equity_ts
@@ -52,7 +52,7 @@ def upgrade() -> None:
 
     # Debate runs of the last 30 days, with the latest portfolio decision of each (a run may have several rows)
     op.execute("""
-        CREATE OR REPLACE VIEW agent_safe_debate_verdicts AS
+        CREATE OR REPLACE VIEW agent_safe_debate_verdicts WITH (security_barrier) AS
         SELECT r.id AS run_id, r.instrument_id, r.status, r.trigger_source, r.created_at, r.completed_at,
                r.failure_reason, r.mandate_id, r.decision_trace_id,
                d.recommendation, d.conviction_score, d.conviction_level, d.allocation_pct, d.decision_price,
@@ -71,7 +71,7 @@ def upgrade() -> None:
 
     # Approvals still waiting for a decision
     op.execute("""
-        CREATE OR REPLACE VIEW agent_safe_open_approvals AS
+        CREATE OR REPLACE VIEW agent_safe_open_approvals WITH (security_barrier) AS
         SELECT id, mandate_id, action_class, command_type, summary, source, level_at_creation, timeout_policy,
                expires_at, created_at
         FROM ai_approvals
@@ -81,7 +81,7 @@ def upgrade() -> None:
 
     # Post-trade reflections, with the instrument of their debate run
     op.execute("""
-        CREATE OR REPLACE VIEW agent_safe_reflections AS
+        CREATE OR REPLACE VIEW agent_safe_reflections WITH (security_barrier) AS
         SELECT f.id, f.run_id, r.instrument_id, f.timeframe, f.volatility_regime, f.outcome, f.actual_outcome_pnl,
                f.alpha_vs_benchmark, f.lessons_learned, f.created_at
         FROM reflections f
@@ -91,7 +91,7 @@ def upgrade() -> None:
 
     # Kill switch state per environment and account: whether it is latched, and why
     op.execute("""
-        CREATE OR REPLACE VIEW agent_safe_risk_latches AS
+        CREATE OR REPLACE VIEW agent_safe_risk_latches WITH (security_barrier) AS
         SELECT environment, account_id, is_latched, latched_at, reason
         FROM execution_kill_switch
     """)
@@ -99,7 +99,7 @@ def upgrade() -> None:
 
     # The daily loss limit of each paper account: today's realized P&L and whether it is latched
     op.execute("""
-        CREATE OR REPLACE VIEW agent_safe_daily_loss AS
+        CREATE OR REPLACE VIEW agent_safe_daily_loss WITH (security_barrier) AS
         SELECT account_id, utc_trading_day, daily_realized_pnl, daily_loss_latched
         FROM paper_accounts
     """)
