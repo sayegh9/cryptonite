@@ -88,6 +88,16 @@ async def test_approving_a_buy_card_under_a_stopped_mandate_names_the_stop(h, br
     assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
 
 
+async def test_the_card_hint_keeps_a_mandate_name_that_holds_a_semicolon(h, brain_card):
+    # Names are free text: the hint is cut at the helper's own tail, not at the first ";" in the name
+    await h.mandate(instruments=(BTC,), status="PAUSED", name="btc; core")
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 409
+    assert res.json()["detail"] == (f"MANDATE_PAUSED: btc; core already covers {BTC}; "
+                                    "resume it on the Mandates page, then approve this card")
+
+
 async def test_approving_a_buy_card_with_no_mandate_still_says_no_mandate(h, brain_card):
     card, notes = brain_card
     async with h.client() as c:

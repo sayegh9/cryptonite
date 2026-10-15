@@ -303,8 +303,10 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         async with pool.acquire() as conn:
             stopped = await _stopped_mandate_on(conn, [canonical_instrument(card["instrument_id"])])
         if stopped is not None:
-            raise HTTPException(status_code=409, detail=f"{stopped.removesuffix('; resume or edit it instead')}; "
-                                "resume it on the Mandates page, then approve this card")
+            # The helper's reason is "<status>: <mandate name> already covers <instrument>; <tail>". A mandate name is
+            # free text and may hold a ";", so cut at the last one: the tail is the helper's own and is never repeated
+            reason = stopped.rsplit(";", 1)[0]
+            raise HTTPException(status_code=409, detail=f"{reason}; resume it on the Mandates page, then approve this card")
     if mandate is None:
         raise HTTPException(status_code=409, detail=f"{why}: approve this card inside an ACTIVE mandate that allows "
                             f"{card['instrument_id']} (Mission Control → Mandates)")
