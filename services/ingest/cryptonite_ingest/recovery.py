@@ -8,6 +8,7 @@ import asyncpg
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline, bar_to_nautilus
 from cryptonite_storage.coordinator import TwoStoreCoordinator
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
+from cryptonite_storage.queries import timeframe_ns
 from nautilus_trader.model import Bar, BarType
 
 from cryptonite_ingest.client import BinanceRestClient
@@ -106,6 +107,26 @@ class GapRecoveryManager:
         logger.warning("Refilled %d bar(s) for %s from REST", healed, bar_type)
         return healed
 
+    @staticmethod
+    def _take_buffered(
+        stream_client: BinanceStreamClient, symbol: str, timeframe: str
+    ) -> list[tuple[RawBinanceKline, int]]:
+        """Remove and return this stream's buffered closed bars; other streams' bars are re-queued."""
+        taken, unmatched = [], []
+        while not stream_client.closed_bar_buffer.empty():
+            try:
+                item = stream_client.closed_bar_buffer.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            s, tf, k_buf, arr_ns = item
+            if s == symbol and tf == timeframe:
+                taken.append((k_buf, arr_ns))
+            else:
+                unmatched.append(item)
+        for item in unmatched:
+            stream_client.closed_bar_buffer.put_nowait(item)
+        return taken
+
     async def recover_gaps_for_stream(
         self,
         symbol: str,
@@ -119,6 +140,15 @@ class GapRecoveryManager:
         """Execute subscribe-before-backfill sequence to guarantee zero gaps."""
         now_ns = time.time_ns()
         checkpoint_ns = await self.get_durable_checkpoint(symbol, timeframe)
+        if checkpoint_ns is not None and not timeframe.endswith("w"):  # Binance weeks start on Monday, not at the epoch
+            # A bar's ts_event is its close, on an epoch-aligned boundary: when the checkpoint already holds
+            # the newest closed bar, nothing can be missing from it to now. Most reconnects end here, with
+            # no catalog scan and no REST call (before: one REST call per stream on every reconnect).
+            step_ns = timeframe_ns(timeframe)
+            if checkpoint_ns >= now_ns // step_ns * step_ns:
+                self._take_buffered(stream_client, symbol, timeframe)  # already committed live
+                logger.debug("No closed %s %s bar since the checkpoint; nothing to recover", symbol, timeframe)
+                return 0
         start_ns = checkpoint_ns if checkpoint_ns else (now_ns - lookback_seconds * 1_000_000_000)
 
         bar_id = str(bar_type)
@@ -183,32 +213,18 @@ class GapRecoveryManager:
                     break
                 cur_start_ms = next_start
 
-            # Drain any buffered closed bars from the stream that arrived during the REST fetch
-            # IMPORTANT: Re-queue bars belonging to other symbols or timeframes to avoid losing them
-            buffered_bars = []
-            unmatched = []
-            while not stream_client.closed_bar_buffer.empty():
-                try:
-                    item = stream_client.closed_bar_buffer.get_nowait()
-                    s, tf, k_buf, arr_ns = item
-                    if s == symbol and tf == timeframe:
-                        buffered_bars.append(
-                            EnrichedBar.from_binance_raw(
-                                raw=k_buf,
-                                instrument_id=f"{symbol}.BINANCE",
-                                bar_type=bar_id,
-                                price_precision=price_precision,
-                                size_precision=size_precision,
-                                received_at_ns=arr_ns,
-                            )
-                        )
-                    else:
-                        unmatched.append(item)
-                except asyncio.QueueEmpty:
-                    break
-
-            for item in unmatched:
-                stream_client.closed_bar_buffer.put_nowait(item)
+            # Closed bars the stream received for this stream during the REST fetch
+            buffered_bars = [
+                EnrichedBar.from_binance_raw(
+                    raw=k_buf,
+                    instrument_id=f"{symbol}.BINANCE",
+                    bar_type=bar_id,
+                    price_precision=price_precision,
+                    size_precision=size_precision,
+                    received_at_ns=arr_ns,
+                )
+                for k_buf, arr_ns in self._take_buffered(stream_client, symbol, timeframe)
+            ]
 
             # A gap that reaches "now" returns the still-open kline; committing it would move the
             # checkpoint past the live bar, and the stream's real closed bar would then be skipped

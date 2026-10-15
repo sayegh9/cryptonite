@@ -351,6 +351,27 @@ test.describe("Mission Control", () => {
     await expect(page.getByTestId("health-local-tier")).toHaveAttribute("data-health", "up");
   });
 
+  test("exit monitor tile says which price the stops run on and flags blind positions", async ({ page }) => {
+    const coverage = (sources: ("STREAM" | "REST" | null)[], blind: Record<string, number>) => ({
+      checked_at: Math.floor(Date.now() / 1000),
+      positions: sources.map((source, i) => ({
+        instrument_id: ["BTCUSDT.BINANCE", "XRPUSDT.BINANCE"][i], source, blind_since: source === null ? 1 : null,
+      })),
+      blind_s_24h: blind,
+    });
+    await mockBackend(page, { status: { ...OK_STATUS, stop_coverage: coverage(["STREAM", "REST"], { "XRPUSDT.BINANCE": 150 }) } });
+    await openMissionControl(page);
+    const tile = page.getByTestId("health-exit-monitor");
+    await expect(tile).toHaveAttribute("data-health", "up");
+    await expect(tile).toContainText("backup price: XRPUSDT");
+    await expect(tile).toContainText("blind 3m / 24h");
+
+    await mockBackend(page, { status: { ...OK_STATUS, stop_coverage: coverage(["STREAM", null], {}) } });
+    await openMissionControl(page);
+    await expect(tile).toHaveAttribute("data-health", "down");
+    await expect(tile).toContainText("stops blind: XRPUSDT");
+  });
+
   test("mandate editor asks for TOTP only when a change adds risk", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     const calls = await mockBackend(page);

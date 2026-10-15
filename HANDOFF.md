@@ -126,9 +126,13 @@ Last full results (2026-10-13, #86): pytest 1957 passed / 0 failed plus 2 destru
 
 ## Known risks to watch
 
-- **Quote pause after a spot reconnect (#55):** gap recovery holds a lock that the spot socket's closed-bar
-  handler waits on, so spot quotes can stall for about 14 s; the exit monitor then logs "No fresh quote" and skips
-  a cycle. None seen since the deploy.
+- **Stop-loss blindness (fixed 2026-10-15, `fix/stop-blindness`):** on the Wi-Fi extender the spot socket
+  reconnected ~480 times a day, and each reconnect's gap recovery froze spot quotes for ~14 s (#55 lock); the exit
+  monitor skipped 522 checks in 24 h and the XRP hard stop filled at -5.28%. Now closed bars wait off the receive
+  loop, a reconnect with no missed bar makes no REST call, and a stale quote falls back to Binance's REST book
+  ticker. Mission Control's Exit monitor tile shows the price source and blind time per 24 h; a CRITICAL
+  NO_FRESH_QUOTE alert goes out after two blind checks in a row. Ethernet instead of the extender is still the
+  real fix for the reconnects.
 - **Futures bookTicker socket** reconnects about twice a minute (keepalive ping timeout). No effect seen; it has no
   recovery hook.
 - **Scanner `/health`** answers in 7–10 s while a scan runs (timeout 20 s).

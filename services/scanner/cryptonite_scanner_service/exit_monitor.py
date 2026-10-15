@@ -1,7 +1,12 @@
 """Exit monitor (AI-first blueprint A2.6): deterministic exits by default, exit debates only on events.
 
 Prices come from the same live quote stream the paper orchestrator fills against
-(``cryptonite:stream:ui_quote_tick``); a position without a fresh quote is not evaluated at all.
+(``cryptonite:stream:ui_quote_tick``). When that quote is older than ``MAX_QUOTE_AGE_S`` the stop is
+checked against Binance's REST book ticker instead (the stream stalls on every reconnect of a flaky
+network, and a stale quote used to skip the stop). Only a position with neither price is not evaluated:
+it is "blind". Blind time is counted per instrument (``exit_monitor:blind_s:<hour>``) and the current
+price source per position is published at ``exit_monitor:coverage`` for Mission Control; a CRITICAL
+NO_FRESH_QUOTE alert goes out once a position has been blind for ``BLIND_ALERT_CYCLES`` checks in a row.
 
 Every ``INTERVAL_S`` each open paper position is evaluated with pure rules (``evaluate_exit``):
 - hard stop: loss >= ``STOP_LOSS_PCT`` at the live exit price (bid for longs, ask for shorts)
@@ -35,6 +40,7 @@ import uuid
 from dataclasses import asdict, dataclass, replace
 
 import asyncpg
+import httpx
 import redis.asyncio as redis
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS, ExitThresholds, settled
 from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
@@ -61,6 +67,13 @@ DEBATE_DEBOUNCE_S = 4 * 3600
 REARM_FRACTION = 0.5  # a drawdown episode ends when the loss recovers to half the trigger
 CLOSE_RETRY_AFTER_S = 60
 ALERT_DEBOUNCE_S = 3600
+BLIND_ALERT_CYCLES = 2  # one blind check is a blip; two in a row (about a minute) pages the operator
+COVERAGE_KEY = "exit_monitor:coverage"
+BLIND_S_KEY = "exit_monitor:blind_s:{hour}"  # hash: instrument -> blind seconds in that UTC hour
+BLIND_S_TTL_S = 26 * 3600
+REST_TIMEOUT_S = 3.0
+SPOT_BOOK_TICKER_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
+PERP_BOOK_TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/bookTicker"
 
 
 def default_thresholds() -> ExitThresholds:
@@ -112,6 +125,7 @@ class Position:
     opened_ts: int = 0  # identity of the position (earliest open row), for per-position state
     funding_rate: float | None = None
     owner_instance: str = AI_INSTANCE  # the one AI instance (legacy or a mandate's) that owns every row
+    price_source: str = "STREAM"  # STREAM (live quote) | REST (backup: the stream quote was stale)
 
     @property
     def pnl_pct(self) -> float:
@@ -198,7 +212,72 @@ class QuoteBook:
             pass
 
 
-async def load_positions(conn, redis_client, quotes: QuoteBook) -> list[Position]:
+_SOURCE_RANK = {"STREAM": 0, "REST": 1, None: 2}
+
+
+async def rest_exit_price(http: httpx.AsyncClient | None, instrument_id: str, side: str) -> float | None:
+    """The backup exit price from Binance's REST book ticker (bid for longs, ask for shorts); None on any failure."""
+    if http is None:
+        return None
+    symbol = instrument_id.split(".")[0]
+    perp = symbol.endswith("-PERP")
+    try:
+        resp = await http.get(PERP_BOOK_TICKER_URL if perp else SPOT_BOOK_TICKER_URL,
+                              params={"symbol": symbol.removesuffix("-PERP").upper()}, timeout=REST_TIMEOUT_S)
+        resp.raise_for_status()
+        book = resp.json()
+        price = float(book["bidPrice"] if side == "LONG" else book["askPrice"])
+        return price if price > 0 else None
+    except Exception as e:
+        logger.warning("Backup REST price for %s failed: %s", instrument_id, e)
+        return None
+
+
+class Coverage:
+    """Which price each position's stops ran on, and how long each has been blind (no price at all)."""
+
+    def __init__(self) -> None:
+        self.blind_cycles: dict[str, int] = {}  # instrument -> consecutive blind checks
+        self.blind_since: dict[str, float] = {}  # instrument -> first blind check of the current run
+        self.last_check: float | None = None
+
+    async def record(self, redis_client, sources: dict[str, str | None], now_s: float | None = None) -> None:
+        """``sources``: instrument -> STREAM | REST, or None when blind. Counts blind seconds, alerts on
+        sustained blindness, and publishes the snapshot Mission Control reads."""
+        now_s = time.time() if now_s is None else now_s
+        elapsed = min(now_s - self.last_check, 3 * INTERVAL_S) if self.last_check else 0.0
+        self.last_check = now_s
+        hour_key = BLIND_S_KEY.format(hour=time.strftime("%Y%m%d%H", time.gmtime(now_s)))
+        for inst in list(self.blind_cycles):
+            if sources.get(inst, "gone") is not None:  # priced again, or the position closed
+                self.blind_cycles.pop(inst, None)
+                self.blind_since.pop(inst, None)
+        for inst, source in sources.items():
+            if source is not None:
+                continue
+            cycles = self.blind_cycles[inst] = self.blind_cycles.get(inst, 0) + 1
+            self.blind_since.setdefault(inst, now_s)
+            if elapsed:
+                await redis_client.hincrbyfloat(hour_key, inst, round(elapsed, 1))
+                await redis_client.expire(hour_key, BLIND_S_TTL_S)
+            if cycles >= BLIND_ALERT_CYCLES and await redis_client.set(
+                    f"exit:alert:{inst}:NO_QUOTE", "1", nx=True, ex=ALERT_DEBOUNCE_S):
+                await redis_client.publish("channel:system_alerts", json.dumps({
+                    "type": "EXIT_MONITOR", "severity": "CRITICAL", "instrument_id": inst,
+                    "action": "ALERT", "reason": "NO_FRESH_QUOTE",
+                    "blind_s": round(now_s - self.blind_since[inst]),
+                }))
+        await redis_client.set(COVERAGE_KEY, json.dumps({
+            "checked_at": now_s,
+            "positions": [{"instrument_id": inst, "source": source,
+                           "blind_since": self.blind_since.get(inst)} for inst, source in sorted(sources.items())],
+        }), ex=int(max(90, 3 * INTERVAL_S)))
+
+
+async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.AsyncClient | None = None,
+                         sources: dict[str, str | None] | None = None) -> list[Position]:
+    """Open positions priced for their stops. ``sources`` (filled in when given): instrument -> the price
+    source used, None for a blind position."""
     rows = await conn.fetch(
         """
         WITH open_rows AS (
@@ -219,16 +298,19 @@ async def load_positions(conn, redis_client, quotes: QuoteBook) -> list[Position
         PAPER_ACCOUNT_ID, AI_INSTANCE,
     )
     positions = []
+    sources = {} if sources is None else sources
     for r in rows:
-        price = quotes.exit_price(r["instrument_id"], r["side"])
+        inst = r["instrument_id"]
+        price, source = quotes.exit_price(inst, r["side"]), "STREAM"
         if price is None:
-            # A stop monitor without prices must fail loudly, not silently skip
-            logger.warning("No fresh quote for %s: stops are not being evaluated", r["instrument_id"])
-            if await redis_client.set(f"exit:alert:{r['instrument_id']}:NO_QUOTE", "1", nx=True, ex=ALERT_DEBOUNCE_S):
-                await redis_client.publish("channel:system_alerts", json.dumps({
-                    "type": "EXIT_MONITOR", "severity": "CRITICAL", "instrument_id": r["instrument_id"],
-                    "action": "ALERT", "reason": "NO_FRESH_QUOTE",
-                }))
+            price, source = await rest_exit_price(http, inst, r["side"]), "REST"
+        if price is None:
+            source = None
+            # A stop monitor without prices must fail loudly, not silently skip (Coverage alerts)
+            logger.warning("No fresh or backup price for %s: stops are not being evaluated", inst)
+        # both sides of an instrument: it is as covered as its worst-covered side
+        sources[inst] = max(sources.get(inst, "STREAM"), source, key=_SOURCE_RANK.__getitem__)
+        if price is None:
             continue
         funding = None
         sym = r["instrument_id"].split(".")[0].replace("-PERP", "").upper()
@@ -240,7 +322,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook) -> list[Position
         positions.append(Position(
             r["instrument_id"], r["side"], float(r["entry_price"] or 0), price, bool(r["ai_owned"]),
             int(r["opened_at"].timestamp()) if r["opened_at"] else 0, funding,
-            r["owner"] if r["ai_owned"] else AI_INSTANCE,
+            r["owner"] if r["ai_owned"] else AI_INSTANCE, source,
         ))
     return positions
 
@@ -300,10 +382,15 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
         }))
 
 
-async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds | None = None) -> None:
+async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds | None = None,
+                       http: httpx.AsyncClient | None = None, coverage: Coverage | None = None) -> None:
     t = t or default_thresholds()
+    sources: dict[str, str | None] = {}
     async with pool.acquire() as conn:
-        for pos in await load_positions(conn, redis_client, quotes):
+        positions = await load_positions(conn, redis_client, quotes, http, sources)
+        # the loop passes one Coverage for its lifetime: blind checks in a row are counted across cycles
+        await (coverage or Coverage()).record(redis_client, sources)
+        for pos in positions:
             best = await best_price_since_open(redis_client, pos)
             episode_key = f"exit:dd_episode:{pos.key}"
             if pos.pnl_pct > -t.debate_drawdown_pct * REARM_FRACTION:
@@ -323,6 +410,8 @@ async def monitor_loop():
     redis_client = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=30)  # redis-py 8 times a blocking read out at exactly its block time (LE-3)
     pool = await asyncpg.create_pool(DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://"), min_size=1, max_size=2)
     quotes = QuoteBook()
+    http = httpx.AsyncClient()
+    coverage = Coverage()
     follower = asyncio.create_task(quotes.follow(redis_client))
     while True:
         if follower.done():  # supervise the quote feed: never run stops on a dead feed
@@ -334,7 +423,7 @@ async def monitor_loop():
             if applied != state:
                 logger.info("Exit thresholds now %s", applied)
             state = applied
-            await monitor_once(pool, redis_client, quotes, state)
+            await monitor_once(pool, redis_client, quotes, state, http, coverage)
             # Brain order approvals are refused unless this is fresh: AI-owned positions rely on it for stops.
             # The payload carries the set in force, so the registry can show what the monitor actually applies.
             await redis_client.set(HEARTBEAT_KEY, json.dumps(asdict(state)), ex=int(max(90, 3 * interval)))

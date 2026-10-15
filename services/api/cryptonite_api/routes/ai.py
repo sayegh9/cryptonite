@@ -73,6 +73,8 @@ EXIT_MONITOR_HEARTBEAT = "exit_monitor:heartbeat"
 NOTIFIER_HEARTBEAT = "notifier:heartbeat"
 LEARNER_HEARTBEAT = "learner:heartbeat"
 SENTIMENT_LAST_OK = "sentiment:last_ok"  # unix seconds of the last answered news-sentiment call
+EXIT_COVERAGE = "exit_monitor:coverage"  # the price source each position's stops last ran on
+EXIT_BLIND_S = "exit_monitor:blind_s:{hour}"  # hash per UTC hour: instrument -> seconds with no price at all
 TOTP_RE = re.compile(r"^\d{6}$")
 
 
@@ -499,6 +501,24 @@ async def decide_from_telegram(approval_id: uuid.UUID, request: Request):
     return await _decide(request, approval_id, approve, "telegram", f"telegram:{req.chat_id}")
 
 
+async def read_stop_coverage(r, now: datetime.datetime | None = None) -> dict | None:
+    """The exit monitor's last coverage snapshot plus each instrument's blind seconds over the last 24 hours;
+    None when the monitor has not published one (down, or not started)."""
+    raw = await r.get(EXIT_COVERAGE)
+    if not raw:
+        return None
+    snap = json.loads(raw)
+    now = now or datetime.datetime.now(datetime.UTC)
+    blind: dict[str, float] = {}
+    for i in range(24):
+        hour = (now - datetime.timedelta(hours=i)).strftime("%Y%m%d%H")
+        for inst, seconds in (await r.hgetall(EXIT_BLIND_S.format(hour=hour)) or {}).items():
+            inst = inst.decode() if isinstance(inst, bytes) else inst
+            blind[inst] = blind.get(inst, 0.0) + float(seconds)
+    return {"checked_at": snap.get("checked_at"), "positions": snap.get("positions", []),
+            "blind_s_24h": {k: round(v) for k, v in sorted(blind.items())}}
+
+
 @router.get("/status")
 async def ai_status(request: Request, auth: dict = Depends(require_operator)):
     """What Mission Control's banners show: kill switch, halted mandates, stop protection, notifier, spend."""
@@ -508,9 +528,11 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
     sentiment_last_ok: int | None = None
     budget_alert = False
     local_tier = None
+    stop_coverage = None
     if r is not None:
         try:
             exit_up = bool(await r.get(EXIT_MONITOR_HEARTBEAT))
+            stop_coverage = await read_stop_coverage(r)
             notifier_up = bool(await r.get(NOTIFIER_HEARTBEAT))
             local_tier = read_local_tier(await r.get(LOCAL_TIER_HEALTH))
             learner_up = bool(await r.get(LEARNER_HEARTBEAT))
@@ -531,6 +553,10 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         degraded.append(f"PAPER kill switch latched: {ks['reason']}")
     if not exit_up:
         degraded.append("Exit monitor down: AI positions have no deterministic stops and new AI orders are refused")
+    elif stop_coverage:
+        blind_now = [p["instrument_id"] for p in stop_coverage["positions"] if p.get("source") is None]
+        if blind_now:
+            degraded.append(f"Stops blind on {', '.join(blind_now)}: no live or backup price, stop-losses are not being checked")
     if not notifier_up:
         degraded.append("Notifier down: no Telegram approvals or Critical alerts")
     if budget_alert:
@@ -545,6 +571,8 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
         "account": {"equity": _dec(backstop["equity"]), "hwm": _dec(backstop["hwm"]), "drawdown_pct": _dec(backstop["drawdown_pct"]),
                     "backstop_pct": "20"} if backstop else None,
         "exit_monitor_up": exit_up, "notifier_up": notifier_up, "budget_alert": budget_alert, "degraded": degraded,
+        # None when Redis could not be read or the monitor has not published coverage yet
+        "stop_coverage": stop_coverage,
         # None when Redis could not be read (unknown, not down)
         "learner_up": learner_up, "sentiment_last_ok": sentiment_last_ok,
         # None until a gateway has probed the local tier (no role routed to it yet)

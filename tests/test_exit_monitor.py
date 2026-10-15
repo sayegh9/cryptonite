@@ -9,6 +9,7 @@ import random
 import uuid
 
 import asyncpg
+import httpx
 import pytest
 from cryptonite_scanner_service import exit_monitor as em
 from cryptonite_scanner_service.exit_monitor import ExitAction, Position, QuoteBook, evaluate_exit
@@ -123,6 +124,30 @@ class Redis:
     async def publish(self, channel, message):
         self.published.append(json.loads(message))
 
+    async def hincrbyfloat(self, key, field, amount):
+        h = self.kv.setdefault(key, {})
+        h[field] = h.get(field, 0.0) + amount
+        return h[field]
+
+    async def expire(self, key, seconds):
+        return True
+
+
+def rest_book(bid: float, ask: float | None = None, calls: list | None = None) -> httpx.AsyncClient:
+    """Binance's REST book ticker, answering every symbol with one price."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if calls is not None:
+            calls.append(request.url)
+        return httpx.Response(200, json={"symbol": request.url.params["symbol"], "bidPrice": str(bid),
+                                         "bidQty": "1", "askPrice": str(ask or bid), "askQty": "1"})
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def rest_down() -> httpx.AsyncClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("network down", request=request)
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
 
 def book(price: float, instrument: str = "BTCUSDT.BINANCE") -> QuoteBook:
     import time as _t
@@ -225,11 +250,64 @@ async def test_missing_quotes_raise_a_critical_alert(db_url):
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
     try:
         await seed(pool, ["AI_DEBATE_WORKER"], price=94.0)
-        redis = Redis()
-        await em.monitor_once(pool, redis, QuoteBook())
-        await em.monitor_once(pool, redis, QuoteBook())
+        redis, coverage = Redis(), em.Coverage()
+        await em.monitor_once(pool, redis, QuoteBook(), coverage=coverage)
+        assert not [p for p in redis.published if p.get("reason") == "NO_FRESH_QUOTE"]  # one blind check: a blip
+        await em.monitor_once(pool, redis, QuoteBook(), coverage=coverage)
+        await em.monitor_once(pool, redis, QuoteBook(), coverage=coverage)
         alerts = [p for p in redis.published if p.get("reason") == "NO_FRESH_QUOTE"]
-        assert len(alerts) == 1 and alerts[0]["severity"] == "CRITICAL"
+        assert len(alerts) == 1 and alerts[0]["severity"] == "CRITICAL"  # sustained: alerted once, debounced
+        assert json.loads(redis.kv[em.COVERAGE_KEY])["positions"][0]["source"] is None
+    finally:
+        await pool.close()
+
+
+async def test_a_stale_stream_quote_falls_back_to_rest_and_the_stop_still_fires(db_url):
+    """The 2026-10-15 XRP stop: the stream quote went stale on every reconnect and the stop was skipped."""
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    calls: list = []
+    try:
+        await seed(pool, ["AI_DEBATE_WORKER"], price=94.0)
+        redis = Redis()
+        await em.monitor_once(pool, redis, QuoteBook(), http=rest_book(94.0, calls=calls))
+        row = await pool.fetchrow("SELECT command_type, payload FROM execution_commands")
+        assert row["command_type"] == "CLOSE_POSITION" and json.loads(row["payload"])["reason"] == "HARD_STOP"
+        assert str(calls[0]).startswith(em.SPOT_BOOK_TICKER_URL) and calls[0].params["symbol"] == "BTCUSDT"
+        assert json.loads(redis.kv[em.COVERAGE_KEY])["positions"] == [
+            {"instrument_id": "BTCUSDT.BINANCE", "source": "REST", "blind_since": None}]
+        assert not [p for p in redis.published if p.get("reason") == "NO_FRESH_QUOTE"]
+    finally:
+        await pool.close()
+
+
+async def test_a_fresh_stream_quote_never_calls_rest(db_url):
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    calls: list = []
+    try:
+        await seed(pool, ["AI_DEBATE_WORKER"], price=100.0)
+        redis = Redis()
+        await em.monitor_once(pool, redis, book(100.0), http=rest_book(94.0, calls=calls))
+        assert calls == [] and await pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+        assert json.loads(redis.kv[em.COVERAGE_KEY])["positions"][0]["source"] == "STREAM"
+    finally:
+        await pool.close()
+
+
+async def test_blind_when_rest_is_down_too_and_the_blind_time_is_counted(db_url):
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        await seed(pool, ["AI_DEBATE_WORKER"], price=94.0)
+        redis, coverage = Redis(), em.Coverage()
+        await em.monitor_once(pool, redis, QuoteBook(), http=rest_down(), coverage=coverage)
+        coverage.last_check -= 30  # the next check runs one interval later
+        await em.monitor_once(pool, redis, QuoteBook(), http=rest_down(), coverage=coverage)
+        assert await pool.fetchval("SELECT count(*) FROM execution_commands") == 0  # never acts without a price
+        blind = {k: v for k, v in redis.kv.items() if k.startswith("exit_monitor:blind_s:")}
+        assert len(blind) == 1 and 29 <= next(iter(blind.values()))["BTCUSDT.BINANCE"] <= 31
+        assert [p["reason"] for p in redis.published] == ["NO_FRESH_QUOTE"]
+        # priced again: the blind run ends and a later blind run alerts only after two checks again
+        await em.monitor_once(pool, redis, QuoteBook(), http=rest_book(99.0), coverage=coverage)
+        assert coverage.blind_cycles == {} and json.loads(redis.kv[em.COVERAGE_KEY])["positions"][0]["blind_since"] is None
     finally:
         await pool.close()
 
@@ -257,3 +335,27 @@ async def test_two_ai_owners_on_one_instrument_only_alert(db_url):
         assert redis.published[-1]["action"] == "ALERT"
     finally:
         await pool.close()
+
+
+async def test_rest_exit_price_uses_the_exit_side_and_the_right_market():
+    calls: list = []
+    http = rest_book(99.0, 101.0, calls=calls)
+    assert await em.rest_exit_price(http, "XRPUSDT.BINANCE", "LONG") == 99.0  # a long exits at the bid
+    assert await em.rest_exit_price(http, "BTCUSDT-PERP.BINANCE", "SHORT") == 101.0  # a short at the ask
+    assert str(calls[0]).startswith(em.SPOT_BOOK_TICKER_URL) and calls[0].params["symbol"] == "XRPUSDT"
+    assert str(calls[1]).startswith(em.PERP_BOOK_TICKER_URL) and calls[1].params["symbol"] == "BTCUSDT"
+    assert await em.rest_exit_price(rest_down(), "XRPUSDT.BINANCE", "LONG") is None
+    assert await em.rest_exit_price(None, "XRPUSDT.BINANCE", "LONG") is None
+
+
+async def test_coverage_counts_blind_checks_in_a_row_and_forgets_closed_positions():
+    redis, coverage = Redis(), em.Coverage()
+    await coverage.record(redis, {"A.BINANCE": None, "B.BINANCE": "REST"}, now_s=1_000.0)
+    await coverage.record(redis, {"A.BINANCE": None, "B.BINANCE": "REST"}, now_s=1_030.0)
+    assert coverage.blind_cycles == {"A.BINANCE": 2}
+    snap = json.loads(redis.kv[em.COVERAGE_KEY])
+    assert snap["positions"] == [{"instrument_id": "A.BINANCE", "source": None, "blind_since": 1_000.0},
+                                 {"instrument_id": "B.BINANCE", "source": "REST", "blind_since": None}]
+    assert [p["blind_s"] for p in redis.published] == [30]
+    await coverage.record(redis, {}, now_s=1_060.0)  # the position closed
+    assert coverage.blind_cycles == {} and coverage.blind_since == {}
