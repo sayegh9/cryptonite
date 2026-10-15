@@ -33,6 +33,7 @@ from cryptonite_agents.gateway import (
     GatewayError,
     InvalidModelOutput,
 )
+from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX
 from cryptonite_agents.persona import Persona
 from cryptonite_schemas.mandate import MIN_HOLDING_QTY
 
@@ -156,15 +157,19 @@ class Brain:
                         yield BrainEvent("tool_call", {"id": call_id, "tool": ev.data["tool"], "phase": "end",
                                                        "status": status})
                         args = (calls.get(call_id) or {}).get("args") or {}
-                        if ev.data["tool"] == "propose_order" and order_cards:
-                            continue  # the turn's card is already staged: no second card for the same turn
-                        if ev.data["tool"] == "propose_order" and args.get("side") == "SELL":
-                            instrument = str(args.get("instrument_id", ""))
-                            if not await self._holds(instrument):
-                                # Spot cannot be shorted: no card. The reply says why, so the operator is not left guessing
-                                notes.append(f"No order card for {instrument}: spot cannot be shorted, and no AI mandate "
-                                             "holds it to sell.")
+                        if ev.data["tool"] == "propose_order":
+                            # Only the held call makes a card, and only the turn's first one. The gateway gives the
+                            # held call the "Held for approval" answer; a refused call gets "Refused" and no card.
+                            held = str(ev.data.get("content") or "").startswith(HELD_FOR_APPROVAL_PREFIX)
+                            if not held or order_cards:
                                 continue
+                            if args.get("side") == "SELL":
+                                instrument = str(args.get("instrument_id", ""))
+                                if not await self._holds(instrument):
+                                    # Spot cannot be shorted: no card. The reply says why, so the operator knows
+                                    notes.append(f"No order card for {instrument}: spot cannot be shorted, and no AI "
+                                                 "mandate holds it to sell.")
+                                    continue
                         widget = widget_for_tool(ev.data["tool"], args, call_id=call_id, status=status,
                                                  content=ev.data.get("content"), trace_id=trace_id)
                         if widget is not None:
@@ -172,6 +177,9 @@ class Brain:
                             if widget.get("kind") == "order_card":
                                 order_cards += 1
                             yield BrainEvent("widget", {"widget": widget})
+                        elif ev.data["tool"] == "propose_order":  # held, but the arguments cannot make a card
+                            notes.append("No order card: the proposal was incomplete (a LIMIT order needs a limit "
+                                         "price). Ask again with complete details.")
                     elif ev.kind == "done" and ev.result is not None:
                         res = ev.result
                         content = "".join(text).strip() or str(res.output)

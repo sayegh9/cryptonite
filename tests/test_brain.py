@@ -720,17 +720,22 @@ async def test_a_held_proposal_tells_the_model_the_hold_is_the_expected_result()
 
 async def test_a_second_proposal_in_one_turn_is_refused_and_renders_no_card():
     second = {**GOOD_ORDER, "instrument_id": "ETHUSDT.BINANCE"}
-    script = Script([("propose_order", GOOD_ORDER), ("propose_order", second)], ["One card is staged."])
-    with override_model(PLANNER, script.model()):
-        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC and ETH"))
-    assert len(_cards(events)) == 1
-    # Which of the two concurrent calls is held is not fixed; the other one must be the refusal
-    texts = sorted(t.split(":")[0] for t in _proposal_returns(script))
-    assert texts == ["Held for approval", "Refused"]
-    refused = next(t for t in _proposal_returns(script) if t.startswith("Refused"))
-    assert refused == ("Refused: only one order card per turn, and the first card is already waiting for the "
-                       "operator. Do not call propose_order again; tell the operator the card is waiting.")
-    assert events[-1].type == "done"
+    # The two calls of one model response run concurrently, so which one is held is not fixed. The card must be
+    # the held call's every time: a card for the refused call would show the operator an order the gateway refused.
+    for _ in range(30):
+        script = Script([("propose_order", GOOD_ORDER), ("propose_order", second)], ["One card is staged."])
+        with override_model(PLANNER, script.model()):
+            events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC and ETH"))
+        cards = _cards(events)
+        assert len(cards) == 1
+        held = [r for r in script.returns if r.tool_name == "propose_order" and str(r.content).startswith("Held")]
+        refused = [r for r in script.returns if r.tool_name == "propose_order" and str(r.content).startswith("Refused")]
+        assert len(held) == 1 and len(refused) == 1
+        assert cards[0]["id"] == held[0].tool_call_id
+        assert str(refused[0].content) == ("Refused: only one order card per turn, and the first card is already "
+                                           "waiting for the operator. Do not call propose_order again; tell the "
+                                           "operator the card is waiting.")
+        assert events[-1].type == "done"
 
 
 def _invalid_output_model(card_first: bool) -> FunctionModel:
@@ -785,4 +790,47 @@ def test_the_brain_prompt_describes_the_held_card_and_the_reply_length():
     assert "Keep replies under about 150 words unless the operator asks for detail." in prompt
     assert ("Before proposing a SELL, check what the mandate holds (query_postgres_readonly on "
             "agent_safe_ai_holdings)." in prompt)
+
+
+def _one_call_per_round(rounds: list[tuple[str, dict]], answer: list[str]) -> FunctionModel:
+    """One tool call per model response, in order (no concurrency), then the text answer."""
+
+    async def stream(messages, info: AgentInfo):
+        done = len(_tool_returns(messages))
+        if done < len(rounds):
+            name, args = rounds[done]
+            yield {0: DeltaToolCall(name=name, json_args=json.dumps(args), tool_call_id=f"call-{done}")}
+            return
+        for chunk in answer:
+            yield chunk
+
+    def sync(messages, info):
+        done = len(_tool_returns(messages))
+        if done < len(rounds):
+            name, args = rounds[done]
+            return ModelResponse(parts=[ToolCallPart(name, args, tool_call_id=f"call-{done}")])
+        return ModelResponse(parts=[TextPart("".join(answer))])
+
+    return FunctionModel(sync, stream_function=stream)
+
+
+async def test_a_suppressed_sell_then_a_buy_renders_no_card_and_says_why():
+    async def nothing(instrument):
+        return Decimal("0")
+
+    model = _one_call_per_round([("propose_order", SELL_ORDER), ("propose_order", GOOD_ORDER)], ["Nothing to sell."])
+    with override_model(PLANNER, model):
+        events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Short XRP, buy BTC"))
+    assert _cards(events) == []  # the SELL was held but had no holding; the BUY was refused for the turn's slot
+    assert events[-1].type == "done" and "spot cannot be shorted" in events[-1].data["content"]
+
+
+async def test_a_held_limit_order_without_a_price_says_the_card_was_not_made():
+    limit = {**GOOD_ORDER, "order_type": "LIMIT"}  # no limit_price: the card cannot be built
+    with override_model(PLANNER, Script([("propose_order", limit)], ["Working on it."]).model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC at a limit"))
+    assert _cards(events) == []
+    assert events[-1].type == "done"
+    assert ("No order card: the proposal was incomplete (a LIMIT order needs a limit price). "
+            "Ask again with complete details.") in events[-1].data["content"]
 

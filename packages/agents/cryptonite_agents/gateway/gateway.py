@@ -14,6 +14,7 @@
 import asyncio
 import logging
 import random
+import threading
 import time
 import uuid
 from collections.abc import Sequence
@@ -44,11 +45,14 @@ ROUTES_TTL_S = 30.0
 # and chat summaries the platform already stores. Other roles never log prompts.
 LOG_INPUT_ROLES = frozenset({"triage", "tagging", "summarize"})
 MAX_LOGGED_INPUT = 20_000
-# Tools that start paid or external work, capped per model turn (LE-8)
+# Tools that start paid or external work, capped per model turn (LE-8). propose_order is capped at one order
+# card per turn: the first call is held for approval, any later one is refused.
 PER_TURN_TOOL_LIMITS = {"stage_debate_proposal": 1, "propose_order": 1}
 # ADD_RISK tools whose denial is the normal way their result is made: the call is held and staged for the
 # operator's approval, so the model gets a "held" answer (not an error) and the per-turn limit applies to it
 HELD_FOR_APPROVAL_TOOLS = frozenset({"propose_order"})
+# The start of the answer a held call gets. The Brain renders a card only for a tool result that starts with it.
+HELD_FOR_APPROVAL_PREFIX = "Held for approval"
 
 
 class GatewayError(Exception):
@@ -227,6 +231,9 @@ class Gateway:
         """Per-call tool gate: the permission check, plus per-turn caps on tools that start paid work
         (LE-8: one model turn must not queue a burst of debates)."""
         used: dict[str, int] = {}
+        # pydantic-ai runs sync tools in worker threads, so two calls of one turn can race here: the read and the
+        # increment of a count must be one step, or both calls could take the same slot
+        lock = threading.Lock()
 
         def guard(spec: ToolSpec) -> str | None:
             try:
@@ -234,9 +241,11 @@ class Gateway:
             except ToolDenied as denied:
                 logger.warning("Tool call denied for %s: %s", role, denied)
                 if denied.reason == "ADD_RISK_REQUIRES_APPROVAL" and spec.name in HELD_FOR_APPROVAL_TOOLS:
-                    used[spec.name] = used.get(spec.name, 0) + 1
-                    if used[spec.name] <= PER_TURN_TOOL_LIMITS[spec.name]:
-                        return (f"Held for approval: the order card is staged and shown to the operator with "
+                    with lock:
+                        used[spec.name] = used.get(spec.name, 0) + 1
+                        held = used[spec.name] <= PER_TURN_TOOL_LIMITS[spec.name]
+                    if held:
+                        return (f"{HELD_FOR_APPROVAL_PREFIX}: the order card is staged and shown to the operator with "
                                 f"Approve / Reject. This is the expected result, not an error. Do not call "
                                 f"{spec.name} again in this turn; tell the operator the card is waiting for their "
                                 "approval.")
@@ -245,11 +254,14 @@ class Gateway:
                 return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
             limit = PER_TURN_TOOL_LIMITS.get(spec.name)
             if limit is not None:
-                if used.get(spec.name, 0) >= limit:
+                with lock:
+                    allowed = used.get(spec.name, 0) < limit
+                    if allowed:
+                        used[spec.name] = used.get(spec.name, 0) + 1
+                if not allowed:
                     logger.warning("Tool call denied for %s: %s over its per-turn limit", role, spec.name)
                     return (f"Tool call denied: {spec.name} is limited to {limit} per turn. "
                             "Tell the operator what else you would stage instead of calling it again.")
-                used[spec.name] = used.get(spec.name, 0) + 1
             return None
 
         return guard
