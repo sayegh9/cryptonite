@@ -26,7 +26,14 @@ from cryptonite_agents.brain.routes import BRAIN_PLAN
 from cryptonite_agents.brain.store import SessionStore
 from cryptonite_agents.brain.toolset import BRAIN_TOOLS
 from cryptonite_agents.brain.widgets import widget_for_tool
-from cryptonite_agents.gateway import BudgetExceeded, CallContext, Gateway, GatewayError
+from cryptonite_agents.gateway import (
+    BudgetExceeded,
+    CallContext,
+    Gateway,
+    GatewayError,
+    InvalidModelOutput,
+)
+from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX
 from cryptonite_agents.persona import Persona
 from cryptonite_schemas.mandate import MIN_HOLDING_QTY
 
@@ -34,7 +41,8 @@ logger = logging.getLogger("cryptonite.agents.brain")
 
 BRAIN_INSTRUCTIONS = """\
 You are the Brain of Cryptonite, a crypto trading terminal. You work for one operator, in PAPER trading.
-You plan, look things up with your tools, and answer in the operator's language: short, dense, no hype.
+You plan, look things up with your tools, and answer in the language the operator wrote in: short, dense, no hype.
+Keep replies under about 150 words unless the operator asks for detail.
 State uncertainty plainly and say which data you used.
 
 How to work:
@@ -46,13 +54,14 @@ How to work:
    Research: queue_strategy_research asks the operator to approve an overnight research run; say it is waiting for approval.
 5. Orders: you cannot place orders. When the operator wants a trade, or your analysis supports one, call
    propose_order with instrument, side, allocation_pct (1 to 25 percent of the mandate's budget), order type,
-   your suggested stop and a one-line rationale. The call is held for approval ("Tool call denied:
-   ADD_RISK_REQUIRES_APPROVAL") and the operator sees an order card with Approve / Reject buttons. That is the
-   expected result: do not retry and do not claim the order was placed. Tell the operator the card is waiting
+   your suggested stop and a one-line rationale. The call returns "Held for approval" and the operator sees an
+   order card with Approve / Reject buttons. That is the expected, successful result: do not retry and do not
+   claim the order was placed. Tell the operator the card is waiting
    for their approval. An approved order is sized by allocation_pct, and the position is protected by the exit
    monitor's deterministic hard and trailing stops, not by your stop price: say so, and if your stop is much
    tighter than a few percent, say the position will not be stopped there. Never propose more than one card
-   for the same idea. Spot cannot be shorted: propose a SELL only to close a position the mandate already holds.
+   for the same idea. Before proposing a SELL, check what the mandate holds (query_postgres_readonly on
+   agent_safe_ai_holdings). Spot cannot be shorted: propose a SELL only to close a position the mandate already holds.
    An approved SELL sells that whole holding, not allocation_pct of the budget.
 6. The conversation summary and recent turns are context. System lines report what the operator did
    (for example an approved card and its paper command id) and what the order then did: FILLED, WORKING
@@ -118,6 +127,7 @@ class Brain:
         widgets: list[dict[str, Any]] = []
         notes: list[str] = []  # what the Brain could not stage, said to the operator in the reply
         calls: dict[str, dict[str, Any]] = {}
+        order_cards = 0  # at most one order card per turn; a SELL that gets no card does not count
         trace_id: str | None = None
         finished = False
         call_ctx = CallContext(role=self.persona.role, session_id=sid)
@@ -147,18 +157,29 @@ class Brain:
                         yield BrainEvent("tool_call", {"id": call_id, "tool": ev.data["tool"], "phase": "end",
                                                        "status": status})
                         args = (calls.get(call_id) or {}).get("args") or {}
-                        if ev.data["tool"] == "propose_order" and args.get("side") == "SELL":
-                            instrument = str(args.get("instrument_id", ""))
-                            if not await self._holds(instrument):
-                                # Spot cannot be shorted: no card. The reply says why, so the operator is not left guessing
-                                notes.append(f"No order card for {instrument}: spot cannot be shorted, and no AI mandate "
-                                             "holds it to sell.")
+                        if ev.data["tool"] == "propose_order":
+                            # Only the held call makes a card, and only the turn's first one. The gateway gives the
+                            # held call the "Held for approval" answer; a refused call gets "Refused" and no card.
+                            held = str(ev.data.get("content") or "").startswith(HELD_FOR_APPROVAL_PREFIX)
+                            if not held or order_cards:
                                 continue
+                            if args.get("side") == "SELL":
+                                instrument = str(args.get("instrument_id", ""))
+                                if not await self._holds(instrument):
+                                    # Spot cannot be shorted: no card. The reply says why, so the operator knows
+                                    notes.append(f"No order card for {instrument}: spot cannot be shorted, and no AI "
+                                                 "mandate holds it to sell.")
+                                    continue
                         widget = widget_for_tool(ev.data["tool"], args, call_id=call_id, status=status,
                                                  content=ev.data.get("content"), trace_id=trace_id)
                         if widget is not None:
                             widgets.append(widget)
+                            if widget.get("kind") == "order_card":
+                                order_cards += 1
                             yield BrainEvent("widget", {"widget": widget})
+                        elif ev.data["tool"] == "propose_order":  # held, but the arguments cannot make a card
+                            notes.append("No order card: the proposal was incomplete (a LIMIT order needs a limit "
+                                         "price). Ask again with complete details.")
                     elif ev.kind == "done" and ev.result is not None:
                         res = ev.result
                         content = "".join(text).strip() or str(res.output)
@@ -172,6 +193,20 @@ class Brain:
                         })
         except BudgetExceeded as e:
             yield BrainEvent("error", {"code": "BUDGET", "message": f"LLM budget: {e.reason}"})
+            return
+        except InvalidModelOutput as e:
+            if order_cards:  # the card the operator sees is real: keep it and say the reply was cut short
+                logger.warning("Brain turn for session %s ended early after an order card was staged: %s", sid, e)
+                await self._keep_partial(sid, text, widgets, trace_id,
+                                         note="\n\n_[the model did not finish its reply; the order card above is "
+                                              "waiting for your approval]_")
+                yield BrainEvent("error", {"code": "MODEL_INCOMPLETE", "message": (
+                    "The model stopped before finishing its reply. The order card above is staged and waiting "
+                    "for your approval.")})
+                return
+            logger.error("Brain turn failed for session %s: %s", sid, e)
+            await self._keep_partial(sid, text, widgets, trace_id, note="\n\n_[the model failed; answer incomplete]_")
+            yield BrainEvent("error", {"code": "MODEL_UNAVAILABLE", "message": str(e)})
             return
         except GatewayError as e:
             logger.error("Brain turn failed for session %s: %s", sid, e)

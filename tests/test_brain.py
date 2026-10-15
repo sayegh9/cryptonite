@@ -178,8 +178,8 @@ async def test_stream_passes_the_permission_gate_and_reports_tool_status():
         events = await collect(gw().stream(BRAIN_PLAN, "go", tools=(show_price_chart, propose_order)))
     results = {e.data["tool"]: e.data["status"] for e in events if e.kind == "tool_result"}
     assert results == {"show_price_chart": "OK", "propose_order": "DENIED"}
-    denied = [r for r in script.returns if r.tool_name == "propose_order"][0]
-    assert "ADD_RISK_REQUIRES_APPROVAL" in str(denied.content)
+    held = [r for r in script.returns if r.tool_name == "propose_order"][0]
+    assert str(held.content).startswith("Held for approval")
     assert {c["tool"]: c["status"] for c in events[-1].result.tool_calls} == results
 
 
@@ -693,4 +693,144 @@ async def test_a_buy_card_needs_no_holding():
     with override_model(PLANNER, Script([("propose_order", GOOD_ORDER)], ["ok"]).model()):
         events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Buy BTC"))
     assert [c["side"] for c in _cards(events)] == ["BUY"]
+
+
+# --- A held order card is a success, not a crash --------------------------------------------------
+
+HELD_ORDER_NOTE = "_[the model did not finish its reply; the order card above is waiting for your approval]_"
+
+
+def _proposal_returns(script) -> list[str]:
+    return [str(r.content) for r in script.returns if r.tool_name == "propose_order"]
+
+
+async def test_a_held_proposal_tells_the_model_the_hold_is_the_expected_result():
+    script = Script([("propose_order", GOOD_ORDER)], ["Card staged for your approval."])
+    with override_model(PLANNER, script.model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC"))
+    [text] = _proposal_returns(script)
+    assert text.startswith("Held for approval: the order card is staged and shown to the operator")
+    assert "This is the expected result, not an error." in text
+    assert "Do not call propose_order again in this turn" in text
+    assert "ADD_RISK_REQUIRES_APPROVAL" not in text
+    cards = _cards(events)
+    assert len(cards) == 1 and cards[0]["status"] == "PENDING_APPROVAL"
+    assert events[-1].type == "done"
+
+
+async def test_a_second_proposal_in_one_turn_is_refused_and_renders_no_card():
+    second = {**GOOD_ORDER, "instrument_id": "ETHUSDT.BINANCE"}
+    # The two calls of one model response run concurrently, so which one is held is not fixed. The card must be
+    # the held call's every time: a card for the refused call would show the operator an order the gateway refused.
+    for _ in range(30):
+        script = Script([("propose_order", GOOD_ORDER), ("propose_order", second)], ["One card is staged."])
+        with override_model(PLANNER, script.model()):
+            events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC and ETH"))
+        cards = _cards(events)
+        assert len(cards) == 1
+        held = [r for r in script.returns if r.tool_name == "propose_order" and str(r.content).startswith("Held")]
+        refused = [r for r in script.returns if r.tool_name == "propose_order" and str(r.content).startswith("Refused")]
+        assert len(held) == 1 and len(refused) == 1
+        assert cards[0]["id"] == held[0].tool_call_id
+        assert str(refused[0].content) == ("Refused: only one order card per turn, and the first card is already "
+                                           "waiting for the operator. Do not call propose_order again; tell the "
+                                           "operator the card is waiting.")
+        assert events[-1].type == "done"
+
+
+def _invalid_output_model(card_first: bool) -> FunctionModel:
+    """Optionally calls propose_order, then returns output the gateway cannot validate (the SOLUSDT incident)."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior  # noqa: PLC0415
+
+    async def stream(messages, info: AgentInfo):
+        if card_first and not _tool_returns(messages):
+            yield {0: DeltaToolCall(name="propose_order", json_args=json.dumps(GOOD_ORDER), tool_call_id="call-0")}
+            return
+        raise UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+        yield ""  # pragma: no cover
+
+    def sync(messages, info):
+        if card_first and not _tool_returns(messages):
+            return ModelResponse(parts=[ToolCallPart("propose_order", GOOD_ORDER, tool_call_id="call-0")])
+        raise UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+
+    return FunctionModel(sync, stream_function=stream)
+
+
+async def test_invalid_output_after_a_staged_card_keeps_the_card_and_says_so():
+    store = MemorySessionStore()
+    with override_model(PLANNER, _invalid_output_model(card_first=True)):
+        events = await collect(brain(store).turn("op-1", "Buy BTC"))
+    assert [c["status"] for c in _cards(events)] == ["PENDING_APPROVAL"]
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_INCOMPLETE"
+    assert events[-1].data["message"] == ("The model stopped before finishing its reply. The order card above is "
+                                          "staged and waiting for your approval.")
+    stored = await store.messages(events[0].data["session_id"])
+    assert [m["role"] for m in stored] == ["user", "assistant"]
+    assert HELD_ORDER_NOTE in stored[1]["content"]
+    assert [w["kind"] for w in stored[1]["widgets"]] == ["order_card"]
+
+
+async def test_invalid_output_without_a_card_is_still_model_unavailable():
+    store = MemorySessionStore()
+    with override_model(PLANNER, _invalid_output_model(card_first=False)):
+        events = await collect(brain(store).turn("op-1", "Buy BTC"))
+    assert _cards(events) == []
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
+    assert "model output invalid" in events[-1].data["message"]
+    assert [m["role"] for m in await store.messages(events[0].data["session_id"])] == ["user"]
+
+
+def test_the_brain_prompt_describes_the_held_card_and_the_reply_length():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    prompt = " ".join(BRAIN_INSTRUCTIONS.split())  # the wording may wrap across lines
+    assert '"Held for approval"' in prompt and "Tool call denied" not in prompt
+    assert "answer in the language the operator wrote in" in prompt
+    assert "Keep replies under about 150 words unless the operator asks for detail." in prompt
+    assert ("Before proposing a SELL, check what the mandate holds (query_postgres_readonly on "
+            "agent_safe_ai_holdings)." in prompt)
+
+
+def _one_call_per_round(rounds: list[tuple[str, dict]], answer: list[str]) -> FunctionModel:
+    """One tool call per model response, in order (no concurrency), then the text answer."""
+
+    async def stream(messages, info: AgentInfo):
+        done = len(_tool_returns(messages))
+        if done < len(rounds):
+            name, args = rounds[done]
+            yield {0: DeltaToolCall(name=name, json_args=json.dumps(args), tool_call_id=f"call-{done}")}
+            return
+        for chunk in answer:
+            yield chunk
+
+    def sync(messages, info):
+        done = len(_tool_returns(messages))
+        if done < len(rounds):
+            name, args = rounds[done]
+            return ModelResponse(parts=[ToolCallPart(name, args, tool_call_id=f"call-{done}")])
+        return ModelResponse(parts=[TextPart("".join(answer))])
+
+    return FunctionModel(sync, stream_function=stream)
+
+
+async def test_a_suppressed_sell_then_a_buy_renders_no_card_and_says_why():
+    async def nothing(instrument):
+        return Decimal("0")
+
+    model = _one_call_per_round([("propose_order", SELL_ORDER), ("propose_order", GOOD_ORDER)], ["Nothing to sell."])
+    with override_model(PLANNER, model):
+        events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Short XRP, buy BTC"))
+    assert _cards(events) == []  # the SELL was held but had no holding; the BUY was refused for the turn's slot
+    assert events[-1].type == "done" and "spot cannot be shorted" in events[-1].data["content"]
+
+
+async def test_a_held_limit_order_without_a_price_says_the_card_was_not_made():
+    limit = {**GOOD_ORDER, "order_type": "LIMIT"}  # no limit_price: the card cannot be built
+    with override_model(PLANNER, Script([("propose_order", limit)], ["Working on it."]).model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC at a limit"))
+    assert _cards(events) == []
+    assert events[-1].type == "done"
+    assert ("No order card: the proposal was incomplete (a LIMIT order needs a limit price). "
+            "Ask again with complete details.") in events[-1].data["content"]
 
