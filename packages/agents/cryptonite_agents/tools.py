@@ -482,8 +482,10 @@ def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: st
     Use this when you have formulated a strategy that you believe should be executed.
     This routes the proposal through the Debate Pipeline and strict risk guardrails.
     """
+    import errno
     import json
     import os
+    import socket
     import urllib.error
     import urllib.request
     
@@ -515,6 +517,13 @@ def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: st
         return "Error staging proposal: CRYPTONITE_AGENT_API_TOKEN is not set; the agent cannot authenticate to the API."
     headers['X-API-Token'] = api_token
 
+    def unreachable(err) -> bool:
+        """Connection refused, or no route or name for the host: the API never saw the request."""
+        return isinstance(err, (ConnectionRefusedError, socket.gaierror)) or (
+            isinstance(err, OSError) and err.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH))
+
+    timed_out = ("Error staging proposal: the API did not answer in time; the debate may or may not have been "
+                 "queued. Do not retry this turn; tell the operator.")
     last_err = None
     for url in candidate_urls:
         try:
@@ -531,9 +540,17 @@ def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: st
             err_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
             return f"Error staging proposal: Server returned {e.code} - {err_body}"
         except urllib.error.URLError as e:
+            if isinstance(e.reason, TimeoutError):
+                return timed_out
+            if not unreachable(e.reason):
+                return f"Error staging proposal: {e.reason}"  # the API may have the request: no other URL
             last_err = f"URL Error: {e.reason}"
             continue
+        except TimeoutError:
+            return timed_out
         except Exception as e:
+            if not unreachable(e):
+                return f"Error staging proposal: {e}"
             last_err = str(e)
             continue
             

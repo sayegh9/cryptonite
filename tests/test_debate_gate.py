@@ -423,17 +423,12 @@ async def test_brain_debates_skip_the_scanner_dedupe_staleness_and_cooldown(main
     assert not any(k.startswith("debate:cooldown:") for k in redis.kv)
 
 
-async def test_brain_debate_takes_the_lite_first_path(main, pool):
+async def test_brain_debate_runs_the_full_fleet_not_the_lite_path(main, pool):
+    """A Brain debate has no market brief and the lite persona has no tools, so it never gets a lite call."""
     models = Models()
     run_row = await run(main, pool, BRAIN, models)
-    assert (run_row["trigger_source"], run_row["status"]) == ("brain_on_demand", "PENDING_APPROVAL")
-    assert models.calls == Counter({"lite": 1})  # one lite call: no triage and no full fleet for a small verdict
-
-
-async def test_brain_debate_escalates_a_sizeable_verdict_to_the_full_fleet(main, pool):
-    models = Models(lite={"bull_case": "b", "bear_case": "r", "recommendation": "BUY",
-                          "conviction_score": 0.8, "allocation_pct": 12.0, "reasoning": "big"})
-    await run(main, pool, BRAIN, models)
+    assert run_row["trigger_source"] == "brain_on_demand"
+    assert models.calls["lite"] == 0 and models.calls["triage"] == 0
     assert models.calls["pm"] == 1 and models.calls["cro"] == 1
 
 

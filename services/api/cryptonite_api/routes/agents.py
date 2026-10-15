@@ -137,10 +137,18 @@ async def trigger_debate(req: DebateTriggerRequest, request: Request):
     day_key = f"brain:debates:{datetime.datetime.now(datetime.UTC):%Y-%m-%d}"
     if brain:
         # WS-1E: the day's count is taken before the queue write; a refused or failed trigger gives its slot back
-        count = await redis_client.incr(day_key)
-        await redis_client.expire(day_key, BRAIN_DEBATE_CAP_TTL_S)
-        if count > BRAIN_DEBATE_DAILY_CAP:
-            await redis_client.decr(day_key)
+        try:
+            async with redis_client.pipeline(transaction=True) as pipe:
+                pipe.incr(day_key)
+                pipe.expire(day_key, BRAIN_DEBATE_CAP_TTL_S)
+                count, _ = await pipe.execute()
+            over_cap = count > BRAIN_DEBATE_DAILY_CAP
+            if over_cap:
+                await redis_client.decr(day_key)
+        except Exception as e:
+            logger.error(f"Brain debate cap unavailable for {inst_id}: {e}")
+            raise HTTPException(status_code=503, detail="Brain debate cap unavailable: Redis error; nothing was queued")
+        if over_cap:
             raise HTTPException(
                 status_code=429,
                 detail=(f"Brain debate cap reached ({BRAIN_DEBATE_DAILY_CAP} per day); "
