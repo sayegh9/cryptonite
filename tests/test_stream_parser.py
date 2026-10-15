@@ -93,6 +93,7 @@ async def test_stream_parser_open_vs_closed():
     })
 
     await client._handle_message(closed_msg, arrival_ns=1725700060000000000)
+    await client._closed_bar_dispatch.join()  # dispatched off the receive loop
 
     # Verify buffered updated
     assert client.open_kline_buffer["BTCUSDT:1m"].is_closed

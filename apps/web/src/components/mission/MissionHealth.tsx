@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Activity } from "lucide-react";
-import type { AiStatus } from "@/lib/mission/types";
+import type { AiStatus, StopCoverage } from "@/lib/mission/types";
 import { fetchBrainSpend } from "@/lib/brain/client";
 import { ageLabel, freshness, metricOrNull } from "@/lib/freshness";
 
@@ -24,6 +24,27 @@ function Tile({ name, health, detail, testId }: { name: string; health: Health; 
       <div className={`mt-0.5 text-2xs ${TEXT[health]}`}>{detail}</div>
     </div>
   );
+}
+
+const symbol = (instrumentId: string) => instrumentId.split(".")[0];
+
+function duration(seconds: number): string {
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+  return `${(seconds / 3600).toFixed(1)}h`;
+}
+
+/** The exit monitor tile: heartbeat first, then whether every position's stops have a price. */
+function exitMonitorTile(up: boolean, coverage: StopCoverage | null | undefined): { health: Health; detail: string } {
+  if (!up) return { health: "down", detail: "no heartbeat" };
+  if (!coverage) return { health: "up", detail: "heartbeat OK" };
+  const blind = coverage.positions.filter((p) => p.source === null).map((p) => symbol(p.instrument_id));
+  if (blind.length) return { health: "down", detail: `stops blind: ${blind.join(", ")}` };
+  const blindTotal = Object.values(coverage.blind_s_24h).reduce((a, b) => a + b, 0);
+  const backup = coverage.positions.filter((p) => p.source === "REST").map((p) => symbol(p.instrument_id));
+  const parts = [backup.length ? `backup price: ${backup.join(", ")}` : "stops priced live"];
+  parts.push(`blind ${duration(blindTotal)} / 24h`);
+  return { health: "up", detail: parts.join(" · ") };
 }
 
 /**
@@ -66,6 +87,7 @@ export function MissionHealth({ status }: { status: AiStatus | null }) {
   const sentimentState = freshness(sentimentAt, SENTIMENT_MAX_AGE_MS);
   const sentimentHealth: Health = sentimentState === "unknown" ? "unknown" : sentimentState === "live" ? "up" : "down";
   const noStatus = "status unavailable";
+  const exitTile = status === null ? null : exitMonitorTile(status.exit_monitor_up, status.stop_coverage);
 
   return (
     <section aria-label="System health" className="rounded border border-zinc-800 bg-zinc-900/30 p-3" data-testid="mission-health">
@@ -73,8 +95,8 @@ export function MissionHealth({ status }: { status: AiStatus | null }) {
         <Activity className="h-3.5 w-3.5" aria-hidden="true" /> Health
       </h3>
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
-        <Tile testId="health-exit-monitor" name="Exit monitor" health={flag(status?.exit_monitor_up)}
-          detail={status === null ? noStatus : status.exit_monitor_up ? "heartbeat OK" : "no heartbeat"} />
+        <Tile testId="health-exit-monitor" name="Exit monitor" health={exitTile?.health ?? "unknown"}
+          detail={exitTile?.detail ?? noStatus} />
         <Tile testId="health-notifier" name="Notifier" health={flag(status?.notifier_up)}
           detail={status === null ? noStatus : status.notifier_up ? "heartbeat OK" : "no heartbeat"} />
         <Tile testId="health-learner" name="Learner" health={flag(status?.learner_up)}

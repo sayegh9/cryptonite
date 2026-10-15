@@ -87,6 +87,17 @@ export interface AiStatus {
   learner_up?: boolean | null;
   /** Unix seconds of the debate worker's last successful get_news_sentiment (`sentiment:last_ok`, N19) */
   sentiment_last_ok?: number | string | null;
+  /** The price each open position's stops last ran on; null/absent until the exit monitor publishes it */
+  stop_coverage?: StopCoverage | null;
+}
+
+export interface StopCoverage {
+  /** Unix seconds of the exit monitor's last check */
+  checked_at: number | null;
+  /** STREAM = live quote, REST = backup price (the stream was stale), null = blind: stops not checked */
+  positions: { instrument_id: string; source: "STREAM" | "REST" | null; blind_since: number | null }[];
+  /** Seconds each instrument had no price at all over the last 24 hours */
+  blind_s_24h: Record<string, number>;
 }
 
 export interface GateCheck {

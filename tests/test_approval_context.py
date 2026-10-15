@@ -1,7 +1,8 @@
 """Approval context served to the web (remediation R6.4, R6.3): past decisions next to an approval,
-and the learner / sentiment health fields of /ai/status."""
+and the learner / sentiment / stop-coverage health fields of /ai/status."""
 
 import datetime
+import json
 import time
 from decimal import Decimal
 
@@ -94,3 +95,26 @@ async def test_status_reports_learner_and_sentiment(h):
         await h.redis.set("sentiment:last_ok", str(now))
         status = (await c.get("/api/v1/ai/status")).json()
         assert status["learner_up"] is True and status["sentiment_last_ok"] == now
+
+
+async def test_status_reports_stop_coverage_and_names_blind_positions(h):
+    now = datetime.datetime.now(datetime.UTC)
+    hours = [f"exit_monitor:blind_s:{(now - datetime.timedelta(hours=i)).strftime('%Y%m%d%H')}" for i in (0, 1, 25)]
+    try:
+        async with h.client() as c:
+            await h.redis.delete("exit_monitor:coverage", *hours)
+            status = (await c.get("/api/v1/ai/status")).json()
+            assert status["stop_coverage"] is None and not any("blind" in d for d in status["degraded"])
+
+            await h.redis.set("exit_monitor:coverage", json.dumps({"checked_at": 1.0, "positions": [
+                {"instrument_id": "BTCUSDT.BINANCE", "source": "REST", "blind_since": None},
+                {"instrument_id": "XRPUSDT.BINANCE", "source": None, "blind_since": 1.0}]}), ex=60)
+            await h.redis.hset(hours[0], "XRPUSDT.BINANCE", "30")
+            await h.redis.hset(hours[1], mapping={"XRPUSDT.BINANCE": "60.5", "BTCUSDT.BINANCE": "12"})
+            await h.redis.hset(hours[2], "XRPUSDT.BINANCE", "999")  # older than 24 h: not counted
+            cov = (await c.get("/api/v1/ai/status")).json()
+            assert cov["stop_coverage"]["blind_s_24h"] == {"BTCUSDT.BINANCE": 12, "XRPUSDT.BINANCE": 90}
+            assert [p["source"] for p in cov["stop_coverage"]["positions"]] == ["REST", None]
+            assert [d for d in cov["degraded"] if d.startswith("Stops blind on XRPUSDT.BINANCE")]
+    finally:
+        await h.redis.delete("exit_monitor:coverage", *hours)

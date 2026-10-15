@@ -73,6 +73,13 @@ class BinanceStreamClient:
         self.closed_bar_buffer: asyncio.Queue[tuple[str, str, RawBinanceKline, int]] = (
             asyncio.Queue()
         )
+        # Closed bars wait here for on_closed_bar, which runs on its own task: it takes the gap-recovery
+        # lock, and waiting for that lock inside the receive loop froze every quote for the length of a
+        # recovery (~14 s per reconnect; the exit monitor skipped stops on the stale quotes).
+        self._closed_bar_dispatch: asyncio.Queue[tuple[str, str, RawBinanceKline, int]] = (
+            asyncio.Queue()
+        )
+        self._dispatch_task: asyncio.Task | None = None
         self.reconnect_count = 0
         self.last_received_ts = 0
 
@@ -391,10 +398,25 @@ class BinanceStreamClient:
                 # Put in internal queue
                 await self.closed_bar_buffer.put((symbol, timeframe, raw_kline, arrival_ns))
                 if self.on_closed_bar:
-                    await self.on_closed_bar(symbol, timeframe, raw_kline, arrival_ns)
+                    # Never awaited here: the receive loop must keep publishing quotes meanwhile
+                    self._closed_bar_dispatch.put_nowait((symbol, timeframe, raw_kline, arrival_ns))
+                    if self._dispatch_task is None or self._dispatch_task.done():
+                        self._dispatch_task = asyncio.create_task(self._dispatch_closed_bars())
 
         except Exception as e:
             logger.error("Error processing stream message: %s", e)
+
+    async def _dispatch_closed_bars(self) -> None:
+        """Hand closed bars to on_closed_bar one at a time, in arrival order."""
+        while True:
+            item = await self._closed_bar_dispatch.get()
+            try:
+                if self.on_closed_bar:
+                    await self.on_closed_bar(*item)
+            except Exception as e:
+                logger.exception("Error in on_closed_bar for %s %s: %s", item[0], item[1], e)
+            finally:
+                self._closed_bar_dispatch.task_done()
 
     async def stop(self) -> None:
         """Stop the WebSocket client."""
@@ -402,4 +424,10 @@ class BinanceStreamClient:
         for ws in list(self._sockets):
             await ws.close()
         self._sockets.clear()
+        if self._dispatch_task:
+            try:  # commit the closed bars already received before stopping
+                await asyncio.wait_for(self._closed_bar_dispatch.join(), timeout=10)
+            except TimeoutError:
+                logger.warning("Stopped with %d closed bar(s) uncommitted", self._closed_bar_dispatch.qsize())
+            self._dispatch_task.cancel()
         logger.info("Stopped Binance WebSocket client")
