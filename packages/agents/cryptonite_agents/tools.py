@@ -147,6 +147,13 @@ _IN_FEED_TTL_S: float = 60.0
 EXIT_MONITOR_HEARTBEAT = "exit_monitor:heartbeat"
 
 
+def system_redis_url() -> str:
+    """The Redis URL for the live system keys (ingest universe, heartbeats, perp marks). Those live in the stack's
+    DB 0; agent_worker's REDIS_URL points at its own DB 1 (sessions, rate limits), so the stack sets SYSTEM_REDIS_URL.
+    Without it, REDIS_URL is used."""
+    return os.getenv("SYSTEM_REDIS_URL") or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+
 def _get_valid_symbols() -> set[str]:
     global _EXCHANGE_INFO_CACHE, _EXCHANGE_INFO_FETCHED_AT
     now = time.time()
@@ -188,10 +195,10 @@ def _parse_server_date_ms(raw: str | None) -> int | None:
 
 
 def _redis_get(key: str) -> str | None:
-    """One read of ``key`` from the agent's Redis (REDIS_URL), short timeouts. Raises when Redis is unreachable."""
+    """One read of the system key ``key`` (system_redis_url), short timeouts. Raises when Redis is unreachable."""
     import redis  # local import: Redis is a service runtime dep (agent_worker), not a package dep
     client = redis.Redis.from_url(
-        os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        system_redis_url(),
         socket_timeout=0.5,
         socket_connect_timeout=0.5,
         decode_responses=True,
