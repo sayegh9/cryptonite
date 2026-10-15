@@ -22,7 +22,7 @@ from decimal import Decimal
 from typing import Any
 
 from cryptonite_agents.brain import memory
-from cryptonite_agents.brain.routes import BRAIN_PLAN
+from cryptonite_agents.brain.routes import BRAIN_CHAT, BRAIN_PLAN
 from cryptonite_agents.brain.store import SessionStore
 from cryptonite_agents.brain.toolset import BRAIN_TOOLS
 from cryptonite_agents.brain.widgets import widget_for_tool
@@ -32,6 +32,8 @@ from cryptonite_agents.gateway import (
     Gateway,
     GatewayError,
     InvalidModelOutput,
+    ModelUnavailable,
+    RiskClass,
 )
 from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX
 from cryptonite_agents.persona import Persona
@@ -75,8 +77,24 @@ The System state block is a snapshot from the start of this turn. Call get_ai_st
 
 BRAIN = Persona(name="brain", role=BRAIN_PLAN, instructions=BRAIN_INSTRUCTIONS, tools=BRAIN_TOOLS)
 
+# The degraded turn (Pro unavailable) gets READ tools without side effects only. Computed from the specs, so a write
+# tool added later is left out without a list to update; _assert_read_only checks again before any model call.
+BRAIN_READONLY_TOOLS = tuple(t for t in BRAIN_TOOLS if t.risk is RiskClass.READ and not t.side_effects)
+DEGRADED_NOTE = ("\n\nDEGRADED MODE: the main model is unavailable. You can look things up and explain, but you cannot "
+                 "propose orders, stage debates or queue research in this turn. Say so if the operator asks for any of "
+                 "those.")
+DEGRADED_PREFIX = "_[degraded: answered by the backup model, read-only]_\n\n"
+
 CANCELLED_NOTE = "\n\n_[stopped by the operator]_"
 STATE_TIMEOUT_S = 3.0  # a slow system-state read never delays a turn by more than this
+
+
+def _assert_read_only(tools) -> None:
+    """Refuse a degraded turn that would offer a tool which writes or starts work. A RuntimeError rather than an
+    assert, so the check also holds under ``python -O``."""
+    for spec in tools:
+        if spec.risk is not RiskClass.READ or spec.side_effects:
+            raise RuntimeError(f"{spec.name} may not be offered on a degraded turn")
 
 
 @dataclass
@@ -143,6 +161,15 @@ class Brain:
         title = " ".join(first_message.split())[:80] or "New conversation"
         return await self.store.create_session(operator_id, title)
 
+    def _degraded_stream(self, prompt: str, sid: str):
+        """The read-only backup turn on brain.chat: the read-only tools and the degraded note. No order path."""
+        _assert_read_only(BRAIN_READONLY_TOOLS)  # before the gateway is called
+        return self.gateway.stream(
+            BRAIN_CHAT, prompt, instructions=BRAIN_INSTRUCTIONS + DEGRADED_NOTE,
+            output_type=self.persona.output_type, tools=BRAIN_READONLY_TOOLS,
+            context=CallContext(role=BRAIN_CHAT, session_id=sid),
+        )
+
     async def turn(self, operator_id: str, message: str, session_id: str | None = None,
                    *, model_override: str | None = None) -> AsyncIterator[BrainEvent]:
         try:
@@ -164,77 +191,99 @@ class Brain:
         trace_id: str | None = None
         finished = False
         call_ctx = CallContext(role=self.persona.role, session_id=sid)
-        stream = self.gateway.stream(
-            self.persona.role, prompt, instructions=self.persona.instructions,
-            output_type=self.persona.output_type, tools=self.persona.tools,
-            model_override=model_override, context=call_ctx,
-        )
+        degraded = False  # True once the turn is answered by the read-only backup model
         try:
-            async with contextlib.aclosing(stream) as events:
-                async for ev in events:
-                    if ev.kind == "start":
-                        trace_id = ev.data["trace_id"]
-                        yield BrainEvent("session", {"session_id": sid, "trace_id": trace_id})
-                    elif ev.kind == "token":
-                        text.append(ev.text)
-                        yield BrainEvent("token", {"text": ev.text})
-                    elif ev.kind == "tool_call":
-                        call_id = ev.data.get("tool_call_id") or ev.data["tool"]
-                        calls[call_id] = ev.data
-                        yield BrainEvent("tool_call", {"id": call_id, "tool": ev.data["tool"],
-                                                       "args": ev.data.get("args") or {}, "phase": "start",
-                                                       "status": "RUNNING"})
-                    elif ev.kind == "tool_result":
-                        call_id = ev.data.get("tool_call_id") or ev.data["tool"]
-                        status = ev.data.get("status", "OK")
-                        yield BrainEvent("tool_call", {"id": call_id, "tool": ev.data["tool"], "phase": "end",
-                                                       "status": status})
-                        args = (calls.get(call_id) or {}).get("args") or {}
-                        if ev.data["tool"] == "propose_order":
-                            # Only the held call makes a card, and only the turn's first one. The gateway gives the
-                            # held call the "Held for approval" answer; a refused call gets "Refused" and no card.
-                            held = str(ev.data.get("content") or "").startswith(HELD_FOR_APPROVAL_PREFIX)
-                            if not held or order_cards:
-                                continue
-                            if args.get("side") == "SELL":
-                                instrument = str(args.get("instrument_id", ""))
-                                if not await self._holds(instrument):
-                                    # Spot cannot be shorted: no card. The reply says why, so the operator knows
-                                    notes.append(f"No order card for {instrument}: spot cannot be shorted, and no AI "
-                                                 "mandate holds it to sell.")
-                                    continue
-                        widget = widget_for_tool(ev.data["tool"], args, call_id=call_id, status=status,
-                                                 content=ev.data.get("content"), trace_id=trace_id)
-                        if widget is not None:
-                            if widget.get("kind") == "order_card":
-                                # Only an entry needs a live feed; a SELL closes a holding and is never refused for it.
-                                # The reader alone sets the field: a value the model passed in its arguments
-                                # never survives
-                                instrument = str(widget.get("instrument_id", ""))
-                                entry = widget.get("side") == "BUY"
-                                widget["feed_refusal"] = await self._feed_refusal(instrument) if entry else None
-                                if widget["feed_refusal"]:
-                                    symbol = instrument.split(".")[0]
-                                    notes.append(f"{symbol} is not in the live data feed, so this card cannot be "
-                                                 "approved yet: onboard it from the card or the Watchlist first.")
-                            widgets.append(widget)
-                            if widget.get("kind") == "order_card":
-                                order_cards += 1
-                            yield BrainEvent("widget", {"widget": widget})
-                        elif ev.data["tool"] == "propose_order":  # held, but the arguments cannot make a card
-                            notes.append("No order card: the proposal was incomplete (a LIMIT order needs a limit "
-                                         "price). Ask again with complete details.")
-                    elif ev.kind == "done" and ev.result is not None:
-                        res = ev.result
-                        content = "".join(text).strip() or str(res.output)
-                        if notes:
-                            content = "\n\n".join([content, *notes])
-                        msg_id = await self.store.append_message(sid, "assistant", content, widgets, str(res.trace_id))
-                        finished = True
-                        yield BrainEvent("done", {
-                            "session_id": sid, "message_id": msg_id, "trace_id": str(res.trace_id),
-                            "model": res.model, "cost_usd": str(res.cost_usd), "content": content,
-                        })
+            while True:
+                if degraded:
+                    stream = self._degraded_stream(prompt, sid)
+                else:
+                    stream = self.gateway.stream(
+                        self.persona.role, prompt, instructions=self.persona.instructions,
+                        output_type=self.persona.output_type, tools=self.persona.tools,
+                        model_override=model_override, context=call_ctx,
+                    )
+                try:
+                    async with contextlib.aclosing(stream) as events:
+                        async for ev in events:
+                            if ev.kind == "start":
+                                trace_id = ev.data["trace_id"]
+                                yield BrainEvent("session", {"session_id": sid, "trace_id": trace_id})
+                            elif ev.kind == "token":
+                                text.append(ev.text)
+                                yield BrainEvent("token", {"text": ev.text})
+                            elif ev.kind == "tool_call":
+                                call_id = ev.data.get("tool_call_id") or ev.data["tool"]
+                                calls[call_id] = ev.data
+                                yield BrainEvent("tool_call", {"id": call_id, "tool": ev.data["tool"],
+                                                               "args": ev.data.get("args") or {}, "phase": "start",
+                                                               "status": "RUNNING"})
+                            elif ev.kind == "tool_result":
+                                call_id = ev.data.get("tool_call_id") or ev.data["tool"]
+                                status = ev.data.get("status", "OK")
+                                yield BrainEvent("tool_call", {"id": call_id, "tool": ev.data["tool"], "phase": "end",
+                                                               "status": status})
+                                args = (calls.get(call_id) or {}).get("args") or {}
+                                if ev.data["tool"] == "propose_order":
+                                    # Only the held call makes a card, and only the turn's first one. The gateway
+                                    # gives the held call the "Held for approval" answer; a refused call gets
+                                    # "Refused" and no card.
+                                    held = str(ev.data.get("content") or "").startswith(HELD_FOR_APPROVAL_PREFIX)
+                                    if not held or order_cards:
+                                        continue
+                                    if args.get("side") == "SELL":
+                                        instrument = str(args.get("instrument_id", ""))
+                                        if not await self._holds(instrument):
+                                            # Spot cannot be shorted: no card. The reply says why, so the operator knows
+                                            notes.append(f"No order card for {instrument}: spot cannot be shorted, "
+                                                         "and no AI mandate holds it to sell.")
+                                            continue
+                                widget = widget_for_tool(ev.data["tool"], args, call_id=call_id, status=status,
+                                                         content=ev.data.get("content"), trace_id=trace_id)
+                                if widget is not None:
+                                    if widget.get("kind") == "order_card":
+                                        # Only an entry needs a live feed; a SELL closes a holding and is never
+                                        # refused for it.
+                                        # The reader alone sets the field: a value the model passed in its arguments
+                                        # never survives
+                                        instrument = str(widget.get("instrument_id", ""))
+                                        entry = widget.get("side") == "BUY"
+                                        widget["feed_refusal"] = await self._feed_refusal(instrument) if entry else None
+                                        if widget["feed_refusal"]:
+                                            symbol = instrument.split(".")[0]
+                                            notes.append(f"{symbol} is not in the live data feed, so this card "
+                                                         "cannot be approved yet: onboard it from the card "
+                                                         "or the Watchlist first.")
+                                    widgets.append(widget)
+                                    if widget.get("kind") == "order_card":
+                                        order_cards += 1
+                                    yield BrainEvent("widget", {"widget": widget})
+                                elif ev.data["tool"] == "propose_order":  # held, but the arguments cannot make a card
+                                    notes.append("No order card: the proposal was incomplete (a LIMIT order needs a "
+                                                 "limit price). Ask again with complete details.")
+                            elif ev.kind == "done" and ev.result is not None:
+                                res = ev.result
+                                content = "".join(text).strip() or str(res.output)
+                                if degraded:
+                                    content = DEGRADED_PREFIX + content
+                                if notes:
+                                    content = "\n\n".join([content, *notes])
+                                msg_id = await self.store.append_message(
+                                    sid, "assistant", content, widgets, str(res.trace_id))
+                                finished = True
+                                yield BrainEvent("done", {
+                                    "session_id": sid, "message_id": msg_id, "trace_id": str(res.trace_id),
+                                    "model": res.model, "cost_usd": str(res.cost_usd), "content": content,
+                                    "degraded": degraded,
+                                })
+                    break
+                except ModelUnavailable as e:
+                    # Pro failed before the operator saw any output: answer once, read-only, on the backup model.
+                    # A pinned model is never swapped; a failure after output, or on the backup, ends the turn.
+                    if degraded or text or widgets or model_override:
+                        raise
+                    logger.warning("Brain plan unavailable for session %s; answering read-only on %s: %s",
+                                   sid, BRAIN_CHAT, e)
+                    degraded = True
         except BudgetExceeded as e:
             yield BrainEvent("error", {"code": "BUDGET", "message": f"LLM budget: {e.reason}"})
             return
@@ -243,23 +292,26 @@ class Brain:
                 logger.warning("Brain turn for session %s ended early after an order card was staged: %s", sid, e)
                 await self._keep_partial(sid, text, widgets, trace_id,
                                          note="\n\n_[the model did not finish its reply; the order card above is "
-                                              "waiting for your approval]_")
+                                              "waiting for your approval]_", degraded=degraded)
                 yield BrainEvent("error", {"code": "MODEL_INCOMPLETE", "message": (
                     "The model stopped before finishing its reply. The order card above is staged and waiting "
                     "for your approval.")})
                 return
             logger.error("Brain turn failed for session %s: %s", sid, e)
-            await self._keep_partial(sid, text, widgets, trace_id, note="\n\n_[the model failed; answer incomplete]_")
+            await self._keep_partial(sid, text, widgets, trace_id, degraded=degraded,
+                                     note="\n\n_[the model failed; answer incomplete]_")
             yield BrainEvent("error", {"code": "MODEL_UNAVAILABLE", "message": str(e)})
             return
         except GatewayError as e:
             logger.error("Brain turn failed for session %s: %s", sid, e)
-            await self._keep_partial(sid, text, widgets, trace_id, note="\n\n_[the model failed; answer incomplete]_")
+            await self._keep_partial(sid, text, widgets, trace_id, degraded=degraded,
+                                     note="\n\n_[the model failed; answer incomplete]_")
             yield BrainEvent("error", {"code": "MODEL_UNAVAILABLE", "message": str(e)})
             return
         except (GeneratorExit, asyncio.CancelledError):
             if not finished:  # the operator pressed stop: keep what they already saw
-                await asyncio.shield(self._keep_partial(sid, text, widgets, trace_id, note=CANCELLED_NOTE))
+                await asyncio.shield(self._keep_partial(sid, text, widgets, trace_id, note=CANCELLED_NOTE,
+                                                        degraded=degraded))
             raise
 
         try:
@@ -268,11 +320,14 @@ class Brain:
             logger.warning("Session %s compaction skipped: %s", sid, e)
 
     async def _keep_partial(self, sid: str, text: list[str], widgets: list[dict[str, Any]],
-                            trace_id: str | None, note: str) -> None:
+                            trace_id: str | None, note: str, degraded: bool = False) -> None:
         if not text and not widgets:
             return
+        content = "".join(text).strip() + note
+        if degraded:  # a partial read-only answer keeps its label
+            content = DEGRADED_PREFIX + content
         try:
-            await self.store.append_message(sid, "assistant", "".join(text).strip() + note, widgets, trace_id)
+            await self.store.append_message(sid, "assistant", content, widgets, trace_id)
         except Exception as e:
             logger.warning("Could not store the partial answer for %s: %s", sid, e)
 
