@@ -10,6 +10,7 @@ survives reloads, restarts and model changes, and needs no provider types outsid
 
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from cryptonite_agents.brain.store import SessionStore
@@ -42,13 +43,32 @@ def _clip(text: str) -> str:
     return text if len(text) <= MAX_MESSAGE_CHARS else text[:MAX_MESSAGE_CHARS] + " …[clipped]"
 
 
+def _utc(value: Any) -> datetime | None:
+    """An ISO timestamp as an aware UTC datetime (a naive one is read as UTC); None when absent or malformed."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+        return (parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed).astimezone(UTC)
+    except (ValueError, OverflowError):
+        return None
+
+
 def transcript(messages: list[dict[str, Any]]) -> str:
     speaker = {"user": "Operator", "assistant": "Brain", "system": "System"}
+    stamps = [t for t in (_utc(m.get("created_at")) for m in messages) if t is not None]
+    newest_day = max(stamps).date() if stamps else None
     lines = []
     for m in messages:
+        stamp = _utc(m.get("created_at"))
+        # Times in UTC; the date too when a turn is not on the newest message's day, so an old price reads as old
+        if stamp is None:
+            when = ""
+        else:
+            when = f"[{stamp:%H:%M}] " if stamp.date() == newest_day else f"[{stamp:%m-%d %H:%M}] "
         body = _clip(m.get("content") or "")
         extras = " ".join(describe_widget(w) for w in m.get("widgets") or [])
-        lines.append(f"{speaker.get(m['role'], m['role'])}: {body}{(' ' + extras) if extras else ''}".rstrip())
+        lines.append(f"{when}{speaker.get(m['role'], m['role'])}: {body}{(' ' + extras) if extras else ''}".rstrip())
     return "\n".join(lines)
 
 
@@ -59,8 +79,11 @@ async def load_context(store: SessionStore, session_id: str) -> BrainContext:
                         turns=await store.messages(session_id, after_id=after))
 
 
-def render_prompt(ctx: BrainContext, message: str) -> str:
-    parts = []
+def render_prompt(ctx: BrainContext, message: str, now: datetime | None = None) -> str:
+    if now is None:
+        now = datetime.now(UTC)
+    now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    parts = [f"## Now\n{now:%Y-%m-%d %H:%M} UTC"]  # the Brain has no other clock: old prices must read as old
     if ctx.summary:
         parts.append(f"## Conversation so far (summary)\n{ctx.summary}")
     if ctx.turns:

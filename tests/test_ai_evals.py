@@ -1,6 +1,8 @@
 """Eval harness (blueprint A1.6), offline: FunctionModels instead of Gemini, stub tools instead of
 live data, results stored in a throwaway DB at Alembic head."""
 
+import re
+
 import asyncpg
 import pytest
 from cryptonite_agents.evals import runner
@@ -143,3 +145,142 @@ def test_triage_v3_is_balanced_across_rules():
     assert worth.count(True) == worth.count(False)
     assert {c["label_reason"] for c in cases if not c["expect"]["worth_debate"][0]} == {
         "reward_to_risk_below_1.5", "stale_data", "both_timeframes_against", "chop"}
+
+
+# --- WS-1D: tool_chain cases can carry history, check the answer text, limit requests and check arguments ---
+
+def stub_propose(instrument_id: str, side: str, allocation_pct: float) -> str:
+    """Stands in for propose_order: the eval only looks at the calls, not at what they return."""
+    return "Order card staged."
+
+
+LIVE_STUB = ToolSpec("get_live_market_data", stub_market_data, RiskClass.READ, "Live 24h market data.")
+ORDER_STUB = ToolSpec("propose_order", stub_propose, RiskClass.ADD_RISK, "Propose a paper order card.")
+
+
+def brain_stub(monkeypatch, *tools: ToolSpec) -> None:
+    monkeypatch.setitem(runner.PERSONAS, "brain", Persona("brain", "chat.research", "test", tools))
+
+
+def _user_text(messages) -> str:
+    from pydantic_ai.messages import ModelRequest, UserPromptPart  # noqa: PLC0415
+
+    return "\n".join(str(p.content) for m in messages if isinstance(m, ModelRequest)
+                     for p in m.parts if isinstance(p, UserPromptPart))
+
+
+def _returned(messages) -> bool:
+    return any(isinstance(p, ToolReturnPart) for m in messages for p in getattr(m, "parts", []))
+
+
+def scripted_chain(calls: list[tuple[str, dict]], answer: str, seen: list[str] | None = None) -> FunctionModel:
+    """Makes the scripted tool calls in one response, then answers. Records the operator's prompt when asked."""
+
+    def fn(messages, info: AgentInfo):
+        if seen is not None and not _returned(messages):
+            seen.append(_user_text(messages))
+        if calls and not _returned(messages):
+            return ModelResponse(parts=[ToolCallPart(name, args, tool_call_id=f"call-{i}")
+                                        for i, (name, args) in enumerate(calls)])
+        return ModelResponse(parts=[TextPart(answer)])
+
+    return FunctionModel(fn)
+
+
+HISTORY_CASE = {
+    "id": "h", "kind": "tool_chain", "persona": "brain", "prompt": "Did my SOL buy go through?",
+    "summary": "Operator trades SOL on paper.",
+    "history": [{"role": "system", "content": "Order for card c1 was NOT EXECUTED: exit monitor heartbeat stale.",
+                 "created_at": "2026-10-15T09:01:00+00:00"}],
+}
+
+
+async def test_history_summary_and_the_clock_reach_the_prompt(monkeypatch):
+    brain_stub(monkeypatch, LIVE_STUB)
+    seen: list[str] = []
+    with override_model(MODEL, scripted_chain([], "It was not executed.", seen)):
+        res = await runner.run_case(Gateway(), HISTORY_CASE, MODEL)
+    prompt = seen[0]
+    assert re.match(r"## Now\n\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\n\n", prompt)
+    assert "## Conversation so far (summary)\nOperator trades SOL on paper." in prompt
+    assert "[09:01] System: Order for card c1 was NOT EXECUTED: exit monitor heartbeat stale." in prompt
+    assert prompt.endswith("## Operator's new message\nDid my SOL buy go through?")
+    assert res.passed
+
+
+async def test_a_case_without_history_keeps_its_plain_prompt(monkeypatch):
+    brain_stub(monkeypatch, LIVE_STUB)
+    seen: list[str] = []
+    case = {"id": "p", "kind": "tool_chain", "persona": "brain", "prompt": "Plain question."}
+    with override_model(MODEL, scripted_chain([], "ok", seen)):
+        await runner.run_case(Gateway(), case, MODEL)
+    assert seen == ["Plain question."]
+
+
+async def test_history_is_ignored_by_kinds_other_than_tool_chain(monkeypatch):
+    monkeypatch.setitem(runner.PERSONAS, "research", Persona("research", "chat.research", "test"))
+    seen: list[str] = []
+    case = {"id": "c", "kind": "chat", "persona": "research", "prompt": "Plain.", "history": HISTORY_CASE["history"]}
+    with override_model(MODEL, scripted_chain([], "funding", seen)):
+        await runner.run_case(Gateway(), case, MODEL)
+    assert seen == ["Plain."]
+
+
+@pytest.mark.parametrize("answer, fields, check, expected", [
+    ("It was NOT EXECUTED.", {"answer_must_match": ["not executed"]}, "answer_matches", True),
+    ("It was not executed.", {"answer_must_match": ["not executed", "position"]}, "answer_matches", False),  # ALL
+    ("It was filled at 10.", {"answer_must_not_match": ["\\bwas filled\\b"]}, "answer_clean", False),
+    ("It was not filled.", {"answer_must_not_match": ["\\bwas filled\\b"]}, "answer_clean", True),
+    ("ETH WAS FILLED", {"answer_must_not_match": ["was filled"]}, "answer_clean", False),  # case-insensitive
+])
+async def test_answer_regexes_are_checked_case_insensitively(monkeypatch, answer, fields, check, expected):
+    brain_stub(monkeypatch, LIVE_STUB)
+    case = {"id": "a", "kind": "tool_chain", "persona": "brain", "prompt": "q", **fields}
+    with override_model(MODEL, scripted_chain([], answer)):
+        res = await runner.run_case(Gateway(), case, MODEL)
+    assert res.checks[check] is expected
+    assert res.passed is expected
+
+
+@pytest.mark.parametrize("calls, expected", [(1, True), (2, False)])
+async def test_max_requests_counts_every_call_whatever_its_status(monkeypatch, calls, expected):
+    brain_stub(monkeypatch, LIVE_STUB, ORDER_STUB)
+    order = {"instrument_id": "BTCUSDT.BINANCE", "side": "BUY", "allocation_pct": 5}
+    case = {"id": "m", "kind": "tool_chain", "persona": "brain", "prompt": "q", "max_requests": {"propose_order": 1}}
+    with override_model(MODEL, scripted_chain([("propose_order", order)] * calls, "cards")):
+        res = await runner.run_case(Gateway(), case, MODEL)
+    assert len([c for c in res.tool_calls if c["tool"] == "propose_order"]) == calls
+    assert res.checks["within_request_limits"] is expected
+
+
+@pytest.mark.parametrize("side, allocation, expected", [
+    ("BUY", 10, True), ("BUY", 1, True), ("BUY", 25, True),  # the range edges are inside
+    ("BUY", 30, False), ("BUY", 0.5, False), ("SELL", 10, False),
+])
+async def test_expect_args_checks_the_call_against_the_ranges(monkeypatch, side, allocation, expected):
+    brain_stub(monkeypatch, LIVE_STUB, ORDER_STUB)
+    rules = {"propose_order": {"side": ["BUY"], "allocation_pct": {"min": 1, "max": 25}}}
+    case = {"id": "x", "kind": "tool_chain", "persona": "brain", "prompt": "q", "expect_args": rules}
+    order = {"instrument_id": "BTCUSDT.BINANCE", "side": side, "allocation_pct": allocation}
+    with override_model(MODEL, scripted_chain([("propose_order", order)], "staged")):
+        res = await runner.run_case(Gateway(), case, MODEL)
+    assert res.checks["args_as_expected"] is expected
+
+
+async def test_expect_args_has_nothing_to_check_when_the_tool_is_not_called(monkeypatch):
+    brain_stub(monkeypatch, LIVE_STUB, ORDER_STUB)
+    case = {"id": "n", "kind": "tool_chain", "persona": "brain", "prompt": "q",
+            "expect_args": {"propose_order": {"side": ["BUY"]}}}
+    with override_model(MODEL, scripted_chain([], "no card")):
+        res = await runner.run_case(Gateway(), case, MODEL)
+    assert res.checks["args_as_expected"] is True  # presence is what must_request is for
+
+
+async def test_an_old_style_case_scores_exactly_as_before(monkeypatch):
+    brain_stub(monkeypatch, LIVE_STUB, ORDER_STUB)
+    case = {"id": "old", "kind": "tool_chain", "persona": "brain", "prompt": "Price?",
+            "must_call": ["get_live_market_data"], "must_not_call": ["propose_order"]}
+    with override_model(MODEL, scripted_chain([("get_live_market_data", {"symbols": "BTCUSDT"})], "BTC is 65k.")):
+        res = await runner.run_case(Gateway(), case, MODEL)
+    assert res.checks == {"called_required_tools": True, "avoided_forbidden_tools": True, "answered": True}
+    assert res.passed

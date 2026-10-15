@@ -4,7 +4,12 @@ Case kinds:
 - ``chat``: a non-empty answer that mentions at least one ``must_mention`` term
 - ``tool_chain``: every ``must_call`` tool was called (and allowed), then a non-empty answer;
   ``must_request`` tools were called at all (ADD_RISK calls are held for approval), ``must_not_call``
-  tools were not
+  tools were not. Optional fields (cases without them score as before):
+  ``history`` (list of ``{role, content, widgets?, created_at?}``) and ``summary`` put the conversation
+  before the message, rendered as the Brain renders it (``memory.render_prompt``); ``answer_must_match``
+  (every regex matches the answer, case-insensitive), ``answer_must_not_match`` (no regex matches);
+  ``max_requests`` (``{tool: n}``: calls of any status per tool are at most n); ``expect_args``
+  (``{tool: {arg: [allowed] | {"min", "max"}}}``: every call to that tool satisfies it; no call passes)
 - ``verdict`` / ``triage``: output validates against the persona's contract (the gateway re-asks on
   invalid output); ``expect`` adds a directional agreement check
 - ``summary``: the Brain's compaction summary (``summarize`` role, its production instructions) keeps
@@ -16,15 +21,22 @@ Headline metrics: ``structured_valid_rate`` (verdict + triage outputs that valid
 """
 
 import json
+import re
 import statistics
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from cryptonite_agents.brain import BRAIN
-from cryptonite_agents.brain.memory import SUMMARY_INSTRUCTIONS, SUMMARY_ROLE
+from cryptonite_agents.brain.memory import (
+    SUMMARY_INSTRUCTIONS,
+    SUMMARY_ROLE,
+    BrainContext,
+    render_prompt,
+)
 from cryptonite_agents.debate_fleet import (
     CHIEF_RISK_OFFICER,
     DEBATE_LITE,
@@ -75,8 +87,7 @@ class CaseResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _agrees(output: Any, expect: dict[str, Any]) -> bool:
-    data = output.model_dump() if hasattr(output, "model_dump") else {}
+def _rules_hold(data: dict[str, Any], expect: dict[str, Any]) -> bool:
     for key, rule in expect.items():
         value = data.get(key)
         if isinstance(rule, dict):
@@ -89,13 +100,24 @@ def _agrees(output: Any, expect: dict[str, Any]) -> bool:
     return True
 
 
+def _agrees(output: Any, expect: dict[str, Any]) -> bool:
+    return _rules_hold(output.model_dump() if hasattr(output, "model_dump") else {}, expect)
+
+
+def _case_prompt(case: dict[str, Any]) -> str:
+    """A tool_chain case with history is asked the way the Brain is asked: clock, summary and turns included."""
+    if case["kind"] != "tool_chain" or "history" not in case:
+        return case["prompt"]
+    return render_prompt(BrainContext(summary=case.get("summary"), turns=case["history"]), case["prompt"])
+
+
 async def run_case(gateway: Gateway, case: dict[str, Any], model: str) -> CaseResult:
     persona = PERSONAS[case["persona"]]
     # Evals must not start real work (e.g. queue a paid debate on a running stack)
     persona = replace(persona, tools=tuple(t for t in persona.tools if not t.side_effects))
     started = time.monotonic()
     try:
-        res = await persona.run(gateway, case["prompt"], config={"model_name": model})
+        res = await persona.run(gateway, _case_prompt(case), config={"model_name": model})
     except Exception as e:  # one broken case must not end the run
         return CaseResult(case["id"], case["kind"], model, False, False, error=str(e),
                           latency_ms=int((time.monotonic() - started) * 1000))
@@ -114,7 +136,20 @@ async def run_case(gateway: Gateway, case: dict[str, Any], model: str) -> CaseRe
             checks["requested_approval_tools"] = set(case["must_request"]) <= requested
         if case.get("must_not_call"):
             checks["avoided_forbidden_tools"] = not (set(case["must_not_call"]) & requested)
-        checks["answered"] = bool(str(res.output).strip())
+        text = str(res.output)
+        if case.get("answer_must_match"):
+            checks["answer_matches"] = all(re.search(p, text, re.IGNORECASE) for p in case["answer_must_match"])
+        if case.get("answer_must_not_match"):
+            checks["answer_clean"] = not any(re.search(p, text, re.IGNORECASE) for p in case["answer_must_not_match"])
+        if case.get("max_requests"):
+            counts = Counter(c["tool"] for c in res.tool_calls or [])  # any status, as above
+            checks["within_request_limits"] = all(counts[tool] <= n for tool, n in case["max_requests"].items())
+        if case.get("expect_args"):
+            checks["args_as_expected"] = all(
+                _rules_hold(c.get("args") or {}, rules)
+                for tool, rules in case["expect_args"].items()
+                for c in res.tool_calls or [] if c["tool"] == tool)
+        checks["answered"] = bool(text.strip())
     elif kind in STRUCTURED_KINDS:
         checks["agrees"] = _agrees(res.output, case.get("expect", {}))
     elif kind == "summary":

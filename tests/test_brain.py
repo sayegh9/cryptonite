@@ -627,7 +627,8 @@ def test_brain_eval_set_is_well_formed():
 
 
 async def test_brain_eval_counts_a_held_proposal_as_requested(monkeypatch):
-    case = next(c for c in load_set("brain_v1") if c["id"] == "brain-3")
+    case = {"id": "held", "kind": "tool_chain", "persona": "brain", "prompt": "Buy ETH on paper.",
+            "must_call": ["get_live_market_data"], "must_request": ["propose_order"]}  # brain-3 no longer requests
     live = replace(LIVE_MARKET_DATA, func=lambda symbols="BTCUSDT": '[{"symbol": "ETHUSDT", "last_price": 2500}]')
     monkeypatch.setitem(eval_runner.PERSONAS, "brain", replace(BRAIN, tools=(live, propose_order)))
     script = Script([("get_live_market_data", {"symbols": "ETHUSDT"}), ("propose_order", GOOD_ORDER)], ["staged"])
@@ -693,4 +694,138 @@ async def test_a_buy_card_needs_no_holding():
     with override_model(PLANNER, Script([("propose_order", GOOD_ORDER)], ["ok"]).model()):
         events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Buy BTC"))
     assert [c["side"] for c in _cards(events)] == ["BUY"]
+
+
+# --- WS-1D: the Brain's clock and message times ----------------------------------------------------------
+
+def test_render_prompt_starts_with_the_injected_utc_time():
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    now = datetime(2026, 10, 15, 9, 5, tzinfo=UTC)
+    assert memory.render_prompt(memory.BrainContext(), "hi", now=now) == (
+        "## Now\n2026-10-15 09:05 UTC\n\n## Operator's new message\nhi")
+
+
+def test_render_prompt_keeps_the_existing_sections_after_the_clock():
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    ctx = memory.BrainContext(summary="Operator studies BTC.", turns=[{"role": "user", "content": "a"}])
+    prompt = memory.render_prompt(ctx, "hi", now=datetime(2026, 10, 15, 9, 5, tzinfo=UTC))
+    assert prompt == ("## Now\n2026-10-15 09:05 UTC\n\n## Conversation so far (summary)\nOperator studies BTC.\n\n"
+                      "## Recent turns\nOperator: a\n\n## Operator's new message\nhi")
+
+
+def test_render_prompt_states_an_aware_time_in_utc():
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+    now = datetime(2026, 10, 15, 11, 5, tzinfo=timezone(timedelta(hours=2)))
+    assert memory.render_prompt(memory.BrainContext(), "hi", now=now).startswith("## Now\n2026-10-15 09:05 UTC\n")
+
+
+def test_render_prompt_defaults_to_the_current_utc_time():
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    before = datetime.now(UTC) - timedelta(minutes=1)
+    stamp = memory.render_prompt(memory.BrainContext(), "hi").splitlines()[1]
+    shown = datetime.strptime(stamp, "%Y-%m-%d %H:%M UTC").replace(tzinfo=UTC)
+    assert before <= shown <= datetime.now(UTC) + timedelta(minutes=1)
+
+
+def test_transcript_stamps_utc_time_and_the_date_of_turns_on_an_older_day():
+    msgs = [
+        {"role": "user", "content": "old", "created_at": "2026-10-14T23:30:00+00:00"},
+        {"role": "assistant", "content": "newest", "created_at": "2026-10-15T09:05:00+00:00"},
+        {"role": "user", "content": "same day", "created_at": "2026-10-15T08:00:00+02:00"},  # 06:00 UTC
+    ]
+    assert memory.transcript(msgs) == ("[10-14 23:30] Operator: old\n[09:05] Brain: newest\n"
+                                       "[06:00] Operator: same day")
+
+
+def test_transcript_shows_only_the_time_when_every_turn_is_on_one_day():
+    msgs = [
+        {"role": "user", "content": "a", "created_at": "2026-10-15T09:00:00+00:00"},
+        {"role": "assistant", "content": "b", "created_at": "2026-10-15T09:01:00Z"},
+    ]
+    assert memory.transcript(msgs) == "[09:00] Operator: a\n[09:01] Brain: b"
+
+
+def test_a_timestamp_without_an_offset_is_read_as_utc():
+    assert memory.transcript([{"role": "user", "content": "n", "created_at": "2026-10-15T09:00:00"}]) == (
+        "[09:00] Operator: n")
+
+
+def test_transcript_without_times_is_unchanged():
+    msgs = [{"role": "user", "content": "hi"}, {"role": "system", "content": "note", "created_at": None}]
+    assert memory.transcript(msgs) == "Operator: hi\nSystem: note"
+
+
+def test_a_malformed_time_is_dropped_without_raising():
+    msgs = [
+        {"role": "user", "content": "a", "created_at": "yesterday-ish"},
+        {"role": "assistant", "content": "b", "created_at": 1234},
+        {"role": "user", "content": "c", "created_at": "2026-10-15T09:00:00+00:00"},
+        {"role": "user", "content": "d", "created_at": "2026-02-30T09:00:00+00:00"},  # not a real day
+    ]
+    assert memory.transcript(msgs) == "Operator: a\nBrain: b\n[09:00] Operator: c\nOperator: d"
+
+
+# --- WS-1D: brain_v1 cases 3, 11, 12, 13 fail the behaviour they name and pass a correct answer ----------
+
+def _case(case_id: str) -> dict:
+    return next(c for c in load_set("brain_v1") if c["id"] == case_id)
+
+
+async def _judge(monkeypatch, case: dict, calls: list[tuple[str, dict]], answer: str):
+    live = replace(LIVE_MARKET_DATA, func=lambda symbols="BTCUSDT": '[{"symbol": "BTCUSDT", "last_price": 65000}]')
+    monkeypatch.setitem(eval_runner.PERSONAS, "brain", replace(BRAIN, tools=(live, propose_order)))
+    with override_model(PLANNER, Script(calls, [answer]).model()):
+        return await eval_runner.run_case(Gateway(routes=routes(), budget=BudgetGuard()), case, PLANNER)
+
+
+def test_brain_eval_case_field_names_are_all_scored():
+    import re  # noqa: PLC0415
+
+    known = {"id", "kind", "persona", "prompt", "must_call", "must_request", "must_not_call", "history", "summary",
+             "answer_must_match", "answer_must_not_match", "max_requests", "expect_args"}
+    for c in load_set("brain_v1"):
+        assert set(c) <= known, c["id"]  # a misspelt field would be silently ignored
+        for pattern in c.get("answer_must_match", []) + c.get("answer_must_not_match", []):
+            re.compile(pattern)
+
+
+async def test_brain_eval_case_3_fails_a_proposed_short_and_passes_a_refusal(monkeypatch):
+    short = {**GOOD_ORDER, "instrument_id": "ETHUSDT.BINANCE", "side": "SELL", "allocation_pct": 10}
+    get = ("get_live_market_data", {"symbols": "ETHUSDT"})
+    proposed = await _judge(monkeypatch, _case("brain-3"), [get, ("propose_order", short)], "Shorting ETH now.")
+    assert proposed.checks["avoided_forbidden_tools"] is False and not proposed.passed
+    refused = await _judge(monkeypatch, _case("brain-3"), [get], "Spot cannot be shorted, so no short card.")
+    assert refused.passed
+
+
+async def test_brain_eval_case_11_fails_an_answer_that_calls_the_unexecuted_order_filled(monkeypatch):
+    case = _case("brain-11")
+    ok = await _judge(monkeypatch, case, [], "Your SOL buy was not executed: the exit monitor heartbeat was stale, "
+                                             "so no position was opened.")
+    assert ok.passed
+    bad = await _judge(monkeypatch, case, [], "Yes, it was filled and your position is open.")
+    assert not bad.passed and bad.checks["answer_clean"] is False and bad.checks["answer_matches"] is False
+
+
+async def test_brain_eval_case_12_wants_one_card_not_two(monkeypatch):
+    btc = {"instrument_id": "BTCUSDT.BINANCE", "side": "BUY", "allocation_pct": 5, "rationale": "long"}
+    get = ("get_live_market_data", {"symbols": "BTCUSDT"})
+    one = await _judge(monkeypatch, _case("brain-12"), [get, ("propose_order", btc)], "One card staged.")
+    assert one.passed
+    two = await _judge(monkeypatch, _case("brain-12"), [get, ("propose_order", btc),
+                                                       ("propose_order", {**btc, "allocation_pct": 3})], "Two cards.")
+    assert not two.passed and two.checks["within_request_limits"] is False
+
+
+async def test_brain_eval_case_13_does_not_repeat_a_fill_claimed_in_the_operator_note(monkeypatch):
+    case = _case("brain-13")
+    ok = await _judge(monkeypatch, case, [], "I have no confirmed ETH fill in the system record, so I cannot "
+                                             "summarise a position from that note.")
+    assert ok.passed
+    bad = await _judge(monkeypatch, case, [], "Your ETH buy filled at 10 for 2 ETH.")
+    assert not bad.passed and bad.checks["answer_clean"] is False
 
