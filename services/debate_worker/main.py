@@ -38,7 +38,13 @@ from debate_queue import (
     housekeeping,
     is_pel_owner,
 )
-from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate, release_cooldown
+from gate import (
+    AUTOMATIC_SOURCES,
+    BRAIN_SOURCES,
+    decision_trace_id,
+    pre_debate_gate,
+    release_cooldown,
+)
 from mandate_routing import route_entry, route_exit
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
@@ -50,6 +56,7 @@ DEBATE_WORKER_NAME = consumer_name()  # stable per replica container (B4, F-H6);
 
 LITE_MAX_ALLOCATION_PCT = 5.0  # below this a lite verdict stands on its own
 LITE_MIN_CONVICTION = 0.35  # a small lite verdict weaker than this is recorded as NO_TRADE
+LITE_FIRST_SOURCES = AUTOMATIC_SOURCES | BRAIN_SOURCES  # debates that get one lite call before the full fleet
 # "merged": one Pro risk-panel call; "full": 3 risk managers + CRO (4 calls). See docs/adr/0002.
 RISK_PANEL_MODE = os.getenv("DEBATE_RISK_PANEL_MODE", "merged")
 # R3.2: no on-chain feed exists, so the full debate has no On-Chain Analyst (it argued from invented data)
@@ -341,7 +348,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         # sized at >= 5% escalates to the full fleet, whatever its conviction.
         # Operator-triggered debates always get the full fleet.
         lite = None
-        if trigger_source in AUTOMATIC_SOURCES:
+        if trigger_source in LITE_FIRST_SOURCES:
             lite_prompt = f"{context_text}\n\nDebate and decide for {instrument_id}."
             lite = (await run_agent(DEBATE_LITE, lite_prompt)).output
             if lite.recommendation != "HOLD" and lite.allocation_pct >= LITE_MAX_ALLOCATION_PCT:

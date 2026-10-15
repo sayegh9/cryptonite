@@ -1,3 +1,4 @@
+import datetime
 import hashlib
 import hmac
 import json
@@ -6,6 +7,7 @@ import os
 import secrets
 import time
 import uuid
+from typing import Literal
 
 import httpx
 from cryptonite_api.routes.auth import (
@@ -34,6 +36,9 @@ router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 # Ensure HMAC secret exists
 INTERNAL_HMAC_SECRET = os.getenv("INTERNAL_HMAC_SECRET", "default_internal_secret")
 DEBATE_QUEUE_MAXLEN = 10_000  # same cap as the scanner's writer (D1 / F-H2): XADD trims the oldest entries
+# WS-1E: debates the Brain starts (origin "brain") per UTC day. Operator triggers are not counted.
+BRAIN_DEBATE_DAILY_CAP = int(os.getenv("BRAIN_DEBATE_DAILY_CAP", "6"))
+BRAIN_DEBATE_CAP_TTL_S = 2 * 86400  # a day's counter expires two days after it was last touched
 
 class ChatRequest(BaseModel):
     message: str
@@ -56,6 +61,7 @@ class DebateTriggerRequest(BaseModel):
     symbol: str
     timeframe: str = "1m"
     custom_thesis: str | None = None
+    origin: Literal["operator", "brain"] = "operator"
 
 class ApproveRequestOverrides(BaseModel):
     allocation_pct: float | None = Field(default=None, ge=1.0, le=25.0)
@@ -127,9 +133,23 @@ async def trigger_debate(req: DebateTriggerRequest, request: Request):
         logger.error("Redis client not available on app.state")
         raise HTTPException(status_code=503, detail="Redis connection unavailable")
     
+    brain = req.origin == "brain"
+    day_key = f"brain:debates:{datetime.datetime.now(datetime.UTC):%Y-%m-%d}"
+    if brain:
+        # WS-1E: the day's count is taken before the queue write; a refused or failed trigger gives its slot back
+        count = await redis_client.incr(day_key)
+        await redis_client.expire(day_key, BRAIN_DEBATE_CAP_TTL_S)
+        if count > BRAIN_DEBATE_DAILY_CAP:
+            await redis_client.decr(day_key)
+            raise HTTPException(
+                status_code=429,
+                detail=(f"Brain debate cap reached ({BRAIN_DEBATE_DAILY_CAP} per day); "
+                        "ask the operator to start it from the Debates page"),
+            )
+
     payload = {
         "instrument_id": inst_id,
-        "trigger_source": "user_on_demand",
+        "trigger_source": "brain_on_demand" if brain else "user_on_demand",
         "timeframe": req.timeframe,
         "custom_thesis": req.custom_thesis or "",
         "timestamp": str(time.time()),
@@ -140,6 +160,8 @@ async def trigger_debate(req: DebateTriggerRequest, request: Request):
         logger.info(f"Queued on-demand debate for {inst_id} (msg ID: {msg_id})")
         return {"status": "queued", "id": str(msg_id), "instrument_id": inst_id, "payload": payload}
     except Exception as e:
+        if brain:
+            await redis_client.decr(day_key)  # nothing was queued, so the slot goes back
         logger.error(f"Failed to queue debate trigger for {inst_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to queue debate: {str(e)}")
 

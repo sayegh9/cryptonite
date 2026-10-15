@@ -490,7 +490,8 @@ def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: st
     payload = {
         "symbol": instrument_id,
         "timeframe": timeframe,
-        "custom_thesis": f"Recommendation: {recommendation}\nScore: {conviction_score}\nReasoning: {reasoning}"
+        "custom_thesis": f"Recommendation: {recommendation}\nScore: {conviction_score}\nReasoning: {reasoning}",
+        "origin": "brain",
     }
     
     data_bytes = json.dumps(payload).encode('utf-8')
