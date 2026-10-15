@@ -221,8 +221,12 @@ def _alembic(url: str, *args: str) -> None:
 async def _trace_columns(url: str) -> set[str]:
     conn = await asyncpg.connect(url)
     try:
-        rows = await conn.fetch("""SELECT table_name FROM information_schema.columns
-                                   WHERE column_name = 'decision_trace_id' AND table_schema = 'public'""")
+        # Base tables only: read-only views (e.g. agent_safe_debate_verdicts, migration 046) also expose the column
+        rows = await conn.fetch("""SELECT c.table_name FROM information_schema.columns c
+                                   JOIN information_schema.tables t
+                                     ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+                                   WHERE c.column_name = 'decision_trace_id' AND c.table_schema = 'public'
+                                     AND t.table_type = 'BASE TABLE'""")
         return {r["table_name"] for r in rows}
     finally:
         await conn.close()
