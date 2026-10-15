@@ -375,7 +375,9 @@ services:
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       PORT: 8084
       ENVIRONMENT: DEMO
-      USE_MOCK_VENUE: "true"
+      # The real Binance demo venue by default; the in-memory simulator only when explicitly asked for
+      # (USE_MOCK_VENUE=true), because simulated fills must never read as real ones.
+      USE_MOCK_VENUE: "${USE_MOCK_VENUE:-false}"
       ACCOUNT_ID: DEMO-ACCOUNT-001
       BINANCE_DEMO_BASE_URL: https://demo-api.binance.com
       BINANCE_DEMO_WS_URL: wss://demo-ws-api.binance.com/ws-api/v3

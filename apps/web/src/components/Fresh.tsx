@@ -57,7 +57,7 @@ export function Fresh<T>({
     <span className={`inline-flex items-center gap-1 ${className}`} data-fresh={state} data-testid={testId}>
       <span className={state === "stale" ? "opacity-60" : undefined}>{format ? format(value as T) : String(value)}</span>
       {state === "live" ? (
-        quietWhenLive ? null : <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-label="live" />
+        quietWhenLive ? null : <span role="img" className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-label="live" />
       ) : (
         <span className={`rounded border px-1 text-2xs leading-tight ${BADGE[state]}`} title={`Observed ${ageLabel(asOf, now)}`}>
           {state}

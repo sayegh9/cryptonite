@@ -134,7 +134,7 @@ export function MarginRiskHUD({ instrumentId }: { instrumentId: string }) {
               {fundingPct >= 0 ? "+" : ""}{fundingPct.toFixed(4)}%
             </span>
             <span className="text-zinc-500"> ({fundingPct >= 0 ? "longs pay" : "shorts pay"}) · </span>
-            <span aria-label="Time to next funding">{formatCountdown(mark.nextFundingTime - now)}</span>
+            <span role="timer" aria-label="Time to next funding">{formatCountdown(mark.nextFundingTime - now)}</span>
           </span>
         ) : (
           <span className="text-zinc-500">awaiting mark feed</span>

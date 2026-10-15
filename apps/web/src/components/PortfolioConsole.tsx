@@ -77,7 +77,7 @@ function MetricCards() {
           {positionsKnown ? (
             <>
               <span className="text-emerald-400">{longs}L</span> / <span className="text-red-400">{open.length - longs}S</span>
-              <span className={upnl >= 0 ? "text-emerald-400/80" : "text-red-400/80"}> · {fmtSignedUsd(upnl)} unrealized</span>
+              <span className={upnl >= 0 ? "text-emerald-400" : "text-red-400"}> · {fmtSignedUsd(upnl)} unrealized</span>
             </>
           ) : (
             "positions unavailable"
@@ -233,7 +233,7 @@ export function PortfolioConsole() {
           <h1 className="text-xl font-black tracking-wider text-white flex items-center space-x-2">
             <span>PORTFOLIO & PAPER EXECUTION CONSOLE</span>
             <span className="px-2 py-0.5 rounded text-2xs bg-cyan-950 text-cyan-400 border border-cyan-800">
-              M4 SIMULATOR
+              PAPER ENGINE
             </span>
           </h1>
           <p className="text-zinc-400 text-xs mt-0.5">
@@ -256,7 +256,7 @@ export function PortfolioConsole() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setShowFlattenModal(true)}
-                  className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white font-bold tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex items-center space-x-1.5 px-3 py-1.5 rounded bg-orange-800 hover:bg-orange-700 text-white font-bold tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   disabled={openPositions.length === 0}
                   title={openPositions.length === 0 ? "Off: there are no open positions to close" : "Close every open position at market"}
                 >
@@ -328,7 +328,7 @@ export function PortfolioConsole() {
               </button>
               <button
                 onClick={handleFlattenAll}
-                className="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded font-bold text-xs"
+                className="px-4 py-1.5 bg-orange-800 hover:bg-orange-700 text-white rounded font-bold text-xs"
               >
                 FLATTEN ALL POSITIONS
               </button>

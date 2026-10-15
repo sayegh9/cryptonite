@@ -313,7 +313,7 @@ export const SettingsPanel: React.FC = () => {
                   <Key className="w-5 h-5 text-cyan-400" />
                   <div>
                     <div className="font-medium">Gemini API Key</div>
-                    <div className="text-xs text-zinc-500">Required for Antigravity AI Agents</div>
+                    <div className="text-xs text-zinc-500">Required for the AI gateway (Gemini models)</div>
                   </div>
                 </div>
                 <div className={`px-3 py-1 rounded-full text-xs font-bold ${envHealth.gemini_key_set ? 'bg-green-900/30 text-green-400 border border-green-900/50' : 'bg-red-900/30 text-red-400 border border-red-900/50'}`}>

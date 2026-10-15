@@ -476,55 +476,6 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
               </div>
               )}
 
-              {/* Annotated example of what a real card looks like. Its controls are not buttons. */}
-              <div className="p-3.5 rounded-lg border-2 border-dashed border-cyan-900/40 bg-zinc-900/30 space-y-3 relative">
-                <div className="flex items-center justify-between text-2xs font-mono text-cyan-400 font-bold uppercase tracking-wider">
-                  <span>Example card · not a real proposal</span>
-                  <span className="px-1.5 py-0.5 rounded bg-cyan-950 border border-cyan-800 text-cyan-300">
-                    Preview
-                  </span>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="flex items-center space-x-1 text-2xs font-mono text-zinc-500 uppercase tracking-wider">
-                    <span className="text-cyan-400 font-bold">1. Verdict & Conviction:</span>
-                  </div>
-                  <div className="p-2 bg-zinc-900 border border-zinc-800 rounded flex items-center justify-between">
-                    <div className="flex items-center space-x-2">
-                      <span className="w-2 h-2 rounded-full bg-zinc-500" />
-                      <span className="font-bold text-xs text-zinc-300 font-mono">&lt;symbol&gt; · &lt;side&gt;</span>
-                    </div>
-                    <span className="text-2xs font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-700">
-                      &lt;verdict · conviction&gt;
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="flex items-center space-x-1 text-2xs font-mono text-zinc-500 uppercase tracking-wider">
-                    <span className="text-purple-400 font-bold">2. Executive Thesis:</span>
-                  </div>
-                  <div className="p-2 bg-zinc-900/70 border border-zinc-800 rounded text-2xs text-zinc-400 space-y-1">
-                    <div>The portfolio manager's reasoning from the debate, and the full transcript below it.</div>
-                  </div>
-                </div>
-
-                <div className="space-y-1 pt-1 border-t border-zinc-800">
-                  <div className="flex items-center space-x-1 text-2xs font-mono text-zinc-500 uppercase tracking-wider">
-                    <span className="text-emerald-400 font-bold">3. 1-Click Governance Controls:</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 pt-1 font-mono text-xs">
-                    <span aria-hidden="true" className="py-1.5 bg-emerald-950/80 border border-emerald-700 text-emerald-300 font-bold rounded flex items-center justify-center space-x-1">
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Approve & Stage</span>
-                    </span>
-                    <span aria-hidden="true" className="py-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 rounded flex items-center justify-center space-x-1">
-                      <XCircle className="w-3.5 h-3.5" />
-                      <span>Reject</span>
-                    </span>
-                  </div>
-                </div>
-              </div>
             </div>
           ) : (
             <div className="p-6 bg-zinc-900/30 border border-zinc-800/80 rounded-lg text-center space-y-2">

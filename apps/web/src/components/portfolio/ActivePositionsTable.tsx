@@ -72,7 +72,7 @@ const PositionRow = React.memo(function PositionRow({ pos, latched, onSelect }: 
       <td className="pr-2 text-right tabular-nums">{fmtPrice(mark)}</td>
       <td className={`pr-2 text-right tabular-nums ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
         <span className="font-black text-[13px]">{fmtSignedUsd(pnl)}</span>
-        <span className="block text-2xs opacity-75">{`${roe >= 0 ? "+" : ""}${(roe * 100).toFixed(2)}%`}</span>
+        <span className="block text-2xs">{`${roe >= 0 ? "+" : ""}${(roe * 100).toFixed(2)}%`}</span>
       </td>
       <td className="pr-2">
         <LiquidationGauge isPerp={perp} distance={perp ? liqDistanceOf(pos, mark) : null} liquidationPrice={pos.liquidation_price} />

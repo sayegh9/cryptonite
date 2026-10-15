@@ -206,6 +206,9 @@ async def test_instances_carry_the_real_and_stable_source_hash(h):
     expected = get_strategy_source_hash(slug)
     assert re.fullmatch(r"[0-9a-f]{64}", expected)
     assert first["strategy_source_hash"] == second["strategy_source_hash"] == expected != "dummy_hash"
+    # The risk policy it was deployed under is a real hash of the enforced limits too, the same for both
+    assert re.fullmatch(r"[0-9a-f]{64}", first["risk_policy_hash"])
+    assert first["risk_policy_hash"] == second["risk_policy_hash"] != "dummy_hash"
     assert get_strategy_source_hash(slug) == expected  # deterministic: the same file hashes the same
 
 
@@ -287,3 +290,20 @@ async def test_a_debate_approved_twice_at_once_gives_one_order(h):
         results = await asyncio.gather(*[c.post(f"/api/v1/agents/debates/{run_id}/approve", headers=h.headers) for _ in range(3)])
     assert sorted(r.status_code for r in results) == [200, 409, 409], [r.text for r in results]
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE command_type = 'SUBMIT_ORDER'") == 1
+
+
+
+def test_the_risk_policy_hash_follows_the_enforced_limits():
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from cryptonite_orchestrator.source_hash import risk_policy_hash
+
+    def dispatcher(**kw):
+        base = dict(max_daily_loss_pct=Decimal("0.03"), min_order_equity_pct=Decimal("0.01"),
+                    max_position_concentration_pct=Decimal("0.25"), taker_fee=Decimal("0.001"))
+        return SimpleNamespace(**{**base, **kw})
+
+    a, b = risk_policy_hash(dispatcher()), risk_policy_hash(dispatcher())
+    assert re.fullmatch(r"[0-9a-f]{64}", a) and a == b  # deterministic
+    assert risk_policy_hash(dispatcher(max_daily_loss_pct=Decimal("0.02"))) != a  # a tighter limit is a new policy

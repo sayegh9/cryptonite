@@ -214,7 +214,7 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
 
     // Verify header title
     await expect(page.locator("text=PORTFOLIO & PAPER EXECUTION CONSOLE")).toBeVisible();
-    await expect(page.locator("text=M4 SIMULATOR")).toBeVisible();
+    await expect(page.locator("text=PAPER ENGINE")).toBeVisible();
 
     // Verify Metric Cards
     await expect(page.locator("text=Total Net Equity")).toBeVisible();
