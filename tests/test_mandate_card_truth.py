@@ -189,13 +189,16 @@ async def test_a_code_recorded_by_a_concurrent_submit_is_reused_not_wrong(h, mon
 
 # --- A SELL closes a stopped mandate's holding; the other sides and the ambiguous case stay as they were ---------------
 
-async def hold(pool, instance_id: str, qty: str) -> None:
-    """A filled BUY on the mandate's own instance: what ``instance_spot_holdings`` nets as a holding of BTC."""
+XRP = "XRPUSDT.BINANCE"
+
+
+async def hold(pool, instance_id: str, qty: str, instrument_id: str = BTC) -> None:
+    """A filled BUY on the mandate's own instance: what ``instance_spot_holdings`` nets as a holding."""
     await pool.execute(
         """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type, quantity,
                filled_qty, avg_fill_price, status)
            VALUES ($1, $2, 'PAPER-ACCOUNT-001', $3, 'BUY', 'MARKET', $4::numeric, $4::numeric, 50000, 'FILLED')""",
-        f"hold-{uuid.uuid4().hex[:8]}", instance_id, BTC, qty)
+        f"hold-{uuid.uuid4().hex[:8]}", instance_id, instrument_id, qty)
 
 
 @pytest.mark.parametrize("status", ["PAUSED", "HALTED"])
@@ -247,6 +250,65 @@ async def test_a_sell_with_two_stopped_mandates_holding_the_instrument_is_ambigu
     halted = await h.mandate(instruments=(BTC,), status="HALTED")
     await hold(h.pool, paused.instance_id, "0.005")
     await hold(h.pool, halted.instance_id, "0.005")
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 409 and res.json()["detail"].startswith("AMBIGUOUS_MANDATE")
+    assert card["status"] == "PENDING_APPROVAL" and notes == []
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+async def test_a_sell_on_an_active_mandate_that_holds_none_is_closed_in_the_stopped_mandate_that_holds_it(h, sell_card):
+    card, _ = sell_card
+    card.update(instrument_id=XRP)
+    active = await h.mandate(instruments=(XRP,))  # allows XRP, holds none of it
+    stopped = await h.mandate(instruments=(XRP,), status="PAUSED")
+    await hold(h.pool, stopped.instance_id, "40", XRP)
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["mandate_id"] == str(stopped.id) and res.json()["mandate_id"] != str(active.id)
+    assert card["status"] == "APPROVED"
+    cmds = await h.pool.fetch("SELECT * FROM execution_commands")
+    assert len(cmds) == 1 and str(cmds[0]["mandate_id"]) == str(stopped.id)
+    payload = json.loads(cmds[0]["payload"])
+    assert payload["side"] == "SELL" and Decimal(payload["quantity"]) == Decimal("40")  # the whole holding
+
+
+async def test_an_active_mandate_that_holds_the_sell_is_used_as_before_even_with_a_stopped_holder(h, sell_card):
+    card, _ = sell_card
+    card.update(instrument_id=XRP)
+    active = await h.mandate(instruments=(XRP,))
+    stopped = await h.mandate(instruments=(XRP,), status="PAUSED")
+    await hold(h.pool, active.instance_id, "40", XRP)
+    await hold(h.pool, stopped.instance_id, "10", XRP)
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["mandate_id"] == str(active.id)
+    cmds = await h.pool.fetch("SELECT * FROM execution_commands")
+    assert len(cmds) == 1 and str(cmds[0]["mandate_id"]) == str(active.id)
+    assert Decimal(json.loads(cmds[0]["payload"])["quantity"]) == Decimal("40")
+
+
+async def test_a_sell_no_mandate_holds_stays_spot_sell_not_held(h, sell_card):
+    card, notes = sell_card
+    card.update(instrument_id=XRP)
+    await h.mandate(instruments=(XRP,))  # allows XRP, holds none, and nothing stopped holds it
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 409 and res.json()["detail"].startswith("SPOT_SELL_NOT_HELD")
+    assert card["status"] == "PENDING_APPROVAL" and notes == []
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+async def test_a_sell_with_two_stopped_holders_behind_an_active_mandate_that_holds_none_is_ambiguous(h, sell_card):
+    card, notes = sell_card
+    card.update(instrument_id=XRP)
+    await h.mandate(instruments=(XRP,))
+    paused = await h.mandate(instruments=(XRP,), status="PAUSED")
+    halted = await h.mandate(instruments=(XRP,), status="HALTED")
+    await hold(h.pool, paused.instance_id, "40", XRP)
+    await hold(h.pool, halted.instance_id, "40", XRP)
     async with h.client() as c:
         res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
     assert res.status_code == 409 and res.json()["detail"].startswith("AMBIGUOUS_MANDATE")

@@ -269,17 +269,22 @@ def _find_card(session: dict[str, Any], widget_id: str) -> dict[str, Any] | None
     return None
 
 
+async def _held_qty(conn, instance_id: str, instrument_id: str) -> Decimal:
+    """The net spot quantity the mandate's instance holds of ``instrument_id`` (0 when none)."""
+    held = await instance_spot_holdings(conn, instance_id)
+    return held.get(canonical_instrument(instrument_id), (Decimal("0"), Decimal("0")))[0]
+
+
 async def _holding_mandate_for_sell(conn, instrument_id: str) -> tuple[Mandate | None, str]:
-    """The mandate a SELL on ``instrument_id`` closes when no ACTIVE mandate allows it: the one non-archived (PAUSED or
-    HALTED) mandate whose instance holds the instrument. (None, NO_MANDATE) when none holds it, (None,
-    AMBIGUOUS_MANDATE) when more than one does."""
+    """The mandate a SELL on ``instrument_id`` closes when the mandate that would be used holds none of it: the one
+    non-archived (PAUSED or HALTED) mandate whose instance holds the instrument. (None, NO_MANDATE) when none holds it,
+    (None, AMBIGUOUS_MANDATE) when more than one does."""
     inst = canonical_instrument(instrument_id)
     holders: list[Mandate] = []
     for row in await conn.fetch(
             "SELECT id FROM ai_mandates WHERE status <> 'ARCHIVED' AND $1 = ANY(instruments) ORDER BY created_at", inst):
         m = await load_mandate(conn, row["id"])
-        held = (await instance_spot_holdings(conn, m.instance_id)).get(inst, (Decimal("0"), Decimal("0")))[0]
-        if held >= MIN_HOLDING_QTY:
+        if await _held_qty(conn, m.instance_id, inst) >= MIN_HOLDING_QTY:
             holders.append(m)
     if not holders:
         return None, "NO_MANDATE"
@@ -322,14 +327,20 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     pool = request.app.state.pool
     async with pool.acquire() as conn:
         mandate, why = await resolve_mandate_for(conn, card["instrument_id"], req.mandate_id if req else None)
-    if mandate is None and why == "NO_MANDATE" and card["side"] == "SELL":
+    if card["side"] == "SELL" and not (req and req.mandate_id) and (mandate is not None or why == "NO_MANDATE"):
         # A SELL closes a holding, and REDUCE_RISK is allowed on a PAUSED or HALTED mandate (check_mandate and the
-        # orchestrator gate): the stopped mandate that holds the instrument is the one the SELL closes in
+        # orchestrator gate). When the mandate that would be used holds none of the instrument, the stopped mandate
+        # that holds it is the one the SELL closes in. An ACTIVE mandate that holds it is used as before
         async with pool.acquire() as conn:
-            mandate, why = await _holding_mandate_for_sell(conn, card["instrument_id"])
-        if why == "AMBIGUOUS_MANDATE":
-            raise HTTPException(status_code=409, detail=f"AMBIGUOUS_MANDATE: more than one stopped mandate holds "
-                                f"{card['instrument_id']}; nothing was queued")
+            holds_it = mandate is not None and await _held_qty(conn, mandate.instance_id, card["instrument_id"]) >= MIN_HOLDING_QTY
+            if not holds_it:
+                holder, holder_why = await _holding_mandate_for_sell(conn, card["instrument_id"])
+                if holder_why == "AMBIGUOUS_MANDATE":
+                    raise HTTPException(status_code=409, detail=f"AMBIGUOUS_MANDATE: more than one stopped mandate holds "
+                                        f"{card['instrument_id']}; nothing was queued")
+                if holder is not None:
+                    mandate, why = holder, ""
+        # Otherwise: no mandate holds it, so NO_MANDATE below, or the ACTIVE mandate's SPOT_SELL_NOT_HELD further down
     if mandate is None and why == "NO_MANDATE" and card["side"] == "BUY":
         # A PAUSED or HALTED mandate on the instrument is the real reason: the operator stopped it. Say so, not "no
         # mandate", which would send the operator to create one inline, where the same stop refuses it
