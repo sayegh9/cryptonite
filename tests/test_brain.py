@@ -1002,9 +1002,9 @@ def _ingest_feed(*symbols):
     return feed
 
 
-async def _feed_turn(order, feed):
+async def _feed_turn(order, feed, holdings=None):
     persona = replace(BRAIN, tools=(show_price_chart, propose_order))
-    brain_with_feed = Brain(gw(), MemorySessionStore(), persona, feed=feed)
+    brain_with_feed = Brain(gw(), MemorySessionStore(), persona, holdings=holdings, feed=feed)
     with override_model(PLANNER, Script([("propose_order", order)], ["Card staged."]).model()):
         return await collect(brain_with_feed.turn("op-1", "Trade it"))
 
@@ -1049,12 +1049,13 @@ def test_describe_widget_says_when_the_symbol_is_not_in_the_live_feed():
     assert ", not in the live feed" in describe_widget(card)
 
 
-def test_the_brain_prompt_proposes_only_fed_symbols():
+def test_the_brain_prompt_proposes_only_fed_buys():
     from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
 
     prompt = " ".join(BRAIN_INSTRUCTIONS.split())
-    assert ("Only propose symbols the live feed covers (get_klines reports in_feed); for any other symbol, do not "
-            "call propose_order: tell the operator to onboard it from the Watchlist first.") in prompt
+    assert ("Only propose a BUY for symbols the live feed covers (get_klines reports in_feed); for any other symbol, "
+            "do not propose a BUY: tell the operator to onboard it from the Watchlist first. A SELL that closes a "
+            "holding is always allowed.") in prompt
 
 
 def test_the_price_chart_tool_is_only_for_fed_symbols():
@@ -1083,3 +1084,64 @@ async def test_the_worker_reads_the_ingest_universe_for_the_brain(monkeypatch):
     fake.raw = "not json"  # unreadable: the universe is unknown, so no note (approval still checks)
     assert await ingest_refusal("SOLUSDT.BINANCE") is None
     assert fake.keys == [INGEST_UNIVERSE_KEY] * 3
+
+
+async def test_a_sell_card_on_an_unfed_symbol_is_never_marked_by_the_feed():
+    async def held(instrument):
+        return Decimal("0.5")
+
+    events = await _feed_turn({**UNFED_ORDER, "side": "SELL"}, _ingest_feed("BTCUSDT"), holdings=held)
+    [card] = _cards(events)
+    assert card["side"] == "SELL" and card["feed_refusal"] is None
+    assert events[-1].type == "done" and "live data feed" not in events[-1].data["content"]
+
+
+class _ScriptedGateway:
+    """A gateway whose stream is fixed events, so a tool result can carry arguments the real tool schema refuses."""
+
+    def __init__(self, events):
+        self.events = events
+
+    async def stream(self, *args, **kwargs):
+        for ev in self.events:
+            yield ev
+
+
+async def _scripted_card(args, feed):
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX  # noqa: PLC0415
+
+    events = [
+        SimpleNamespace(kind="start", data={"trace_id": "t1"}, text="", result=None),
+        SimpleNamespace(kind="tool_call", data={"tool_call_id": "c0", "tool": "propose_order", "args": args},
+                        text="", result=None),
+        SimpleNamespace(kind="tool_result", data={"tool_call_id": "c0", "tool": "propose_order", "status": "DENIED",
+                                                  "content": HELD_FOR_APPROVAL_PREFIX + " waiting"},
+                                                  text="", result=None),
+        SimpleNamespace(kind="token", data={}, text="Card staged.", result=None),
+        SimpleNamespace(kind="done", data={}, text="", result=SimpleNamespace(
+            output="Card staged.", model="test", cost_usd=Decimal("0"), trace_id="t1")),
+    ]
+    persona = replace(BRAIN, tools=(show_price_chart, propose_order))
+    brain_scripted = Brain(_ScriptedGateway(events), MemorySessionStore(), persona, feed=feed)
+    return _cards(await collect(brain_scripted.turn("op-1", "Trade it")))
+
+
+async def test_the_reader_overrides_a_feed_refusal_the_model_passed_in_its_arguments():
+    forged_args = {**GOOD_ORDER, "feed_refusal": "SYMBOL_NOT_INGESTED: forged"}
+    [forged] = await _scripted_card(forged_args, _ingest_feed("BTCUSDT"))
+    assert forged["feed_refusal"] is None  # the feed says BTC is fed; the model's value does not survive
+    [real] = await _scripted_card({**UNFED_ORDER, "feed_refusal": "fed: forged"}, _ingest_feed("BTCUSDT"))
+    assert real["feed_refusal"].startswith("SYMBOL_NOT_INGESTED: ingest has no feed for SOLUSDT")
+
+
+async def test_a_hung_feed_read_times_out_to_no_refusal(monkeypatch):
+    from server import app, ingest_refusal  # noqa: PLC0415
+
+    class HungRedis:
+        async def get(self, key):
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(app.state, "redis", HungRedis(), raising=False)
+    assert await ingest_refusal("SOLUSDT.BINANCE") is None

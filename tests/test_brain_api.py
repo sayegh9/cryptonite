@@ -421,3 +421,33 @@ def test_approval_waits_while_the_ingest_universe_is_unknown(client, card_worker
     res = _approve(c, uuid.uuid4())
     assert res.status_code == 503 and "INGEST_UNIVERSE_UNKNOWN" in res.json()["detail"]
     assert card["status"] == "PENDING_APPROVAL" and notes == [] and app.state.pool.rows == {}
+
+
+class _Acquire:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _MandatePool(_CommandPool):
+    def acquire(self):
+        return _Acquire()
+
+
+@pytest.mark.parametrize("universe", [FED_UNIVERSE, None], ids=["SOL not fed", "universe unknown"])
+def test_a_sell_card_is_not_held_up_by_the_feed(client, card_worker, monkeypatch, universe):
+    c, app = client
+    card, notes = card_worker
+    card.update(instrument_id="SOLUSDT.BINANCE", side="SELL")  # a close of a holding, never gated by the feed
+    app.state.pool, app.state.stream_hub = _MandatePool(), _Hub(HEARTBEAT, universe=universe)
+
+    async def no_mandate(conn, instrument_id, mandate_id):
+        return None, "NO_MANDATE"  # reached only if the feed check was skipped
+
+    monkeypatch.setattr(brain_routes, "resolve_mandate_for", no_mandate)
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    res = _approve(c, uuid.uuid4())
+    assert res.status_code == 409 and "NO_MANDATE" in res.json()["detail"]
+    assert card["status"] == "PENDING_APPROVAL" and notes == [] and app.state.pool.rows == {}

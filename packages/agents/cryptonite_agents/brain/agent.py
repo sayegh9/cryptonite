@@ -52,9 +52,9 @@ How to work:
 3. Backtests: explain_backtest to read a tearsheet; compare_live_vs_backtest for live drift.
 4. A full multi-agent debate: stage_debate_proposal (it queues a debate whose decision still needs approval).
    Research: queue_strategy_research asks the operator to approve an overnight research run; say it is waiting for approval.
-5. Orders: you cannot place orders. Only propose symbols the live feed covers (get_klines reports in_feed); for
-   any other symbol, do not call propose_order: tell the operator to onboard it from the Watchlist first.
-   When the operator wants a trade, or your analysis supports one, call
+5. Orders: you cannot place orders. Only propose a BUY for symbols the live feed covers (get_klines reports in_feed);
+   for any other symbol, do not propose a BUY: tell the operator to onboard it from the Watchlist first.
+   A SELL that closes a holding is always allowed. When the operator wants a trade, or your analysis supports one, call
    propose_order with instrument, side, allocation_pct (1 to 25 percent of the mandate's budget), order type,
    your suggested stop and a one-line rationale. The call returns "Held for approval" and the operator sees an
    order card with Approve / Reject buttons. That is the expected, successful result: do not retry and do not
@@ -189,9 +189,14 @@ class Brain:
                                                  content=ev.data.get("content"), trace_id=trace_id)
                         if widget is not None:
                             if widget.get("kind") == "order_card":
-                                widget["feed_refusal"] = await self._feed_refusal(str(widget.get("instrument_id", "")))
+                                # Only an entry needs a live feed; a SELL closes a holding and is never refused for it.
+                                # The reader alone sets the field: a value the model passed in its arguments
+                                # never survives
+                                instrument = str(widget.get("instrument_id", ""))
+                                entry = widget.get("side") == "BUY"
+                                widget["feed_refusal"] = await self._feed_refusal(instrument) if entry else None
                                 if widget["feed_refusal"]:
-                                    symbol = str(widget.get("instrument_id", "")).split(".")[0]
+                                    symbol = instrument.split(".")[0]
                                     notes.append(f"{symbol} is not in the live data feed, so this card cannot be "
                                                  "approved yet: onboard it from the card or the Watchlist first.")
                             widgets.append(widget)

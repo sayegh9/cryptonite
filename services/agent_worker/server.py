@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -106,7 +107,11 @@ config_cache = ConfigCache()
 
 async def ingest_refusal(instrument_id: str) -> str | None:
     """Why ingest does not feed ``instrument_id`` (for the Brain's card note), or None when it does or it is unknown."""
-    universe = IngestUniverse.parse(await app.state.redis.get(INGEST_UNIVERSE_KEY))
+    try:
+        raw = await asyncio.wait_for(app.state.redis.get(INGEST_UNIVERSE_KEY), timeout=1)
+    except TimeoutError:
+        return None  # a slow Redis shows no note; approval still checks the feed
+    universe = IngestUniverse.parse(raw)
     return universe.refusal(instrument_id) if universe is not None else None
 
 @app.on_event("startup")

@@ -288,8 +288,9 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
                             "(docker compose --profile monitoring up -d exit_monitor); without it the position has no stop")
     protection = json.loads(raw)
 
-    # A symbol ingest does not feed cannot fill: refuse it (422) before the card is claimed, as the mandate step does
-    await require_fed(request, [card["instrument_id"]])
+    # An entry needs a live feed; a SELL closes a holding and is never blocked by the feed
+    if card["side"] != "SELL":
+        await require_fed(request, [card["instrument_id"]])
 
     # Every AI order trades inside a mandate (A5.1); resolve it before the card is claimed
     pool = request.app.state.pool
