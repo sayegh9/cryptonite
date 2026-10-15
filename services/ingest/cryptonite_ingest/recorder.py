@@ -73,6 +73,7 @@ class IngestRecorder:
         self.redis_url = redis_url
         # Onboarded instruments rows join the env list on start (default on); the cap bounds the total
         self.onboarded_from_db = os.getenv("INGEST_ONBOARDED_FROM_DB", "1") != "0"
+        self._env_symbols: list[str] = []  # INGEST_SYMBOLS as given; onboarded symbols are never in it
         try:
             self.max_symbols = int(os.getenv("INGEST_MAX_SYMBOLS", "12"))
         except ValueError:
@@ -129,6 +130,7 @@ class IngestRecorder:
         except Exception as e:  # never block start-up
             logger.error("Empty instrument file check failed: %s", e)
         await self.sync_instruments()
+        self._drop_unlisted_onboarded_symbols()
 
         # Reconcile any uncommitted batches from previous crashes
         for symbol in self.symbols:
@@ -139,9 +141,10 @@ class IngestRecorder:
 
     async def _apply_onboarded_symbols(self) -> None:
         """Merge the onboarded instruments rows into self.symbols on start (WS-1A); no-op when disabled."""
+        env_symbols = list(self.symbols)
+        self._env_symbols = env_symbols
         if not self.onboarded_from_db:
             return
-        env_symbols = list(self.symbols)
         onboarded = await self._load_onboarded_symbols()
         self.symbols = self._merged_symbols(env_symbols, onboarded)
         added = [s for s in self.symbols if s not in env_symbols]
@@ -188,6 +191,21 @@ class IngestRecorder:
                 "INGEST_MAX_SYMBOLS=%d reached; onboarded symbols not ingested: %s", self.max_symbols, dropped
             )
         return merged
+
+    def _drop_unlisted_onboarded_symbols(self) -> None:
+        """Drop onboarded symbols Binance does not list for trading, so no dead symbol is fed (WS-1A).
+
+        Env symbols are never dropped here, whatever exchangeInfo says about them.
+        """
+        env = set(self._env_symbols)
+        dead = [
+            s
+            for s in self.symbols
+            if s not in env and (self._symbol_metadata.get(s) or {}).get("is_trading") is not True
+        ]
+        if dead:
+            self.symbols = [s for s in self.symbols if s not in dead]
+            logger.warning("Dropping onboarded symbols Binance does not list for trading: %s", dead)
 
     async def sync_instruments(self, symbols: list[str] | None = None) -> None:
         """Fetch instrument definitions, write to Nautilus catalog and PostgreSQL."""

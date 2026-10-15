@@ -87,6 +87,17 @@ def stub_startup(monkeypatch):
     return coordinator
 
 
+def listing_sync(recorder: IngestRecorder, not_listed=(), not_trading=()):
+    """Stand-in for sync_instruments: records metadata for every symbol except the ones Binance does not list."""
+
+    async def fake_sync(symbols=None):
+        for sym in recorder.symbols:
+            if sym not in not_listed:
+                recorder._symbol_metadata[sym] = {"symbol": sym, "is_trading": sym not in not_trading}
+
+    return fake_sync
+
+
 def make_recorder(tmp_path, symbols=("BTCUSDT", "ETHUSDT")) -> IngestRecorder:
     return IngestRecorder(
         symbols=list(symbols),
@@ -191,12 +202,15 @@ async def test_disabled_flag_keeps_env_list_and_skips_db(tmp_path):
 async def test_initialize_starts_from_merged_symbols(db_pool, tmp_path, stub_startup, monkeypatch):
     await seed_rows(db_pool)
     recorder = make_recorder(tmp_path, symbols=["BTCUSDT"])
+    recorder.max_symbols = 1000  # the test DB may hold other rows; only containment is asserted
     symbols_at_sync: list[list[str]] = []
+    listed = listing_sync(recorder)
 
-    async def fake_sync(symbols=None):
+    async def recording_sync(symbols=None):
         symbols_at_sync.append(list(recorder.symbols))
+        await listed(symbols)
 
-    monkeypatch.setattr(recorder, "sync_instruments", fake_sync)
+    monkeypatch.setattr(recorder, "sync_instruments", recording_sync)
     try:
         await recorder.initialize()
     finally:
@@ -207,8 +221,60 @@ async def test_initialize_starts_from_merged_symbols(db_pool, tmp_path, stub_sta
     assert ACTIVE in recorder.symbols
     assert ACTIVE_3 in recorder.symbols
     assert BREAK not in recorder.symbols
-    assert symbols_at_sync == [recorder.symbols]  # merged before the instrument sync and the reconcile
+    # merged before the instrument sync and the reconcile; nothing listed was dropped after the sync
+    assert set(recorder.symbols) <= set(symbols_at_sync[0])
     stub_startup.reconcile_pending_batches.assert_awaited()
+
+
+async def test_onboarded_symbol_absent_from_exchange_info_is_dropped(
+    db_pool, tmp_path, stub_startup, monkeypatch, caplog
+):
+    await insert_instrument(db_pool, ACTIVE)  # delisted on Binance: no exchangeInfo entry
+    await insert_instrument(db_pool, ACTIVE_2)  # still listed
+    recorder = make_recorder(tmp_path, symbols=["BTCUSDT"])
+    recorder.max_symbols = 1000
+    monkeypatch.setattr(recorder, "sync_instruments", listing_sync(recorder, not_listed=(ACTIVE,)))
+    try:
+        with caplog.at_level(logging.WARNING, logger="cryptonite.recorder"):
+            await recorder.initialize()
+    finally:
+        if recorder.pool:
+            await recorder.pool.close()
+
+    assert ACTIVE not in recorder.symbols
+    assert ACTIVE in caplog.text  # the warning names the dropped symbol
+    assert ACTIVE_2 in recorder.symbols  # a present onboarded symbol is kept
+    assert "BTCUSDT" in recorder.symbols
+
+
+async def test_onboarded_symbol_not_trading_on_binance_is_dropped(
+    db_pool, tmp_path, stub_startup, monkeypatch
+):
+    await insert_instrument(db_pool, ACTIVE_3)  # listed but status is not TRADING any more
+    recorder = make_recorder(tmp_path, symbols=["BTCUSDT"])
+    recorder.max_symbols = 1000
+    monkeypatch.setattr(recorder, "sync_instruments", listing_sync(recorder, not_trading=(ACTIVE_3,)))
+    try:
+        await recorder.initialize()
+    finally:
+        if recorder.pool:
+            await recorder.pool.close()
+
+    assert ACTIVE_3 not in recorder.symbols
+    assert "BTCUSDT" in recorder.symbols
+
+
+async def test_env_symbol_absent_from_exchange_info_is_kept(db_pool, tmp_path, stub_startup, monkeypatch):
+    recorder = make_recorder(tmp_path, symbols=["BTCUSDT", "ETHUSDT"])
+    monkeypatch.setattr(recorder, "sync_instruments", listing_sync(recorder, not_listed=("ETHUSDT",)))
+    try:
+        await recorder.initialize()
+    finally:
+        if recorder.pool:
+            await recorder.pool.close()
+
+    assert "ETHUSDT" in recorder.symbols  # env symbols are never dropped by the listing check
+    assert "BTCUSDT" in recorder.symbols
 
 
 async def test_initialize_with_flag_off_keeps_env_list(db_pool, tmp_path, stub_startup, monkeypatch):
