@@ -45,7 +45,10 @@ ROUTES_TTL_S = 30.0
 LOG_INPUT_ROLES = frozenset({"triage", "tagging", "summarize"})
 MAX_LOGGED_INPUT = 20_000
 # Tools that start paid or external work, capped per model turn (LE-8)
-PER_TURN_TOOL_LIMITS = {"stage_debate_proposal": 1}
+PER_TURN_TOOL_LIMITS = {"stage_debate_proposal": 1, "propose_order": 1}
+# ADD_RISK tools whose denial is the normal way their result is made: the call is held and staged for the
+# operator's approval, so the model gets a "held" answer (not an error) and the per-turn limit applies to it
+HELD_FOR_APPROVAL_TOOLS = frozenset({"propose_order"})
 
 
 class GatewayError(Exception):
@@ -230,6 +233,15 @@ class Gateway:
                 self.permission.check(spec, ctx)
             except ToolDenied as denied:
                 logger.warning("Tool call denied for %s: %s", role, denied)
+                if denied.reason == "ADD_RISK_REQUIRES_APPROVAL" and spec.name in HELD_FOR_APPROVAL_TOOLS:
+                    used[spec.name] = used.get(spec.name, 0) + 1
+                    if used[spec.name] <= PER_TURN_TOOL_LIMITS[spec.name]:
+                        return (f"Held for approval: the order card is staged and shown to the operator with "
+                                f"Approve / Reject. This is the expected result, not an error. Do not call "
+                                f"{spec.name} again in this turn; tell the operator the card is waiting for their "
+                                "approval.")
+                    return (f"Refused: only one order card per turn, and the first card is already waiting for the "
+                            f"operator. Do not call {spec.name} again; tell the operator the card is waiting.")
                 return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
             limit = PER_TURN_TOOL_LIMITS.get(spec.name)
             if limit is not None:

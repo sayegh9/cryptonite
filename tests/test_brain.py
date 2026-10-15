@@ -178,8 +178,8 @@ async def test_stream_passes_the_permission_gate_and_reports_tool_status():
         events = await collect(gw().stream(BRAIN_PLAN, "go", tools=(show_price_chart, propose_order)))
     results = {e.data["tool"]: e.data["status"] for e in events if e.kind == "tool_result"}
     assert results == {"show_price_chart": "OK", "propose_order": "DENIED"}
-    denied = [r for r in script.returns if r.tool_name == "propose_order"][0]
-    assert "ADD_RISK_REQUIRES_APPROVAL" in str(denied.content)
+    held = [r for r in script.returns if r.tool_name == "propose_order"][0]
+    assert str(held.content).startswith("Held for approval")
     assert {c["tool"]: c["status"] for c in events[-1].result.tool_calls} == results
 
 
@@ -693,4 +693,96 @@ async def test_a_buy_card_needs_no_holding():
     with override_model(PLANNER, Script([("propose_order", GOOD_ORDER)], ["ok"]).model()):
         events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Buy BTC"))
     assert [c["side"] for c in _cards(events)] == ["BUY"]
+
+
+# --- A held order card is a success, not a crash --------------------------------------------------
+
+HELD_ORDER_NOTE = "_[the model did not finish its reply; the order card above is waiting for your approval]_"
+
+
+def _proposal_returns(script) -> list[str]:
+    return [str(r.content) for r in script.returns if r.tool_name == "propose_order"]
+
+
+async def test_a_held_proposal_tells_the_model_the_hold_is_the_expected_result():
+    script = Script([("propose_order", GOOD_ORDER)], ["Card staged for your approval."])
+    with override_model(PLANNER, script.model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC"))
+    [text] = _proposal_returns(script)
+    assert text.startswith("Held for approval: the order card is staged and shown to the operator")
+    assert "This is the expected result, not an error." in text
+    assert "Do not call propose_order again in this turn" in text
+    assert "ADD_RISK_REQUIRES_APPROVAL" not in text
+    cards = _cards(events)
+    assert len(cards) == 1 and cards[0]["status"] == "PENDING_APPROVAL"
+    assert events[-1].type == "done"
+
+
+async def test_a_second_proposal_in_one_turn_is_refused_and_renders_no_card():
+    second = {**GOOD_ORDER, "instrument_id": "ETHUSDT.BINANCE"}
+    script = Script([("propose_order", GOOD_ORDER), ("propose_order", second)], ["One card is staged."])
+    with override_model(PLANNER, script.model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC and ETH"))
+    assert len(_cards(events)) == 1
+    # Which of the two concurrent calls is held is not fixed; the other one must be the refusal
+    texts = sorted(t.split(":")[0] for t in _proposal_returns(script))
+    assert texts == ["Held for approval", "Refused"]
+    refused = next(t for t in _proposal_returns(script) if t.startswith("Refused"))
+    assert refused == ("Refused: only one order card per turn, and the first card is already waiting for the "
+                       "operator. Do not call propose_order again; tell the operator the card is waiting.")
+    assert events[-1].type == "done"
+
+
+def _invalid_output_model(card_first: bool) -> FunctionModel:
+    """Optionally calls propose_order, then returns output the gateway cannot validate (the SOLUSDT incident)."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior  # noqa: PLC0415
+
+    async def stream(messages, info: AgentInfo):
+        if card_first and not _tool_returns(messages):
+            yield {0: DeltaToolCall(name="propose_order", json_args=json.dumps(GOOD_ORDER), tool_call_id="call-0")}
+            return
+        raise UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+        yield ""  # pragma: no cover
+
+    def sync(messages, info):
+        if card_first and not _tool_returns(messages):
+            return ModelResponse(parts=[ToolCallPart("propose_order", GOOD_ORDER, tool_call_id="call-0")])
+        raise UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+
+    return FunctionModel(sync, stream_function=stream)
+
+
+async def test_invalid_output_after_a_staged_card_keeps_the_card_and_says_so():
+    store = MemorySessionStore()
+    with override_model(PLANNER, _invalid_output_model(card_first=True)):
+        events = await collect(brain(store).turn("op-1", "Buy BTC"))
+    assert [c["status"] for c in _cards(events)] == ["PENDING_APPROVAL"]
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_INCOMPLETE"
+    assert events[-1].data["message"] == ("The model stopped before finishing its reply. The order card above is "
+                                          "staged and waiting for your approval.")
+    stored = await store.messages(events[0].data["session_id"])
+    assert [m["role"] for m in stored] == ["user", "assistant"]
+    assert HELD_ORDER_NOTE in stored[1]["content"]
+    assert [w["kind"] for w in stored[1]["widgets"]] == ["order_card"]
+
+
+async def test_invalid_output_without_a_card_is_still_model_unavailable():
+    store = MemorySessionStore()
+    with override_model(PLANNER, _invalid_output_model(card_first=False)):
+        events = await collect(brain(store).turn("op-1", "Buy BTC"))
+    assert _cards(events) == []
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
+    assert "model output invalid" in events[-1].data["message"]
+    assert [m["role"] for m in await store.messages(events[0].data["session_id"])] == ["user"]
+
+
+def test_the_brain_prompt_describes_the_held_card_and_the_reply_length():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    prompt = " ".join(BRAIN_INSTRUCTIONS.split())  # the wording may wrap across lines
+    assert '"Held for approval"' in prompt and "Tool call denied" not in prompt
+    assert "answer in the language the operator wrote in" in prompt
+    assert "Keep replies under about 150 words unless the operator asks for detail." in prompt
+    assert ("Before proposing a SELL, check what the mandate holds (query_postgres_readonly on "
+            "agent_safe_ai_holdings)." in prompt)
 
