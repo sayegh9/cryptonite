@@ -416,6 +416,8 @@ services:
       DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       ASYNC_DATABASE_URL: postgresql+asyncpg://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/1
+      # live system keys (ingest:universe, exit_monitor:heartbeat, perp marks) are on DB 0; REDIS_URL is DB 1 (WS-2F)
+      SYSTEM_REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       AGENT_TOOLS_DATABASE_URL: postgresql://cryptonite_agent_ro:agent_ro_dev_pass@postgres:5432/cryptonite
       AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog

@@ -1079,7 +1079,7 @@ async def test_the_worker_reads_the_ingest_universe_for_the_brain(monkeypatch):
             return self.raw
 
     fake = FakeRedis(IngestUniverse.build(["BTCUSDT"], ["1m"]).model_dump_json())
-    monkeypatch.setattr(app.state, "redis", fake, raising=False)
+    monkeypatch.setattr(app.state, "system_redis", fake, raising=False)  # the live universe is a system key (WS-2F)
     assert (await ingest_refusal("SOLUSDT.BINANCE")).startswith("SYMBOL_NOT_INGESTED")
     assert await ingest_refusal("BTCUSDT.BINANCE") is None
     fake.raw = "not json"  # unreadable: the universe is unknown, so no note (approval still checks)
