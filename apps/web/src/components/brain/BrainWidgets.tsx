@@ -660,18 +660,20 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <XCircle className="h-3 w-3" /> Rejected by you
         </p>
       )}
-      {mandateBlock && (
+      {pending && mandateBlock && (
         <p role="alert" className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-amber-300">
           <AlertTriangle className="h-3 w-3" aria-hidden /> Order not queued: {mandateBlock}
           <a
-            href={`/${buildQuery("mission", "mandates")}`}
+            href={`/${buildQuery("mission", "overview")}`}
             onClick={(e) => {
+              // Modified clicks keep the browser's behaviour (new tab, new window, download)
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
               e.preventDefault();
-              dispatchSwitchWorkspace({ mode: "mission", view: "mandates" });
+              dispatchSwitchWorkspace({ mode: "mission", view: "overview" });
             }}
             className="font-bold text-cyan-400 underline hover:text-cyan-300"
           >
-            Open Mandates
+            Open Mission Control
           </a>
         </p>
       )}

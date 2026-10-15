@@ -286,7 +286,7 @@ test.describe("Brain Home", () => {
     expect(reactErrors).toEqual([]);
   });
 
-  test("an approve refused by a paused mandate shows its reason and a link to Mandates, with no TOTP box", async ({ page }) => {
+  test("an approve refused by a paused mandate shows its reason and a link to Mission Control, with no TOTP box", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     await mockBackend(page);
     const mandateBodies: any[] = [];
@@ -313,7 +313,7 @@ test.describe("Brain Home", () => {
     // The server's reason is shown and the operator is pointed at the Mandates page; no mandate form, no TOTP box
     await expect(card.getByRole("alert")).toContainText("MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE");
     await expect(card.getByRole("alert")).toContainText("resume it on the Mandates page, then approve this card");
-    await expect(card.getByRole("link", { name: "Open Mandates" })).toHaveAttribute("href", "/?ws=mission&view=mandates");
+    await expect(card.getByRole("link", { name: "Open Mission Control" })).toHaveAttribute("href", "/?ws=mission&view=overview");
     await expect(card.getByLabel("TOTP code")).toHaveCount(0);
     await expect(card.getByRole("group", { name: "Confirm paper order" })).toHaveCount(0);
     // Approve stays available for a retry after the mandate is resumed; nothing was created or queued
@@ -322,8 +322,58 @@ test.describe("Brain Home", () => {
     expect(orderBodies[0]?.mandate_id).toBeUndefined();
     expect(mandateBodies).toEqual([]);
 
-    await card.getByRole("link", { name: "Open Mandates" }).click();
-    await expect(page).toHaveURL(/\?ws=mission&view=mandates$/);
+    await card.getByRole("link", { name: "Open Mission Control" }).click();
+    await expect(page).toHaveURL(/\?ws=mission&view=overview$/);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("the Open Mission Control link is reachable and works from the keyboard", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockBackend(page);
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
+      route.fulfill({
+        status: 409,
+        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it on the Mandates page, then approve this card" },
+      }),
+    );
+    await openBrainHome(page);
+    await page.getByRole("textbox", { name: "Message the Brain" }).fill("Analyze BTC and propose a trade");
+    await page.getByRole("button", { name: "Send to the Brain" }).click();
+
+    const card = page.getByTestId("brain-assistant-message").last().getByTestId("brain-widget-order-card");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+    const link = card.getByRole("link", { name: "Open Mission Control" });
+    await expect(link).toBeVisible();
+    await link.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\?ws=mission&view=overview$/);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a paused-mandate notice goes with the card when the operator rejects it", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockBackend(page);
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
+      route.fulfill({
+        status: 409,
+        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it on the Mandates page, then approve this card" },
+      }),
+    );
+    await openBrainHome(page);
+    await page.getByRole("textbox", { name: "Message the Brain" }).fill("Analyze BTC and propose a trade");
+    await page.getByRole("button", { name: "Send to the Brain" }).click();
+
+    const card = page.getByTestId("brain-assistant-message").last().getByTestId("brain-widget-order-card");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+    await expect(card.getByRole("link", { name: "Open Mission Control" })).toBeVisible();
+
+    // Rejected: the card no longer asks for approval, so the "then approve this card" notice goes too
+    await card.getByRole("button", { name: "Reject" }).click();
+    await expect(card).toContainText("Rejected by you");
+    await expect(card.getByRole("link", { name: "Open Mission Control" })).toHaveCount(0);
+    await expect(card).not.toContainText("then approve this card");
     expect(reactErrors).toEqual([]);
   });
 
@@ -358,7 +408,7 @@ test.describe("Brain Home", () => {
 
     // The form is gone (not only the code): the reason and the Mandates link replace it, and Approve is back
     await expect(card.getByRole("alert")).toContainText("MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE");
-    await expect(card.getByRole("link", { name: "Open Mandates" })).toBeVisible();
+    await expect(card.getByRole("link", { name: "Open Mission Control" })).toBeVisible();
     await expect(card.getByLabel("TOTP code")).toHaveCount(0);
     await expect(card.getByRole("group", { name: "Confirm paper order" })).toHaveCount(0);
     await expect(card.getByRole("button", { name: "Approve…" })).toBeVisible();
