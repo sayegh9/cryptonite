@@ -982,3 +982,104 @@ def test_a_resumed_next_day_marks_yesterdays_turns_with_their_date():
     assert "[10-14 07:30] Brain: SOL 180 at 07:30\n[10-14 07:31] Operator: and now?" in prompt
     assert "[07:3" not in prompt  # never a bare time for yesterday's quote
 
+
+# --- An order card says when ingest does not feed its symbol (WS-1C, the SOLUSDT incident) -------------------------
+
+UNFED_ORDER = {**GOOD_ORDER, "instrument_id": "SOLUSDT.BINANCE"}
+FEED_NOTE = ("SOLUSDT is not in the live data feed, so this card cannot be approved yet: onboard it from the card "
+             "or the Watchlist first.")
+
+
+def _ingest_feed(*symbols):
+    """A feed reader over what ingest publishes for ``symbols`` (the real refusal lines)."""
+    from cryptonite_schemas.universe import IngestUniverse  # noqa: PLC0415
+
+    universe = IngestUniverse.build(list(symbols), ["1m"])
+
+    async def feed(instrument):
+        return universe.refusal(instrument)
+
+    return feed
+
+
+async def _feed_turn(order, feed):
+    persona = replace(BRAIN, tools=(show_price_chart, propose_order))
+    brain_with_feed = Brain(gw(), MemorySessionStore(), persona, feed=feed)
+    with override_model(PLANNER, Script([("propose_order", order)], ["Card staged."]).model()):
+        return await collect(brain_with_feed.turn("op-1", "Trade it"))
+
+
+async def test_a_card_for_an_unfed_symbol_carries_the_refusal_and_the_onboarding_note():
+    events = await _feed_turn(UNFED_ORDER, _ingest_feed("BTCUSDT"))
+    [card] = _cards(events)
+    assert card["feed_refusal"].startswith("SYMBOL_NOT_INGESTED: ingest has no feed for SOLUSDT")
+    assert events[-1].type == "done" and FEED_NOTE in events[-1].data["content"]
+
+
+async def test_a_card_for_a_fed_symbol_has_no_refusal_and_no_note():
+    events = await _feed_turn(GOOD_ORDER, _ingest_feed("BTCUSDT"))
+    [card] = _cards(events)
+    assert card["feed_refusal"] is None
+    assert events[-1].type == "done" and "live data feed" not in events[-1].data["content"]
+
+
+async def test_a_feed_reader_that_raises_leaves_the_card_unmarked_and_the_turn_completes(caplog):
+    import logging  # noqa: PLC0415
+
+    async def broken(instrument):
+        raise RuntimeError("redis down")
+
+    with caplog.at_level(logging.WARNING, logger="cryptonite.agents.brain"):
+        events = await _feed_turn(UNFED_ORDER, broken)
+    [card] = _cards(events)
+    assert card["feed_refusal"] is None
+    assert events[-1].type == "done" and "live data feed" not in events[-1].data["content"]
+    assert "Could not read the live feed for SOLUSDT.BINANCE" in caplog.text
+
+
+async def test_without_a_feed_reader_no_card_is_marked():
+    [card] = _cards(await _feed_turn(UNFED_ORDER, None))
+    assert card["feed_refusal"] is None
+
+
+def test_describe_widget_says_when_the_symbol_is_not_in_the_live_feed():
+    card = widget_for_tool("propose_order", UNFED_ORDER, call_id="c1", status="DENIED")
+    assert card["feed_refusal"] is None and ", not in the live feed" not in describe_widget(card)
+    card["feed_refusal"] = "SYMBOL_NOT_INGESTED: ingest has no feed for SOLUSDT (fed: BTCUSDT); onboard it first"
+    assert ", not in the live feed" in describe_widget(card)
+
+
+def test_the_brain_prompt_proposes_only_fed_symbols():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    prompt = " ".join(BRAIN_INSTRUCTIONS.split())
+    assert ("Only propose symbols the live feed covers (get_klines reports in_feed); for any other symbol, do not "
+            "call propose_order: tell the operator to onboard it from the Watchlist first.") in prompt
+
+
+def test_the_price_chart_tool_is_only_for_fed_symbols():
+    doc = " ".join(show_price_chart.func.__doc__.split())
+    assert "Only for symbols the ingest feed records (get_klines reports in_feed)." in doc
+    assert "Use it whenever you discuss price action." not in doc
+
+
+async def test_the_worker_reads_the_ingest_universe_for_the_brain(monkeypatch):
+    from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse  # noqa: PLC0415
+    from server import app, ingest_refusal  # noqa: PLC0415
+
+    class FakeRedis:
+        def __init__(self, raw):
+            self.raw = raw
+            self.keys: list[str] = []
+
+        async def get(self, key):
+            self.keys.append(key)
+            return self.raw
+
+    fake = FakeRedis(IngestUniverse.build(["BTCUSDT"], ["1m"]).model_dump_json())
+    monkeypatch.setattr(app.state, "redis", fake, raising=False)
+    assert (await ingest_refusal("SOLUSDT.BINANCE")).startswith("SYMBOL_NOT_INGESTED")
+    assert await ingest_refusal("BTCUSDT.BINANCE") is None
+    fake.raw = "not json"  # unreadable: the universe is unknown, so no note (approval still checks)
+    assert await ingest_refusal("SOLUSDT.BINANCE") is None
+    assert fake.keys == [INGEST_UNIVERSE_KEY] * 3

@@ -71,6 +71,8 @@ class OrderCardWidget(OrderProposal):
     status: Literal["PENDING_APPROVAL", "APPROVED", "REJECTED", "FAILED"] = "PENDING_APPROVAL"
     trace_id: str | None = None
     command_id: str | None = None
+    # Why ingest does not feed the symbol (an ``IngestUniverse.refusal`` line), or None when it does
+    feed_refusal: str | None = None
 
 
 class DebateSummaryWidget(BaseModel):
@@ -136,6 +138,7 @@ def describe_widget(widget: dict[str, Any]) -> str:
     if kind == "order_card":
         return (f"[order card {widget.get('id')}: {widget.get('side')} {widget.get('instrument_id')} "
                 f"{widget.get('order_type')} ({widget.get('allocation_pct')}% of the mandate), status {widget.get('status')}"
+                + (", not in the live feed" if widget.get("feed_refusal") else "")
                 + (f", paper command {widget['command_id']}" if widget.get("command_id") else "") + "]")
     if kind == "price_chart":
         return f"[price chart {widget.get('symbol')} {widget.get('timeframe')}]"

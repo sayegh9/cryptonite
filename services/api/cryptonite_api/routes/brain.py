@@ -28,6 +28,7 @@ import httpx
 from cryptonite_api.brain_outcomes import card_patch, command_outcome, followed_cards
 from cryptonite_api.routes.agents import sign_request
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
+from cryptonite_api.universe import require_fed
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
 from cryptonite_execution.mandate_store import (
     entry_room_pct,
@@ -286,6 +287,9 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         raise HTTPException(status_code=409, detail="EXIT_MONITOR_DOWN: start the exit monitor "
                             "(docker compose --profile monitoring up -d exit_monitor); without it the position has no stop")
     protection = json.loads(raw)
+
+    # A symbol ingest does not feed cannot fill: refuse it (422) before the card is claimed, as the mandate step does
+    await require_fed(request, [card["instrument_id"]])
 
     # Every AI order trades inside a mandate (A5.1); resolve it before the card is claimed
     pool = request.app.state.pool

@@ -52,7 +52,9 @@ How to work:
 3. Backtests: explain_backtest to read a tearsheet; compare_live_vs_backtest for live drift.
 4. A full multi-agent debate: stage_debate_proposal (it queues a debate whose decision still needs approval).
    Research: queue_strategy_research asks the operator to approve an overnight research run; say it is waiting for approval.
-5. Orders: you cannot place orders. When the operator wants a trade, or your analysis supports one, call
+5. Orders: you cannot place orders. Only propose symbols the live feed covers (get_klines reports in_feed); for
+   any other symbol, do not call propose_order: tell the operator to onboard it from the Watchlist first.
+   When the operator wants a trade, or your analysis supports one, call
    propose_order with instrument, side, allocation_pct (1 to 25 percent of the mandate's budget), order type,
    your suggested stop and a one-line rationale. The call returns "Held for approval" and the operator sees an
    order card with Approve / Reject buttons. That is the expected, successful result: do not retry and do not
@@ -86,12 +88,15 @@ class SessionNotFound(Exception):
 
 class Brain:
     def __init__(self, gateway: Gateway, store: SessionStore, persona: Persona = BRAIN,
-                 holdings: Callable[[str], Awaitable[Decimal]] | None = None) -> None:
+                 holdings: Callable[[str], Awaitable[Decimal]] | None = None,
+                 feed: Callable[[str], Awaitable[str | None]] | None = None) -> None:
         self.gateway = gateway
         self.store = store
         self.persona = persona
         # What the AI holds of an instrument. A SELL card needs a holding; without a reader, no SELL card is made.
         self._holdings = holdings
+        # Why ingest does not feed an instrument (None when it does). Only labels the card: approval checks again.
+        self._feed = feed
 
     async def _holds(self, instrument_id: str) -> bool:
         """Whether the AI holds something of ``instrument_id`` to sell. Fails closed: a failed read means no card."""
@@ -102,6 +107,16 @@ class Brain:
         except Exception:
             logger.exception("Could not read the holding of %s; no SELL card", instrument_id)
             return False
+
+    async def _feed_refusal(self, instrument_id: str) -> str | None:
+        """Why the live feed does not cover ``instrument_id``, or None. Display only, so a failed read shows nothing."""
+        if self._feed is None:
+            return None
+        try:
+            return await self._feed(instrument_id)
+        except Exception as e:
+            logger.warning("Could not read the live feed for %s: %s", instrument_id, e)
+            return None
 
     async def open_session(self, operator_id: str, session_id: str | None, first_message: str) -> str:
         if session_id:
@@ -173,6 +188,12 @@ class Brain:
                         widget = widget_for_tool(ev.data["tool"], args, call_id=call_id, status=status,
                                                  content=ev.data.get("content"), trace_id=trace_id)
                         if widget is not None:
+                            if widget.get("kind") == "order_card":
+                                widget["feed_refusal"] = await self._feed_refusal(str(widget.get("instrument_id", "")))
+                                if widget["feed_refusal"]:
+                                    symbol = str(widget.get("instrument_id", "")).split(".")[0]
+                                    notes.append(f"{symbol} is not in the live data feed, so this card cannot be "
+                                                 "approved yet: onboard it from the card or the Watchlist first.")
                             widgets.append(widget)
                             if widget.get("kind") == "order_card":
                                 order_cards += 1

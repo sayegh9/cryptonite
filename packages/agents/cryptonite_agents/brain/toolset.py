@@ -33,7 +33,7 @@ from pydantic import Field
 @tool(RiskClass.READ, name="show_price_chart")
 def show_price_chart(symbol: str, timeframe: str = "1h") -> str:
     """Show the operator an inline price chart for a symbol (e.g. 'BTCUSDT') and timeframe
-    ('1m', '5m', '15m', '1h', '4h', '1d'). Use it whenever you discuss price action."""
+    ('1m', '5m', '15m', '1h', '4h', '1d'). Only for symbols the ingest feed records (get_klines reports in_feed)."""
     return f"Chart of {symbol.upper()} {timeframe} is shown to the operator."
 
 
