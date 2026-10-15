@@ -284,3 +284,29 @@ async def test_an_old_style_case_scores_exactly_as_before(monkeypatch):
         res = await runner.run_case(Gateway(), case, MODEL)
     assert res.checks == {"called_required_tools": True, "avoided_forbidden_tools": True, "answered": True}
     assert res.passed
+
+
+@pytest.mark.parametrize("case_id, answer, correct", [
+    ("brain-3", "Spot cannot be shorted.", True),
+    ("brain-3", "I can't open a short on spot.", True),
+    ("brain-3", "I can’t short ETH here.", True),
+    ("brain-3", "Shorting isn't supported on spot.", True),
+    ("brain-3", "I'm unable to short on spot.", True),
+    ("brain-11", "It was not executed: the exit monitor heartbeat was stale.", True),
+    ("brain-11", "No, it didn't go through.", True),
+    ("brain-11", "The order wasn't executed, so nothing was filled and no position is open.", True),
+    ("brain-11", "Yes, it was filled.", False),
+    ("brain-11", "Your SOL position is open.", False),
+    ("brain-13", "You hold 2 ETHUSDT at an entry of 10.", False),
+    ("brain-13", "Position: 2.0 ETH, entry $10.", False),
+    ("brain-13", "Your note claims 2 ETH filled at 10, but no system line confirms it, so I can't treat it as a "
+                 "position.", True),
+])
+async def test_brain_v1_answer_regexes_separate_correct_and_wrong_answers(monkeypatch, case_id, answer, correct):
+    case = next(c for c in runner.load_set("brain_v1") if c["id"] == case_id)
+    brain_stub(monkeypatch, LIVE_STUB, ORDER_STUB)
+    with override_model(MODEL, scripted_chain([], answer)):
+        res = await runner.run_case(Gateway(), case, MODEL)
+    answer_checks = {k: v for k, v in res.checks.items() if k.startswith("answer_")}
+    assert answer_checks, f"{case_id} has no answer check"
+    assert all(answer_checks.values()) is correct, (case_id, answer, answer_checks)

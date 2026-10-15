@@ -10,7 +10,7 @@ survives reloads, restarts and model changes, and needs no provider types outsid
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from cryptonite_agents.brain.store import SessionStore
@@ -54,18 +54,20 @@ def _utc(value: Any) -> datetime | None:
         return None
 
 
-def transcript(messages: list[dict[str, Any]]) -> str:
+def transcript(messages: list[dict[str, Any]], today: date | None = None) -> str:
+    """Turns with UTC times. ``today`` (UTC) is the day the Brain is answering on: a turn off that day gets its date.
+    Without it, the newest turn's day is used (compaction)."""
     speaker = {"user": "Operator", "assistant": "Brain", "system": "System"}
     stamps = [t for t in (_utc(m.get("created_at")) for m in messages) if t is not None]
-    newest_day = max(stamps).date() if stamps else None
+    day = today if today is not None else (max(stamps).date() if stamps else None)
     lines = []
     for m in messages:
         stamp = _utc(m.get("created_at"))
-        # Times in UTC; the date too when a turn is not on the newest message's day, so an old price reads as old
+        # The date too when a turn is not on that day, so an old price reads as old
         if stamp is None:
             when = ""
         else:
-            when = f"[{stamp:%H:%M}] " if stamp.date() == newest_day else f"[{stamp:%m-%d %H:%M}] "
+            when = f"[{stamp:%H:%M}] " if stamp.date() == day else f"[{stamp:%m-%d %H:%M}] "
         body = _clip(m.get("content") or "")
         extras = " ".join(describe_widget(w) for w in m.get("widgets") or [])
         lines.append(f"{when}{speaker.get(m['role'], m['role'])}: {body}{(' ' + extras) if extras else ''}".rstrip())
@@ -87,7 +89,7 @@ def render_prompt(ctx: BrainContext, message: str, now: datetime | None = None) 
     if ctx.summary:
         parts.append(f"## Conversation so far (summary)\n{ctx.summary}")
     if ctx.turns:
-        parts.append(f"## Recent turns\n{transcript(ctx.turns)}")
+        parts.append(f"## Recent turns\n{transcript(ctx.turns, today=now.date())}")
     parts.append(f"## Operator's new message\n{message}")
     return "\n\n".join(parts)
 

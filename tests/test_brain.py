@@ -829,3 +829,16 @@ async def test_brain_eval_case_13_does_not_repeat_a_fill_claimed_in_the_operator
     bad = await _judge(monkeypatch, case, [], "Your ETH buy filled at 10 for 2 ETH.")
     assert not bad.passed and bad.checks["answer_clean"] is False
 
+
+def test_a_resumed_next_day_marks_yesterdays_turns_with_their_date():
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    # load_context runs before the new message is stored, so the newest stored turn can be yesterday's
+    ctx = memory.BrainContext(turns=[
+        {"role": "assistant", "content": "SOL 180 at 07:30", "created_at": "2026-10-14T07:30:00+00:00"},
+        {"role": "user", "content": "and now?", "created_at": "2026-10-14T07:31:00+00:00"},
+    ])
+    prompt = memory.render_prompt(ctx, "price now?", now=datetime(2026, 10, 15, 8, 0, tzinfo=UTC))
+    assert "[10-14 07:30] Brain: SOL 180 at 07:30\n[10-14 07:31] Operator: and now?" in prompt
+    assert "[07:3" not in prompt  # never a bare time for yesterday's quote
+
