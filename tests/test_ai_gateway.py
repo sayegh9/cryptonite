@@ -192,6 +192,19 @@ async def test_add_risk_tool_is_denied_without_approval_and_read_tools_run():
     assert by_tool == {"read_prices": "OK", "place_order": "DENIED"}
 
 
+async def test_a_non_held_add_risk_tool_keeps_the_plain_denial_text():
+    def place_order(symbol: str, qty: float) -> str:
+        """Place an order."""
+        return "placed"
+
+    tools = [ToolSpec("place_order", place_order, RiskClass.ADD_RISK, "Place an order.")]
+    with override_model(PRIMARY, TestModel(call_tools="all")):
+        res = await gateway().run("r", "go", tools=tools)
+    returns = [p for m in res.messages for p in getattr(m, "parts", []) if getattr(p, "part_kind", "") == "tool-return"]
+    assert [str(p.content) for p in returns] == [
+        "Tool call denied: ADD_RISK_REQUIRES_APPROVAL. Ask the operator to approve this action."]
+
+
 async def test_a_turn_can_stage_at_most_one_paid_debate():
     """LE-8: stage_debate_proposal queues a paid debate; one model turn may call it once."""
     staged = []

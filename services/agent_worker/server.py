@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -21,6 +22,7 @@ from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
 from cryptonite_agents.persona import Persona
+from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -103,6 +105,15 @@ class ConfigCache:
 
 config_cache = ConfigCache()
 
+async def ingest_refusal(instrument_id: str) -> str | None:
+    """Why ingest does not feed ``instrument_id`` (for the Brain's card note), or None when it does or it is unknown."""
+    try:
+        raw = await asyncio.wait_for(app.state.redis.get(INGEST_UNIVERSE_KEY), timeout=1)
+    except TimeoutError:
+        return None  # a slow Redis shows no note; approval still checks the feed
+    universe = IngestUniverse.parse(raw)
+    return universe.refusal(instrument_id) if universe is not None else None
+
 @app.on_event("startup")
 async def startup_event():
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
@@ -119,7 +130,8 @@ async def startup_event():
     # Brain sessions live with the gateway's telemetry role (migration 024), never with agent_ro
     store = PgSessionStore(app.state.telemetry_pool) if app.state.telemetry_pool else MemorySessionStore()
     app.state.brain = Brain(app.state.gateway, store,
-                            holdings=lambda instrument: ai_spot_holding(app.state.pool, instrument))
+                            holdings=lambda instrument: ai_spot_holding(app.state.pool, instrument),
+                            feed=ingest_refusal)
 
 @app.on_event("shutdown")
 async def shutdown_event():

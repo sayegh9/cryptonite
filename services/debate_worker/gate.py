@@ -14,8 +14,11 @@ Automatic (scanner) triggers pass, in order, before any model is called:
      structured brief): reward-to-risk < 1.5, the two highest timeframes both trending down, chop
      -> ``TRIAGE_RULE_<NAME>`` with no model call. Missing data never rejects: it falls through to 6.
   6. triage (Flash-Lite, one cheap call on the market brief) -> worth a full debate?
-Operator-triggered debates (dashboard, chat, stage_debate_proposal) skip the gate: that spend is an
-explicit choice.
+Brain-started debates (``brain_on_demand``, WS-1E) run only the account checks, kill switch, daily loss and
+position cap, then pass as ``BRAIN_TRIGGER``: no triage call and no dedupe, stale, brief or cooldown check. The
+API's per-day cap bounds how many there are. Debates staged by an AI tool (the Brain and the research chat,
+``trigger_source = "brain_on_demand"``) pass the account safety checks and count toward the daily Brain debate cap.
+Only debates the operator starts from the dashboard skip the gate: that spend is an explicit choice.
 """
 
 import datetime
@@ -34,6 +37,7 @@ logger = logging.getLogger("debate_worker.gate")
 
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 AUTOMATIC_SOURCES = frozenset({"scanner"})
+BRAIN_SOURCES = frozenset({"brain_on_demand"})
 MAX_POSITION_PCT = 25.0
 MIN_ENTRY_PCT = 1.0  # the dispatcher's floor: less than this headroom means no entry can be placed
 COOLDOWN_S = 30 * 60
@@ -128,8 +132,32 @@ def _rule_rejection(brief_data: dict[str, Any] | None) -> str | None:
     return f"TRIAGE_RULE_{hits[0]}" if hits else None
 
 
+async def _account_refusal(conn, instrument_id: str) -> str | None:
+    """The account-level checks that come before anything else for a debate: the reason it is refused, or None.
+    Scanner candidates run them after their own dedupe; Brain-started debates run only these."""
+    latched = await conn.fetchval(
+        "SELECT is_latched FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = $1",
+        PAPER_ACCOUNT_ID,
+    )
+    if latched:
+        return "KILL_SWITCH_LATCHED"
+    if await conn.fetchval("SELECT daily_loss_latched FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID):
+        return "DAILY_LOSS_LATCHED"
+    weight = await conn.fetchval(
+        "SELECT COALESCE(SUM(weight_pct), 0) FROM agent_safe_positions WHERE instrument_id = $1", instrument_id
+    )
+    if float(weight or 0) > MAX_POSITION_PCT - MIN_ENTRY_PCT:
+        return "POSITION_AT_CAP"
+    return None
+
+
 async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=None) -> GateDecision:
-    if payload.get("trigger_source", "scanner") not in AUTOMATIC_SOURCES:
+    source = payload.get("trigger_source", "scanner")
+    if source in BRAIN_SOURCES:
+        async with pg_pool.acquire() as conn:
+            refusal = await _account_refusal(conn, payload["instrument_id"])
+        return GateDecision(False, refusal) if refusal else GateDecision(True, "BRAIN_TRIGGER")
+    if source not in AUTOMATIC_SOURCES:
         return GateDecision(True, "OPERATOR_TRIGGER")
 
     instrument_id = payload["instrument_id"]
@@ -149,19 +177,8 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
             "SELECT EXISTS (SELECT 1 FROM debate_runs WHERE candidate_id = $1)", cid
         ):
             return GateDecision(False, "DUPLICATE_CANDIDATE")
-        latched = await conn.fetchval(
-            "SELECT is_latched FROM execution_kill_switch WHERE environment = 'PAPER' AND account_id = $1",
-            PAPER_ACCOUNT_ID,
-        )
-        if latched:
-            return GateDecision(False, "KILL_SWITCH_LATCHED")
-        if await conn.fetchval("SELECT daily_loss_latched FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID):
-            return GateDecision(False, "DAILY_LOSS_LATCHED")
-        weight = await conn.fetchval(
-            "SELECT COALESCE(SUM(weight_pct), 0) FROM agent_safe_positions WHERE instrument_id = $1", instrument_id
-        )
-        if float(weight or 0) > MAX_POSITION_PCT - MIN_ENTRY_PCT:
-            return GateDecision(False, "POSITION_AT_CAP")
+        if refusal := await _account_refusal(conn, instrument_id):
+            return GateDecision(False, refusal)
 
     close_ns = candidate.get("bar_close_inclusive_ns")
     if close_ns:

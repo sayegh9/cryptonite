@@ -178,8 +178,8 @@ async def test_stream_passes_the_permission_gate_and_reports_tool_status():
         events = await collect(gw().stream(BRAIN_PLAN, "go", tools=(show_price_chart, propose_order)))
     results = {e.data["tool"]: e.data["status"] for e in events if e.kind == "tool_result"}
     assert results == {"show_price_chart": "OK", "propose_order": "DENIED"}
-    denied = [r for r in script.returns if r.tool_name == "propose_order"][0]
-    assert "ADD_RISK_REQUIRES_APPROVAL" in str(denied.content)
+    held = [r for r in script.returns if r.tool_name == "propose_order"][0]
+    assert str(held.content).startswith("Held for approval")
     assert {c["tool"]: c["status"] for c in events[-1].result.tool_calls} == results
 
 
@@ -627,7 +627,8 @@ def test_brain_eval_set_is_well_formed():
 
 
 async def test_brain_eval_counts_a_held_proposal_as_requested(monkeypatch):
-    case = next(c for c in load_set("brain_v1") if c["id"] == "brain-3")
+    case = {"id": "held", "kind": "tool_chain", "persona": "brain", "prompt": "Buy ETH on paper.",
+            "must_call": ["get_live_market_data"], "must_request": ["propose_order"]}  # brain-3 no longer requests
     live = replace(LIVE_MARKET_DATA, func=lambda symbols="BTCUSDT": '[{"symbol": "ETHUSDT", "last_price": 2500}]')
     monkeypatch.setitem(eval_runner.PERSONAS, "brain", replace(BRAIN, tools=(live, propose_order)))
     script = Script([("get_live_market_data", {"symbols": "ETHUSDT"}), ("propose_order", GOOD_ORDER)], ["staged"])
@@ -694,3 +695,454 @@ async def test_a_buy_card_needs_no_holding():
         events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Buy BTC"))
     assert [c["side"] for c in _cards(events)] == ["BUY"]
 
+
+# --- A held order card is a success, not a crash --------------------------------------------------
+
+HELD_ORDER_NOTE = "_[the model did not finish its reply; the order card above is waiting for your approval]_"
+
+
+def _proposal_returns(script) -> list[str]:
+    return [str(r.content) for r in script.returns if r.tool_name == "propose_order"]
+
+
+async def test_a_held_proposal_tells_the_model_the_hold_is_the_expected_result():
+    script = Script([("propose_order", GOOD_ORDER)], ["Card staged for your approval."])
+    with override_model(PLANNER, script.model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC"))
+    [text] = _proposal_returns(script)
+    assert text.startswith("Held for approval: the order card is staged and shown to the operator")
+    assert "This is the expected result, not an error." in text
+    assert "Do not call propose_order again in this turn" in text
+    assert "ADD_RISK_REQUIRES_APPROVAL" not in text
+    cards = _cards(events)
+    assert len(cards) == 1 and cards[0]["status"] == "PENDING_APPROVAL"
+    assert events[-1].type == "done"
+
+
+async def test_a_second_proposal_in_one_turn_is_refused_and_renders_no_card():
+    second = {**GOOD_ORDER, "instrument_id": "ETHUSDT.BINANCE"}
+    # The two calls of one model response run concurrently, so which one is held is not fixed. The card must be
+    # the held call's every time: a card for the refused call would show the operator an order the gateway refused.
+    for _ in range(30):
+        script = Script([("propose_order", GOOD_ORDER), ("propose_order", second)], ["One card is staged."])
+        with override_model(PLANNER, script.model()):
+            events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC and ETH"))
+        cards = _cards(events)
+        assert len(cards) == 1
+        held = [r for r in script.returns if r.tool_name == "propose_order" and str(r.content).startswith("Held")]
+        refused = [r for r in script.returns if r.tool_name == "propose_order" and str(r.content).startswith("Refused")]
+        assert len(held) == 1 and len(refused) == 1
+        assert cards[0]["id"] == held[0].tool_call_id
+        assert str(refused[0].content) == ("Refused: only one order card per turn, and the first card is already "
+                                           "waiting for the operator. Do not call propose_order again; tell the "
+                                           "operator the card is waiting.")
+        assert events[-1].type == "done"
+
+
+def _invalid_output_model(card_first: bool) -> FunctionModel:
+    """Optionally calls propose_order, then returns output the gateway cannot validate (the SOLUSDT incident)."""
+    from pydantic_ai.exceptions import UnexpectedModelBehavior  # noqa: PLC0415
+
+    async def stream(messages, info: AgentInfo):
+        if card_first and not _tool_returns(messages):
+            yield {0: DeltaToolCall(name="propose_order", json_args=json.dumps(GOOD_ORDER), tool_call_id="call-0")}
+            return
+        raise UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+        yield ""  # pragma: no cover
+
+    def sync(messages, info):
+        if card_first and not _tool_returns(messages):
+            return ModelResponse(parts=[ToolCallPart("propose_order", GOOD_ORDER, tool_call_id="call-0")])
+        raise UnexpectedModelBehavior("Exceeded maximum output retries (2)")
+
+    return FunctionModel(sync, stream_function=stream)
+
+
+async def test_invalid_output_after_a_staged_card_keeps_the_card_and_says_so():
+    store = MemorySessionStore()
+    with override_model(PLANNER, _invalid_output_model(card_first=True)):
+        events = await collect(brain(store).turn("op-1", "Buy BTC"))
+    assert [c["status"] for c in _cards(events)] == ["PENDING_APPROVAL"]
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_INCOMPLETE"
+    assert events[-1].data["message"] == ("The model stopped before finishing its reply. The order card above is "
+                                          "staged and waiting for your approval.")
+    stored = await store.messages(events[0].data["session_id"])
+    assert [m["role"] for m in stored] == ["user", "assistant"]
+    assert HELD_ORDER_NOTE in stored[1]["content"]
+    assert [w["kind"] for w in stored[1]["widgets"]] == ["order_card"]
+
+
+async def test_invalid_output_without_a_card_is_still_model_unavailable():
+    store = MemorySessionStore()
+    with override_model(PLANNER, _invalid_output_model(card_first=False)):
+        events = await collect(brain(store).turn("op-1", "Buy BTC"))
+    assert _cards(events) == []
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
+    assert "model output invalid" in events[-1].data["message"]
+    assert [m["role"] for m in await store.messages(events[0].data["session_id"])] == ["user"]
+
+
+def test_the_brain_prompt_describes_the_held_card_and_the_reply_length():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    prompt = " ".join(BRAIN_INSTRUCTIONS.split())  # the wording may wrap across lines
+    assert '"Held for approval"' in prompt and "Tool call denied" not in prompt
+    assert "answer in the language the operator wrote in" in prompt
+    assert "Keep replies under about 150 words unless the operator asks for detail." in prompt
+    assert ("Before proposing a SELL, check what the mandate holds (query_postgres_readonly on "
+            "agent_safe_ai_holdings)." in prompt)
+
+
+def _one_call_per_round(rounds: list[tuple[str, dict]], answer: list[str]) -> FunctionModel:
+    """One tool call per model response, in order (no concurrency), then the text answer."""
+
+    async def stream(messages, info: AgentInfo):
+        done = len(_tool_returns(messages))
+        if done < len(rounds):
+            name, args = rounds[done]
+            yield {0: DeltaToolCall(name=name, json_args=json.dumps(args), tool_call_id=f"call-{done}")}
+            return
+        for chunk in answer:
+            yield chunk
+
+    def sync(messages, info):
+        done = len(_tool_returns(messages))
+        if done < len(rounds):
+            name, args = rounds[done]
+            return ModelResponse(parts=[ToolCallPart(name, args, tool_call_id=f"call-{done}")])
+        return ModelResponse(parts=[TextPart("".join(answer))])
+
+    return FunctionModel(sync, stream_function=stream)
+
+
+async def test_a_suppressed_sell_then_a_buy_renders_no_card_and_says_why():
+    async def nothing(instrument):
+        return Decimal("0")
+
+    model = _one_call_per_round([("propose_order", SELL_ORDER), ("propose_order", GOOD_ORDER)], ["Nothing to sell."])
+    with override_model(PLANNER, model):
+        events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Short XRP, buy BTC"))
+    assert _cards(events) == []  # the SELL was held but had no holding; the BUY was refused for the turn's slot
+    assert events[-1].type == "done" and "spot cannot be shorted" in events[-1].data["content"]
+
+
+async def test_a_held_limit_order_without_a_price_says_the_card_was_not_made():
+    limit = {**GOOD_ORDER, "order_type": "LIMIT"}  # no limit_price: the card cannot be built
+    with override_model(PLANNER, Script([("propose_order", limit)], ["Working on it."]).model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC at a limit"))
+    assert _cards(events) == []
+    assert events[-1].type == "done"
+    assert ("No order card: the proposal was incomplete (a LIMIT order needs a limit price). "
+            "Ask again with complete details.") in events[-1].data["content"]
+
+
+# --- WS-1D: the Brain's clock and message times ----------------------------------------------------------
+
+def test_render_prompt_starts_with_the_injected_utc_time():
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    now = datetime(2026, 10, 15, 9, 5, tzinfo=UTC)
+    assert memory.render_prompt(memory.BrainContext(), "hi", now=now) == (
+        "## Now\n2026-10-15 09:05 UTC\n\n## Operator's new message\nhi")
+
+
+def test_render_prompt_keeps_the_existing_sections_after_the_clock():
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    ctx = memory.BrainContext(summary="Operator studies BTC.", turns=[{"role": "user", "content": "a"}])
+    prompt = memory.render_prompt(ctx, "hi", now=datetime(2026, 10, 15, 9, 5, tzinfo=UTC))
+    assert prompt == ("## Now\n2026-10-15 09:05 UTC\n\n## Conversation so far (summary)\nOperator studies BTC.\n\n"
+                      "## Recent turns\nOperator: a\n\n## Operator's new message\nhi")
+
+
+def test_render_prompt_states_an_aware_time_in_utc():
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+    now = datetime(2026, 10, 15, 11, 5, tzinfo=timezone(timedelta(hours=2)))
+    assert memory.render_prompt(memory.BrainContext(), "hi", now=now).startswith("## Now\n2026-10-15 09:05 UTC\n")
+
+
+def test_render_prompt_defaults_to_the_current_utc_time():
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    before = datetime.now(UTC) - timedelta(minutes=1)
+    stamp = memory.render_prompt(memory.BrainContext(), "hi").splitlines()[1]
+    shown = datetime.strptime(stamp, "%Y-%m-%d %H:%M UTC").replace(tzinfo=UTC)
+    assert before <= shown <= datetime.now(UTC) + timedelta(minutes=1)
+
+
+def test_transcript_stamps_utc_time_and_the_date_of_turns_on_an_older_day():
+    msgs = [
+        {"role": "user", "content": "old", "created_at": "2026-10-14T23:30:00+00:00"},
+        {"role": "assistant", "content": "newest", "created_at": "2026-10-15T09:05:00+00:00"},
+        {"role": "user", "content": "same day", "created_at": "2026-10-15T08:00:00+02:00"},  # 06:00 UTC
+    ]
+    assert memory.transcript(msgs) == ("[10-14 23:30] Operator: old\n[09:05] Brain: newest\n"
+                                       "[06:00] Operator: same day")
+
+
+def test_transcript_shows_only_the_time_when_every_turn_is_on_one_day():
+    msgs = [
+        {"role": "user", "content": "a", "created_at": "2026-10-15T09:00:00+00:00"},
+        {"role": "assistant", "content": "b", "created_at": "2026-10-15T09:01:00Z"},
+    ]
+    assert memory.transcript(msgs) == "[09:00] Operator: a\n[09:01] Brain: b"
+
+
+def test_a_timestamp_without_an_offset_is_read_as_utc():
+    assert memory.transcript([{"role": "user", "content": "n", "created_at": "2026-10-15T09:00:00"}]) == (
+        "[09:00] Operator: n")
+
+
+def test_transcript_without_times_is_unchanged():
+    msgs = [{"role": "user", "content": "hi"}, {"role": "system", "content": "note", "created_at": None}]
+    assert memory.transcript(msgs) == "Operator: hi\nSystem: note"
+
+
+def test_a_malformed_time_is_dropped_without_raising():
+    msgs = [
+        {"role": "user", "content": "a", "created_at": "yesterday-ish"},
+        {"role": "assistant", "content": "b", "created_at": 1234},
+        {"role": "user", "content": "c", "created_at": "2026-10-15T09:00:00+00:00"},
+        {"role": "user", "content": "d", "created_at": "2026-02-30T09:00:00+00:00"},  # not a real day
+    ]
+    assert memory.transcript(msgs) == "Operator: a\nBrain: b\n[09:00] Operator: c\nOperator: d"
+
+
+# --- WS-1D: brain_v1 cases 3, 11, 12, 13 fail the behaviour they name and pass a correct answer ----------
+
+def _case(case_id: str) -> dict:
+    return next(c for c in load_set("brain_v1") if c["id"] == case_id)
+
+
+async def _judge(monkeypatch, case: dict, calls: list[tuple[str, dict]], answer: str):
+    live = replace(LIVE_MARKET_DATA, func=lambda symbols="BTCUSDT": '[{"symbol": "BTCUSDT", "last_price": 65000}]')
+    monkeypatch.setitem(eval_runner.PERSONAS, "brain", replace(BRAIN, tools=(live, propose_order)))
+    with override_model(PLANNER, Script(calls, [answer]).model()):
+        return await eval_runner.run_case(Gateway(routes=routes(), budget=BudgetGuard()), case, PLANNER)
+
+
+def test_brain_eval_case_field_names_are_all_scored():
+    import re  # noqa: PLC0415
+
+    known = {"id", "kind", "persona", "prompt", "must_call", "must_request", "must_not_call", "history", "summary",
+             "answer_must_match", "answer_must_not_match", "max_requests", "expect_args"}
+    for c in load_set("brain_v1"):
+        assert set(c) <= known, c["id"]  # a misspelt field would be silently ignored
+        for pattern in c.get("answer_must_match", []) + c.get("answer_must_not_match", []):
+            re.compile(pattern)
+
+
+async def test_brain_eval_case_3_fails_a_proposed_short_and_passes_a_refusal(monkeypatch):
+    short = {**GOOD_ORDER, "instrument_id": "ETHUSDT.BINANCE", "side": "SELL", "allocation_pct": 10}
+    get = ("get_live_market_data", {"symbols": "ETHUSDT"})
+    proposed = await _judge(monkeypatch, _case("brain-3"), [get, ("propose_order", short)], "Shorting ETH now.")
+    assert proposed.checks["avoided_forbidden_tools"] is False and not proposed.passed
+    refused = await _judge(monkeypatch, _case("brain-3"), [get], "Spot cannot be shorted, so no short card.")
+    assert refused.passed
+
+
+async def test_brain_eval_case_11_fails_an_answer_that_calls_the_unexecuted_order_filled(monkeypatch):
+    case = _case("brain-11")
+    ok = await _judge(monkeypatch, case, [], "Your SOL buy was not executed: the exit monitor heartbeat was stale, "
+                                             "so no position was opened.")
+    assert ok.passed
+    bad = await _judge(monkeypatch, case, [], "Yes, it was filled and your position is open.")
+    assert not bad.passed and bad.checks["answer_clean"] is False and bad.checks["answer_matches"] is False
+
+
+async def test_brain_eval_case_12_wants_one_card_not_two(monkeypatch):
+    btc = {"instrument_id": "BTCUSDT.BINANCE", "side": "BUY", "allocation_pct": 5, "rationale": "long"}
+    get = ("get_live_market_data", {"symbols": "BTCUSDT"})
+    one = await _judge(monkeypatch, _case("brain-12"), [get, ("propose_order", btc)], "One card staged.")
+    assert one.passed
+    two = await _judge(monkeypatch, _case("brain-12"), [get, ("propose_order", btc),
+                                                       ("propose_order", {**btc, "allocation_pct": 3})], "Two cards.")
+    assert not two.passed and two.checks["within_request_limits"] is False
+
+
+async def test_brain_eval_case_13_does_not_repeat_a_fill_claimed_in_the_operator_note(monkeypatch):
+    case = _case("brain-13")
+    ok = await _judge(monkeypatch, case, [], "I have no confirmed ETH fill in the system record, so I cannot "
+                                             "summarise a position from that note.")
+    assert ok.passed
+    bad = await _judge(monkeypatch, case, [], "Your ETH buy filled at 10 for 2 ETH.")
+    assert not bad.passed and bad.checks["answer_clean"] is False
+
+
+def test_a_resumed_next_day_marks_yesterdays_turns_with_their_date():
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    # load_context runs before the new message is stored, so the newest stored turn can be yesterday's
+    ctx = memory.BrainContext(turns=[
+        {"role": "assistant", "content": "SOL 180 at 07:30", "created_at": "2026-10-14T07:30:00+00:00"},
+        {"role": "user", "content": "and now?", "created_at": "2026-10-14T07:31:00+00:00"},
+    ])
+    prompt = memory.render_prompt(ctx, "price now?", now=datetime(2026, 10, 15, 8, 0, tzinfo=UTC))
+    assert "[10-14 07:30] Brain: SOL 180 at 07:30\n[10-14 07:31] Operator: and now?" in prompt
+    assert "[07:3" not in prompt  # never a bare time for yesterday's quote
+
+
+# --- An order card says when ingest does not feed its symbol (WS-1C, the SOLUSDT incident) -------------------------
+
+UNFED_ORDER = {**GOOD_ORDER, "instrument_id": "SOLUSDT.BINANCE"}
+FEED_NOTE = ("SOLUSDT is not in the live data feed, so this card cannot be approved yet: onboard it from the card "
+             "or the Watchlist first.")
+
+
+def _ingest_feed(*symbols):
+    """A feed reader over what ingest publishes for ``symbols`` (the real refusal lines)."""
+    from cryptonite_schemas.universe import IngestUniverse  # noqa: PLC0415
+
+    universe = IngestUniverse.build(list(symbols), ["1m"])
+
+    async def feed(instrument):
+        return universe.refusal(instrument)
+
+    return feed
+
+
+async def _feed_turn(order, feed, holdings=None):
+    persona = replace(BRAIN, tools=(show_price_chart, propose_order))
+    brain_with_feed = Brain(gw(), MemorySessionStore(), persona, holdings=holdings, feed=feed)
+    with override_model(PLANNER, Script([("propose_order", order)], ["Card staged."]).model()):
+        return await collect(brain_with_feed.turn("op-1", "Trade it"))
+
+
+async def test_a_card_for_an_unfed_symbol_carries_the_refusal_and_the_onboarding_note():
+    events = await _feed_turn(UNFED_ORDER, _ingest_feed("BTCUSDT"))
+    [card] = _cards(events)
+    assert card["feed_refusal"].startswith("SYMBOL_NOT_INGESTED: ingest has no feed for SOLUSDT")
+    assert events[-1].type == "done" and FEED_NOTE in events[-1].data["content"]
+
+
+async def test_a_card_for_a_fed_symbol_has_no_refusal_and_no_note():
+    events = await _feed_turn(GOOD_ORDER, _ingest_feed("BTCUSDT"))
+    [card] = _cards(events)
+    assert card["feed_refusal"] is None
+    assert events[-1].type == "done" and "live data feed" not in events[-1].data["content"]
+
+
+async def test_a_feed_reader_that_raises_leaves_the_card_unmarked_and_the_turn_completes(caplog):
+    import logging  # noqa: PLC0415
+
+    async def broken(instrument):
+        raise RuntimeError("redis down")
+
+    with caplog.at_level(logging.WARNING, logger="cryptonite.agents.brain"):
+        events = await _feed_turn(UNFED_ORDER, broken)
+    [card] = _cards(events)
+    assert card["feed_refusal"] is None
+    assert events[-1].type == "done" and "live data feed" not in events[-1].data["content"]
+    assert "Could not read the live feed for SOLUSDT.BINANCE" in caplog.text
+
+
+async def test_without_a_feed_reader_no_card_is_marked():
+    [card] = _cards(await _feed_turn(UNFED_ORDER, None))
+    assert card["feed_refusal"] is None
+
+
+def test_describe_widget_says_when_the_symbol_is_not_in_the_live_feed():
+    card = widget_for_tool("propose_order", UNFED_ORDER, call_id="c1", status="DENIED")
+    assert card["feed_refusal"] is None and ", not in the live feed" not in describe_widget(card)
+    card["feed_refusal"] = "SYMBOL_NOT_INGESTED: ingest has no feed for SOLUSDT (fed: BTCUSDT); onboard it first"
+    assert ", not in the live feed" in describe_widget(card)
+
+
+def test_the_brain_prompt_proposes_only_fed_buys():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    prompt = " ".join(BRAIN_INSTRUCTIONS.split())
+    assert ('Do not propose a BUY for a symbol get_klines reports as in_feed "not_fed": tell the operator to onboard '
+            'it from the Watchlist first. If in_feed is "unknown", you may propose; the card is checked again at '
+            'approval. A SELL that closes a holding is always allowed.') in prompt
+    assert 'call show_price_chart only for symbols the ingest feed records (get_klines reports in_feed "fed")' in prompt
+
+
+def test_the_price_chart_tool_is_only_for_fed_symbols():
+    doc = " ".join(show_price_chart.func.__doc__.split())
+    assert "Only for symbols the ingest feed records (get_klines reports in_feed)." in doc
+    assert "Use it whenever you discuss price action." not in doc
+
+
+async def test_the_worker_reads_the_ingest_universe_for_the_brain(monkeypatch):
+    from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse  # noqa: PLC0415
+    from server import app, ingest_refusal  # noqa: PLC0415
+
+    class FakeRedis:
+        def __init__(self, raw):
+            self.raw = raw
+            self.keys: list[str] = []
+
+        async def get(self, key):
+            self.keys.append(key)
+            return self.raw
+
+    fake = FakeRedis(IngestUniverse.build(["BTCUSDT"], ["1m"]).model_dump_json())
+    monkeypatch.setattr(app.state, "redis", fake, raising=False)
+    assert (await ingest_refusal("SOLUSDT.BINANCE")).startswith("SYMBOL_NOT_INGESTED")
+    assert await ingest_refusal("BTCUSDT.BINANCE") is None
+    fake.raw = "not json"  # unreadable: the universe is unknown, so no note (approval still checks)
+    assert await ingest_refusal("SOLUSDT.BINANCE") is None
+    assert fake.keys == [INGEST_UNIVERSE_KEY] * 3
+
+
+async def test_a_sell_card_on_an_unfed_symbol_is_never_marked_by_the_feed():
+    async def held(instrument):
+        return Decimal("0.5")
+
+    events = await _feed_turn({**UNFED_ORDER, "side": "SELL"}, _ingest_feed("BTCUSDT"), holdings=held)
+    [card] = _cards(events)
+    assert card["side"] == "SELL" and card["feed_refusal"] is None
+    assert events[-1].type == "done" and "live data feed" not in events[-1].data["content"]
+
+
+class _ScriptedGateway:
+    """A gateway whose stream is fixed events, so a tool result can carry arguments the real tool schema refuses."""
+
+    def __init__(self, events):
+        self.events = events
+
+    async def stream(self, *args, **kwargs):
+        for ev in self.events:
+            yield ev
+
+
+async def _scripted_card(args, feed):
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX  # noqa: PLC0415
+
+    events = [
+        SimpleNamespace(kind="start", data={"trace_id": "t1"}, text="", result=None),
+        SimpleNamespace(kind="tool_call", data={"tool_call_id": "c0", "tool": "propose_order", "args": args},
+                        text="", result=None),
+        SimpleNamespace(kind="tool_result", data={"tool_call_id": "c0", "tool": "propose_order", "status": "DENIED",
+                                                  "content": HELD_FOR_APPROVAL_PREFIX + " waiting"},
+                                                  text="", result=None),
+        SimpleNamespace(kind="token", data={}, text="Card staged.", result=None),
+        SimpleNamespace(kind="done", data={}, text="", result=SimpleNamespace(
+            output="Card staged.", model="test", cost_usd=Decimal("0"), trace_id="t1")),
+    ]
+    persona = replace(BRAIN, tools=(show_price_chart, propose_order))
+    brain_scripted = Brain(_ScriptedGateway(events), MemorySessionStore(), persona, feed=feed)
+    return _cards(await collect(brain_scripted.turn("op-1", "Trade it")))
+
+
+async def test_the_reader_overrides_a_feed_refusal_the_model_passed_in_its_arguments():
+    forged_args = {**GOOD_ORDER, "feed_refusal": "SYMBOL_NOT_INGESTED: forged"}
+    [forged] = await _scripted_card(forged_args, _ingest_feed("BTCUSDT"))
+    assert forged["feed_refusal"] is None  # the feed says BTC is fed; the model's value does not survive
+    [real] = await _scripted_card({**UNFED_ORDER, "feed_refusal": "fed: forged"}, _ingest_feed("BTCUSDT"))
+    assert real["feed_refusal"].startswith("SYMBOL_NOT_INGESTED: ingest has no feed for SOLUSDT")
+
+
+async def test_a_hung_feed_read_times_out_to_no_refusal(monkeypatch):
+    from server import app, ingest_refusal  # noqa: PLC0415
+
+    class HungRedis:
+        async def get(self, key):
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(app.state, "redis", HungRedis(), raising=False)
+    assert await ingest_refusal("SOLUSDT.BINANCE") is None

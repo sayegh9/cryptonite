@@ -14,6 +14,7 @@ from cryptonite_api.main import create_app
 from cryptonite_api.routes import brain as brain_routes
 from cryptonite_api.routes.agents import INTERNAL_HMAC_SECRET
 from cryptonite_api.routes.auth import COOKIE_NAME
+from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi.testclient import TestClient
 from test_route_auth_guards import CSRF, OPERATOR_SID, VIEWER_SID, _FakeAuthManager
 
@@ -184,18 +185,26 @@ CARD = {"kind": "order_card", "id": "card-1", "instrument_id": "BTCUSDT.BINANCE"
         "take_profit": None, "status": "PENDING_APPROVAL", "trace_id": str(uuid.uuid4()), "command_id": None}
 
 
+FED_UNIVERSE = IngestUniverse.build(["BTCUSDT"], ["1m"]).model_dump_json()  # what ingest publishes for BTC
+
+
 class _Redis:
-    def __init__(self, value):
+    """The exit monitor heartbeat, and the ingest universe (None: unknown, as after a TTL expiry)."""
+
+    def __init__(self, value, universe=FED_UNIVERSE):
         self.value = value
+        self.universe = universe
 
     async def get(self, key):
+        if key == INGEST_UNIVERSE_KEY:
+            return self.universe
         assert key == "exit_monitor:heartbeat"
         return self.value
 
 
 class _Hub:
-    def __init__(self, value):
-        self.redis = _Redis(value)
+    def __init__(self, value, universe=FED_UNIVERSE):
+        self.redis = _Redis(value, universe)
 
 
 class _CommandPool:
@@ -389,3 +398,56 @@ def test_the_card_outcome_endpoint_follows_a_working_limit_to_its_fill(client, c
     assert second["status"] == "FILLED" and second["filled_qty"] == "361.8"
     assert [n["status"] for n in notes] == ["WORKING", "FILLED"]
     assert c.get(f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/nope/outcome").status_code == 404
+
+
+# --- An un-fed symbol is refused before anything is claimed (WS-1C) -----------------------------------------------
+
+def test_approval_of_a_card_for_an_unfed_symbol_is_refused_before_anything_is_claimed(client, card_worker):
+    c, app = client
+    card, notes = card_worker
+    card["instrument_id"] = "SOLUSDT.BINANCE"  # SOL is not in the ingest feed (the SOLUSDT incident)
+    app.state.pool, app.state.stream_hub = _CommandPool(), _Hub(HEARTBEAT)
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    res = _approve(c, uuid.uuid4())
+    assert res.status_code == 422 and "SYMBOL_NOT_INGESTED" in res.json()["detail"]
+    assert card["status"] == "PENDING_APPROVAL" and notes == [] and app.state.pool.rows == {}
+
+
+def test_approval_waits_while_the_ingest_universe_is_unknown(client, card_worker):
+    c, app = client
+    card, notes = card_worker
+    app.state.pool, app.state.stream_hub = _CommandPool(), _Hub(HEARTBEAT, universe=None)
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    res = _approve(c, uuid.uuid4())
+    assert res.status_code == 503 and "INGEST_UNIVERSE_UNKNOWN" in res.json()["detail"]
+    assert card["status"] == "PENDING_APPROVAL" and notes == [] and app.state.pool.rows == {}
+
+
+class _Acquire:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _MandatePool(_CommandPool):
+    def acquire(self):
+        return _Acquire()
+
+
+@pytest.mark.parametrize("universe", [FED_UNIVERSE, None], ids=["SOL not fed", "universe unknown"])
+def test_a_sell_card_is_not_held_up_by_the_feed(client, card_worker, monkeypatch, universe):
+    c, app = client
+    card, notes = card_worker
+    card.update(instrument_id="SOLUSDT.BINANCE", side="SELL")  # a close of a holding, never gated by the feed
+    app.state.pool, app.state.stream_hub = _MandatePool(), _Hub(HEARTBEAT, universe=universe)
+
+    async def no_mandate(conn, instrument_id, mandate_id):
+        return None, "NO_MANDATE"  # reached only if the feed check was skipped
+
+    monkeypatch.setattr(brain_routes, "resolve_mandate_for", no_mandate)
+    c.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    res = _approve(c, uuid.uuid4())
+    assert res.status_code == 409 and "NO_MANDATE" in res.json()["detail"]
+    assert card["status"] == "PENDING_APPROVAL" and notes == [] and app.state.pool.rows == {}

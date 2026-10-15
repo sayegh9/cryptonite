@@ -190,16 +190,51 @@ def test_fed_symbols_uses_authoritative_universe():
     fake_client.close.assert_called_once()
 
 
-def test_fed_symbols_degrades_to_empty_on_failure():
-    """T1 unit: any Redis/parse failure yields an empty set (callers report 'unknown')."""
+def test_fed_symbols_degrades_to_none_on_failure():
+    """T1 unit: any Redis failure yields None, the unknown universe (never an empty set that reads as 'not fed')."""
     with patch("redis.Redis.from_url", side_effect=ConnectionError("redis down")):
-        assert tools._fed_symbols() == frozenset()
+        assert tools._fed_symbols() is None
 
 
-def test_in_feed_unknown_when_universe_unavailable():
-    """T1: an unavailable authoritative universe yields in_feed 'unknown', never a hardcoded 'fed'."""
-    with patch.object(tools, "_get_valid_symbols", return_value={"BTCUSDT"}), patch.object(
-        tools, "_fed_symbols", return_value=frozenset()
+def test_fed_symbols_none_when_key_missing():
+    """T1 unit: a missing `ingest:universe` key is an unknown universe, not an empty one."""
+    fake_client = MagicMock()
+    fake_client.get.return_value = None
+    with patch("redis.Redis.from_url", return_value=fake_client):
+        assert tools._fed_symbols() is None
+    fake_client.close.assert_called_once()
+
+
+def test_fed_symbols_none_when_payload_unreadable():
+    """T1 unit: a key that does not parse as an IngestUniverse is an unknown universe."""
+    fake_client = MagicMock()
+    fake_client.get.return_value = "not-json{"
+    with patch("redis.Redis.from_url", return_value=fake_client):
+        assert tools._fed_symbols() is None
+
+
+def _universe_client(raw):
+    client = MagicMock()
+    client.get.return_value = raw
+    return client
+
+
+def test_in_feed_unknown_when_key_missing():
+    """T1: a missing authoritative universe yields in_feed 'unknown', never a hardcoded 'fed' or 'not_fed'."""
+    with patch.object(tools, "_get_valid_symbols", return_value={"BTCUSDT"}), patch(
+        "redis.Redis.from_url", return_value=_universe_client(None)
+    ), patch(
+        "httpx.get",
+        return_value=_resp(200, {"X-MBX-USED-WEIGHT-1M": "10", "Date": DATE_HDR}, [_kline(NOW - 3600000, NOW - 1)]),
+    ), patch("time.time", return_value=NOW / 1000.0):
+        data = json.loads(tools.get_klines("BTCUSDT", "1h", 1))
+    assert data["in_feed"] == "unknown"
+
+
+def test_in_feed_unknown_when_redis_unreachable():
+    """T1: Redis unreachable means the universe is unknown, so in_feed is 'unknown' for every symbol."""
+    with patch.object(tools, "_get_valid_symbols", return_value={"BTCUSDT"}), patch(
+        "redis.Redis.from_url", side_effect=ConnectionError("redis down")
     ), patch(
         "httpx.get",
         return_value=_resp(200, {"X-MBX-USED-WEIGHT-1M": "10", "Date": DATE_HDR}, [_kline(NOW - 3600000, NOW - 1)]),
@@ -209,7 +244,7 @@ def test_in_feed_unknown_when_universe_unavailable():
 
 
 def test_in_feed_fed_only_for_universe_members():
-    """T1: a symbol in the authoritative universe is 'fed'; an out-of-universe symbol is 'unknown'."""
+    """T1: a symbol in the known authoritative universe is 'fed'."""
     with patch.object(tools, "_get_valid_symbols", return_value={"BTCUSDT", "SOLUSDT", "WLDUSDT"}), patch.object(
         tools, "_fed_symbols", return_value=frozenset({"BTCUSDT", "SOLUSDT"})
     ), patch(
@@ -218,10 +253,33 @@ def test_in_feed_fed_only_for_universe_members():
     ), patch("time.time", return_value=NOW / 1000.0):
         btc = json.loads(tools.get_klines("BTCUSDT", "1h", 1))
         sol = json.loads(tools.get_klines("SOLUSDT", "1h", 1))
-        wld = json.loads(tools.get_klines("WLDUSDT", "1h", 1))
     assert btc["in_feed"] == "fed"
     assert sol["in_feed"] == "fed"
-    assert wld["in_feed"] == "unknown"
+
+
+def test_in_feed_not_fed_when_universe_known_and_symbol_absent():
+    """T1: a known universe that does not list the symbol gives 'not_fed' (not 'unknown')."""
+    with patch.object(tools, "_get_valid_symbols", return_value={"BTCUSDT", "SOLUSDT", "WLDUSDT"}), patch.object(
+        tools, "_fed_symbols", return_value=frozenset({"BTCUSDT", "SOLUSDT"})
+    ), patch(
+        "httpx.get",
+        return_value=_resp(200, {"X-MBX-USED-WEIGHT-1M": "10", "Date": DATE_HDR}, [_kline(NOW - 3600000, NOW - 1)]),
+    ), patch("time.time", return_value=NOW / 1000.0):
+        wld = json.loads(tools.get_klines("WLDUSDT", "1h", 1))
+    assert wld["in_feed"] == "not_fed"
+
+
+def test_in_feed_not_fed_when_published_universe_is_empty():
+    """T1: an empty but readable universe is known: nothing is fed, so the symbol is 'not_fed'."""
+    raw = json.dumps({"v": 1, "venue": "binance", "symbols": [], "timeframes": [], "perp_symbols": []})
+    with patch.object(tools, "_get_valid_symbols", return_value={"BTCUSDT"}), patch(
+        "redis.Redis.from_url", return_value=_universe_client(raw)
+    ), patch(
+        "httpx.get",
+        return_value=_resp(200, {"X-MBX-USED-WEIGHT-1M": "10", "Date": DATE_HDR}, [_kline(NOW - 3600000, NOW - 1)]),
+    ), patch("time.time", return_value=NOW / 1000.0):
+        data = json.loads(tools.get_klines("BTCUSDT", "1h", 1))
+    assert data["in_feed"] == "not_fed"
 
 
 # ---------------------------------------------------------------------------

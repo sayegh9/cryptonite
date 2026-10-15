@@ -1,6 +1,6 @@
 # HANDOFF
 
-Current state of Cryptonite and what is left to do. Updated 2026-10-13 evening (main `c378285`).
+Current state of Cryptonite and what is left to do. Updated 2026-10-13 evening (main `c378285`); Brain upgrade Wave 1 on feat/brain-upgrade.
 Earlier handovers, status reports and review plans were removed from the tree on 2026-10-13; they are in git
 history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
@@ -8,17 +8,26 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
 - **Code:** everything is on `main`; no pull requests are open. CI on GitHub does not run (see Operator items),
   so every merge since #78 was verified locally with the commands below.
-- **Database:** dev DB `cryptonite` at Alembic `045` (single head).
+- **Database:** dev DB `cryptonite` at Alembic `045` (single head). `feat/brain-upgrade` has head `046` (read-only
+  `agent_safe_*` views for the Brain); it is not on `main` yet.
 - **Services (Docker Compose, project `infra`):** all running and healthy. `api`, `agent_worker`, `orchestrator`,
   `ingest`, `scanner`, `learner`, `debate_worker` ×3, `backtester`, `strategy_sandbox` and `web` run `main`'s code;
   `research_worker`, `exit_monitor`, `derivatives_feed`, `outbox` and `notifier` differ from `main` only in shared
   package files they do not import. No deploy hold is in force.
 - **Feed:** ingest streams BTCUSDT, ETHUSDT, XRPUSDT and WLDUSDT (1m, 15m, 1h, 4h), with REST gap recovery on
   start and on spot reconnect (#55), rate-limit handling (#52) and per-instrument price precision in the
-  scanner (#49). XRP and WLD history reaches back to 2026-04-15.
+  scanner (#49). XRP and WLD history reaches back to 2026-04-15. Ingest also starts from active onboarded spot
+  instruments with status `TRADING` (cap `INGEST_MAX_SYMBOLS`=12, off with `INGEST_ONBOARDED_FROM_DB=0`). Removing a
+  symbol now also needs `is_active=false` on its `instruments` row. Onboarded symbols that Binance no longer lists
+  for trading are dropped at start.
 - **AI Brain:** conversations are stored and can be searched, reopened and continued, renamed and archived
   (History column, open by default on wide screens; #82–#84). The Brain can read klines for any Binance symbol
-  (`get_klines`, #46). SELL cards are refused for spot the mandate does not hold (#76, #78).
+  (`get_klines`, #46). SELL cards are refused for spot the mandate does not hold (#76, #78). Wave 1 on
+  `feat/brain-upgrade`: one order card per turn; a held card is answered "Held for approval", which is the expected
+  result, not an error; a broken reply after a card shows MODEL_INCOMPLETE and keeps the card. BUY cards for symbols
+  the feed does not cover offer "Onboard X"; their approval is refused with 422, or 503 while the universe is
+  unknown. SELL is never blocked by the feed. The Brain sees the UTC time. Debates that the Brain or the research
+  chat starts pass the account safety gate and a cap of 6 a day (`BRAIN_DEBATE_DAILY_CAP`).
 - **Web:** the 2026-10-12 UI critique is implemented ([docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md), #81):
   unknown states never read as healthy or empty, one session store, one kill-switch poller per account,
   PAPER and DEMO kill switches told apart.

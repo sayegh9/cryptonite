@@ -20,7 +20,7 @@ from cryptonite_agents.gateway import Gateway
 from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
 from cryptonite_agents.gateway.routes import EMBED, FLASH, FLASH_LITE, PRO
 from cryptonite_schemas.marks import encode_mark
-from migrated_db import migrated_database
+from migrated_db import migrated_database, seed_paper_account
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -344,6 +344,102 @@ async def test_operator_triggers_bypass_the_gate(gate, pool):
     )
     decision = await gate.pre_debate_gate(pool, Redis(), {"instrument_id": INSTRUMENT, "trigger_source": "user_on_demand"}, None, None)
     assert (decision.allowed, decision.reason) == (True, "OPERATOR_TRIGGER")
+
+
+# --- Brain-started debates (WS-1E): the account checks only, no triage -----------------------------
+
+BRAIN = {"instrument_id": INSTRUMENT, "trigger_source": "brain_on_demand"}
+
+
+async def _seed_account_state(db_url: str, state: str) -> None:
+    """One account-level refusal on a seeded paper account (seeded the way the paper trading tests seed it)."""
+    admin = await asyncpg.connect(db_url)
+    try:
+        await seed_paper_account(admin)
+        if state == "KILL_SWITCH_LATCHED":
+            await admin.execute(
+                "INSERT INTO execution_kill_switch (environment, account_id, is_latched) "
+                "VALUES ('PAPER', 'PAPER-ACCOUNT-001', true)"
+            )
+        elif state == "DAILY_LOSS_LATCHED":
+            await admin.execute(
+                "UPDATE paper_accounts SET daily_loss_latched = true WHERE account_id = 'PAPER-ACCOUNT-001'"
+            )
+        elif state == "POSITION_AT_CAP":  # 0.5 BTC at 50,000 on 100,000 equity is 25%, above the 24% headroom
+            await admin.execute(
+                """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side, entry_price,
+                       quantity, current_price, status)
+                   VALUES ($1, 'PAPER-ACCOUNT-001', 'MANUAL_TRADE', $2, 'LONG', 50000, 0.5, 50000, 'OPEN')""",
+                uuid.uuid4().hex, INSTRUMENT,
+            )
+    finally:
+        await admin.close()
+
+
+@pytest.fixture
+async def seeded_account(pool, db_url):
+    """Clears the positions and instances a test seeds, so the pool fixture can delete the paper account."""
+    yield
+    admin = await asyncpg.connect(db_url)
+    await admin.execute("TRUNCATE paper_positions, paper_strategy_instances CASCADE")
+    await admin.close()
+
+
+@pytest.mark.parametrize("state", ["KILL_SWITCH_LATCHED", "DAILY_LOSS_LATCHED", "POSITION_AT_CAP"])
+async def test_brain_debates_are_refused_by_the_account_checks_without_a_model_call(
+        gate, pool, db_url, seeded_account, state):
+    await _seed_account_state(db_url, state)
+    models = Models()
+    with override_model(FLASH_LITE, models.model()):
+        decision = await gate.pre_debate_gate(pool, Redis(), BRAIN, Gateway(), "MARKET BRIEF")
+    assert (decision.allowed, decision.reason) == (False, state)
+    assert sum(models.calls.values()) == 0
+
+
+async def test_scanner_candidates_are_refused_at_the_position_cap(gate, pool, db_url, seeded_account):
+    await _seed_account_state(db_url, "POSITION_AT_CAP")
+    decision = await gate.pre_debate_gate(pool, Redis(), scanner_payload(), None, "MARKET BRIEF")
+    assert decision.reason == "POSITION_AT_CAP"
+
+
+async def test_brain_debate_passes_the_account_checks_and_never_asks_triage(gate, pool):
+    models = Models(triage=False)  # a triage call would refuse: the Brain path must not make one
+    with override_model(FLASH_LITE, models.model()):
+        decision = await gate.pre_debate_gate(pool, Redis(), BRAIN, Gateway(), None)
+    assert (decision.allowed, decision.reason) == (True, "BRAIN_TRIGGER")
+    assert sum(models.calls.values()) == 0
+    assert decision.cooldown_key is None  # no cooldown is taken, so a failure has nothing to release
+
+
+async def test_brain_debates_skip_the_scanner_dedupe_staleness_and_cooldown(main, gate, pool):
+    cid = str(uuid.uuid4())
+    # 1970 is stale for a scanner candidate, and this candidate already has a durable run
+    candidate = {"candidate_id": cid, "timeframe": "1h", "bar_close_inclusive_ns": 1}
+    payload = {**BRAIN, "candidate_payload": json.dumps(candidate)}
+    redis = Redis("MARKET BRIEF BTCUSDT")
+    assert (await run(main, pool, payload, Models(), redis))["candidate_id"] == uuid.UUID(cid)
+    decision = await gate.pre_debate_gate(pool, redis, payload, None, None)
+    assert decision.reason == "BRAIN_TRIGGER"
+    assert not any(k.startswith("debate:cooldown:") for k in redis.kv)
+
+
+async def test_brain_debate_runs_the_full_fleet_not_the_lite_path(main, pool):
+    """A Brain debate has no market brief and the lite persona has no tools, so it never gets a lite call."""
+    models = Models()
+    run_row = await run(main, pool, BRAIN, models)
+    assert run_row["trigger_source"] == "brain_on_demand"
+    assert models.calls["lite"] == 0 and models.calls["triage"] == 0
+    assert models.calls["pm"] == 1 and models.calls["cro"] == 1
+
+
+async def test_brain_debate_with_the_kill_switch_latched_never_reaches_a_model(main, pool):
+    await pool.execute(
+        "INSERT INTO execution_kill_switch (environment, account_id, is_latched) "
+        "VALUES ('PAPER', 'PAPER-ACCOUNT-001', true)"
+    )
+    models = Models()
+    assert await run(main, pool, BRAIN, models) is None
+    assert sum(models.calls.values()) == 0
 
 
 # --- Triage (A2.3) and stakes-sized debates (A2.4) ----------------------------------------------
