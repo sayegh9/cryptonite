@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+from cryptonite_schemas.identifiers import to_perp_instrument_id
 from cryptonite_schemas.mandate import canonical_instrument
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from sqlalchemy import create_engine, text
@@ -101,6 +102,8 @@ def get_live_market_data(symbols: str = "BTCUSDT") -> str:
                     "high_24h": float(item["highPrice"]),
                     "low_24h": float(item["lowPrice"]),
                     "volume_24h": float(item["volume"]),
+                    "as_of": datetime.datetime.fromtimestamp(item["closeTime"] / 1000, tz=datetime.UTC).isoformat(
+                        timespec="seconds"),
                 }
             for item in data
             ]
@@ -908,6 +911,138 @@ def ai_state_header() -> str | None:
         return None
 
 
+# --- Market context for the debate analysts (WS-2C) ----------------------------------------------
+# The perp feed (services/scanner/cryptonite_scanner_service/derivatives_feed.py) writes these keys; each expires when
+# the feed stops writing it, so a missing key means "not running or not covered", which the output says.
+
+PERP_MARK_KEY = "perp:mark:{symbol}"  # MARK_KEY of the feed: 15 s TTL
+PERP_OI_KEY = "perp:oi:{symbol}"  # OI_KEY of the feed: 90 s TTL
+
+
+def _feed_symbol(symbol: str) -> str:
+    """'btcusdt-perp.binance' -> 'BTCUSDT': the base symbol the feed keys its Redis values by."""
+    return symbol.strip().upper().split(".")[0].split("-")[0]
+
+
+def _perp_payload(key_template: str, symbol: str, label: str, ttl: str, notes: list[str]) -> Any:
+    """The JSON value of one perp key, or None with a note saying why it is missing."""
+    key = key_template.format(symbol=symbol)
+    try:
+        raw = _redis_get(key)
+    except Exception as e:
+        notes.append(f"{key} could not be read ({type(e).__name__}): the {label} is unknown.")
+        return None
+    if raw is None:
+        notes.append(f"{key} is missing (it expires after {ttl} without a write): the derivatives feed is not "
+                     f"running or does not cover {symbol}, so the {label} is unknown.")
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        notes.append(f"{key} is not valid JSON: the {label} is unknown.")
+        return None
+
+
+def _funding_history(symbol: str, notes: list[str]) -> list[dict[str, Any]] | None:
+    """The last FUNDING_ROWS settlements of the perpetual, newest first. None when the table cannot be read."""
+    instrument = to_perp_instrument_id(symbol)
+    try:
+        rows = _readonly_rows(
+            "SELECT funding_time_ns, funding_rate, mark_price, funding_interval_hours, source FROM funding_rates "
+            "WHERE instrument_id = :instrument_id ORDER BY funding_time_ns DESC LIMIT 6",
+            {"instrument_id": instrument},
+        )
+    except Exception as e:
+        notes.append(f"funding_rates could not be read ({type(e).__name__}): the funding history is unknown.")
+        return None
+    if not rows:
+        notes.append(f"No funding settlements are recorded for {instrument}.")
+    return [{
+        "funding_time": datetime.datetime.fromtimestamp(r["funding_time_ns"] // 10**9, tz=datetime.UTC).isoformat(
+            timespec="seconds"),
+        "funding_rate": _num(r["funding_rate"]),
+        "mark_price": None if r["mark_price"] is None else _num(r["mark_price"]),
+        "funding_interval_hours": r["funding_interval_hours"],
+        "source": r["source"],
+    } for r in rows]
+
+
+def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
+    """Perpetual futures context for one symbol: the latest mark price, open interest, and the last six funding
+    settlements. Use it for funding and open interest, which the spot ticker does not show.
+
+    Fields:
+        mark: the latest Binance USD-M mark price tick. mark_price and index_price are strings in quote currency;
+            funding_rate is the rate in force; ts_event_ns is the exchange event time in nanoseconds since the epoch;
+            next_funding_time_ns is the next settlement. null when the mark is missing (see note).
+        open_interest: the latest open interest poll. open_interest is in base-asset units; ts_event_ns as above.
+            null when missing (see note).
+        funding: the last six settlements, newest first. funding_time is UTC ISO; funding_rate is the settled rate
+            (0.0001 is 0.01 percent); mark_price is the mark at settlement (null in old history); a positive rate
+            means longs pay shorts. null when the table cannot be read.
+        note: says what is missing and why, or null when every field is present. A missing field is unknown, never
+            zero: do not read it as no funding or no open interest.
+        as_of: when this answer was built (UTC ISO).
+
+    Parameters:
+        symbol: Base symbol, e.g. 'BTCUSDT' (the perpetual is BTCUSDT-PERP.BINANCE).
+    """
+    sym = _feed_symbol(symbol)
+    notes: list[str] = []
+    mark = _perp_payload(PERP_MARK_KEY, sym, "mark", "15 s", notes)
+    open_interest = _perp_payload(PERP_OI_KEY, sym, "open interest", "90 s", notes)
+    funding = _funding_history(sym, notes)
+    out = {
+        "symbol": sym,
+        "mark": mark,
+        "open_interest": open_interest,
+        "funding": funding,
+        "note": " ".join(notes) or None,
+        "as_of": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+    }
+    return json.dumps(out, default=str)
+
+
+def get_market_regime(symbol: str = "BTCUSDT") -> str:
+    """The market regime of one symbol at the latest closed 1h bar: TREND_UP, TREND_DOWN, CHOP or HIGH_VOL. The
+    same classifier the learner uses to tag decisions. Reporting only: it does not decide any trade. bar_time is the
+    close time of the 1h bar the label is based on (UTC ISO). regime is null with a reason when the analytics lake has
+    too little 1h history for the symbol.
+
+    Parameters:
+        symbol: Base symbol, e.g. 'BTCUSDT'.
+    """
+    # Imported here: the analytics lake stack is needed by this tool alone
+    from cryptonite_scanner.regime import HIGH_VOL_WINDOW_BARS, MIN_BARS, classify_regime
+    from cryptonite_storage.queries import AnalyticsQueryEngine
+
+    sym = _feed_symbol(symbol)
+    # The same trailing window the learner reads (services/debate_worker/outcomes.REGIME_LOOKBACK_S)
+    lookback_ns = (HIGH_VOL_WINDOW_BARS + MIN_BARS) * 3600 * 10**9
+    end_ns = time.time_ns()
+    try:
+        lake = AnalyticsQueryEngine(Path(os.getenv("ANALYTICS_LAKE_PATH", "/app/data/analytics_lake")))
+        bars = lake.query_bars_df(symbol=sym, timeframe="1h", start_ns=end_ns - lookback_ns, end_ns=end_ns)
+    except Exception as e:
+        logger.warning("Regime unavailable for %s: %s", sym, e)
+        return json.dumps({"regime": None, "reason": f"analytics lake unreadable: {e}"})
+    if bars is None or bars.is_empty() or "ts_event_ns" not in bars.columns:
+        return json.dumps({"regime": None, "reason": f"no 1h bars in the analytics lake for {sym}"})
+    bars = bars.filter(bars["ts_event_ns"] <= end_ns).sort("ts_event_ns")
+    if bars.is_empty():
+        return json.dumps({"regime": None, "reason": f"no 1h bars in the analytics lake for {sym}"})
+    regime = classify_regime(bars)
+    if regime is None:
+        return json.dumps({"regime": None, "reason": f"not enough 1h history in the analytics lake for {sym} "
+                                                     f"to tag the regime (it needs {MIN_BARS} bars)"})
+    bar_close_s = int(bars["ts_event_ns"][-1]) // 10**9
+    return json.dumps({
+        "symbol": sym,
+        "regime": regime,
+        "bar_time": datetime.datetime.fromtimestamp(bar_close_s, tz=datetime.UTC).isoformat(timespec="seconds"),
+    })
+
+
 # --- Gateway tool registry (AI-first blueprint A1.5) ---------------------------------------------
 # Every tool an agent may call, with the risk it can create. None of these changes exposure:
 # stage_debate_proposal only queues a debate whose decision still needs operator approval.
@@ -926,3 +1061,5 @@ READ_TEARSHEET = _register(RiskClass.READ)(read_nautilus_tearsheet)
 EXECUTION_ANALYSIS = _register(RiskClass.READ)(run_execution_analysis)
 STAGE_DEBATE_PROPOSAL = _register(RiskClass.READ, side_effects=True)(stage_debate_proposal)
 COMPARE_LIVE_VS_BACKTEST = _register(RiskClass.READ)(compare_live_vs_backtest)
+DERIVATIVES_CONTEXT = _register(RiskClass.READ)(get_derivatives_context)  # WS-2C: funding, mark, open interest
+MARKET_REGIME = _register(RiskClass.READ)(get_market_regime)  # WS-2C: the learner's regime on 1h lake bars
