@@ -145,7 +145,7 @@ async def test_a_card_on_a_stopped_instrument_is_told_which_mandate_to_resume(h,
         approve = await c.post(path, headers=h.headers)
         assert approve.status_code == 409
         assert approve.json()["detail"].startswith(f"MANDATE_PAUSED: {stopped_name} already covers {BTC}")
-        assert "resume it on the Mandates page" in approve.json()["detail"]
+        assert "resume it in Mission Control, then approve this card" in approve.json()["detail"]
         created = await c.post("/api/v1/ai/mandates", json=create_body("BTCUSDT"), headers=h.headers)
     assert created.status_code == 409 and created.json()["detail"].startswith("MANDATE_PAUSED")
     assert brain_card["status"] == "PENDING_APPROVAL"

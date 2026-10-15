@@ -188,7 +188,13 @@ async def verify_totp(request: Request, code: str | None, *, user_id: Any = None
     step = _matched_totp_step(secret, code)
     if step is not None and await _totp_step_used(request, row["id"], step):
         return TotpOutcome.REUSED
-    return TotpOutcome.VALID if await auth_mgr.verify_totp_code(row["id"], secret, code) else TotpOutcome.WRONG
+    if await auth_mgr.verify_totp_code(row["id"], secret, code):
+        return TotpOutcome.VALID
+    # Refused by the insert: a concurrent submit of this same code recorded its step after the check above. That is a
+    # reuse, not a wrong code
+    if step is not None and await _totp_step_used(request, row["id"], step):
+        return TotpOutcome.REUSED
+    return TotpOutcome.WRONG
 
 
 TOTP_MAX_FAILURES = 5

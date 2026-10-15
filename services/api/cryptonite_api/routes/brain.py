@@ -34,9 +34,15 @@ from cryptonite_execution.approvals import ApprovalConflict, record_operator_app
 from cryptonite_execution.mandate_store import (
     entry_room_pct,
     instance_spot_holdings,
+    load_mandate,
     resolve_mandate_for,
 )
-from cryptonite_schemas.mandate import MIN_HOLDING_QTY, MIN_MANDATE_ENTRY_PCT, canonical_instrument
+from cryptonite_schemas.mandate import (
+    MIN_HOLDING_QTY,
+    MIN_MANDATE_ENTRY_PCT,
+    Mandate,
+    canonical_instrument,
+)
 from cryptonite_schemas.marks import read_marks
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -263,6 +269,25 @@ def _find_card(session: dict[str, Any], widget_id: str) -> dict[str, Any] | None
     return None
 
 
+async def _holding_mandate_for_sell(conn, instrument_id: str) -> tuple[Mandate | None, str]:
+    """The mandate a SELL on ``instrument_id`` closes when no ACTIVE mandate allows it: the one non-archived (PAUSED or
+    HALTED) mandate whose instance holds the instrument. (None, NO_MANDATE) when none holds it, (None,
+    AMBIGUOUS_MANDATE) when more than one does."""
+    inst = canonical_instrument(instrument_id)
+    holders: list[Mandate] = []
+    for row in await conn.fetch(
+            "SELECT id FROM ai_mandates WHERE status <> 'ARCHIVED' AND $1 = ANY(instruments) ORDER BY created_at", inst):
+        m = await load_mandate(conn, row["id"])
+        held = (await instance_spot_holdings(conn, m.instance_id)).get(inst, (Decimal("0"), Decimal("0")))[0]
+        if held >= MIN_HOLDING_QTY:
+            holders.append(m)
+    if not holders:
+        return None, "NO_MANDATE"
+    if len(holders) > 1:
+        return None, "AMBIGUOUS_MANDATE"
+    return holders[0], ""
+
+
 class CardApproveRequest(BaseModel):
     mandate_id: uuid.UUID | None = None  # default: the single ACTIVE mandate that allows the instrument
 
@@ -297,6 +322,14 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     pool = request.app.state.pool
     async with pool.acquire() as conn:
         mandate, why = await resolve_mandate_for(conn, card["instrument_id"], req.mandate_id if req else None)
+    if mandate is None and why == "NO_MANDATE" and card["side"] == "SELL":
+        # A SELL closes a holding, and REDUCE_RISK is allowed on a PAUSED or HALTED mandate (check_mandate and the
+        # orchestrator gate): the stopped mandate that holds the instrument is the one the SELL closes in
+        async with pool.acquire() as conn:
+            mandate, why = await _holding_mandate_for_sell(conn, card["instrument_id"])
+        if why == "AMBIGUOUS_MANDATE":
+            raise HTTPException(status_code=409, detail=f"AMBIGUOUS_MANDATE: more than one stopped mandate holds "
+                                f"{card['instrument_id']}; nothing was queued")
     if mandate is None and why == "NO_MANDATE" and card["side"] == "BUY":
         # A PAUSED or HALTED mandate on the instrument is the real reason: the operator stopped it. Say so, not "no
         # mandate", which would send the operator to create one inline, where the same stop refuses it
@@ -306,7 +339,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
             # The helper's reason is "<status>: <mandate name> already covers <instrument>; <tail>". A mandate name is
             # free text and may hold a ";", so cut at the last one: the tail is the helper's own and is never repeated
             reason = stopped.rsplit(";", 1)[0]
-            raise HTTPException(status_code=409, detail=f"{reason}; resume it on the Mandates page, then approve this card")
+            raise HTTPException(status_code=409, detail=f"{reason}; resume it in Mission Control, then approve this card")
     if mandate is None:
         raise HTTPException(status_code=409, detail=f"{why}: approve this card inside an ACTIVE mandate that allows "
                             f"{card['instrument_id']} (Mission Control → Mandates)")
