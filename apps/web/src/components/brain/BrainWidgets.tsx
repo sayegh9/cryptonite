@@ -301,17 +301,31 @@ function DebateSummaryCard({ widget }: { widget: DebateSummaryWidget }) {
   );
 }
 
-/** How long an onboarded symbol gets to start streaming, and how often the live feed is checked meanwhile */
+/** How long an onboarded symbol gets to start streaming, how often the live feed is checked, and each check's deadline */
 const ONBOARD_WAIT_MS = 180_000;
 const ONBOARD_POLL_MS = 5_000;
+const FEED_REQUEST_MS = 10_000;
 
-/** Symbols the live feed streams right now; null while ingest has not published its universe */
-async function fetchFedSymbols(signal?: AbortSignal): Promise<string[] | null> {
-  const res = await fetch("/api/v1/market/universe", { credentials: "include", cache: "no-store", signal });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const body = await res.json();
-  return body.available && Array.isArray(body.symbols) ? body.symbols : null;
+/** Instruments the live feed streams right now (e.g. "SOLUSDT.BINANCE"); null while ingest has not published its universe */
+async function fetchFedInstruments(signal?: AbortSignal): Promise<string[] | null> {
+  // Each check has its own deadline, so one hung request cannot stretch the onboarding window
+  const ctrl = new AbortController();
+  const deadline = setTimeout(() => ctrl.abort(), FEED_REQUEST_MS);
+  const cancel = () => ctrl.abort();
+  signal?.addEventListener("abort", cancel);
+  try {
+    const res = await fetch("/api/v1/market/universe", { credentials: "include", cache: "no-store", signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    return body.available && Array.isArray(body.instruments) ? body.instruments : null;
+  } finally {
+    clearTimeout(deadline);
+    signal?.removeEventListener("abort", cancel);
+  }
 }
+
+/** Whether the feed streams this exact instrument: the venue counts (BTCUSDT.BYBIT is not BTCUSDT.BINANCE) */
+const isFed = (fed: string[] | null, instrumentId: string) => fed?.includes(instrumentId.toUpperCase()) ?? false;
 
 /** The reason the API gives for a refused request (its `detail`), or the status */
 async function failureText(res: Response): Promise<string> {
@@ -320,24 +334,29 @@ async function failureText(res: Response): Promise<string> {
 }
 
 /**
- * Shown on an order card whose symbol the live feed does not stream: the approval would be refused, so the card offers
- * the onboarding instead of a form that cannot succeed. Checks the feed once when shown (the symbol may have been
- * onboarded since), then every 5 s for up to 3 minutes after Onboard; calls onStreaming once the symbol is in the feed.
+ * Shown on an order card the live feed does not allow, instead of a form that cannot succeed. Only SYMBOL_NOT_INGESTED
+ * has a fix here (Onboard); other refusals (venue, perp, timeframe) stay locked and show their reason. For a symbol the
+ * feed is checked once when shown (it may have been onboarded since), then every 5 s for up to 3 minutes after Onboard;
+ * onStreaming runs once this exact instrument is in the feed.
  */
-function FeedGate({ symbol, onStreaming }: { symbol: string; onStreaming: () => void }) {
+function FeedGate({ instrumentId, reason, onStreaming }: { instrumentId: string; reason: string; onStreaming: () => void }) {
+  const symbol = instrumentId.split(".")[0];
+  const onboardable = reason.startsWith("SYMBOL_NOT_INGESTED");
   const [phase, setPhase] = useState<"idle" | "onboarding" | "timeout">("idle");
   const [error, setError] = useState<string | null>(null);
   const polling = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
-    fetchFedSymbols(ctrl.signal)
-      .then((fed) => {
-        if (fed?.includes(symbol)) onStreaming();
-      })
-      .catch(() => {});
+    if (onboardable) {
+      fetchFedInstruments(ctrl.signal)
+        .then((fed) => {
+          if (isFed(fed, instrumentId)) onStreaming();
+        })
+        .catch(() => {});
+    }
     return () => ctrl.abort();
-  }, [symbol, onStreaming]);
+  }, [instrumentId, onboardable, onStreaming]);
 
   // Stop polling on unmount
   useEffect(() => () => polling.current?.abort(), []);
@@ -368,8 +387,8 @@ function FeedGate({ symbol, onStreaming }: { symbol: string; onStreaming: () => 
       await new Promise((resolve) => setTimeout(resolve, ONBOARD_POLL_MS));
       if (ctrl.signal.aborted) return;
       try {
-        const fed = await fetchFedSymbols(ctrl.signal);
-        if (fed?.includes(symbol)) {
+        const fed = await fetchFedInstruments(ctrl.signal);
+        if (isFed(fed, instrumentId)) {
           onStreaming();
           return;
         }
@@ -386,21 +405,29 @@ function FeedGate({ symbol, onStreaming }: { symbol: string; onStreaming: () => 
   const busy = phase === "onboarding";
   return (
     <div className="mt-2 rounded border border-amber-700 bg-zinc-950 p-2" data-testid="brain-order-feed-gate">
-      <p role="note" className="text-amber-300">
-        {symbol} is not in the live data feed, so this order cannot be approved yet. Onboard it first; the card unlocks once{" "}
-        {symbol} is streaming.
-      </p>
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void onboard()}
-          className="rounded border border-amber-600 bg-amber-600/20 px-2 py-1 text-2xs font-bold text-amber-200 hover:bg-amber-600/30 disabled:opacity-50"
-        >
-          {busy ? `Onboarding ${symbol}…` : `Onboard ${symbol}`}
-        </button>
-        {phase === "timeout" && <span className="text-zinc-400">Still not streaming; try again or check the Watchlist.</span>}
-      </div>
+      {onboardable ? (
+        <p role="note" className="text-amber-300">
+          {symbol} is not in the live data feed, so this order cannot be approved yet. Onboard it first; the card unlocks once{" "}
+          {symbol} is streaming.
+        </p>
+      ) : (
+        <p role="note" className="text-amber-300">
+          {reason}. This order cannot be approved.
+        </p>
+      )}
+      {onboardable && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void onboard()}
+            className="rounded border border-amber-600 bg-amber-600/20 px-2 py-1 text-2xs font-bold text-amber-200 hover:bg-amber-600/30 disabled:opacity-50"
+          >
+            {busy ? `Onboarding ${symbol}…` : `Onboard ${symbol}`}
+          </button>
+          {phase === "timeout" && <p role="status" className="text-zinc-400">Still not streaming; try again or check the Watchlist.</p>}
+        </div>
+      )}
       {error && (
         <p role="alert" className="mt-1 text-rose-400">
           {error}
@@ -421,11 +448,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [totp, setTotp] = useState("");
   const pending = widget.status === "PENDING_APPROVAL";
   const buy = widget.side === "BUY";
-  // A symbol the live feed does not stream cannot be approved: no mandate form, no TOTP, Approve disabled until it streams
+  // An instrument the live feed does not allow cannot be approved: no mandate form, no TOTP, Approve disabled until it streams
   const [fed, setFed] = useState(false);
   const unlockFeed = useCallback(() => setFed(true), []);
-  const feedLocked = pending && !!widget.feed_refusal && !fed;
-  const feedSymbol = widget.instrument_id.split(".")[0];
+  const feedRefusal = pending ? widget.feed_refusal ?? null : null;
+  const feedLocked = !!feedRefusal && !fed;
   const sessionId = useBrainStore((s) => s.sessionId);
   useCardOutcome(widget, sessionId);
 
@@ -520,7 +547,14 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       </dl>
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
 
-      {feedLocked && <FeedGate symbol={feedSymbol} onStreaming={unlockFeed} />}
+      {feedLocked && feedRefusal ? (
+        <FeedGate instrumentId={widget.instrument_id} reason={feedRefusal} onStreaming={unlockFeed} />
+      ) : null}
+      {pending && fed && (
+        <p role="status" className="mt-2 flex items-center gap-1 text-emerald-400">
+          <CheckCircle2 className="h-3 w-3" aria-hidden /> {widget.instrument_id.split(".")[0]} is streaming; you can approve now.
+        </p>
+      )}
 
       {pending && !confirming && (
         <div className="mt-3 flex gap-2">

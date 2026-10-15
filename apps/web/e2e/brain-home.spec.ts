@@ -380,7 +380,7 @@ test.describe("Brain Home", () => {
     expect(reactErrors).toEqual([]);
   });
 
-  /** An order on a symbol the live feed does not stream: the card offers onboarding and stays locked until it streams */
+  /** An order on an instrument the live feed does not allow: the card says why, and unlocks only once the feed streams it */
   const SOL_CARD = {
     ...ORDER_CARD,
     instrument_id: "SOLUSDT.BINANCE",
@@ -388,13 +388,16 @@ test.describe("Brain Home", () => {
     feed_refusal: "SYMBOL_NOT_INGESTED: ingest has no feed for SOLUSDT (fed: BTCUSDT); onboard it first",
   };
 
-  async function openSolCard(page: Page) {
+  /** /market/universe as the API answers it: instruments are SYMBOL.VENUE */
+  const universe = (instruments: string[]) => ({ available: true, instruments });
+
+  async function openCard(page: Page, card: Record<string, unknown>) {
     await mockBackend(page);
     await page.route("**/agent-api/brain/stream", (route: Route) =>
-      route.fulfill({ status: 200, headers: { "content-type": "text/event-stream" }, body: turnWith(SOL_CARD) }),
+      route.fulfill({ status: 200, headers: { "content-type": "text/event-stream" }, body: turnWith(card) }),
     );
     await openBrainHome(page);
-    await page.getByRole("textbox", { name: "Message the Brain" }).fill("Propose a SOL trade");
+    await page.getByRole("textbox", { name: "Message the Brain" }).fill("Propose a trade");
     await page.getByRole("button", { name: "Send to the Brain" }).click();
     return page.getByTestId("brain-assistant-message").last().getByTestId("brain-widget-order-card");
   }
@@ -404,14 +407,14 @@ test.describe("Brain Home", () => {
     let streaming = false;
     const onboardBodies: { body: unknown; csrf: string | undefined }[] = [];
     await page.route("**/api/v1/market/universe", (route) =>
-      route.fulfill({ json: { available: true, symbols: streaming ? ["BTCUSDT", "SOLUSDT"] : ["BTCUSDT"] } }),
+      route.fulfill({ json: universe(streaming ? ["BTCUSDT.BINANCE", "SOLUSDT.BINANCE"] : ["BTCUSDT.BINANCE"]) }),
     );
     await page.route("**/api/v1/instruments/onboard", (route) => {
       onboardBodies.push({ body: route.request().postDataJSON(), csrf: route.request().headers()["x-csrf-token"] });
       streaming = true; // ingest picks the symbol up; the card's next feed check sees it
       return route.fulfill({ json: { status: "ok", message: "Onboarding SOLUSDT..." } });
     });
-    const card = await openSolCard(page);
+    const card = await openCard(page, SOL_CARD);
 
     await expect(card).toContainText("SOLUSDT is not in the live data feed, so this order cannot be approved yet.");
     await expect(card.getByRole("button", { name: "Approve…" })).toBeDisabled();
@@ -420,10 +423,11 @@ test.describe("Brain Home", () => {
 
     await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
     await expect(card.getByRole("button", { name: "Onboarding SOLUSDT…" })).toBeDisabled();
-    expect(onboardBodies).toEqual([{ body: { symbol: "SOLUSDT" }, csrf: "csrf-test" }]);
+    await expect.poll(() => onboardBodies).toEqual([{ body: { symbol: "SOLUSDT" }, csrf: "csrf-test" }]);
 
-    // The feed is checked every 5 s; once SOLUSDT streams the normal approve flow appears
+    // The feed is checked every 5 s; once SOLUSDT.BINANCE streams the normal approve flow appears
     await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled({ timeout: 15_000 });
+    await expect(card.getByRole("status")).toContainText("SOLUSDT is streaming; you can approve now.");
     await expect(card).not.toContainText("cannot be approved yet");
     await card.getByRole("button", { name: "Approve…" }).click();
     await card.getByRole("button", { name: "Confirm paper order" }).click();
@@ -431,13 +435,96 @@ test.describe("Brain Home", () => {
     expect(reactErrors).toEqual([]);
   });
 
+  test("a symbol the feed already streams unlocks on first render, with no Onboard click", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const onboardBodies: unknown[] = [];
+    await page.route("**/api/v1/market/universe", (route) => route.fulfill({ json: universe(["BTCUSDT.BINANCE", "SOLUSDT.BINANCE"]) }));
+    await page.route("**/api/v1/instruments/onboard", (route) => {
+      onboardBodies.push(route.request().postDataJSON());
+      return route.fulfill({ json: { status: "ok" } });
+    });
+    const card = await openCard(page, SOL_CARD);
+
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    await expect(card.getByRole("status")).toContainText("SOLUSDT is streaming; you can approve now.");
+    await expect(card).not.toContainText("cannot be approved yet");
+    await expect(card.getByRole("button", { name: /Onboard/ })).toHaveCount(0);
+    expect(onboardBodies).toEqual([]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("onboarding that never streams gives up after 3 minutes, with a retry message", async ({ page }) => {
+    test.setTimeout(150_000); // the fake clock must run past the 3-minute window
+    const reactErrors = collectReactErrors(page);
+    await page.clock.install();
+    const onboardBodies: unknown[] = [];
+    await page.route("**/api/v1/market/universe", (route) => route.fulfill({ json: universe(["BTCUSDT.BINANCE"]) }));
+    await page.route("**/api/v1/instruments/onboard", (route) => {
+      onboardBodies.push(route.request().postDataJSON());
+      return route.fulfill({ json: { status: "ok" } });
+    });
+    const card = await openCard(page, SOL_CARD);
+
+    await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
+    await expect.poll(() => onboardBodies.length).toBe(1);
+    // Each feed check waits on a 5 s timer of the fake clock: advance it until the 3-minute window has passed
+    await expect
+      .poll(
+        async () => {
+          await page.clock.runFor(5_000);
+          return card.getByText("Still not streaming; try again or check the Watchlist.").count();
+        },
+        { timeout: 120_000 },
+      )
+      .toBe(1);
+    await expect(card.getByRole("button", { name: "Onboard SOLUSDT" })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeDisabled();
+    expect(onboardBodies).toHaveLength(1);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a card that is no longer pending is not locked by its refusal", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    let universeCalls = 0;
+    await page.route("**/api/v1/market/universe", (route) => {
+      universeCalls++;
+      return route.fulfill({ json: universe(["BTCUSDT.BINANCE"]) });
+    });
+    const card = await openCard(page, { ...SOL_CARD, status: "REJECTED" });
+
+    await expect(card).toContainText("Rejected by you");
+    await expect(card.getByTestId("brain-order-feed-gate")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toHaveCount(0);
+    expect(universeCalls).toBe(0);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("an instrument on another venue stays locked with its reason, and offers no Onboard", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await page.route("**/api/v1/market/universe", (route) => route.fulfill({ json: universe(["BTCUSDT.BINANCE"]) }));
+    const bybit = {
+      ...SOL_CARD,
+      instrument_id: "BTCUSDT.BYBIT",
+      rationale: "Breakout on the BYBIT book.",
+      feed_refusal: "VENUE_NOT_INGESTED: ingest streams BINANCE only, not BYBIT",
+    };
+    const card = await openCard(page, bybit);
+
+    await expect(card).toContainText("VENUE_NOT_INGESTED: ingest streams BINANCE only, not BYBIT. This order cannot be approved.");
+    await expect(card.getByRole("button", { name: /Onboard/ })).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeDisabled();
+    await expect(card.getByLabel("TOTP code")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Reject" })).toBeEnabled();
+    expect(reactErrors).toEqual([]);
+  });
+
   test("a failed onboard shows the API's reason on the card and keeps Approve locked", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
-    await page.route("**/api/v1/market/universe", (route) => route.fulfill({ json: { available: true, symbols: ["BTCUSDT"] } }));
+    await page.route("**/api/v1/market/universe", (route) => route.fulfill({ json: universe(["BTCUSDT.BINANCE"]) }));
     await page.route("**/api/v1/instruments/onboard", (route) =>
       route.fulfill({ status: 401, json: { detail: "Not authenticated" } }),
     );
-    const card = await openSolCard(page);
+    const card = await openCard(page, SOL_CARD);
 
     await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
     await expect(card.getByRole("alert")).toContainText("Not authenticated");
