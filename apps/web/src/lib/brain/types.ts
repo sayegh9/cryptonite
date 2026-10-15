@@ -47,6 +47,8 @@ export interface OrderCardWidget {
   execution_reason?: string | null;
   filled_qty?: string | null;
   avg_fill_price?: string | null;
+  /** Set when the live data feed does not stream the symbol (the reason line); null when it does or the feed is unknown */
+  feed_refusal?: string | null;
 }
 
 /** What an approved card's order did, from /brain/sessions/{id}/cards/{card}/outcome */
