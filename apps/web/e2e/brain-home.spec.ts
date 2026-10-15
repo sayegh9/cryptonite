@@ -499,6 +499,25 @@ test.describe("Brain Home", () => {
     expect(reactErrors).toEqual([]);
   });
 
+  test("a pending SELL is never locked by the feed, even if its refusal is set", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    let universeCalls = 0;
+    await page.route("**/api/v1/market/universe", (route) => {
+      universeCalls++;
+      return route.fulfill({ json: universe(["BTCUSDT.BINANCE"]) });
+    });
+    // The API sends feed_refusal null for a SELL; this card carries one anyway to prove the UI does not lock it
+    const sell = { ...SOL_CARD, side: "SELL", rationale: "Taking profit on the SOL holding." };
+    const card = await openCard(page, sell);
+
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    await expect(card.getByTestId("brain-order-feed-gate")).toHaveCount(0);
+    await expect(card).not.toContainText("cannot be approved yet");
+    await expect(card.getByRole("button", { name: /Onboard/ })).toHaveCount(0);
+    expect(universeCalls).toBe(0);
+    expect(reactErrors).toEqual([]);
+  });
+
   test("an instrument on another venue stays locked with its reason, and offers no Onboard", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     await page.route("**/api/v1/market/universe", (route) => route.fulfill({ json: universe(["BTCUSDT.BINANCE"]) }));

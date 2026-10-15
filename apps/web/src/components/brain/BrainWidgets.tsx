@@ -451,7 +451,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   // An instrument the live feed does not allow cannot be approved: no mandate form, no TOTP, Approve disabled until it streams
   const [fed, setFed] = useState(false);
   const unlockFeed = useCallback(() => setFed(true), []);
-  const feedRefusal = pending ? widget.feed_refusal ?? null : null;
+  // Only a BUY adds risk; a SELL closes a holding and is never blocked by the feed
+  const feedRefusal = pending && widget.side === "BUY" ? widget.feed_refusal ?? null : null;
   const feedLocked = !!feedRefusal && !fed;
   const sessionId = useBrainStore((s) => s.sessionId);
   useCardOutcome(widget, sessionId);
