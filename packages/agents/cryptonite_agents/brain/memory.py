@@ -81,11 +81,13 @@ async def load_context(store: SessionStore, session_id: str) -> BrainContext:
                         turns=await store.messages(session_id, after_id=after))
 
 
-def render_prompt(ctx: BrainContext, message: str, now: datetime | None = None) -> str:
+def render_prompt(ctx: BrainContext, message: str, now: datetime | None = None, state: str | None = None) -> str:
     if now is None:
         now = datetime.now(UTC)
     now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
     parts = [f"## Now\n{now:%Y-%m-%d %H:%M} UTC"]  # the Brain has no other clock: old prices must read as old
+    if state:  # the snapshot of the trading system at the start of the turn (get_ai_state's header)
+        parts.append(f"## System state (snapshot at the start of this turn)\n{state}")
     if ctx.summary:
         parts.append(f"## Conversation so far (summary)\n{ctx.summary}")
     if ctx.turns:
