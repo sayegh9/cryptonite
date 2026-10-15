@@ -51,8 +51,12 @@ Cryptonite is a single-operator **paper** trading terminal. The Brain is the ope
 
 **Operator note:** turn `AI_ALLOW_DEV_TOTP` off before any real-money use.
 
-**Workaround until WS-1A ships:** onboard SOLUSDT from the Watchlist, then confirm the card. Re-onboard after
-every ingest restart.
+**WS-1A shipped:** onboarded symbols now persist across ingest restarts.
+
+**Decisions taken during Wave 1:**
+- Brain debates keep the full fleet. The lite-first path was reverted, since a lite debate would decide with no brief.
+- The feed check applies to BUY only. A SELL closes a holding and is never blocked by the feed.
+- Research-chat debates are gated and capped like the Brain's.
 
 ---
 

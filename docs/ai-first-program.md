@@ -43,7 +43,8 @@ guard ($25/day; exits are never blocked), a permission gate on tools (READ / RED
   and skips a down or un-pulled local primary immediately (no timeout stall). `/api/v1/ai/status`
   reports it and the web shows a banner.
 - **Thinking off for Ollama:** `thinking_budget=0` is sent as `reasoning_effort: "none"`.
-- **Per-turn tool caps:** `stage_debate_proposal` (starts paid work) at most once per turn.
+- **Per-turn tool caps:** `stage_debate_proposal` (starts paid work) at most once per turn; `propose_order` (one
+  card per turn; the held call is answered "Held for approval", a later one "Refused").
 - **Distillation logging:** the prompts of `triage`, `tagging` and `summarize` are stored in
   `ai_decision_traces.input` (migration 029), at most 20,000 characters.
 
@@ -166,6 +167,7 @@ overfitting on out-of-sample before paying for a Pro review, and stores the repo
 | 030 | role `cryptonite_backtester` |
 | 031 | `research_reports` |
 | 036 | `ai_model_routes.shadow_model`, `ai_model_routes.shadow_sample_rate`, `ai_shadow_results` (F2) |
+| 046 | `agent_safe_mandate_health`, `agent_safe_debate_verdicts`, `agent_safe_open_approvals`, `agent_safe_reflections`, `agent_safe_risk_latches`, `agent_safe_daily_loss` (read-only views for the Brain, `security_barrier`) |
 
 ## 9. Redis keys the program added
 
