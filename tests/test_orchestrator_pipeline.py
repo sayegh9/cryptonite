@@ -1,6 +1,7 @@
 """Tests for live strategy orchestrator pipeline, strategy patching, and command execution."""
 
 import json
+import re
 import uuid
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -9,7 +10,6 @@ import pytest
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.risk import OrderIntent
 from cryptonite_orchestrator.server import _patch_strategy_for_paper_engine, command_poller
-from nautilus_trader.model import Price, Quantity
 
 
 class DummyNautilusOrder:
@@ -121,6 +121,9 @@ async def test_command_poller_processes_deploy_command():
     mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
 
     engine = MagicMock(spec=PaperTradingEngine)
+    # A real engine always has its dispatcher; the deploy records a hash of the limits it enforces
+    engine.dispatcher = MagicMock(max_daily_loss_pct=Decimal("0.03"), min_order_equity_pct=Decimal("0.01"),
+                                  max_position_concentration_pct=Decimal("0.25"), taker_fee=Decimal("0.001"))
 
     import asyncio
     with pytest.raises(asyncio.CancelledError):
@@ -129,6 +132,9 @@ async def test_command_poller_processes_deploy_command():
     # Verify paper_strategy_instances insert was called
     executed_sqls = [call[0][0] for call in mock_conn.execute.call_args_list]
     assert any("INSERT INTO paper_strategy_instances" in sql for sql in executed_sqls)
+    (insert,) = [c for c in mock_conn.execute.call_args_list if "INSERT INTO paper_strategy_instances" in c[0][0]]
+    assert "dummy_hash" not in insert[0][0]
+    assert re.fullmatch(r"[0-9a-f]{64}", insert[0][-1])  # the risk policy hash
     # Verify command marked COMPLETED
     assert any("UPDATE execution_commands SET status = 'COMPLETED'" in sql for sql in executed_sqls)
 
