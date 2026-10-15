@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BarChart3, CheckCircle2, FileText, GitBranch, Loader2, ScrollText, XCircle } from "lucide-react";
 import { approveOrderCard, fetchCardOutcome, rejectOrderCard } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
@@ -301,6 +301,115 @@ function DebateSummaryCard({ widget }: { widget: DebateSummaryWidget }) {
   );
 }
 
+/** How long an onboarded symbol gets to start streaming, and how often the live feed is checked meanwhile */
+const ONBOARD_WAIT_MS = 180_000;
+const ONBOARD_POLL_MS = 5_000;
+
+/** Symbols the live feed streams right now; null while ingest has not published its universe */
+async function fetchFedSymbols(signal?: AbortSignal): Promise<string[] | null> {
+  const res = await fetch("/api/v1/market/universe", { credentials: "include", cache: "no-store", signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const body = await res.json();
+  return body.available && Array.isArray(body.symbols) ? body.symbols : null;
+}
+
+/** The reason the API gives for a refused request (its `detail`), or the status */
+async function failureText(res: Response): Promise<string> {
+  const body = await res.json().catch(() => null);
+  return typeof body?.detail === "string" ? body.detail : `HTTP ${res.status}`;
+}
+
+/**
+ * Shown on an order card whose symbol the live feed does not stream: the approval would be refused, so the card offers
+ * the onboarding instead of a form that cannot succeed. Checks the feed once when shown (the symbol may have been
+ * onboarded since), then every 5 s for up to 3 minutes after Onboard; calls onStreaming once the symbol is in the feed.
+ */
+function FeedGate({ symbol, onStreaming }: { symbol: string; onStreaming: () => void }) {
+  const [phase, setPhase] = useState<"idle" | "onboarding" | "timeout">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const polling = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchFedSymbols(ctrl.signal)
+      .then((fed) => {
+        if (fed?.includes(symbol)) onStreaming();
+      })
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, [symbol, onStreaming]);
+
+  // Stop polling on unmount
+  useEffect(() => () => polling.current?.abort(), []);
+
+  const onboard = async () => {
+    polling.current?.abort();
+    const ctrl = new AbortController();
+    polling.current = ctrl;
+    setError(null);
+    setPhase("onboarding");
+    try {
+      const res = await fetch("/api/v1/instruments/onboard", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": localStorage.getItem("csrf_token") ?? "" },
+        body: JSON.stringify({ symbol }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) throw new Error(await failureText(res));
+    } catch (e: any) {
+      if (ctrl.signal.aborted) return;
+      setError(e?.message || "Onboarding failed");
+      setPhase("idle");
+      return;
+    }
+    const started = Date.now();
+    while (!ctrl.signal.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, ONBOARD_POLL_MS));
+      if (ctrl.signal.aborted) return;
+      try {
+        const fed = await fetchFedSymbols(ctrl.signal);
+        if (fed?.includes(symbol)) {
+          onStreaming();
+          return;
+        }
+      } catch {
+        if (ctrl.signal.aborted) return;
+      }
+      if (Date.now() - started >= ONBOARD_WAIT_MS) {
+        setPhase("timeout");
+        return;
+      }
+    }
+  };
+
+  const busy = phase === "onboarding";
+  return (
+    <div className="mt-2 rounded border border-amber-700 bg-zinc-950 p-2" data-testid="brain-order-feed-gate">
+      <p role="note" className="text-amber-300">
+        {symbol} is not in the live data feed, so this order cannot be approved yet. Onboard it first; the card unlocks once{" "}
+        {symbol} is streaming.
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void onboard()}
+          className="rounded border border-amber-600 bg-amber-600/20 px-2 py-1 text-2xs font-bold text-amber-200 hover:bg-amber-600/30 disabled:opacity-50"
+        >
+          {busy ? `Onboarding ${symbol}…` : `Onboard ${symbol}`}
+        </button>
+        {phase === "timeout" && <span className="text-zinc-400">Still not streaming; try again or check the Watchlist.</span>}
+      </div>
+      {error && (
+        <p role="alert" className="mt-1 text-rose-400">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -312,6 +421,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [totp, setTotp] = useState("");
   const pending = widget.status === "PENDING_APPROVAL";
   const buy = widget.side === "BUY";
+  // A symbol the live feed does not stream cannot be approved: no mandate form, no TOTP, Approve disabled until it streams
+  const [fed, setFed] = useState(false);
+  const unlockFeed = useCallback(() => setFed(true), []);
+  const feedLocked = pending && !!widget.feed_refusal && !fed;
+  const feedSymbol = widget.instrument_id.split(".")[0];
   const sessionId = useBrainStore((s) => s.sessionId);
   useCardOutcome(widget, sessionId);
 
@@ -406,12 +520,15 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       </dl>
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
 
+      {feedLocked && <FeedGate symbol={feedSymbol} onStreaming={unlockFeed} />}
+
       {pending && !confirming && (
         <div className="mt-3 flex gap-2">
           <button
             type="button"
+            disabled={feedLocked}
             onClick={() => setConfirming(true)}
-            className="flex-1 rounded border border-amber-600 bg-amber-600/20 px-2 py-1.5 text-2xs font-bold text-amber-200 hover:bg-amber-600/30"
+            className="flex-1 rounded border border-amber-600 bg-amber-600/20 px-2 py-1.5 text-2xs font-bold text-amber-200 hover:bg-amber-600/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Approve…
           </button>
@@ -424,7 +541,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           </button>
         </div>
       )}
-      {pending && confirming && (
+      {pending && confirming && !feedLocked && (
         <div className="mt-3 rounded border border-amber-700 bg-zinc-950 p-2" role="group" aria-label="Confirm paper order">
           {needsMandate ? (
             <>

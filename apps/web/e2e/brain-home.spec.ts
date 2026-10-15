@@ -379,4 +379,70 @@ test.describe("Brain Home", () => {
     await expect(copilot.getByRole("textbox", { name: "Message the Brain" })).toHaveValue("Ask about this chart: BTCUSDT 1h");
     expect(reactErrors).toEqual([]);
   });
+
+  /** An order on a symbol the live feed does not stream: the card offers onboarding and stays locked until it streams */
+  const SOL_CARD = {
+    ...ORDER_CARD,
+    instrument_id: "SOLUSDT.BINANCE",
+    rationale: "Reclaim of the 4H range.",
+    feed_refusal: "SYMBOL_NOT_INGESTED: ingest has no feed for SOLUSDT (fed: BTCUSDT); onboard it first",
+  };
+
+  async function openSolCard(page: Page) {
+    await mockBackend(page);
+    await page.route("**/agent-api/brain/stream", (route: Route) =>
+      route.fulfill({ status: 200, headers: { "content-type": "text/event-stream" }, body: turnWith(SOL_CARD) }),
+    );
+    await openBrainHome(page);
+    await page.getByRole("textbox", { name: "Message the Brain" }).fill("Propose a SOL trade");
+    await page.getByRole("button", { name: "Send to the Brain" }).click();
+    return page.getByTestId("brain-assistant-message").last().getByTestId("brain-widget-order-card");
+  }
+
+  test("an un-fed symbol: the card offers onboarding, locks Approve, and unlocks once the symbol streams", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    let streaming = false;
+    const onboardBodies: { body: unknown; csrf: string | undefined }[] = [];
+    await page.route("**/api/v1/market/universe", (route) =>
+      route.fulfill({ json: { available: true, symbols: streaming ? ["BTCUSDT", "SOLUSDT"] : ["BTCUSDT"] } }),
+    );
+    await page.route("**/api/v1/instruments/onboard", (route) => {
+      onboardBodies.push({ body: route.request().postDataJSON(), csrf: route.request().headers()["x-csrf-token"] });
+      streaming = true; // ingest picks the symbol up; the card's next feed check sees it
+      return route.fulfill({ json: { status: "ok", message: "Onboarding SOLUSDT..." } });
+    });
+    const card = await openSolCard(page);
+
+    await expect(card).toContainText("SOLUSDT is not in the live data feed, so this order cannot be approved yet.");
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeDisabled();
+    await expect(card.getByLabel("TOTP code")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Reject" })).toBeEnabled();
+
+    await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
+    await expect(card.getByRole("button", { name: "Onboarding SOLUSDT…" })).toBeDisabled();
+    expect(onboardBodies).toEqual([{ body: { symbol: "SOLUSDT" }, csrf: "csrf-test" }]);
+
+    // The feed is checked every 5 s; once SOLUSDT streams the normal approve flow appears
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled({ timeout: 15_000 });
+    await expect(card).not.toContainText("cannot be approved yet");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+    await expect(card.getByRole("status")).toContainText("Approved · sending the order · paper command cmd-12345678");
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a failed onboard shows the API's reason on the card and keeps Approve locked", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await page.route("**/api/v1/market/universe", (route) => route.fulfill({ json: { available: true, symbols: ["BTCUSDT"] } }));
+    await page.route("**/api/v1/instruments/onboard", (route) =>
+      route.fulfill({ status: 401, json: { detail: "Not authenticated" } }),
+    );
+    const card = await openSolCard(page);
+
+    await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
+    await expect(card.getByRole("alert")).toContainText("Not authenticated");
+    await expect(card.getByRole("button", { name: "Onboard SOLUSDT" })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeDisabled();
+    expect(reactErrors).toEqual([]);
+  });
 });
