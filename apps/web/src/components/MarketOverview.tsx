@@ -88,7 +88,13 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
   };
 
   return (
-    <div className="h-full flex flex-col bg-zinc-950 text-zinc-100 p-4 space-y-6 overflow-y-auto">
+    // tabIndex: a keyboard user can focus the region to scroll it (WCAG scrollable-region-focusable)
+    <div
+      role="region"
+      aria-label="Markets overview"
+      tabIndex={0}
+      className="h-full flex flex-col bg-zinc-950 text-zinc-100 p-4 space-y-6 overflow-y-auto focus-visible:outline focus-visible:outline-1 focus-visible:outline-cyan-700"
+    >
       
       {/* Section 1: Top Movers */}
       <div className="space-y-3 shrink-0">
@@ -132,7 +138,12 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
       {/* Section 2: Volume Leaders */}
       <div className="space-y-3 shrink-0">
         <h2 className="font-mono text-2xs uppercase tracking-widest text-zinc-500">Volume Leaders</h2>
-        <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-zinc-800">
+        <div
+          role="region"
+          aria-label="Volume leaders"
+          tabIndex={0}
+          className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-zinc-800 focus-visible:outline focus-visible:outline-1 focus-visible:outline-cyan-700"
+        >
           {topVolume.map((t) => (
             <div
               key={t.symbol}
@@ -162,7 +173,7 @@ export const MarketOverview: React.FC<Props> = ({ onSelectSymbol }) => {
               className={`${getHeatmapColor(t.change_pct)} p-2 flex flex-col justify-center items-center cursor-pointer hover:brightness-110 transition-all rounded-sm`}
             >
               <span className="font-mono text-xs font-bold truncate w-full text-center">{t.symbol.replace("USDT", "")}</span>
-              <span className="font-mono text-2xs opacity-90">
+              <span className="font-mono text-2xs">
                 {t.change_pct > 0 ? "+" : ""}{t.change_pct.toFixed(2)}%
               </span>
             </div>
