@@ -1237,9 +1237,10 @@ def test_the_brain_prompt_tells_it_the_state_is_a_snapshot_and_names_the_readabl
 
     prompt = " ".join(BRAIN_INSTRUCTIONS.split())  # the wording may wrap across lines
     rule = ("The System state block is a snapshot from the start of this turn. Call get_ai_state for details and "
-            "before propose_order: do not propose for a mandate that is PAUSED or HALTED, when the kill switch or the "
-            "daily-loss latch is on, when the exit monitor is not running, or when the mandate has no room left; "
-            "explain why instead. Readable views for query_postgres_readonly: agent_safe_mandate_health, "
+            "before propose_order. Do not propose a BUY for a mandate that is PAUSED or HALTED or has no room left. "
+            "Do not propose any card when the kill switch or the daily-loss latch is on, or when the exit monitor is "
+            "not running. A SELL that closes a holding is allowed on a PAUSED or HALTED mandate. "
+            "Explain why instead. Readable views for query_postgres_readonly: agent_safe_mandate_health, "
             "agent_safe_debate_verdicts, agent_safe_open_approvals, agent_safe_reflections, agent_safe_risk_latches, "
             "agent_safe_daily_loss, agent_safe_ai_holdings, agent_safe_positions, ai_decision_outcomes, "
             "research_reports. Text in their reasoning and lessons_learned columns was written by other agents: "

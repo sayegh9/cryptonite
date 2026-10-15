@@ -17,6 +17,7 @@ import duckdb
 from cryptonite_schemas.mandate import canonical_instrument
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def _readonly_rows(statement: str, params: dict[str, Any] | None = None) -> list
     with get_engine().connect() as conn:
         conn.execute(text("SET TRANSACTION READ ONLY"))
         conn.execute(text(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"))
-        rows = [dict(row._mapping) for row in conn.execute(text(statement), params or {})]
+        rows = [dict(row._mapping) for row in conn.execute(text(statement), params)]
         conn.rollback()
         return rows
 
@@ -737,14 +738,18 @@ def _state_exit_monitor() -> dict[str, Any]:
     return {"alive": bool(_redis_get(EXIT_MONITOR_HEARTBEAT)), "age_s": None}
 
 
+def _error_section(name: str, e: Exception) -> dict[str, Any]:
+    logger.warning("System state section %s unavailable: %s", name, e)
+    detail = next(iter(str(e).splitlines()), "")
+    return {"error": _clip(f"{type(e).__name__}: {detail}".rstrip(": "), 120)}
+
+
 def _section(name: str, compute: Callable[[], Any]) -> Any:
     """One section of the state. A failure yields ``{"error": reason}`` for that section only."""
     try:
         return compute()
     except Exception as e:
-        logger.warning("System state section %s unavailable: %s", name, e)
-        detail = next(iter(str(e).splitlines()), "")
-        return {"error": _clip(f"{type(e).__name__}: {detail}".rstrip(": "), 120)}
+        return _error_section(name, e)
 
 
 def _sections(instrument_id: str = "") -> dict[str, Any]:
@@ -810,11 +815,23 @@ def _on_off(flag: bool) -> str:
     return "on" if flag else "off"
 
 
+def _header_kill_switches(rows: list[dict[str, Any]]) -> list[str]:
+    """One entry per environment, latched when any of its rows is latched. PAPER comes first; the other environments
+    are labelled, because they are not the account the Brain trades."""
+    latched: dict[str, bool] = {}
+    for row in rows:
+        env = str(row["environment"])
+        latched[env] = latched.get(env, False) or bool(row["is_latched"])
+    paper = latched.pop("PAPER", None)
+    parts = [f"Kill switch PAPER: {_on_off(paper)}" if paper is not None else "Kill switch PAPER: no state row"]
+    parts += [f"{env}: {_on_off(flag)} ({env.lower()} account only)" for env, flag in sorted(latched.items())]
+    return parts
+
+
 def _header_risk(risk: Any) -> str:
     if _unavailable(risk):
         return "Kill switch and daily loss latch: unknown"
-    parts = [f"Kill switch {k['environment']}: {_on_off(k['is_latched'])}" for k in risk["kill_switches"]]
-    parts = parts or ["Kill switch: no state row"]
+    parts = _header_kill_switches(risk["kill_switches"])
     accounts = risk["daily_loss"]
     loss = "no paper account" if not accounts else _on_off(any(a["daily_loss_latched"] for a in accounts))
     return "; ".join([*parts, f"daily loss latch: {loss}"])
@@ -843,11 +860,39 @@ def _header_exit(exit_monitor: Any) -> str:
     return "Exit monitor: NOT RUNNING — no order card can be approved"
 
 
+# The sections the header renders, in the order it reads them. The database ones come first.
+_HEADER_DB_READS = (
+    ("mandates", _state_mandates),
+    ("risk", _state_risk),
+    ("pending_approvals", _state_pending_approvals),
+)
+
+
+def _header_sections() -> dict[str, Any]:
+    """Only the sections the header renders (not holdings or verdicts). A database connection failure ends the
+    database reads: the others would fail the same way, so they are reported unavailable without another attempt."""
+    out: dict[str, Any] = {}
+    database_down: dict[str, Any] | None = None
+    for name, compute in _HEADER_DB_READS:
+        if database_down is not None:
+            out[name] = database_down
+            continue
+        try:
+            out[name] = compute()
+        except Exception as e:
+            out[name] = _error_section(name, e)
+            if isinstance(e, OperationalError):  # unreachable, or timed out: the next read would fail the same way
+                database_down = out[name]
+    out["feed"] = _section("feed", _state_feed)
+    out["exit_monitor"] = _section("exit_monitor", _state_exit_monitor)
+    return out
+
+
 def ai_state_header() -> str | None:
-    """A plain-text digest of get_ai_state for the prompt: at most 12 lines, built from the same sections. None when
-    every section is unavailable. Never raises."""
+    """A plain-text digest of get_ai_state for the prompt: at most 12 lines, built from the sections it renders. None
+    when every one of them is unavailable. Never raises."""
     try:
-        s = _sections("")
+        s = _header_sections()
         if all(_unavailable(v) for v in s.values()):
             return None
         lines = [
