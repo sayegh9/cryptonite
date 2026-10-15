@@ -24,7 +24,9 @@ BRAIN_ROUTES: dict[str, RoleRoute] = {
         # one turn's cost (thinking is billed as output, as for debate.verdict)
         RoleRoute(BRAIN_PLAN, PRO, fallback_policy=FallbackPolicy.FAIL_CLOSED, priority=BudgetPriority.INTERACTIVE,
                   max_output_tokens=8000, thinking_budget=4096),
-        RoleRoute(BRAIN_CHAT, FLASH, FLASH_LITE, FallbackPolicy.DEGRADE, BudgetPriority.INTERACTIVE),
+        # brain.chat also answers the degraded read-only turn, so it is capped the same way (smaller: no order plans)
+        RoleRoute(BRAIN_CHAT, FLASH, FLASH_LITE, FallbackPolicy.DEGRADE, BudgetPriority.INTERACTIVE,
+                  max_output_tokens=4000, thinking_budget=1024),
     ]
 }
 

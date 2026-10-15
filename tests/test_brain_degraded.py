@@ -109,8 +109,9 @@ def test_brain_plan_caps_output_and_thinking_and_stays_fail_closed():
     assert route.primary_model == PRO and route.priority is BudgetPriority.INTERACTIVE
 
 
-def test_brain_chat_route_is_unchanged():
+def test_brain_chat_route_has_output_and_thinking_caps_and_keeps_its_degrade_path():
     route = brain_gateway_routes()[BRAIN_CHAT]
+    assert (route.max_output_tokens, route.thinking_budget) == (4000, 1024)
     assert (route.primary_model, route.fallback_model, route.fallback_policy) == (
         FLASH, FLASH_LITE, FallbackPolicy.DEGRADE)
 
@@ -225,6 +226,24 @@ async def test_failure_after_a_widget_is_not_retried():
     assert "widget" in types_of(events)
     assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
     assert (chat.calls, backup.calls) == (0, 0)
+
+
+async def test_a_tool_call_with_no_widget_is_not_retried(monkeypatch):
+    # queue_strategy_research is READ risk with side effects. With no API token it returns an error before any request
+    # (research/tools.py), so nothing reaches the network. The call still happened, so the operator saw output.
+    monkeypatch.delenv("CRYPTONITE_AGENT_API_TOKEN", raising=False)
+    brain, store = make_brain()
+    research = ("queue_strategy_research", {"idea": "mean reversion", "instrument_id": "BTCUSDT.BINANCE",
+                                            "timeframe": "1h"})
+    plan = ScriptedModel(call_tool=research, error=RuntimeError("provider down"))
+    chat, backup = ScriptedModel(["never"]), ScriptedModel(["never"])
+    with models(plan, chat, backup):
+        events = await collect(brain.turn("op-1", "research BTC mean reversion"))
+    assert any(e.type == "tool_call" and e.data.get("tool") == "queue_strategy_research" for e in events)
+    assert "widget" not in types_of(events)
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
+    assert (chat.calls, backup.calls) == (0, 0)  # the backup model was never invoked
+    assert [m["role"] for m in await store.messages(events[0].data["session_id"])] == ["user"]
 
 
 async def test_a_degraded_retry_that_also_fails_is_model_unavailable():

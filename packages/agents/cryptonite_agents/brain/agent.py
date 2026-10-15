@@ -192,6 +192,7 @@ class Brain:
         finished = False
         call_ctx = CallContext(role=self.persona.role, session_id=sid)
         degraded = False  # True once the turn is answered by the read-only backup model
+        emitted = False  # True once any token or tool event reached the operator: no retry after that
         try:
             while True:
                 if degraded:
@@ -205,6 +206,8 @@ class Brain:
                 try:
                     async with contextlib.aclosing(stream) as events:
                         async for ev in events:
+                            if ev.kind in ("token", "tool_call", "tool_result"):
+                                emitted = True
                             if ev.kind == "start":
                                 trace_id = ev.data["trace_id"]
                                 yield BrainEvent("session", {"session_id": sid, "trace_id": trace_id})
@@ -277,9 +280,9 @@ class Brain:
                                 })
                     break
                 except ModelUnavailable as e:
-                    # Pro failed before the operator saw any output: answer once, read-only, on the backup model.
-                    # A pinned model is never swapped; a failure after output, or on the backup, ends the turn.
-                    if degraded or text or widgets or model_override:
+                    # Pro failed before it emitted anything (no token, no tool event): answer once, read-only, on the
+                    # backup model. A pinned model is never swapped; a failure after output, or on the backup, ends it.
+                    if degraded or emitted or model_override:
                         raise
                     logger.warning("Brain plan unavailable for session %s; answering read-only on %s: %s",
                                    sid, BRAIN_CHAT, e)
