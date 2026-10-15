@@ -1053,9 +1053,10 @@ def test_the_brain_prompt_proposes_only_fed_buys():
     from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
 
     prompt = " ".join(BRAIN_INSTRUCTIONS.split())
-    assert ("Only propose a BUY for symbols the live feed covers (get_klines reports in_feed); for any other symbol, "
-            "do not propose a BUY: tell the operator to onboard it from the Watchlist first. A SELL that closes a "
-            "holding is always allowed.") in prompt
+    assert ('Do not propose a BUY for a symbol get_klines reports as in_feed "not_fed": tell the operator to onboard '
+            'it from the Watchlist first. If in_feed is "unknown", you may propose; the card is checked again at '
+            'approval. A SELL that closes a holding is always allowed.') in prompt
+    assert 'call show_price_chart only for symbols the ingest feed records (get_klines reports in_feed "fed")' in prompt
 
 
 def test_the_price_chart_tool_is_only_for_fed_symbols():
