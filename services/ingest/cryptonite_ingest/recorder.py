@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import re
 import time
 from typing import Any
 
@@ -39,6 +41,9 @@ from cryptonite_ingest.stream import (
 
 logger = logging.getLogger("cryptonite.recorder")
 
+# Raw symbols an onboarded instrument may carry; anything else is skipped when loading from the DB (WS-1A)
+_ONBOARDED_SYMBOL_RE = re.compile(r"[A-Z0-9]{2,20}")
+
 
 class IngestRecorder:
     """Orchestrates market data ingestion, recovery, and dual-store commits."""
@@ -66,6 +71,13 @@ class IngestRecorder:
         self.analytics_lake_path = analytics_lake_path
         self.database_url = database_url
         self.redis_url = redis_url
+        # Onboarded instruments rows join the env list on start (default on); the cap bounds the total
+        self.onboarded_from_db = os.getenv("INGEST_ONBOARDED_FROM_DB", "1") != "0"
+        try:
+            self.max_symbols = int(os.getenv("INGEST_MAX_SYMBOLS", "12"))
+        except ValueError:
+            logger.warning("INGEST_MAX_SYMBOLS is not an integer; using 12")
+            self.max_symbols = 12
 
         self.nautilus_manager = NautilusCatalogManager(self.nautilus_catalog_path)
         self.analytics_writer = AnalyticsLakeWriter(self.analytics_lake_path)
@@ -90,6 +102,9 @@ class IngestRecorder:
 
         if self.redis_url:
             self.redis = aioredis.from_url(self.redis_url, decode_responses=True)
+
+        # Before the sync, reconcile and gap recovery, so they cover onboarded symbols too (WS-1A)
+        await self._apply_onboarded_symbols()
 
         self.coordinator = TwoStoreCoordinator(
             nautilus_manager=self.nautilus_manager,
@@ -121,6 +136,58 @@ class IngestRecorder:
                 inst_id = to_spot_instrument_id(symbol)
                 bar_type = to_nautilus_bar_type(inst_id, tf)
                 await self.coordinator.reconcile_pending_batches(bar_type)
+
+    async def _apply_onboarded_symbols(self) -> None:
+        """Merge the onboarded instruments rows into self.symbols on start (WS-1A); no-op when disabled."""
+        if not self.onboarded_from_db:
+            return
+        env_symbols = list(self.symbols)
+        onboarded = await self._load_onboarded_symbols()
+        self.symbols = self._merged_symbols(env_symbols, onboarded)
+        added = [s for s in self.symbols if s not in env_symbols]
+        logger.info("Ingest symbols: env %s + onboarded %s", env_symbols, added)
+
+    async def _load_onboarded_symbols(self) -> list[str]:
+        """Active TRADING SPOT BINANCE symbols from the instruments table; [] on any failure (WS-1A)."""
+        if not self.pool:
+            return []
+        query = """
+        SELECT raw_symbol FROM instruments
+        WHERE venue = 'BINANCE' AND market_type = 'SPOT' AND is_active AND status = 'TRADING'
+        ORDER BY raw_symbol;
+        """
+        try:
+            rows = await self.pool.fetch(query)
+        except Exception as e:  # start-up must never fail because of this
+            logger.warning("Could not load onboarded symbols from instruments: %s", e)
+            return []
+        symbols: list[str] = []
+        for row in rows:
+            sym = str(row["raw_symbol"]).upper()
+            if _ONBOARDED_SYMBOL_RE.fullmatch(sym):
+                symbols.append(sym)
+            else:
+                logger.warning("Skipping onboarded instrument with invalid symbol %r", row["raw_symbol"])
+        return symbols
+
+    def _merged_symbols(self, env: list[str], onboarded: list[str]) -> list[str]:
+        """Env symbols first, in order and never truncated; then new onboarded symbols up to max_symbols."""
+        merged = list(env)
+        seen = set(merged)
+        dropped: list[str] = []
+        for sym in onboarded:
+            if sym in seen:
+                continue
+            if len(merged) >= self.max_symbols:
+                dropped.append(sym)
+                continue
+            merged.append(sym)
+            seen.add(sym)
+        if dropped:
+            logger.warning(
+                "INGEST_MAX_SYMBOLS=%d reached; onboarded symbols not ingested: %s", self.max_symbols, dropped
+            )
+        return merged
 
     async def sync_instruments(self, symbols: list[str] | None = None) -> None:
         """Fetch instrument definitions, write to Nautilus catalog and PostgreSQL."""
