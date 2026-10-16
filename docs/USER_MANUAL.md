@@ -192,7 +192,7 @@ When a debate session concludes with actionable conviction:
   - **Temporal Ordering & Timestamp Cards**: Each card displays a dedicated clock icon and formatted date/time stacked neatly underneath the instrument symbol, sorted chronologically with the latest proposals first.
   - **Filter Tabs**: Toggle between **`Pending`** (actionable items), **`Staged`** (approved trades), **`Rejected`** (dismissed runs), and **`All`** with real-time badge counts.
   - **1-Click Card Dismiss**: Click the trash icon (`✕`) on any card header to instantly dismiss that proposal from view.
-  - **`Clear History`**: A 1-click header button that purges all inactive, completed, and rejected items from view while preserving active pending approvals.
+  - **`Clear History`**: A 1-click header button that purges all inactive, completed, and rejected items from view while preserving active pending approvals. It also clears no-trade runs (`NO TRADE`, `NO PRICE DATA`) and not-run runs (`Not run (safety gate)`).
   - **`Purge All`**: Flushes local proposal history.
 - **Real-Time Price Drift**: Live telemetry tracks drift between `decision_price` and streaming mid-price.
 - **Exact Quantity Sizing**: When approving in the Action Inbox, the API gateway dynamically computes the exact order quantity:
@@ -241,6 +241,34 @@ is unknown. SELL cards are never locked by the feed, because a SELL closes a pos
 - **Degraded answers.** When the planning model is unavailable, the Brain can answer from a backup model, read-only.
   Such a reply starts with `_[degraded: answered by the backup model, read-only]_`. That turn has no order or debate
   tools.
+
+#### 5. Dry run, rationale, past lessons and debate cards
+- **The dry run.** A pending order card shows one line about what Approve would do, under its details. The card checks
+  again when it appears, when you press Approve, and when the window regains focus (at most every five seconds).
+  - `Would size to <percent>% of <mandate name> ($<budget>)`: the order fits. "(clipped from X% — room left)" means
+    the mandate has less room than the card asked for.
+  - `Would sell <quantity> from <mandate name>`: the SELL closes the mandate's holding.
+  - `No ACTIVE mandate allows <symbol> yet: approving creates one (TOTP)`: approval also creates a mandate.
+  - `Would be refused: <reason>`: approval would refuse. The button then reads **Approve anyway…**. You can still press
+    it, because the server checks again and has the final say.
+  - The dry run does not check the kill switch. Under the kill switch, approval still refuses.
+- **Rationale.** A card shows its thesis, the evidence behind it (each item names its tool and the time it came from),
+  its invalidation, and a horizon and confidence. A card made before these fields existed shows none of them.
+- **Past lessons.** "Past lessons (n)" under the rationale opens up to three lessons that the learner wrote on earlier
+  debate decisions for the same instrument in the last 90 days. The largest moves come first. Each lesson shows its
+  outcome (or a dash), its alpha against BTC, its date, and its text in quotes. A model wrote the text, so read it as a
+  note, not as advice. Lessons are never put in the Brain's prompt.
+- **Debate cards.** A debate card shows where its debate stands: "Debate queued…", "Debate running…", "Verdict: <side>
+  <size>% · conviction <n>% · <approval state>", "No trade (<reason>)", "Not run: <reason in words>", or "Debate
+  failed". The card rechecks every 10 seconds until the debate reaches an answer, for at most 30 minutes.
+  - "Not run" means the safety gate refused the debate before it ran. The card names three reasons in words: the kill
+    switch is latched, the daily-loss latch is on, or the position is at its cap. Any other reason shows as its code.
+    The Action Inbox lists the same run as "Not run (safety gate)".
+  - A debate card made before Wave 3 cannot be followed. It shows a neutral note, "Debate queued earlier — see the
+    Debates page", and the card does not poll.
+- **`/postmortem`.** Type `/postmortem XRP` (or `/postmortem XRPUSDT`) in the Brain composer to ask for a review of the
+  last trade on that symbol: its entry, verdict, how it closed, P&L and lesson. USDT is added when you give no quote
+  asset. Type `/postmortem` on its own to review the most recent closed AI trade.
 
 ---
 
