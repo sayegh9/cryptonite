@@ -59,7 +59,8 @@ def worker(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         state.methods.append(request.method)
         if request.method == "GET":
-            return httpx.Response(200, json={"session": {}, "messages": [{"role": "assistant", "widgets": [state.card]}]})
+            session = {"session": {}, "messages": [{"role": "assistant", "widgets": [state.card]}]}
+            return httpx.Response(200, json=session)
         body = json.loads(request.content)
         state.notes.append(body)
         if body.get("expect_status") and state.card["status"] != body["expect_status"]:
@@ -68,15 +69,16 @@ def worker(monkeypatch):
         return httpx.Response(200, json={"status": "ok"})
 
     real = httpx.AsyncClient
-    monkeypatch.setattr(brain_routes.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(brain_routes.httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
     return state
 
 
 async def hold_position(pool, instance_id: str, qty: float, instrument_id: str = BTC) -> None:
     """An open position at its stored price: what the mandate's position limit counts (entry_room_pct)."""
     await pool.execute(
-        """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side, entry_price, quantity,
-               current_price, status)
+        """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side, entry_price,
+               quantity, current_price, status)
            VALUES ($1, 'PAPER-ACCOUNT-001', $2, $3, 'LONG', 50000, $4, 50000, 'OPEN')""",
         uuid.uuid4().hex, instance_id, instrument_id, qty)
 
@@ -84,8 +86,8 @@ async def hold_position(pool, instance_id: str, qty: float, instrument_id: str =
 async def hold_spot(pool, instance_id: str, qty: str, instrument_id: str = BTC) -> None:
     """A filled BUY on the mandate's own instance: what ``instance_spot_holdings`` nets as a holding."""
     await pool.execute(
-        """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type, quantity,
-               filled_qty, avg_fill_price, status)
+        """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type,
+               quantity, filled_qty, avg_fill_price, status)
            VALUES ($1, $2, 'PAPER-ACCOUNT-001', $3, 'BUY', 'MARKET', $4::numeric, $4::numeric, 50000, 'FILLED')""",
         f"hold-{uuid.uuid4().hex[:8]}", instance_id, instrument_id, qty)
 
@@ -96,7 +98,8 @@ async def snapshot(pool) -> dict:
         "approvals": await pool.fetchval("SELECT count(*) FROM ai_approvals"),
         "commands": await pool.fetchval("SELECT count(*) FROM execution_commands"),
         "orders": await pool.fetchval("SELECT count(*) FROM paper_orders"),
-        "mandates": [dict(r) for r in await pool.fetch("SELECT id, status, autonomy_level FROM ai_mandates ORDER BY id")],
+        "mandates": [dict(r) for r in
+                     await pool.fetch("SELECT id, status, autonomy_level FROM ai_mandates ORDER BY id")],
     }
 
 
@@ -192,9 +195,9 @@ async def test_a_buy_at_the_position_limit_is_refused_like_approve(h, worker):
 async def test_a_buy_twin_of_an_approved_card_is_a_duplicate(h, worker):
     m = await h.mandate(instruments=(BTC,))
     async with h.pool.acquire() as conn:  # the same decision's card, approved earlier from another session
-        await record_operator_approval(conn, m, "SUBMIT_ORDER", {"instrument_id": BTC, "side": "BUY"}, summary="earlier",
-                                       source="brain_card", source_ref="other-session:card-9", decided_by="operator:test",
-                                       trace_id=uuid.UUID(worker.card["trace_id"]))
+        await record_operator_approval(conn, m, "SUBMIT_ORDER", {"instrument_id": BTC, "side": "BUY"},
+                                       summary="earlier", source="brain_card", source_ref="other-session:card-9",
+                                       decided_by="operator:test", trace_id=uuid.UUID(worker.card["trace_id"]))
     await assert_refused_like_approve(h, worker, code="DUPLICATE_DECISION")
 
 

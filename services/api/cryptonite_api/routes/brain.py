@@ -502,17 +502,20 @@ async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request,
     if card is None:
         raise HTTPException(status_code=404, detail="Order card not found")
     if card.get("status") != "PENDING_APPROVAL":  # approve refuses such a card before it plans it too
-        return {"ok": False, "code": "NOT_PENDING", "detail": f"The card is {card.get('status')}", "needs_mandate": False}
+        detail = f"The card is {card.get('status')}"
+        return {"ok": False, "code": "NOT_PENDING", "detail": detail, "needs_mandate": False}
     try:
         plan = await _plan_card(request, sid, card, mandate_id)
     except HTTPException as e:
         detail = str(e.detail)
         code = _refusal_code(detail)
         # approve's NO_MANDATE for a BUY is the one refusal that makes the card offer to create a mandate
-        return {"ok": False, "code": code, "detail": detail, "needs_mandate": code == "NO_MANDATE" and card["side"] == "BUY"}
+        needs_mandate = code == "NO_MANDATE" and card["side"] == "BUY"
+        return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate}
     requested = Decimal(str(card["allocation_pct"]))
     return {
-        "ok": True, "mandate": {"id": str(plan.mandate.id), "name": plan.mandate.name, "status": str(plan.mandate.status)},
+        "ok": True, "mandate": {"id": str(plan.mandate.id), "name": plan.mandate.name,
+                                "status": str(plan.mandate.status)},
         "side": card["side"], "allocation_pct": float(plan.allocation), "budget_usd": float(plan.budget),
         "clipped_from_pct": float(requested) if card["side"] == "BUY" and plan.allocation < requested else None,
         "sell_quantity": format(plan.held, "f") if card["side"] == "SELL" else None, "summary": plan.summary,
