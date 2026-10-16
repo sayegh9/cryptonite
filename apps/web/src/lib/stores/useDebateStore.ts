@@ -15,7 +15,8 @@ export interface DebateRun {
   instrumentId: string;
   // NO_TRADE: the verdict was HOLD, so there is nothing to approve
   // NO_PRICE: the debate ended before a verdict because it had no usable quote (a terminal outcome)
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PENDING_APPROVAL' | 'FAILED' | 'REJECTED' | 'NO_TRADE' | 'NO_PRICE';
+  // GATE_REFUSED: the safety gate refused the debate before it ran (a terminal outcome, nothing to approve)
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'PENDING_APPROVAL' | 'FAILED' | 'REJECTED' | 'NO_TRADE' | 'NO_PRICE' | 'GATE_REFUSED';
   decision?: string;
   timestamp?: number;
   turns: DebateTurn[];
@@ -91,7 +92,7 @@ export const useDebateStore = create<DebateState>()(persist((set) => ({
   clearCompleted: () => set((state) => {
     const next: Record<string, DebateRun> = {};
     for (const [id, run] of Object.entries(state.activeDebates)) {
-      if (run.status !== 'COMPLETED' && run.status !== 'REJECTED' && run.status !== 'FAILED' && run.status !== 'NO_TRADE' && run.status !== 'NO_PRICE') {
+      if (run.status !== 'COMPLETED' && run.status !== 'REJECTED' && run.status !== 'FAILED' && run.status !== 'NO_TRADE' && run.status !== 'NO_PRICE' && run.status !== 'GATE_REFUSED') {
         next[id] = run;
       }
     }

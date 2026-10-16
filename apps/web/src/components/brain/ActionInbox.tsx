@@ -39,11 +39,8 @@ const LOCAL_ONLY_PREFIXES = ["demo-", "sim-", "pending-"];
 /** A proposals request that has not answered by then is reported as not loaded, not waited on forever */
 const INBOX_TIMEOUT_MS = 10_000;
 
-/**
- * A Brain debate the safety gate refused before it ran: a finished no trade with nothing to approve. Read as a plain
- * string because the debate store's status type does not list it.
- */
-const gateRefused = (run: { status: string }) => run.status === "GATE_REFUSED";
+/** A Brain debate the safety gate refused before it ran: a finished no trade with nothing to approve */
+const gateRefused = (run: DebateRun) => run.status === "GATE_REFUSED";
 
 /** The inbox could not load: say so, and never show "nothing to approve" in its place */
 function InboxLoadError({ syncError, session, onRetry }: { syncError: string; session: SessionStatus; onRetry: () => void }) {
