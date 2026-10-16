@@ -37,10 +37,10 @@ SUMMARY_INSTRUCTIONS = (
 )
 
 # Server-written events are `<system_event>` blocks; an operator or Brain message can type the same look. So those
-# messages are folded (NFKC, format characters such as zero-width spaces dropped), every line break becomes a newline,
-# every spelling of the tag is escaped, a line that reads as `System:` is quoted, and continuation lines are indented:
-# no line inside a message can start a turn or a System line. Only the server's own blocks carry a system event's
-# authority.
+# messages are folded (NFKC, format characters such as zero-width spaces dropped, joiners kept), every line break
+# becomes a newline, every spelling of the tag is escaped, a line that reads as `System:` is quoted, and continuation
+# lines are indented: no line inside a message can start a turn or a System line. Only the server's own blocks carry a
+# system event's authority.
 # Every pattern here is linear: each token has one way to match, and the line pattern's classes never cross a newline
 # (`\s*/?\s*` and `[\s…]*` across lines took seconds on a few thousand newlines, on the worker's event loop).
 SYSTEM_EVENT_TAG = re.compile(r"<(?=\s*(?:/\s*)?system[\s_-]*event)", re.IGNORECASE)
@@ -74,10 +74,14 @@ def _utc(value: Any) -> datetime | None:
         return None
 
 
+JOINERS = frozenset("\u200c\u200d")  # ZWNJ and ZWJ: part of Persian and Indic words and of emoji, so display keeps them
+
+
 def _fold(text: str) -> str:
-    """NFKC (fullwidth '＜' is '<', fullwidth colon is ':'), with format characters such as zero-width spaces dropped."""
+    """NFKC (fullwidth '＜' is '<', fullwidth colon is ':'), with format characters such as zero-width spaces dropped,
+    the joiners kept. The detectors drop the joiners from their own copy (``_matching``)."""
     text = unicodedata.normalize("NFKC", text)
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return "".join(ch for ch in text if ch in JOINERS or unicodedata.category(ch) != "Cf")
 
 
 def _matching(text: str) -> tuple[str, list[int]]:
