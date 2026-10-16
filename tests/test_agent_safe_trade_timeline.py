@@ -21,7 +21,8 @@ COLUMNS = [
     "position_id", "mandate_id", "mandate_name", "instrument_id", "side", "quantity", "entry_price", "opened_at",
     "status", "closed_at", "exit_price", "realized_pnl", "return_pct", "entry_command_id", "entry_source",
     "entry_summary_text", "debate_run_id", "debate_recommendation", "debate_conviction", "close_reason",
-    "close_command_id", "outcome_24h_pct", "outcome_72h_pct", "reflection_text",
+    "close_command_id", "partial_exits", "outcome_24h_pct", "outcome_72h_pct",
+    "reflection_text",
 ]
 
 # Every base table the view reads that the agent role was never granted (ai_decision_outcomes already has a SELECT
@@ -350,6 +351,68 @@ async def test_close_reason_follows_the_command_that_closed_the_position(conn, r
     assert r["close_command_id"] == close
     assert r["close_reason"] == expected
     assert r["exit_price"] == Decimal("0.6")  # the first SELL fill after the close command
+
+
+# --- the close is the latest close command; earlier sells are partial exits -----------------------------------------
+
+async def test_the_close_is_the_latest_close_and_the_earlier_half_sell_is_a_partial_exit(conn):
+    await account(conn)
+    mid = await mandate(conn, "partial")
+    target = mandate_instance(mid)
+    await instance(conn, target)
+    opened = NOW - timedelta(days=3)
+    entry = await command(conn, "SUBMIT_ORDER", target, {"instrument_id": XRP, "side": "BUY"}, "operator:tester",
+                          opened - timedelta(seconds=5), mid=mid)
+    await order(conn, target, f"AI-{entry.hex[:12].upper()}", XRP, "BUY", opened - timedelta(seconds=4), 10, 0.5)
+    closed = opened + timedelta(hours=5)
+    pid = await position(conn, target, opened, qty=10, entry=0.5, realized=1, closed_at=closed)
+    # a REDUCE half-close two hours in, then the exit monitor's hard stop
+    half = await command(conn, "SUBMIT_ORDER", target, {"instrument_id": XRP, "side": "SELL", "source": "debate"},
+                         "ai:debate_worker", opened + timedelta(hours=2), mid=mid)
+    await order(conn, target, f"AI-{half.hex[:12].upper()}", XRP, "SELL", opened + timedelta(hours=2, seconds=1), 5, 0.55)
+    stop = await command(conn, "CLOSE_POSITION", target, {"instrument_id": XRP, "reason": "HARD_STOP"},
+                         "risk:exit_monitor", opened + timedelta(hours=4), mid=mid)
+    await order(conn, target, f"CLOSE-{uuid.uuid4().hex[:8].upper()}", XRP, "SELL", opened + timedelta(hours=4, seconds=1),
+                5, 0.58)
+    # a SELL after this position closed belongs to a later trade
+    await command(conn, "SUBMIT_ORDER", target, {"instrument_id": XRP, "side": "SELL"}, "operator:tester",
+                  closed + timedelta(minutes=5), mid=mid)
+
+    r = await row(conn, pid)
+    assert r["close_command_id"] == stop and r["close_reason"] == "HARD_STOP"
+    assert r["partial_exits"] == 1
+    assert r["exit_price"] == Decimal("0.58")
+
+
+async def test_an_open_position_counts_the_sells_it_has_already_made(conn):
+    await account(conn)
+    mid = await mandate(conn, "openpartial")
+    target = mandate_instance(mid)
+    await instance(conn, target)
+    opened = NOW - timedelta(days=2)
+    pid = await position(conn, target, opened, qty=5, entry=0.5)
+    await command(conn, "SUBMIT_ORDER", target, {"instrument_id": XRP, "side": "SELL", "source": "debate"},
+                  "ai:debate_worker", opened + timedelta(hours=1), mid=mid)
+
+    r = await row(conn, pid)
+    assert r["close_command_id"] is None and r["close_reason"] is None
+    assert r["partial_exits"] == 1
+
+
+async def test_a_close_from_before_the_position_opened_is_not_its_close(conn):
+    await account(conn)
+    mid = await mandate(conn, "previous")
+    target = mandate_instance(mid)
+    await instance(conn, target)
+    opened = NOW - timedelta(days=2)
+    # the previous trade's hard stop, an hour before this position opened
+    await command(conn, "CLOSE_POSITION", target, {"instrument_id": XRP, "reason": "HARD_STOP"}, "risk:exit_monitor",
+                  opened - timedelta(hours=1), mid=mid)
+    pid = await position(conn, target, opened, qty=1, entry=0.5, realized=0, closed_at=opened + timedelta(hours=3))
+
+    r = await row(conn, pid)
+    assert r["close_command_id"] is None and r["close_reason"] is None
+    assert r["partial_exits"] == 0
 
 
 # --- exit_price: the closing fill of that close, never a later position's fill -------------------------------------

@@ -991,8 +991,8 @@ TRADE_TIMELINE_MAX_LIMIT = 20
 TRADE_TIMELINE_COLUMNS = (
     "position_id, mandate_id, mandate_name, instrument_id, side, quantity, entry_price, opened_at, status, closed_at, "
     "exit_price, realized_pnl, return_pct, entry_command_id, entry_source, entry_summary_text, debate_run_id, "
-    "debate_recommendation, debate_conviction, close_reason, close_command_id, outcome_24h_pct, outcome_72h_pct, "
-    "reflection_text"
+    "debate_recommendation, debate_conviction, close_reason, close_command_id, partial_exits, outcome_24h_pct, "
+    "outcome_72h_pct, reflection_text"
 )
 
 

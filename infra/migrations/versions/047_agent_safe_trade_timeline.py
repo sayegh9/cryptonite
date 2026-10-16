@@ -16,8 +16,11 @@ Rules the view applies (derived only from what the base tables record):
   Its approval is the ``ai_approvals`` row bound to that command. A debate approval's ``source_ref`` is the debate run.
 - The debate verdict is the latest ``portfolio_decisions`` row of that run. Outcomes are its ``ai_decision_outcomes``
   rows at 24h and 72h. The reflection is the latest ``reflections`` row of that run.
-- The close is the earliest COMPLETED ``CLOSE_POSITION`` (or SELL ``SUBMIT_ORDER``) of that instance and instrument
-  created between ``opened_at`` and ``closed_at``. Its ``close_reason`` follows the command that wrote it. Approved
+- The close is the LATEST COMPLETED ``CLOSE_POSITION`` (or SELL ``SUBMIT_ORDER``) of that instance and instrument created
+  between ``opened_at`` and ``closed_at``: the command that closed the position. An earlier REDUCE half-close is not the
+  close. ``partial_exits`` counts the other SELL and CLOSE commands of that instance and instrument from ``opened_at``
+  up to ``closed_at`` (up to now while the position is open), so a trade cut in halves shows it. ``close_reason``
+  follows the close command that wrote it. Approved
   commands are requested as ``approval:<via>:<who>``, so the payload's ``source`` is read first: ``debate`` or
   ``exit_debate`` gives EXIT_DEBATE, and ``brain_order_card`` gives SELL_CARD. Then the requester: ``ai:debate_worker``
   gives EXIT_DEBATE, ``risk:exit_monitor`` gives the payload's reason (HARD_STOP or TRAILING_STOP), and
@@ -77,6 +80,7 @@ def upgrade() -> None:
                    ELSE NULL
                END AS close_reason,
                cl.command_id AS close_command_id,
+               px.n AS partial_exits,
                oc.outcome_24h_pct,
                oc.outcome_72h_pct,
                left(rf.lessons_learned, 300) AS reflection_text
@@ -142,9 +146,21 @@ def upgrade() -> None:
                    OR (c.command_type = 'SUBMIT_ORDER' AND c.payload->>'side' = 'SELL'))
               AND c.created_at >= p.opened_at
               AND c.created_at <= p.closed_at
-            ORDER BY c.created_at, c.command_id
+            ORDER BY c.created_at DESC, c.command_id DESC
             LIMIT 1
         ) cl ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT count(*) AS n
+            FROM execution_commands c
+            WHERE c.target_instance_id = p.instance_id
+              AND c.status = 'COMPLETED'
+              AND upper(split_part(c.payload->>'instrument_id', '.', 1)) = upper(split_part(p.instrument_id, '.', 1))
+              AND (c.command_type = 'CLOSE_POSITION'
+                   OR (c.command_type = 'SUBMIT_ORDER' AND c.payload->>'side' = 'SELL'))
+              AND c.created_at >= p.opened_at
+              AND c.created_at < COALESCE(p.closed_at, now())
+              AND c.command_id IS DISTINCT FROM cl.command_id
+        ) px ON TRUE
         LEFT JOIN LATERAL (
             SELECT o.avg_fill_price
             FROM paper_orders o
