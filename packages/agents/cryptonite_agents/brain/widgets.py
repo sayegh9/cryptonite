@@ -13,6 +13,9 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 logger = logging.getLogger("cryptonite.agents.brain.widgets")
 
 MIN_ALLOCATION_PCT, MAX_ALLOCATION_PCT = 1.0, 25.0  # mirrors the dispatcher's invariant equity clamp
+# A platform instrument (BTCUSDT.BINANCE, BTCUSDT-PERP.BINANCE). Checked after the normaliser in OrderProposal,
+# so a value the server echoes into a system event (the reject line) cannot carry a line or a tag.
+INSTRUMENT_ID = r"^[A-Z0-9]{2,20}(-PERP)?\.[A-Z0-9]{2,16}$"
 
 
 class PriceChartWidget(BaseModel):
@@ -32,7 +35,7 @@ class TearsheetWidget(BaseModel):
 class OrderProposal(BaseModel):
     """What ``propose_order`` may stage. The card is a proposal; the dispatcher still decides."""
 
-    instrument_id: str = Field(min_length=3, max_length=64)
+    instrument_id: str = Field(min_length=3, max_length=64, pattern=INSTRUMENT_ID)
     side: Literal["BUY", "SELL"]
     # Optional and display-free: an approved order is sized from allocation_pct (a share of the mandate's
     # budget) at the live price, capped at the room left under the mandate's position limit
