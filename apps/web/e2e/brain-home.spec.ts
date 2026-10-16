@@ -996,4 +996,85 @@ test.describe("Brain Home", () => {
     expect(reads.count).toBe(1);
     expect(reactErrors).toEqual([]);
   });
+
+  /** Past lessons on this instrument, as the server sends them (alpha in percent, dates as ISO timestamps) */
+  const LESSONS = [
+    { lesson_text: "Chasing the 4H breakout into the weekly high lost the edge.", outcome: "LOSS", alpha_pct: -0.8, created_at: "2026-10-01T09:30:00Z" },
+    { lesson_text: "Waiting for the retest paid off.", outcome: "WIN", alpha_pct: 1.2, created_at: "2026-09-20T14:00:00+00:00" },
+  ];
+
+  test("past lessons are collapsed by default, and expand to show each lesson with its outcome, alpha and date", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const card = await openCard(page, { ...ORDER_CARD, lessons: LESSONS });
+
+    const toggle = card.getByRole("button", { name: "Past lessons (2)" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(card.getByText("Waiting for the retest paid off.")).toBeHidden();
+
+    // Keyboard: the disclosure is a real button, so Enter opens it
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    const items = card.locator("li");
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0)).toContainText("LOSS");
+    await expect(items.nth(0)).toContainText("−0.8%");
+    await expect(items.nth(0)).toContainText("2026-10-01");
+    await expect(items.nth(0)).toContainText("“Chasing the 4H breakout into the weekly high lost the edge.”");
+    await expect(items.nth(1)).toContainText("WIN");
+    await expect(items.nth(1)).toContainText("+1.2%");
+    await expect(items.nth(1)).toContainText("2026-09-20");
+    await expect(items.nth(1)).toContainText("“Waiting for the retest paid off.”");
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(card.getByText("Waiting for the retest paid off.")).toBeHidden();
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a card without past lessons shows no disclosure", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card).toContainText("4H reclaim of 60k");
+    await expect(card.getByRole("button", { name: /Past lessons/ })).toHaveCount(0);
+    await expect(card).not.toContainText("Past lessons");
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("lesson text is plain text: markup in a lesson renders literally, and a null outcome shows a dash", async ({ page }) => {
+    const card = await openCard(page, {
+      ...ORDER_CARD,
+      lessons: [
+        {
+          lesson_text: "<b>Size</b> was <img src=x onerror=alert(1)> too big",
+          outcome: null,
+          alpha_pct: null,
+          created_at: "2026-10-02T00:00:00Z",
+        },
+      ],
+    });
+
+    await card.getByRole("button", { name: "Past lessons (1)" }).click();
+    await expect(card.locator("li")).toContainText("“<b>Size</b> was <img src=x onerror=alert(1)> too big”");
+    await expect(card.locator("li")).toContainText("—");
+    await expect(card.locator("li")).toContainText("2026-10-02");
+    await expect(card.locator("b")).toHaveCount(0);
+    await expect(card.locator("img")).toHaveCount(0);
+  });
+
+  test("past lessons show on a card in any status, a SELL included", async ({ page }) => {
+    const card = await openCard(page, {
+      ...ORDER_CARD,
+      side: "SELL",
+      status: "FILLED",
+      filled_qty: "0.01",
+      avg_fill_price: "60100",
+      lessons: [LESSONS[1]],
+    });
+
+    await expect(card.getByTestId("card-outcome")).toContainText("Filled");
+    await expect(card.getByRole("button", { name: "Past lessons (1)" })).toHaveAttribute("aria-expanded", "false");
+  });
 });
