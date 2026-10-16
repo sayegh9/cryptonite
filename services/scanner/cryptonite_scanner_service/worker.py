@@ -741,7 +741,12 @@ class ScannerWorker:
                 )
             raw_symbol = inst.split(".")[0]
             # 1. Fetch 1m bars from Analytics Lake via DuckDB
-            df_1m = self.query_engine.query_bars_df(symbol=raw_symbol, timeframe="1m", start_ns=start_ns)
+            try:
+                df_1m = self.query_engine.query_bars_df(symbol=raw_symbol, timeframe="1m", start_ns=start_ns)
+            except ValueError as e:
+                # the lake refuses a key that is not a plain symbol: skip this instrument, scan the others
+                logger.warning("Skipping %s in the scan: the analytics lake refused it (%s)", inst, e)
+                continue
             if df_1m.is_empty():
                 continue
 
