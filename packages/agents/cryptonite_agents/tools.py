@@ -1086,10 +1086,14 @@ def get_market_regime(symbol: str = "BTCUSDT") -> str:
     """
     # Imported here: the analytics lake stack is needed by this tool alone
     from cryptonite_scanner.regime import HIGH_VOL_WINDOW_BARS, MIN_BARS, classify_regime
-    from cryptonite_storage.queries import AnalyticsQueryEngine
+    from cryptonite_storage.queries import AnalyticsQueryEngine, lake_symbol
 
     sym = _feed_symbol(symbol)
     if not _SYMBOL_REGEX.fullmatch(sym):
+        return json.dumps({"error": "invalid symbol"})
+    try:
+        sym = lake_symbol(sym)  # the lake's own key check, before any lake path is built from the symbol
+    except ValueError:
         return json.dumps({"error": "invalid symbol"})
     # The same trailing window the learner reads (services/debate_worker/outcomes.REGIME_LOOKBACK_S)
     lookback_ns = (HIGH_VOL_WINDOW_BARS + MIN_BARS) * 3600 * 10**9

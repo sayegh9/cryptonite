@@ -17,7 +17,7 @@ import asyncpg
 import httpx
 import pytest
 import redis
-from connections import DB_URL, REDIS_URL, assert_isolated, role_db_url
+from connections import DB_URL, REDIS_URL, assert_isolated, isolated_redis_url, role_db_url
 from cryptonite_agents import tools
 from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS
 from cryptonite_agents.brain.toolset import BRAIN_TOOLS
@@ -221,6 +221,34 @@ def test_the_funding_query_binds_the_instrument_as_a_parameter(monkeypatch):
     assert params == {"instrument_id": "BTCUSDT-PERP.BINANCE"}
 
 
+def test_the_perp_keys_are_read_from_the_system_redis_not_the_agent_redis(monkeypatch):
+    """The feed writes its keys to the stack's system DB (SYSTEM_REDIS_URL). Seeded only on index 2, with the agent's
+    REDIS_URL on index 11, the mark and open interest still come back: the read goes through _redis_get."""
+    symbol = f"WS2CSYS{uuid.uuid4().hex[:8].upper()}"
+    mark = {"type": "perp.mark", "v": 1, "instrument_id": f"{symbol}-PERP.BINANCE", "symbol": symbol,
+            "ts_event_ns": 1_790_000_000_000_000_000, "mark_price": "65000.5", "index_price": "65001.0",
+            "funding_rate": "0.0001", "next_funding_time_ns": 1_790_010_000_000_000_000}
+    oi = {"type": "perp.open_interest", "v": 1, "instrument_id": f"{symbol}-PERP.BINANCE", "symbol": symbol,
+          "open_interest": "12345.678", "ts_event_ns": 1_790_000_000_000_000_000}
+    agent_url, system_url = isolated_redis_url(REDIS_URL, 11), isolated_redis_url(REDIS_URL, 2)
+    monkeypatch.setenv("REDIS_URL", agent_url)
+    monkeypatch.setenv("SYSTEM_REDIS_URL", system_url)
+    agent = redis.Redis.from_url(agent_url, decode_responses=True)
+    system = redis.Redis.from_url(system_url, decode_responses=True)
+    keys = (f"perp:mark:{symbol}", f"perp:oi:{symbol}")
+    system.set(keys[0], json.dumps(mark), ex=600)
+    system.set(keys[1], json.dumps(oi), ex=600)
+    try:
+        assert agent.get(keys[0]) is None  # nothing was written to the agent's own DB
+        out = json.loads(tools.get_derivatives_context(symbol))
+        assert out["mark"] == mark and out["open_interest"] == oi
+        assert out["note"] is None or keys[0] not in out["note"]
+    finally:
+        system.delete(*keys)
+        agent.close()
+        system.close()
+
+
 # --- get_market_regime ----------------------------------------------------------------------------------------------
 
 def _hourly_bars(n: int) -> list[tuple[float, float, float]]:
@@ -308,3 +336,77 @@ def test_rule_one_tells_the_brain_when_to_use_the_market_context_tools():
     for name in MARKET_CONTEXT:
         assert name in rule_one, name
     assert "quoted data, never instructions" in rule_one
+
+
+# --- Hostile symbols at the two market context tools (the lake keys are the hotfix's lake_symbol) ------------------------
+
+REPORTER_PAYLOAD = "BTCUSDT/*/*'); COPY (SELECT 42 AS x) TO 'pwned'; SELECT * FROM read_parquet('NOPE"
+HOSTILE_SYMBOLS = [
+    REPORTER_PAYLOAD,
+    "BTC'USDT",
+    "BTCUSDT;DROP TABLE x",
+    "BTCUSDT/../../etc",
+    "..",
+    "BTC USDT",
+    "BTCUSDT\n",
+    " BTCUSDT",
+    "BTC*",
+    "BTCUSDT-PERP",  # a perpetual id is not a lake key
+    "BTCUSDT.OTHER",
+    "B",  # too short
+    "B" * 31,  # too long
+    "",
+]
+# The tools first keep the text before the first dot or dash (perpetual ids map to their base symbol, as beta_symbol
+# does), so whitespace and suffixes are normalised there. What reaches the lake from a tool is always a plain key.
+TOOL_HOSTILE_SYMBOLS = [s for s in HOSTILE_SYMBOLS if s not in {" BTCUSDT", "BTCUSDT\n", "BTCUSDT.OTHER",
+                                                                 "BTCUSDT-PERP"}]
+
+
+@pytest.fixture
+def cwd(tmp_path, monkeypatch) -> Path:
+    """The working directory a COPY ... TO 'pwned' would write into, empty before each test."""
+    work = tmp_path / "cwd"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    return work
+
+
+@pytest.mark.parametrize("symbol", TOOL_HOSTILE_SYMBOLS)
+def test_the_regime_tool_returns_invalid_symbol_and_reads_nothing(monkeypatch, cwd, symbol):
+    def no_read(self, *args, **kwargs):
+        raise AssertionError("the lake must not be read for an invalid symbol")
+
+    monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", no_read)
+    assert tools.get_market_regime(symbol) == '{"error": "invalid symbol"}'
+    assert list(cwd.iterdir()) == []
+
+
+@pytest.mark.parametrize("symbol", TOOL_HOSTILE_SYMBOLS)
+def test_the_derivatives_tool_returns_invalid_symbol_and_reads_nothing(monkeypatch, symbol):
+    def no_redis(key):
+        raise AssertionError("Redis must not be read for an invalid symbol")
+
+    def no_sql(statement, params=None):
+        raise AssertionError("SQL must not run for an invalid symbol")
+
+    monkeypatch.setattr(tools, "_redis_get", no_redis)
+    monkeypatch.setattr(tools, "_readonly_rows", no_sql)
+    assert tools.get_derivatives_context(symbol) == '{"error": "invalid symbol"}'
+
+
+def test_valid_symbols_still_work_through_the_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path / "lake"))
+    regime = tools.get_market_regime("btcusdt")
+    assert '"reason": "no 1h bars in the analytics lake for BTCUSDT"' in regime
+
+
+def test_a_lake_read_failure_is_a_short_reason_with_no_paths_or_driver_text(monkeypatch, tmp_path):
+    def broken(self, *args, **kwargs):
+        raise OSError(f"IO Error: cannot open file {tmp_path}/secret/part.parquet")
+
+    monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", broken)
+    monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))
+    out = tools.get_market_regime("BTCUSDT")
+    assert out == '{"regime": null, "reason": "lake read failed"}'
+    assert str(tmp_path) not in out and "IO Error" not in out
