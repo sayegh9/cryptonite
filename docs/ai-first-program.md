@@ -37,6 +37,9 @@ guard ($25/day; exits are never blocked), a permission gate on tools (READ / RED
 - **Routes:** each role has a primary model, an optional fallback, a fallback policy, a priority and
   output/thinking limits. `ai_model_routes` rows override the code defaults at runtime. Trade-decision
   roles (`debate.verdict`, `debate.cro`, `exit.verdict`) are protected and fail closed.
+- **Brain routes** (`brain/routes.py`): `brain.plan`, the planner that may propose orders, fails closed and is
+  capped at 8000 output tokens and 4096 thinking tokens. `brain.chat`, for lighter turns, is capped at 4000 and
+  1024, and is also the read-only degraded answer when the planner's model fails.
 - **Fallback policies:** `DEGRADE` switches to the fallback model when the primary fails; `FAIL_CLOSED`
   never switches.
 - **Local tier** (`local_tier.py`): probes Ollama `/api/tags`, publishes `local_tier:health` to Redis,
@@ -89,7 +92,8 @@ The bake-offs behind these choices (triage, summarize, tagging, embeddings) are 
 
 ## 3. Mandates, autonomy and approvals (Phase 5, [ADR 0004](adr/0004-mandates-and-autonomy.md))
 
-- **No AI order executes without an ACTIVE mandate** that allows its instrument. Mandates trade under
+- **No AI entry executes without an ACTIVE mandate** that allows its instrument; a SELL that closes a holding may run
+  in a PAUSED or HALTED mandate (REDUCE_RISK passes the mandate check). Mandates trade under
   their own instance `AI_MANDATE_<id>`; entries are sized as a percentage of the mandate budget, capped
   at the room left under the position limit (what the mandate already holds counts), then pass the
   mandate check, then `GuardedOrderDispatcher`.
@@ -178,3 +182,6 @@ overfitting on out-of-sample before paying for a Pro review, and stores the repo
 | `exit_monitor:heartbeat` | exit monitor | stops are protected; Brain order cards are refused without it |
 | `research:queue` | Brain tool / API | pending research ideas |
 | `brief:*` | scanner | cached brief per candidate |
+
+`agent_worker` reads the system keys (ingest universe, heartbeats, perp marks) from DB 0 through
+`SYSTEM_REDIS_URL`, because its own `REDIS_URL` points at DB 1 (sessions and rate limits).

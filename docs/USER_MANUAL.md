@@ -204,8 +204,9 @@ When a debate session concludes with actionable conviction:
 The old global autonomous mode is gone. Whether a debate verdict waits for you or executes on its own
 now depends on the **mandate** that owns the instrument and its **autonomy level**; see
 [chapter 10](#10-mission-control-mandates-autonomy--approvals). Without an active mandate, no AI order
-executes at all, including an order card you approved yourself. All AI orders remain bounded by the
-pre-trade risk checks (25.0% concentration ceiling, daily loss limit with kill-switch latching).
+executes at all, including an order card you approved yourself. The one exception is a SELL that closes a holding
+the mandate already has: it can run on a PAUSED or HALTED mandate and sells the whole holding. All AI orders remain
+bounded by the pre-trade risk checks (25.0% concentration ceiling, daily loss limit with kill-switch latching).
 
 #### 3. Order card for a symbol that is not fed
 When the Brain proposes a BUY for a symbol the live data feed does not cover, the card shows an amber notice, for
@@ -221,6 +222,25 @@ locked, the mandate form and the TOTP field are hidden and **Approve** is disabl
 
 The server applies the same rule: approving an un-fed BUY is refused, and approval is also refused while the feed status
 is unknown. SELL cards are never locked by the feed, because a SELL closes a position you already hold.
+
+#### 4. Stopped mandates, TOTP and degraded answers
+- **A BUY on a stopped mandate.** When the mandate that covers the instrument is PAUSED or HALTED, approving the BUY
+  card is refused. The card gives the reason, for example "MANDATE_PAUSED: <name> already covers BTCUSDT.BINANCE;
+  resume it in Mission Control, then approve this card", with an **Open Mission Control** link. It shows no TOTP box,
+  and the refusal comes before your TOTP code is checked, so the code is not spent. The Brain does not propose a BUY
+  on a PAUSED or HALTED mandate.
+- **A SELL on a stopped mandate.** A SELL that closes a holding the stopped mandate has is approved and sells the
+  whole holding, and no breach is recorded. When two stopped mandates hold the same instrument, the SELL is refused
+  as `AMBIGUOUS_MANDATE`: resume one of them in Mission Control, or reject the card.
+- **Codes work once.** A TOTP code you already used is refused with `TOTP_REUSED`, and that does not count toward
+  the lockout. Wait for the next code from your authenticator. The TOTP box is cleared after every submit, whether
+  it succeeded or failed.
+- **The System state block.** Each Brain turn starts with a snapshot of the system: mandates, kill switches, the
+  daily-loss latch, pending approvals, feed coverage and the exit monitor. The Brain declines cards while the kill
+  switch or the daily-loss latch is on, or the exit monitor is not running, and says why.
+- **Degraded answers.** When the planning model is unavailable, the Brain can answer from a backup model, read-only.
+  Such a reply starts with `_[degraded: answered by the backup model, read-only]_`. That turn has no order or debate
+  tools.
 
 ---
 
