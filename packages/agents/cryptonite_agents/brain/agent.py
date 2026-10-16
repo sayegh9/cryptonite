@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import Any
 
 from cryptonite_agents.brain import memory
+from cryptonite_agents.brain.lessons import CARD_LESSONS_LIMIT
 from cryptonite_agents.brain.routes import BRAIN_CHAT, BRAIN_PLAN
 from cryptonite_agents.brain.store import SessionStore
 from cryptonite_agents.brain.toolset import BRAIN_TOOLS
@@ -132,6 +133,7 @@ def no_card_note(args: dict[str, Any]) -> str:
 
 CANCELLED_NOTE = "\n\n_[stopped by the operator]_"
 STATE_TIMEOUT_S = 3.0  # a slow system-state read never delays a turn by more than this
+LESSONS_TIMEOUT_S = 2.0  # a slow lessons read never delays an order card by more than this
 
 
 def _assert_read_only(tools) -> None:
@@ -156,7 +158,8 @@ class Brain:
     def __init__(self, gateway: Gateway, store: SessionStore, persona: Persona = BRAIN,
                  holdings: Callable[[str], Awaitable[Decimal]] | None = None,
                  feed: Callable[[str], Awaitable[str | None]] | None = None,
-                 state: Callable[[], Awaitable[str | None]] | None = None) -> None:
+                 state: Callable[[], Awaitable[str | None]] | None = None,
+                 lessons: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None) -> None:
         self.gateway = gateway
         self.store = store
         self.persona = persona
@@ -166,6 +169,8 @@ class Brain:
         self._feed = feed
         # The system state snapshot for each turn's prompt (None: no block).
         self._state = state
+        # The past lessons on an instrument, shown on its order card (None: no lessons).
+        self._lessons = lessons
 
     async def _system_state(self) -> str | None:
         """The system state header for this turn, or None. Bounded by STATE_TIMEOUT_S: a failed or slow read never
@@ -187,6 +192,18 @@ class Brain:
         except Exception:
             logger.exception("Could not read the holding of %s; no SELL card", instrument_id)
             return False
+
+    async def _card_lessons(self, instrument_id: str) -> list[dict[str, Any]]:
+        """The past lessons on ``instrument_id`` for its order card. Bounded by LESSONS_TIMEOUT_S: a failed or slow read
+        gives no lessons and never blocks or breaks the card."""
+        if self._lessons is None:
+            return []
+        try:
+            lessons = await asyncio.wait_for(self._lessons(instrument_id), timeout=LESSONS_TIMEOUT_S)
+            return list(lessons)[:CARD_LESSONS_LIMIT]
+        except Exception as e:
+            logger.warning("Could not read the past lessons for %s; the card shows none: %s", instrument_id, e)
+            return []
 
     async def _feed_refusal(self, instrument_id: str) -> str | None:
         """Why the live feed does not cover ``instrument_id``, or None. Display only, so a failed read shows nothing."""
@@ -301,6 +318,8 @@ class Brain:
                                             notes.append(f"{symbol} is not in the live data feed, so this card "
                                                          "cannot be approved yet: onboard it from the card "
                                                          "or the Watchlist first.")
+                                        # The past lessons come from the reader alone, for a BUY or a SELL card
+                                        widget["lessons"] = await self._card_lessons(instrument)
                                     widgets.append(widget)
                                     if widget.get("kind") == "order_card":
                                         order_cards += 1
