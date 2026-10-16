@@ -33,6 +33,7 @@ from cryptonite_agents.tools import (
     QUERY_POSTGRES,
     SCANNER_CONTEXT,
     STAGE_DEBATE_PROPOSAL,
+    TRADE_TIMELINE,
     read_nautilus_tearsheet,
 )
 from pydantic import Field
@@ -108,6 +109,7 @@ BRAIN_TOOLS = (
     MARKET_REGIME,
     SCANNER_CONTEXT,
     AI_STATE,
+    TRADE_TIMELINE,
     QUERY_POSTGRES,
     QUERY_PARQUET,
     COMPARE_LIVE_VS_BACKTEST,
