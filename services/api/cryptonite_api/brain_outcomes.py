@@ -103,6 +103,9 @@ def card_patch(card: dict[str, Any], out: dict[str, Any]) -> dict[str, Any] | No
 DEBATE_STREAM = "stream:debate_queue"
 DEBATE_FOLLOWED = ("QUEUED", "RUNNING")  # a debate card whose run may still change
 DEBATE_FINAL = ("VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED")
+APPROVAL_TAIL = {  # how a verdict line words its approval: the operator's decision, or what became of it
+    "PENDING": "waiting for your approval", "APPROVED": "approved by the operator", "VETOED": "vetoed",
+    "EXPIRED": "expired with no order", "EXPIRED_PROCEEDED": "expired and proceeded", "CANCELLED": "cancelled"}
 GATE_REASONS = {  # the words for a gate refusal, in the conversation line (the codes are shown too)
     "KILL_SWITCH_LATCHED": "the kill switch is latched",
     "DAILY_LOSS_LATCHED": "the daily-loss latch is on",
@@ -176,7 +179,7 @@ def debate_line(card: dict[str, Any], out: dict[str, Any], run_status: str | Non
         v = out["verdict"]
         approval = v["approval_status"]
         if approval:
-            tail = "waiting for approval" if approval == "PENDING" else f"approval {approval.lower()}"
+            tail = APPROVAL_TAIL.get(approval, f"approval {approval.lower()}")
         elif run_status == "COMPLETED":  # sent under a mandate with no approval step: nothing for the operator to do
             tail = "no approval needed"
         elif run_status == "REJECTED":

@@ -292,13 +292,12 @@ class BrainNoteRequest(BaseModel):
     widget_id: str | None = Field(default=None, max_length=128)
     # After APPROVED, a card follows its order: WORKING (a resting limit), FILLED, or NOT_EXECUTED (refused, failed
     # or cancelled with nothing filled). Approval is the operator's decision; these are what the order did.
-    # A debate card (WS-3C) follows its run: QUEUED or RUNNING to a final VERDICT, NO_TRADE, GATE_REFUSED or FAILED.
+    # A debate card (WS-3C) is QUEUED until its run reaches a final VERDICT, NO_TRADE, GATE_REFUSED or FAILED.
     # Only the API's own sync sends these; the client endpoint accepts REJECTED alone.
     status: str | None = Field(
-        default=None, pattern="^(APPROVED|REJECTED|FAILED|WORKING|FILLED|NOT_EXECUTED|VERDICT|NO_TRADE|GATE_REFUSED"
-                              "|RUNNING)$")
+        default=None, pattern="^(APPROVED|REJECTED|FAILED|WORKING|FILLED|NOT_EXECUTED|VERDICT|NO_TRADE|GATE_REFUSED)$")
     command_id: str | None = Field(default=None, max_length=128)
-    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED|WORKING|QUEUED|RUNNING)$")
+    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED|WORKING|QUEUED)$")
     execution_reason: str | None = Field(default=None, max_length=300)
     filled_qty: str | None = Field(default=None, max_length=40)
     avg_fill_price: str | None = Field(default=None, max_length=40)

@@ -329,7 +329,7 @@ def test_a_debate_card_moves_to_its_verdict_once(client, debate_worker):
     assert card["status"] == "VERDICT"
     (note,) = notes
     assert note["status"] == "VERDICT" and note["expect_status"] == "QUEUED" and note["widget_id"] == "deb-1"
-    assert note["content"] == (f"Debate for {INSTRUMENT}: verdict BUY 5% (conviction 0.62), waiting for approval.")
+    assert note["content"] == (f"Debate for {INSTRUMENT}: verdict BUY 5% (conviction 0.62), waiting for your approval.")
     _open(c, app, _DebateConn(_run("PENDING_APPROVAL"), DECISION, {"status": "PENDING"}), sid)
     assert len(notes) == 1  # a final state is written once
 
@@ -398,8 +398,12 @@ def test_an_unknown_debate_card_is_not_found(client, debate_worker):
 
 @pytest.mark.parametrize("run_status, approval, tail", [
     ("PENDING_APPROVAL", None, "waiting for approval"),  # the operator decides: no approval row exists yet
-    ("PENDING_APPROVAL", "PENDING", "waiting for approval"),
-    ("PENDING_APPROVAL", "APPROVED", "approval approved"),
+    ("PENDING_APPROVAL", "PENDING", "waiting for your approval"),
+    ("PENDING_APPROVAL", "APPROVED", "approved by the operator"),
+    ("PENDING_APPROVAL", "VETOED", "vetoed"),
+    ("PENDING_APPROVAL", "EXPIRED", "expired with no order"),
+    ("PENDING_APPROVAL", "EXPIRED_PROCEEDED", "expired and proceeded"),
+    ("PENDING_APPROVAL", "CANCELLED", "cancelled"),
     ("COMPLETED", None, "no approval needed"),  # sent under a mandate: nothing waits for the operator
     ("REJECTED", None, "rejected"),
 ])
@@ -439,9 +443,8 @@ async def test_the_outcome_reads_a_run_and_its_decision_from_the_database(pool):
 
 # --- The worker and the API's client endpoint: the status set the sync may send, and no wider ---------------------
 
-@pytest.mark.parametrize("status, expect_status", [("VERDICT", "QUEUED"), ("NO_TRADE", "RUNNING"),
-                                                   ("GATE_REFUSED", "QUEUED"), ("FAILED", "RUNNING"),
-                                                   ("RUNNING", "QUEUED")])
+@pytest.mark.parametrize("status, expect_status", [("VERDICT", "QUEUED"), ("NO_TRADE", "QUEUED"),
+                                                   ("GATE_REFUSED", "QUEUED"), ("FAILED", "QUEUED")])
 def test_the_worker_accepts_a_debate_card_transition_from_the_sync_path(monkeypatch, status, expect_status):
     worker_app = worker_server.app
     calls: list[tuple] = []
@@ -463,7 +466,9 @@ def test_the_worker_accepts_a_debate_card_transition_from_the_sync_path(monkeypa
 
 
 @pytest.mark.parametrize("status, expect_status", [("COMPLETED", "QUEUED"),  # not a card state the sync sends
-                                                   ("VERDICT", "COMPLETED")])  # not an expectation the sync sends
+                                                   ("RUNNING", "QUEUED"),  # the sync only patches final states
+                                                   ("VERDICT", "COMPLETED"),  # not an expectation the sync sends
+                                                   ("VERDICT", "RUNNING")])  # no card waits in RUNNING either
 def test_the_worker_still_refuses_a_status_or_expectation_outside_the_debate_set(monkeypatch, status, expect_status):
     worker_app = worker_server.app
 
