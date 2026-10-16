@@ -48,9 +48,15 @@ def explain_backtest(backtest_id: str = "latest") -> str:
     return read_nautilus_tearsheet(backtest_id)
 
 
+# The shape the model sees in the schema. It is widgets.INSTRUMENT_ID with the exchange optional: the bare "SOLUSDT"
+# is a valid proposal (OrderProposal adds ".BINANCE" after this check), and INSTRUMENT_ID would refuse it here. The
+# platform check still runs on the normalised id in OrderProposal.
+TOOL_INSTRUMENT_ID = r"^[A-Za-z0-9]{2,20}(-PERP)?(\.[A-Za-z0-9]{2,16})?$"
+
+
 @tool(RiskClass.ADD_RISK, name="propose_order")
 def propose_order(
-    instrument_id: Annotated[str, Field(min_length=3, max_length=64)],
+    instrument_id: Annotated[str, Field(min_length=3, max_length=64, pattern=TOOL_INSTRUMENT_ID)],
     side: Literal["BUY", "SELL"],
     allocation_pct: Annotated[float, Field(ge=MIN_ALLOCATION_PCT, le=MAX_ALLOCATION_PCT)],
     order_type: Literal["MARKET", "LIMIT"] = "MARKET",
