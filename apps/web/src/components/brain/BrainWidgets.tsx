@@ -621,6 +621,8 @@ function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, liv
 
   useEffect(() => {
     if (!live) return;
+    // A read from before the card was locked (the feed gate) is stale: it goes at once, and the read below replaces it
+    setPreflight(null);
     check();
     const onFocus = () => {
       if (Date.now() - lastRead.current >= PREFLIGHT_FOCUS_MS) check();
@@ -799,6 +801,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const { preflight, check: checkPreflight } = useCardPreflight(widget, sessionId, pending && !feedLocked);
   // Approve stays enabled when the dry run says it would be refused (the server decides); the label says so
   const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate;
+  // A dry run that finds no ACTIVE mandate for a BUY readies the create form, so the first Approve already shows it
+  useEffect(() => {
+    if (buy && preflight) setNeedsMandate(!preflight.ok && preflight.needs_mandate);
+  }, [buy, preflight]);
 
   const approve = async () => {
     setBusy(true);
@@ -902,7 +908,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <dd className="text-zinc-100">{widget.take_profit ? fmt(widget.take_profit) : "—"}</dd>
         </div>
       </dl>
-      {preflight && <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />}
+      {/* The paused-mandate notice already says this refusal: the dry-run line does not repeat it */}
+      {preflight && !(mandateBlock && !preflight.ok && /^MANDATE_(PAUSED|HALTED)/.test(preflight.code)) && (
+        <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />
+      )}
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
       <StructuredRationale widget={widget} />
       <PastLessons lessons={widget.lessons ?? []} />
