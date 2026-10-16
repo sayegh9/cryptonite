@@ -367,6 +367,10 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
 # A model-callable DuckDB query is exactly one SELECT (DuckDB's own parser decides the statement type)
 REFUSED_NOT_A_SELECT = "Security Error: only a single SELECT is allowed"
 DUCKDB_MAX_ROWS = 1000
+# A model-callable query is interrupted after this many seconds, and its JSON result is cut at this many characters
+DUCKDB_TOOL_TIMEOUT_S = 30
+DUCKDB_MAX_RESULT_CHARS = 100_000
+DUCKDB_TRUNCATED_MARKER = " …[truncated]"
 # A backtest run directory is named by its run id (a UUID). Nothing else may become a path or an SQL literal.
 _BACKTEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -382,6 +386,11 @@ def _catalog_connection() -> duckdb.DuckDBPyConnection:
         con.execute(f"SET allowed_directories = ['{catalog}']")
         con.execute("SET autoinstall_known_extensions = false")
         con.execute("SET autoload_known_extensions = false")
+        # Resource caps, set while external access is still on: no spill file in the working directory, 1 GB, 2 threads
+        con.execute("SET temp_directory = ''")
+        con.execute("SET max_temp_directory_size = '0B'")
+        con.execute("SET memory_limit = '1GB'")
+        con.execute("SET threads = 2")
         con.execute("SET enable_external_access = false")
         con.execute("SET lock_configuration = true")
     except Exception:
@@ -422,15 +431,26 @@ def query_parquet_duckdb(query: str) -> str:
         
         # A new locked connection per call, so no setting or attached file outlives it; the row count is capped
         con = _catalog_connection()
+        # The watchdog interrupts a query that runs past the timeout (execute and fetch both count against it)
+        watchdog = threading.Timer(DUCKDB_TOOL_TIMEOUT_S, con.interrupt)
         try:
+            watchdog.start()
             cursor = con.execute(full_query)
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchmany(DUCKDB_MAX_ROWS)
+        except duckdb.InterruptException:
+            return f"DuckDB Error: query took longer than {DUCKDB_TOOL_TIMEOUT_S} s and was stopped"
         finally:
+            watchdog.cancel()
+            # join: an interrupt that already started finishes before the connection closes
+            watchdog.join()
             con.close()
         records = [dict(zip(columns, row)) for row in rows]
         # Serialize datetime objects using default str if necessary
-        return json.dumps(records, default=str)
+        out = json.dumps(records, default=str)
+        if len(out) > DUCKDB_MAX_RESULT_CHARS:
+            return out[:DUCKDB_MAX_RESULT_CHARS] + DUCKDB_TRUNCATED_MARKER
+        return out
     except Exception as e:
         return f"DuckDB Error: {e}"
 

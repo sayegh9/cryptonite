@@ -12,6 +12,7 @@ import datetime
 import json
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,8 +146,9 @@ def test_a_select_with_a_trailing_semicolon_is_one_statement(sandbox):
 
 
 def test_settings_do_not_persist_between_calls(sandbox):
-    default_threads = duckdb.connect().execute("SELECT current_setting('threads')").fetchone()[0]
-    changed = "1" if default_threads != "1" else "2"
+    # The baseline is what a sandboxed call sees (the pinned thread count), not the bare DuckDB default
+    default_threads = json.loads(tools.query_parquet_duckdb("SELECT current_setting('threads') AS t"))[0]["t"]
+    changed = "1" if default_threads != 1 else "3"
     tools.query_parquet_duckdb(f"SET threads = {changed}; SELECT 1 AS x")
     out = tools.query_parquet_duckdb("SELECT current_setting('threads') AS t")
     assert json.loads(out) == [{"t": default_threads}]
@@ -295,3 +297,50 @@ async def test_the_outcome_pass_skips_one_refused_row_and_labels_the_rest(db_url
         assert any("BAD-PERP.BINANCE" in r.getMessage() for r in caplog.records)
     finally:
         await pool.close()
+
+
+def _memory_limit_bytes(text: str) -> float:
+    """DuckDB reports a byte size as a number and a unit, e.g. '953.6 MiB' for a 1GB limit."""
+    number, unit = text.split()
+    return float(number) * {"bytes": 1, "KiB": 2**10, "MiB": 2**20, "GiB": 2**30}[unit]
+
+
+def test_a_cross_join_is_stopped_by_the_watchdog_and_returns_the_timeout_message(sandbox, monkeypatch):
+    monkeypatch.setattr(tools, "DUCKDB_TOOL_TIMEOUT_S", 1)
+    started = time.monotonic()
+    out = tools.query_parquet_duckdb("SELECT count(*) FROM range(100000) a, range(100000) b, range(1000) c")
+    elapsed = time.monotonic() - started
+    assert out == "DuckDB Error: query took longer than 1 s and was stopped", out
+    assert elapsed < 15, f"the cross join ran for {elapsed:.1f} s past a 1 s timeout"
+
+
+def test_a_huge_string_result_is_truncated_to_100_000_chars_with_a_marker(sandbox):
+    out = tools.query_parquet_duckdb("SELECT repeat('x', 5000000) AS s")
+    marker = " …[truncated]"
+    assert out == "[{\"s\": \"" + "x" * (100_000 - len("[{\"s\": \"")) + marker, out[:80]
+    assert len(out) == 100_000 + len(marker)
+
+
+def test_a_planted_file_in_the_duckdb_tmp_dir_cannot_be_read(sandbox):
+    planted = sandbox.cwd / ".tmp" / "leak.txt"
+    planted.parent.mkdir()
+    planted.write_text("LOCALSECRET")
+    out = tools.query_parquet_duckdb(f"SELECT content FROM read_text({chr47(planted)})")
+    assert out.startswith("DuckDB Error"), out
+    assert not [m for m in SECRET_MARKERS if m in out], out
+
+
+def test_the_sandbox_pins_threads_memory_and_temp_spill(sandbox):
+    out = json.loads(tools.query_parquet_duckdb(
+        "SELECT current_setting('threads') AS t, current_setting('memory_limit') AS m, "
+        "current_setting('temp_directory') AS d, current_setting('max_temp_directory_size') AS s"))[0]
+    assert out["t"] == 2
+    assert _memory_limit_bytes(out["m"]) == pytest.approx(1e9, rel=0.01), out["m"]
+    assert out["d"] == ""
+    assert _memory_limit_bytes(out["s"]) == 0
+
+
+def test_a_grouped_catalog_aggregate_still_runs_under_the_caps(sandbox):
+    out = tools.query_parquet_duckdb(
+        "SELECT close, count(*) AS n FROM read_parquet('data/bars/**/*.parquet') GROUP BY close")
+    assert json.loads(out) == [{"close": 100.0, "n": 1}]
