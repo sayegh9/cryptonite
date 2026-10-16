@@ -11,6 +11,7 @@ survives reloads, restarts and model changes, and needs no provider types outsid
 import logging
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -41,8 +42,9 @@ SUMMARY_INSTRUCTIONS = (
 # becomes a newline, every spelling of the tag is escaped, a line that reads as `System:` is quoted, and continuation
 # lines are indented: no line inside a message can start a turn or a System line. Only the server's own blocks carry a
 # system event's authority.
-# Every pattern here is linear: each token has one way to match, and the line pattern's classes never cross a newline
-# (`\s*/?\s*` and `[\s…]*` across lines took seconds on a few thousand newlines, on the worker's event loop).
+# Every pattern here is linear: each token has one way to match, and no class matches a newline (the tag pattern runs
+# on a copy where a newline is a space, see _neutral). The earlier `\s*/?\s*` and `[\s…]*` took seconds on a few
+# thousand newlines, on the worker's event loop.
 SYSTEM_EVENT_TAG = re.compile(r"<(?=\s*(?:/\s*)?system[\s_-]*event)", re.IGNORECASE)
 SYSTEM_LINE = re.compile(r"^((?:[^\S\n]|[>*_#\-\d.)\[\]:])*)(system[^\S\n]*[:：])", re.IGNORECASE | re.MULTILINE)
 LINE_BREAK = re.compile("\r\n|[\r\v\f\u0085  ]")
@@ -84,7 +86,7 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in text if ch in JOINERS or unicodedata.category(ch) != "Cf")
 
 
-def _matching(text: str) -> tuple[str, list[int]]:
+def _matching(text: str) -> tuple[str, Sequence[int]]:
     """The copy the detectors run on, with format characters dropped and lookalike letters folded to ASCII, and for each
     of its characters the index of that character in ``text``."""
     if text.isascii():  # no format characters or lookalikes in ASCII: the copy is the text
