@@ -196,6 +196,40 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     await expect(page.locator("text=COMPLETED").first()).toBeVisible({ timeout: 5000 });
   });
 
+  test("a debate the safety gate refused is a finished no trade: not pending, labelled Not run", async ({ page }) => {
+    const RUN_ID = "9a7e0000-2222-4333-8444-555555555555";
+    await page.addInitScript(() => {
+      localStorage.setItem("csrf_token", "test-csrf");
+      localStorage.setItem("cryptonite:ai-brain-tour-seen", "true");
+    });
+    await page.route("**/api/v1/paper/**", async (route) => {
+      const url = route.request().url();
+      const body = url.includes("/paper/accounts")
+        ? [{ account_id: "PAPER-ACCOUNT-001", venue: "PAPER", currency: "USDT", starting_balance: "10000", cash_balance: "10000", total_equity: "10000", realized_pnl: "0", daily_realized_pnl: "0", daily_loss_latched: false }]
+        : url.includes("/paper/kill-switch") ? { id: 1, is_latched: true } : [];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.route("**/api/v1/agents/debates*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { runId: RUN_ID, instrumentId: "XRPUSDT.BINANCE", status: "GATE_REFUSED", decision: null, timestamp: Date.now(), turns: [] },
+        ]),
+      });
+    });
+
+    await page.goto("/");
+    await page.locator("button", { hasText: "AI Brain" }).click();
+    await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
+
+    // Finished, so it is not in the pending tab; the No trade tab holds it with its reason in words
+    await expect(page.getByText("Not run (safety gate)")).toHaveCount(0);
+    await page.getByRole("button", { name: /^No trade/ }).click();
+    await expect(page.getByText("Not run (safety gate)")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("approve-debate-btn")).toHaveCount(0);
+  });
+
   test("approve without a session shows an error, never a local COMPLETED", async ({ page }) => {
     const RUN_ID = "aaaaaaaa-2222-4333-8444-555555555555";
     let approveCalled = false;

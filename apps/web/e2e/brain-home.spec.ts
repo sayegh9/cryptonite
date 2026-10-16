@@ -1078,3 +1078,112 @@ test.describe("Brain Home", () => {
     await expect(card.getByRole("button", { name: "Past lessons (1)" })).toHaveAttribute("aria-expanded", "false");
   });
 });
+
+/**
+ * WS-3C debate cards: a card follows its debate run (asked on mount, then every 10 s while QUEUED or RUNNING), stops at
+ * a final state, and says a gate refusal in words.
+ */
+test.describe("Debate cards follow their run", () => {
+  const DEBATE_RUN = "3f2a1c00-0000-4000-8000-0000000000d1";
+  const VERDICT = { recommendation: "BUY", conviction_score: 0.62, allocation_pct: 5, approval_status: null };
+
+  const debateWidget = (id: string, over: Record<string, unknown> = {}) => ({
+    kind: "debate_summary",
+    id,
+    instrument_id: "XRPUSDT.BINANCE",
+    timeframe: "5m",
+    recommendation: null,
+    conviction_score: null,
+    status: "QUEUED",
+    message: "Proposal staged to Action Inbox",
+    message_ref: "1728900000000-0",
+    run_id: null,
+    verdict: null,
+    reason: null,
+    ...over,
+  });
+
+  /** Opens a session whose history holds these cards. The debate route answers each ask with `responses` in turn. */
+  async function openDebates(page: Page, widgets: Record<string, unknown>[], responses: Record<string, unknown>[] = []) {
+    const asks = { n: 0 };
+    const queued = { status: "QUEUED", run_id: null, verdict: null, reason: null };
+    await page.route("**/api/v1/paper/positions*", (route) => route.fulfill({ json: [] }));
+    await page.route("**/agent-api/brain/spend", (route) => route.fulfill({ json: { spent_usd: "0.10", cap_usd: "25.00" } }));
+    await page.route(/\/agent-api\/brain\/sessions(\?.*)?$/, (route) => route.fulfill({ json: { sessions: [], next_cursor: null } }));
+    await page.route(`**/agent-api/brain/sessions/${SESSION}`, (route) =>
+      route.fulfill({
+        json: {
+          session: { id: SESSION, title: "XRP debates" },
+          summary: null,
+          messages: [
+            { id: 1, role: "user", content: "Debate the XRP setups", widgets: [], trace_id: null, created_at: null },
+            { id: 2, role: "assistant", content: "The debates are below.", widgets, trace_id: null, created_at: null },
+          ],
+        },
+      }),
+    );
+    await page.route(/\/agent-api\/brain\/sessions\/[^/]+\/cards\/[^/]+\/debate$/, (route) => {
+      const body = responses.length ? responses[Math.min(asks.n, responses.length - 1)] : queued;
+      asks.n++;
+      return route.fulfill({ json: body });
+    });
+    await page.addInitScript((sid) => {
+      localStorage.setItem("csrf_token", "csrf-test");
+      localStorage.setItem("cryptonite-brain", JSON.stringify({ state: { sessionId: sid, historyOpen: false }, version: 1 }));
+    }, SESSION);
+    await page.goto("/?ws=brain&view=home");
+    await expect(page.getByTestId("brain-home")).toBeVisible();
+    return asks;
+  }
+
+  test("a queued debate follows its run to the verdict, then stops asking", async ({ page }) => {
+    test.setTimeout(60_000); // asks at once and every 10 s, then waits one more interval to prove it stopped
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(
+      page,
+      [debateWidget("call-2")],
+      [
+        { status: "QUEUED", run_id: null, verdict: null, reason: null },
+        { status: "RUNNING", run_id: DEBATE_RUN, verdict: null, reason: null },
+        { status: "VERDICT", run_id: DEBATE_RUN, verdict: VERDICT, reason: null },
+      ],
+    );
+    const card = page.getByTestId("brain-widget-debate");
+    const outcome = card.getByTestId("debate-outcome");
+
+    await expect(outcome).toHaveText("Debate running…", { timeout: 15_000 });
+    await expect(card).toContainText("RUNNING");
+    await expect(outcome).toHaveText("Verdict: BUY 5% · conviction 62% · awaiting approval", { timeout: 20_000 });
+    await expect(card).toContainText("VERDICT");
+
+    const atVerdict = asks.n;
+    expect(atVerdict).toBe(3);
+    await page.waitForTimeout(11_000); // one full poll interval after the verdict
+    expect(asks.n).toBe(atVerdict);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("final debate states read in words and are never asked again", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [
+      debateWidget("call-2", { status: "VERDICT", run_id: DEBATE_RUN, verdict: VERDICT }),
+      debateWidget("call-3", { status: "NO_TRADE", run_id: DEBATE_RUN, reason: "NO_PRICE" }),
+      debateWidget("call-4", { status: "GATE_REFUSED", reason: "KILL_SWITCH_LATCHED" }),
+      debateWidget("call-5", { status: "GATE_REFUSED", reason: "DAILY_LOSS_LATCHED" }),
+      debateWidget("call-6", { status: "GATE_REFUSED", reason: "POSITION_AT_CAP" }),
+      debateWidget("call-7", { status: "FAILED", message: "The debate could not be started" }),
+    ]);
+
+    await expect(page.getByTestId("debate-outcome")).toHaveText([
+      "Verdict: BUY 5% · conviction 62% · awaiting approval",
+      "No trade (no usable price)",
+      "Not run: the kill switch is latched",
+      "Not run: the daily-loss latch is on",
+      "Not run: the position is at its cap",
+      "Debate failed",
+    ]);
+    await expect(page.getByTestId("brain-widget-debate").filter({ hasText: "NOT RUN" })).toHaveCount(3);
+    expect(asks.n).toBe(0);
+    expect(reactErrors).toEqual([]);
+  });
+});
