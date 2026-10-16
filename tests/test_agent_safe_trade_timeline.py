@@ -325,9 +325,20 @@ async def test_a_debate_run_without_a_decision_still_reconstructs_the_entry(conn
         ("risk:exit_monitor", "CLOSE_POSITION", {"instrument_id": XRP, "reason": "TRAILING_STOP"}, "TRAILING_STOP"),
         ("risk:mandate_monitor", "CLOSE_POSITION", {"instrument_id": XRP, "reason": "HARD_STOP"}, "MANDATE_HALT"),
         ("ai:debate_worker", "CLOSE_POSITION", {"instrument_id": XRP, "reason": "EXIT_DEBATE_CLOSE"}, "EXIT_DEBATE"),
+        # an L1 exit debate waits for the operator; a timed-out approval is requested as approval:timeout:system
+        ("approval:timeout:system", "CLOSE_POSITION",
+         {"instrument_id": XRP, "reason": "EXIT_DEBATE_CLOSE", "source": "exit_debate"}, "EXIT_DEBATE"),
+        ("approval:web:operator:tester", "CLOSE_POSITION",
+         {"instrument_id": XRP, "reason": "EXIT_DEBATE_CLOSE", "source": "exit_debate"}, "EXIT_DEBATE"),
+        # an L1 debate SELL is approved on the approval path: the payload's source says it came from a debate
+        ("approval:timeout:system", "SUBMIT_ORDER", {"instrument_id": XRP, "side": "SELL", "source": "debate"},
+         "EXIT_DEBATE"),
+        ("ai:debate_worker", "SUBMIT_ORDER", {"instrument_id": XRP, "side": "SELL", "source": "debate"}, "EXIT_DEBATE"),
         ("web-ui", "CLOSE_POSITION", {"instrument_id": XRP, "price": None}, "MANUAL"),
         ("operator:tester", "SUBMIT_ORDER", {"instrument_id": XRP, "side": "SELL", "source": "brain_order_card"},
          "SELL_CARD"),
+        ("approval:web:operator:tester", "SUBMIT_ORDER",
+         {"instrument_id": XRP, "side": "SELL", "source": "brain_order_card"}, "SELL_CARD"),
         ("web-ui", "SUBMIT_ORDER", {"instrument_id": XRP, "side": "SELL"}, None),
     ],
 )

@@ -17,10 +17,12 @@ Rules the view applies (derived only from what the base tables record):
 - The debate verdict is the latest ``portfolio_decisions`` row of that run. Outcomes are its ``ai_decision_outcomes``
   rows at 24h and 72h. The reflection is the latest ``reflections`` row of that run.
 - The close is the earliest COMPLETED ``CLOSE_POSITION`` (or SELL ``SUBMIT_ORDER``) of that instance and instrument
-  created between ``opened_at`` and ``closed_at``. Its ``close_reason`` follows the command that wrote it:
-  ``risk:exit_monitor`` gives the payload's reason (HARD_STOP or TRAILING_STOP); ``risk:mandate_monitor`` gives
-  MANDATE_HALT; a brain order card's SELL gives SELL_CARD; an AI debate's close or sell gives EXIT_DEBATE; any other
-  CLOSE_POSITION (the operator's) gives MANUAL. Anything else is null.
+  created between ``opened_at`` and ``closed_at``. Its ``close_reason`` follows the command that wrote it. Approved
+  commands are requested as ``approval:<via>:<who>``, so the payload's ``source`` is read first: ``debate`` or
+  ``exit_debate`` gives EXIT_DEBATE, and ``brain_order_card`` gives SELL_CARD. Then the requester: ``ai:debate_worker``
+  gives EXIT_DEBATE, ``risk:exit_monitor`` gives the payload's reason (HARD_STOP or TRAILING_STOP), and
+  ``risk:mandate_monitor`` gives MANDATE_HALT. Any other CLOSE_POSITION (the operator's) gives MANUAL. Anything else is
+  null.
 - The exit price is the average fill of the first order after the close command on the closing side (SELL, or BUY for a
   short). A closed position reads FLAT with quantity 0, so its side comes from the entry command and its return is
   realized_pnl over the entry fill's filled quantity times the entry price, and is null while the position is open.
@@ -63,8 +65,9 @@ def upgrade() -> None:
                dv.conviction_score AS debate_conviction,
                CASE
                    WHEN cl.command_id IS NULL THEN NULL
-                   WHEN cl.command_type = 'SUBMIT_ORDER' AND cl.payload->>'source' = 'brain_order_card' THEN 'SELL_CARD'
-                   WHEN cl.requester_id IN ('ai:debate_worker') THEN 'EXIT_DEBATE'
+                   WHEN cl.payload->>'source' IN ('exit_debate', 'debate') THEN 'EXIT_DEBATE'
+                   WHEN cl.payload->>'source' = 'brain_order_card' THEN 'SELL_CARD'
+                   WHEN cl.requester_id = 'ai:debate_worker' THEN 'EXIT_DEBATE'
                    WHEN cl.requester_id = 'risk:exit_monitor' THEN cl.payload->>'reason'
                    WHEN cl.requester_id = 'risk:mandate_monitor' THEN 'MANDATE_HALT'
                    WHEN cl.command_type = 'CLOSE_POSITION'
