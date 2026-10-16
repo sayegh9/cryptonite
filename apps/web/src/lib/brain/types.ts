@@ -51,6 +51,23 @@ export interface OrderCardWidget {
   feed_refusal?: string | null;
   /** Past lessons on this instrument, shown collapsed under the rationale; absent or empty hides the disclosure */
   lessons?: CardLesson[];
+  /** The structured rationale the model wrote (all optional: a card from before them has none). Shown as plain text. */
+  thesis?: string | null;
+  evidence?: CardEvidence[];
+  invalidation?: string | null;
+  horizon?: CardHorizon | null;
+  /** 0 to 1; shown as a percentage */
+  confidence?: number | null;
+}
+
+export type CardHorizon = "1h" | "4h" | "24h" | "3d" | "7d";
+
+/** One fact the proposal rests on: the tool it came from, the field, its value, and the time it describes */
+export interface CardEvidence {
+  source_tool: string;
+  field: string;
+  value: string;
+  as_of?: string | null;
 }
 
 /** A past reflection on the same instrument, from the server (at most 3). `lesson_text` is model-written: shown as quoted data. */

@@ -20,6 +20,7 @@ import { createMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import type {
   BrainWidget,
+  CardEvidence,
   CardLesson,
   CardPreflight,
   DebateSummaryWidget,
@@ -587,6 +588,55 @@ function PastLessons({ lessons }: { lessons: CardLesson[] }) {
   );
 }
 
+/** One evidence line in plain form: "field = value · source_tool · as_of" (the as_of part is dropped when absent) */
+function evidenceText(item: CardEvidence): string {
+  return [`${item.field} = ${item.value}`, item.source_tool, item.as_of].filter(Boolean).join(" · ");
+}
+
+/**
+ * The structured rationale under the card's text: thesis, evidence, invalidation, and a horizon and confidence line.
+ * Each part is hidden when absent, so a card from before them shows nothing extra. The model wrote every field: they
+ * are plain text (React escapes them), never markup.
+ */
+function StructuredRationale({ widget }: { widget: OrderCardWidget }) {
+  const evidence = widget.evidence ?? [];
+  const confidence = typeof widget.confidence === "number" && Number.isFinite(widget.confidence) ? widget.confidence : null;
+  const meta = [
+    widget.horizon ? `Horizon ${widget.horizon}` : null,
+    confidence !== null ? `Confidence ${Math.round(confidence * 100)}%` : null,
+  ].filter((part): part is string => part !== null);
+  if (!widget.thesis && evidence.length === 0 && !widget.invalidation && meta.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1.5 text-2xs" data-testid="brain-card-structured">
+      {widget.thesis ? (
+        <div>
+          <p className="text-zinc-500">Thesis</p>
+          <p className="text-zinc-300">{widget.thesis}</p>
+        </div>
+      ) : null}
+      {evidence.length > 0 ? (
+        <div>
+          <p className="text-zinc-500">Evidence</p>
+          <ul className="space-y-0.5">
+            {evidence.map((item, i) => (
+              <li key={i} className="text-zinc-300">
+                {evidenceText(item)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {widget.invalidation ? (
+        <div>
+          <p className="text-zinc-500">Invalidation</p>
+          <p className="text-zinc-300">{widget.invalidation}</p>
+        </div>
+      ) : null}
+      {meta.length > 0 ? <p className="text-zinc-400">{meta.join(" · ")}</p> : null}
+    </div>
+  );
+}
+
 function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -717,6 +767,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       </dl>
       {preflight && <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />}
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
+      <StructuredRationale widget={widget} />
       <PastLessons lessons={widget.lessons ?? []} />
 
       {feedLocked && feedRefusal ? (
