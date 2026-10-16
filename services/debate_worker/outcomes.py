@@ -84,8 +84,13 @@ async def label_pending(pool, query_engine, now: datetime.datetime | None = None
             continue
         symbol = row["instrument_id"].split(".")[0]
         longest = max(HORIZONS_S[h] for h in due)
-        bars = query_engine.query_bars_df(symbol=symbol, timeframe="1m", start_ns=decision_ns,
-                                          end_ns=decision_ns + longest * 1_000_000_000)
+        try:
+            bars = query_engine.query_bars_df(symbol=symbol, timeframe="1m", start_ns=decision_ns,
+                                              end_ns=decision_ns + longest * 1_000_000_000)
+        except ValueError as e:  # the lake refuses a key that is not a plain symbol: skip this decision, label the rest
+            logger.warning("Skipping outcome labels for %s (decision %s): the analytics lake refused it (%s)",
+                           row["instrument_id"], row["id"], e)
+            continue
         if bars.is_empty():
             continue
         price = float(row["decision_price"])

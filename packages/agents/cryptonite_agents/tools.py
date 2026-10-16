@@ -150,6 +150,13 @@ _IN_FEED_TTL_S: float = 60.0
 EXIT_MONITOR_HEARTBEAT = "exit_monitor:heartbeat"
 
 
+def system_redis_url() -> str:
+    """The Redis URL for the live system keys (ingest universe, heartbeats, perp marks). Those live in the stack's
+    DB 0; agent_worker's REDIS_URL points at its own DB 1 (sessions, rate limits), so the stack sets SYSTEM_REDIS_URL.
+    Without it, REDIS_URL is used."""
+    return os.getenv("SYSTEM_REDIS_URL") or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+
 def _get_valid_symbols() -> set[str]:
     global _EXCHANGE_INFO_CACHE, _EXCHANGE_INFO_FETCHED_AT
     now = time.time()
@@ -191,10 +198,10 @@ def _parse_server_date_ms(raw: str | None) -> int | None:
 
 
 def _redis_get(key: str) -> str | None:
-    """One read of ``key`` from the agent's Redis (REDIS_URL), short timeouts. Raises when Redis is unreachable."""
+    """One read of the system key ``key`` (system_redis_url), short timeouts. Raises when Redis is unreachable."""
     import redis  # local import: Redis is a service runtime dep (agent_worker), not a package dep
     client = redis.Redis.from_url(
-        os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        system_redis_url(),
         socket_timeout=0.5,
         socket_connect_timeout=0.5,
         decode_responses=True,
@@ -391,6 +398,41 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
         except Exception as e:
             return f"Error fetching klines data: {e}"
 
+# A model-callable DuckDB query is exactly one SELECT (DuckDB's own parser decides the statement type)
+REFUSED_NOT_A_SELECT = "Security Error: only a single SELECT is allowed"
+DUCKDB_MAX_ROWS = 1000
+# A model-callable query is interrupted after this many seconds, and its JSON result is cut at this many characters
+DUCKDB_TOOL_TIMEOUT_S = 30
+DUCKDB_MAX_RESULT_CHARS = 100_000
+DUCKDB_TRUNCATED_MARKER = " …[truncated]"
+# A backtest run directory is named by its run id (a UUID). Nothing else may become a path or an SQL literal.
+_BACKTEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _catalog_connection() -> duckdb.DuckDBPyConnection:
+    """A new DuckDB connection for one model-callable query. It reads files only under CATALOG_PATH, cannot load or
+    install an extension, and the query cannot switch these settings back. The caller closes it after the call."""
+    con = duckdb.connect(":memory:")
+    try:
+        # Order matters: DuckDB refuses to change allowed_directories once external access is off, and a list in
+        # connect(config=...) is refused at start-up, so every option is a SET after the connection opens
+        catalog = str(Path(CATALOG_PATH).resolve()).replace("'", "''")
+        con.execute(f"SET allowed_directories = ['{catalog}']")
+        con.execute("SET autoinstall_known_extensions = false")
+        con.execute("SET autoload_known_extensions = false")
+        # Resource caps, set while external access is still on: no spill file in the working directory, 1 GB, 2 threads
+        con.execute("SET temp_directory = ''")
+        con.execute("SET max_temp_directory_size = '0B'")
+        con.execute("SET memory_limit = '1GB'")
+        con.execute("SET threads = 2")
+        con.execute("SET enable_external_access = false")
+        con.execute("SET lock_configuration = true")
+    except Exception:
+        con.close()
+        raise
+    return con
+
+
 def query_parquet_duckdb(query: str) -> str:
     """Executes a DuckDB SQL query against the massive Parquet data catalog.
     
@@ -408,6 +450,11 @@ def query_parquet_duckdb(query: str) -> str:
         # Resolve path relative to CATALOG_PATH
         full_query = query.replace("data/bars", str(Path(CATALOG_PATH) / "data/bars"))
         
+        # Exactly one statement, and it is a SELECT: a chained or non-SELECT statement is refused before anything runs
+        statements = duckdb.extract_statements(full_query)
+        if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
+            return REFUSED_NOT_A_SELECT
+
         # 2. Strict path validation: ensure ANY string literal containing a path is within CATALOG_PATH
         string_literals = re.findall(r"'([^']*)'", full_query)
         for literal in string_literals:
@@ -416,11 +463,28 @@ def query_parquet_duckdb(query: str) -> str:
                 if not Path(resolved_literal).resolve().is_relative_to(Path(CATALOG_PATH).resolve()):
                     return f"Security Error: Unauthorized file access attempted outside catalog path. Blocked: {literal}"
         
-        rel = duckdb.query(full_query)
-        columns = rel.columns
-        records = [dict(zip(columns, row)) for row in rel.fetchall()]
+        # A new locked connection per call, so no setting or attached file outlives it; the row count is capped
+        con = _catalog_connection()
+        # The watchdog interrupts a query that runs past the timeout (execute and fetch both count against it)
+        watchdog = threading.Timer(DUCKDB_TOOL_TIMEOUT_S, con.interrupt)
+        try:
+            watchdog.start()
+            cursor = con.execute(full_query)
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchmany(DUCKDB_MAX_ROWS)
+        except duckdb.InterruptException:
+            return f"DuckDB Error: query took longer than {DUCKDB_TOOL_TIMEOUT_S} s and was stopped"
+        finally:
+            watchdog.cancel()
+            # join: an interrupt that already started finishes before the connection closes
+            watchdog.join()
+            con.close()
+        records = [dict(zip(columns, row)) for row in rows]
         # Serialize datetime objects using default str if necessary
-        return json.dumps(records, default=str)
+        out = json.dumps(records, default=str)
+        if len(out) > DUCKDB_MAX_RESULT_CHARS:
+            return out[:DUCKDB_MAX_RESULT_CHARS] + DUCKDB_TRUNCATED_MARKER
+        return out
     except Exception as e:
         return f"DuckDB Error: {e}"
 
@@ -440,6 +504,10 @@ def read_nautilus_tearsheet(backtest_id: str) -> str:
                 return "No backtest runs found in backtest_artifacts directory."
         else:
             return "Backtest artifacts directory does not exist."
+
+    # The id becomes a path and an SQL argument below: only a run directory name (a UUID) may pass
+    if not _BACKTEST_ID.fullmatch(target_id):
+        return "Error: invalid backtest_id."
 
     intended_path = (artifact_root / target_id / "tearsheet.json").resolve()
     
@@ -471,7 +539,8 @@ def read_nautilus_tearsheet(backtest_id: str) -> str:
         try:
             conn = duckdb.connect()
             if equity_path.exists():
-                eq = conn.execute(f"SELECT equity, drawdown FROM '{equity_path}' ORDER BY ts_event_ns ASC").fetchall()
+                eq = conn.execute("SELECT equity, drawdown FROM read_parquet(?) ORDER BY ts_event_ns ASC",
+                                  [str(equity_path)]).fetchall()
                 if eq:
                     summary["initial_equity"] = eq[0][0]
                     summary["final_equity"] = eq[-1][0]
@@ -479,7 +548,8 @@ def read_nautilus_tearsheet(backtest_id: str) -> str:
                     summary["max_drawdown_pct"] = round(max(r[1] for r in eq) * 100, 4)
 
             if trades_path.exists():
-                tr = conn.execute(f"SELECT realized_pnl, realized_return, entry_price, exit_price FROM '{trades_path}'").fetchall()
+                tr = conn.execute("SELECT realized_pnl, realized_return, entry_price, exit_price FROM read_parquet(?)",
+                                  [str(trades_path)]).fetchall()
                 summary["total_trades"] = len(tr)
                 if tr:
                     wins = [r for r in tr if r[0] > 0]

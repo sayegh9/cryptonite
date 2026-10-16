@@ -12,6 +12,9 @@ _UNIT_NS = {"m": 60 * 10**9, "h": 3600 * 10**9, "d": 86400 * 10**9, "w": 7 * 864
 # every statement in that string, so a caller-supplied value is checked here, before any path is built.
 # The timeframes are the ones the lake stores (scanner resampler TIMEFRAME_MINUTES; the API stream allows the same).
 LAKE_TIMEFRAMES = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
+# The venue and market the lake is written under (analytics_catalog: binance/spot), lowercase as on disk
+LAKE_VENUES = frozenset({"binance"})
+LAKE_MARKETS = frozenset({"spot"})
 _LAKE_SYMBOL = re.compile(r"[A-Z0-9]{2,30}")
 
 
@@ -20,6 +23,9 @@ def lake_symbol(symbol: str, venue: str = "binance") -> str:
 
     Raises ``ValueError("invalid symbol")`` for anything that is not a plain 2 to 30 character alphanumeric symbol
     (quotes, slashes, dots other than the venue suffix, spaces, perpetual ids such as ``BTCUSDT-PERP``)."""
+    # ASCII only, checked before upper(): some non-ASCII letters upper-case to ASCII ('ı' gives 'I')
+    if not symbol.isascii():
+        raise ValueError("invalid symbol")
     base = symbol
     suffix = f".{venue.upper()}"
     if base.upper().endswith(suffix):
@@ -74,6 +80,12 @@ class AnalyticsQueryEngine:
         venue: str = "binance",
         market_type: str = "spot",
     ) -> str:
+        venue = venue.lower()
+        market_type = market_type.lower()
+        if venue not in LAKE_VENUES:
+            raise ValueError("invalid venue")
+        if market_type not in LAKE_MARKETS:
+            raise ValueError("invalid market type")
         symbol = lake_symbol(symbol, venue)
         timeframe = lake_timeframe(timeframe)
         pattern = (
@@ -168,6 +180,9 @@ class AnalyticsQueryEngine:
         end_ns: int | None = None,
     ) -> pl.DataFrame:
         glob_path = self._get_derivatives_glob_path(symbol, timeframe)
+        # interpolated into the SQL below: integers only
+        start_ns = None if start_ns is None else int(start_ns)
+        end_ns = None if end_ns is None else int(end_ns)
         where_clauses = []
         if start_ns is not None:
             where_clauses.append(f"ts_event_ns >= {start_ns}")
@@ -205,7 +220,7 @@ class AnalyticsQueryEngine:
     ) -> list[tuple[int, int]]:
         """Identify missing gaps in the sequence of bars."""
         glob_path = self._get_glob_path(symbol, timeframe)
-        step_ns = step_seconds * 1_000_000_000
+        step_ns = int(step_seconds) * 1_000_000_000  # interpolated into the SQL below: an integer only
         query = f"""
             WITH ranked AS (
                 SELECT ts_event_ns,
