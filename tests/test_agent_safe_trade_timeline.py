@@ -189,8 +189,9 @@ async def closed_trade(conn, requester, command_type, payload, *, opened=NOW - t
     await order(conn, target, f"AI-{entry.hex[:12].upper()}", XRP, "BUY", opened - timedelta(seconds=4), 10, 0.5)
     pid = await position(conn, target, opened, qty=10, entry=0.5, realized=1, closed_at=opened + timedelta(hours=5))
     close = await command(conn, command_type, target, payload, requester, opened + timedelta(hours=4), mid=mid)
-    await order(conn, target, f"CLOSE-{uuid.uuid4().hex[:8].upper()}", XRP, "SELL", opened + timedelta(hours=4, seconds=1),
-                10, 0.6)
+    # a SUBMIT_ORDER close fills under its own AI-<command> id, as the orchestrator gives it; a CLOSE_POSITION has none
+    closing = f"AI-{close.hex[:12].upper()}" if command_type == "SUBMIT_ORDER" else f"CLOSE-{uuid.uuid4().hex[:8].upper()}"
+    await order(conn, target, closing, XRP, "SELL", opened + timedelta(hours=4, seconds=1), 10, 0.6)
     return pid, close
 
 
@@ -349,6 +350,50 @@ async def test_close_reason_follows_the_command_that_closed_the_position(conn, r
     assert r["close_command_id"] == close
     assert r["close_reason"] == expected
     assert r["exit_price"] == Decimal("0.6")  # the first SELL fill after the close command
+
+
+# --- exit_price: the closing fill of that close, never a later position's fill -------------------------------------
+
+async def test_a_close_without_its_own_order_has_no_exit_price_even_if_a_later_sell_fills(conn):
+    await account(conn)
+    mid = await mandate(conn, "nofill")
+    target = mandate_instance(mid)
+    await instance(conn, target)
+    opened = NOW - timedelta(days=3)
+    pid = await position(conn, target, opened, qty=10, entry=0.5, realized=0, closed_at=opened + timedelta(hours=5))
+    close = await command(conn, "CLOSE_POSITION", target, {"instrument_id": XRP, "reason": "HARD_STOP"},
+                          "risk:exit_monitor", opened + timedelta(hours=4), mid=mid)
+    # a later position is closed by a SELL that fills after this one closed: it is not this trade's exit
+    later = opened + timedelta(hours=6)
+    await position(conn, target, later, qty=5, entry=0.6, realized=0, closed_at=later + timedelta(hours=1))
+    await order(conn, target, f"CLOSE-{uuid.uuid4().hex[:8].upper()}", XRP, "SELL", later + timedelta(hours=1), 5, 0.9)
+
+    r = await row(conn, pid)
+    assert r["close_command_id"] == close and r["close_reason"] == "HARD_STOP"
+    assert r["exit_price"] is None
+
+
+async def test_a_sell_card_close_takes_its_own_fill_not_an_earlier_unrelated_sell(conn):
+    await account(conn)
+    mid = await mandate(conn, "ownfill")
+    target = mandate_instance(mid)
+    await instance(conn, target)
+    opened = NOW - timedelta(days=3)
+    entry = await command(conn, "SUBMIT_ORDER", target, {"instrument_id": XRP, "side": "BUY"}, "operator:tester",
+                          opened - timedelta(seconds=5), mid=mid)
+    await order(conn, target, f"AI-{entry.hex[:12].upper()}", XRP, "BUY", opened - timedelta(seconds=4), 10, 0.5)
+    closed = opened + timedelta(hours=5)
+    pid = await position(conn, target, opened, qty=10, entry=0.5, realized=1, closed_at=closed)
+    sell = opened + timedelta(hours=4)
+    card = await command(conn, "SUBMIT_ORDER", target,
+                         {"instrument_id": XRP, "side": "SELL", "source": "brain_order_card"}, "operator:tester",
+                         sell, mid=mid)
+    await order(conn, target, "OTHER-SELL0001", XRP, "SELL", sell + timedelta(seconds=1), 3, 0.99)  # earlier, not ours
+    await order(conn, target, f"AI-{card.hex[:12].upper()}", XRP, "SELL", sell + timedelta(seconds=2), 10, 0.61)
+
+    r = await row(conn, pid)
+    assert r["close_command_id"] == card and r["close_reason"] == "SELL_CARD"
+    assert r["exit_price"] == Decimal("0.61")
 
 
 # --- scope: AI-mandate positions of the last 90 days only -----------------------------------------------------------

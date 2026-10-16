@@ -23,8 +23,10 @@ Rules the view applies (derived only from what the base tables record):
   gives EXIT_DEBATE, ``risk:exit_monitor`` gives the payload's reason (HARD_STOP or TRAILING_STOP), and
   ``risk:mandate_monitor`` gives MANDATE_HALT. Any other CLOSE_POSITION (the operator's) gives MANUAL. Anything else is
   null.
-- The exit price is the average fill of the first order after the close command on the closing side (SELL, or BUY for a
-  short). A closed position reads FLAT with quantity 0, so its side comes from the entry command and its return is
+- The exit price is the average fill of the close's own order, and it is never a later position's fill. A SUBMIT_ORDER
+  close matches its order by ``client_order_id`` (the payload's, else ``AI-`` plus the first 12 hex digits of the command).
+  A CLOSE_POSITION has no order id, so it takes the first SELL fill from the close to ``closed_at``. Null when nothing
+  matches. A closed position reads FLAT with quantity 0, so its side comes from the entry command and its return is
   realized_pnl over the entry fill's filled quantity times the entry price, and is null while the position is open.
 """
 
@@ -149,9 +151,13 @@ def upgrade() -> None:
             WHERE cl.command_id IS NOT NULL
               AND o.instance_id = p.instance_id
               AND o.instrument_id = p.instrument_id
-              AND o.side = CASE WHEN ps.side = 'SHORT' THEN 'BUY' ELSE 'SELL' END
+              AND o.side = 'SELL'
               AND o.filled_qty > 0
               AND o.created_at >= cl.created_at
+              AND o.created_at <= p.closed_at
+              AND (cl.command_type = 'CLOSE_POSITION'
+                   OR o.client_order_id = COALESCE(cl.payload->>'client_order_id',
+                                                   'AI-' || upper(left(replace(cl.command_id::text, '-', ''), 12))))
             ORDER BY o.created_at, o.client_order_id
             LIMIT 1
         ) cf ON TRUE
