@@ -172,6 +172,7 @@ overfitting on out-of-sample before paying for a Pro review, and stores the repo
 | 031 | `research_reports` |
 | 036 | `ai_model_routes.shadow_model`, `ai_model_routes.shadow_sample_rate`, `ai_shadow_results` (F2) |
 | 046 | `agent_safe_mandate_health`, `agent_safe_debate_verdicts`, `agent_safe_open_approvals`, `agent_safe_reflections`, `agent_safe_risk_latches`, `agent_safe_daily_loss` (read-only views for the Brain, `security_barrier`) |
+| 047 | `agent_safe_trade_timeline` (read-only view for the Brain, `security_barrier`: one row per AI-mandate position opened in the last 90 days; the entry, its debate, the close and the outcome). Indexes `ix_execution_commands_target_created` and `ix_paper_orders_instance_instr_created`. `debate_runs.status` gains the value `GATE_REFUSED` (no schema change) |
 
 ## 9. Redis keys the program added
 

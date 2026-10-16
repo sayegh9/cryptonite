@@ -154,12 +154,26 @@ Effort: S ≈ under a day, M ≈ 1–3 days, L ≈ more. The specialist in brack
 
 | WS | What | Owns | Runs | Specialist |
 |---|---|---|---|---|
-| 3A | **Card pre-flight.** A read-only API dry run: same sizing and `check_mandate` as approval, plus kill switch, exit-monitor heartbeat and feed. The card shows "would size to $X" or "would be refused: CODE". The approval re-check stays the authority. | `routes/brain.py`, `execution` read-only helper, web `OrderCard` | first | Backend Architect + Frontend Developer |
-| 3B | **Lessons on cards.** Move `recall_lessons` into a shared package. Attach the top 3 lessons to each card deterministically; show "no lessons" on failure. | `packages/agents/.../lessons.py`, `debate_worker/main.py` import, `brain/agent.py` hook | after 3A | AI Engineer |
-| 3C | **Debate follow-through.** The Brain turn's trace and session pass to the debate (contextvar set in `_guard`). The `debate_summary` card follows its run to verdict, approval and outcome, and is written into the session once (#86 pattern). | `gateway/gateway.py`, `tools.py`, `routes/brain.py`, `brain/widgets.py`, web card | after 3B | Multi-Agent Systems Architect |
+| 3A | **Card pre-flight.** A read-only API dry run (`GET …/cards/{widget_id}/preflight`) that plans the card the way approval does, through one shared `_plan_card`: the exit monitor, feed, mandate, holding, duplicate and room checks. The card shows "Would size to …", "Would sell …", "Would be refused: …" (then "Approve anyway…") or the needs-a-mandate line. It has no kill-switch check, so approval still refuses under the kill switch. The approval re-check stays the authority. | `routes/brain.py` (`_plan_card`), web `OrderCard` | first | Backend Architect + Frontend Developer |
+| 3B | **Lessons on cards.** `brain/lessons.py` reads the card's instrument from `agent_safe_reflections`: at most three, from the last 90 days, largest \|alpha\| first. It is deterministic, not semantic. The card shows them under "Past lessons (n)". A read error shows no lessons, and no "no lessons" line. Lessons never enter the prompt. | `brain/lessons.py` (new), `brain/agent.py` hook, `brain/widgets.py`, web `OrderCard` | after 3A | AI Engineer |
+| 3C | **Debate follow-through.** The `debate_summary` card follows its run to the verdict and the approval state (not the outcome). The session gets one "Debate for …" line per final state (#86 pattern). A Brain debate that the safety gate refuses is recorded as `GATE_REFUSED`. Trace-id linking was descoped. | `services/debate_worker/main.py`, `brain/widgets.py`, `brain_outcomes.py`, `routes/brain.py`, web debate card, Action Inbox | after 3B | Multi-Agent Systems Architect |
 | 3D | **Structured rationale.** `OrderProposal` gains thesis, evidence (tool, field, value, as_of), invalidation, horizon and confidence. The card renders them. | `brain/widgets.py`, `brain/toolset.py`, web card | after 3C | AI Engineer + Frontend Developer |
-| 3E | **Trusted system lines.** `<system_event>` wrapping for server-written lines, escaping of lookalikes, and a prompt rule that tool text is data. | `brain/memory.py`, `brain_outcomes.py`, tests | parallel to 3A | Prompt Engineer (**+ Opus security review**) |
-| 3F | **Trade post-mortem.** Migration 047 `agent_safe_trade_timeline` (card → debate → fills → stop source and blind time → outcome → reflection), a `get_trade_timeline` tool and a `/postmortem` chip. | `047_*`, `tools.py`, `brain/toolset.py`, web chips | after 3D | Data Engineer + Frontend Developer |
+| 3E | **Trusted system lines.** `<system_event>` wrapping for server-written lines, escaping of lookalikes, and a prompt rule that tool text is data. The summarizer keeps order outcomes only from those blocks. | `brain/memory.py`, `brain/agent.py` (rule 6), tests | parallel to 3A | Prompt Engineer (**+ Opus security review**) |
+| 3F | **Trade post-mortem.** Migration 047 `agent_safe_trade_timeline`: one row per AI-mandate position of the last 90 days, with the entry (card or debate, and its summary), the debate verdict, the exit price, how it closed (hard or trailing stop, sell card, exit debate, mandate halt, or manual), realized P&L and return, the 24h and 72h outcome, and the reflection. A `get_trade_timeline` tool, and the `/postmortem [SYMBOL]` composer command. | `047_*`, `tools.py`, `brain/toolset.py`, `brain/agent.py` (rule 1), web composer | after 3D | Data Engineer + Frontend Developer |
+
+### Decisions taken during Wave 3
+
+- **The card pre-flight has no kill-switch check.** It covers the sizing, mandate, feed, exit-monitor and holding checks.
+  Approval still refuses under the kill switch.
+- **Lessons are deterministic, not semantic.** They come from the same instrument, from the last 90 days, largest
+  |alpha| first. They are never in the Brain's prompt.
+- **Trace-id linking between a Brain turn and its debate is descoped.**
+- **A debate card follows the debate to its verdict and approval, not to its outcome.** The 24h and 72h outcome is in
+  the trade timeline (3F).
+- **Historic exit-monitor blind time is descoped.** It is not stored per position, so the timeline does not show it.
+- **Per-mandate room is covered by the card's dry run,** not by `get_ai_state` (see 2B).
+- **3D was built in an isolated worktree as the cloud pilot.** The remote option ran locally.
+- **`/postmortem` is a composer command,** not a chip.
 
 ### Wave 4: measuring quality
 
