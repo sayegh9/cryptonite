@@ -94,6 +94,15 @@ def test_the_allocation_reads_as_the_web_showed_it(client, worker, allocation, s
     assert worker.notes[-1]["content"] == f"Operator rejected order card card-1 (BUY BTCUSDT.BINANCE, {shown}% of mandate)."
 
 
+@pytest.mark.parametrize("stored", ["BTCUSDT", "btc usdt", "<b>BTC</b>", ""])
+def test_a_card_stored_with_a_non_matching_instrument_is_named_as_an_order_card(client, worker, stored):
+    """A card stored before the instrument pattern existed is not echoed as it was stored: the line says "an order card"."""
+    client.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    worker.widgets[0]["instrument_id"] = stored
+    assert _reject(client, uuid.uuid4(), {"widget_id": "card-1", "status": "REJECTED"}).status_code == 200
+    assert worker.notes[-1]["content"] == "Operator rejected order card card-1 (BUY an order card, 5% of mandate)."
+
+
 def test_an_unknown_card_is_not_found_and_nothing_is_written(client, worker):
     client.cookies.set(COOKIE_NAME, OPERATOR_SID)
     res = _reject(client, uuid.uuid4(), {"widget_id": "nope", "status": "REJECTED"})
