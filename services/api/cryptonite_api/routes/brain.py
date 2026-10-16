@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -297,19 +298,23 @@ class CardApproveRequest(BaseModel):
     mandate_id: uuid.UUID | None = None  # default: the single ACTIVE mandate that allows the instrument
 
 
-@router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
-async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_human_operator),
-                             req: CardApproveRequest | None = None):
-    """Approve an order card: one PAPER order inside a mandate, at most once, protected by the exit
-    monitor's stops. The approval is recorded in ``ai_approvals`` and bound to its command (A5.3)."""
-    op = operator_id(auth)
-    if len(widget_id) > 128:
-        raise HTTPException(status_code=422, detail="Invalid card id")
-    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), widget_id)
-    if card is None:
-        raise HTTPException(status_code=404, detail="Order card not found")
-    if card.get("status") == "APPROVED" and card.get("command_id"):
-        return {"command_id": card["command_id"], "status": "APPROVED", "replayed": True}
+@dataclass(frozen=True)
+class CardPlan:
+    """An order card as approve sizes and queues it now. Built only by ``_plan_card``, which reads and never writes."""
+    mandate: Mandate
+    allocation: Decimal  # % of the mandate budget: the card's, cut to the room a BUY has left under its position limit
+    budget: Decimal  # USD: the allocation of the mandate's capital budget
+    summary: str
+    held: Decimal  # the spot quantity a SELL closes (0 for a BUY)
+    protection: dict[str, Any]  # the exit monitor's heartbeat: the stops that protect the position
+    trace_id: uuid.UUID | None
+    source_ref: str  # the approval is recorded under this: "<session>:<card>"
+
+
+async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], mandate_id: uuid.UUID | None) -> CardPlan:
+    """Every check approve makes before it claims a card, in the same order, with the same refusals and details.
+    Reads only: nothing is claimed, noted, recorded or queued here, so the dry run (preflight) cannot disagree with
+    approve about what would be refused or how big the order would be."""
     if card.get("status") not in ("PENDING_APPROVAL", "APPROVED"):
         raise HTTPException(status_code=409, detail=f"The card is {card.get('status')}")
 
@@ -326,8 +331,8 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     # Every AI order trades inside a mandate (A5.1); resolve it before the card is claimed
     pool = request.app.state.pool
     async with pool.acquire() as conn:
-        mandate, why = await resolve_mandate_for(conn, card["instrument_id"], req.mandate_id if req else None)
-    if card["side"] == "SELL" and not (req and req.mandate_id) and (mandate is not None or why == "NO_MANDATE"):
+        mandate, why = await resolve_mandate_for(conn, card["instrument_id"], mandate_id)
+    if card["side"] == "SELL" and not mandate_id and (mandate is not None or why == "NO_MANDATE"):
         # A SELL closes a holding, and REDUCE_RISK is allowed on a PAUSED or HALTED mandate (check_mandate and the
         # orchestrator gate). When the mandate that would be used holds none of the instrument, the stopped mandate
         # that holds it is the one the SELL closes in. An ACTIVE mandate that holds it is used as before
@@ -371,7 +376,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     # (3 XRP cards of one trace were approved within 6 s); a twin of an approved card is refused, unclaimed
     trace = card.get("trace_id")
     trace_id = uuid.UUID(trace) if _is_uuid(trace) else None
-    source_ref = f"{sid}:{widget_id}"
+    source_ref = f"{sid}:{card['id']}"  # _find_card matched this card by id: that is the widget id
     if trace_id is not None:
         async with pool.acquire() as conn:
             twin = await _approved_twin(conn, trace_id, card, source_ref)
@@ -394,6 +399,28 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     else:
         summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {allocation:g}% of mandate "
                    f"{mandate.name} (${budget:,.0f})")
+    return CardPlan(mandate=mandate, allocation=allocation, budget=budget, summary=summary, held=held,
+                    protection=protection, trace_id=trace_id, source_ref=source_ref)
+
+
+@router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
+async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_human_operator),
+                             req: CardApproveRequest | None = None):
+    """Approve an order card: one PAPER order inside a mandate, at most once, protected by the exit
+    monitor's stops. The approval is recorded in ``ai_approvals`` and bound to its command (A5.3)."""
+    op = operator_id(auth)
+    if len(widget_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid card id")
+    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), widget_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Order card not found")
+    if card.get("status") == "APPROVED" and card.get("command_id"):
+        return {"command_id": card["command_id"], "status": "APPROVED", "replayed": True}
+    plan = await _plan_card(request, sid, card, req.mandate_id if req else None)
+    mandate, allocation, summary, held = plan.mandate, plan.allocation, plan.summary, plan.held
+    protection, trace_id, source_ref = plan.protection, plan.trace_id, plan.source_ref
+    pool = request.app.state.pool
+
     if card.get("status") == "PENDING_APPROVAL":  # claim it first: a concurrent reject can no longer win
         claimed = await _worker_note(sid, {
             "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "expect_status": "PENDING_APPROVAL",
@@ -451,6 +478,48 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     })
     return {"command_id": command_id, "status": "APPROVED", "protection": protection, "mandate_id": str(mandate.id),
             "approval_id": str(decision.approval_id)}
+
+
+def _refusal_code(detail: str) -> str:
+    """The reason code a refusal's detail starts with: "MANDATE_PAUSED: ..." is MANDATE_PAUSED. The details that have
+    no "CODE:" prefix are the card's own status ("The card is REJECTED", NOT_PENDING) and, for any other, REFUSED."""
+    if detail.startswith("The card is "):
+        return "NOT_PENDING"
+    code, sep, _ = detail.partition(":")
+    return code if sep else "REFUSED"
+
+
+@router.get("/sessions/{sid}/cards/{widget_id}/preflight")
+async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator),
+                               mandate_id: uuid.UUID | None = Query(default=None)):
+    """The dry run before approve (WS-3A): the mandate and size approve would queue for this card now, or the code and
+    detail of the refusal approve would give. Read only: it claims, notes, records and queues nothing, so the operator
+    sees the outcome before pressing Approve. Auth is an operator session or an operator-scoped machine token, as the
+    other reads of this router; approve itself stays human-only."""
+    if len(widget_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid card id")
+    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}"), widget_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Order card not found")
+    if card.get("status") != "PENDING_APPROVAL":  # approve refuses such a card before it plans it too
+        detail = f"The card is {card.get('status')}"
+        return {"ok": False, "code": "NOT_PENDING", "detail": detail, "needs_mandate": False}
+    try:
+        plan = await _plan_card(request, sid, card, mandate_id)
+    except HTTPException as e:
+        detail = str(e.detail)
+        code = _refusal_code(detail)
+        # approve's NO_MANDATE for a BUY is the one refusal that makes the card offer to create a mandate
+        needs_mandate = code == "NO_MANDATE" and card["side"] == "BUY"
+        return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate}
+    requested = Decimal(str(card["allocation_pct"]))
+    return {
+        "ok": True, "mandate": {"id": str(plan.mandate.id), "name": plan.mandate.name,
+                                "status": str(plan.mandate.status)},
+        "side": card["side"], "allocation_pct": float(plan.allocation), "budget_usd": float(plan.budget),
+        "clipped_from_pct": float(requested) if card["side"] == "BUY" and plan.allocation < requested else None,
+        "sell_quantity": format(plan.held, "f") if card["side"] == "SELL" else None, "summary": plan.summary,
+    }
 
 
 class _DuplicateDecision(Exception):
