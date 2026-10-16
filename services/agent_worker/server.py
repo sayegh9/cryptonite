@@ -17,6 +17,7 @@ from cryptonite_agents.brain import (
     brain_gateway_routes,
 )
 from cryptonite_agents.brain.holdings import ai_spot_holding
+from cryptonite_agents.brain.lessons import card_lessons
 from cryptonite_agents.brain.store import session_cursor
 from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
@@ -135,7 +136,8 @@ async def startup_event():
     app.state.brain = Brain(app.state.gateway, store,
                             holdings=lambda instrument: ai_spot_holding(app.state.pool, instrument),
                             feed=ingest_refusal,
-                            state=lambda: asyncio.to_thread(ai_state_header))
+                            state=lambda: asyncio.to_thread(ai_state_header),
+                            lessons=lambda instrument: asyncio.to_thread(card_lessons, instrument))
 
 @app.on_event("shutdown")
 async def shutdown_event():

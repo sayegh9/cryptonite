@@ -67,6 +67,15 @@ class OrderProposal(BaseModel):
         return self
 
 
+class CardLesson(BaseModel):
+    """A past lesson on an order card. ``lesson_text`` was written by a model: it is shown as quoted data."""
+
+    lesson_text: str
+    outcome: str | None = None
+    alpha_pct: float | None = None
+    created_at: str
+
+
 class OrderCardWidget(OrderProposal):
     kind: Literal["order_card"] = "order_card"
     id: str
@@ -76,6 +85,8 @@ class OrderCardWidget(OrderProposal):
     command_id: str | None = None
     # Why ingest does not feed the symbol (an ``IngestUniverse.refusal`` line), or None when it does
     feed_refusal: str | None = None
+    # The instrument's past lessons, attached by the Brain from the reader alone (lessons.py); never from the model
+    lessons: list[CardLesson] = Field(default_factory=list, max_length=3)
 
 
 class DebateSummaryWidget(BaseModel):
@@ -120,7 +131,9 @@ def widget_for_tool(
             return TearsheetWidget(id=call_id, backtest_id=backtest_id, metrics=metrics).model_dump()
         if tool == "propose_order":
             # The gate holds ADD_RISK for approval (status DENIED): that is exactly when the card shows
-            card = OrderCardWidget(id=call_id, trace_id=trace_id, **args)
+            # A ``lessons`` argument from the model is dropped here: the Brain sets the field from the reader alone
+            card = OrderCardWidget(id=call_id, trace_id=trace_id,
+                                   **{k: v for k, v in args.items() if k != "lessons"})
             return card.model_dump()
         if tool == "stage_debate_proposal" and status == "OK":
             queued = bool(content) and content.startswith("Success")
