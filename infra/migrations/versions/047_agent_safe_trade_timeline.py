@@ -13,20 +13,19 @@ text is cut to 300 characters.
 Rules the view applies (derived only from what the base tables record):
 - A position belongs to a mandate when its ``instance_id`` is ``AI_MANDATE_`` plus the mandate's id without dashes.
 - The entry is the latest COMPLETED BUY ``SUBMIT_ORDER`` of that instance and instrument in the day before ``opened_at``
-  (an older BUY is not this trade's entry).
-  Its approval is the ``ai_approvals`` row bound to that command. A debate approval's ``source_ref`` is the debate run.
+  (an older BUY is not this trade's entry). Its approval is the ``ai_approvals`` row bound to that command. A debate
+  approval's ``source_ref`` is the debate run.
 - The debate verdict is the latest ``portfolio_decisions`` row of that run. Outcomes are its ``ai_decision_outcomes``
   rows at 24h and 72h. The reflection is the latest ``reflections`` row of that run.
 - The close is the LATEST COMPLETED ``CLOSE_POSITION`` (or SELL ``SUBMIT_ORDER``) of that instance and instrument created
   between ``opened_at`` and ``closed_at``: the command that closed the position. An earlier REDUCE half-close is not the
   close. ``partial_exits`` counts the other SELL and CLOSE commands of that instance and instrument from ``opened_at``
   up to ``closed_at`` (up to now while the position is open), so a trade cut in halves shows it. ``close_reason``
-  follows the close command that wrote it. Approved
-  commands are requested as ``approval:<via>:<who>``, so the payload's ``source`` is read first: ``debate`` or
-  ``exit_debate`` gives EXIT_DEBATE, and ``brain_order_card`` gives SELL_CARD. Then the requester: ``ai:debate_worker``
-  gives EXIT_DEBATE, ``risk:exit_monitor`` gives the payload's reason (HARD_STOP or TRAILING_STOP), and
-  ``risk:mandate_monitor`` gives MANDATE_HALT. Any other CLOSE_POSITION (the operator's) gives MANUAL. Anything else is
-  null.
+  follows the close command that wrote it. Approved commands are requested as ``approval:<via>:<who>``, so the
+  payload's ``source`` is read first: ``debate`` or ``exit_debate`` gives EXIT_DEBATE, and ``brain_order_card`` gives
+  SELL_CARD. Then the requester: ``ai:debate_worker`` gives EXIT_DEBATE, ``risk:exit_monitor`` gives the payload's
+  reason (HARD_STOP or TRAILING_STOP), and ``risk:mandate_monitor`` gives MANDATE_HALT. Any other CLOSE_POSITION (the
+  operator's) gives MANUAL. Anything else is null.
 - The exit price is the average fill of the close's own order, and it is never a later position's fill. A SUBMIT_ORDER
   close matches its order by ``client_order_id`` (the payload's, else ``AI-`` plus the first 12 hex digits of the command).
   A CLOSE_POSITION has no order id, so it takes the first SELL fill from the close to ``closed_at``. Null when nothing
