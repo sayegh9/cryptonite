@@ -1710,3 +1710,89 @@ async def test_a_bare_instrument_becomes_a_card_with_the_platform_id():
                                         ["Waiting for your approval."]).model()):
         events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy SOL"))
     assert [card["instrument_id"] for card in _cards(events)] == ["SOLUSDT.BINANCE"]
+
+
+# --- WS-3D: a structured rationale on the order card (all optional; a card from before it still renders) -------------
+
+STRUCTURED = {
+    **GOOD_ORDER,
+    "thesis": "4H reclaim of 60k on volume; the trend turns up above 60k.",
+    "evidence": [
+        {"source_tool": "get_klines", "field": "close_4h", "value": "60120", "as_of": "2026-10-16T08:00:00Z"},
+        {"source_tool": "get_market_regime", "field": "regime", "value": "trend up"},
+    ],
+    "invalidation": "A 4H close back below 58k.",
+    "horizon": "24h",
+    "confidence": 0.65,
+}
+
+
+def test_order_proposal_accepts_a_full_structured_rationale():
+    proposal = OrderProposal.model_validate(STRUCTURED)
+    assert proposal.thesis == STRUCTURED["thesis"] and proposal.horizon == "24h" and proposal.confidence == 0.65
+    assert [e.source_tool for e in proposal.evidence] == ["get_klines", "get_market_regime"]
+    assert proposal.evidence[0].as_of == "2026-10-16T08:00:00Z" and proposal.evidence[1].as_of is None
+
+
+def test_order_proposal_refuses_more_than_five_evidence_items():
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    item = {"source_tool": "get_klines", "field": "close_4h", "value": "60120"}
+    with pytest.raises(ValidationError):
+        OrderProposal.model_validate({**GOOD_ORDER, "evidence": [item] * 6})
+    assert len(OrderProposal.model_validate({**GOOD_ORDER, "evidence": [item] * 5}).evidence) == 5
+
+
+@pytest.mark.parametrize("confidence", [-0.1, 1.5])
+def test_order_proposal_refuses_a_confidence_outside_zero_to_one(confidence):
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    with pytest.raises(ValidationError):
+        OrderProposal.model_validate({**GOOD_ORDER, "confidence": confidence})
+    assert widget_for_tool("propose_order", {**GOOD_ORDER, "confidence": confidence}, call_id="c-conf") is None
+
+
+def test_order_proposal_refuses_an_unknown_horizon():
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    with pytest.raises(ValidationError):
+        OrderProposal.model_validate({**GOOD_ORDER, "horizon": "2h"})
+
+
+def test_an_old_rationale_only_proposal_still_validates_and_renders():
+    proposal = OrderProposal.model_validate(GOOD_ORDER)
+    assert proposal.thesis is None and proposal.evidence == [] and proposal.invalidation is None
+    assert proposal.horizon is None and proposal.confidence is None
+    old = widget_for_tool("propose_order", GOOD_ORDER, call_id="c-old", status="DENIED")
+    assert old["thesis"] is None and old["evidence"] == [] and old["confidence"] is None
+    assert old["rationale"] == GOOD_ORDER["rationale"]
+
+
+def test_the_model_sees_the_structured_limits_in_the_propose_order_schema():
+    from cryptonite_agents.gateway.providers.pydantic_ai_backend import _as_tool  # noqa: PLC0415
+
+    schema = _as_tool(propose_order, lambda spec: None, []).function_schema.json_schema["properties"]
+    assert schema["evidence"]["maxItems"] == 5
+    assert schema["horizon"]["anyOf"][0]["enum"] == ["1h", "4h", "24h", "3d", "7d"]
+    assert schema["confidence"]["anyOf"][0]["maximum"] == 1 and schema["confidence"]["anyOf"][0]["minimum"] == 0
+
+
+async def test_a_held_proposal_with_structured_args_yields_a_card_carrying_them():
+    with override_model(PLANNER, Script([("propose_order", STRUCTURED)], ["Waiting for your approval."]).model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC"))
+    [card] = _cards(events)
+    assert card["thesis"] == STRUCTURED["thesis"] and card["invalidation"] == STRUCTURED["invalidation"]
+    assert card["horizon"] == "24h" and card["confidence"] == 0.65
+    assert card["evidence"][0] == {"source_tool": "get_klines", "field": "close_4h", "value": "60120",
+                                   "as_of": "2026-10-16T08:00:00Z"}
+    assert card["evidence"][1]["as_of"] is None
+
+
+def test_the_brain_prompt_asks_rule_five_for_the_structured_rationale():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    prompt = " ".join(BRAIN_INSTRUCTIONS.split())  # the wording wraps across lines
+    sentence = ("your suggested stop, a thesis, the evidence behind it (each item naming the tool and the as_of "
+                "time it came from), what would invalidate it, a horizon and your confidence, and a one-line rationale.")
+    assert sentence in prompt
+    assert prompt.index("5. Orders:") < prompt.index(sentence) < prompt.index("The call returns")

@@ -32,6 +32,18 @@ class TearsheetWidget(BaseModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
 
 
+class Evidence(BaseModel):
+    """One fact a proposal rests on: the tool it came from, the field, its value and the time it describes.
+
+    The model wrote it: it is shown on the card as plain text, never as markup.
+    """
+
+    source_tool: str = Field(max_length=40)
+    field: str = Field(max_length=60)
+    value: str = Field(max_length=120)
+    as_of: str | None = Field(default=None, max_length=40)
+
+
 class OrderProposal(BaseModel):
     """What ``propose_order`` may stage. The card is a proposal; the dispatcher still decides."""
 
@@ -46,6 +58,12 @@ class OrderProposal(BaseModel):
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
     rationale: str = Field(default="", max_length=2000)
+    # Optional structured rationale: a card made before these existed still validates and renders without them
+    thesis: str | None = Field(default=None, max_length=300)
+    evidence: list[Evidence] = Field(default_factory=list, max_length=5)
+    invalidation: str | None = Field(default=None, max_length=300)
+    horizon: Literal["1h", "4h", "24h", "3d", "7d"] | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
 
     @field_validator("side", "order_type", mode="before")
     @classmethod
