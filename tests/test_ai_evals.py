@@ -203,7 +203,9 @@ async def test_history_summary_and_the_clock_reach_the_prompt(monkeypatch):
     prompt = seen[0]
     assert re.match(r"## Now\n\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\n\n", prompt)
     assert "## Conversation so far (summary)\nOperator trades SOL on paper." in prompt
-    assert "[09:01] System: Order for card c1 was NOT EXECUTED: exit monitor heartbeat stale." in prompt
+    # The fixture is dated 2026-10-15: on any later UTC day the transcript prefixes the date as well
+    assert re.search(r"\[(10-15 )?09:01\] System: Order for card c1 was NOT EXECUTED: exit monitor heartbeat stale\.",
+                     prompt)
     assert prompt.endswith("## Operator's new message\nDid my SOL buy go through?")
     assert res.passed
 
