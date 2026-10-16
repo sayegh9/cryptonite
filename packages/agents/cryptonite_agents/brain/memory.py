@@ -46,6 +46,11 @@ SUMMARY_INSTRUCTIONS = (
 SYSTEM_EVENT_TAG = re.compile(r"<(?=\s*(?:/\s*)?system[\s_-]*event)", re.IGNORECASE)
 SYSTEM_LINE = re.compile(r"^((?:[^\S\n]|[>*_#\-\d.)\[\]:])*)(system[^\S\n]*[:：])", re.IGNORECASE | re.MULTILINE)
 LINE_BREAK = re.compile("\r\n|[\r\v\f\u0085  ]")
+# Cyrillic and Greek letters that look like the letters of "system". The detectors fold them; displayed text never does.
+CONFUSABLES = str.maketrans({
+    "\u0435": "e", "\u0443": "y", "\u0455": "s", "\u0442": "t", "\u043c": "m",  # е у ѕ т м
+    "\u0405": "S", "\u03a5": "Y", "\u03a4": "T", "\u039c": "M", "\u0415": "E",  # Ѕ Υ Τ Μ Е
+})
 
 
 @dataclass
@@ -75,13 +80,31 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
 
 
+def _matching(text: str) -> tuple[str, list[int]]:
+    """The copy the detectors run on, with format characters dropped and lookalike letters folded to ASCII, and for each
+    of its characters the index of that character in ``text``."""
+    if text.isascii():  # no format characters or lookalikes in ASCII: the copy is the text
+        return text, range(len(text))
+    kept = [i for i, ch in enumerate(text) if unicodedata.category(ch) != "Cf"]
+    return "".join(text[i].translate(CONFUSABLES) for i in kept), kept
+
+
+def _neutral(text: str, *, quote_lines: bool) -> str:
+    """``text`` with every spelling of a system event tag escaped and, when ``quote_lines``, every line that reads as a
+    System line quoted. A tag may span a line break, so the tag pattern runs on a copy with no newline in it (the
+    newline is a space there); no class of a pattern ever crosses a line. Only the characters found change."""
+    chars, index = _matching(text)
+    edits = {index[m.start()]: "&lt;" for m in SYSTEM_EVENT_TAG.finditer(chars.replace("\n", " "))}
+    if quote_lines:
+        for m in SYSTEM_LINE.finditer(chars):
+            pos = index[m.start(2)]
+            edits[pos] = "(quoted) " + text[pos]
+    return "".join(edits.get(i, ch) for i, ch in enumerate(text)) if edits else text
+
+
 def _escape_tags(text: str) -> str:
-    """Text that must not carry a system event tag in any spelling (a summary, server-written content)."""
-    return SYSTEM_EVENT_TAG.sub("&lt;", _fold(text))
-
-
-def _quote_system_lines(text: str) -> str:
-    return SYSTEM_LINE.sub(r"\1(quoted) \2", text)
+    """Text that must not carry a system event tag in any spelling (a summary)."""
+    return _neutral(_fold(text), quote_lines=False)
 
 
 def _indent(text: str) -> str:
@@ -92,14 +115,13 @@ def _indent(text: str) -> str:
 def _operator_text(text: str) -> str:
     """Operator or Brain text as the model sees it: it can never read as a system event, and no line in it can start
     a turn or a System line. Every continuation line is indented."""
-    text = LINE_BREAK.sub("\n", _fold(text))
-    return _indent(_quote_system_lines(SYSTEM_EVENT_TAG.sub("&lt;", text)))
+    return _indent(_neutral(LINE_BREAK.sub("\n", _fold(text)), quote_lines=True))
 
 
 def _system_text(text: str) -> str:
     """Server-written event content: line breaks and tags as for operator text, continuation lines indented. Its
     System-looking lines are not quoted: the server wrote them."""
-    return _indent(SYSTEM_EVENT_TAG.sub("&lt;", LINE_BREAK.sub("\n", _fold(text))))
+    return _indent(_neutral(LINE_BREAK.sub("\n", _fold(text)), quote_lines=False))
 
 
 def transcript(messages: list[dict[str, Any]], today: date | None = None) -> str:
