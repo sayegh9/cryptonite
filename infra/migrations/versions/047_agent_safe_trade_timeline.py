@@ -12,7 +12,8 @@ text is cut to 300 characters.
 
 Rules the view applies (derived only from what the base tables record):
 - A position belongs to a mandate when its ``instance_id`` is ``AI_MANDATE_`` plus the mandate's id without dashes.
-- The entry is the latest COMPLETED BUY ``SUBMIT_ORDER`` of that instance and instrument at or before ``opened_at``.
+- The entry is the latest COMPLETED BUY ``SUBMIT_ORDER`` of that instance and instrument in the day before ``opened_at``
+  (an older BUY is not this trade's entry).
   Its approval is the ``ai_approvals`` row bound to that command. A debate approval's ``source_ref`` is the debate run.
 - The debate verdict is the latest ``portfolio_decisions`` row of that run. Outcomes are its ``ai_decision_outcomes``
   rows at 24h and 72h. The reflection is the latest ``reflections`` row of that run.
@@ -46,6 +47,11 @@ VIEW = "agent_safe_trade_timeline"
 
 
 def upgrade() -> None:
+    # The view's lookups filter these by instance (and instrument) and time. Neither index existed before this migration.
+    op.execute("CREATE INDEX IF NOT EXISTS ix_execution_commands_target_created "
+               "ON execution_commands (target_instance_id, created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_paper_orders_instance_instr_created "
+               "ON paper_orders (instance_id, instrument_id, created_at)")
     op.execute(f"""
         CREATE OR REPLACE VIEW {VIEW} WITH (security_barrier) AS
         SELECT p.position_id,
@@ -94,6 +100,7 @@ def upgrade() -> None:
               AND c.status = 'COMPLETED'
               AND upper(split_part(c.payload->>'instrument_id', '.', 1)) = upper(split_part(p.instrument_id, '.', 1))
               AND c.payload->>'side' = 'BUY'
+              AND c.created_at >= p.opened_at - interval '1 day'
               AND c.created_at <= p.opened_at
             ORDER BY c.created_at DESC, c.command_id DESC
             LIMIT 1
@@ -191,3 +198,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(f"DROP VIEW IF EXISTS {VIEW}")
+    op.execute("DROP INDEX IF EXISTS ix_paper_orders_instance_instr_created")
+    op.execute("DROP INDEX IF EXISTS ix_execution_commands_target_created")

@@ -17,6 +17,10 @@ import pytest
 from migrated_db import REPO_ROOT, migrated_database
 
 VIEW = "agent_safe_trade_timeline"
+LOOKUP_INDEXES = {
+    "ix_execution_commands_target_created": "(target_instance_id, created_at)",
+    "ix_paper_orders_instance_instr_created": "(instance_id, instrument_id, created_at)",
+}
 COLUMNS = [
     "position_id", "mandate_id", "mandate_name", "instrument_id", "side", "quantity", "entry_price", "opened_at",
     "status", "closed_at", "exit_price", "realized_pnl", "return_pct", "entry_command_id", "entry_source",
@@ -415,6 +419,22 @@ async def test_a_close_from_before_the_position_opened_is_not_its_close(conn):
     assert r["partial_exits"] == 0
 
 
+# --- entry: a BUY from more than a day before the open is not this trade's entry ----------------------------------
+
+async def test_an_entry_from_more_than_a_day_before_the_open_is_not_its_entry(conn):
+    await account(conn)
+    mid = await mandate(conn, "stale")
+    target = mandate_instance(mid)
+    await instance(conn, target)
+    opened = NOW - timedelta(days=3)
+    await command(conn, "SUBMIT_ORDER", target, {"instrument_id": XRP, "side": "BUY"}, "operator:tester",
+                  opened - timedelta(days=2), mid=mid)
+    pid = await position(conn, target, opened, qty=10, entry=0.5)
+
+    r = await row(conn, pid)
+    assert r["entry_command_id"] is None and r["entry_source"] is None
+
+
 # --- exit_price: the closing fill of that close, never a later position's fill -------------------------------------
 
 async def test_a_close_without_its_own_order_has_no_exit_price_even_if_a_later_sell_fills(conn):
@@ -493,11 +513,33 @@ async def _view_exists(url):
         await c.close()
 
 
+async def _indexes(url):
+    c = await asyncpg.connect(url)
+    try:
+        rows = await c.fetch("SELECT indexname, indexdef FROM pg_indexes WHERE indexname = ANY($1::text[])",
+                             list(LOOKUP_INDEXES))
+        return {r["indexname"]: r["indexdef"] for r in rows}
+    finally:
+        await c.close()
+
+
+async def test_the_lookups_have_indexes_on_the_columns_they_filter(conn):
+    rows = await conn.fetch("SELECT indexname, indexdef FROM pg_indexes WHERE indexname = ANY($1::text[])",
+                            list(LOOKUP_INDEXES))
+    found = {r["indexname"]: r["indexdef"] for r in rows}
+    assert set(found) == set(LOOKUP_INDEXES)
+    for name, columns in LOOKUP_INDEXES.items():
+        assert columns in found[name], found[name]
+
+
 def test_downgrade_to_046_drops_the_view_and_upgrade_restores_it():
     # Sync test: migrated_database() and _alembic() own their event loops (asyncio.run)
     with migrated_database("cryptonite_viewtldown") as url:
         assert asyncio.run(_view_exists(url))
+        assert set(asyncio.run(_indexes(url))) == set(LOOKUP_INDEXES)
         _alembic(url, "downgrade", "046")
         assert not asyncio.run(_view_exists(url))
+        assert asyncio.run(_indexes(url)) == {}
         _alembic(url, "upgrade", "head")
         assert asyncio.run(_view_exists(url))
+        assert set(asyncio.run(_indexes(url))) == set(LOOKUP_INDEXES)

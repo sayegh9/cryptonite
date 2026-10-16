@@ -275,9 +275,9 @@ async def test_the_symbol_is_a_bound_parameter_never_formatted_into_the_sql(monk
     real = tools._readonly_rows
     seen = []
 
-    def record(statement, params=None):
+    def record(statement, params=None, **kwargs):
         seen.append((statement, params))
-        return real(statement, params)
+        return real(statement, params, **kwargs)
 
     monkeypatch.setattr(tools, "_readonly_rows", record)
     timeline(instrument_id="XRPUSDT")
@@ -286,8 +286,22 @@ async def test_the_symbol_is_a_bound_parameter_never_formatted_into_the_sql(monk
     assert params["instrument"] == XRP
 
 
+async def test_the_timeline_read_turns_jit_off_for_its_own_transaction(monkeypatch):
+    # the planner costs the view's per-trade lookups above jit_above_cost; JIT compiling them took over a second
+    real = tools._readonly_rows
+    seen = []
+
+    def record(statement, params=None, **kwargs):
+        seen.append(kwargs)
+        return real(statement, params, **kwargs)
+
+    monkeypatch.setattr(tools, "_readonly_rows", record)
+    timeline(instrument_id="XRPUSDT")
+    assert seen == [{"jit": False}]
+
+
 async def test_a_database_failure_returns_an_error_not_a_traceback(monkeypatch):
-    def broken(statement, params=None):
+    def broken(statement, params=None, **kwargs):
         raise RuntimeError("database unreachable")
 
     monkeypatch.setattr(tools, "_readonly_rows", broken)

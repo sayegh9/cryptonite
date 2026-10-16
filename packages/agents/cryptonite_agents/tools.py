@@ -47,12 +47,15 @@ def _single_statement(sql: str) -> str | None:
     body = sql.strip().rstrip(";").strip()
     return None if not body or ";" in body else body
 
-def _readonly_rows(statement: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def _readonly_rows(statement: str, params: dict[str, Any] | None = None, *, jit: bool = True) -> list[dict[str, Any]]:
     """Runs one statement as the read-only agent role inside a READ ONLY transaction (always rolled back) with the
-    statement timeout, and returns its rows. Raises on error. Every model-callable SQL read goes through here."""
+    statement timeout, and returns its rows. Raises on error. Every model-callable SQL read goes through here.
+    ``jit=False`` turns JIT off for this transaction only."""
     with get_engine().connect() as conn:
         conn.execute(text("SET TRANSACTION READ ONLY"))
         conn.execute(text(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}"))
+        if not jit:
+            conn.execute(text("SET LOCAL jit = off"))
         rows = [dict(row._mapping) for row in conn.execute(text(statement), params)]
         conn.rollback()
         return rows
@@ -1026,11 +1029,14 @@ def get_trade_timeline(instrument_id: str = "", limit: int = TRADE_TIMELINE_DEFA
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= TRADE_TIMELINE_MAX_LIMIT:
         return json.dumps({"error": f"limit must be a whole number from 1 to {TRADE_TIMELINE_MAX_LIMIT}"})
     try:
+        # jit=False: the planner costs the view's per-trade lookups above jit_above_cost, and JIT compiling them took
+        # over a second of the all-instruments read (2000 trades: about 2.5 s with JIT, about 1.2 s without)
         rows = _readonly_rows(
             f"SELECT {TRADE_TIMELINE_COLUMNS} FROM agent_safe_trade_timeline "
             "WHERE (:any_instrument OR instrument_id = :instrument) "
             "ORDER BY opened_at DESC, position_id LIMIT :limit",
             {"any_instrument": not instrument, "instrument": instrument, "limit": limit},
+            jit=False,
         )
     except Exception as e:
         return json.dumps(_error_section("trade_timeline", e))
