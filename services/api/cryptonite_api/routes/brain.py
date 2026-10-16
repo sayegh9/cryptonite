@@ -480,6 +480,45 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
             "approval_id": str(decision.approval_id)}
 
 
+def _refusal_code(detail: str) -> str:
+    """The reason code a refusal's detail starts with: "MANDATE_PAUSED: ..." is MANDATE_PAUSED. The details that have
+    no "CODE:" prefix are the card's own status ("The card is REJECTED", NOT_PENDING) and, for any other, REFUSED."""
+    if detail.startswith("The card is "):
+        return "NOT_PENDING"
+    code, sep, _ = detail.partition(":")
+    return code if sep else "REFUSED"
+
+
+@router.get("/sessions/{sid}/cards/{widget_id}/preflight")
+async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator),
+                               mandate_id: uuid.UUID | None = Query(default=None)):
+    """The dry run before approve (WS-3A): the mandate and size approve would queue for this card now, or the code and
+    detail of the refusal approve would give. Read only: it claims, notes, records and queues nothing, so the operator
+    sees the outcome before pressing Approve. Auth is an operator session or an operator-scoped machine token, as the
+    other reads of this router; approve itself stays human-only."""
+    if len(widget_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid card id")
+    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}"), widget_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Order card not found")
+    if card.get("status") != "PENDING_APPROVAL":  # approve refuses such a card before it plans it too
+        return {"ok": False, "code": "NOT_PENDING", "detail": f"The card is {card.get('status')}", "needs_mandate": False}
+    try:
+        plan = await _plan_card(request, sid, card, mandate_id)
+    except HTTPException as e:
+        detail = str(e.detail)
+        code = _refusal_code(detail)
+        # approve's NO_MANDATE for a BUY is the one refusal that makes the card offer to create a mandate
+        return {"ok": False, "code": code, "detail": detail, "needs_mandate": code == "NO_MANDATE" and card["side"] == "BUY"}
+    requested = Decimal(str(card["allocation_pct"]))
+    return {
+        "ok": True, "mandate": {"id": str(plan.mandate.id), "name": plan.mandate.name, "status": str(plan.mandate.status)},
+        "side": card["side"], "allocation_pct": float(plan.allocation), "budget_usd": float(plan.budget),
+        "clipped_from_pct": float(requested) if card["side"] == "BUY" and plan.allocation < requested else None,
+        "sell_quantity": format(plan.held, "f") if card["side"] == "SELL" else None, "summary": plan.summary,
+    }
+
+
 class _DuplicateDecision(Exception):
     def __init__(self, twin: Any) -> None:
         super().__init__(str(twin["id"]))
