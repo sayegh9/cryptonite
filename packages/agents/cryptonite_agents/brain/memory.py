@@ -10,6 +10,7 @@ survives reloads, restarts and model changes, and needs no provider types outsid
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -36,10 +37,13 @@ SUMMARY_INSTRUCTIONS = (
 )
 
 # Server-written events are `<system_event>` blocks; an operator or Brain message can type the same look. So those
-# messages get a `<system_event` / `</system_event` tag escaped, and a line starting `System:` quoted, before the model
-# sees them. Only the server's own blocks then carry the authority of a system event.
-SYSTEM_EVENT_TAG = re.compile(r"<(/?system_event)", re.IGNORECASE)
-SYSTEM_LINE = re.compile(r"^((?:[^\S\n]|>)*)(system:)", re.IGNORECASE | re.MULTILINE)
+# messages are folded (NFKC, format characters such as zero-width spaces dropped), every line break becomes a newline,
+# every spelling of the tag is escaped, a line that reads as `System:` is quoted, and continuation lines are indented:
+# no line inside a message can start a turn or a System line. Only the server's own blocks carry a system event's
+# authority.
+SYSTEM_EVENT_TAG = re.compile(r"<(?=\s*/?\s*system[\s_-]*event)", re.IGNORECASE)
+SYSTEM_LINE = re.compile(r"^([\s>*_#\-\d.)\[\]:]*)(system\s*[:：])", re.IGNORECASE | re.MULTILINE)
+LINE_BREAK = re.compile("\r\n|[\r\v\f\u0085  ]")
 
 
 @dataclass
@@ -63,8 +67,15 @@ def _utc(value: Any) -> datetime | None:
         return None
 
 
+def _fold(text: str) -> str:
+    """NFKC (fullwidth '＜' is '<', fullwidth colon is ':'), with format characters such as zero-width spaces dropped."""
+    text = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+
+
 def _escape_tags(text: str) -> str:
-    return SYSTEM_EVENT_TAG.sub(r"&lt;\1", text)
+    """Text that must not carry a system event tag in any spelling (a summary, server-written content)."""
+    return SYSTEM_EVENT_TAG.sub("&lt;", _fold(text))
 
 
 def _quote_system_lines(text: str) -> str:
@@ -72,8 +83,10 @@ def _quote_system_lines(text: str) -> str:
 
 
 def _operator_text(text: str) -> str:
-    """Operator or Brain text as the model sees it: it can never read as a system event."""
-    return _quote_system_lines(_escape_tags(text))
+    """Operator or Brain text as the model sees it: it can never read as a system event, and no line in it can start
+    a turn or a System line. Every continuation line is indented."""
+    text = LINE_BREAK.sub("\n", _fold(text))
+    return _quote_system_lines(SYSTEM_EVENT_TAG.sub("&lt;", text)).replace("\n", "\n    ")
 
 
 def transcript(messages: list[dict[str, Any]], today: date | None = None) -> str:
