@@ -490,7 +490,7 @@ function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; 
     if (preflight.needs_mandate) {
       return (
         <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
-          No ACTIVE mandate allows {symbol} yet: approving creates one (TOTP).
+          No ACTIVE mandate allows {symbol} yet: approving creates one (TOTP)
         </p>
       );
     }
