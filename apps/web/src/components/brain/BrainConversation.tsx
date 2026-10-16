@@ -17,6 +17,20 @@ const STARTERS = [
   "What has the scanner flagged for ETHUSDT today?",
 ];
 
+/** /postmortem [SYMBOL]: a trade review question. The symbol is normalised as the watchlist does (XRP -> XRPUSDT). */
+const POSTMORTEM = /^\/postmortem(?:\s+([\s\S]*))?$/i;
+const QUOTE_ASSET = /(USDT|BTC|FDUSD)$/;
+
+/** The question to send for `/postmortem <arg>`, or null when the argument is not a symbol (then nothing is sent). */
+function postmortemPrompt(arg: string): string | null {
+  if (!arg) return "Reconstruct our most recent closed AI trade: entry, verdict, how it closed, P&L and the lesson.";
+  // A venue form such as XRPUSDT.BINANCE names the same symbol
+  const base = arg.trim().toUpperCase().replace(/\.[A-Z]+$/, "");
+  const symbol = QUOTE_ASSET.test(base) ? base : `${base}USDT`;
+  if (!/^[A-Z0-9]{2,20}$/.test(symbol)) return null;
+  return `Why did we win or lose on ${symbol}? Reconstruct the last trade: entry, verdict, how it closed, P&L and the lesson.`;
+}
+
 const TOOL_LABELS: Record<string, string> = {
   get_live_market_data: "live prices",
   show_price_chart: "chart",
@@ -148,6 +162,13 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
       setDraft("");
       return;
     }
+    const pm = POSTMORTEM.exec(t);
+    if (pm) {
+      // An argument that is not a symbol leaves the draft in place, so the operator can correct it
+      const prompt = postmortemPrompt(pm[1] ?? "");
+      if (prompt) void sendBrainMessage(prompt);
+      return;
+    }
     void sendBrainMessage(t);
   };
 
@@ -205,7 +226,7 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
               }
             }}
             rows={compact ? 1 : 2}
-            placeholder="Ask the Brain… (/why opens the last trace, /new starts over)"
+            placeholder="Ask the Brain… (/why opens the last trace, /new starts over, /postmortem [SYMBOL] reviews a trade)"
             className="min-h-[36px] flex-1 resize-none rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 focus:border-cyan-600 focus:outline-none"
           />
           {streaming ? (

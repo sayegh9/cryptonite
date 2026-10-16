@@ -1317,4 +1317,48 @@ test.describe("Debate cards follow their run", () => {
     expect(Object.values(asks)).toEqual([0, 0, 0, 0, 0, 0, 0]);
     expect(reactErrors).toEqual([]);
   });
+
+  /** /postmortem turns the composer into a trade review question: the symbol is normalised like the watchlist's */
+  test("/postmortem sends the trade review for a normalised symbol, or for the last closed trade with no symbol", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const calls = await mockBackend(page);
+    await openBrainHome(page);
+    const input = page.getByRole("textbox", { name: "Message the Brain" });
+    const send = page.getByRole("button", { name: "Send to the Brain" });
+    await expect(input).toHaveAttribute("placeholder", /\/postmortem/);
+
+    const review = (symbol: string) =>
+      `Why did we win or lose on ${symbol}? Reconstruct the last trade: entry, verdict, how it closed, P&L and the lesson.`;
+
+    // A bare base asset gets the quote asset; case does not matter
+    await input.fill("/postmortem xrp");
+    await send.click();
+    await expect.poll(() => calls.stream.length).toBe(1);
+    expect(calls.stream[0]).toEqual({ message: review("XRPUSDT"), session_id: null });
+    await expect(input).toHaveValue("");
+    await expect(send).toBeVisible();
+
+    // A symbol that already has its quote asset is kept; a venue suffix is dropped
+    await input.fill("/postmortem XRPUSDT.BINANCE");
+    await input.press("Enter");
+    await expect.poll(() => calls.stream.length).toBe(2);
+    expect(calls.stream[1].message).toBe(review("XRPUSDT"));
+    await expect(send).toBeVisible();
+
+    // No symbol: the most recent closed AI trade
+    await input.fill("/postmortem");
+    await send.click();
+    await expect.poll(() => calls.stream.length).toBe(3);
+    expect(calls.stream[2].message).toBe(
+      "Reconstruct our most recent closed AI trade: entry, verdict, how it closed, P&L and the lesson.",
+    );
+    await expect(send).toBeVisible();
+
+    // A symbol that is not a symbol is not sent; the draft stays so the operator can fix it
+    await input.fill("/postmortem XRP/USD");
+    await send.click();
+    await expect(input).toHaveValue("/postmortem XRP/USD");
+    expect(calls.stream).toHaveLength(3);
+    expect(reactErrors).toEqual([]);
+  });
 });
