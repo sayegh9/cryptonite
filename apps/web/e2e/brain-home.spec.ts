@@ -1077,4 +1077,64 @@ test.describe("Brain Home", () => {
     await expect(card.getByTestId("card-outcome")).toContainText("Filled");
     await expect(card.getByRole("button", { name: "Past lessons (1)" })).toHaveAttribute("aria-expanded", "false");
   });
+
+  /** The structured rationale as the server sends it (confidence 0 to 1; as_of null when the fact has no time) */
+  const STRUCTURED = {
+    thesis: "4H reclaim of 60k on volume; the trend turns up above 60k.",
+    evidence: [
+      { source_tool: "get_klines", field: "close_4h", value: "60120", as_of: "2026-10-16T08:00:00Z" },
+      { source_tool: "get_market_regime", field: "regime", value: "trend up", as_of: null },
+    ],
+    invalidation: "A 4H close back below 58k.",
+    horizon: "24h",
+    confidence: 0.65,
+  };
+
+  test("a card with the structured rationale shows its thesis, evidence, invalidation, horizon and confidence", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const card = await openCard(page, { ...ORDER_CARD, ...STRUCTURED });
+
+    const block = card.getByTestId("brain-card-structured");
+    await expect(block).toBeVisible();
+    await expect(block).toContainText("Thesis");
+    await expect(block).toContainText("4H reclaim of 60k on volume; the trend turns up above 60k.");
+    await expect(block).toContainText("Evidence");
+    const items = block.locator("li");
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0)).toHaveText("close_4h = 60120 · get_klines · 2026-10-16T08:00:00Z");
+    await expect(items.nth(1)).toHaveText("regime = trend up · get_market_regime");
+    await expect(block).toContainText("Invalidation");
+    await expect(block).toContainText("A 4H close back below 58k.");
+    await expect(block).toContainText("Horizon 24h · Confidence 65%");
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a card without the structured rationale shows none of its parts", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card).toContainText("4H reclaim of 60k");
+    await expect(card.getByTestId("brain-card-structured")).toHaveCount(0);
+    await expect(card).not.toContainText("Thesis");
+    await expect(card).not.toContainText("Evidence");
+    await expect(card).not.toContainText("Invalidation");
+    await expect(card).not.toContainText("Horizon");
+    await expect(card).not.toContainText("Confidence");
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("the thesis, evidence and invalidation are plain text: markup renders literally", async ({ page }) => {
+    const card = await openCard(page, {
+      ...ORDER_CARD,
+      thesis: "<b>Breakout</b> <img src=x onerror=alert(1)>",
+      evidence: [{ source_tool: "<i>tool</i>", field: "<u>f</u>", value: "<s>v</s>", as_of: null }],
+      invalidation: "<a href=x>below</a>",
+    });
+
+    const block = card.getByTestId("brain-card-structured");
+    await expect(block).toContainText("<b>Breakout</b> <img src=x onerror=alert(1)>");
+    await expect(block.locator("li")).toHaveText("<u>f</u> = <s>v</s> · <i>tool</i>");
+    await expect(block).toContainText("<a href=x>below</a>");
+    await expect(block.locator("b, img, i, u, s, a")).toHaveCount(0);
+  });
 });
