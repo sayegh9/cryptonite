@@ -460,7 +460,9 @@ function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, liv
     lastRead.current = Date.now();
     fetchCardPreflight(sessionId, widget.id, ctrl.signal)
       .then((p) => {
-        if (!ctrl.signal.aborted) setPreflight(p);
+        // Decided elsewhere: the local card may be stale, so there is no refusal to show and the normal label stays
+        const decided = !p.ok && p.code === "NOT_PENDING";
+        if (!ctrl.signal.aborted) setPreflight(decided ? null : p);
       })
       .catch(() => {
         if (!ctrl.signal.aborted) setPreflight(null);
@@ -510,7 +512,7 @@ function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; 
   }
   return (
     <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
-      Would size to {preflight.allocation_pct}% of {preflight.mandate.name} (${preflight.budget_usd})
+      Would size to {preflight.allocation_pct}% of {preflight.mandate.name} (${fmt(Number(preflight.budget_usd), 0)})
       {preflight.clipped_from_pct != null && <> (clipped from {preflight.clipped_from_pct}% — room left)</>}
     </p>
   );
@@ -566,6 +568,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       await approveOrderCard(widget, mandateId);
       setConfirming(false);
     } catch (e: any) {
+      // The server refused: the dry run is read again so an "ok" line never sits next to that refusal
+      checkPreflight();
       const msg: string = e?.message || "Order rejected";
       if (buy && msg.startsWith("NO_MANDATE")) {
         setNeedsMandate(true);

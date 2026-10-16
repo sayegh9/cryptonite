@@ -216,6 +216,8 @@ export async function fetchCardPreflight(sessionId: string, widgetId: string, si
   );
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  // Anything but the contract (a proxy page, an odd body) is not a dry run: the card shows nothing
+  if (typeof body !== "object" || body === null || typeof body.ok !== "boolean") throw new Error("Unexpected dry-run response");
   return body as CardPreflight;
 }
 

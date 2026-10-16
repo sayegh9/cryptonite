@@ -774,7 +774,7 @@ test.describe("Brain Home", () => {
     mandate: { id: "mandate-btc", name: "BTC L1", status: "ACTIVE" },
     side: "BUY",
     allocation_pct: 5,
-    budget_usd: "10000",
+    budget_usd: 10000,
     clipped_from_pct: null,
     sell_quantity: null,
     summary: "Sized at 5% of the mandate.",
@@ -786,7 +786,7 @@ test.describe("Brain Home", () => {
     const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
     const card = await openCard(page, ORDER_CARD);
 
-    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of BTC L1 ($10000)");
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of BTC L1 ($10,000)");
     await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
     expect(reads.count).toBe(1);
     expect(reads.methods).toEqual(["GET"]);
@@ -798,7 +798,7 @@ test.describe("Brain Home", () => {
     const card = await openCard(page, ORDER_CARD);
 
     await expect(card.getByTestId("brain-card-preflight")).toHaveText(
-      "Would size to 10% of BTC L1 ($10000) (clipped from 12% — room left)",
+      "Would size to 10% of BTC L1 ($10,000) (clipped from 12% — room left)",
     );
   });
 
@@ -862,6 +862,75 @@ test.describe("Brain Home", () => {
     await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
   });
 
+  test("a dry run answered NOT_PENDING (decided elsewhere) shows no refusal and keeps the normal label", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const reads = await mockPreflight(page, () => ({
+      json: { ok: false, code: "NOT_PENDING", detail: "NOT_PENDING: the card is APPROVED", needs_mandate: false },
+    }));
+    const answered = page.waitForResponse(/\/cards\/[^/]+\/preflight/);
+    const card = await openCard(page, ORDER_CARD);
+
+    await answered;
+    await page.waitForTimeout(300); // the card has rendered the answer by now
+    expect(reads.count).toBe(1);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve anyway…" })).toHaveCount(0);
+    expect(reactErrors).toEqual([]);
+  });
+
+  /** A 200 that is not the dry-run contract (a proxy's HTML page, an object without a boolean `ok`) is treated as unavailable */
+  async function oddDryRun(page: Page, contentType: string, body: string) {
+    const reactErrors = collectReactErrors(page);
+    let reads = 0;
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/preflight`, (route) => {
+      reads++;
+      return route.fulfill({ status: 200, contentType, body });
+    });
+    const answered = page.waitForResponse(/\/cards\/[^/]+\/preflight/);
+    const card = await openCard(page, ORDER_CARD);
+
+    await answered;
+    await page.waitForTimeout(300);
+    expect(reads).toBe(1);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    expect(reactErrors).toEqual([]);
+  }
+
+  test("a dry run answered with a non-JSON page shows nothing and never blocks Approve", async ({ page }) => {
+    await oddDryRun(page, "text/html", "<!doctype html><html><body>Sign in</body></html>");
+  });
+
+  test("a dry run answered with an object whose ok is not a boolean shows nothing and never blocks Approve", async ({ page }) => {
+    await oddDryRun(page, "application/json", JSON.stringify({ ok: "yes", mandate: { name: "BTC L1" }, allocation_pct: 5 }));
+  });
+
+  test("a refused Approve reads the dry run again, so the refusal replaces the normal line", async ({ page }) => {
+    const refusal = "PRICE_COLLAR_REJECT: the limit is too far from the market";
+    let refused = false;
+    const reads = await mockPreflight(page, () =>
+      refused
+        ? { json: { ok: false, code: "PRICE_COLLAR_REJECT", detail: refusal, needs_mandate: false } }
+        : { json: buyPreflight() },
+    );
+    // Registered after openCard: its mockBackend registers the approve success route, and the later route wins
+    const card = await openCard(page, ORDER_CARD);
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) => {
+      refused = true; // the market moved after the dry run
+      return route.fulfill({ status: 409, json: { detail: refusal } });
+    });
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of BTC L1 ($10,000)");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+
+    await expect(card.getByRole("alert")).toContainText(refusal);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(`Would be refused: ${refusal}`);
+    // mount, the confirm step, then the read after the refused Approve
+    await expect.poll(() => reads.count).toBe(3);
+  });
+
   test("opening the confirm step reads the dry run again", async ({ page }) => {
     const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
     const card = await openCard(page, ORDER_CARD);
@@ -923,7 +992,7 @@ test.describe("Brain Home", () => {
 
     await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
     await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled({ timeout: 15_000 });
-    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of Brain SOLUSDT.BINANCE ($10000)");
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of Brain SOLUSDT.BINANCE ($10,000)");
     expect(reads.count).toBe(1);
     expect(reactErrors).toEqual([]);
   });
