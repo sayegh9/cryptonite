@@ -64,12 +64,13 @@ class BrainAskRequest(BaseModel):
 
 
 class BrainNoteRequest(BaseModel):
-    """An operator note; the only card transition a client may request is PENDING_APPROVAL -> REJECTED
-    (approval goes through the approve endpoint)."""
+    """A card rejection by the operator; the only card transition a client may request is PENDING_APPROVAL -> REJECTED
+    (approval goes through the approve endpoint). The conversation line is written by the server from the card, so
+    ``content`` is accepted for the web client and ignored: a client's text never becomes a system event."""
 
-    content: str = Field(min_length=1, max_length=2000)
-    widget_id: str | None = Field(default=None, max_length=128)
-    status: str | None = Field(default=None, pattern="^REJECTED$")
+    widget_id: str = Field(min_length=1, max_length=128)
+    status: str = Field(pattern="^REJECTED$")
+    content: str | None = Field(default=None, max_length=2000)
 
 
 def operator_id(auth: dict) -> str:
@@ -253,10 +254,24 @@ async def _worker_note(sid: uuid.UUID, body: dict[str, Any]) -> int:
     return resp.status_code
 
 
+def _js_number(value: Any) -> str:
+    """A number as the web prints it (5.0 reads as 5), so the reject line is the one the operator saw."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    number = float(value)
+    return str(int(number)) if number.is_integer() else repr(number)
+
+
 @router.post("/sessions/{sid}/notes", dependencies=OPERATOR_WRITE)
 async def brain_note(sid: uuid.UUID, req: BrainNoteRequest, auth: dict = Depends(require_operator)):
-    body = {"operator_id": operator_id(auth), "content": req.content, "widget_id": req.widget_id,
-            "status": req.status, "expect_status": "PENDING_APPROVAL" if req.status else None}
+    op = operator_id(auth)
+    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), req.widget_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    content = (f"Operator rejected order card {card['id']} ({card['side']} {card['instrument_id']}, "
+               f"{_js_number(card['allocation_pct'])}% of mandate).")
+    body = {"operator_id": op, "content": content, "widget_id": req.widget_id, "status": req.status,
+            "expect_status": "PENDING_APPROVAL"}
     if await _worker_note(sid, body) == 409:
         raise HTTPException(status_code=409, detail="The card is no longer pending")
     return {"status": "ok"}
