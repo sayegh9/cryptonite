@@ -1,7 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, BarChart3, CheckCircle2, FileText, GitBranch, Loader2, ScrollText, XCircle } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  BarChart3,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  FileText,
+  GitBranch,
+  Loader2,
+  ScrollText,
+  XCircle,
+} from "lucide-react";
 import { approveOrderCard, fetchCardOutcome, fetchCardPreflight, rejectOrderCard } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
@@ -9,6 +20,7 @@ import { createMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import type {
   BrainWidget,
+  CardLesson,
   CardPreflight,
   DebateSummaryWidget,
   OrderCardWidget,
@@ -518,6 +530,63 @@ function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; 
   );
 }
 
+/** Alpha as a signed percent in plain words ("+1.2%", "−0.8%"; a true minus sign), with its colour */
+function alphaLabel(alpha: number): { text: string; className: string } {
+  const rounded = Number(alpha.toFixed(1));
+  if (rounded < 0) return { text: `−${fmt(-rounded, 1)}%`, className: "text-rose-400" };
+  return { text: `+${fmt(rounded, 1)}%`, className: rounded > 0 ? "text-emerald-400" : "text-zinc-400" };
+}
+
+/** The lesson's calendar date (YYYY-MM-DD) from the server timestamp; "—" when it is not an ISO date */
+function lessonDate(createdAt: string): string {
+  return /^\d{4}-\d{2}-\d{2}/.exec(createdAt)?.[0] ?? "—";
+}
+
+/**
+ * Past lessons the learner wrote on earlier decisions for this instrument, collapsed under the rationale. The lesson text
+ * was written by a model: it is shown as plain text in quotes (React escapes it), never as HTML.
+ */
+function PastLessons({ lessons }: { lessons: CardLesson[] }) {
+  const [open, setOpen] = useState(false);
+  const listId = useId();
+  if (lessons.length === 0) return null;
+  return (
+    <div className="mt-2" data-testid="brain-card-lessons">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-2xs text-cyan-400 hover:text-cyan-300 hover:underline"
+      >
+        {open ? <ChevronUp className="h-3 w-3" aria-hidden /> : <ChevronDown className="h-3 w-3" aria-hidden />}
+        Past lessons ({lessons.length})
+      </button>
+      <ul id={listId} hidden={!open} className="mt-1 space-y-2 border-l border-zinc-800 pl-2">
+        {lessons.map((lesson, i) => {
+          const alpha = lesson.alpha_pct != null && Number.isFinite(lesson.alpha_pct) ? alphaLabel(lesson.alpha_pct) : null;
+          const outcomeClass =
+            lesson.outcome === "WIN"
+              ? "border-emerald-800 text-emerald-300"
+              : lesson.outcome === "LOSS"
+                ? "border-rose-800 text-rose-300"
+                : "border-zinc-700 text-zinc-300";
+          return (
+            <li key={i} className="text-zinc-400">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs">
+                <span className={`rounded border px-1 font-bold ${outcomeClass}`}>{lesson.outcome ?? "—"}</span>
+                {alpha && <span className={alpha.className}>{alpha.text}</span>}
+                <span className="text-zinc-500">{lessonDate(lesson.created_at)}</span>
+              </div>
+              <p className="mt-0.5 text-zinc-300">{`“${lesson.lesson_text}”`}</p>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -648,6 +717,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       </dl>
       {preflight && <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />}
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
+      <PastLessons lessons={widget.lessons ?? []} />
 
       {feedLocked && feedRefusal ? (
         <FeedGate instrumentId={widget.instrument_id} reason={feedRefusal} onStreaming={unlockFeed} />

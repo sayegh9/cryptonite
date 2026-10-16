@@ -49,6 +49,17 @@ export interface OrderCardWidget {
   avg_fill_price?: string | null;
   /** Set when the live data feed does not stream the symbol (the reason line); null when it does or the feed is unknown */
   feed_refusal?: string | null;
+  /** Past lessons on this instrument, shown collapsed under the rationale; absent or empty hides the disclosure */
+  lessons?: CardLesson[];
+}
+
+/** A past reflection on the same instrument, from the server (at most 3). `lesson_text` is model-written: shown as quoted data. */
+export interface CardLesson {
+  lesson_text: string;
+  outcome: string | null;
+  /** Alpha against the benchmark, in percent (e.g. 1.2 for +1.2%) */
+  alpha_pct: number | null;
+  created_at: string;
 }
 
 /** What an approved card's order did, from /brain/sessions/{id}/cards/{card}/outcome */
