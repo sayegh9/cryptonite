@@ -25,7 +25,7 @@ from cryptonite_agents.brain import memory
 from cryptonite_agents.brain.routes import BRAIN_CHAT, BRAIN_PLAN
 from cryptonite_agents.brain.store import SessionStore
 from cryptonite_agents.brain.toolset import BRAIN_TOOLS
-from cryptonite_agents.brain.widgets import widget_for_tool
+from cryptonite_agents.brain.widgets import OrderProposal, widget_for_tool
 from cryptonite_agents.gateway import (
     BudgetExceeded,
     CallContext,
@@ -38,6 +38,7 @@ from cryptonite_agents.gateway import (
 from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX
 from cryptonite_agents.persona import Persona
 from cryptonite_schemas.mandate import MIN_HOLDING_QTY
+from pydantic import ValidationError
 
 logger = logging.getLogger("cryptonite.agents.brain")
 
@@ -92,6 +93,42 @@ DEGRADED_NOTE = ("\n\nDEGRADED MODE: the main model is unavailable. You can look
                  "propose orders, stage debates or queue research in this turn. Say so if the operator asks for any of "
                  "those.")
 DEGRADED_PREFIX = "_[degraded: answered by the backup model, read-only]_\n\n"
+
+# Why a held propose_order made no card, in plain words, keyed by the field its first validation error names
+_FIELD_REASONS = {
+    "instrument_id": "the instrument id is not valid (expected e.g. SOLUSDT.BINANCE)",
+    "side": "the side must be BUY or SELL",
+    "order_type": "the order type must be MARKET or LIMIT",
+    "allocation_pct": "the allocation must be between 1 and 25 percent",
+    "limit_price": "the limit price must be a positive number",
+    "stop_loss": "the stop loss must be a positive number",
+    "take_profit": "the take profit must be a positive number",
+    "quantity": "the quantity must be a positive number",
+    "rationale": "the rationale is too long",
+}
+
+
+def no_card_note(args: dict[str, Any]) -> str:
+    """The reply's note for a held propose_order that made no card: the first validation error of its arguments, from
+    OrderProposal (never the value itself, which the operator may not see), else a generic reason."""
+    try:
+        OrderProposal.model_validate(args)
+    except ValidationError as e:
+        first = e.errors()[0]
+        loc = first.get("loc") or ()
+        if loc:
+            field = str(loc[0])
+            reason = _FIELD_REASONS.get(field) or f"the {field.replace('_', ' ')} is not valid"
+            if first.get("type") == "missing":
+                reason = f"the {field.replace('_', ' ')} is missing"
+        elif "LIMIT" in str(first.get("msg", "")):  # the model validator: a LIMIT order without its price
+            reason = "a LIMIT order needs a limit price"
+        else:
+            reason = "the proposal is not valid"
+    else:
+        reason = "the proposal was incomplete"
+    return f"No order card: {reason}. Ask again with complete details."
+
 
 CANCELLED_NOTE = "\n\n_[stopped by the operator]_"
 STATE_TIMEOUT_S = 3.0  # a slow system-state read never delays a turn by more than this
@@ -269,8 +306,7 @@ class Brain:
                                         order_cards += 1
                                     yield BrainEvent("widget", {"widget": widget})
                                 elif ev.data["tool"] == "propose_order":  # held, but the arguments cannot make a card
-                                    notes.append("No order card: the proposal was incomplete (a LIMIT order needs a "
-                                                 "limit price). Ask again with complete details.")
+                                    notes.append(no_card_note(args))
                             elif ev.kind == "done" and ev.result is not None:
                                 res = ev.result
                                 content = "".join(text).strip() or str(res.output)
