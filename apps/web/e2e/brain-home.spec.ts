@@ -1231,6 +1231,33 @@ test.describe("Debate cards follow their run", () => {
     expect(reactErrors).toEqual([]);
   });
 
+  test("an old debate card with no message id is never asked, and reads as queued earlier in neutral styling", async ({ page }) => {
+    test.setTimeout(60_000); // one poll interval after mount, to prove it is still never asked
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [debateWidget("call-2", { message_ref: null })]);
+    const card = page.getByTestId("brain-widget-debate");
+    await expect(card.getByTestId("debate-outcome")).toHaveText("Debate queued earlier — see the Debates page");
+    await expect(card).toContainText("QUEUED EARLIER");
+    await expect(card.locator("span", { hasText: "QUEUED EARLIER" })).not.toHaveClass(/text-purple-300/);
+    await page.waitForTimeout(11_000);
+    expect(asks["call-2"]).toBe(0);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("an UNTRACKED answer from the route reads the same way, and the card stops asking", async ({ page }) => {
+    test.setTimeout(60_000); // asks on mount, then one poll interval to prove it is not asked again
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [debateWidget("call-2")], {
+      "call-2": [{ status: "UNTRACKED", run_id: null, verdict: null, reason: null }],
+    });
+    const card = page.getByTestId("brain-widget-debate");
+    await expect(card.getByTestId("debate-outcome")).toHaveText("Debate queued earlier — see the Debates page", { timeout: 15_000 });
+    await expect(card).toContainText("QUEUED EARLIER");
+    await page.waitForTimeout(11_000);
+    expect(asks["call-2"]).toBe(1);
+    expect(reactErrors).toEqual([]);
+  });
+
   test("a final card the store wrote without its answer is asked once on mount and reads the answer", async ({ page }) => {
     test.setTimeout(60_000); // asks once, then waits one poll interval to prove it is not asked again
     const reactErrors = collectReactErrors(page);

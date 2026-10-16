@@ -265,7 +265,8 @@ async def brain_card_outcome(sid: uuid.UUID, widget_id: str, request: Request, a
 async def brain_debate_outcome(sid: uuid.UUID, widget_id: str, request: Request,
                                auth: dict = Depends(require_operator)):
     """Where a Brain debate card's run is, for a card waiting on screen: QUEUED, RUNNING, VERDICT (with its approval),
-    NO_TRADE, GATE_REFUSED or FAILED. Read only: the conversation's line is written by the sync, never by this read."""
+    NO_TRADE, GATE_REFUSED or FAILED. A card with no message id (queued before Wave 3) is UNTRACKED: there is no run to
+    follow, and that is not a failure. Read only: the conversation's line is written by the sync, never by this read."""
     if len(widget_id) > 128:
         raise HTTPException(status_code=422, detail="Invalid card id")
     session = await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}")
@@ -273,8 +274,8 @@ async def brain_debate_outcome(sid: uuid.UUID, widget_id: str, request: Request,
                  if w.get("id") == widget_id and w.get("kind") == "debate_summary"), None)
     if card is None:
         raise HTTPException(status_code=404, detail="Debate card not found")
-    if not card.get("message_ref"):  # no message id to follow: the card cannot reach a verdict
-        return {"status": "FAILED", "run_id": None, "verdict": None, "reason": "NO_RUN_REFERENCE"}
+    if not card.get("message_ref"):  # no message id to follow: the card has no run to reach a verdict
+        return {"status": "UNTRACKED", "run_id": None, "verdict": None, "reason": None}
     async with request.app.state.pool.acquire() as conn:
         return await debate_outcome(conn, card["message_ref"])
 

@@ -21,7 +21,13 @@ import httpx
 import pytest
 from cryptonite_agents.brain.widgets import describe_widget, widget_for_tool
 from cryptonite_agents.gateway import Gateway
-from cryptonite_api.brain_outcomes import debate_line, debate_outcome, debate_read
+from cryptonite_api.brain_outcomes import (
+    debate_line,
+    debate_outcome,
+    debate_patch,
+    debate_read,
+    followed_debates,
+)
 from cryptonite_api.main import create_app
 from cryptonite_api.routes import brain as brain_routes
 from cryptonite_api.routes.auth import COOKIE_NAME
@@ -379,14 +385,34 @@ def test_the_debate_outcome_route_reports_the_run_and_writes_nothing(client, deb
     assert notes == [] and card["status"] == "QUEUED"  # read only: the sync, not this route, writes the line
 
 
-def test_a_debate_card_without_a_message_id_cannot_be_followed(client, debate_worker):
+def test_a_debate_card_without_a_message_id_is_untracked(client, debate_worker):
+    """A card queued before Wave 3 has no message id: it is UNTRACKED (not a failure), and the route reads no run."""
     c, app = client
     card, _, _ = debate_worker
     card.update(message_ref=None)
-    app.state.pool = _DebateDB(_DebateConn())
+    conn = _DebateConn(_run("GATE_REFUSED", "KILL_SWITCH_LATCHED"))
+    app.state.pool = _DebateDB(conn)
     c.cookies.set(COOKIE_NAME, OPERATOR_SID)
     response = c.get(f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/deb-1/debate")
-    assert response.json() == {"status": "FAILED", "run_id": None, "verdict": None, "reason": "NO_RUN_REFERENCE"}
+    assert response.json() == {"status": "UNTRACKED", "run_id": None, "verdict": None, "reason": None}
+    assert conn.calls == []
+
+
+def test_the_sync_skips_an_untracked_debate_card(client, debate_worker):
+    """UNTRACKED is not a final state: the sync reads no run for the card and writes no system line for it."""
+    c, app = client
+    card, notes, _ = debate_worker
+    card.update(message_ref=None)
+    conn = _DebateConn(_run("GATE_REFUSED", "KILL_SWITCH_LATCHED"))
+    assert _open(c, app, conn, str(uuid.uuid4())).status_code == 200
+    assert notes == [] and card["status"] == "QUEUED"
+    assert not any("debate_runs" in sql for sql, _ in conn.calls)
+
+
+def test_an_untracked_card_is_not_followed():
+    old = {"kind": "debate_summary", "id": "deb-old", "status": "QUEUED", "message_ref": None}
+    assert followed_debates({"messages": [{"widgets": [old]}]}) == []
+    assert debate_patch(old, {"status": "UNTRACKED", "reason": None}) is None
 
 
 def test_an_unknown_debate_card_is_not_found(client, debate_worker):

@@ -107,8 +107,13 @@ export type CardPreflight =
     }
   | { ok: false; code: string; detail: string; needs_mandate: boolean };
 
-/** Where a Brain debate stands, from its debate run (QUEUED until the run exists) */
-export const DEBATE_CARD_STATUSES = ["QUEUED", "RUNNING", "VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED"] as const;
+/**
+ * Where a Brain debate stands, from its debate run (QUEUED until the run exists). UNTRACKED: a card queued before Wave 3
+ * has no message id, so there is no run to follow (the route answers it; it is not a failure)
+ */
+export const DEBATE_CARD_STATUSES = [
+  "QUEUED", "RUNNING", "VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED", "UNTRACKED",
+] as const;
 export type DebateCardStatus = (typeof DEBATE_CARD_STATUSES)[number];
 
 /** The debate's verdict. approval_status is null until an approval exists for the run */
