@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BarChart3, CheckCircle2, FileText, GitBranch, Loader2, ScrollText, XCircle } from "lucide-react";
-import { approveOrderCard, fetchCardOutcome, rejectOrderCard } from "@/lib/brain/client";
+import { approveOrderCard, fetchCardOutcome, fetchCardPreflight, rejectOrderCard } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { createMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import type {
   BrainWidget,
+  CardPreflight,
   DebateSummaryWidget,
   OrderCardWidget,
   PriceChartWidget,
@@ -438,6 +439,83 @@ function FeedGate({ instrumentId, reason, onStreaming }: { instrumentId: string;
   );
 }
 
+/** The dry run is read again at most this often when the operator only switches back to the window */
+const PREFLIGHT_FOCUS_MS = 5_000;
+
+/**
+ * What Approve would do right now: read on mount (while the card can be approved), again by `check` when the operator
+ * opens the confirm step, and on window focus (at most every 5 s). It fails quiet: an unavailable dry run shows nothing
+ * and never blocks Approve, the server stays the authority.
+ */
+function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, live: boolean) {
+  const [preflight, setPreflight] = useState<CardPreflight | null>(null);
+  const inflight = useRef<AbortController | null>(null);
+  const lastRead = useRef(0);
+
+  const check = useCallback(() => {
+    if (!sessionId) return;
+    inflight.current?.abort();
+    const ctrl = new AbortController();
+    inflight.current = ctrl;
+    lastRead.current = Date.now();
+    fetchCardPreflight(sessionId, widget.id, ctrl.signal)
+      .then((p) => {
+        if (!ctrl.signal.aborted) setPreflight(p);
+      })
+      .catch(() => {
+        if (!ctrl.signal.aborted) setPreflight(null);
+      });
+  }, [sessionId, widget.id]);
+
+  useEffect(() => {
+    if (!live) return;
+    check();
+    const onFocus = () => {
+      if (Date.now() - lastRead.current >= PREFLIGHT_FOCUS_MS) check();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      inflight.current?.abort();
+    };
+  }, [live, check]);
+
+  return { preflight: live ? preflight : null, check };
+}
+
+/** The dry run in plain words, under the size row: the sizing, the sell, the mandate Approve would create, or the refusal */
+function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; instrumentId: string }) {
+  const symbol = instrumentId.split(".")[0];
+  if (!preflight.ok) {
+    if (preflight.needs_mandate) {
+      return (
+        <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
+          No ACTIVE mandate allows {symbol} yet: approving creates one (TOTP).
+        </p>
+      );
+    }
+    return (
+      <p role="note" data-testid="brain-card-preflight" className="mt-2 flex items-start gap-1 text-amber-300">
+        <AlertTriangle className="mt-px h-3 w-3 flex-none" aria-hidden />
+        <span>Would be refused: {preflight.detail}</span>
+      </p>
+    );
+  }
+  if (preflight.side === "SELL") {
+    return (
+      <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
+        Would sell {preflight.sell_quantity ?? "the whole holding"} from {preflight.mandate.name}
+      </p>
+    );
+  }
+  return (
+    <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
+      Would size to {preflight.allocation_pct}% of {preflight.mandate.name} (${preflight.budget_usd})
+      {preflight.clipped_from_pct != null && <> (clipped from {preflight.clipped_from_pct}% — room left)</>}
+    </p>
+  );
+}
+
 function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -459,6 +537,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const feedLocked = !!feedRefusal && !fed;
   const sessionId = useBrainStore((s) => s.sessionId);
   useCardOutcome(widget, sessionId);
+  // Only a card that can still be approved is checked: not decided, and not locked by the feed
+  const { preflight, check: checkPreflight } = useCardPreflight(widget, sessionId, pending && !feedLocked);
+  // Approve stays enabled when the dry run says it would be refused (the server decides); the label says so
+  const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate;
 
   const approve = async () => {
     setBusy(true);
@@ -560,6 +642,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <dd className="text-zinc-100">{widget.take_profit ? fmt(widget.take_profit) : "—"}</dd>
         </div>
       </dl>
+      {preflight && <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />}
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
 
       {feedLocked && feedRefusal ? (
@@ -576,10 +659,13 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <button
             type="button"
             disabled={feedLocked}
-            onClick={() => setConfirming(true)}
+            onClick={() => {
+              setConfirming(true);
+              checkPreflight();
+            }}
             className="flex-1 rounded border border-amber-600 bg-amber-600/20 px-2 py-1.5 text-2xs font-bold text-amber-200 hover:bg-amber-600/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Approve…
+            {refused ? "Approve anyway…" : "Approve…"}
           </button>
           <button
             type="button"

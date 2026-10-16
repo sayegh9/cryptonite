@@ -1,6 +1,14 @@
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { readSse } from "./sse";
-import type { BrainSessionPage, BrainSessionSummary, CardOutcome, DecisionTrace, OrderCardWidget, StoredBrainMessage } from "./types";
+import type {
+  BrainSessionPage,
+  BrainSessionSummary,
+  CardOutcome,
+  CardPreflight,
+  DecisionTrace,
+  OrderCardWidget,
+  StoredBrainMessage,
+} from "./types";
 
 /**
  * Brain client: one conversation shared by Brain Home and the Copilot drawer.
@@ -195,6 +203,20 @@ export async function approveOrderCard(card: OrderCardWidget, mandateId?: string
   const commandId = String(res.command_id);
   useBrainStore.getState().updateOrderCard(card.id, { status: "APPROVED", command_id: commandId });
   return commandId;
+}
+
+/**
+ * Dry run of Approve: what the order would size to, or why the server would refuse it. Read-only; it claims, queues and
+ * writes nothing, so it can be asked as often as the operator looks at the card. Throws on failure (the card then shows nothing).
+ */
+export async function fetchCardPreflight(sessionId: string, widgetId: string, signal?: AbortSignal): Promise<CardPreflight> {
+  const res = await fetch(
+    `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(widgetId)}/preflight`,
+    { credentials: "include", cache: "no-store", signal },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  return body as CardPreflight;
 }
 
 export async function rejectOrderCard(card: OrderCardWidget): Promise<void> {
