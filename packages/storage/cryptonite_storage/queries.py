@@ -7,6 +7,40 @@ import duckdb
 import polars as pl
 
 _UNIT_NS = {"m": 60 * 10**9, "h": 3600 * 10**9, "d": 86400 * 10**9, "w": 7 * 86400 * 10**9}
+
+# A symbol and a timeframe become part of a file path that DuckDB then reads with read_parquet('...'). DuckDB runs
+# every statement in that string, so a caller-supplied value is checked here, before any path is built.
+# The timeframes are the ones the lake stores (scanner resampler TIMEFRAME_MINUTES; the API stream allows the same).
+LAKE_TIMEFRAMES = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
+# The venue and market the lake is written under (analytics_catalog: binance/spot), lowercase as on disk
+LAKE_VENUES = frozenset({"binance"})
+LAKE_MARKETS = frozenset({"spot"})
+_LAKE_SYMBOL = re.compile(r"[A-Z0-9]{2,30}")
+
+
+def lake_symbol(symbol: str, venue: str = "binance") -> str:
+    """The base symbol the lake is keyed by: ``BTCUSDT.BINANCE`` and ``btcusdt`` both give ``BTCUSDT``.
+
+    Raises ``ValueError("invalid symbol")`` for anything that is not a plain 2 to 30 character alphanumeric symbol
+    (quotes, slashes, dots other than the venue suffix, spaces, perpetual ids such as ``BTCUSDT-PERP``)."""
+    # ASCII only, checked before upper(): some non-ASCII letters upper-case to ASCII ('ı' gives 'I')
+    if not symbol.isascii():
+        raise ValueError("invalid symbol")
+    base = symbol
+    suffix = f".{venue.upper()}"
+    if base.upper().endswith(suffix):
+        base = base[: -len(suffix)]
+    base = base.upper()
+    if not _LAKE_SYMBOL.fullmatch(base):
+        raise ValueError("invalid symbol")
+    return base
+
+
+def lake_timeframe(timeframe: str) -> str:
+    """The timeframe exactly as the lake stores it (``1m``, ``1h``, ...). Raises ``ValueError("invalid timeframe")``."""
+    if timeframe not in LAKE_TIMEFRAMES:
+        raise ValueError("invalid timeframe")
+    return timeframe
 # A live kline arrives a few hundred ms before its rounded close; one recorded more than this before
 # its close was still open when written.
 EARLY_RECEIPT_TOLERANCE_NS = 5 * 10**9
@@ -46,15 +80,21 @@ class AnalyticsQueryEngine:
         venue: str = "binance",
         market_type: str = "spot",
     ) -> str:
-        if symbol.upper().endswith(f".{venue.upper()}"):
-            symbol = symbol.split(".")[0]
+        venue = venue.lower()
+        market_type = market_type.lower()
+        if venue not in LAKE_VENUES:
+            raise ValueError("invalid venue")
+        if market_type not in LAKE_MARKETS:
+            raise ValueError("invalid market type")
+        symbol = lake_symbol(symbol, venue)
+        timeframe = lake_timeframe(timeframe)
         pattern = (
             self.base_dir
             / "binance_klines_enriched"
             / venue.lower()
             / market_type.lower()
             / timeframe
-            / symbol.upper()
+            / symbol
             / "date=*"
             / "*.parquet"
         )
@@ -80,8 +120,12 @@ class AnalyticsQueryEngine:
         at the OPEN (its ``received_at_ns`` is exactly ``ts_event_ns + timeframe - 1 ms``; repaired by
         ``scripts/repair_lake_open_stamped_rows.py``), then the latest receipt, then batch and checksum.
         """
+        timeframe = lake_timeframe(timeframe)  # before any path or SQL is built from the caller's values
         tf_ns = timeframe_ns(timeframe)
         glob_path = self._get_glob_path(symbol, timeframe)
+        # interpolated into the SQL below: integers only
+        start_ns = None if start_ns is None else int(start_ns)
+        end_ns = None if end_ns is None else int(end_ns)
         where_clauses = []
         if start_ns is not None:
             where_clauses.append(f"ts_event_ns >= {start_ns}")
@@ -124,7 +168,8 @@ class AnalyticsQueryEngine:
 
 
     def _get_derivatives_glob_path(self, symbol: str, timeframe: str = "1m") -> str:
-        pattern = self.base_dir / "derivatives" / "binance" / "perpetual" / timeframe / symbol.upper() / "*.parquet"
+        pattern = (self.base_dir / "derivatives" / "binance" / "perpetual" / lake_timeframe(timeframe)
+                   / lake_symbol(symbol) / "*.parquet")
         return str(pattern)
 
     def query_derivatives_df(
@@ -135,6 +180,9 @@ class AnalyticsQueryEngine:
         end_ns: int | None = None,
     ) -> pl.DataFrame:
         glob_path = self._get_derivatives_glob_path(symbol, timeframe)
+        # interpolated into the SQL below: integers only
+        start_ns = None if start_ns is None else int(start_ns)
+        end_ns = None if end_ns is None else int(end_ns)
         where_clauses = []
         if start_ns is not None:
             where_clauses.append(f"ts_event_ns >= {start_ns}")
@@ -172,7 +220,7 @@ class AnalyticsQueryEngine:
     ) -> list[tuple[int, int]]:
         """Identify missing gaps in the sequence of bars."""
         glob_path = self._get_glob_path(symbol, timeframe)
-        step_ns = step_seconds * 1_000_000_000
+        step_ns = int(step_seconds) * 1_000_000_000  # interpolated into the SQL below: an integer only
         query = f"""
             WITH ranked AS (
                 SELECT ts_event_ns,
