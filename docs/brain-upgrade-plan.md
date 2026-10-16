@@ -137,6 +137,18 @@ Effort: S ≈ under a day, M ≈ 1–3 days, L ≈ more. The specialist in brack
 | 2B | **`get_ai_state()` tool + ≤300-token state header.** Covers mandates, room, gates, kill switches, exit-monitor heartbeat, local tier, feed coverage, recent verdicts. Prompt lists the safe views. | `tools.py`, `brain/toolset.py`, `brain/memory.py`, `brain/agent.py` (prompt) | after 2A | AI Engineer |
 | 2C | **Market context.** Wire in `NEWS_SENTIMENT`. Add `get_derivatives` (funding, OI, mark), regime, and the cached scanner brief. Add `as_of` to ticker rows. | `tools.py`, `brain/toolset.py` | after 2B | AI Engineer |
 | 2D | **Routing hygiene.** Output and thinking caps on `brain.plan`. On Pro failure, a degraded read-only answer on Flash, with a toolset that has no `propose_order` and no debate tool, labelled "degraded". | `brain/routes.py`, `brain/agent.py` | after 2C | AI Engineer |
+| 2E | **Card truth.** A BUY card on a PAUSED or HALTED mandate names the stop and is refused before the TOTP code is spent. A used TOTP code says `TOTP_REUSED` and does not count toward the lockout. A SELL closes a holding in a stopped mandate (`AMBIGUOUS_MANDATE` when several hold it). | `routes/ai.py`, `routes/brain.py`, `tests/test_mandate_card_truth.py` | — | — |
+| 2F | **System keys on DB 0.** `agent_worker` reads the ingest universe, heartbeats and perp marks through `SYSTEM_REDIS_URL` (Redis DB 0), so `in_feed` and the card feed notes work. | `infra/docker-compose.yml`, `packages/agents/cryptonite_agents/tools.py` | — | — |
+
+### Decisions taken during Wave 2
+
+- **SELL in a PAUSED or HALTED holder mandate.** The SELL is REDUCE_RISK, sized to the holding, and refused as
+  AMBIGUOUS when several stopped mandates hold the instrument. It is safe because it only reduces risk.
+- **Descoped from 2B:** local-tier health and per-mandate room in `get_ai_state`. Room is checked at approval and
+  moves to 3A.
+- **Descoped from 2C:** the cached scanner brief.
+- **Security hotfix #93 (DuckDB sandbox) merged into Wave 2.** It caps the model-callable DuckDB query in time,
+  memory, threads and result size.
 
 ### Wave 3: cards and the debate loop
 

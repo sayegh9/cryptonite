@@ -1,6 +1,6 @@
 # HANDOFF
 
-Current state of Cryptonite and what is left to do. Updated 2026-10-13 evening (main `c378285`); Brain upgrade Wave 1 on feat/brain-upgrade.
+Current state of Cryptonite and what is left to do. Main `0cffad8` (Wave 1 deployed 2026-10-15 18:47 UTC); Brain upgrade Wave 2 on `feat/brain-upgrade-w2`, with the security hotfix PR #93 merged in.
 Earlier handovers, status reports and review plans were removed from the tree on 2026-10-13; they are in git
 history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
@@ -8,8 +8,8 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
 - **Code:** everything is on `main`; no pull requests are open. CI on GitHub does not run (see Operator items),
   so every merge since #78 was verified locally with the commands below.
-- **Database:** dev DB `cryptonite` at Alembic `045` (single head). `feat/brain-upgrade` has head `046` (read-only
-  `agent_safe_*` views for the Brain); it is not on `main` yet.
+- **Database:** dev DB `cryptonite` at Alembic `046` (single head). `046` adds the read-only `agent_safe_*` views
+  for the Brain.
 - **Services (Docker Compose, project `infra`):** all running and healthy. `api`, `agent_worker`, `orchestrator`,
   `ingest`, `scanner`, `learner`, `debate_worker` ×3, `backtester`, `strategy_sandbox` and `web` run `main`'s code;
   `research_worker`, `exit_monitor`, `derivatives_feed`, `outbox` and `notifier` differ from `main` only in shared
@@ -27,7 +27,16 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
   result, not an error; a broken reply after a card shows MODEL_INCOMPLETE and keeps the card. BUY cards for symbols
   the feed does not cover offer "Onboard X"; their approval is refused with 422, or 503 while the universe is
   unknown. SELL is never blocked by the feed. The Brain sees the UTC time. Debates that the Brain or the research
-  chat starts pass the account safety gate and a cap of 6 a day (`BRAIN_DEBATE_DAILY_CAP`).
+  chat starts pass the account safety gate and a cap of 6 a day (`BRAIN_DEBATE_DAILY_CAP`). Wave 2 on
+  `feat/brain-upgrade-w2`: every turn starts with a System state block (mandates, kill switches and the daily-loss
+  latch, pending approvals, feed coverage, exit monitor). The Brain declines cards under the kill switch, the
+  daily-loss latch or a stopped exit monitor, and BUYs on PAUSED or HALTED mandates. It has tools for news,
+  funding, open interest and mark, and the market regime; ticker rows carry `as_of`. `brain.plan` output is capped
+  at 8000 tokens (thinking 4096). A read-only answer from the backup model is labelled
+  `_[degraded: answered by the backup model, read-only]_`. A BUY card on a PAUSED or HALTED mandate is refused with
+  a link to Mission Control before the TOTP code is spent. A used TOTP code is answered `TOTP_REUSED` and does not
+  count toward the lockout. A SELL closes a stopped mandate's holding. `in_feed` and the card feed notes now work
+  (Redis DB 0).
 - **Web:** the 2026-10-12 UI critique is implemented ([docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md), #81):
   unknown states never read as healthy or empty, one session store, one kill-switch poller per account,
   PAPER and DEMO kill switches told apart.
@@ -74,6 +83,9 @@ docker compose -f infra/docker-compose.yml up -d --no-deps <services>
 - Migrations: take a backup (`scripts/backup.sh db`), then follow [docs/operator-release-checklist.md](docs/operator-release-checklist.md).
 - Which services a change needs: compare the code in each container with `main` (the files under `/app/packages`
   and `/app/services`); a shared package change only matters to the services that import it.
+- `agent_worker` has `SYSTEM_REDIS_URL` (Redis DB 0, the system keys: ingest universe, heartbeats, perp marks). A
+  container created before this change does not have it: recreate `agent_worker`
+  (`up -d --force-recreate --no-deps agent_worker`) to pick it up.
 
 ## Test (CI does not run, so run these before merging)
 
@@ -126,6 +138,8 @@ Last full results (2026-10-13, #86): pytest 1957 passed / 0 failed plus 2 destru
    the off-machine copy has not been proven. Keep `~/.config/cryptonite-backup/passphrase` off this machine too.
 8. **Decisions:** whether to resume a mandate (BTC exposure was 9.6% of a 10% limit, plus a manual 0.03 BTC long);
    the WLD mandate and the wider symbol onboarding list; deleting strategy `ai-gen-62f49193` in the UI.
+9. **Live Brain checks (paid model):** the System state block in a Brain reply, and a BUY card on a PAUSED mandate
+   (it must be refused, with the link to Mission Control, before the TOTP code is spent).
 
 ## Waiting on time
 

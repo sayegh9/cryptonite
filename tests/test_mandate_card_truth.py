@@ -316,6 +316,90 @@ async def test_a_sell_with_two_stopped_holders_behind_an_active_mandate_that_hol
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
 
 
+@pytest.mark.parametrize("status", ["PAUSED", "HALTED"])
+async def test_a_sell_closing_a_stopped_holding_records_no_breach_and_leaves_the_mandate_as_it_was(h, sell_card, status):
+    card, _ = sell_card
+    m = await h.mandate(level=2, instruments=(BTC,), status=status, name=f"btc-{status.lower()}-{uuid.uuid4().hex[:6]}")
+    await hold(h.pool, m.instance_id, "0.005")
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 200, res.text
+    [cmd] = await h.pool.fetch("SELECT * FROM execution_commands")
+    row, _ = await run_seeded_poller(h.pool, cmd["command_id"], Decimal("0.005"))
+    assert row["status"] == "COMPLETED", row["error_message"]
+    after = await h.pool.fetchrow("SELECT status, autonomy_level FROM ai_mandates WHERE id = $1", m.id)
+    assert after["status"] == status and after["autonomy_level"] == 2
+    assert await h.pool.fetchval(
+        "SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'BREACH'", m.id) == 0
+
+
+async def test_an_explicitly_named_active_mandate_is_not_overridden_by_a_stopped_holder(h, sell_card):
+    card, notes = sell_card
+    card.update(instrument_id=XRP)
+    active = await h.mandate(instruments=(XRP,))  # allows XRP, holds none
+    stopped = await h.mandate(instruments=(XRP,), status="PAUSED")
+    await hold(h.pool, stopped.instance_id, "40", XRP)
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers, json={"mandate_id": str(active.id)})
+    assert res.status_code == 409 and res.json()["detail"].startswith("SPOT_SELL_NOT_HELD")
+    assert card["status"] == "PENDING_APPROVAL" and notes == []
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+async def test_an_explicitly_named_stopped_mandate_is_refused_not_swapped_for_its_stopped_holder(h, sell_card):
+    card, notes = sell_card
+    card.update(instrument_id=XRP)
+    named = await h.mandate(instruments=(XRP,), status="PAUSED")  # holds none
+    holder = await h.mandate(instruments=(XRP,), status="HALTED")
+    await hold(h.pool, holder.instance_id, "40", XRP)
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers, json={"mandate_id": str(named.id)})
+    assert res.status_code == 409 and res.json()["detail"].startswith("MANDATE_HALTED")
+    assert card["status"] == "PENDING_APPROVAL" and notes == []
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+async def test_an_archived_mandate_that_holds_the_instrument_is_ignored(h, sell_card):
+    card, _ = sell_card
+    card.update(instrument_id=XRP)
+    archived = await h.mandate(instruments=(XRP,), status="ARCHIVED")
+    paused = await h.mandate(instruments=(XRP,), status="PAUSED")
+    await hold(h.pool, archived.instance_id, "40", XRP)
+    await hold(h.pool, paused.instance_id, "10", XRP)
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 200, res.text  # one live holder, so not AMBIGUOUS
+    assert res.json()["mandate_id"] == str(paused.id)
+    [cmd] = await h.pool.fetch("SELECT * FROM execution_commands")
+    assert Decimal(json.loads(cmd["payload"])["quantity"]) == Decimal("10")
+
+
+async def test_an_archived_mandate_alone_holding_the_instrument_is_no_mandate(h, sell_card):
+    card, notes = sell_card
+    card.update(instrument_id=XRP)
+    archived = await h.mandate(instruments=(XRP,), status="ARCHIVED")
+    await hold(h.pool, archived.instance_id, "40", XRP)
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 409 and res.json()["detail"].startswith("NO_MANDATE")
+    assert card["status"] == "PENDING_APPROVAL" and notes == []
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+async def test_the_ambiguous_sell_says_what_to_do_next(h, sell_card):
+    card, notes = sell_card
+    paused = await h.mandate(instruments=(BTC,), status="PAUSED")
+    halted = await h.mandate(instruments=(BTC,), status="HALTED")
+    await hold(h.pool, paused.instance_id, "0.005")
+    await hold(h.pool, halted.instance_id, "0.005")
+    async with h.client() as c:
+        res = await c.post(APPROVE.format(sid=uuid.uuid4()), headers=h.headers)
+    assert res.status_code == 409
+    assert res.json()["detail"] == (f"AMBIGUOUS_MANDATE: more than one stopped mandate holds {BTC}; nothing was queued; "
+                                    "resume one of them in Mission Control, or reject this card")
+    assert card["status"] == "PENDING_APPROVAL" and notes == []
+
+
 # --- The Telegram approval path: a reused code is not counted and is answered TOTP_REQUIRED -------------------------
 
 TG_SECRET = "ws2e-notifier-secret"

@@ -299,7 +299,7 @@ test.describe("Brain Home", () => {
       orderBodies.push(route.request().postDataJSON());
       return route.fulfill({
         status: 409,
-        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it on the Mandates page, then approve this card" },
+        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it in Mission Control, then approve this card" },
       });
     });
     await openBrainHome(page);
@@ -310,9 +310,9 @@ test.describe("Brain Home", () => {
     await card.getByRole("button", { name: "Approve…" }).click();
     await card.getByRole("button", { name: "Confirm paper order" }).click();
 
-    // The server's reason is shown and the operator is pointed at the Mandates page; no mandate form, no TOTP box
+    // The server's reason is shown and the operator is pointed at Mission Control; no mandate form, no TOTP box
     await expect(card.getByRole("alert")).toContainText("MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE");
-    await expect(card.getByRole("alert")).toContainText("resume it on the Mandates page, then approve this card");
+    await expect(card.getByRole("alert")).toContainText("resume it in Mission Control, then approve this card");
     await expect(card.getByRole("link", { name: "Open Mission Control" })).toHaveAttribute("href", "/?ws=mission&view=overview");
     await expect(card.getByLabel("TOTP code")).toHaveCount(0);
     await expect(card.getByRole("group", { name: "Confirm paper order" })).toHaveCount(0);
@@ -333,7 +333,7 @@ test.describe("Brain Home", () => {
     await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
       route.fulfill({
         status: 409,
-        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it on the Mandates page, then approve this card" },
+        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it in Mission Control, then approve this card" },
       }),
     );
     await openBrainHome(page);
@@ -357,7 +357,7 @@ test.describe("Brain Home", () => {
     await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
       route.fulfill({
         status: 409,
-        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it on the Mandates page, then approve this card" },
+        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it in Mission Control, then approve this card" },
       }),
     );
     await openBrainHome(page);
@@ -386,7 +386,7 @@ test.describe("Brain Home", () => {
       mandateBodies.push(route.request().postDataJSON());
       return route.fulfill({
         status: 409,
-        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it on the Mandates page, then approve this card" },
+        json: { detail: "MANDATE_PAUSED: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it in Mission Control, then approve this card" },
       });
     });
     await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
