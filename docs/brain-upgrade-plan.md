@@ -1,6 +1,6 @@
 # Brain upgrade plan
 
-Status: DRAFT for operator approval, 2026-10-15. Base: `main` `b75b1d6`, Alembic head `045`.
+Status: Waves 1–3 merged and deployed on `main` (`3438e91`, Alembic head `047`), 2026-10-16; Waves 4–5 pending.
 
 This plan covers the Brain roadmap from the four-specialist review (capabilities, quality, orchestration,
 operator value) and the SOLUSDT order-card incident. Each workstream is implemented by a specialist agent

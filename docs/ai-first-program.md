@@ -1,7 +1,7 @@
 # AI-First Program: what is built (Phases 0–7)
 
-The plan is [ai-first-blueprint.md](ai-first-blueprint.md). This page describes what actually runs, as of
-2026-10-04 (branch `feat/ai-first-phase6`, Alembic head `031`). Day-to-day state, open items and evidence
+The plan is [ai-first-blueprint.md](ai-first-blueprint.md). This page describes what actually runs on `main`
+(Alembic head `047`, including Brain upgrade Waves 1–3 as of 2026-10-16). Day-to-day state, open items and evidence
 are in [HANDOFF.md](../HANDOFF.md).
 
 The three rules did not change: **AI and UI propose, deterministic rules and risk controls decide,

@@ -1,6 +1,6 @@
 # HANDOFF
 
-Current state of Cryptonite and what is left to do. Main `4727323` = Brain upgrade Wave 2 and the security hotfix #93, deployed 2026-10-16. Wave 3 is on `feat/brain-upgrade-w3`, not yet merged or deployed.
+Current state of Cryptonite and what is left to do. Main `3438e91` = Brain upgrade Waves 1–3 (#95) and the security hotfix #93, deployed 2026-10-16.
 Earlier handovers, status reports and review plans were removed from the tree on 2026-10-13; they are in git
 history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
@@ -8,12 +8,12 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
 - **Code:** everything is on `main`; no pull requests are open. CI on GitHub does not run (see Operator items),
   so every merge since #78 was verified locally with the commands below.
-- **Database:** dev DB `cryptonite` at Alembic `046` (single head on main). `046` adds the read-only `agent_safe_*`
-  views for the Brain. On `feat/brain-upgrade-w3`, `047` adds the read-only view `agent_safe_trade_timeline` (the trade
-  post-mortem) and two indexes. The dev DB stays at `046` until Wave 3 is deployed.
-- **Services (Docker Compose, project `infra`):** all running and healthy. `api`, `agent_worker`, `orchestrator`,
-  `ingest`, `scanner`, `learner`, `debate_worker` ×3, `backtester`, `strategy_sandbox` and `web` run `main`'s code;
-  `research_worker`, `exit_monitor`, `derivatives_feed`, `outbox` and `notifier` differ from `main` only in shared
+- **Database:** dev DB `cryptonite` at Alembic `047` (single head on main). `046` adds the read-only `agent_safe_*`
+  views for the Brain; `047` adds the read-only view `agent_safe_trade_timeline` (the trade post-mortem) and two
+  lookup indexes.
+- **Services (Docker Compose, project `infra`):** all running and healthy. `api`, `agent_worker`, `research_worker`,
+  `orchestrator`, `ingest`, `scanner`, `learner`, `debate_worker` ×3, `backtester`, `strategy_sandbox` and `web` run
+  `main`'s code; `exit_monitor`, `derivatives_feed`, `outbox` and `notifier` differ from `main` only in shared
   package files they do not import. No deploy hold is in force.
 - **Feed:** ingest streams BTCUSDT, ETHUSDT, XRPUSDT and WLDUSDT (1m, 15m, 1h, 4h), with REST gap recovery on
   start and on spot reconnect (#55), rate-limit handling (#52) and per-instrument price precision in the
@@ -35,14 +35,14 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
   (thinking 4096). A read-only answer from the backup model is labelled `_[degraded: answered by the backup model,
   read-only]_`. A BUY card on a PAUSED or HALTED mandate is refused with a link to Mission Control before the TOTP code
   is spent. A used TOTP code is answered `TOTP_REUSED` and does not count toward the lockout. A SELL closes a stopped
-  mandate's holding. `in_feed` and the card feed notes now work (Redis DB 0). Wave 3 (on `feat/brain-upgrade-w3`, not
-  merged or deployed): an order card shows a dry run before Approve ("Would size to…", "Would sell…", "Would be refused:
-  …"; the button then reads "Approve anyway…"), plus thesis, evidence, invalidation, horizon and confidence, and up to
-  three past lessons for the same instrument from the last 90 days; lessons are never put in the prompt. The dry run
-  does not check the kill switch, so approval still refuses under it. A debate card follows its run to the verdict and
-  the approval, and a Brain debate that the safety gate refuses is recorded as `GATE_REFUSED` ("Not run (safety gate)").
-  Only server-written `<system_event>` blocks are authoritative for the Brain. A proposal that cannot become a card says
-  why. `/postmortem [SYMBOL]` asks for a trade review, which the Brain reads with `get_trade_timeline`.
+  mandate's holding. `in_feed` and the card feed notes now work (Redis DB 0). Wave 3: an order card shows a dry run
+  before Approve ("Would size to…", "Would sell…", "Would be refused: …"; the button then reads "Approve anyway…"), plus
+  thesis, evidence, invalidation, horizon and confidence, and up to three past lessons for the same instrument from the
+  last 90 days; lessons are never put in the prompt. The dry run does not check the kill switch, so approval still
+  refuses under it. A debate card follows its run to the verdict and the approval, and a Brain debate that the safety
+  gate refuses is recorded as `GATE_REFUSED` ("Not run (safety gate)"). Only server-written `<system_event>` blocks are
+  authoritative for the Brain. A proposal that cannot become a card says why. `/postmortem [SYMBOL]` asks for a trade
+  review, which the Brain reads with `get_trade_timeline`.
 - **Web:** the 2026-10-12 UI critique is implemented ([docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md), #81):
   unknown states never read as healthy or empty, one session store, one kill-switch poller per account,
   PAPER and DEMO kill switches told apart.
@@ -146,7 +146,7 @@ Last full results (2026-10-13, #86): pytest 1957 passed / 0 failed plus 2 destru
    the WLD mandate and the wider symbol onboarding list; deleting strategy `ai-gen-62f49193` in the UI.
 9. **Live Brain checks (paid model):** the System state block in a Brain reply, and a BUY card on a PAUSED mandate
    (it must be refused, with the link to Mission Control, before the TOTP code is spent).
-10. **Live Brain checks after Wave 3 is deployed (paid model):** a structured order card (thesis, evidence,
+10. **Live Brain checks for Wave 3 (paid model):** a structured order card (thesis, evidence,
     invalidation), `/postmortem XRP`, and an old debate card from before Wave 3 (it must not read "Debate failed").
 
 ## Waiting on time
