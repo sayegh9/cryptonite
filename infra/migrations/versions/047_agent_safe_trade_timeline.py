@@ -32,6 +32,8 @@ Rules the view applies (derived only from what the base tables record):
   A CLOSE_POSITION has no order id, so it takes the first SELL fill from the close to ``closed_at``. Null when nothing
   matches. A closed position reads FLAT with quantity 0, so its side comes from the entry command and its return is
   realized_pnl over the entry fill's filled quantity times the entry price, and is null while the position is open.
+  Scale-in limitation: the return divides by the entry command's own fill quantity, so a position built from several
+  BUYs has a return_pct that is not the whole trade's return. Read realized_pnl and the fills for those trades.
 """
 
 from collections.abc import Sequence
@@ -107,8 +109,7 @@ def upgrade() -> None:
         ) e ON TRUE
         LEFT JOIN LATERAL (
             SELECT CASE WHEN p.side <> 'FLAT' THEN p.side
-                        WHEN e.payload->>'side' = 'BUY' THEN 'LONG'
-                        WHEN e.payload->>'side' = 'SELL' THEN 'SHORT'
+                        WHEN e.command_id IS NOT NULL THEN 'LONG'  -- the entry is a BUY: spot positions are long only
                         ELSE p.side END AS side
         ) ps ON TRUE
         LEFT JOIN LATERAL (
