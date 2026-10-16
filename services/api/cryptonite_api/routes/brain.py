@@ -20,12 +20,14 @@ because nothing else would stop the position out.
 import json
 import logging
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
 import httpx
+from cryptonite_agents.brain.widgets import INSTRUMENT_ID
 from cryptonite_api.brain_outcomes import (
     card_patch,
     command_outcome,
@@ -265,7 +267,8 @@ async def brain_card_outcome(sid: uuid.UUID, widget_id: str, request: Request, a
 async def brain_debate_outcome(sid: uuid.UUID, widget_id: str, request: Request,
                                auth: dict = Depends(require_operator)):
     """Where a Brain debate card's run is, for a card waiting on screen: QUEUED, RUNNING, VERDICT (with its approval),
-    NO_TRADE, GATE_REFUSED or FAILED. Read only: the conversation's line is written by the sync, never by this read."""
+    NO_TRADE, GATE_REFUSED or FAILED. A card with no message id (queued before Wave 3) is UNTRACKED: there is no run to
+    follow, and that is not a failure. Read only: the conversation's line is written by the sync, never by this read."""
     if len(widget_id) > 128:
         raise HTTPException(status_code=422, detail="Invalid card id")
     session = await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}")
@@ -273,8 +276,8 @@ async def brain_debate_outcome(sid: uuid.UUID, widget_id: str, request: Request,
                  if w.get("id") == widget_id and w.get("kind") == "debate_summary"), None)
     if card is None:
         raise HTTPException(status_code=404, detail="Debate card not found")
-    if not card.get("message_ref"):  # no message id to follow: the card cannot reach a verdict
-        return {"status": "FAILED", "run_id": None, "verdict": None, "reason": "NO_RUN_REFERENCE"}
+    if not card.get("message_ref"):  # no message id to follow: the card has no run to reach a verdict
+        return {"status": "UNTRACKED", "run_id": None, "verdict": None, "reason": None}
     async with request.app.state.pool.acquire() as conn:
         return await debate_outcome(conn, card["message_ref"])
 
@@ -303,13 +306,20 @@ def _js_number(value: Any) -> str:
     return str(int(number)) if number.is_integer() else repr(number)
 
 
+def _shown_instrument(card: dict[str, Any]) -> str:
+    """The instrument a server line may echo from a stored card: the card's own when it matches INSTRUMENT_ID, else
+    "an order card" (a card stored before the instrument pattern existed is not echoed as it was stored)."""
+    raw = card.get("instrument_id")
+    return raw if isinstance(raw, str) and re.fullmatch(INSTRUMENT_ID, raw) else "an order card"
+
+
 @router.post("/sessions/{sid}/notes", dependencies=OPERATOR_WRITE)
 async def brain_note(sid: uuid.UUID, req: BrainNoteRequest, auth: dict = Depends(require_operator)):
     op = operator_id(auth)
     card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), req.widget_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
-    content = (f"Operator rejected order card {card['id']} ({card['side']} {card['instrument_id']}, "
+    content = (f"Operator rejected order card {card['id']} ({card['side']} {_shown_instrument(card)}, "
                f"{_js_number(card['allocation_pct'])}% of mandate).")
     body = {"operator_id": op, "content": content, "widget_id": req.widget_id, "status": req.status,
             "expect_status": "PENDING_APPROVAL"}
@@ -360,7 +370,8 @@ class CardPlan:
     mandate: Mandate
     allocation: Decimal  # % of the mandate budget: the card's, cut to the room a BUY has left under its position limit
     budget: Decimal  # USD: the allocation of the mandate's capital budget
-    summary: str
+    summary: str  # the audit text (the approval record and the paper command's summary)
+    shown: str  # the same text as the server's note lines show it (see _shown_instrument)
     held: Decimal  # the spot quantity a SELL closes (0 for a BUY)
     protection: dict[str, Any]  # the exit monitor's heartbeat: the stops that protect the position
     trace_id: uuid.UUID | None
@@ -450,13 +461,19 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
                 f"{mandate.max_position_pct}% in {card['instrument_id']}; nothing was queued"))
         allocation = min(allocation, room.quantize(Decimal("0.01")))
     budget = mandate.capital_budget_usd * allocation / 100
-    if card["side"] == "SELL":
-        summary = f"SELL {card['instrument_id']} {card['order_type']} the whole holding of {held:g} in mandate {mandate.name}"
-    else:
-        summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {allocation:g}% of mandate "
-                   f"{mandate.name} (${budget:,.0f})")
-    return CardPlan(mandate=mandate, allocation=allocation, budget=budget, summary=summary, held=held,
+    summary = _card_summary(card, card["instrument_id"], mandate, allocation, budget, held)
+    shown = _card_summary(card, _shown_instrument(card), mandate, allocation, budget, held)
+    return CardPlan(mandate=mandate, allocation=allocation, budget=budget, summary=summary, shown=shown, held=held,
                     protection=protection, trace_id=trace_id, source_ref=source_ref)
+
+
+def _card_summary(card: dict[str, Any], instrument: str, mandate: Mandate, allocation: Decimal, budget: Decimal,
+                  held: Decimal) -> str:
+    """What an approved card does, in words, for the instrument given (the card's own, or the shown one)."""
+    if card["side"] == "SELL":
+        return f"SELL {instrument} {card['order_type']} the whole holding of {held:g} in mandate {mandate.name}"
+    return (f"{card['side']} {instrument} {card['order_type']} at {allocation:g}% of mandate "
+            f"{mandate.name} (${budget:,.0f})")
 
 
 @router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
@@ -475,12 +492,13 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     plan = await _plan_card(request, sid, card, req.mandate_id if req else None)
     mandate, allocation, summary, held = plan.mandate, plan.allocation, plan.summary, plan.held
     protection, trace_id, source_ref = plan.protection, plan.trace_id, plan.source_ref
+    shown = plan.shown  # what the note lines say: the audit summary above keeps the card's own text
     pool = request.app.state.pool
 
     if card.get("status") == "PENDING_APPROVAL":  # claim it first: a concurrent reject can no longer win
         claimed = await _worker_note(sid, {
             "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "expect_status": "PENDING_APPROVAL",
-            "content": f"Operator approved order card {widget_id}: {summary}.",
+            "content": f"Operator approved order card {widget_id}: {shown}.",
         })
         if claimed == 409:
             raise HTTPException(status_code=409, detail="The card is no longer pending")
@@ -527,7 +545,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     await _worker_note(sid, {
         "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "command_id": command_id,
         "expect_status": "APPROVED",
-        "content": (f"Paper command {command_id} queued for the dispatcher inside mandate {mandate.name} ({summary}); "
+        "content": (f"Paper command {command_id} queued for the dispatcher inside mandate {mandate.name} ({shown}); "
                     f"the exit monitor's "
                     f"{protection.get('stop_loss_pct')}% hard stop and {protection.get('trail_pct')}% trailing stop "
                     f"(after +{protection.get('trail_activate_pct')}%) protect the position."),

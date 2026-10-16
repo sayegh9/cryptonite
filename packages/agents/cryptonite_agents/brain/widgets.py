@@ -126,7 +126,8 @@ class DebateSummaryWidget(BaseModel):
     timeframe: str = "1m"
     recommendation: str | None = None
     conviction_score: float | None = None
-    status: Literal["QUEUED", "RUNNING", "VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED"] = "QUEUED"
+    # UNTRACKED: a card queued before Wave 3 has no message id, so it has no run to follow (not a failure)
+    status: Literal["QUEUED", "RUNNING", "VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED", "UNTRACKED"] = "QUEUED"
     message: str = ""
     # The queue message the staging tool returned ("Msg ID"): the card follows the debate run recorded under it
     message_ref: str | None = None

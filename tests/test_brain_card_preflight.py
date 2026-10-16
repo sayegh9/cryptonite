@@ -244,6 +244,22 @@ async def test_a_buy_that_would_size_is_ok_and_approve_queues_that_size(h, worke
     assert json.loads(cmd["payload"])["allocation_pct"] == body["allocation_pct"]
 
 
+async def test_the_approve_notes_name_an_order_card_when_the_stored_instrument_predates_the_pattern(h, worker):
+    """A card stored as "BTCUSDT" (no venue, so no match for INSTRUMENT_ID) still approves as BTC; its two note lines
+    say "an order card" where they would echo the instrument. The approval record keeps the card's own summary."""
+    name = f"core-{uuid.uuid4().hex[:6]}"
+    m = await h.mandate(instruments=(BTC,), name=name)
+    worker.card["instrument_id"] = "BTCUSDT"
+    res = await approve(h, uuid.uuid4())
+    assert res.status_code == 200, res.text
+    assert res.json()["mandate_id"] == str(m.id)
+    claim, queued = worker.notes[0]["content"], worker.notes[1]["content"]
+    assert claim.startswith("Operator approved order card card-1: BUY an order card MARKET at ") and name in claim
+    assert "BUY an order card MARKET" in queued and "BTCUSDT" not in claim + queued
+    [approval] = await h.pool.fetch("SELECT summary FROM ai_approvals")
+    assert approval["summary"].startswith("Brain order card: BUY BTCUSDT MARKET at ")
+
+
 async def test_a_buy_clipped_to_the_room_left_says_so_and_approve_queues_the_clip(h, worker):
     name = f"core-{uuid.uuid4().hex[:6]}"
     m = await h.mandate(instruments=(BTC,), name=name)

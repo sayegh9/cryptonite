@@ -331,6 +331,7 @@ const DEBATE_BADGE: Record<DebateCardStatus, { label: string; tone: string }> = 
   NO_TRADE: { label: "NO TRADE", tone: "border-sky-800 text-sky-300" },
   GATE_REFUSED: { label: "NOT RUN", tone: "border-zinc-700 text-zinc-300" },
   FAILED: { label: "FAILED", tone: "border-rose-800 text-rose-300" },
+  UNTRACKED: { label: "QUEUED EARLIER", tone: "border-zinc-700 text-zinc-300" },
 };
 
 /**
@@ -347,18 +348,23 @@ function needsAnswer(widget: DebateSummaryWidget): boolean {
 
 /**
  * Follows a debate card to its answer. A QUEUED or RUNNING card is asked on mount, then every 10 s until its debate is
- * final (at most 30 min). A final card that needs its answer (see needsAnswer) is asked once, on mount. Read-only: it
+ * final (at most 30 min). A final card that needs its answer (see needsAnswer) is asked once, on mount. A live card with
+ * no message_ref (queued before Wave 3) has no run to follow: it is never asked, and reads as UNTRACKED. Read-only: it
  * queues and approves nothing.
  */
 function useDebateOutcome(widget: DebateSummaryWidget, sessionId: string | null): DebateOutcome {
   const [polled, setPolled] = useState<DebateOutcome | null>(null);
-  const outcome: DebateOutcome = polled ?? {
-    status: widget.status,
-    run_id: widget.run_id ?? null,
-    verdict: widget.verdict ?? null,
-    reason: widget.reason ?? null,
-  };
-  const live = widget.status === "QUEUED" || widget.status === "RUNNING";
+  const liveStatus = widget.status === "QUEUED" || widget.status === "RUNNING";
+  const untracked = liveStatus && widget.message_ref == null;
+  const outcome: DebateOutcome = polled ?? (untracked
+    ? { status: "UNTRACKED", run_id: null, verdict: null, reason: null }
+    : {
+      status: widget.status,
+      run_id: widget.run_id ?? null,
+      verdict: widget.verdict ?? null,
+      reason: widget.reason ?? null,
+    });
+  const live = liveStatus && !untracked;
   const lookup = !live && needsAnswer(widget);
   useEffect(() => {
     if (!(live || lookup) || !sessionId) return;
@@ -370,7 +376,7 @@ function useDebateOutcome(widget: DebateSummaryWidget, sessionId: string | null)
         const out = await fetchCardDebate(sessionId, widget.id, ctrl.signal);
         if (ctrl.signal.aborted) return;
         setPolled(out);
-        if (lookup || DEBATE_FINAL.includes(out.status)) return;
+        if (lookup || DEBATE_FINAL.includes(out.status) || out.status === "UNTRACKED") return;
       } catch {
         if (ctrl.signal.aborted || lookup) return;
       }
@@ -424,6 +430,8 @@ function outcomeLine(status: DebateCardStatus, verdict: DebateVerdict | null, re
       return gateRefusedText(reason);
     case "FAILED":
       return "Debate failed";
+    case "UNTRACKED":
+      return "Debate queued earlier — see the Debates page";
   }
 }
 
@@ -613,6 +621,8 @@ function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, liv
 
   useEffect(() => {
     if (!live) return;
+    // A read from before the card was locked (the feed gate) is stale: it goes at once, and the read below replaces it
+    setPreflight(null);
     check();
     const onFocus = () => {
       if (Date.now() - lastRead.current >= PREFLIGHT_FOCUS_MS) check();
@@ -791,6 +801,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const { preflight, check: checkPreflight } = useCardPreflight(widget, sessionId, pending && !feedLocked);
   // Approve stays enabled when the dry run says it would be refused (the server decides); the label says so
   const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate;
+  // A dry run that finds no ACTIVE mandate for a BUY readies the create form, so the first Approve already shows it
+  useEffect(() => {
+    if (buy && preflight) setNeedsMandate(!preflight.ok && preflight.needs_mandate);
+  }, [buy, preflight]);
 
   const approve = async () => {
     setBusy(true);
@@ -894,7 +908,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <dd className="text-zinc-100">{widget.take_profit ? fmt(widget.take_profit) : "—"}</dd>
         </div>
       </dl>
-      {preflight && <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />}
+      {/* The paused-mandate notice already says this refusal: the dry-run line does not repeat it */}
+      {preflight && !(mandateBlock && !preflight.ok && /^MANDATE_(PAUSED|HALTED)/.test(preflight.code)) && (
+        <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />
+      )}
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
       <StructuredRationale widget={widget} />
       <PastLessons lessons={widget.lessons ?? []} />

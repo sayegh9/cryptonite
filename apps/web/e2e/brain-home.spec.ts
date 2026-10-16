@@ -853,6 +853,47 @@ test.describe("Brain Home", () => {
     await expect(card.getByRole("group", { name: "Confirm paper order" })).toBeVisible();
   });
 
+  test("a BUY with no ACTIVE mandate opens the create form on the first Approve, before any confirm is sent", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockPreflight(page, () => ({
+      json: {
+        ok: false,
+        code: "NO_MANDATE",
+        detail: "NO_MANDATE: approve this card inside an ACTIVE mandate that allows BTCUSDT.BINANCE (Mission Control → Mandates)",
+        needs_mandate: true,
+      },
+    }));
+    const card = await openCard(page, ORDER_CARD);
+    await expect(card.getByTestId("brain-card-preflight")).toContainText("approving creates one (TOTP)");
+
+    await card.getByRole("button", { name: "Approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group.getByLabel("TOTP code")).toBeVisible();
+    await expect(group.getByRole("button", { name: "Create mandate and confirm" })).toBeDisabled();
+    expect(reactErrors).toEqual([]);
+  });
+
+  for (const code of ["MANDATE_PAUSED", "MANDATE_HALTED"]) {
+    test(`a ${code} notice replaces the dry run's duplicate refusal line`, async ({ page }) => {
+      const reactErrors = collectReactErrors(page);
+      const detail = `${code}: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it in Mission Control, then approve this card`;
+      await mockPreflight(page, () => ({ json: { ok: false, code, detail, needs_mandate: false } }));
+      const card = await openCard(page, ORDER_CARD);
+      await expect(card.getByTestId("brain-card-preflight")).toContainText(`Would be refused: ${code}`);
+
+      await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
+        route.fulfill({ status: 409, json: { detail } }),
+      );
+      await card.getByRole("button", { name: "Approve anyway…" }).click();
+      await card.getByRole("button", { name: "Confirm paper order" }).click();
+
+      // The notice says it once; the dry-run line does not repeat the refusal, and nothing is queued
+      await expect(card.getByRole("alert")).toContainText(`Order not queued: ${code}: BTC-ETH spot L1`);
+      await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+      expect(reactErrors).toEqual([]);
+    });
+  }
+
   test("an unavailable dry run shows nothing and never blocks Approve", async ({ page }) => {
     const reads = await mockPreflight(page, () => ({ status: 500, json: { detail: "preflight unavailable" } }));
     const card = await openCard(page, ORDER_CARD);
@@ -993,6 +1034,31 @@ test.describe("Brain Home", () => {
     await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
     await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled({ timeout: 15_000 });
     await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of Brain SOLUSDT.BINANCE ($10,000)");
+    expect(reads.count).toBe(1);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("once the feed unlocks, the card shows the fresh dry run and never the SYMBOL_NOT_INGESTED refusal", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    let streaming = false;
+    await page.route("**/api/v1/market/universe", (route) =>
+      route.fulfill({ json: universe(streaming ? ["BTCUSDT.BINANCE", "SOLUSDT.BINANCE"] : ["BTCUSDT.BINANCE"]) }),
+    );
+    await page.route("**/api/v1/instruments/onboard", (route) => {
+      streaming = true;
+      return route.fulfill({ json: { status: "ok" } });
+    });
+    const reads = await mockPreflight(page, () => ({
+      json: buyPreflight({ mandate: { id: "mandate-sol", name: "Brain SOLUSDT.BINANCE", status: "ACTIVE" } }),
+    }));
+    const card = await openCard(page, SOL_CARD);
+    await expect(card).toContainText("cannot be approved yet");
+    expect(reads.count).toBe(0); // locked: the dry run is not read, so no refusal can be shown from before the lock
+
+    await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled({ timeout: 15_000 });
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of Brain SOLUSDT.BINANCE ($10,000)");
+    await expect(card).not.toContainText("SYMBOL_NOT_INGESTED");
     expect(reads.count).toBe(1);
     expect(reactErrors).toEqual([]);
   });
@@ -1228,6 +1294,33 @@ test.describe("Debate cards follow their run", () => {
     expect(atVerdict).toBe(3);
     await page.waitForTimeout(11_000); // one full poll interval after the verdict
     expect(asks["call-2"]).toBe(atVerdict);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("an old debate card with no message id is never asked, and reads as queued earlier in neutral styling", async ({ page }) => {
+    test.setTimeout(60_000); // one poll interval after mount, to prove it is still never asked
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [debateWidget("call-2", { message_ref: null })]);
+    const card = page.getByTestId("brain-widget-debate");
+    await expect(card.getByTestId("debate-outcome")).toHaveText("Debate queued earlier — see the Debates page");
+    await expect(card).toContainText("QUEUED EARLIER");
+    await expect(card.locator("span", { hasText: "QUEUED EARLIER" })).not.toHaveClass(/text-purple-300/);
+    await page.waitForTimeout(11_000);
+    expect(asks["call-2"]).toBe(0);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("an UNTRACKED answer from the route reads the same way, and the card stops asking", async ({ page }) => {
+    test.setTimeout(60_000); // asks on mount, then one poll interval to prove it is not asked again
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [debateWidget("call-2")], {
+      "call-2": [{ status: "UNTRACKED", run_id: null, verdict: null, reason: null }],
+    });
+    const card = page.getByTestId("brain-widget-debate");
+    await expect(card.getByTestId("debate-outcome")).toHaveText("Debate queued earlier — see the Debates page", { timeout: 15_000 });
+    await expect(card).toContainText("QUEUED EARLIER");
+    await page.waitForTimeout(11_000);
+    expect(asks["call-2"]).toBe(1);
     expect(reactErrors).toEqual([]);
   });
 
