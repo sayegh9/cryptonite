@@ -137,13 +137,15 @@ async def test_a_card_with_no_mandate_gets_one_inline_and_is_approved(h, brain_c
     assert row["status"] == "COMPLETED", row["error_message"]
 
 
-async def test_a_card_on_a_stopped_instrument_gets_no_mandate(h, brain_card):
+async def test_a_card_on_a_stopped_instrument_is_told_which_mandate_to_resume(h, brain_card):
     stopped_name = f"btc-stopped-{uuid.uuid4().hex[:6]}"
     await h.mandate(instruments=(BTC,), status="PAUSED", name=stopped_name)
     path = APPROVE.format(sid=uuid.uuid4())
     async with h.client() as c:
         approve = await c.post(path, headers=h.headers)
-        assert approve.status_code == 409 and "NO_MANDATE" in approve.json()["detail"]
+        assert approve.status_code == 409
+        assert approve.json()["detail"].startswith(f"MANDATE_PAUSED: {stopped_name} already covers {BTC}")
+        assert "resume it in Mission Control, then approve this card" in approve.json()["detail"]
         created = await c.post("/api/v1/ai/mandates", json=create_body("BTCUSDT"), headers=h.headers)
     assert created.status_code == 409 and created.json()["detail"].startswith("MANDATE_PAUSED")
     assert brain_card["status"] == "PENDING_APPROVAL"
