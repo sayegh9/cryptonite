@@ -1029,8 +1029,9 @@ def get_trade_timeline(instrument_id: str = "", limit: int = TRADE_TIMELINE_DEFA
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= TRADE_TIMELINE_MAX_LIMIT:
         return json.dumps({"error": f"limit must be a whole number from 1 to {TRADE_TIMELINE_MAX_LIMIT}"})
     try:
-        # jit=False: the planner costs the view's per-trade lookups above jit_above_cost, and JIT compiling them took
-        # over a second of the all-instruments read (2000 trades: about 2.5 s with JIT, about 1.2 s without)
+        # jit=False: when the planner's cost estimate for the view's per-trade lookups passes jit_above_cost, PostgreSQL
+        # JIT-compiles them. At 2000 trades the all-instruments read took 2.5 to 3.0 s with JIT and 1.2 s without; the
+        # estimate moves between plans, so the read opts out of JIT.
         rows = _readonly_rows(
             f"SELECT {TRADE_TIMELINE_COLUMNS} FROM agent_safe_trade_timeline "
             "WHERE (:any_instrument OR instrument_id = :instrument) "

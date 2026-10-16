@@ -287,7 +287,7 @@ async def test_the_symbol_is_a_bound_parameter_never_formatted_into_the_sql(monk
 
 
 async def test_the_timeline_read_turns_jit_off_for_its_own_transaction(monkeypatch):
-    # the planner costs the view's per-trade lookups above jit_above_cost; JIT compiling them took over a second
+    # the planner's cost for the view's per-trade lookups can pass jit_above_cost, and JIT would then compile them
     real = tools._readonly_rows
     seen = []
 
