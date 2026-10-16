@@ -61,6 +61,24 @@ export interface CardOutcome {
   limit_price?: string | null;
 }
 
+/**
+ * What approving an order card would do now, from /brain/sessions/{id}/cards/{card}/preflight. Read-only: the card stays
+ * PENDING_APPROVAL and nothing is claimed or queued. `needs_mandate` is true for a BUY that has no ACTIVE mandate yet.
+ */
+export type CardPreflight =
+  | {
+      ok: true;
+      mandate: { id: string; name: string; status: string };
+      side: "BUY" | "SELL";
+      allocation_pct: number;
+      budget_usd: string | number;
+      /** Set when the room left under the mandate's position limit clipped the size */
+      clipped_from_pct: number | null;
+      sell_quantity: string | null;
+      summary: string;
+    }
+  | { ok: false; code: string; detail: string; needs_mandate: boolean };
+
 export interface DebateSummaryWidget {
   kind: "debate_summary";
   id: string;

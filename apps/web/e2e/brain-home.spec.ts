@@ -755,4 +755,245 @@ test.describe("Brain Home", () => {
     await expect(card.getByRole("button", { name: "Approve…" })).toBeDisabled();
     expect(reactErrors).toEqual([]);
   });
+
+  /** The dry run Approve would get: the mock answers each read of /cards/{id}/preflight and counts the reads */
+  async function mockPreflight(page: Page, answer: () => { status?: number; json: unknown }) {
+    const reads = { count: 0, methods: [] as string[] };
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/preflight`, (route) => {
+      reads.count++;
+      reads.methods.push(route.request().method());
+      const reply = answer();
+      return route.fulfill({ status: reply.status ?? 200, json: reply.json });
+    });
+    return reads;
+  }
+
+  /** A dry run that would size a BUY inside an ACTIVE mandate; `over` replaces fields */
+  const buyPreflight = (over: Record<string, unknown> = {}) => ({
+    ok: true,
+    mandate: { id: "mandate-btc", name: "BTC L1", status: "ACTIVE" },
+    side: "BUY",
+    allocation_pct: 5,
+    budget_usd: 10000,
+    clipped_from_pct: null,
+    sell_quantity: null,
+    summary: "Sized at 5% of the mandate.",
+    ...over,
+  });
+
+  test("a BUY card says what Approve would size to, before the operator confirms", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of BTC L1 ($10,000)");
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    expect(reads.count).toBe(1);
+    expect(reads.methods).toEqual(["GET"]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a size the room under the position limit clipped says so", async ({ page }) => {
+    await mockPreflight(page, () => ({ json: buyPreflight({ allocation_pct: 10, clipped_from_pct: 12 }) }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(
+      "Would size to 10% of BTC L1 ($10,000) (clipped from 12% — room left)",
+    );
+  });
+
+  test("a SELL card says what it would sell and from which mandate", async ({ page }) => {
+    await mockPreflight(page, () => ({ json: buyPreflight({ side: "SELL", sell_quantity: "0.015" }) }));
+    const card = await openCard(page, {
+      ...ORDER_CARD,
+      side: "SELL",
+      rationale: "Taking profit on the BTC holding.",
+    });
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would sell 0.015 from BTC L1");
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+  });
+
+  test("a BUY with no ACTIVE mandate says approving creates one, and Approve keeps its normal flow", async ({ page }) => {
+    await mockPreflight(page, () => ({
+      json: {
+        ok: false,
+        code: "NO_MANDATE",
+        detail: "NO_MANDATE: approve this card inside an ACTIVE mandate that allows BTCUSDT.BINANCE (Mission Control → Mandates)",
+        needs_mandate: true,
+      },
+    }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(
+      "No ACTIVE mandate allows BTCUSDT yet: approving creates one (TOTP)",
+    );
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve anyway…" })).toHaveCount(0);
+  });
+
+  test("a refusal says why, and Approve stays enabled as Approve anyway", async ({ page }) => {
+    await mockPreflight(page, () => ({
+      json: {
+        ok: false,
+        code: "MANDATE_PAUSED",
+        detail: "MANDATE_PAUSED: BTC paused already covers BTCUSDT.BINANCE; resume or edit it instead",
+        needs_mandate: false,
+      },
+    }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(
+      "Would be refused: MANDATE_PAUSED: BTC paused already covers BTCUSDT.BINANCE; resume or edit it instead",
+    );
+    const anyway = card.getByRole("button", { name: "Approve anyway…" });
+    await expect(anyway).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve…" })).toHaveCount(0);
+    await anyway.click();
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toBeVisible();
+  });
+
+  test("an unavailable dry run shows nothing and never blocks Approve", async ({ page }) => {
+    const reads = await mockPreflight(page, () => ({ status: 500, json: { detail: "preflight unavailable" } }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect.poll(() => reads.count).toBe(1);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+  });
+
+  test("a dry run answered NOT_PENDING (decided elsewhere) shows no refusal and keeps the normal label", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const reads = await mockPreflight(page, () => ({
+      json: { ok: false, code: "NOT_PENDING", detail: "NOT_PENDING: the card is APPROVED", needs_mandate: false },
+    }));
+    const answered = page.waitForResponse(/\/cards\/[^/]+\/preflight/);
+    const card = await openCard(page, ORDER_CARD);
+
+    await answered;
+    await page.waitForTimeout(300); // the card has rendered the answer by now
+    expect(reads.count).toBe(1);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve anyway…" })).toHaveCount(0);
+    expect(reactErrors).toEqual([]);
+  });
+
+  /** A 200 that is not the dry-run contract (a proxy's HTML page, an object without a boolean `ok`) is treated as unavailable */
+  async function oddDryRun(page: Page, contentType: string, body: string) {
+    const reactErrors = collectReactErrors(page);
+    let reads = 0;
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/preflight`, (route) => {
+      reads++;
+      return route.fulfill({ status: 200, contentType, body });
+    });
+    const answered = page.waitForResponse(/\/cards\/[^/]+\/preflight/);
+    const card = await openCard(page, ORDER_CARD);
+
+    await answered;
+    await page.waitForTimeout(300);
+    expect(reads).toBe(1);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    expect(reactErrors).toEqual([]);
+  }
+
+  test("a dry run answered with a non-JSON page shows nothing and never blocks Approve", async ({ page }) => {
+    await oddDryRun(page, "text/html", "<!doctype html><html><body>Sign in</body></html>");
+  });
+
+  test("a dry run answered with an object whose ok is not a boolean shows nothing and never blocks Approve", async ({ page }) => {
+    await oddDryRun(page, "application/json", JSON.stringify({ ok: "yes", mandate: { name: "BTC L1" }, allocation_pct: 5 }));
+  });
+
+  test("a refused Approve reads the dry run again, so the refusal replaces the normal line", async ({ page }) => {
+    const refusal = "PRICE_COLLAR_REJECT: the limit is too far from the market";
+    let refused = false;
+    const reads = await mockPreflight(page, () =>
+      refused
+        ? { json: { ok: false, code: "PRICE_COLLAR_REJECT", detail: refusal, needs_mandate: false } }
+        : { json: buyPreflight() },
+    );
+    // Registered after openCard: its mockBackend registers the approve success route, and the later route wins
+    const card = await openCard(page, ORDER_CARD);
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) => {
+      refused = true; // the market moved after the dry run
+      return route.fulfill({ status: 409, json: { detail: refusal } });
+    });
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of BTC L1 ($10,000)");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+
+    await expect(card.getByRole("alert")).toContainText(refusal);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(`Would be refused: ${refusal}`);
+    // mount, the confirm step, then the read after the refused Approve
+    await expect.poll(() => reads.count).toBe(3);
+  });
+
+  test("opening the confirm step reads the dry run again", async ({ page }) => {
+    const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toBeVisible();
+    const before = reads.count;
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toBeVisible();
+    await expect.poll(() => reads.count).toBe(before + 1);
+    expect(reads.methods.every((m) => m === "GET")).toBe(true);
+  });
+
+  test("window focus re-reads the dry run, at most every 5 seconds", async ({ page }) => {
+    const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toBeVisible();
+    expect(reads.count).toBe(1);
+    // Focus within 5 s of the last read is ignored
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.waitForTimeout(300);
+    expect(reads.count).toBe(1);
+    // Once 5 s have passed since the last read, focus reads it again
+    await page.waitForTimeout(5_000);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect.poll(() => reads.count).toBe(2);
+  });
+
+  test("a card that is no longer pending is not read", async ({ page }) => {
+    const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const card = await openCard(page, { ...ORDER_CARD, status: "REJECTED" });
+
+    await expect(card).toContainText("Rejected by you");
+    // A read started with the card would have reached the route by now
+    await page.waitForTimeout(500);
+    expect(reads.count).toBe(0);
+  });
+
+  test("a feed-locked card is not read until its symbol streams, then it is", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    let streaming = false;
+    let universeCalls = 0;
+    await page.route("**/api/v1/market/universe", (route) => {
+      universeCalls++;
+      return route.fulfill({ json: universe(streaming ? ["BTCUSDT.BINANCE", "SOLUSDT.BINANCE"] : ["BTCUSDT.BINANCE"]) });
+    });
+    await page.route("**/api/v1/instruments/onboard", (route) => {
+      streaming = true; // ingest picks the symbol up; the card's next feed check sees it
+      return route.fulfill({ json: { status: "ok" } });
+    });
+    const reads = await mockPreflight(page, () => ({
+      json: buyPreflight({ mandate: { id: "mandate-sol", name: "Brain SOLUSDT.BINANCE", status: "ACTIVE" } }),
+    }));
+    const card = await openCard(page, SOL_CARD);
+
+    await expect(card).toContainText("cannot be approved yet");
+    await expect.poll(() => universeCalls).toBeGreaterThan(0);
+    expect(reads.count).toBe(0);
+
+    await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled({ timeout: 15_000 });
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of Brain SOLUSDT.BINANCE ($10,000)");
+    expect(reads.count).toBe(1);
+    expect(reactErrors).toEqual([]);
+  });
 });
