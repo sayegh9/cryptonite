@@ -12,12 +12,11 @@ Market data, research SQL/Parquet and debate staging reuse the registered tools 
 """
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from cryptonite_agents.brain.widgets import (
     MAX_ALLOCATION_PCT,
     MIN_ALLOCATION_PCT,
-    Evidence,
     OrderProposal,
 )
 from cryptonite_agents.gateway import RiskClass, tool
@@ -59,6 +58,16 @@ def explain_backtest(backtest_id: str = "latest") -> str:
 TOOL_INSTRUMENT_ID = r"^[A-Za-z0-9]{2,20}(-PERP)?(\.[A-Za-z0-9]{2,16})?$"
 
 
+class EvidenceArg(TypedDict):
+    """One evidence item as the model sends it. A plain dict, so the recorded call args stay JSON (a pydantic
+    model would be stored as its repr). The limits match ``widgets.Evidence``, which validates the card."""
+
+    source_tool: Annotated[str, Field(max_length=40)]
+    field: Annotated[str, Field(max_length=60)]
+    value: Annotated[str, Field(max_length=120)]
+    as_of: NotRequired[Annotated[str | None, Field(max_length=40)]]
+
+
 @tool(RiskClass.ADD_RISK, name="propose_order")
 def propose_order(
     instrument_id: Annotated[str, Field(min_length=3, max_length=64, pattern=TOOL_INSTRUMENT_ID)],
@@ -70,7 +79,7 @@ def propose_order(
     take_profit: Annotated[float | None, Field(gt=0)] = None,
     rationale: Annotated[str, Field(max_length=2000)] = "",
     thesis: Annotated[str | None, Field(max_length=300)] = None,
-    evidence: Annotated[list[Evidence], Field(max_length=5)] = [],
+    evidence: Annotated[list[EvidenceArg], Field(max_length=5)] = [],
     invalidation: Annotated[str | None, Field(max_length=300)] = None,
     horizon: Literal["1h", "4h", "24h", "3d", "7d"] | None = None,
     confidence: Annotated[float | None, Field(ge=0, le=1)] = None,
@@ -79,7 +88,7 @@ def propose_order(
     approves or rejects the card. instrument_id like 'BTCUSDT.BINANCE'; side BUY or SELL;
     allocation_pct is the share of the mandate's budget (1 to 25): the approved order is sized from it at
     the live price and capped at the room left under the mandate's position limit; order_type MARKET or LIMIT
-    (LIMIT needs limit_price); give a short rationale with the stop and the invalidation.
+    (LIMIT needs limit_price); give a short rationale.
     Give thesis, evidence (each item: the tool it came from, the field, the value, and its as_of time),
     invalidation (what would prove the idea wrong), horizon and confidence (0-1)."""
     proposal = OrderProposal(

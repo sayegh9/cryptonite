@@ -261,6 +261,16 @@ def test_order_card_widget_enforces_the_allocation_band_and_limit_price():
     assert "% of the mandate" in describe_widget(old) and "0.06" not in describe_widget(old)
 
 
+def test_describe_widget_keeps_the_thesis_and_the_evidence_out_of_the_transcript():
+    card = widget_for_tool("propose_order", STRUCTURED, call_id="c-desc", status="DENIED")
+    line = describe_widget(card)
+    assert "BTCUSDT.BINANCE" in line and "% of the mandate" in line
+    assert STRUCTURED["thesis"] not in line
+    for item in STRUCTURED["evidence"]:
+        assert not any(item[key] in line for key in ("source_tool", "field", "value"))
+        assert item.get("as_of") is None or item["as_of"] not in line
+
+
 def test_tearsheet_and_debate_widgets():
     ts = widget_for_tool("explain_backtest", {"backtest_id": "bt-1"}, call_id="c",
                          content=json.dumps({"total_return_pct": 12.5, "max_drawdown_pct": 4.2}))
@@ -1786,6 +1796,25 @@ async def test_a_held_proposal_with_structured_args_yields_a_card_carrying_them(
     assert card["evidence"][0] == {"source_tool": "get_klines", "field": "close_4h", "value": "60120",
                                    "as_of": "2026-10-16T08:00:00Z"}
     assert card["evidence"][1]["as_of"] is None
+
+
+async def test_a_held_proposal_records_its_evidence_as_plain_json(monkeypatch):
+    # The ledger stores the validated tool arguments as JSON. Evidence must reach the recorder as plain dicts:
+    # a model object would be stored as its repr, not as JSON.
+    written = []
+
+    async def fake_write(pool, rec):
+        written.append(rec)
+        return True
+
+    monkeypatch.setattr(gateway_module, "write_call", fake_write)
+    with override_model(PLANNER, Script([("propose_order", STRUCTURED)], ["ok"]).model()):
+        await collect(gw().stream(BRAIN_PLAN, "go", tools=(propose_order,)))
+    assert len(written) == 1
+    recorded = json.loads(json.dumps(written[0].tool_calls))  # no default=str: a non-JSON value would raise here
+    evidence = recorded[0]["args"]["evidence"]
+    assert evidence == STRUCTURED["evidence"]
+    assert all(type(item) is dict for item in written[0].tool_calls[0]["args"]["evidence"])
 
 
 def test_the_brain_prompt_asks_rule_five_for_the_structured_rationale():
