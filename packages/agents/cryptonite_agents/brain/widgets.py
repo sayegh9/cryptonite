@@ -6,6 +6,7 @@ passed the permission gate and is recorded in the decision trace.
 
 import json
 import logging
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -16,6 +17,8 @@ MIN_ALLOCATION_PCT, MAX_ALLOCATION_PCT = 1.0, 25.0  # mirrors the dispatcher's i
 # A platform instrument (BTCUSDT.BINANCE, BTCUSDT-PERP.BINANCE). Checked after the normaliser in OrderProposal,
 # so a value the server echoes into a system event (the reject line) cannot carry a line or a tag.
 INSTRUMENT_ID = r"^[A-Z0-9]{2,20}(-PERP)?\.[A-Z0-9]{2,16}$"
+_MSG_ID = re.compile(r"Msg ID: (\S+)\)")  # the staging tool's reply: "(Msg ID: <stream id>)"
+_STREAM_ID = re.compile(r"\d+-\d+")  # a Redis stream id, as the trigger returns it
 
 
 class PriceChartWidget(BaseModel):
@@ -107,15 +110,37 @@ class OrderCardWidget(OrderProposal):
     lessons: list[CardLesson] = Field(default_factory=list, max_length=3)
 
 
+class DebateVerdict(BaseModel):
+    """A debate's decision, read from its run (the card shows it; the model never wrote it)."""
+
+    recommendation: str
+    conviction_score: float | None = None
+    allocation_pct: float | None = None
+    approval_status: str | None = None  # the debate's approval, or None when it has none
+
+
 class DebateSummaryWidget(BaseModel):
     kind: Literal["debate_summary"] = "debate_summary"
     id: str
-    instrument_id: str
+    instrument_id: str = Field(pattern=INSTRUMENT_ID)
     timeframe: str = "1m"
     recommendation: str | None = None
     conviction_score: float | None = None
-    status: Literal["QUEUED", "FAILED"] = "QUEUED"
+    status: Literal["QUEUED", "RUNNING", "VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED"] = "QUEUED"
     message: str = ""
+    # The queue message the staging tool returned ("Msg ID"): the card follows the debate run recorded under it
+    message_ref: str | None = None
+    run_id: str | None = None
+    verdict: DebateVerdict | None = None
+    reason: str | None = None  # why it did not trade, or was not run (a code from the run, never model text)
+
+    @field_validator("instrument_id", mode="before")
+    @classmethod
+    def _instrument(cls, v: Any) -> Any:
+        if not isinstance(v, str):
+            return v
+        v = v.strip().upper()
+        return v if "." in v else f"{v}.BINANCE"  # the same canonical form the debate trigger queues under
 
 
 def _parse_json(content: str | None) -> dict[str, Any] | None:
@@ -155,11 +180,13 @@ def widget_for_tool(
             return card.model_dump()
         if tool == "stage_debate_proposal" and status == "OK":
             queued = bool(content) and content.startswith("Success")
+            found = _MSG_ID.search(content or "")
+            message_ref = found.group(1) if queued and found and _STREAM_ID.fullmatch(found.group(1)) else None
             return DebateSummaryWidget(
                 id=call_id, instrument_id=str(args.get("instrument_id", "")),
                 timeframe=str(args.get("timeframe") or "1m"),
                 recommendation=args.get("recommendation"), conviction_score=args.get("conviction_score"),
-                status="QUEUED" if queued else "FAILED", message=(content or "")[:500],
+                status="QUEUED" if queued else "FAILED", message=(content or "")[:500], message_ref=message_ref,
             ).model_dump()
     except (ValidationError, ValueError, TypeError) as e:
         logger.warning("Tool %s produced no widget (invalid arguments): %s", tool, e)
@@ -179,5 +206,7 @@ def describe_widget(widget: dict[str, Any]) -> str:
     if kind == "tearsheet":
         return f"[tearsheet for backtest {widget.get('backtest_id')}]"
     if kind == "debate_summary":
-        return f"[debate {widget.get('status', '').lower()} for {widget.get('instrument_id')}]"
+        verdict = widget.get("verdict")
+        return (f"[debate {str(widget.get('status', '')).lower()} for {widget.get('instrument_id')}"
+                + (f", verdict {verdict['recommendation']}" if verdict else "") + "]")
     return f"[{kind}]"

@@ -26,7 +26,15 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
-from cryptonite_api.brain_outcomes import card_patch, command_outcome, followed_cards
+from cryptonite_api.brain_outcomes import (
+    card_patch,
+    command_outcome,
+    debate_outcome,
+    debate_patch,
+    debate_read,
+    followed_cards,
+    followed_debates,
+)
 from cryptonite_api.routes.agents import sign_request
 from cryptonite_api.routes.ai import _stopped_mandate_on
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
@@ -185,22 +193,37 @@ async def brain_session_patch(sid: uuid.UUID, req: BrainSessionPatch, auth: dict
 
 
 async def sync_session_cards(request: Request, op: str, sid: uuid.UUID, session: dict[str, Any] | None = None) -> int:
-    """Move every approved order card of the conversation to what its order did (WORKING, FILLED, NOT_EXECUTED) and
-    record the change as a system line, once. Returns how many cards changed. Never raises: an outcome that cannot
-    be read now is read on the next load or turn."""
+    """Move every approved order card of the conversation to what its order did (WORKING, FILLED, NOT_EXECUTED), and
+    every queued Brain debate card to its run's final state (VERDICT, NO_TRADE, GATE_REFUSED, FAILED), recording each
+    change as a system line, once. Returns how many cards changed. Never raises: an outcome that cannot be read now is
+    read on the next load or turn."""
     try:
         if session is None:
             session = await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}")
         cards = followed_cards(session)
-        if not cards:
+        debates = followed_debates(session)
+        if not cards and not debates:
             return 0
         changed = 0
         async with request.app.state.pool.acquire() as conn:
             outcomes = [(c, await command_outcome(conn, c["command_id"])) for c in cards]
+            debate_outs = []
+            for d in debates:  # its own guard here too: a run that cannot be read now never costs an order card
+                try:
+                    debate_outs.append((d, *(await debate_read(conn, d["message_ref"]))))
+                except Exception as e:
+                    logger.warning("Debate card %s not read for session %s: %s", d.get("id"), sid, e)
         for card, out in outcomes:
             note = card_patch(card, out) if out else None
             if note and await _worker_note(sid, {"operator_id": op, **{k: v for k, v in note.items() if v is not None}}) == 200:
                 changed += 1
+        for card, out, run_status in debate_outs:  # its own guard: a refused debate note costs no order card
+            note = debate_patch(card, out, run_status)
+            try:
+                if note and await _worker_note(sid, {"operator_id": op, **note}) == 200:
+                    changed += 1
+            except Exception as e:
+                logger.warning("Debate card %s outcome not recorded for session %s: %s", card.get("id"), sid, e)
         return changed
     except Exception as e:  # the conversation still loads; the next load or turn tries again
         logger.warning("Brain card outcome sync failed for session %s: %s", sid, e)
@@ -236,6 +259,24 @@ async def brain_card_outcome(sid: uuid.UUID, widget_id: str, request: Request, a
     if note and await _worker_note(sid, {"operator_id": operator_id(auth), **{k: v for k, v in note.items() if v is not None}}) == 200:
         status = note["status"]
     return {"status": status, **out}
+
+
+@router.get("/sessions/{sid}/cards/{widget_id}/debate")
+async def brain_debate_outcome(sid: uuid.UUID, widget_id: str, request: Request,
+                               auth: dict = Depends(require_operator)):
+    """Where a Brain debate card's run is, for a card waiting on screen: QUEUED, RUNNING, VERDICT (with its approval),
+    NO_TRADE, GATE_REFUSED or FAILED. Read only: the conversation's line is written by the sync, never by this read."""
+    if len(widget_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid card id")
+    session = await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}")
+    card = next((w for m in session.get("messages", []) for w in (m.get("widgets") or [])
+                 if w.get("id") == widget_id and w.get("kind") == "debate_summary"), None)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Debate card not found")
+    if not card.get("message_ref"):  # no message id to follow: the card cannot reach a verdict
+        return {"status": "FAILED", "run_id": None, "verdict": None, "reason": "NO_RUN_REFERENCE"}
+    async with request.app.state.pool.acquire() as conn:
+        return await debate_outcome(conn, card["message_ref"])
 
 
 async def _worker_note(sid: uuid.UUID, body: dict[str, Any]) -> int:
