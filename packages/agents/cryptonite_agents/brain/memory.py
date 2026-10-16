@@ -108,11 +108,6 @@ def _neutral(text: str, *, quote_lines: bool) -> str:
     return "".join(edits.get(i, ch) for i, ch in enumerate(text)) if edits else text
 
 
-def _escape_tags(text: str) -> str:
-    """Text that must not carry a system event tag in any spelling (a summary)."""
-    return _neutral(_fold(text), quote_lines=False)
-
-
 def _indent(text: str) -> str:
     """Continuation lines indented, so no line of a message can start at the margin."""
     return text.replace("\n", "\n    ")
@@ -169,7 +164,7 @@ def render_prompt(ctx: BrainContext, message: str, now: datetime | None = None, 
     if state:  # the snapshot of the trading system at the start of the turn (get_ai_state's header)
         parts.append(f"## System state (snapshot at the start of this turn)\n{state}")
     if ctx.summary:
-        parts.append(f"## Conversation so far (summary)\n{_escape_tags(ctx.summary)}")
+        parts.append(f"## Conversation so far (summary)\n{_operator_text(ctx.summary)}")
     if ctx.turns:
         parts.append(f"## Recent turns\n{transcript(ctx.turns, today=now.date())}")
     parts.append(f"## Operator's new message\n{_operator_text(message)}")
@@ -182,7 +177,7 @@ async def compact(gateway: Gateway, store: SessionStore, session_id: str) -> boo
     if len(ctx.turns) <= COMPACT_AFTER:
         return False
     fold = ctx.turns[:-KEEP_MESSAGES]
-    prompt = (f"## Previous summary\n{_escape_tags(ctx.summary or '(none yet)')}\n\n"
+    prompt = (f"## Previous summary\n{_operator_text(ctx.summary or '(none yet)')}\n\n"
               f"## New turns to merge\n{transcript(fold)}\n\n"
               "Write the updated summary.")
     res = await gateway.run(SUMMARY_ROLE, prompt, instructions=SUMMARY_INSTRUCTIONS,
