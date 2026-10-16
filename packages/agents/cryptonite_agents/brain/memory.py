@@ -84,11 +84,22 @@ def _quote_system_lines(text: str) -> str:
     return SYSTEM_LINE.sub(r"\1(quoted) \2", text)
 
 
+def _indent(text: str) -> str:
+    """Continuation lines indented, so no line of a message can start at the margin."""
+    return text.replace("\n", "\n    ")
+
+
 def _operator_text(text: str) -> str:
     """Operator or Brain text as the model sees it: it can never read as a system event, and no line in it can start
     a turn or a System line. Every continuation line is indented."""
     text = LINE_BREAK.sub("\n", _fold(text))
-    return _quote_system_lines(SYSTEM_EVENT_TAG.sub("&lt;", text)).replace("\n", "\n    ")
+    return _indent(_quote_system_lines(SYSTEM_EVENT_TAG.sub("&lt;", text)))
+
+
+def _system_text(text: str) -> str:
+    """Server-written event content: line breaks and tags as for operator text, continuation lines indented. Its
+    System-looking lines are not quoted: the server wrote them."""
+    return _indent(SYSTEM_EVENT_TAG.sub("&lt;", LINE_BREAK.sub("\n", _fold(text))))
 
 
 def transcript(messages: list[dict[str, Any]], today: date | None = None) -> str:
@@ -108,7 +119,7 @@ def transcript(messages: list[dict[str, Any]], today: date | None = None) -> str
         text = f"{body}{(' ' + extras) if extras else ''}"
         if m["role"] == "system":
             attr = f' time="{clock}"' if clock else ""
-            lines.append(f"<system_event{attr}>{_escape_tags(text)}</system_event>")
+            lines.append(f"<system_event{attr}>{_system_text(text)}</system_event>")
         else:
             when = f"[{clock}] " if clock else ""
             lines.append(f"{when}{speaker.get(m['role'], m['role'])}: {_operator_text(text)}".rstrip())
