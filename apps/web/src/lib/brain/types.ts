@@ -107,6 +107,19 @@ export type CardPreflight =
     }
   | { ok: false; code: string; detail: string; needs_mandate: boolean };
 
+/** Where a Brain debate stands, from its debate run (QUEUED until the run exists) */
+export const DEBATE_CARD_STATUSES = ["QUEUED", "RUNNING", "VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED"] as const;
+export type DebateCardStatus = (typeof DEBATE_CARD_STATUSES)[number];
+
+/** The debate's verdict. approval_status is null until an approval exists for the run */
+export interface DebateVerdict {
+  recommendation: string;
+  /** 0 to 1, shown as a percentage */
+  conviction_score: number | null;
+  allocation_pct: number | null;
+  approval_status: string | null;
+}
+
 export interface DebateSummaryWidget {
   kind: "debate_summary";
   id: string;
@@ -114,8 +127,22 @@ export interface DebateSummaryWidget {
   timeframe: string;
   recommendation: string | null;
   conviction_score: number | null;
-  status: "QUEUED" | "FAILED";
+  status: DebateCardStatus;
   message: string;
+  /** The queue message the debate was staged under; links the card to its run */
+  message_ref: string | null;
+  run_id: string | null;
+  verdict: DebateVerdict | null;
+  /** NO_PRICE / NO_TRADE for no trade, the gate reason for GATE_REFUSED, else null */
+  reason: string | null;
+}
+
+/** What a debate card shows now, from /brain/sessions/{id}/cards/{card}/debate. Read-only. */
+export interface DebateOutcome {
+  status: DebateCardStatus;
+  run_id: string | null;
+  verdict: DebateVerdict | null;
+  reason: string | null;
 }
 
 export type BrainWidget = PriceChartWidget | TearsheetWidget | OrderCardWidget | DebateSummaryWidget;

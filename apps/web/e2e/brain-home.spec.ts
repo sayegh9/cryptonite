@@ -1138,3 +1138,183 @@ test.describe("Brain Home", () => {
     await expect(block.locator("b, img, i, u, s, a")).toHaveCount(0);
   });
 });
+
+/**
+ * WS-3C debate cards: a card follows its debate run (asked on mount, then every 10 s while QUEUED or RUNNING), stops at
+ * a final state, and says a gate refusal in words. The server stores only a final card's status, so such a card is
+ * asked once on mount for its answer.
+ */
+test.describe("Debate cards follow their run", () => {
+  const DEBATE_RUN = "3f2a1c00-0000-4000-8000-0000000000d1";
+  const VERDICT = { recommendation: "BUY", conviction_score: 0.62, allocation_pct: 5, approval_status: "PENDING" };
+
+  const debateWidget = (id: string, over: Record<string, unknown> = {}) => ({
+    kind: "debate_summary",
+    id,
+    instrument_id: "XRPUSDT.BINANCE",
+    timeframe: "5m",
+    recommendation: null,
+    conviction_score: null,
+    status: "QUEUED",
+    message: "Proposal staged to Action Inbox",
+    message_ref: "1728900000000-0",
+    run_id: null,
+    verdict: null,
+    reason: null,
+    ...over,
+  });
+
+  /**
+   * Opens a session whose history holds these cards. Each card's debate route answers its asks from `answers[cardId]`
+   * in turn (a card with no entry is asked a QUEUED answer). Returns the number of asks each card received.
+   */
+  async function openDebates(page: Page, widgets: Record<string, unknown>[], answers: Record<string, Record<string, unknown>[]> = {}) {
+    const asks: Record<string, number> = Object.fromEntries(widgets.map((w) => [String(w.id), 0]));
+    const queued = { status: "QUEUED", run_id: null, verdict: null, reason: null };
+    await page.route("**/api/v1/paper/positions*", (route) => route.fulfill({ json: [] }));
+    await page.route("**/agent-api/brain/spend", (route) => route.fulfill({ json: { spent_usd: "0.10", cap_usd: "25.00" } }));
+    await page.route(/\/agent-api\/brain\/sessions(\?.*)?$/, (route) => route.fulfill({ json: { sessions: [], next_cursor: null } }));
+    await page.route(`**/agent-api/brain/sessions/${SESSION}`, (route) =>
+      route.fulfill({
+        json: {
+          session: { id: SESSION, title: "XRP debates" },
+          summary: null,
+          messages: [
+            { id: 1, role: "user", content: "Debate the XRP setups", widgets: [], trace_id: null, created_at: null },
+            { id: 2, role: "assistant", content: "The debates are below.", widgets, trace_id: null, created_at: null },
+          ],
+        },
+      }),
+    );
+    await page.route(/\/agent-api\/brain\/sessions\/[^/]+\/cards\/[^/]+\/debate$/, (route) => {
+      const cardId = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) ?? "");
+      const seq = answers[cardId] ?? [queued];
+      const n = asks[cardId] ?? 0;
+      asks[cardId] = n + 1;
+      return route.fulfill({ json: seq[Math.min(n, seq.length - 1)] });
+    });
+    await page.addInitScript((sid) => {
+      localStorage.setItem("csrf_token", "csrf-test");
+      localStorage.setItem("cryptonite-brain", JSON.stringify({ state: { sessionId: sid, historyOpen: false }, version: 1 }));
+    }, SESSION);
+    await page.goto("/?ws=brain&view=home");
+    await expect(page.getByTestId("brain-home")).toBeVisible();
+    return asks;
+  }
+
+  test("a queued debate follows its run to the verdict, then stops asking", async ({ page }) => {
+    test.setTimeout(60_000); // asks at once and every 10 s, then waits one more interval to prove it stopped
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(
+      page,
+      [debateWidget("call-2")],
+      {
+        "call-2": [
+          { status: "QUEUED", run_id: null, verdict: null, reason: null },
+          { status: "RUNNING", run_id: DEBATE_RUN, verdict: null, reason: null },
+          { status: "VERDICT", run_id: DEBATE_RUN, verdict: VERDICT, reason: null },
+        ],
+      },
+    );
+    const card = page.getByTestId("brain-widget-debate");
+    const outcome = card.getByTestId("debate-outcome");
+
+    await expect(outcome).toHaveText("Debate running…", { timeout: 15_000 });
+    await expect(card).toContainText("RUNNING");
+    await expect(outcome).toHaveText("Verdict: BUY 5% · conviction 62% · awaiting approval", { timeout: 20_000 });
+    await expect(card).toContainText("VERDICT");
+
+    const atVerdict = asks["call-2"];
+    expect(atVerdict).toBe(3);
+    await page.waitForTimeout(11_000); // one full poll interval after the verdict
+    expect(asks["call-2"]).toBe(atVerdict);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a final card the store wrote without its answer is asked once on mount and reads the answer", async ({ page }) => {
+    test.setTimeout(60_000); // asks once, then waits one poll interval to prove it is not asked again
+    const reactErrors = collectReactErrors(page);
+    // The server stores only the status of a final card: no run_id, verdict or reason
+    const asks = await openDebates(
+      page,
+      [
+        debateWidget("call-2", { status: "VERDICT" }),
+        debateWidget("call-3", { status: "NO_TRADE" }),
+        debateWidget("call-4", { status: "GATE_REFUSED" }),
+        debateWidget("call-5", { status: "GATE_REFUSED" }),
+        debateWidget("call-6", { status: "GATE_REFUSED" }),
+        debateWidget("call-7", { status: "FAILED", message: "The debate could not be started" }),
+      ],
+      {
+        "call-2": [{ status: "VERDICT", run_id: DEBATE_RUN, verdict: VERDICT, reason: null }],
+        "call-3": [{ status: "NO_TRADE", run_id: DEBATE_RUN, verdict: null, reason: "NO_PRICE" }],
+        "call-4": [{ status: "GATE_REFUSED", run_id: null, verdict: null, reason: "KILL_SWITCH_LATCHED" }],
+        "call-5": [{ status: "GATE_REFUSED", run_id: null, verdict: null, reason: "DAILY_LOSS_LATCHED" }],
+        "call-6": [{ status: "GATE_REFUSED", run_id: null, verdict: null, reason: "POSITION_AT_CAP" }],
+        "call-7": [{ status: "FAILED", run_id: null, verdict: null, reason: null }],
+      },
+    );
+
+    await expect(page.getByTestId("debate-outcome")).toHaveText([
+      "Verdict: BUY 5% · conviction 62% · awaiting approval",
+      "No trade (no usable price)",
+      "Not run: the kill switch is latched",
+      "Not run: the daily-loss latch is on",
+      "Not run: the position is at its cap",
+      "Debate failed",
+    ]);
+    await expect(page.getByTestId("brain-widget-debate").filter({ hasText: "NOT RUN" })).toHaveCount(3);
+    await page.waitForTimeout(11_000); // one full poll interval after the answers
+    expect(asks).toEqual({ "call-2": 1, "call-3": 1, "call-4": 1, "call-5": 1, "call-6": 1, "call-7": 1 });
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a final card that already carries its answer is never asked", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [
+      debateWidget("call-2", { status: "VERDICT", run_id: DEBATE_RUN, verdict: VERDICT }),
+      debateWidget("call-3", { status: "NO_TRADE", run_id: DEBATE_RUN, reason: "NO_PRICE" }),
+      debateWidget("call-4", { status: "GATE_REFUSED", run_id: DEBATE_RUN, reason: "KILL_SWITCH_LATCHED" }),
+      debateWidget("call-5", { status: "GATE_REFUSED", run_id: DEBATE_RUN, reason: "DAILY_LOSS_LATCHED" }),
+      debateWidget("call-6", { status: "GATE_REFUSED", run_id: DEBATE_RUN, reason: "POSITION_AT_CAP" }),
+      debateWidget("call-7", { status: "FAILED", run_id: DEBATE_RUN, message: "The debate could not be started" }),
+    ]);
+
+    await expect(page.getByTestId("debate-outcome")).toHaveText([
+      "Verdict: BUY 5% · conviction 62% · awaiting approval",
+      "No trade (no usable price)",
+      "Not run: the kill switch is latched",
+      "Not run: the daily-loss latch is on",
+      "Not run: the position is at its cap",
+      "Debate failed",
+    ]);
+    await expect(page.getByTestId("brain-widget-debate").filter({ hasText: "NOT RUN" })).toHaveCount(3);
+    expect(Object.values(asks)).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("the verdict line names the approval state and says nothing when there is none", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [
+      ...["PENDING", "APPROVED", "VETOED", "EXPIRED", "EXPIRED_PROCEEDED", "CANCELLED", null].map((approval, i) =>
+        debateWidget(`call-${i + 2}`, {
+          status: "VERDICT",
+          run_id: DEBATE_RUN,
+          verdict: { ...VERDICT, approval_status: approval },
+        }),
+      ),
+    ]);
+
+    await expect(page.getByTestId("debate-outcome")).toHaveText([
+      "Verdict: BUY 5% · conviction 62% · awaiting approval",
+      "Verdict: BUY 5% · conviction 62% · approved",
+      "Verdict: BUY 5% · conviction 62% · vetoed",
+      "Verdict: BUY 5% · conviction 62% · expired (no order)",
+      "Verdict: BUY 5% · conviction 62% · expired and proceeded",
+      "Verdict: BUY 5% · conviction 62% · cancelled",
+      "Verdict: BUY 5% · conviction 62%",
+    ]);
+    expect(Object.values(asks)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(reactErrors).toEqual([]);
+  });
+});

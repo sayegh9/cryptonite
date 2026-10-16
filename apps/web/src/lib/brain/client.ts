@@ -1,13 +1,15 @@
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { readSse } from "./sse";
-import type {
-  BrainSessionPage,
-  BrainSessionSummary,
-  CardOutcome,
-  CardPreflight,
-  DecisionTrace,
-  OrderCardWidget,
-  StoredBrainMessage,
+import {
+  DEBATE_CARD_STATUSES,
+  type BrainSessionPage,
+  type BrainSessionSummary,
+  type CardOutcome,
+  type CardPreflight,
+  type DebateOutcome,
+  type DecisionTrace,
+  type OrderCardWidget,
+  type StoredBrainMessage,
 } from "./types";
 
 /**
@@ -219,6 +221,23 @@ export async function fetchCardPreflight(sessionId: string, widgetId: string, si
   // Anything but the contract (a proxy page, an odd body) is not a dry run: the card shows nothing
   if (typeof body !== "object" || body === null || typeof body.ok !== "boolean") throw new Error("Unexpected dry-run response");
   return body as CardPreflight;
+}
+
+/**
+ * Where a debate card's debate stands: read-only, from the debate run its stage call queued. A card whose run does not
+ * exist yet reads QUEUED. Throws on failure, and on a status the card does not know (the card then keeps what it had).
+ */
+export async function fetchCardDebate(sessionId: string, widgetId: string, signal?: AbortSignal): Promise<DebateOutcome> {
+  const res = await fetch(
+    `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(widgetId)}/debate`,
+    { credentials: "include", cache: "no-store", signal },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  if (typeof body !== "object" || body === null || !(DEBATE_CARD_STATUSES as readonly string[]).includes(body.status)) {
+    throw new Error("Unexpected debate response");
+  }
+  return body as DebateOutcome;
 }
 
 export async function rejectOrderCard(card: OrderCardWidget): Promise<void> {

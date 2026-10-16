@@ -13,7 +13,7 @@ import {
   ScrollText,
   XCircle,
 } from "lucide-react";
-import { approveOrderCard, fetchCardOutcome, fetchCardPreflight, rejectOrderCard } from "@/lib/brain/client";
+import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight, rejectOrderCard } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { createMandate } from "@/lib/mission/client";
@@ -23,7 +23,10 @@ import type {
   CardEvidence,
   CardLesson,
   CardPreflight,
+  DebateCardStatus,
+  DebateOutcome,
   DebateSummaryWidget,
+  DebateVerdict,
   OrderCardWidget,
   PriceChartWidget,
   TearsheetWidget,
@@ -299,19 +302,145 @@ function TearsheetCard({ widget }: { widget: TearsheetWidget }) {
   );
 }
 
+/** A debate card asks for its debate every 10 s while the debate is QUEUED or RUNNING, and for at most 30 min */
+const DEBATE_POLL_MS = 10_000;
+const DEBATE_FOLLOW_MS = 30 * 60_000;
+const DEBATE_FINAL: readonly DebateCardStatus[] = ["VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED"];
+
+/** Plain words for the gate reasons that refuse a Brain debate; an unknown reason is shown as its code */
+const GATE_REFUSED_REASON: [prefix: string, text: string][] = [
+  ["KILL_SWITCH_LATCHED", "the kill switch is latched"],
+  ["DAILY_LOSS_LATCHED", "the daily-loss latch is on"],
+  ["POSITION_AT_CAP", "the position is at its cap"],
+];
+
+/** Plain words for a verdict's approval state (the ai_approvals statuses); the approval is always the operator's */
+const APPROVAL_WORDS: Record<string, string> = {
+  PENDING: "awaiting approval",
+  APPROVED: "approved",
+  VETOED: "vetoed",
+  EXPIRED: "expired (no order)",
+  EXPIRED_PROCEEDED: "expired and proceeded",
+  CANCELLED: "cancelled",
+};
+
+const DEBATE_BADGE: Record<DebateCardStatus, { label: string; tone: string }> = {
+  QUEUED: { label: "QUEUED", tone: "border-purple-800 text-purple-300" },
+  RUNNING: { label: "RUNNING", tone: "border-purple-800 text-purple-300" },
+  VERDICT: { label: "VERDICT", tone: "border-amber-800 text-amber-300" },
+  NO_TRADE: { label: "NO TRADE", tone: "border-sky-800 text-sky-300" },
+  GATE_REFUSED: { label: "NOT RUN", tone: "border-zinc-700 text-zinc-300" },
+  FAILED: { label: "FAILED", tone: "border-rose-800 text-rose-300" },
+};
+
+/**
+ * A final card the store wrote without its answer: the server stores only the status, so it has no run or no verdict or
+ * reason. Such a card is linked by its message_ref and asked once. A final card that already carries its answer is not.
+ */
+function needsAnswer(widget: DebateSummaryWidget): boolean {
+  if (!DEBATE_FINAL.includes(widget.status) || widget.message_ref == null) return false;
+  if (widget.run_id == null) return true;
+  if (widget.status === "VERDICT") return widget.verdict == null;
+  if (widget.status === "NO_TRADE" || widget.status === "GATE_REFUSED") return widget.reason == null;
+  return false;
+}
+
+/**
+ * Follows a debate card to its answer. A QUEUED or RUNNING card is asked on mount, then every 10 s until its debate is
+ * final (at most 30 min). A final card that needs its answer (see needsAnswer) is asked once, on mount. Read-only: it
+ * queues and approves nothing.
+ */
+function useDebateOutcome(widget: DebateSummaryWidget, sessionId: string | null): DebateOutcome {
+  const [polled, setPolled] = useState<DebateOutcome | null>(null);
+  const outcome: DebateOutcome = polled ?? {
+    status: widget.status,
+    run_id: widget.run_id ?? null,
+    verdict: widget.verdict ?? null,
+    reason: widget.reason ?? null,
+  };
+  const live = widget.status === "QUEUED" || widget.status === "RUNNING";
+  const lookup = !live && needsAnswer(widget);
+  useEffect(() => {
+    if (!(live || lookup) || !sessionId) return;
+    const ctrl = new AbortController();
+    const started = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = async () => {
+      try {
+        const out = await fetchCardDebate(sessionId, widget.id, ctrl.signal);
+        if (ctrl.signal.aborted) return;
+        setPolled(out);
+        if (lookup || DEBATE_FINAL.includes(out.status)) return;
+      } catch {
+        if (ctrl.signal.aborted || lookup) return;
+      }
+      if (Date.now() - started < DEBATE_FOLLOW_MS) timer = setTimeout(ask, DEBATE_POLL_MS);
+    };
+    void ask();
+    return () => {
+      ctrl.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [live, lookup, sessionId, widget.id]);
+  return outcome;
+}
+
+/**
+ * The verdict line: "Verdict: BUY 5% · conviction 62% · awaiting approval". With no approval yet (approval_status null)
+ * the line says nothing about approval: the card does not know whether the run needs one.
+ */
+function verdictText(v: DebateVerdict | null): string {
+  if (!v) return "Verdict recorded";
+  const size = v.allocation_pct != null ? ` ${Number.isInteger(v.allocation_pct) ? v.allocation_pct : fmt(v.allocation_pct, 2)}%` : "";
+  const conviction = v.conviction_score != null ? `conviction ${fmt(v.conviction_score * 100, 0)}%` : null;
+  const approval = v.approval_status ? (APPROVAL_WORDS[v.approval_status] ?? v.approval_status) : null;
+  return [`Verdict: ${v.recommendation}${size}`, conviction, approval].filter(Boolean).join(" · ");
+}
+
+/** NO_PRICE means the debate ended without a usable quote; NO_TRADE (the verdict was HOLD) is a plain no trade */
+function noTradeText(reason: string | null): string {
+  if (reason === "NO_PRICE") return "No trade (no usable price)";
+  if (!reason || reason === "NO_TRADE") return "No trade";
+  return `No trade (${reason})`;
+}
+
+function gateRefusedText(reason: string | null): string {
+  if (!reason) return "Not run: the safety gate refused it";
+  const known = GATE_REFUSED_REASON.find(([code]) => reason.startsWith(code));
+  return `Not run: ${known ? known[1] : reason}`;
+}
+
+function outcomeLine(status: DebateCardStatus, verdict: DebateVerdict | null, reason: string | null): string {
+  switch (status) {
+    case "QUEUED":
+      return "Debate queued…";
+    case "RUNNING":
+      return "Debate running…";
+    case "VERDICT":
+      return verdictText(verdict);
+    case "NO_TRADE":
+      return noTradeText(reason);
+    case "GATE_REFUSED":
+      return gateRefusedText(reason);
+    case "FAILED":
+      return "Debate failed";
+  }
+}
+
 function DebateSummaryCard({ widget }: { widget: DebateSummaryWidget }) {
+  const sessionId = useBrainStore((s) => s.sessionId);
+  const { status, verdict, reason } = useDebateOutcome(widget, sessionId);
+  const badge = DEBATE_BADGE[status];
   return (
     <WidgetFrame testId="brain-widget-debate" icon={<GitBranch className="h-3 w-3 text-purple-400" />} title={`Debate · ${widget.instrument_id}`}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${widget.status === "QUEUED" ? "border-purple-800 text-purple-300" : "border-rose-800 text-rose-300"}`}>
-          {widget.status === "QUEUED" ? "QUEUED" : "NOT QUEUED"}
-        </span>
-        {widget.recommendation && <span>Thesis: {widget.recommendation}</span>}
-        {widget.conviction_score != null && <span className="text-zinc-400">conviction {fmt(widget.conviction_score * 100, 0)}%</span>}
+        <span className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${badge.tone}`}>{badge.label}</span>
         <span className="text-zinc-500">{widget.timeframe}</span>
       </div>
-      {widget.message && <p className="mt-1 text-zinc-500">{widget.message}</p>}
-      <p className="mt-1 text-zinc-500">The debate's verdict lands in the Debates view and still needs your approval.</p>
+      <p role="status" data-testid="debate-outcome" className="mt-1 text-zinc-200">
+        {outcomeLine(status, verdict, reason)}
+      </p>
+      {(status === "QUEUED" || status === "FAILED") && widget.message && <p className="mt-1 text-zinc-500">{widget.message}</p>}
     </WidgetFrame>
   );
 }
