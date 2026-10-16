@@ -41,8 +41,10 @@ SUMMARY_INSTRUCTIONS = (
 # every spelling of the tag is escaped, a line that reads as `System:` is quoted, and continuation lines are indented:
 # no line inside a message can start a turn or a System line. Only the server's own blocks carry a system event's
 # authority.
-SYSTEM_EVENT_TAG = re.compile(r"<(?=\s*/?\s*system[\s_-]*event)", re.IGNORECASE)
-SYSTEM_LINE = re.compile(r"^([\s>*_#\-\d.)\[\]:]*)(system\s*[:：])", re.IGNORECASE | re.MULTILINE)
+# Every pattern here is linear: each token has one way to match, and the line pattern's classes never cross a newline
+# (`\s*/?\s*` and `[\s…]*` across lines took seconds on a few thousand newlines, on the worker's event loop).
+SYSTEM_EVENT_TAG = re.compile(r"<(?=\s*(?:/\s*)?system[\s_-]*event)", re.IGNORECASE)
+SYSTEM_LINE = re.compile(r"^((?:[^\S\n]|[>*_#\-\d.)\[\]:])*)(system[^\S\n]*[:：])", re.IGNORECASE | re.MULTILINE)
 LINE_BREAK = re.compile("\r\n|[\r\v\f\u0085  ]")
 
 

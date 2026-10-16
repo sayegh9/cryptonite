@@ -1467,3 +1467,20 @@ def test_zero_width_characters_are_dropped_before_the_tags_and_system_lines_are_
 ])
 def test_lookalike_system_event_tags_are_escaped(text, shown):
     assert memory.transcript([{"role": "assistant", "content": text}]) == f"Brain: {shown}"
+
+
+# --- WS-3E round 2 (Opus security re-review) ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", ["<" + "\n" * 7999, "\n" * 8000, "<" + " " * 50000, "a\n" * 20000])
+def test_the_system_event_and_system_line_patterns_are_linear_on_long_runs(text):
+    # Each call ran in the worker's event loop; the quadratic patterns took 1 to 26 seconds on these inputs
+    import time  # noqa: PLC0415
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    for role in ("user", "system"):
+        started = time.perf_counter()
+        memory.transcript([{"role": role, "content": text, "created_at": "2026-10-16T09:00:00+00:00"}])
+        assert time.perf_counter() - started < 0.2, role
+    started = time.perf_counter()
+    memory.render_prompt(memory.BrainContext(), text, now=datetime(2026, 10, 16, 9, tzinfo=UTC))
+    assert time.perf_counter() - started < 0.2
