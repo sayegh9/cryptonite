@@ -446,7 +446,11 @@ def test_a_sell_card_is_not_held_up_by_the_feed(client, card_worker, monkeypatch
     async def no_mandate(conn, instrument_id, mandate_id):
         return None, "NO_MANDATE"  # reached only if the feed check was skipped
 
+    async def no_holding_mandate(conn, instrument_id):
+        return None, "NO_MANDATE"  # the stopped-holder lookup needs a database; no holder here either
+
     monkeypatch.setattr(brain_routes, "resolve_mandate_for", no_mandate)
+    monkeypatch.setattr(brain_routes, "_holding_mandate_for_sell", no_holding_mandate)
     c.cookies.set(COOKIE_NAME, OPERATOR_SID)
     res = _approve(c, uuid.uuid4())
     assert res.status_code == 409 and "NO_MANDATE" in res.json()["detail"]

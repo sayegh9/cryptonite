@@ -30,7 +30,7 @@
 ## Architecture Rules
 - Dependency direction: `services → packages`; `packages/schemas` imports no sibling package; web reaches backend only via `/api/v1` and the `/agent-api` proxy.
 - Never bypass `GuardedOrderDispatcher` (`packages/execution/cryptonite_execution/risk.py`); 1–25% equity clamp is invariant.
-- AI orders need an ACTIVE mandate (checked before the dispatcher). Tests never call paid models and never run against the dev DB `cryptonite` (use a throwaway DB).
+- AI entries need an ACTIVE mandate (checked before the dispatcher); a SELL that closes a holding may run in a PAUSED or HALTED mandate. Tests never call paid models and never run against the dev DB `cryptonite` (use a throwaway DB).
 - UI state: persisted Zustand stores only; cross-workspace calls via typed `cryptonite:*` CustomEvents.
 - Naming: components `PascalCase.tsx`, stores `useXStore.ts`, Python `snake_case.py`.
 

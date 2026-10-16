@@ -18,9 +18,13 @@ from cryptonite_agents.brain.widgets import MAX_ALLOCATION_PCT, MIN_ALLOCATION_P
 from cryptonite_agents.gateway import RiskClass, tool
 from cryptonite_agents.research.tools import QUEUE_RESEARCH
 from cryptonite_agents.tools import (
+    AI_STATE,
     COMPARE_LIVE_VS_BACKTEST,
+    DERIVATIVES_CONTEXT,
     GET_KLINES,
     LIVE_MARKET_DATA,
+    MARKET_REGIME,
+    NEWS_SENTIMENT,
     QUERY_PARQUET,
     QUERY_POSTGRES,
     SCANNER_CONTEXT,
@@ -71,7 +75,11 @@ def propose_order(
 BRAIN_TOOLS = (
     LIVE_MARKET_DATA,
     GET_KLINES,
+    NEWS_SENTIMENT,
+    DERIVATIVES_CONTEXT,
+    MARKET_REGIME,
     SCANNER_CONTEXT,
+    AI_STATE,
     QUERY_POSTGRES,
     QUERY_PARQUET,
     COMPARE_LIVE_VS_BACKTEST,

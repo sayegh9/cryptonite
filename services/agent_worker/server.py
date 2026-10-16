@@ -22,6 +22,7 @@ from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
 from cryptonite_agents.persona import Persona
+from cryptonite_agents.tools import ai_state_header, system_redis_url
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -108,7 +109,8 @@ config_cache = ConfigCache()
 async def ingest_refusal(instrument_id: str) -> str | None:
     """Why ingest does not feed ``instrument_id`` (for the Brain's card note), or None when it does or it is unknown."""
     try:
-        raw = await asyncio.wait_for(app.state.redis.get(INGEST_UNIVERSE_KEY), timeout=1)
+        # The live universe is a system key (stack DB 0); REDIS_URL here is the worker's own DB 1 (WS-2F)
+        raw = await asyncio.wait_for(app.state.system_redis.get(INGEST_UNIVERSE_KEY), timeout=1)
     except TimeoutError:
         return None  # a slow Redis shows no note; approval still checks the feed
     universe = IngestUniverse.parse(raw)
@@ -118,6 +120,7 @@ async def ingest_refusal(instrument_id: str) -> str | None:
 async def startup_event():
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     app.state.redis = redis.from_url(REDIS_URL, decode_responses=True)
+    app.state.system_redis = redis.from_url(system_redis_url(), decode_responses=True)
     # The gateway writes telemetry as its own role; the model's SQL tools use the read-only agent role
     telemetry_url = os.getenv("AI_TELEMETRY_DATABASE_URL")
     app.state.telemetry_pool = await asyncpg.create_pool(telemetry_url, min_size=1, max_size=3) if telemetry_url else None
@@ -131,7 +134,8 @@ async def startup_event():
     store = PgSessionStore(app.state.telemetry_pool) if app.state.telemetry_pool else MemorySessionStore()
     app.state.brain = Brain(app.state.gateway, store,
                             holdings=lambda instrument: ai_spot_holding(app.state.pool, instrument),
-                            feed=ingest_refusal)
+                            feed=ingest_refusal,
+                            state=lambda: asyncio.to_thread(ai_state_header))
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -141,6 +145,8 @@ async def shutdown_event():
         await app.state.telemetry_pool.close()
     if getattr(app.state, "redis", None):
         await app.state.redis.aclose()
+    if getattr(app.state, "system_redis", None):
+        await app.state.system_redis.aclose()
 
 async def verify_hmac(request: Request):
     if request.url.path == "/health":

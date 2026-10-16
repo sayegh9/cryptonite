@@ -20,9 +20,13 @@ BRAIN_CHAT = "brain.chat"  # lighter chat turns (budget degrade target)
 BRAIN_ROUTES: dict[str, RoleRoute] = {
     r.role: r
     for r in [
-        # brain.plan can propose an order, so it fails closed: no silent downgrade to a weaker model
-        RoleRoute(BRAIN_PLAN, PRO, fallback_policy=FallbackPolicy.FAIL_CLOSED, priority=BudgetPriority.INTERACTIVE),
-        RoleRoute(BRAIN_CHAT, FLASH, FLASH_LITE, FallbackPolicy.DEGRADE, BudgetPriority.INTERACTIVE),
+        # brain.plan can propose an order, so it fails closed: no silent downgrade to a weaker model. The caps bound
+        # one turn's cost (thinking is billed as output, as for debate.verdict)
+        RoleRoute(BRAIN_PLAN, PRO, fallback_policy=FallbackPolicy.FAIL_CLOSED, priority=BudgetPriority.INTERACTIVE,
+                  max_output_tokens=8000, thinking_budget=4096),
+        # brain.chat also answers the degraded read-only turn, so it is capped the same way (smaller: no order plans)
+        RoleRoute(BRAIN_CHAT, FLASH, FLASH_LITE, FallbackPolicy.DEGRADE, BudgetPriority.INTERACTIVE,
+                  max_output_tokens=4000, thinking_budget=1024),
     ]
 }
 
