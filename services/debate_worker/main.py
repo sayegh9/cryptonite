@@ -38,7 +38,13 @@ from debate_queue import (
     housekeeping,
     is_pel_owner,
 )
-from gate import AUTOMATIC_SOURCES, decision_trace_id, pre_debate_gate, release_cooldown
+from gate import (
+    AUTOMATIC_SOURCES,
+    BRAIN_SOURCES,
+    decision_trace_id,
+    pre_debate_gate,
+    release_cooldown,
+)
 from mandate_routing import route_entry, route_exit
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
@@ -203,6 +209,32 @@ async def already_handled(pg_pool, message_ref: str | None, redis_client=None, c
             return True
 
 
+async def record_gate_refusal(pg_pool, redis_client, instrument_id: str, trigger_source: str, reason: str,
+                              trace_id: str, message_ref: str | None, consumer: str | None) -> None:
+    """A Brain-started debate the pre-debate gate refused ends as a terminal GATE_REFUSED run (WS-3C), so the card the
+    Brain showed as staged can say why it did not run. One row per queued message: the unique message ref drops a
+    redelivery's write. Owner-guarded like NO_PRICE, so a stale attempt cannot block the owner's run. Never raises:
+    the refusal stands either way."""
+    try:
+        async with pg_pool.acquire() as conn:
+            async with conn.transaction():
+                if consumer and message_ref:
+                    sr, _, mr = message_ref.partition("/")
+                    if not await is_pel_owner(redis_client, sr, mr, consumer):
+                        logger.warning(f"GATE_REFUSED outcome for {message_ref} refused: {consumer} "
+                                       f"no longer owns it in PEL")
+                        return
+                await conn.execute(
+                    """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at,
+                                                completed_at, failure_reason, stream_message_id, decision_trace_id)
+                       VALUES ($1, $2, 'GATE_REFUSED', $3, now(), now(), $4, $5, $6)""",
+                    uuid.uuid4(), instrument_id, trigger_source, reason, message_ref, uuid.UUID(trace_id))
+    except asyncpg.UniqueViolationError:
+        logger.info(f"GATE_REFUSED outcome for {message_ref} already recorded: redelivery is idempotent")
+    except Exception:
+        logger.exception(f"GATE_REFUSED outcome for {message_ref} ({reason}) not recorded")
+
+
 async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
                                  message_ref: str | None = None, delivered: int | None = None,
                                  consumer: str | None = None):
@@ -268,6 +300,9 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
                                  brief_data=await load_brief_data(redis_client, payload))
     if not gate.allowed:
+        if trigger_source in BRAIN_SOURCES:  # the Brain already said "staged": the refusal is recorded, not silent
+            await record_gate_refusal(pg_pool, redis_client, instrument_id, trigger_source, gate.reason, trace_id,
+                                      message_ref, consumer)
         return
 
     # D1: the run row is the first durable write of a run. Until it commits, any failure releases the

@@ -95,3 +95,113 @@ def card_patch(card: dict[str, Any], out: dict[str, Any]) -> dict[str, Any] | No
             "execution_reason": (out.get("reason") or None) and str(out["reason"])[:300],
             "filled_qty": out.get("filled_qty"), "avg_fill_price": out.get("avg_fill_price"),
             "content": outcome_line(card, out)}
+
+
+# --- Debate cards (WS-3C): a debate card follows its run to the verdict ---------------------------------------------
+
+# The queue the Brain's debate trigger writes to. A run records its message as "<stream>/<id>"; the tool returns "<id>"
+DEBATE_STREAM = "stream:debate_queue"
+DEBATE_FOLLOWED = ("QUEUED", "RUNNING")  # a debate card whose run may still change
+DEBATE_FINAL = ("VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED")
+APPROVAL_TAIL = {  # how a verdict line words its approval: the operator's decision, or what became of it
+    "PENDING": "waiting for your approval", "APPROVED": "approved by the operator", "VETOED": "vetoed",
+    "EXPIRED": "expired with no order", "EXPIRED_PROCEEDED": "expired and proceeded", "CANCELLED": "cancelled"}
+GATE_REASONS = {  # the words for a gate refusal, in the conversation line (the codes are shown too)
+    "KILL_SWITCH_LATCHED": "the kill switch is latched",
+    "DAILY_LOSS_LATCHED": "the daily-loss latch is on",
+    "POSITION_AT_CAP": "the position is at its cap",
+}
+
+
+def _plain(value: Any) -> str:
+    """A number as the conversation prints it: 0.62 reads 0.62, 5.00 reads 5, 0 reads 0."""
+    return format(Decimal(str(value)).normalize(), "f")
+
+
+async def debate_read(conn, message_ref: str) -> tuple[dict[str, Any], str | None]:
+    """The state of a Brain debate card's run, found by the message id the staging tool returned: QUEUED (no run yet),
+    RUNNING, VERDICT (its decision, with the approval of that run), NO_TRADE, GATE_REFUSED (the safety gate refused
+    it before any model call), or FAILED. Read only. Also returns the run's own status (None with no run): the
+    conversation line words the approval by it, since a run that needed no approval has no approval row."""
+    run = await conn.fetchrow(
+        """SELECT id, status, failure_reason FROM debate_runs
+           WHERE stream_message_id = $1 OR stream_message_id = $2 ORDER BY created_at DESC LIMIT 1""",
+        message_ref, f"{DEBATE_STREAM}/{message_ref}")
+    if run is None:
+        return {"status": "QUEUED", "run_id": None, "verdict": None, "reason": None}, None
+    run_id, status = str(run["id"]), run["status"]
+
+    def out(state: str, verdict: dict[str, Any] | None = None, reason: str | None = None) -> dict[str, Any]:
+        return {"status": state, "run_id": run_id, "verdict": verdict, "reason": reason}
+
+    if status in ("PENDING", "RUNNING"):
+        return out("RUNNING" if status == "RUNNING" else "QUEUED"), status
+    if status in ("NO_TRADE", "NO_PRICE"):
+        return out("NO_TRADE", reason=status), status
+    if status == "GATE_REFUSED":
+        return out("GATE_REFUSED", reason=run["failure_reason"]), status
+    if status == "FAILED":
+        return out("FAILED", reason=run["failure_reason"]), status
+    if status in ("PENDING_APPROVAL", "COMPLETED", "REJECTED"):
+        decision = await conn.fetchrow(
+            """SELECT recommendation, conviction_score, allocation_pct FROM portfolio_decisions
+               WHERE run_id = $1 ORDER BY created_at DESC LIMIT 1""", run["id"])
+        if decision is None:  # a decided run with no decision cannot show a verdict: it is not followed further
+            return out("FAILED", reason="NO_DECISION"), status
+        # approve writes the run's approval as source 'debate', source_ref = the run id (one per run)
+        approval = await conn.fetchrow(
+            """SELECT status FROM ai_approvals WHERE source = 'debate' AND source_ref = $1
+               ORDER BY created_at DESC LIMIT 1""", run_id)
+        verdict = {"recommendation": decision["recommendation"],
+                   "conviction_score": float(decision["conviction_score"]),
+                   "allocation_pct": float(decision["allocation_pct"]),
+                   "approval_status": approval["status"] if approval else None}
+        return out("VERDICT", verdict=verdict), status
+    return out("FAILED", reason=status), status  # a status this code does not know cannot be followed to a verdict
+
+
+async def debate_outcome(conn, message_ref: str) -> dict[str, Any]:
+    """The card's state (see debate_read) as the route returns it."""
+    return (await debate_read(conn, message_ref))[0]
+
+
+def followed_debates(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Debate cards whose run may still change: queued or running, with the message id the run is recorded under."""
+    return [w for m in session.get("messages", []) for w in (m.get("widgets") or [])
+            if w.get("kind") == "debate_summary" and w.get("message_ref") and w.get("status") in DEBATE_FOLLOWED]
+
+
+def debate_line(card: dict[str, Any], out: dict[str, Any], run_status: str | None = None) -> str:
+    """The system line a debate card's final state writes. Server-built from the run's own values, never model text."""
+    inst = card.get("instrument_id")
+    state = out["status"]
+    if state == "VERDICT":
+        v = out["verdict"]
+        approval = v["approval_status"]
+        if approval:
+            tail = APPROVAL_TAIL.get(approval, f"approval {approval.lower()}")
+        elif run_status == "COMPLETED":  # sent under a mandate with no approval step: nothing for the operator to do
+            tail = "no approval needed"
+        elif run_status == "REJECTED":
+            tail = "rejected"
+        else:  # PENDING_APPROVAL: the operator decides
+            tail = "waiting for approval"
+        return (f"Debate for {inst}: verdict {v['recommendation']} {_plain(v['allocation_pct'])}% "
+                f"(conviction {_plain(v['conviction_score'])}), {tail}.")
+    reason = out.get("reason") or "UNKNOWN"
+    if state == "NO_TRADE":
+        return f"Debate for {inst} ended with no trade ({reason})."
+    if state == "GATE_REFUSED":
+        why = GATE_REASONS.get(reason)
+        if why:
+            return f"Debate for {inst} was not run: {why} ({reason})."
+        return f"Debate for {inst} was not run ({reason})."
+    return f"Debate for {inst} failed ({reason})."
+
+
+def debate_patch(card: dict[str, Any], out: dict[str, Any], run_status: str | None = None) -> dict[str, Any] | None:
+    """The note that moves a debate card to its final state, or None while the run is still going."""
+    if out["status"] not in DEBATE_FINAL:
+        return None
+    return {"widget_id": card["id"], "status": out["status"], "expect_status": card["status"],
+            "content": debate_line(card, out, run_status)}

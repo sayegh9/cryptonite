@@ -1,15 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, BarChart3, CheckCircle2, FileText, GitBranch, Loader2, ScrollText, XCircle } from "lucide-react";
-import { approveOrderCard, fetchCardOutcome, rejectOrderCard } from "@/lib/brain/client";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  BarChart3,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  FileText,
+  GitBranch,
+  Loader2,
+  ScrollText,
+  XCircle,
+} from "lucide-react";
+import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight, rejectOrderCard } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { createMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import type {
   BrainWidget,
+  CardEvidence,
+  CardLesson,
+  CardPreflight,
+  DebateCardStatus,
+  DebateOutcome,
   DebateSummaryWidget,
+  DebateVerdict,
   OrderCardWidget,
   PriceChartWidget,
   TearsheetWidget,
@@ -285,19 +302,153 @@ function TearsheetCard({ widget }: { widget: TearsheetWidget }) {
   );
 }
 
+/** A debate card asks for its debate every 10 s while the debate is QUEUED or RUNNING, and for at most 30 min */
+const DEBATE_POLL_MS = 10_000;
+const DEBATE_FOLLOW_MS = 30 * 60_000;
+const DEBATE_FINAL: readonly DebateCardStatus[] = ["VERDICT", "NO_TRADE", "GATE_REFUSED", "FAILED"];
+
+/** Plain words for the gate reasons that refuse a Brain debate; an unknown reason is shown as its code */
+const GATE_REFUSED_REASON: [prefix: string, text: string][] = [
+  ["KILL_SWITCH_LATCHED", "the kill switch is latched"],
+  ["DAILY_LOSS_LATCHED", "the daily-loss latch is on"],
+  ["POSITION_AT_CAP", "the position is at its cap"],
+];
+
+/** Plain words for a verdict's approval state (the ai_approvals statuses); the approval is always the operator's */
+const APPROVAL_WORDS: Record<string, string> = {
+  PENDING: "awaiting approval",
+  APPROVED: "approved",
+  VETOED: "vetoed",
+  EXPIRED: "expired (no order)",
+  EXPIRED_PROCEEDED: "expired and proceeded",
+  CANCELLED: "cancelled",
+};
+
+const DEBATE_BADGE: Record<DebateCardStatus, { label: string; tone: string }> = {
+  QUEUED: { label: "QUEUED", tone: "border-purple-800 text-purple-300" },
+  RUNNING: { label: "RUNNING", tone: "border-purple-800 text-purple-300" },
+  VERDICT: { label: "VERDICT", tone: "border-amber-800 text-amber-300" },
+  NO_TRADE: { label: "NO TRADE", tone: "border-sky-800 text-sky-300" },
+  GATE_REFUSED: { label: "NOT RUN", tone: "border-zinc-700 text-zinc-300" },
+  FAILED: { label: "FAILED", tone: "border-rose-800 text-rose-300" },
+  UNTRACKED: { label: "QUEUED EARLIER", tone: "border-zinc-700 text-zinc-300" },
+};
+
+/**
+ * A final card the store wrote without its answer: the server stores only the status, so it has no run or no verdict or
+ * reason. Such a card is linked by its message_ref and asked once. A final card that already carries its answer is not.
+ */
+function needsAnswer(widget: DebateSummaryWidget): boolean {
+  if (!DEBATE_FINAL.includes(widget.status) || widget.message_ref == null) return false;
+  if (widget.run_id == null) return true;
+  if (widget.status === "VERDICT") return widget.verdict == null;
+  if (widget.status === "NO_TRADE" || widget.status === "GATE_REFUSED") return widget.reason == null;
+  return false;
+}
+
+/**
+ * Follows a debate card to its answer. A QUEUED or RUNNING card is asked on mount, then every 10 s until its debate is
+ * final (at most 30 min). A final card that needs its answer (see needsAnswer) is asked once, on mount. A live card with
+ * no message_ref (queued before Wave 3) has no run to follow: it is never asked, and reads as UNTRACKED. Read-only: it
+ * queues and approves nothing.
+ */
+function useDebateOutcome(widget: DebateSummaryWidget, sessionId: string | null): DebateOutcome {
+  const [polled, setPolled] = useState<DebateOutcome | null>(null);
+  const liveStatus = widget.status === "QUEUED" || widget.status === "RUNNING";
+  const untracked = liveStatus && widget.message_ref == null;
+  const outcome: DebateOutcome = polled ?? (untracked
+    ? { status: "UNTRACKED", run_id: null, verdict: null, reason: null }
+    : {
+      status: widget.status,
+      run_id: widget.run_id ?? null,
+      verdict: widget.verdict ?? null,
+      reason: widget.reason ?? null,
+    });
+  const live = liveStatus && !untracked;
+  const lookup = !live && needsAnswer(widget);
+  useEffect(() => {
+    if (!(live || lookup) || !sessionId) return;
+    const ctrl = new AbortController();
+    const started = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = async () => {
+      try {
+        const out = await fetchCardDebate(sessionId, widget.id, ctrl.signal);
+        if (ctrl.signal.aborted) return;
+        setPolled(out);
+        if (lookup || DEBATE_FINAL.includes(out.status) || out.status === "UNTRACKED") return;
+      } catch {
+        if (ctrl.signal.aborted || lookup) return;
+      }
+      if (Date.now() - started < DEBATE_FOLLOW_MS) timer = setTimeout(ask, DEBATE_POLL_MS);
+    };
+    void ask();
+    return () => {
+      ctrl.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [live, lookup, sessionId, widget.id]);
+  return outcome;
+}
+
+/**
+ * The verdict line: "Verdict: BUY 5% · conviction 62% · awaiting approval". With no approval yet (approval_status null)
+ * the line says nothing about approval: the card does not know whether the run needs one.
+ */
+function verdictText(v: DebateVerdict | null): string {
+  if (!v) return "Verdict recorded";
+  const size = v.allocation_pct != null ? ` ${Number.isInteger(v.allocation_pct) ? v.allocation_pct : fmt(v.allocation_pct, 2)}%` : "";
+  const conviction = v.conviction_score != null ? `conviction ${fmt(v.conviction_score * 100, 0)}%` : null;
+  const approval = v.approval_status ? (APPROVAL_WORDS[v.approval_status] ?? v.approval_status) : null;
+  return [`Verdict: ${v.recommendation}${size}`, conviction, approval].filter(Boolean).join(" · ");
+}
+
+/** NO_PRICE means the debate ended without a usable quote; NO_TRADE (the verdict was HOLD) is a plain no trade */
+function noTradeText(reason: string | null): string {
+  if (reason === "NO_PRICE") return "No trade (no usable price)";
+  if (!reason || reason === "NO_TRADE") return "No trade";
+  return `No trade (${reason})`;
+}
+
+function gateRefusedText(reason: string | null): string {
+  if (!reason) return "Not run: the safety gate refused it";
+  const known = GATE_REFUSED_REASON.find(([code]) => reason.startsWith(code));
+  return `Not run: ${known ? known[1] : reason}`;
+}
+
+function outcomeLine(status: DebateCardStatus, verdict: DebateVerdict | null, reason: string | null): string {
+  switch (status) {
+    case "QUEUED":
+      return "Debate queued…";
+    case "RUNNING":
+      return "Debate running…";
+    case "VERDICT":
+      return verdictText(verdict);
+    case "NO_TRADE":
+      return noTradeText(reason);
+    case "GATE_REFUSED":
+      return gateRefusedText(reason);
+    case "FAILED":
+      return "Debate failed";
+    case "UNTRACKED":
+      return "Debate queued earlier — see the Debates page";
+  }
+}
+
 function DebateSummaryCard({ widget }: { widget: DebateSummaryWidget }) {
+  const sessionId = useBrainStore((s) => s.sessionId);
+  const { status, verdict, reason } = useDebateOutcome(widget, sessionId);
+  const badge = DEBATE_BADGE[status];
   return (
     <WidgetFrame testId="brain-widget-debate" icon={<GitBranch className="h-3 w-3 text-purple-400" />} title={`Debate · ${widget.instrument_id}`}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${widget.status === "QUEUED" ? "border-purple-800 text-purple-300" : "border-rose-800 text-rose-300"}`}>
-          {widget.status === "QUEUED" ? "QUEUED" : "NOT QUEUED"}
-        </span>
-        {widget.recommendation && <span>Thesis: {widget.recommendation}</span>}
-        {widget.conviction_score != null && <span className="text-zinc-400">conviction {fmt(widget.conviction_score * 100, 0)}%</span>}
+        <span className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${badge.tone}`}>{badge.label}</span>
         <span className="text-zinc-500">{widget.timeframe}</span>
       </div>
-      {widget.message && <p className="mt-1 text-zinc-500">{widget.message}</p>}
-      <p className="mt-1 text-zinc-500">The debate's verdict lands in the Debates view and still needs your approval.</p>
+      <p role="status" data-testid="debate-outcome" className="mt-1 text-zinc-200">
+        {outcomeLine(status, verdict, reason)}
+      </p>
+      {(status === "QUEUED" || status === "FAILED") && widget.message && <p className="mt-1 text-zinc-500">{widget.message}</p>}
     </WidgetFrame>
   );
 }
@@ -438,6 +589,193 @@ function FeedGate({ instrumentId, reason, onStreaming }: { instrumentId: string;
   );
 }
 
+/** The dry run is read again at most this often when the operator only switches back to the window */
+const PREFLIGHT_FOCUS_MS = 5_000;
+
+/**
+ * What Approve would do right now: read on mount (while the card can be approved), again by `check` when the operator
+ * opens the confirm step, and on window focus (at most every 5 s). It fails quiet: an unavailable dry run shows nothing
+ * and never blocks Approve, the server stays the authority.
+ */
+function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, live: boolean) {
+  const [preflight, setPreflight] = useState<CardPreflight | null>(null);
+  const inflight = useRef<AbortController | null>(null);
+  const lastRead = useRef(0);
+
+  const check = useCallback(() => {
+    if (!sessionId) return;
+    inflight.current?.abort();
+    const ctrl = new AbortController();
+    inflight.current = ctrl;
+    lastRead.current = Date.now();
+    fetchCardPreflight(sessionId, widget.id, ctrl.signal)
+      .then((p) => {
+        // Decided elsewhere: the local card may be stale, so there is no refusal to show and the normal label stays
+        const decided = !p.ok && p.code === "NOT_PENDING";
+        if (!ctrl.signal.aborted) setPreflight(decided ? null : p);
+      })
+      .catch(() => {
+        if (!ctrl.signal.aborted) setPreflight(null);
+      });
+  }, [sessionId, widget.id]);
+
+  useEffect(() => {
+    if (!live) return;
+    // A read from before the card was locked (the feed gate) is stale: it goes at once, and the read below replaces it
+    setPreflight(null);
+    check();
+    const onFocus = () => {
+      if (Date.now() - lastRead.current >= PREFLIGHT_FOCUS_MS) check();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      inflight.current?.abort();
+    };
+  }, [live, check]);
+
+  return { preflight: live ? preflight : null, check };
+}
+
+/** The dry run in plain words, under the size row: the sizing, the sell, the mandate Approve would create, or the refusal */
+function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; instrumentId: string }) {
+  const symbol = instrumentId.split(".")[0];
+  if (!preflight.ok) {
+    if (preflight.needs_mandate) {
+      return (
+        <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
+          No ACTIVE mandate allows {symbol} yet: approving creates one (TOTP)
+        </p>
+      );
+    }
+    return (
+      <p role="note" data-testid="brain-card-preflight" className="mt-2 flex items-start gap-1 text-amber-300">
+        <AlertTriangle className="mt-px h-3 w-3 flex-none" aria-hidden />
+        <span>Would be refused: {preflight.detail}</span>
+      </p>
+    );
+  }
+  if (preflight.side === "SELL") {
+    return (
+      <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
+        Would sell {preflight.sell_quantity ?? "the whole holding"} from {preflight.mandate.name}
+      </p>
+    );
+  }
+  return (
+    <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
+      Would size to {preflight.allocation_pct}% of {preflight.mandate.name} (${fmt(Number(preflight.budget_usd), 0)})
+      {preflight.clipped_from_pct != null && <> (clipped from {preflight.clipped_from_pct}% — room left)</>}
+    </p>
+  );
+}
+
+/** Alpha as a signed percent in plain words ("+1.2%", "−0.8%"; a true minus sign), with its colour */
+function alphaLabel(alpha: number): { text: string; className: string } {
+  const rounded = Number(alpha.toFixed(1));
+  if (rounded < 0) return { text: `−${fmt(-rounded, 1)}%`, className: "text-rose-400" };
+  return { text: `+${fmt(rounded, 1)}%`, className: rounded > 0 ? "text-emerald-400" : "text-zinc-400" };
+}
+
+/** The lesson's calendar date (YYYY-MM-DD) from the server timestamp; "—" when it is not an ISO date */
+function lessonDate(createdAt: string): string {
+  return /^\d{4}-\d{2}-\d{2}/.exec(createdAt)?.[0] ?? "—";
+}
+
+/**
+ * Past lessons the learner wrote on earlier decisions for this instrument, collapsed under the rationale. The lesson text
+ * was written by a model: it is shown as plain text in quotes (React escapes it), never as HTML.
+ */
+function PastLessons({ lessons }: { lessons: CardLesson[] }) {
+  const [open, setOpen] = useState(false);
+  const listId = useId();
+  if (lessons.length === 0) return null;
+  return (
+    <div className="mt-2" data-testid="brain-card-lessons">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-2xs text-cyan-400 hover:text-cyan-300 hover:underline"
+      >
+        {open ? <ChevronUp className="h-3 w-3" aria-hidden /> : <ChevronDown className="h-3 w-3" aria-hidden />}
+        Past lessons ({lessons.length})
+      </button>
+      <ul id={listId} hidden={!open} className="mt-1 space-y-2 border-l border-zinc-800 pl-2">
+        {lessons.map((lesson, i) => {
+          const alpha = lesson.alpha_pct != null && Number.isFinite(lesson.alpha_pct) ? alphaLabel(lesson.alpha_pct) : null;
+          const outcomeClass =
+            lesson.outcome === "WIN"
+              ? "border-emerald-800 text-emerald-300"
+              : lesson.outcome === "LOSS"
+                ? "border-rose-800 text-rose-300"
+                : "border-zinc-700 text-zinc-300";
+          return (
+            <li key={i} className="text-zinc-400">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs">
+                <span className={`rounded border px-1 font-bold ${outcomeClass}`}>{lesson.outcome ?? "—"}</span>
+                {alpha && <span className={alpha.className}>{alpha.text}</span>}
+                <span className="text-zinc-500">{lessonDate(lesson.created_at)}</span>
+              </div>
+              <p className="mt-0.5 text-zinc-300">{`“${lesson.lesson_text}”`}</p>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/** One evidence line in plain form: "field = value · source_tool · as_of" (the as_of part is dropped when absent) */
+function evidenceText(item: CardEvidence): string {
+  return [`${item.field} = ${item.value}`, item.source_tool, item.as_of].filter(Boolean).join(" · ");
+}
+
+/**
+ * The structured rationale under the card's text: thesis, evidence, invalidation, and a horizon and confidence line.
+ * Each part is hidden when absent, so a card from before them shows nothing extra. The model wrote every field: they
+ * are plain text (React escapes them), never markup.
+ */
+function StructuredRationale({ widget }: { widget: OrderCardWidget }) {
+  const evidence = widget.evidence ?? [];
+  const confidence = typeof widget.confidence === "number" && Number.isFinite(widget.confidence) ? widget.confidence : null;
+  const meta = [
+    widget.horizon ? `Horizon ${widget.horizon}` : null,
+    confidence !== null ? `Confidence ${Math.round(confidence * 100)}%` : null,
+  ].filter((part): part is string => part !== null);
+  if (!widget.thesis && evidence.length === 0 && !widget.invalidation && meta.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1.5 text-2xs" data-testid="brain-card-structured">
+      {widget.thesis ? (
+        <div>
+          <p className="text-zinc-500">Thesis</p>
+          <p className="text-zinc-300">{widget.thesis}</p>
+        </div>
+      ) : null}
+      {evidence.length > 0 ? (
+        <div>
+          <p className="text-zinc-500">Evidence</p>
+          <ul className="space-y-0.5">
+            {evidence.map((item, i) => (
+              <li key={i} className="text-zinc-300">
+                {evidenceText(item)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {widget.invalidation ? (
+        <div>
+          <p className="text-zinc-500">Invalidation</p>
+          <p className="text-zinc-300">{widget.invalidation}</p>
+        </div>
+      ) : null}
+      {meta.length > 0 ? <p className="text-zinc-400">{meta.join(" · ")}</p> : null}
+    </div>
+  );
+}
+
 function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -459,6 +797,14 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const feedLocked = !!feedRefusal && !fed;
   const sessionId = useBrainStore((s) => s.sessionId);
   useCardOutcome(widget, sessionId);
+  // Only a card that can still be approved is checked: not decided, and not locked by the feed
+  const { preflight, check: checkPreflight } = useCardPreflight(widget, sessionId, pending && !feedLocked);
+  // Approve stays enabled when the dry run says it would be refused (the server decides); the label says so
+  const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate;
+  // A dry run that finds no ACTIVE mandate for a BUY readies the create form, so the first Approve already shows it
+  useEffect(() => {
+    if (buy && preflight) setNeedsMandate(!preflight.ok && preflight.needs_mandate);
+  }, [buy, preflight]);
 
   const approve = async () => {
     setBusy(true);
@@ -484,6 +830,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       await approveOrderCard(widget, mandateId);
       setConfirming(false);
     } catch (e: any) {
+      // The server refused: the dry run is read again so an "ok" line never sits next to that refusal
+      checkPreflight();
       const msg: string = e?.message || "Order rejected";
       if (buy && msg.startsWith("NO_MANDATE")) {
         setNeedsMandate(true);
@@ -560,7 +908,13 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <dd className="text-zinc-100">{widget.take_profit ? fmt(widget.take_profit) : "—"}</dd>
         </div>
       </dl>
+      {/* The paused-mandate notice already says this refusal: the dry-run line does not repeat it */}
+      {preflight && !(mandateBlock && !preflight.ok && /^MANDATE_(PAUSED|HALTED)/.test(preflight.code)) && (
+        <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />
+      )}
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
+      <StructuredRationale widget={widget} />
+      <PastLessons lessons={widget.lessons ?? []} />
 
       {feedLocked && feedRefusal ? (
         <FeedGate instrumentId={widget.instrument_id} reason={feedRefusal} onStreaming={unlockFeed} />
@@ -576,10 +930,13 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <button
             type="button"
             disabled={feedLocked}
-            onClick={() => setConfirming(true)}
+            onClick={() => {
+              setConfirming(true);
+              checkPreflight();
+            }}
             className="flex-1 rounded border border-amber-600 bg-amber-600/20 px-2 py-1.5 text-2xs font-bold text-amber-200 hover:bg-amber-600/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Approve…
+            {refused ? "Approve anyway…" : "Approve…"}
           </button>
           <button
             type="button"

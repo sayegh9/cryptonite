@@ -143,18 +143,19 @@ def test_rename_and_archive_need_an_operator_and_csrf(client, worker):
     assert c.patch(url, json={"title": "x" * 121}, headers={"X-CSRF-Token": CSRF}).status_code == 422
 
 
-def test_note_forwards_only_display_fields(client, worker):
+def test_note_forwards_only_display_fields(client, card_worker):
     c, _ = client
+    _, notes = card_worker
     c.cookies.set(COOKIE_NAME, OPERATOR_SID)
     sid = uuid.uuid4()
     res = c.post(f"/api/v1/agents/brain/sessions/{sid}/notes", headers={"X-CSRF-Token": CSRF},
-                 json={"content": "rejected", "widget_id": "c1", "status": "REJECTED"})
+                 json={"content": "rejected", "widget_id": "card-1", "status": "REJECTED"})
     assert res.status_code == 200
-    sent = json.loads(worker[-1].content)
+    sent = notes[-1]
     assert sent["operator_id"] == "u-op" and sent["expect_status"] == "PENDING_APPROVAL"  # only from pending
     for status in ("EXECUTE_NOW", "APPROVED"):  # approval only through the approve endpoint
         bad = c.post(f"/api/v1/agents/brain/sessions/{sid}/notes", headers={"X-CSRF-Token": CSRF},
-                     json={"content": "x", "widget_id": "c1", "status": status})
+                     json={"content": "x", "widget_id": "card-1", "status": status})
         assert bad.status_code == 422
 
 

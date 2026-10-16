@@ -17,6 +17,7 @@ from cryptonite_agents.brain import (
     brain_gateway_routes,
 )
 from cryptonite_agents.brain.holdings import ai_spot_holding
+from cryptonite_agents.brain.lessons import card_lessons
 from cryptonite_agents.brain.store import session_cursor
 from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
@@ -135,7 +136,8 @@ async def startup_event():
     app.state.brain = Brain(app.state.gateway, store,
                             holdings=lambda instrument: ai_spot_holding(app.state.pool, instrument),
                             feed=ingest_refusal,
-                            state=lambda: asyncio.to_thread(ai_state_header))
+                            state=lambda: asyncio.to_thread(ai_state_header),
+                            lessons=lambda instrument: asyncio.to_thread(card_lessons, instrument))
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -290,9 +292,12 @@ class BrainNoteRequest(BaseModel):
     widget_id: str | None = Field(default=None, max_length=128)
     # After APPROVED, a card follows its order: WORKING (a resting limit), FILLED, or NOT_EXECUTED (refused, failed
     # or cancelled with nothing filled). Approval is the operator's decision; these are what the order did.
-    status: str | None = Field(default=None, pattern="^(APPROVED|REJECTED|FAILED|WORKING|FILLED|NOT_EXECUTED)$")
+    # A debate card (WS-3C) is QUEUED until its run reaches a final VERDICT, NO_TRADE, GATE_REFUSED or FAILED.
+    # Only the API's own sync sends these; the client endpoint accepts REJECTED alone.
+    status: str | None = Field(
+        default=None, pattern="^(APPROVED|REJECTED|FAILED|WORKING|FILLED|NOT_EXECUTED|VERDICT|NO_TRADE|GATE_REFUSED)$")
     command_id: str | None = Field(default=None, max_length=128)
-    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED|WORKING)$")
+    expect_status: str | None = Field(default=None, pattern="^(PENDING_APPROVAL|APPROVED|WORKING|QUEUED)$")
     execution_reason: str | None = Field(default=None, max_length=300)
     filled_qty: str | None = Field(default=None, max_length=40)
     avg_fill_price: str | None = Field(default=None, max_length=40)

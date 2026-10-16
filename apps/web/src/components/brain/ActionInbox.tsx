@@ -39,6 +39,9 @@ const LOCAL_ONLY_PREFIXES = ["demo-", "sim-", "pending-"];
 /** A proposals request that has not answered by then is reported as not loaded, not waited on forever */
 const INBOX_TIMEOUT_MS = 10_000;
 
+/** A Brain debate the safety gate refused before it ran: a finished no trade with nothing to approve */
+const gateRefused = (run: DebateRun) => run.status === "GATE_REFUSED";
+
 /** The inbox could not load: say so, and never show "nothing to approve" in its place */
 function InboxLoadError({ syncError, session, onRetry }: { syncError: string; session: SessionStatus; onRetry: () => void }) {
   return (
@@ -153,8 +156,9 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
     let noTrade = 0;
 
     for (const run of debatesList) {
-      // NO_PRICE is a finished debate with nothing to approve (it had no price), so it counts as no trade
-      if (run.status === "NO_TRADE" || run.status === "NO_PRICE") {
+      // NO_PRICE is a finished debate with nothing to approve (it had no price), so it counts as no trade; so does a
+      // debate the safety gate refused before it ran (GATE_REFUSED)
+      if (run.status === "NO_TRADE" || run.status === "NO_PRICE" || gateRefused(run)) {
         noTrade++;
       } else if (run.status === "COMPLETED") {
         if (run.decision === "REJECTED") rejected++;
@@ -190,10 +194,11 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
     if (activeTab === "pending") {
       list = list.filter(
         (r) =>
-          r.status !== "COMPLETED" && r.status !== "REJECTED" && r.status !== "FAILED" && r.status !== "NO_TRADE" && r.status !== "NO_PRICE"
+          r.status !== "COMPLETED" && r.status !== "REJECTED" && r.status !== "FAILED" && r.status !== "NO_TRADE" && r.status !== "NO_PRICE" &&
+          !gateRefused(r)
       );
     } else if (activeTab === "no_trade") {
-      list = list.filter((r) => r.status === "NO_TRADE" || r.status === "NO_PRICE");
+      list = list.filter((r) => r.status === "NO_TRADE" || r.status === "NO_PRICE" || gateRefused(r));
     } else if (activeTab === "completed") {
       list = list.filter((r) => r.status === "COMPLETED" && r.decision !== "REJECTED");
     } else if (activeTab === "rejected") {
@@ -328,7 +333,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
         {/* Quick Header Actions */}
         <div className="flex items-center space-x-1.5">
-          {completedCount + rejectedCount > 0 && (
+          {completedCount + rejectedCount + noTradeCount > 0 && (
             <button
               onClick={handleClearCompleted}
               title="Clear all completed and rejected proposals"
@@ -499,6 +504,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
             const isRejected = run.status === "REJECTED" || (run.status === "COMPLETED" && run.decision === "REJECTED");
             const isNoTrade = run.status === "NO_TRADE";
             const isNoPrice = run.status === "NO_PRICE";
+            const isGateRefused = gateRefused(run);
             // Only a run the server holds in PENDING_APPROVAL can be approved
             const isActionable = run.status === "PENDING_APPROVAL";
             const symbolDisplay = resolveInstrument(run);
@@ -557,12 +563,20 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                           ? "bg-zinc-800 text-zinc-400 border-zinc-700"
                           : isRunning
                           ? "bg-purple-950 text-purple-300 border-purple-800"
-                          : isNoTrade || isNoPrice
+                          : isNoTrade || isNoPrice || isGateRefused
                           ? "bg-sky-950 text-sky-300 border-sky-800"
                           : "bg-amber-950 text-amber-300 border-amber-800"
                       }`}
                     >
-                      {isRejected ? "REJECTED" : isNoTrade ? "NO TRADE" : isNoPrice ? "NO PRICE DATA" : run.status}
+                      {isRejected
+                        ? "REJECTED"
+                        : isNoTrade
+                        ? "NO TRADE"
+                        : isNoPrice
+                        ? "NO PRICE DATA"
+                        : isGateRefused
+                        ? "Not run (safety gate)"
+                        : run.status}
                     </span>
 
                     {/* Individual Dismiss Button */}

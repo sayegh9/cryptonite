@@ -20,12 +20,23 @@ because nothing else would stop the position out.
 import json
 import logging
 import os
+import re
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
 import httpx
-from cryptonite_api.brain_outcomes import card_patch, command_outcome, followed_cards
+from cryptonite_agents.brain.widgets import INSTRUMENT_ID
+from cryptonite_api.brain_outcomes import (
+    card_patch,
+    command_outcome,
+    debate_outcome,
+    debate_patch,
+    debate_read,
+    followed_cards,
+    followed_debates,
+)
 from cryptonite_api.routes.agents import sign_request
 from cryptonite_api.routes.ai import _stopped_mandate_on
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
@@ -63,12 +74,13 @@ class BrainAskRequest(BaseModel):
 
 
 class BrainNoteRequest(BaseModel):
-    """An operator note; the only card transition a client may request is PENDING_APPROVAL -> REJECTED
-    (approval goes through the approve endpoint)."""
+    """A card rejection by the operator; the only card transition a client may request is PENDING_APPROVAL -> REJECTED
+    (approval goes through the approve endpoint). The conversation line is written by the server from the card, so
+    ``content`` is accepted for the web client and ignored: a client's text never becomes a system event."""
 
-    content: str = Field(min_length=1, max_length=2000)
-    widget_id: str | None = Field(default=None, max_length=128)
-    status: str | None = Field(default=None, pattern="^REJECTED$")
+    widget_id: str = Field(min_length=1, max_length=128)
+    status: str = Field(pattern="^REJECTED$")
+    content: str | None = Field(default=None, max_length=2000)
 
 
 def operator_id(auth: dict) -> str:
@@ -183,22 +195,37 @@ async def brain_session_patch(sid: uuid.UUID, req: BrainSessionPatch, auth: dict
 
 
 async def sync_session_cards(request: Request, op: str, sid: uuid.UUID, session: dict[str, Any] | None = None) -> int:
-    """Move every approved order card of the conversation to what its order did (WORKING, FILLED, NOT_EXECUTED) and
-    record the change as a system line, once. Returns how many cards changed. Never raises: an outcome that cannot
-    be read now is read on the next load or turn."""
+    """Move every approved order card of the conversation to what its order did (WORKING, FILLED, NOT_EXECUTED), and
+    every queued Brain debate card to its run's final state (VERDICT, NO_TRADE, GATE_REFUSED, FAILED), recording each
+    change as a system line, once. Returns how many cards changed. Never raises: an outcome that cannot be read now is
+    read on the next load or turn."""
     try:
         if session is None:
             session = await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}")
         cards = followed_cards(session)
-        if not cards:
+        debates = followed_debates(session)
+        if not cards and not debates:
             return 0
         changed = 0
         async with request.app.state.pool.acquire() as conn:
             outcomes = [(c, await command_outcome(conn, c["command_id"])) for c in cards]
+            debate_outs = []
+            for d in debates:  # its own guard here too: a run that cannot be read now never costs an order card
+                try:
+                    debate_outs.append((d, *(await debate_read(conn, d["message_ref"]))))
+                except Exception as e:
+                    logger.warning("Debate card %s not read for session %s: %s", d.get("id"), sid, e)
         for card, out in outcomes:
             note = card_patch(card, out) if out else None
             if note and await _worker_note(sid, {"operator_id": op, **{k: v for k, v in note.items() if v is not None}}) == 200:
                 changed += 1
+        for card, out, run_status in debate_outs:  # its own guard: a refused debate note costs no order card
+            note = debate_patch(card, out, run_status)
+            try:
+                if note and await _worker_note(sid, {"operator_id": op, **note}) == 200:
+                    changed += 1
+            except Exception as e:
+                logger.warning("Debate card %s outcome not recorded for session %s: %s", card.get("id"), sid, e)
         return changed
     except Exception as e:  # the conversation still loads; the next load or turn tries again
         logger.warning("Brain card outcome sync failed for session %s: %s", sid, e)
@@ -236,6 +263,25 @@ async def brain_card_outcome(sid: uuid.UUID, widget_id: str, request: Request, a
     return {"status": status, **out}
 
 
+@router.get("/sessions/{sid}/cards/{widget_id}/debate")
+async def brain_debate_outcome(sid: uuid.UUID, widget_id: str, request: Request,
+                               auth: dict = Depends(require_operator)):
+    """Where a Brain debate card's run is, for a card waiting on screen: QUEUED, RUNNING, VERDICT (with its approval),
+    NO_TRADE, GATE_REFUSED or FAILED. A card with no message id (queued before Wave 3) is UNTRACKED: there is no run to
+    follow, and that is not a failure. Read only: the conversation's line is written by the sync, never by this read."""
+    if len(widget_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid card id")
+    session = await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}")
+    card = next((w for m in session.get("messages", []) for w in (m.get("widgets") or [])
+                 if w.get("id") == widget_id and w.get("kind") == "debate_summary"), None)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Debate card not found")
+    if not card.get("message_ref"):  # no message id to follow: the card has no run to reach a verdict
+        return {"status": "UNTRACKED", "run_id": None, "verdict": None, "reason": None}
+    async with request.app.state.pool.acquire() as conn:
+        return await debate_outcome(conn, card["message_ref"])
+
+
 async def _worker_note(sid: uuid.UUID, body: dict[str, Any]) -> int:
     path = f"/api/v1/brain/sessions/{sid}/notes"
     raw = json.dumps(body).encode()
@@ -252,10 +298,31 @@ async def _worker_note(sid: uuid.UUID, body: dict[str, Any]) -> int:
     return resp.status_code
 
 
+def _js_number(value: Any) -> str:
+    """A number as the web prints it (5.0 reads as 5), so the reject line is the one the operator saw."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    number = float(value)
+    return str(int(number)) if number.is_integer() else repr(number)
+
+
+def _shown_instrument(card: dict[str, Any]) -> str:
+    """The instrument a server line may echo from a stored card: the card's own when it matches INSTRUMENT_ID, else
+    "an order card" (a card stored before the instrument pattern existed is not echoed as it was stored)."""
+    raw = card.get("instrument_id")
+    return raw if isinstance(raw, str) and re.fullmatch(INSTRUMENT_ID, raw) else "an order card"
+
+
 @router.post("/sessions/{sid}/notes", dependencies=OPERATOR_WRITE)
 async def brain_note(sid: uuid.UUID, req: BrainNoteRequest, auth: dict = Depends(require_operator)):
-    body = {"operator_id": operator_id(auth), "content": req.content, "widget_id": req.widget_id,
-            "status": req.status, "expect_status": "PENDING_APPROVAL" if req.status else None}
+    op = operator_id(auth)
+    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), req.widget_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    content = (f"Operator rejected order card {card['id']} ({card['side']} {_shown_instrument(card)}, "
+               f"{_js_number(card['allocation_pct'])}% of mandate).")
+    body = {"operator_id": op, "content": content, "widget_id": req.widget_id, "status": req.status,
+            "expect_status": "PENDING_APPROVAL"}
     if await _worker_note(sid, body) == 409:
         raise HTTPException(status_code=409, detail="The card is no longer pending")
     return {"status": "ok"}
@@ -297,19 +364,24 @@ class CardApproveRequest(BaseModel):
     mandate_id: uuid.UUID | None = None  # default: the single ACTIVE mandate that allows the instrument
 
 
-@router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
-async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_human_operator),
-                             req: CardApproveRequest | None = None):
-    """Approve an order card: one PAPER order inside a mandate, at most once, protected by the exit
-    monitor's stops. The approval is recorded in ``ai_approvals`` and bound to its command (A5.3)."""
-    op = operator_id(auth)
-    if len(widget_id) > 128:
-        raise HTTPException(status_code=422, detail="Invalid card id")
-    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), widget_id)
-    if card is None:
-        raise HTTPException(status_code=404, detail="Order card not found")
-    if card.get("status") == "APPROVED" and card.get("command_id"):
-        return {"command_id": card["command_id"], "status": "APPROVED", "replayed": True}
+@dataclass(frozen=True)
+class CardPlan:
+    """An order card as approve sizes and queues it now. Built only by ``_plan_card``, which reads and never writes."""
+    mandate: Mandate
+    allocation: Decimal  # % of the mandate budget: the card's, cut to the room a BUY has left under its position limit
+    budget: Decimal  # USD: the allocation of the mandate's capital budget
+    summary: str  # the audit text (the approval record and the paper command's summary)
+    shown: str  # the same text as the server's note lines show it (see _shown_instrument)
+    held: Decimal  # the spot quantity a SELL closes (0 for a BUY)
+    protection: dict[str, Any]  # the exit monitor's heartbeat: the stops that protect the position
+    trace_id: uuid.UUID | None
+    source_ref: str  # the approval is recorded under this: "<session>:<card>"
+
+
+async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], mandate_id: uuid.UUID | None) -> CardPlan:
+    """Every check approve makes before it claims a card, in the same order, with the same refusals and details.
+    Reads only: nothing is claimed, noted, recorded or queued here, so the dry run (preflight) cannot disagree with
+    approve about what would be refused or how big the order would be."""
     if card.get("status") not in ("PENDING_APPROVAL", "APPROVED"):
         raise HTTPException(status_code=409, detail=f"The card is {card.get('status')}")
 
@@ -326,8 +398,8 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     # Every AI order trades inside a mandate (A5.1); resolve it before the card is claimed
     pool = request.app.state.pool
     async with pool.acquire() as conn:
-        mandate, why = await resolve_mandate_for(conn, card["instrument_id"], req.mandate_id if req else None)
-    if card["side"] == "SELL" and not (req and req.mandate_id) and (mandate is not None or why == "NO_MANDATE"):
+        mandate, why = await resolve_mandate_for(conn, card["instrument_id"], mandate_id)
+    if card["side"] == "SELL" and not mandate_id and (mandate is not None or why == "NO_MANDATE"):
         # A SELL closes a holding, and REDUCE_RISK is allowed on a PAUSED or HALTED mandate (check_mandate and the
         # orchestrator gate). When the mandate that would be used holds none of the instrument, the stopped mandate
         # that holds it is the one the SELL closes in. An ACTIVE mandate that holds it is used as before
@@ -371,7 +443,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     # (3 XRP cards of one trace were approved within 6 s); a twin of an approved card is refused, unclaimed
     trace = card.get("trace_id")
     trace_id = uuid.UUID(trace) if _is_uuid(trace) else None
-    source_ref = f"{sid}:{widget_id}"
+    source_ref = f"{sid}:{card['id']}"  # _find_card matched this card by id: that is the widget id
     if trace_id is not None:
         async with pool.acquire() as conn:
             twin = await _approved_twin(conn, trace_id, card, source_ref)
@@ -389,15 +461,44 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
                 f"{mandate.max_position_pct}% in {card['instrument_id']}; nothing was queued"))
         allocation = min(allocation, room.quantize(Decimal("0.01")))
     budget = mandate.capital_budget_usd * allocation / 100
+    summary = _card_summary(card, card["instrument_id"], mandate, allocation, budget, held)
+    shown = _card_summary(card, _shown_instrument(card), mandate, allocation, budget, held)
+    return CardPlan(mandate=mandate, allocation=allocation, budget=budget, summary=summary, shown=shown, held=held,
+                    protection=protection, trace_id=trace_id, source_ref=source_ref)
+
+
+def _card_summary(card: dict[str, Any], instrument: str, mandate: Mandate, allocation: Decimal, budget: Decimal,
+                  held: Decimal) -> str:
+    """What an approved card does, in words, for the instrument given (the card's own, or the shown one)."""
     if card["side"] == "SELL":
-        summary = f"SELL {card['instrument_id']} {card['order_type']} the whole holding of {held:g} in mandate {mandate.name}"
-    else:
-        summary = (f"{card['side']} {card['instrument_id']} {card['order_type']} at {allocation:g}% of mandate "
-                   f"{mandate.name} (${budget:,.0f})")
+        return f"SELL {instrument} {card['order_type']} the whole holding of {held:g} in mandate {mandate.name}"
+    return (f"{card['side']} {instrument} {card['order_type']} at {allocation:g}% of mandate "
+            f"{mandate.name} (${budget:,.0f})")
+
+
+@router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
+async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_human_operator),
+                             req: CardApproveRequest | None = None):
+    """Approve an order card: one PAPER order inside a mandate, at most once, protected by the exit
+    monitor's stops. The approval is recorded in ``ai_approvals`` and bound to its command (A5.3)."""
+    op = operator_id(auth)
+    if len(widget_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid card id")
+    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), widget_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Order card not found")
+    if card.get("status") == "APPROVED" and card.get("command_id"):
+        return {"command_id": card["command_id"], "status": "APPROVED", "replayed": True}
+    plan = await _plan_card(request, sid, card, req.mandate_id if req else None)
+    mandate, allocation, summary, held = plan.mandate, plan.allocation, plan.summary, plan.held
+    protection, trace_id, source_ref = plan.protection, plan.trace_id, plan.source_ref
+    shown = plan.shown  # what the note lines say: the audit summary above keeps the card's own text
+    pool = request.app.state.pool
+
     if card.get("status") == "PENDING_APPROVAL":  # claim it first: a concurrent reject can no longer win
         claimed = await _worker_note(sid, {
             "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "expect_status": "PENDING_APPROVAL",
-            "content": f"Operator approved order card {widget_id}: {summary}.",
+            "content": f"Operator approved order card {widget_id}: {shown}.",
         })
         if claimed == 409:
             raise HTTPException(status_code=409, detail="The card is no longer pending")
@@ -444,13 +545,55 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     await _worker_note(sid, {
         "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "command_id": command_id,
         "expect_status": "APPROVED",
-        "content": (f"Paper command {command_id} queued for the dispatcher inside mandate {mandate.name} ({summary}); "
+        "content": (f"Paper command {command_id} queued for the dispatcher inside mandate {mandate.name} ({shown}); "
                     f"the exit monitor's "
                     f"{protection.get('stop_loss_pct')}% hard stop and {protection.get('trail_pct')}% trailing stop "
                     f"(after +{protection.get('trail_activate_pct')}%) protect the position."),
     })
     return {"command_id": command_id, "status": "APPROVED", "protection": protection, "mandate_id": str(mandate.id),
             "approval_id": str(decision.approval_id)}
+
+
+def _refusal_code(detail: str) -> str:
+    """The reason code a refusal's detail starts with: "MANDATE_PAUSED: ..." is MANDATE_PAUSED. The details that have
+    no "CODE:" prefix are the card's own status ("The card is REJECTED", NOT_PENDING) and, for any other, REFUSED."""
+    if detail.startswith("The card is "):
+        return "NOT_PENDING"
+    code, sep, _ = detail.partition(":")
+    return code if sep else "REFUSED"
+
+
+@router.get("/sessions/{sid}/cards/{widget_id}/preflight")
+async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator),
+                               mandate_id: uuid.UUID | None = Query(default=None)):
+    """The dry run before approve (WS-3A): the mandate and size approve would queue for this card now, or the code and
+    detail of the refusal approve would give. Read only: it claims, notes, records and queues nothing, so the operator
+    sees the outcome before pressing Approve. Auth is an operator session or an operator-scoped machine token, as the
+    other reads of this router; approve itself stays human-only."""
+    if len(widget_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid card id")
+    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}"), widget_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Order card not found")
+    if card.get("status") != "PENDING_APPROVAL":  # approve refuses such a card before it plans it too
+        detail = f"The card is {card.get('status')}"
+        return {"ok": False, "code": "NOT_PENDING", "detail": detail, "needs_mandate": False}
+    try:
+        plan = await _plan_card(request, sid, card, mandate_id)
+    except HTTPException as e:
+        detail = str(e.detail)
+        code = _refusal_code(detail)
+        # approve's NO_MANDATE for a BUY is the one refusal that makes the card offer to create a mandate
+        needs_mandate = code == "NO_MANDATE" and card["side"] == "BUY"
+        return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate}
+    requested = Decimal(str(card["allocation_pct"]))
+    return {
+        "ok": True, "mandate": {"id": str(plan.mandate.id), "name": plan.mandate.name,
+                                "status": str(plan.mandate.status)},
+        "side": card["side"], "allocation_pct": float(plan.allocation), "budget_usd": float(plan.budget),
+        "clipped_from_pct": float(requested) if card["side"] == "BUY" and plan.allocation < requested else None,
+        "sell_quantity": format(plan.held, "f") if card["side"] == "SELL" else None, "summary": plan.summary,
+    }
 
 
 class _DuplicateDecision(Exception):

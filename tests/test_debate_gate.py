@@ -432,13 +432,14 @@ async def test_brain_debate_runs_the_full_fleet_not_the_lite_path(main, pool):
     assert models.calls["pm"] == 1 and models.calls["cro"] == 1
 
 
-async def test_brain_debate_with_the_kill_switch_latched_never_reaches_a_model(main, pool):
+async def test_brain_debate_with_the_kill_switch_latched_is_recorded_as_gate_refused_without_a_model_call(main, pool):
     await pool.execute(
         "INSERT INTO execution_kill_switch (environment, account_id, is_latched) "
         "VALUES ('PAPER', 'PAPER-ACCOUNT-001', true)"
     )
     models = Models()
-    assert await run(main, pool, BRAIN, models) is None
+    row = await run(main, pool, BRAIN, models)
+    assert (row["status"], row["failure_reason"]) == ("GATE_REFUSED", "KILL_SWITCH_LATCHED")
     assert sum(models.calls.values()) == 0
 
 

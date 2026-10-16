@@ -1,6 +1,16 @@
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { readSse } from "./sse";
-import type { BrainSessionPage, BrainSessionSummary, CardOutcome, DecisionTrace, OrderCardWidget, StoredBrainMessage } from "./types";
+import {
+  DEBATE_CARD_STATUSES,
+  type BrainSessionPage,
+  type BrainSessionSummary,
+  type CardOutcome,
+  type CardPreflight,
+  type DebateOutcome,
+  type DecisionTrace,
+  type OrderCardWidget,
+  type StoredBrainMessage,
+} from "./types";
 
 /**
  * Brain client: one conversation shared by Brain Home and the Copilot drawer.
@@ -195,6 +205,39 @@ export async function approveOrderCard(card: OrderCardWidget, mandateId?: string
   const commandId = String(res.command_id);
   useBrainStore.getState().updateOrderCard(card.id, { status: "APPROVED", command_id: commandId });
   return commandId;
+}
+
+/**
+ * Dry run of Approve: what the order would size to, or why the server would refuse it. Read-only; it claims, queues and
+ * writes nothing, so it can be asked as often as the operator looks at the card. Throws on failure (the card then shows nothing).
+ */
+export async function fetchCardPreflight(sessionId: string, widgetId: string, signal?: AbortSignal): Promise<CardPreflight> {
+  const res = await fetch(
+    `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(widgetId)}/preflight`,
+    { credentials: "include", cache: "no-store", signal },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  // Anything but the contract (a proxy page, an odd body) is not a dry run: the card shows nothing
+  if (typeof body !== "object" || body === null || typeof body.ok !== "boolean") throw new Error("Unexpected dry-run response");
+  return body as CardPreflight;
+}
+
+/**
+ * Where a debate card's debate stands: read-only, from the debate run its stage call queued. A card whose run does not
+ * exist yet reads QUEUED. Throws on failure, and on a status the card does not know (the card then keeps what it had).
+ */
+export async function fetchCardDebate(sessionId: string, widgetId: string, signal?: AbortSignal): Promise<DebateOutcome> {
+  const res = await fetch(
+    `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(widgetId)}/debate`,
+    { credentials: "include", cache: "no-store", signal },
+  );
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  if (typeof body !== "object" || body === null || !(DEBATE_CARD_STATUSES as readonly string[]).includes(body.status)) {
+    throw new Error("Unexpected debate response");
+  }
+  return body as DebateOutcome;
 }
 
 export async function rejectOrderCard(card: OrderCardWidget): Promise<void> {

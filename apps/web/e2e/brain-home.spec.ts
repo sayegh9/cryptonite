@@ -755,4 +755,703 @@ test.describe("Brain Home", () => {
     await expect(card.getByRole("button", { name: "Approve…" })).toBeDisabled();
     expect(reactErrors).toEqual([]);
   });
+
+  /** The dry run Approve would get: the mock answers each read of /cards/{id}/preflight and counts the reads */
+  async function mockPreflight(page: Page, answer: () => { status?: number; json: unknown }) {
+    const reads = { count: 0, methods: [] as string[] };
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/preflight`, (route) => {
+      reads.count++;
+      reads.methods.push(route.request().method());
+      const reply = answer();
+      return route.fulfill({ status: reply.status ?? 200, json: reply.json });
+    });
+    return reads;
+  }
+
+  /** A dry run that would size a BUY inside an ACTIVE mandate; `over` replaces fields */
+  const buyPreflight = (over: Record<string, unknown> = {}) => ({
+    ok: true,
+    mandate: { id: "mandate-btc", name: "BTC L1", status: "ACTIVE" },
+    side: "BUY",
+    allocation_pct: 5,
+    budget_usd: 10000,
+    clipped_from_pct: null,
+    sell_quantity: null,
+    summary: "Sized at 5% of the mandate.",
+    ...over,
+  });
+
+  test("a BUY card says what Approve would size to, before the operator confirms", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of BTC L1 ($10,000)");
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    expect(reads.count).toBe(1);
+    expect(reads.methods).toEqual(["GET"]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a size the room under the position limit clipped says so", async ({ page }) => {
+    await mockPreflight(page, () => ({ json: buyPreflight({ allocation_pct: 10, clipped_from_pct: 12 }) }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(
+      "Would size to 10% of BTC L1 ($10,000) (clipped from 12% — room left)",
+    );
+  });
+
+  test("a SELL card says what it would sell and from which mandate", async ({ page }) => {
+    await mockPreflight(page, () => ({ json: buyPreflight({ side: "SELL", sell_quantity: "0.015" }) }));
+    const card = await openCard(page, {
+      ...ORDER_CARD,
+      side: "SELL",
+      rationale: "Taking profit on the BTC holding.",
+    });
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would sell 0.015 from BTC L1");
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+  });
+
+  test("a BUY with no ACTIVE mandate says approving creates one, and Approve keeps its normal flow", async ({ page }) => {
+    await mockPreflight(page, () => ({
+      json: {
+        ok: false,
+        code: "NO_MANDATE",
+        detail: "NO_MANDATE: approve this card inside an ACTIVE mandate that allows BTCUSDT.BINANCE (Mission Control → Mandates)",
+        needs_mandate: true,
+      },
+    }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(
+      "No ACTIVE mandate allows BTCUSDT yet: approving creates one (TOTP)",
+    );
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve anyway…" })).toHaveCount(0);
+  });
+
+  test("a refusal says why, and Approve stays enabled as Approve anyway", async ({ page }) => {
+    await mockPreflight(page, () => ({
+      json: {
+        ok: false,
+        code: "MANDATE_PAUSED",
+        detail: "MANDATE_PAUSED: BTC paused already covers BTCUSDT.BINANCE; resume or edit it instead",
+        needs_mandate: false,
+      },
+    }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(
+      "Would be refused: MANDATE_PAUSED: BTC paused already covers BTCUSDT.BINANCE; resume or edit it instead",
+    );
+    const anyway = card.getByRole("button", { name: "Approve anyway…" });
+    await expect(anyway).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve…" })).toHaveCount(0);
+    await anyway.click();
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toBeVisible();
+  });
+
+  test("a BUY with no ACTIVE mandate opens the create form on the first Approve, before any confirm is sent", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockPreflight(page, () => ({
+      json: {
+        ok: false,
+        code: "NO_MANDATE",
+        detail: "NO_MANDATE: approve this card inside an ACTIVE mandate that allows BTCUSDT.BINANCE (Mission Control → Mandates)",
+        needs_mandate: true,
+      },
+    }));
+    const card = await openCard(page, ORDER_CARD);
+    await expect(card.getByTestId("brain-card-preflight")).toContainText("approving creates one (TOTP)");
+
+    await card.getByRole("button", { name: "Approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group.getByLabel("TOTP code")).toBeVisible();
+    await expect(group.getByRole("button", { name: "Create mandate and confirm" })).toBeDisabled();
+    expect(reactErrors).toEqual([]);
+  });
+
+  for (const code of ["MANDATE_PAUSED", "MANDATE_HALTED"]) {
+    test(`a ${code} notice replaces the dry run's duplicate refusal line`, async ({ page }) => {
+      const reactErrors = collectReactErrors(page);
+      const detail = `${code}: BTC-ETH spot L1 already covers BTCUSDT.BINANCE; resume it in Mission Control, then approve this card`;
+      await mockPreflight(page, () => ({ json: { ok: false, code, detail, needs_mandate: false } }));
+      const card = await openCard(page, ORDER_CARD);
+      await expect(card.getByTestId("brain-card-preflight")).toContainText(`Would be refused: ${code}`);
+
+      await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) =>
+        route.fulfill({ status: 409, json: { detail } }),
+      );
+      await card.getByRole("button", { name: "Approve anyway…" }).click();
+      await card.getByRole("button", { name: "Confirm paper order" }).click();
+
+      // The notice says it once; the dry-run line does not repeat the refusal, and nothing is queued
+      await expect(card.getByRole("alert")).toContainText(`Order not queued: ${code}: BTC-ETH spot L1`);
+      await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+      expect(reactErrors).toEqual([]);
+    });
+  }
+
+  test("an unavailable dry run shows nothing and never blocks Approve", async ({ page }) => {
+    const reads = await mockPreflight(page, () => ({ status: 500, json: { detail: "preflight unavailable" } }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect.poll(() => reads.count).toBe(1);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+  });
+
+  test("a dry run answered NOT_PENDING (decided elsewhere) shows no refusal and keeps the normal label", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const reads = await mockPreflight(page, () => ({
+      json: { ok: false, code: "NOT_PENDING", detail: "NOT_PENDING: the card is APPROVED", needs_mandate: false },
+    }));
+    const answered = page.waitForResponse(/\/cards\/[^/]+\/preflight/);
+    const card = await openCard(page, ORDER_CARD);
+
+    await answered;
+    await page.waitForTimeout(300); // the card has rendered the answer by now
+    expect(reads.count).toBe(1);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    await expect(card.getByRole("button", { name: "Approve anyway…" })).toHaveCount(0);
+    expect(reactErrors).toEqual([]);
+  });
+
+  /** A 200 that is not the dry-run contract (a proxy's HTML page, an object without a boolean `ok`) is treated as unavailable */
+  async function oddDryRun(page: Page, contentType: string, body: string) {
+    const reactErrors = collectReactErrors(page);
+    let reads = 0;
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/preflight`, (route) => {
+      reads++;
+      return route.fulfill({ status: 200, contentType, body });
+    });
+    const answered = page.waitForResponse(/\/cards\/[^/]+\/preflight/);
+    const card = await openCard(page, ORDER_CARD);
+
+    await answered;
+    await page.waitForTimeout(300);
+    expect(reads).toBe(1);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled();
+    expect(reactErrors).toEqual([]);
+  }
+
+  test("a dry run answered with a non-JSON page shows nothing and never blocks Approve", async ({ page }) => {
+    await oddDryRun(page, "text/html", "<!doctype html><html><body>Sign in</body></html>");
+  });
+
+  test("a dry run answered with an object whose ok is not a boolean shows nothing and never blocks Approve", async ({ page }) => {
+    await oddDryRun(page, "application/json", JSON.stringify({ ok: "yes", mandate: { name: "BTC L1" }, allocation_pct: 5 }));
+  });
+
+  test("a refused Approve reads the dry run again, so the refusal replaces the normal line", async ({ page }) => {
+    const refusal = "PRICE_COLLAR_REJECT: the limit is too far from the market";
+    let refused = false;
+    const reads = await mockPreflight(page, () =>
+      refused
+        ? { json: { ok: false, code: "PRICE_COLLAR_REJECT", detail: refusal, needs_mandate: false } }
+        : { json: buyPreflight() },
+    );
+    // Registered after openCard: its mockBackend registers the approve success route, and the later route wins
+    const card = await openCard(page, ORDER_CARD);
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) => {
+      refused = true; // the market moved after the dry run
+      return route.fulfill({ status: 409, json: { detail: refusal } });
+    });
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of BTC L1 ($10,000)");
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await card.getByRole("button", { name: "Confirm paper order" }).click();
+
+    await expect(card.getByRole("alert")).toContainText(refusal);
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(`Would be refused: ${refusal}`);
+    // mount, the confirm step, then the read after the refused Approve
+    await expect.poll(() => reads.count).toBe(3);
+  });
+
+  test("opening the confirm step reads the dry run again", async ({ page }) => {
+    const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toBeVisible();
+    const before = reads.count;
+    await card.getByRole("button", { name: "Approve…" }).click();
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toBeVisible();
+    await expect.poll(() => reads.count).toBe(before + 1);
+    expect(reads.methods.every((m) => m === "GET")).toBe(true);
+  });
+
+  test("window focus re-reads the dry run, at most every 5 seconds", async ({ page }) => {
+    const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card.getByTestId("brain-card-preflight")).toBeVisible();
+    expect(reads.count).toBe(1);
+    // Focus within 5 s of the last read is ignored
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.waitForTimeout(300);
+    expect(reads.count).toBe(1);
+    // Once 5 s have passed since the last read, focus reads it again
+    await page.waitForTimeout(5_000);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect.poll(() => reads.count).toBe(2);
+  });
+
+  test("a card that is no longer pending is not read", async ({ page }) => {
+    const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const card = await openCard(page, { ...ORDER_CARD, status: "REJECTED" });
+
+    await expect(card).toContainText("Rejected by you");
+    // A read started with the card would have reached the route by now
+    await page.waitForTimeout(500);
+    expect(reads.count).toBe(0);
+  });
+
+  test("a feed-locked card is not read until its symbol streams, then it is", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    let streaming = false;
+    let universeCalls = 0;
+    await page.route("**/api/v1/market/universe", (route) => {
+      universeCalls++;
+      return route.fulfill({ json: universe(streaming ? ["BTCUSDT.BINANCE", "SOLUSDT.BINANCE"] : ["BTCUSDT.BINANCE"]) });
+    });
+    await page.route("**/api/v1/instruments/onboard", (route) => {
+      streaming = true; // ingest picks the symbol up; the card's next feed check sees it
+      return route.fulfill({ json: { status: "ok" } });
+    });
+    const reads = await mockPreflight(page, () => ({
+      json: buyPreflight({ mandate: { id: "mandate-sol", name: "Brain SOLUSDT.BINANCE", status: "ACTIVE" } }),
+    }));
+    const card = await openCard(page, SOL_CARD);
+
+    await expect(card).toContainText("cannot be approved yet");
+    await expect.poll(() => universeCalls).toBeGreaterThan(0);
+    expect(reads.count).toBe(0);
+
+    await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled({ timeout: 15_000 });
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of Brain SOLUSDT.BINANCE ($10,000)");
+    expect(reads.count).toBe(1);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("once the feed unlocks, the card shows the fresh dry run and never the SYMBOL_NOT_INGESTED refusal", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    let streaming = false;
+    await page.route("**/api/v1/market/universe", (route) =>
+      route.fulfill({ json: universe(streaming ? ["BTCUSDT.BINANCE", "SOLUSDT.BINANCE"] : ["BTCUSDT.BINANCE"]) }),
+    );
+    await page.route("**/api/v1/instruments/onboard", (route) => {
+      streaming = true;
+      return route.fulfill({ json: { status: "ok" } });
+    });
+    const reads = await mockPreflight(page, () => ({
+      json: buyPreflight({ mandate: { id: "mandate-sol", name: "Brain SOLUSDT.BINANCE", status: "ACTIVE" } }),
+    }));
+    const card = await openCard(page, SOL_CARD);
+    await expect(card).toContainText("cannot be approved yet");
+    expect(reads.count).toBe(0); // locked: the dry run is not read, so no refusal can be shown from before the lock
+
+    await card.getByRole("button", { name: "Onboard SOLUSDT" }).click();
+    await expect(card.getByRole("button", { name: "Approve…" })).toBeEnabled({ timeout: 15_000 });
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText("Would size to 5% of Brain SOLUSDT.BINANCE ($10,000)");
+    await expect(card).not.toContainText("SYMBOL_NOT_INGESTED");
+    expect(reads.count).toBe(1);
+    expect(reactErrors).toEqual([]);
+  });
+
+  /** Past lessons on this instrument, as the server sends them (alpha in percent, dates as ISO timestamps) */
+  const LESSONS = [
+    { lesson_text: "Chasing the 4H breakout into the weekly high lost the edge.", outcome: "LOSS", alpha_pct: -0.8, created_at: "2026-10-01T09:30:00Z" },
+    { lesson_text: "Waiting for the retest paid off.", outcome: "WIN", alpha_pct: 1.2, created_at: "2026-09-20T14:00:00+00:00" },
+  ];
+
+  test("past lessons are collapsed by default, and expand to show each lesson with its outcome, alpha and date", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const card = await openCard(page, { ...ORDER_CARD, lessons: LESSONS });
+
+    const toggle = card.getByRole("button", { name: "Past lessons (2)" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(card.getByText("Waiting for the retest paid off.")).toBeHidden();
+
+    // Keyboard: the disclosure is a real button, so Enter opens it
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    const items = card.locator("li");
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0)).toContainText("LOSS");
+    await expect(items.nth(0)).toContainText("−0.8%");
+    await expect(items.nth(0)).toContainText("2026-10-01");
+    await expect(items.nth(0)).toContainText("“Chasing the 4H breakout into the weekly high lost the edge.”");
+    await expect(items.nth(1)).toContainText("WIN");
+    await expect(items.nth(1)).toContainText("+1.2%");
+    await expect(items.nth(1)).toContainText("2026-09-20");
+    await expect(items.nth(1)).toContainText("“Waiting for the retest paid off.”");
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(card.getByText("Waiting for the retest paid off.")).toBeHidden();
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a card without past lessons shows no disclosure", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card).toContainText("4H reclaim of 60k");
+    await expect(card.getByRole("button", { name: /Past lessons/ })).toHaveCount(0);
+    await expect(card).not.toContainText("Past lessons");
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("lesson text is plain text: markup in a lesson renders literally, and a null outcome shows a dash", async ({ page }) => {
+    const card = await openCard(page, {
+      ...ORDER_CARD,
+      lessons: [
+        {
+          lesson_text: "<b>Size</b> was <img src=x onerror=alert(1)> too big",
+          outcome: null,
+          alpha_pct: null,
+          created_at: "2026-10-02T00:00:00Z",
+        },
+      ],
+    });
+
+    await card.getByRole("button", { name: "Past lessons (1)" }).click();
+    await expect(card.locator("li")).toContainText("“<b>Size</b> was <img src=x onerror=alert(1)> too big”");
+    await expect(card.locator("li")).toContainText("—");
+    await expect(card.locator("li")).toContainText("2026-10-02");
+    await expect(card.locator("b")).toHaveCount(0);
+    await expect(card.locator("img")).toHaveCount(0);
+  });
+
+  test("past lessons show on a card in any status, a SELL included", async ({ page }) => {
+    const card = await openCard(page, {
+      ...ORDER_CARD,
+      side: "SELL",
+      status: "FILLED",
+      filled_qty: "0.01",
+      avg_fill_price: "60100",
+      lessons: [LESSONS[1]],
+    });
+
+    await expect(card.getByTestId("card-outcome")).toContainText("Filled");
+    await expect(card.getByRole("button", { name: "Past lessons (1)" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  /** The structured rationale as the server sends it (confidence 0 to 1; as_of null when the fact has no time) */
+  const STRUCTURED = {
+    thesis: "4H reclaim of 60k on volume; the trend turns up above 60k.",
+    evidence: [
+      { source_tool: "get_klines", field: "close_4h", value: "60120", as_of: "2026-10-16T08:00:00Z" },
+      { source_tool: "get_market_regime", field: "regime", value: "trend up", as_of: null },
+    ],
+    invalidation: "A 4H close back below 58k.",
+    horizon: "24h",
+    confidence: 0.65,
+  };
+
+  test("a card with the structured rationale shows its thesis, evidence, invalidation, horizon and confidence", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const card = await openCard(page, { ...ORDER_CARD, ...STRUCTURED });
+
+    const block = card.getByTestId("brain-card-structured");
+    await expect(block).toBeVisible();
+    await expect(block).toContainText("Thesis");
+    await expect(block).toContainText("4H reclaim of 60k on volume; the trend turns up above 60k.");
+    await expect(block).toContainText("Evidence");
+    const items = block.locator("li");
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(0)).toHaveText("close_4h = 60120 · get_klines · 2026-10-16T08:00:00Z");
+    await expect(items.nth(1)).toHaveText("regime = trend up · get_market_regime");
+    await expect(block).toContainText("Invalidation");
+    await expect(block).toContainText("A 4H close back below 58k.");
+    await expect(block).toContainText("Horizon 24h · Confidence 65%");
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a card without the structured rationale shows none of its parts", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const card = await openCard(page, ORDER_CARD);
+
+    await expect(card).toContainText("4H reclaim of 60k");
+    await expect(card.getByTestId("brain-card-structured")).toHaveCount(0);
+    await expect(card).not.toContainText("Thesis");
+    await expect(card).not.toContainText("Evidence");
+    await expect(card).not.toContainText("Invalidation");
+    await expect(card).not.toContainText("Horizon");
+    await expect(card).not.toContainText("Confidence");
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("the thesis, evidence and invalidation are plain text: markup renders literally", async ({ page }) => {
+    const card = await openCard(page, {
+      ...ORDER_CARD,
+      thesis: "<b>Breakout</b> <img src=x onerror=alert(1)>",
+      evidence: [{ source_tool: "<i>tool</i>", field: "<u>f</u>", value: "<s>v</s>", as_of: null }],
+      invalidation: "<a href=x>below</a>",
+    });
+
+    const block = card.getByTestId("brain-card-structured");
+    await expect(block).toContainText("<b>Breakout</b> <img src=x onerror=alert(1)>");
+    await expect(block.locator("li")).toHaveText("<u>f</u> = <s>v</s> · <i>tool</i>");
+    await expect(block).toContainText("<a href=x>below</a>");
+    await expect(block.locator("b, img, i, u, s, a")).toHaveCount(0);
+  });
+});
+
+/**
+ * WS-3C debate cards: a card follows its debate run (asked on mount, then every 10 s while QUEUED or RUNNING), stops at
+ * a final state, and says a gate refusal in words. The server stores only a final card's status, so such a card is
+ * asked once on mount for its answer.
+ */
+test.describe("Debate cards follow their run", () => {
+  const DEBATE_RUN = "3f2a1c00-0000-4000-8000-0000000000d1";
+  const VERDICT = { recommendation: "BUY", conviction_score: 0.62, allocation_pct: 5, approval_status: "PENDING" };
+
+  const debateWidget = (id: string, over: Record<string, unknown> = {}) => ({
+    kind: "debate_summary",
+    id,
+    instrument_id: "XRPUSDT.BINANCE",
+    timeframe: "5m",
+    recommendation: null,
+    conviction_score: null,
+    status: "QUEUED",
+    message: "Proposal staged to Action Inbox",
+    message_ref: "1728900000000-0",
+    run_id: null,
+    verdict: null,
+    reason: null,
+    ...over,
+  });
+
+  /**
+   * Opens a session whose history holds these cards. Each card's debate route answers its asks from `answers[cardId]`
+   * in turn (a card with no entry is asked a QUEUED answer). Returns the number of asks each card received.
+   */
+  async function openDebates(page: Page, widgets: Record<string, unknown>[], answers: Record<string, Record<string, unknown>[]> = {}) {
+    const asks: Record<string, number> = Object.fromEntries(widgets.map((w) => [String(w.id), 0]));
+    const queued = { status: "QUEUED", run_id: null, verdict: null, reason: null };
+    await page.route("**/api/v1/paper/positions*", (route) => route.fulfill({ json: [] }));
+    await page.route("**/agent-api/brain/spend", (route) => route.fulfill({ json: { spent_usd: "0.10", cap_usd: "25.00" } }));
+    await page.route(/\/agent-api\/brain\/sessions(\?.*)?$/, (route) => route.fulfill({ json: { sessions: [], next_cursor: null } }));
+    await page.route(`**/agent-api/brain/sessions/${SESSION}`, (route) =>
+      route.fulfill({
+        json: {
+          session: { id: SESSION, title: "XRP debates" },
+          summary: null,
+          messages: [
+            { id: 1, role: "user", content: "Debate the XRP setups", widgets: [], trace_id: null, created_at: null },
+            { id: 2, role: "assistant", content: "The debates are below.", widgets, trace_id: null, created_at: null },
+          ],
+        },
+      }),
+    );
+    await page.route(/\/agent-api\/brain\/sessions\/[^/]+\/cards\/[^/]+\/debate$/, (route) => {
+      const cardId = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) ?? "");
+      const seq = answers[cardId] ?? [queued];
+      const n = asks[cardId] ?? 0;
+      asks[cardId] = n + 1;
+      return route.fulfill({ json: seq[Math.min(n, seq.length - 1)] });
+    });
+    await page.addInitScript((sid) => {
+      localStorage.setItem("csrf_token", "csrf-test");
+      localStorage.setItem("cryptonite-brain", JSON.stringify({ state: { sessionId: sid, historyOpen: false }, version: 1 }));
+    }, SESSION);
+    await page.goto("/?ws=brain&view=home");
+    await expect(page.getByTestId("brain-home")).toBeVisible();
+    return asks;
+  }
+
+  test("a queued debate follows its run to the verdict, then stops asking", async ({ page }) => {
+    test.setTimeout(60_000); // asks at once and every 10 s, then waits one more interval to prove it stopped
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(
+      page,
+      [debateWidget("call-2")],
+      {
+        "call-2": [
+          { status: "QUEUED", run_id: null, verdict: null, reason: null },
+          { status: "RUNNING", run_id: DEBATE_RUN, verdict: null, reason: null },
+          { status: "VERDICT", run_id: DEBATE_RUN, verdict: VERDICT, reason: null },
+        ],
+      },
+    );
+    const card = page.getByTestId("brain-widget-debate");
+    const outcome = card.getByTestId("debate-outcome");
+
+    await expect(outcome).toHaveText("Debate running…", { timeout: 15_000 });
+    await expect(card).toContainText("RUNNING");
+    await expect(outcome).toHaveText("Verdict: BUY 5% · conviction 62% · awaiting approval", { timeout: 20_000 });
+    await expect(card).toContainText("VERDICT");
+
+    const atVerdict = asks["call-2"];
+    expect(atVerdict).toBe(3);
+    await page.waitForTimeout(11_000); // one full poll interval after the verdict
+    expect(asks["call-2"]).toBe(atVerdict);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("an old debate card with no message id is never asked, and reads as queued earlier in neutral styling", async ({ page }) => {
+    test.setTimeout(60_000); // one poll interval after mount, to prove it is still never asked
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [debateWidget("call-2", { message_ref: null })]);
+    const card = page.getByTestId("brain-widget-debate");
+    await expect(card.getByTestId("debate-outcome")).toHaveText("Debate queued earlier — see the Debates page");
+    await expect(card).toContainText("QUEUED EARLIER");
+    await expect(card.locator("span", { hasText: "QUEUED EARLIER" })).not.toHaveClass(/text-purple-300/);
+    await page.waitForTimeout(11_000);
+    expect(asks["call-2"]).toBe(0);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("an UNTRACKED answer from the route reads the same way, and the card stops asking", async ({ page }) => {
+    test.setTimeout(60_000); // asks on mount, then one poll interval to prove it is not asked again
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [debateWidget("call-2")], {
+      "call-2": [{ status: "UNTRACKED", run_id: null, verdict: null, reason: null }],
+    });
+    const card = page.getByTestId("brain-widget-debate");
+    await expect(card.getByTestId("debate-outcome")).toHaveText("Debate queued earlier — see the Debates page", { timeout: 15_000 });
+    await expect(card).toContainText("QUEUED EARLIER");
+    await page.waitForTimeout(11_000);
+    expect(asks["call-2"]).toBe(1);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a final card the store wrote without its answer is asked once on mount and reads the answer", async ({ page }) => {
+    test.setTimeout(60_000); // asks once, then waits one poll interval to prove it is not asked again
+    const reactErrors = collectReactErrors(page);
+    // The server stores only the status of a final card: no run_id, verdict or reason
+    const asks = await openDebates(
+      page,
+      [
+        debateWidget("call-2", { status: "VERDICT" }),
+        debateWidget("call-3", { status: "NO_TRADE" }),
+        debateWidget("call-4", { status: "GATE_REFUSED" }),
+        debateWidget("call-5", { status: "GATE_REFUSED" }),
+        debateWidget("call-6", { status: "GATE_REFUSED" }),
+        debateWidget("call-7", { status: "FAILED", message: "The debate could not be started" }),
+      ],
+      {
+        "call-2": [{ status: "VERDICT", run_id: DEBATE_RUN, verdict: VERDICT, reason: null }],
+        "call-3": [{ status: "NO_TRADE", run_id: DEBATE_RUN, verdict: null, reason: "NO_PRICE" }],
+        "call-4": [{ status: "GATE_REFUSED", run_id: null, verdict: null, reason: "KILL_SWITCH_LATCHED" }],
+        "call-5": [{ status: "GATE_REFUSED", run_id: null, verdict: null, reason: "DAILY_LOSS_LATCHED" }],
+        "call-6": [{ status: "GATE_REFUSED", run_id: null, verdict: null, reason: "POSITION_AT_CAP" }],
+        "call-7": [{ status: "FAILED", run_id: null, verdict: null, reason: null }],
+      },
+    );
+
+    await expect(page.getByTestId("debate-outcome")).toHaveText([
+      "Verdict: BUY 5% · conviction 62% · awaiting approval",
+      "No trade (no usable price)",
+      "Not run: the kill switch is latched",
+      "Not run: the daily-loss latch is on",
+      "Not run: the position is at its cap",
+      "Debate failed",
+    ]);
+    await expect(page.getByTestId("brain-widget-debate").filter({ hasText: "NOT RUN" })).toHaveCount(3);
+    await page.waitForTimeout(11_000); // one full poll interval after the answers
+    expect(asks).toEqual({ "call-2": 1, "call-3": 1, "call-4": 1, "call-5": 1, "call-6": 1, "call-7": 1 });
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a final card that already carries its answer is never asked", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [
+      debateWidget("call-2", { status: "VERDICT", run_id: DEBATE_RUN, verdict: VERDICT }),
+      debateWidget("call-3", { status: "NO_TRADE", run_id: DEBATE_RUN, reason: "NO_PRICE" }),
+      debateWidget("call-4", { status: "GATE_REFUSED", run_id: DEBATE_RUN, reason: "KILL_SWITCH_LATCHED" }),
+      debateWidget("call-5", { status: "GATE_REFUSED", run_id: DEBATE_RUN, reason: "DAILY_LOSS_LATCHED" }),
+      debateWidget("call-6", { status: "GATE_REFUSED", run_id: DEBATE_RUN, reason: "POSITION_AT_CAP" }),
+      debateWidget("call-7", { status: "FAILED", run_id: DEBATE_RUN, message: "The debate could not be started" }),
+    ]);
+
+    await expect(page.getByTestId("debate-outcome")).toHaveText([
+      "Verdict: BUY 5% · conviction 62% · awaiting approval",
+      "No trade (no usable price)",
+      "Not run: the kill switch is latched",
+      "Not run: the daily-loss latch is on",
+      "Not run: the position is at its cap",
+      "Debate failed",
+    ]);
+    await expect(page.getByTestId("brain-widget-debate").filter({ hasText: "NOT RUN" })).toHaveCount(3);
+    expect(Object.values(asks)).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("the verdict line names the approval state and says nothing when there is none", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const asks = await openDebates(page, [
+      ...["PENDING", "APPROVED", "VETOED", "EXPIRED", "EXPIRED_PROCEEDED", "CANCELLED", null].map((approval, i) =>
+        debateWidget(`call-${i + 2}`, {
+          status: "VERDICT",
+          run_id: DEBATE_RUN,
+          verdict: { ...VERDICT, approval_status: approval },
+        }),
+      ),
+    ]);
+
+    await expect(page.getByTestId("debate-outcome")).toHaveText([
+      "Verdict: BUY 5% · conviction 62% · awaiting approval",
+      "Verdict: BUY 5% · conviction 62% · approved",
+      "Verdict: BUY 5% · conviction 62% · vetoed",
+      "Verdict: BUY 5% · conviction 62% · expired (no order)",
+      "Verdict: BUY 5% · conviction 62% · expired and proceeded",
+      "Verdict: BUY 5% · conviction 62% · cancelled",
+      "Verdict: BUY 5% · conviction 62%",
+    ]);
+    expect(Object.values(asks)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  /** /postmortem turns the composer into a trade review question: the symbol is normalised like the watchlist's */
+  test("/postmortem sends the trade review for a normalised symbol, or for the last closed trade with no symbol", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const calls = await mockBackend(page);
+    await openBrainHome(page);
+    const input = page.getByRole("textbox", { name: "Message the Brain" });
+    const send = page.getByRole("button", { name: "Send to the Brain" });
+    await expect(input).toHaveAttribute("placeholder", /\/postmortem/);
+
+    const review = (symbol: string) =>
+      `Why did we win or lose on ${symbol}? Reconstruct the last trade: entry, verdict, how it closed, P&L and the lesson.`;
+
+    // A bare base asset gets the quote asset; case does not matter
+    await input.fill("/postmortem xrp");
+    await send.click();
+    await expect.poll(() => calls.stream.length).toBe(1);
+    expect(calls.stream[0]).toEqual({ message: review("XRPUSDT"), session_id: null });
+    await expect(input).toHaveValue("");
+    await expect(send).toBeVisible();
+
+    // A symbol that already has its quote asset is kept; a venue suffix is dropped
+    await input.fill("/postmortem XRPUSDT.BINANCE");
+    await input.press("Enter");
+    await expect.poll(() => calls.stream.length).toBe(2);
+    expect(calls.stream[1].message).toBe(review("XRPUSDT"));
+    await expect(send).toBeVisible();
+
+    // No symbol: the most recent closed AI trade
+    await input.fill("/postmortem");
+    await send.click();
+    await expect.poll(() => calls.stream.length).toBe(3);
+    expect(calls.stream[2].message).toBe(
+      "Reconstruct our most recent closed AI trade: entry, verdict, how it closed, P&L and the lesson.",
+    );
+    await expect(send).toBeVisible();
+
+    // A symbol that is not a symbol is not sent; the draft stays so the operator can fix it
+    await input.fill("/postmortem XRP/USD");
+    await send.click();
+    await expect(input).toHaveValue("/postmortem XRP/USD");
+    expect(calls.stream).toHaveLength(3);
+    expect(reactErrors).toEqual([]);
+  });
 });
