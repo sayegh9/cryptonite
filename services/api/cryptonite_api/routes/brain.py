@@ -337,7 +337,8 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
                 holder, holder_why = await _holding_mandate_for_sell(conn, card["instrument_id"])
                 if holder_why == "AMBIGUOUS_MANDATE":
                     raise HTTPException(status_code=409, detail=f"AMBIGUOUS_MANDATE: more than one stopped mandate holds "
-                                        f"{card['instrument_id']}; nothing was queued")
+                                        f"{card['instrument_id']}; nothing was queued; resume one of them in Mission "
+                                        "Control, or reject this card")
                 if holder is not None:
                     mandate, why = holder, ""
         # Otherwise: no mandate holds it, so NO_MANDATE below, or the ACTIVE mandate's SPOT_SELL_NOT_HELD further down
