@@ -313,8 +313,15 @@ const GATE_REFUSED_REASON: [prefix: string, text: string][] = [
   ["POSITION_AT_CAP", "the position is at its cap"],
 ];
 
-/** Plain words for a verdict's approval state; the approval is always the operator's */
-const APPROVAL_WORDS: Record<string, string> = { PENDING_APPROVAL: "awaiting approval", APPROVED: "approved", REJECTED: "rejected" };
+/** Plain words for a verdict's approval state (the ai_approvals statuses); the approval is always the operator's */
+const APPROVAL_WORDS: Record<string, string> = {
+  PENDING: "awaiting approval",
+  APPROVED: "approved",
+  VETOED: "vetoed",
+  EXPIRED: "expired (no order)",
+  EXPIRED_PROCEEDED: "expired and proceeded",
+  CANCELLED: "cancelled",
+};
 
 const DEBATE_BADGE: Record<DebateCardStatus, { label: string; tone: string }> = {
   QUEUED: { label: "QUEUED", tone: "border-purple-800 text-purple-300" },
@@ -326,8 +333,21 @@ const DEBATE_BADGE: Record<DebateCardStatus, { label: string; tone: string }> = 
 };
 
 /**
- * Follows a debate card to its verdict: asked on mount, then every 10 s while the debate is QUEUED or RUNNING. A final
- * state ends it (and a card that is already final is never asked). Read-only: it queues and approves nothing.
+ * A final card the store wrote without its answer: the server stores only the status, so it has no run or no verdict or
+ * reason. Such a card is linked by its message_ref and asked once. A final card that already carries its answer is not.
+ */
+function needsAnswer(widget: DebateSummaryWidget): boolean {
+  if (!DEBATE_FINAL.includes(widget.status) || widget.message_ref == null) return false;
+  if (widget.run_id == null) return true;
+  if (widget.status === "VERDICT") return widget.verdict == null;
+  if (widget.status === "NO_TRADE" || widget.status === "GATE_REFUSED") return widget.reason == null;
+  return false;
+}
+
+/**
+ * Follows a debate card to its answer. A QUEUED or RUNNING card is asked on mount, then every 10 s until its debate is
+ * final (at most 30 min). A final card that needs its answer (see needsAnswer) is asked once, on mount. Read-only: it
+ * queues and approves nothing.
  */
 function useDebateOutcome(widget: DebateSummaryWidget, sessionId: string | null): DebateOutcome {
   const [polled, setPolled] = useState<DebateOutcome | null>(null);
@@ -337,38 +357,42 @@ function useDebateOutcome(widget: DebateSummaryWidget, sessionId: string | null)
     verdict: widget.verdict ?? null,
     reason: widget.reason ?? null,
   };
-  const following = outcome.status === "QUEUED" || outcome.status === "RUNNING";
+  const live = widget.status === "QUEUED" || widget.status === "RUNNING";
+  const lookup = !live && needsAnswer(widget);
   useEffect(() => {
-    if (!following || !sessionId) return;
+    if (!(live || lookup) || !sessionId) return;
     const ctrl = new AbortController();
     const started = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
+    const ask = async () => {
       try {
         const out = await fetchCardDebate(sessionId, widget.id, ctrl.signal);
         if (ctrl.signal.aborted) return;
         setPolled(out);
-        if (DEBATE_FINAL.includes(out.status)) return;
+        if (lookup || DEBATE_FINAL.includes(out.status)) return;
       } catch {
-        if (ctrl.signal.aborted) return;
+        if (ctrl.signal.aborted || lookup) return;
       }
-      if (Date.now() - started < DEBATE_FOLLOW_MS) timer = setTimeout(poll, DEBATE_POLL_MS);
+      if (Date.now() - started < DEBATE_FOLLOW_MS) timer = setTimeout(ask, DEBATE_POLL_MS);
     };
-    void poll();
+    void ask();
     return () => {
       ctrl.abort();
       if (timer) clearTimeout(timer);
     };
-  }, [following, sessionId, widget.id]);
+  }, [live, lookup, sessionId, widget.id]);
   return outcome;
 }
 
-/** The verdict line: "Verdict: BUY 5% · conviction 62% · awaiting approval" */
+/**
+ * The verdict line: "Verdict: BUY 5% · conviction 62% · awaiting approval". With no approval yet (approval_status null)
+ * the line says nothing about approval: the card does not know whether the run needs one.
+ */
 function verdictText(v: DebateVerdict | null): string {
   if (!v) return "Verdict recorded";
   const size = v.allocation_pct != null ? ` ${Number.isInteger(v.allocation_pct) ? v.allocation_pct : fmt(v.allocation_pct, 2)}%` : "";
   const conviction = v.conviction_score != null ? `conviction ${fmt(v.conviction_score * 100, 0)}%` : null;
-  const approval = v.approval_status ? (APPROVAL_WORDS[v.approval_status] ?? v.approval_status) : "awaiting approval";
+  const approval = v.approval_status ? (APPROVAL_WORDS[v.approval_status] ?? v.approval_status) : null;
   return [`Verdict: ${v.recommendation}${size}`, conviction, approval].filter(Boolean).join(" · ");
 }
 

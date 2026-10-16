@@ -244,7 +244,7 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
         : url.includes("/paper/kill-switch") ? { id: 1, is_latched: true } : [];
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
     });
-    // "Clear History" only appears when a completed or rejected run exists, so the list holds one of each
+    // "Clear History" only appears when a completed, rejected or no-trade run exists, so the list holds one of each
     await page.route("**/api/v1/agents/debates*", async (route) => {
       await route.fulfill({
         status: 200,
@@ -267,6 +267,45 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     await expect(page.getByText("Cleaned inactive and completed proposals")).toBeVisible({ timeout: 5000 });
 
     // The refused run is gone from the store, not just hidden: no No trade count, no card, and no history left to clean
+    await expect(page.getByText("Not run (safety gate)")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^No trade/ })).not.toContainText(/\d/);
+    await expect(page.getByRole("button", { name: "Clear History" })).toHaveCount(0);
+  });
+
+  test("Clear History shows for a lone GATE_REFUSED run and clearing removes it", async ({ page }) => {
+    const REFUSED_ID = "9a7e0000-7777-4888-8999-aaaaaaaaaaaa";
+    await page.addInitScript(() => {
+      localStorage.setItem("csrf_token", "test-csrf");
+      localStorage.setItem("cryptonite:ai-brain-tour-seen", "true");
+    });
+    await page.route("**/api/v1/paper/**", async (route) => {
+      const url = route.request().url();
+      const body = url.includes("/paper/accounts")
+        ? [{ account_id: "PAPER-ACCOUNT-001", venue: "PAPER", currency: "USDT", starting_balance: "10000", cash_balance: "10000", total_equity: "10000", realized_pnl: "0", daily_realized_pnl: "0", daily_loss_latched: false }]
+        : url.includes("/paper/kill-switch") ? { id: 1, is_latched: true } : [];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    // The only run is refused: Clear History is the one way to take it out of the history
+    await page.route("**/api/v1/agents/debates*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          { runId: REFUSED_ID, instrumentId: "XRPUSDT.BINANCE", status: "GATE_REFUSED", decision: null, timestamp: Date.now(), turns: [] },
+        ]),
+      });
+    });
+
+    await page.goto("/");
+    await page.locator("button", { hasText: "AI Brain" }).click();
+    await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
+
+    await page.getByRole("button", { name: /^No trade/ }).click();
+    await expect(page.getByText("Not run (safety gate)")).toBeVisible({ timeout: 5000 });
+
+    await page.getByRole("button", { name: "Clear History" }).click();
+    await expect(page.getByText("Cleaned inactive and completed proposals")).toBeVisible({ timeout: 5000 });
+
     await expect(page.getByText("Not run (safety gate)")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^No trade/ })).not.toContainText(/\d/);
     await expect(page.getByRole("button", { name: "Clear History" })).toHaveCount(0);

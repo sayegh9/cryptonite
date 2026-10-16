@@ -333,7 +333,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
         {/* Quick Header Actions */}
         <div className="flex items-center space-x-1.5">
-          {completedCount + rejectedCount > 0 && (
+          {completedCount + rejectedCount + noTradeCount > 0 && (
             <button
               onClick={handleClearCompleted}
               title="Clear all completed and rejected proposals"
