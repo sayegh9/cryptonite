@@ -448,8 +448,8 @@ async def test_retry_after_a_failed_accept_places_the_working_order_again():
 
     class FailingAccept(AbortingConn):
         async def execute(self, sql, *args):
-            if "'ACCEPTED'" in sql:
-                raise RuntimeError("transient db error")
+            if "'ACCEPTED'" in sql:  # transient: retried. A generic error is settled instead (test_command_queue_guard)
+                raise ConnectionResetError("connection lost")
             await super().execute(sql, *args)
 
     conn = FailingAccept([cmd("MANUAL_ORDER", payload, command_id)])
