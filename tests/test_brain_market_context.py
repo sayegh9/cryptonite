@@ -135,6 +135,12 @@ def _context(symbol: str) -> dict:
     return json.loads(tools.get_derivatives_context(symbol))
 
 
+def _binance_has_no_perpetual(monkeypatch) -> None:
+    """Binance answers -1121 for a symbol with no USD-M perpetual; the REST fallback then makes no other call."""
+    monkeypatch.setattr(httpx, "get", lambda url, params=None, timeout=None: httpx.Response(
+        400, json={"code": -1121, "msg": "Invalid symbol."}))
+
+
 async def test_every_field_comes_from_redis_and_the_funding_table(perp):
     perp.seed_redis()
     await perp.seed_funding(8)
@@ -155,12 +161,14 @@ async def test_funding_is_the_last_six_settlements_newest_first_in_utc(perp):
     assert [f["funding_rate"] for f in funding] == [0.0008, 0.0007, 0.0006, 0.0005, 0.0004, 0.0003]
 
 
-async def test_missing_keys_and_rows_are_nulls_with_a_note_not_guesses(perp):
-    out = _context(perp.symbol)
-    assert out["mark"] is None and out["open_interest"] is None and out["funding"] == []
-    assert perp.mark_key in out["note"] and perp.oi_key in out["note"]
-    assert "not running" in out["note"] and "does not cover" in out["note"]
-    assert "No funding settlements" in out["note"]
+async def test_a_symbol_the_feed_does_not_cover_is_asked_of_binance_usdm(perp, monkeypatch):
+    """No feed keys and no funding rows: the feed does not cover the symbol, so Binance USD-M answers instead. Here
+    Binance has no such perpetual, which is a neutral answer, never a note about a missing feed."""
+    _binance_has_no_perpetual(monkeypatch)
+    assert _context(perp.symbol) == {
+        "symbol": perp.symbol, "perpetual": False,
+        "note": f"no USD-M perpetual is listed for {perp.symbol} on Binance; derivatives data does not apply",
+    }
 
 
 async def test_a_redis_outage_keeps_the_funding_rows(perp, monkeypatch):
@@ -191,6 +199,7 @@ def test_the_symbol_is_normalised_to_the_feed_symbol_and_instrument(monkeypatch)
 
     monkeypatch.setattr(tools, "_readonly_rows", fake_rows)
     monkeypatch.setattr(tools, "_redis_get", lambda key: keys.append(key))
+    _binance_has_no_perpetual(monkeypatch)  # the feed has no data for BTCUSDT here, so the REST fallback is asked
     out = _context("btcusdt-perp.binance")
     assert out["symbol"] == "BTCUSDT"
     assert keys == ["perp:mark:BTCUSDT", "perp:oi:BTCUSDT"]
@@ -214,6 +223,7 @@ def test_the_funding_query_binds_the_instrument_as_a_parameter(monkeypatch):
 
     monkeypatch.setattr(tools, "_readonly_rows", fake_rows)
     monkeypatch.setattr(tools, "_redis_get", lambda key: None)
+    _binance_has_no_perpetual(monkeypatch)
     _context("BTCUSDT")
     (statement, params), = calls
     assert statement.lstrip().upper().startswith("SELECT") and "LIMIT 6" in statement

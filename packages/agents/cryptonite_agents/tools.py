@@ -1102,11 +1102,155 @@ def _funding_history(symbol: str, notes: list[str]) -> list[dict[str, Any]] | No
     } for r in rows]
 
 
+# Binance USD-M futures, public REST (no key). A symbol the live derivatives feed does not cover is read from here.
+# The futures host has its own X-MBX-USED-WEIGHT-1M header and its own 2400 cap, so it has a sibling of the spot budget.
+_FAPI_BASE = "https://fapi.binance.com"
+_FAPI_TIMEOUT_S: float = 5.0
+_FAPI_CACHE_TTL_S: float = 30.0  # one symbol's answer is reused this long
+_FAPI_CACHE_MAX = 256
+_FAPI_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_FAPI_WEIGHT_LIMIT = 2400
+_FAPI_WEIGHT_REFUSE_AT = 2160  # 90 % of the cap: no new request at or over this, so other callers keep some room
+_FAPI_WEIGHT_WINDOW_S: float = 60.0
+_FAPI_LAST_USED_WEIGHT: int = 0
+_FAPI_LAST_WEIGHT_AT: float = 0.0
+# Serializes the cache, the weight gate and the requests of one symbol, as the spot path does for klines
+_FAPI_LOCK = threading.Lock()
+_BINANCE_INVALID_SYMBOL = -1121  # "Invalid symbol": Binance lists no USD-M perpetual under this name
+NO_PERPETUAL_NOTE = "no USD-M perpetual is listed for {symbol} on Binance; derivatives data does not apply"
+
+class _FapiNoPerpetual(Exception):
+    """Binance answered -1121 for the symbol: there is no USD-M perpetual to read."""
+
+
+class _FapiRefused(Exception):
+    """One USD-M request gave no answer: not sent near the weight cap, rate limited, failed or unreadable. The
+    message is the reason given to the model."""
+
+
+def _binance_error_code(resp: Any) -> int | None:
+    """Binance's error code from a JSON error body, or None when the body is not one."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    return body.get("code") if isinstance(body, dict) else None
+
+
+def _fapi_get(path: str, params: dict[str, Any]) -> Any:
+    """One GET on the USD-M host, the symbol only ever in ``params``. Returns the parsed JSON, or raises
+    _FapiNoPerpetual (-1121) or _FapiRefused. Every answer records the futures weight for the requests after it."""
+    global _FAPI_LAST_USED_WEIGHT, _FAPI_LAST_WEIGHT_AT
+    now = time.time()
+    if _FAPI_LAST_USED_WEIGHT >= _FAPI_WEIGHT_REFUSE_AT and (now - _FAPI_LAST_WEIGHT_AT) < _FAPI_WEIGHT_WINDOW_S:
+        raise _FapiRefused(f"the USD-M request weight ({_FAPI_LAST_USED_WEIGHT} of {_FAPI_WEIGHT_LIMIT} a minute) "
+                           "is near its limit, so the request was not sent")
+    try:
+        import httpx
+        resp = httpx.get(f"{_FAPI_BASE}{path}", params=params, timeout=_FAPI_TIMEOUT_S)
+    except Exception as e:
+        raise _FapiRefused(f"the request failed ({type(e).__name__})") from e
+    used = resp.headers.get("X-MBX-USED-WEIGHT-1M") or resp.headers.get("x-mbx-used-weight-1m")
+    if used:
+        try:
+            _FAPI_LAST_USED_WEIGHT = int(used)
+            _FAPI_LAST_WEIGHT_AT = time.time()
+        except ValueError:
+            pass
+    if resp.status_code in (429, 418):
+        retry_after = resp.headers.get("Retry-After") or "60"
+        raise _FapiRefused(f"Binance rate limited the request (HTTP {resp.status_code}; Retry-After {retry_after}s)")
+    if resp.status_code != 200:
+        if _binance_error_code(resp) == _BINANCE_INVALID_SYMBOL:
+            raise _FapiNoPerpetual()
+        raise _FapiRefused(f"Binance answered HTTP {resp.status_code}")
+    return resp.json()
+
+
+def _fapi_section(label: str, path: str, params: dict[str, Any], notes: list[str], parse: Callable[[Any], Any]) -> Any:
+    """One section of the USD-M answer, parsed. None, with a note naming the section, when it gives no usable answer."""
+    try:
+        return parse(_fapi_get(path, params))
+    except _FapiNoPerpetual:
+        raise
+    except _FapiRefused as e:
+        notes.append(f"{label} is unknown: {e}.")
+    except Exception as e:  # an answer in an unexpected shape: the section is unknown, it never raises
+        logger.warning("Binance USD-M %s answer could not be read", path, exc_info=True)
+        notes.append(f"{label} is unknown: the answer could not be read ({type(e).__name__}).")
+    return None
+
+
+def _ms_iso(ms: Any) -> str:
+    return datetime.datetime.fromtimestamp(int(ms) / 1000, tz=datetime.UTC).isoformat(timespec="seconds")
+
+
+def _optional_num(value: Any) -> float | None:
+    return None if value in (None, "") else _num(value)
+
+
+def _usdm_mark(body: dict[str, Any]) -> dict[str, Any]:
+    return {"mark_price": _num(body["markPrice"]), "index_price": _num(body["indexPrice"]),
+            "funding_rate": _num(body["lastFundingRate"]), "next_funding_time": _ms_iso(body["nextFundingTime"])}
+
+
+def _usdm_open_interest(body: dict[str, Any]) -> dict[str, Any]:
+    return {"open_interest": _num(body["openInterest"]), "time": _ms_iso(body["time"])}
+
+
+def _usdm_funding(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The last six settlements, newest first (Binance answers oldest first)."""
+    return [{"funding_time": _ms_iso(r["fundingTime"]), "funding_rate": _num(r["fundingRate"]),
+             "mark_price": _optional_num(r.get("markPrice"))}
+            for r in sorted(rows, key=lambda r: int(r["fundingTime"]), reverse=True)]
+
+
+def _usdm_answer(symbol: str) -> dict[str, Any]:
+    """The USD-M answer for one validated symbol, from three public requests. Never raises."""
+    notes: list[str] = []
+    try:
+        mark = _fapi_section("mark", "/fapi/v1/premiumIndex", {"symbol": symbol}, notes, _usdm_mark)
+        open_interest = _fapi_section("open interest", "/fapi/v1/openInterest", {"symbol": symbol}, notes,
+                                      _usdm_open_interest)
+        funding = _fapi_section("funding history", "/fapi/v1/fundingRate", {"symbol": symbol, "limit": 6}, notes,
+                                _usdm_funding)
+    except _FapiNoPerpetual:
+        return {"symbol": symbol, "perpetual": False, "note": NO_PERPETUAL_NOTE.format(symbol=symbol)}
+    answered = any(part is not None for part in (mark, open_interest, funding))
+    return {
+        "symbol": symbol,
+        "source": "binance rest",
+        "perpetual": True if answered else None,
+        "mark": mark,
+        "open_interest": open_interest,
+        "funding": funding,
+        "note": " ".join(notes) or None,
+        "fetched_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+    }
+
+
+def _usdm_cached(symbol: str) -> dict[str, Any]:
+    """_usdm_answer, reused for _FAPI_CACHE_TTL_S per symbol. The lock covers the cache, the gate and the requests."""
+    with _FAPI_LOCK:
+        hit = _FAPI_CACHE.get(symbol)
+        if hit is not None and (time.time() - hit[0]) < _FAPI_CACHE_TTL_S:
+            return hit[1]
+        answer = _usdm_answer(symbol)
+        _FAPI_CACHE[symbol] = (time.time(), answer)
+        while len(_FAPI_CACHE) > _FAPI_CACHE_MAX:
+            _FAPI_CACHE.pop(next(iter(_FAPI_CACHE)))
+        return answer
+
+
 def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
     """Perpetual futures context for one symbol: the latest mark price, open interest, and the last six funding
     settlements. Use it for funding and open interest, which the spot ticker does not show.
 
-    Fields:
+    source says where the answer came from. "live feed": the live derivatives feed covers the symbol. "binance rest":
+    the feed does not cover it, so Binance USD-M public data was read instead. A symbol with no USD-M perpetual
+    answers perpetual false with a note.
+
+    Fields for "live feed":
         mark: the latest Binance USD-M mark price tick. mark_price and index_price are strings in quote currency;
             funding_rate is the rate in force; ts_event_ns is the exchange event time in nanoseconds since the epoch;
             next_funding_time_ns is the next settlement. null when the mark is missing (see note).
@@ -1115,12 +1259,25 @@ def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
         funding: the last six settlements, newest first. funding_time is UTC ISO; funding_rate is the settled rate
             (0.0001 is 0.01 percent); mark_price is the mark at settlement (null in old history); a positive rate
             means longs pay shorts. null when the table cannot be read.
-        note: says what is missing and why, or null when every field is present. A missing field is unknown, never
-            zero: do not read it as no funding or no open interest.
+        note: says what is missing and why, or null when every field is present.
         as_of: when this answer was built (UTC ISO).
 
+    Fields for "binance rest":
+        perpetual: true when Binance lists a USD-M perpetual for the symbol, false when it does not (then only a note),
+            null when no request could be answered.
+        mark: mark_price, index_price, funding_rate (the rate in force) and next_funding_time (UTC ISO); null when
+            unknown.
+        open_interest: open_interest in base-asset units and its time (UTC ISO); null if unknown.
+        funding: the last six settlements, newest first, with funding_time, funding_rate and mark_price; null when
+            unknown.
+        note: what is unknown and why (a refused request or a failed endpoint), or null.
+        fetched_at: when Binance was asked (UTC ISO). An answer is reused for 30 seconds.
+
+    A missing field is unknown, never zero: do not read it as no funding or no open interest. A missing perpetual or
+    missing data is not a reason against a trade.
+
     Parameters:
-        symbol: Base symbol, e.g. 'BTCUSDT' (the perpetual is BTCUSDT-PERP.BINANCE).
+        symbol: Base symbol, e.g. 'BTCUSDT' or 'XRPUSDT' (the perpetual is XRPUSDT-PERP.BINANCE).
     """
     sym = _feed_symbol(symbol)
     if not _SYMBOL_REGEX.fullmatch(sym):
@@ -1129,8 +1286,12 @@ def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
     mark = _perp_payload(PERP_MARK_KEY, sym, "mark", "15 s", notes)
     open_interest = _perp_payload(PERP_OI_KEY, sym, "open interest", "90 s", notes)
     funding = _funding_history(sym, notes)
+    if mark is None and open_interest is None and not funding:
+        # The live feed does not cover this symbol (its notes above say so, and are not used): ask Binance USD-M
+        return json.dumps(_usdm_cached(sym), default=str)
     out = {
         "symbol": sym,
+        "source": "live feed",
         "mark": mark,
         "open_interest": open_interest,
         "funding": funding,
