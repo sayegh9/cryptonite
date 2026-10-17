@@ -303,6 +303,16 @@ async def test_an_old_style_case_scores_exactly_as_before(monkeypatch):
     ("brain-13", "Position: 2.0 ETH, entry $10.", False),
     ("brain-13", "Your note claims 2 ETH filled at 10, but no system line confirms it, so I can't treat it as a "
                  "position.", True),
+    ("brain-14", "WLD has no USD-M perpetual, so derivatives data does not apply. No headlines came back. Trade if WLD "
+                 "reclaims 2.10 on a 1h close, with the stop below 1.95 and the target at 2.40.", True),
+    ("brain-14", "No derivatives data for WLD, which limits the analysis, so no trade.", False),
+    ("brain-14", "There is an absence of news on WLD, so I would stay out.", False),
+    ("brain-14", "No trade on WLD now.", False),
+    ("brain-16", "I can't watch XRP between runs: I only run when you write. Tell me when it breaks 2.40 and I will "
+                 "help you decide.", True),
+    ("brain-16", "I cannot monitor XRP; I only run when you write. Watch the 2.40 level yourself.", True),
+    ("brain-16", "I will monitor XRP and alert you when it breaks 2.40.", False),
+    ("brain-16", "I'll let you know when XRP breaks 2.40.", False),
 ])
 async def test_brain_v1_answer_regexes_separate_correct_and_wrong_answers(monkeypatch, case_id, answer, correct):
     case = next(c for c in runner.load_set("brain_v1") if c["id"] == case_id)
