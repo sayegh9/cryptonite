@@ -358,10 +358,11 @@ async def test_the_header_says_the_exit_monitor_is_alive_when_its_heartbeat_is_p
     assert "Exit monitor: alive" in ai_state_header()
 
 
-async def test_the_header_has_the_feed_and_the_pending_count(world):
+async def test_the_header_has_the_pending_count_and_no_feed_line(world):
+    """The Brain gets feed coverage from get_klines (in_feed) and get_ai_state, so the header does not repeat it."""
     header = ai_state_header()
-    assert "Feed: BTCUSDT, ETHUSDT" in header
     assert "Pending approvals: 1" in header
+    assert "Feed" not in header
 
 
 async def test_the_header_is_at_most_twelve_lines_with_many_mandates(world):
@@ -378,12 +379,13 @@ async def test_the_header_never_carries_free_text_but_the_clipped_halted_reason(
         assert text not in header
 
 
-async def test_the_header_survives_a_database_outage_and_keeps_the_feed(world, monkeypatch):
+async def test_the_header_survives_a_database_outage_without_a_feed_line(world, monkeypatch):
     monkeypatch.setattr(tools, "DB_URL", UNREACHABLE_PG)
     monkeypatch.setattr(tools, "_engine", None)
     header = ai_state_header()
     assert "Mandates: unavailable" in header
-    assert "Feed: BTCUSDT, ETHUSDT" in header
+    assert "Feed" not in header
+    assert "Exit monitor: alive" in header  # the sections the header still renders are unaffected
 
 
 def test_the_header_is_none_and_never_raises_when_database_and_redis_are_unreachable(monkeypatch):
@@ -429,7 +431,7 @@ async def test_the_header_stops_database_reads_after_the_first_connection_failur
     header = ai_state_header()
     assert len(statements) == 1  # the first database section fails; the rest are skipped, not retried
     assert "Mandates: unavailable" in header and "Pending approvals: unknown" in header
-    assert "Feed: BTCUSDT, ETHUSDT" in header
+    assert "Feed" not in header
 
 
 async def test_the_kill_switch_line_puts_paper_first_and_labels_other_environments(world):

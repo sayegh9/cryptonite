@@ -947,14 +947,6 @@ def _header_pending(rows: Any) -> str:
     return f"Pending approvals: {count}"
 
 
-def _header_feed(feed: Any) -> str:
-    if _unavailable(feed):
-        return "Feed: unknown (ingest universe missing or unreadable)"
-    if not feed["symbols"]:
-        return "Feed: none"
-    return "Feed: " + ", ".join(feed["symbols"])
-
-
 def _header_exit(exit_monitor: Any) -> str:
     if _unavailable(exit_monitor):
         return "Exit monitor: unknown (heartbeat unreadable)"
@@ -986,7 +978,6 @@ def _header_sections() -> dict[str, Any]:
             out[name] = _error_section(name, e)
             if isinstance(e, OperationalError):  # unreachable, or timed out: the next read would fail the same way
                 database_down = out[name]
-    out["feed"] = _section("feed", _state_feed)
     out["exit_monitor"] = _section("exit_monitor", _state_exit_monitor)
     return out
 
@@ -1002,7 +993,6 @@ def ai_state_header() -> str | None:
             *_header_mandates(s["mandates"]),
             _header_risk(s["risk"]),
             _header_pending(s["pending_approvals"]),
-            _header_feed(s["feed"]),
             _header_exit(s["exit_monitor"]),
         ]
         return "\n".join(lines)
