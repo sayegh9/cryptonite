@@ -49,9 +49,16 @@ async def show_price_chart(
     stop: float | None = None,
     target: float | None = None,
 ) -> dict[str, Any]:
-    """Render an inline candlestick chart for the operator. Only for symbols the ingest feed records (get_klines reports in_feed). Optionally pass entry, stop, and target prices to overlay swing trade geometry lines."""
+    """Render an inline candlestick chart for the operator. Only for symbols the ingest feed records (get_klines reports in_feed). Optionally pass entry, stop, and target prices to overlay swing trade geometry lines. The UI renders the chart widget automatically; explain the levels in words and never output markdown image syntax ![...](...)."""
     bars = max(24, min(bars, 240))
-    out: dict[str, Any] = {"rendered": "price_chart", "symbol": symbol, "timeframe": timeframe, "bars": bars}
+    clean_symbol = symbol.strip().upper().split(".")[0]
+    out: dict[str, Any] = {
+        "rendered": "price_chart",
+        "symbol": clean_symbol,
+        "timeframe": timeframe,
+        "bars": bars,
+        "note": "Chart widget rendered inline below your message. Summarize the price action and levels in 1-2 sentences; do NOT output markdown image tags ![...](...).",
+    }
     if entry is not None:
         out["entry"] = float(entry)
     if stop is not None:

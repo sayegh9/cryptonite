@@ -35,6 +35,7 @@ import type {
 } from "@/lib/brain/types";
 
 const fmt = (n: number, digits = 2) => n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const fmtPrice = (n: number) => (Math.abs(n) > 0 && Math.abs(n) < 1 ? fmt(n, 4) : Math.abs(n) < 10 ? fmt(n, 3) : fmt(n, 2));
 const cardInput = "rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 focus:border-amber-600 focus:outline-none";
 
 /** Milliseconds for a bar timeframe string such as "1m", "15m", "1h", "4h", "1d". Defaults to 1m. */
@@ -226,7 +227,11 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
   );
 
   if (closes && closes.length > 1) {
-    const allVals = [...closes, ...levels];
+    const barLo = Math.min(...closes);
+    const barHi = Math.max(...closes);
+    const mid = (barLo + barHi) / 2 || 1;
+    const nearbyLevels = levels.filter((v) => Math.abs(v - mid) / mid <= 0.08);
+    const allVals = [...closes, ...nearbyLevels];
     lo = Math.min(...allVals);
     hi = Math.max(...allVals);
     span = hi - lo || 1;
@@ -240,7 +245,7 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
   const yOf = (val: number) => Math.max(2, Math.min(H - 2, H - ((val - lo) / span) * H));
 
   return (
-    <WidgetFrame testId="brain-widget-price-chart" icon={<BarChart3 className="h-3 w-3 text-cyan-400" />} title={`${widget.symbol} · ${widget.timeframe}`}>
+    <WidgetFrame testId="brain-widget-price-chart" icon={<BarChart3 className="h-3 w-3 text-cyan-400" />} title={`${symbol} · ${widget.timeframe}`}>
       {bars === null && !error && (
         <div className="flex h-[72px] items-center justify-center text-zinc-500">
           <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading bars…
@@ -255,7 +260,7 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
       {bars !== null && !error && bars.length > 0 && closes.length <= 1 && <div className="text-zinc-500">Not enough bars to draw.</div>}
       {bars !== null && !error && closes.length > 1 && (
         <div>
-          <svg viewBox={`0 0 ${W} ${H}`} className="h-[72px] w-full" role="img" aria-label={`${widget.symbol} price, ${closes.length} bars`}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="h-[72px] w-full" role="img" aria-label={`${symbol} price, ${closes.length} bars`}>
             <path d={path} fill="none" strokeWidth="1.5" className={up ? "stroke-emerald-400" : "stroke-rose-400"} />
             {typeof widget.entry === "number" && Number.isFinite(widget.entry) && (
               <line x1="0" y1={yOf(widget.entry)} x2={W} y2={yOf(widget.entry)} stroke="#38bdf8" strokeDasharray="4 3" strokeWidth="1" />
@@ -269,7 +274,7 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
           </svg>
           <div className="mt-1 flex justify-between text-2xs text-zinc-400">
             <span>
-              Last <span className="text-zinc-100">{fmt(closes[closes.length - 1])}</span>
+              Last <span className="text-zinc-100">{fmtPrice(closes[closes.length - 1])}</span>
             </span>
             <span className={up ? "text-emerald-400" : "text-rose-400"}>
               {up ? "+" : ""}
@@ -282,14 +287,14 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
                 <span className="flex items-center gap-1">
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#38bdf8]" />
                   <span className="text-zinc-400">Entry</span>
-                  <span className="text-zinc-100">{fmt(widget.entry)}</span>
+                  <span className="text-zinc-100">{fmtPrice(widget.entry)}</span>
                 </span>
               )}
               {typeof widget.stop === "number" && (
                 <span className="flex items-center gap-1">
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#f43f5e]" />
                   <span className="text-zinc-400">Stop</span>
-                  <span className="text-rose-300">{fmt(widget.stop)}</span>
+                  <span className="text-rose-300">{fmtPrice(widget.stop)}</span>
                   {typeof widget.entry === "number" && widget.entry > 0 && (
                     <span className="text-rose-400/80">
                       (-{((Math.abs(widget.entry - widget.stop) / widget.entry) * 100).toFixed(1)}%)
@@ -301,7 +306,7 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
                 <span className="flex items-center gap-1">
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#10b981]" />
                   <span className="text-zinc-400">TP1</span>
-                  <span className="text-emerald-300">{fmt(widget.target)}</span>
+                  <span className="text-emerald-300">{fmtPrice(widget.target)}</span>
                   {typeof widget.entry === "number" && widget.entry > 0 && (
                     <span className="text-emerald-400/80">
                       (+{((Math.abs(widget.target - widget.entry) / widget.entry) * 100).toFixed(1)}%)
@@ -1259,9 +1264,9 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
 
                 {/* Trade Geometry Row */}
                 <div className="text-2xs text-zinc-300">
-                  Entry <span className="font-semibold text-sky-400">{fmt(c.entry)}</span> · Stop{" "}
-                  <span className="font-semibold text-rose-400">{fmt(c.stop)}</span> · TP1{" "}
-                  <span className="font-semibold text-emerald-400">{fmt(c.target)}</span>
+                  Entry <span className="font-semibold text-sky-400">{fmtPrice(c.entry)}</span> · Stop{" "}
+                  <span className="font-semibold text-rose-400">{fmtPrice(c.stop)}</span> · TP1{" "}
+                  <span className="font-semibold text-emerald-400">{fmtPrice(c.target)}</span>
                 </div>
 
                 {/* 1-Click Chat Action Buttons */}
@@ -1270,12 +1275,13 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
                     type="button"
                     onClick={() =>
                       void sendBrainMessage(
-                        `Show the ${c.timeframe} price chart for ${c.instrument_id} with entry ${c.entry}, stop ${c.stop}, and target ${c.target}`
+                        `Show the ${c.timeframe} price chart for ${c.instrument_id.split(".")[0]} with entry ${c.entry}, stop ${c.stop}, and target ${c.target}, and summarize the setup in 1-2 sentences.`
                       )
                     }
                     className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-2xs text-zinc-200 hover:border-cyan-700 hover:text-cyan-300 transition-colors"
                   >
-                    <span>📈 Chart</span>
+                    <BarChart3 className="h-3 w-3 text-cyan-400" />
+                    <span>Chart</span>
                   </button>
                   <button
                     type="button"
@@ -1286,7 +1292,8 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
                     }
                     className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-2xs text-zinc-200 hover:border-purple-700 hover:text-purple-300 transition-colors"
                   >
-                    <span>⚡ Debate</span>
+                    <GitBranch className="h-3 w-3 text-purple-400" />
+                    <span>Debate</span>
                   </button>
                   <button
                     type="button"
@@ -1297,7 +1304,8 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
                     }
                     className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-2xs text-zinc-200 hover:border-emerald-700 hover:text-emerald-300 transition-colors"
                   >
-                    <span>🎯 Propose Order</span>
+                    <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                    <span>Propose Order</span>
                   </button>
                 </div>
               </div>

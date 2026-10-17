@@ -109,7 +109,9 @@ function MessageView({ message }: { message: BrainMessage }) {
         ) : (
           <div className="text-xs leading-relaxed [&_p]:my-1 [&_ul]:my-1 [&_table]:text-2xs">
             {message.content ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>
+                {message.content}
+              </ReactMarkdown>
             ) : message.status === "streaming" ? (
               <span className="flex items-center gap-1 text-zinc-500" role="status">
                 <Loader2 className="h-3 w-3 animate-spin" /> Thinking…

@@ -468,9 +468,9 @@
     "semantic_hash": "9cfa577f022dbdf1dc3e3cd03e456cf8"
   },
   "packages/agents/cryptonite_agents/tools.py": {
-    "mtime": 1792259569.8185496,
-    "seen": 1792259766.5606463,
-    "ast_hash": "e605c9df1bedd582ddabe32c5f92c2e4",
+    "mtime": 1792261478.0763376,
+    "seen": 1792261554.6982489,
+    "ast_hash": "2c58c1a1b25264a0882802826e215231",
     "semantic_hash": ""
   },
   "packages/agents/pyproject.toml": {
@@ -1962,9 +1962,9 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1792259698.581754,
-    "seen": 1792259766.6013854,
-    "ast_hash": "e0af4002d88ace1f46d5b02512d1d47b",
+    "mtime": 1792260035.2626271,
+    "seen": 1792261554.7338712,
+    "ast_hash": "7e29554b07dcedd2fa4c7cd0bf3ce596",
     "semantic_hash": ""
   },
   "apps/web/src/components/ResearchLab/StrategyManagerModal.tsx": {
@@ -2010,9 +2010,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainConversation.tsx": {
-    "mtime": 1792258448.8085835,
-    "seen": 1792258710.7336185,
-    "ast_hash": "bc3cc06077b30260ff71d9ec94d340db",
+    "mtime": 1792261401.5428052,
+    "seen": 1792261554.6773076,
+    "ast_hash": "51a44c52637161b83518761d4c48550b",
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainHome.tsx": {
@@ -2022,9 +2022,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainWidgets.tsx": {
-    "mtime": 1792258389.0151384,
-    "seen": 1792258710.7341008,
-    "ast_hash": "c30a2c5d491d782833637aa473fd5556",
+    "mtime": 1792261429.9456315,
+    "seen": 1792261554.6776717,
+    "ast_hash": "e55edd23c580754d9a046857c3673216",
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/DecisionTraceDrawer.tsx": {
@@ -2298,9 +2298,9 @@
     "semantic_hash": ""
   },
   "packages/agents/cryptonite_agents/brain/toolset.py": {
-    "mtime": 1792258647.176891,
-    "seen": 1792258710.7579906,
-    "ast_hash": "b9b44b403bed6f2fd0aea2d2f4dce042",
+    "mtime": 1792261299.0324333,
+    "seen": 1792261554.6952078,
+    "ast_hash": "40bb25e91b1bae177dc0a782e47b1375",
     "semantic_hash": ""
   },
   "packages/agents/cryptonite_agents/brain/widgets.py": {

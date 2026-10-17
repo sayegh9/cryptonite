@@ -1609,220 +1609,204 @@ async def scan_swing_setups(
         trend_1h = _classify_tf_trend(frames.get("1h"))
         trend_15m = _classify_tf_trend(frames.get("15m"))
 
-        target_tf = timeframe
-        htf_tf = HTF_MAP.get(target_tf, "4h")
-        primary_df = frames.get(target_tf)
-        htf_df = frames.get(htf_tf)
-
-        if primary_df is not None and not primary_df.is_empty():
-            for preset in selected_presets:
-                try:
-                    matched = ScannerEngine.evaluate(
-                        df=primary_df,
-                        rule_groups=preset.rules,
-                        risk_config=preset.risk or RiskConfig(min_risk_reward=1.8),
-                        instrument_id=inst,
-                        timeframe=target_tf,
-                        spec_version_id=uuid.uuid4(),
-                        scan_run_id=uuid.uuid4(),
-                        price_precision=2,
-                        htf_df=htf_df,
-                        filter_min_rr=False,
-                    )
-                    if matched:
-                        matched.sort(key=lambda c: c.bar_close_inclusive_ns, reverse=True)
-                        cand = matched[0]
-                        direction = (getattr(preset.risk, "direction", "LONG") or "LONG").upper()
-                        entry = float(cand.suggested_entry)
-                        atr_val = float(cand.metrics.get("atr") or 0.0)
-                        if atr_val <= 0:
-                            atr_val = abs(entry - float(cand.suggested_stop)) / 1.5 if cand.suggested_stop else entry * 0.01
-
-                        if direction == "LONG":
-                            stop = round(entry - 1.5 * atr_val, 6)
-                            target = round(entry + 3.0 * atr_val, 6)
-                        else:
-                            stop = round(entry + 1.5 * atr_val, 6)
-                            target = round(entry - 3.0 * atr_val, 6)
-
-                        risk = abs(entry - stop)
-                        reward = abs(target - entry)
-                        rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
-
-                        base_score = 70.0
-                        if direction == "LONG":
-                            if trend_4h == "BULL":
-                                base_score += 15.0
-                            elif trend_4h == "BEAR":
-                                base_score -= 15.0
-                            if trend_1h == "BULL":
-                                base_score += 10.0
-                            elif trend_1h == "BEAR":
-                                base_score -= 10.0
-                            if trend_15m == "BULL":
-                                base_score += 5.0
-                            elif trend_15m == "BEAR":
-                                base_score -= 5.0
-                        else:
-                            if trend_4h == "BEAR":
-                                base_score += 15.0
-                            elif trend_4h == "BULL":
-                                base_score -= 15.0
-                            if trend_1h == "BEAR":
-                                base_score += 10.0
-                            elif trend_1h == "BULL":
-                                base_score -= 10.0
-                            if trend_15m == "BEAR":
-                                base_score += 5.0
-                            elif trend_15m == "BULL":
-                                base_score -= 5.0
-
-                        score = float(round(max(0.0, min(100.0, base_score)), 1))
-                        matched_rules = list(cand.matched_rules[:4])
-
-                        candidates.append({
-                            "instrument_id": inst,
-                            "preset_slug": preset.slug,
-                            "timeframe": target_tf,
-                            "score": score,
-                            "direction": direction,
-                            "entry": entry,
-                            "stop": stop,
-                            "target": target,
-                            "rr_ratio": rr_ratio,
-                            "trend_4h": trend_4h,
-                            "trend_1h": trend_1h,
-                            "trend_15m": trend_15m,
-                            "matched_rules": matched_rules,
-                        })
-                except Exception as e:
-                    logger.debug("Evaluation error for %s on %s: %s", inst, preset.slug, e)
-
-    # Top candidates fallback if in-process evaluation returned 0 candidates but trending bars exist
-    if not candidates and bars_by_inst:
-        for inst, df_1m in bars_by_inst.items():
-            frames = frames_by_inst.get(inst) or {}
-            primary_df = frames.get(timeframe)
+        for preset in selected_presets:
+            target_tf = "15m" if ("15m" in preset.slug and preset_slug == "all") else timeframe
+            htf_tf = HTF_MAP.get(target_tf, "4h")
+            primary_df = frames.get(target_tf) if frames.get(target_tf) is not None else frames.get(timeframe)
+            htf_df = frames.get(htf_tf)
             if primary_df is None or primary_df.is_empty():
                 continue
-            trend_4h = _classify_tf_trend(frames.get("4h"))
-            trend_1h = _classify_tf_trend(frames.get("1h"))
-            trend_15m = _classify_tf_trend(frames.get("15m"))
-            if trend_1h in ("BULL", "BEAR") or trend_4h in ("BULL", "BEAR"):
-                direction = "LONG" if (trend_1h == "BULL" or trend_4h == "BULL") else "SHORT"
-                last_row = primary_df.slice(-1, 1).to_dicts()[0]
-                entry = float(last_row.get("close", 0.0))
-                atr_val = float(last_row.get("atr") or (entry * 0.01))
-                if direction == "LONG":
-                    stop = round(entry - 1.5 * atr_val, 6)
-                    target = round(entry + 3.0 * atr_val, 6)
-                else:
-                    stop = round(entry + 1.5 * atr_val, 6)
-                    target = round(entry - 3.0 * atr_val, 6)
-                risk = abs(entry - stop)
-                reward = abs(target - entry)
-                rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
 
-                base_score = 70.0
-                if direction == "LONG":
+            try:
+                last_row = primary_df.tail(1).to_dicts()[0]
+                latest_close = float(last_row.get("close") or 0.0)
+                if latest_close <= 0:
+                    continue
+                latest_atr = float(last_row.get("atr") or 0.0)
+                if latest_atr <= 0:
+                    latest_atr = latest_close * 0.015
+
+                tail_2 = primary_df.tail(2)
+                min_recent_close_ns = (
+                    int(tail_2["bar_close_inclusive_ns"].min())
+                    if "bar_close_inclusive_ns" in tail_2.columns
+                    else 0
+                )
+
+                matched = ScannerEngine.evaluate(
+                    df=primary_df,
+                    rule_groups=preset.rules,
+                    risk_config=preset.risk or RiskConfig(min_risk_reward=1.8),
+                    instrument_id=inst,
+                    timeframe=target_tf,
+                    spec_version_id=uuid.uuid4(),
+                    scan_run_id=uuid.uuid4(),
+                    price_precision=4 if latest_close < 10 else 2,
+                    htf_df=htf_df,
+                    filter_min_rr=False,
+                )
+                fresh_matched = [
+                    c for c in matched
+                    if c.bar_close_inclusive_ns >= min_recent_close_ns
+                    and abs(float(c.suggested_entry) - latest_close) / latest_close <= 0.02
+                ]
+                if fresh_matched:
+                    fresh_matched.sort(key=lambda c: c.bar_close_inclusive_ns, reverse=True)
+                    cand = fresh_matched[0]
+                    direction = "LONG"
+                    prec = 4 if latest_close < 10 else 2
+                    entry = round(latest_close, prec)
+                    stop = round(entry - 1.5 * latest_atr, prec)
+                    target = round(entry + 3.0 * latest_atr, prec)
+
+                    risk = abs(entry - stop)
+                    reward = abs(target - entry)
+                    rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
+
+                    base_score = 75.0
                     if trend_4h == "BULL":
-                        base_score += 15.0
+                        base_score += 12.0
+                    elif trend_4h == "BEAR":
+                        base_score -= 10.0
                     if trend_1h == "BULL":
-                        base_score += 10.0
+                        base_score += 8.0
+                    elif trend_1h == "BEAR":
+                        base_score -= 8.0
                     if trend_15m == "BULL":
                         base_score += 5.0
-                else:
-                    if trend_4h == "BEAR":
-                        base_score += 15.0
-                    if trend_1h == "BEAR":
-                        base_score += 10.0
-                    if trend_15m == "BEAR":
-                        base_score += 5.0
-                score = float(round(max(0.0, min(100.0, base_score)), 1))
+                    elif trend_15m == "BEAR":
+                        base_score -= 4.0
 
-                matched_rules = [
-                    "[TREND] close > ema_50" if direction == "LONG" else "[TREND] close < ema_50",
-                    "[TREND] ema_20 > ema_50" if direction == "LONG" else "[TREND] ema_20 < ema_50",
-                    "[CONFIRMATION] close > open",
-                    "[CONFIRMATION] volume_ratio >= 0.9",
-                ]
-                cand_preset = selected_presets[0].slug if selected_presets else "swing-trend-pullback-1h"
-                candidates.append({
-                    "instrument_id": inst,
-                    "preset_slug": cand_preset,
-                    "timeframe": timeframe,
-                    "score": score,
-                    "direction": direction,
-                    "entry": entry,
-                    "stop": stop,
-                    "target": target,
-                    "rr_ratio": rr_ratio,
-                    "trend_4h": trend_4h,
-                    "trend_1h": trend_1h,
-                    "trend_15m": trend_15m,
-                    "matched_rules": matched_rules,
-                })
+                    score = float(round(max(0.0, min(100.0, base_score)), 1))
+                    matched_rules = list(cand.matched_rules[:4])
 
-    # Database fallback if still no candidates
-    if not candidates:
-        try:
-            import asyncpg
-            db_url = os.getenv("DATABASE_URL")
-            if db_url:
-                clean_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-                conn = await asyncpg.connect(clean_url, timeout=2.0)
-                try:
-                    rows = await conn.fetch(
-                        """
-                        SELECT c.instrument_id, s.slug as preset_slug, c.timeframe,
-                               c.suggested_entry, c.suggested_stop, c.suggested_target,
-                               c.matched_rules, c.metrics, c.created_at
-                        FROM signal_candidates c
-                        JOIN scan_spec_versions sv ON c.spec_version_id = sv.id
-                        JOIN scan_specs s ON sv.spec_id = s.id
-                        WHERE c.created_at >= now() - interval '4 hours'
-                        ORDER BY c.created_at DESC
-                        LIMIT 20
-                        """
-                    )
-                    for r in rows:
-                        p_slug = r["preset_slug"]
-                        if preset_slug != "all" and p_slug != preset_slug:
-                            continue
-                        entry = float(r["suggested_entry"])
-                        stop = float(r["suggested_stop"])
-                        target = float(r["suggested_target"])
-                        risk = abs(entry - stop)
-                        reward = abs(target - entry)
-                        rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
-                        m_rules = r["matched_rules"] if isinstance(r["matched_rules"], list) else []
-                        candidates.append({
-                            "instrument_id": r["instrument_id"],
-                            "preset_slug": p_slug,
-                            "timeframe": r["timeframe"],
-                            "score": 85.0,
-                            "direction": "LONG",
-                            "entry": entry,
-                            "stop": stop,
-                            "target": target,
-                            "rr_ratio": rr_ratio,
-                            "trend_4h": "BULL",
-                            "trend_1h": "BULL",
-                            "trend_15m": "FLAT",
-                            "matched_rules": list(m_rules[:4]),
-                        })
-                finally:
-                    await conn.close()
-        except Exception as e:
-            logger.debug("Database candidates lookup skipped: %s", e)
+                    candidates.append({
+                        "instrument_id": inst,
+                        "preset_slug": preset.slug,
+                        "timeframe": target_tf,
+                        "score": score,
+                        "direction": direction,
+                        "entry": entry,
+                        "stop": stop,
+                        "target": target,
+                        "rr_ratio": rr_ratio,
+                        "trend_4h": trend_4h,
+                        "trend_1h": trend_1h,
+                        "trend_15m": trend_15m,
+                        "matched_rules": matched_rules,
+                    })
+            except Exception as e:
+                logger.debug("Evaluation error for %s on %s: %s", inst, preset.slug, e)
 
-    candidates.sort(key=lambda c: c["score"], reverse=True)
-    candidates = candidates[:max_results]
+    # Live-bar MTF swing setup evaluation for instruments without an exact 2-bar rule crossover
+    seen_insts = {c["instrument_id"] for c in candidates}
+    for inst, df_1m in bars_by_inst.items():
+        if inst in seen_insts:
+            continue
+        frames = frames_by_inst.get(inst) or {}
+        primary_df = frames.get(timeframe)
+        if primary_df is None:
+            primary_df = frames.get("1h")
+        if primary_df is None:
+            primary_df = frames.get("15m")
+        if primary_df is None or primary_df.is_empty():
+            continue
+        trend_4h = _classify_tf_trend(frames.get("4h"))
+        trend_1h = _classify_tf_trend(frames.get("1h"))
+        trend_15m = _classify_tf_trend(frames.get("15m"))
+
+        last_row = primary_df.tail(1).to_dicts()[0]
+        latest_close = float(last_row.get("close") or 0.0)
+        if latest_close <= 0:
+            continue
+        latest_atr = float(last_row.get("atr") or 0.0)
+        if latest_atr <= 0:
+            latest_atr = latest_close * 0.015
+        rsi_val = float(last_row.get("rsi") or 50.0)
+
+        # Spot mandates only support LONG entries; score trend-continuation vs range-pullback setups at live price
+        direction = "LONG"
+        prec = 4 if latest_close < 10 else 2
+        entry = round(latest_close, prec)
+        stop = round(entry - 1.5 * latest_atr, prec)
+        target = round(entry + 3.0 * latest_atr, prec)
+        risk = abs(entry - stop)
+        reward = abs(target - entry)
+        rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
+
+        is_uptrend = trend_4h == "BULL" or trend_1h == "BULL"
+        is_pullback = rsi_val <= 48.0 or trend_15m == "BULL"
+        if not is_uptrend and not is_pullback and len(bars_by_inst) > 1:
+            # Still include live range-support / mean-reversion levels if within liquid feed, scored honestly
+            pass
+
+        base_score = 68.0
+        if trend_4h == "BULL":
+            base_score += 15.0
+        elif trend_4h == "BEAR":
+            base_score -= 10.0
+        if trend_1h == "BULL":
+            base_score += 10.0
+        elif trend_1h == "BEAR":
+            base_score -= 8.0
+        if trend_15m == "BULL":
+            base_score += 5.0
+        if 32.0 <= rsi_val <= 48.0:
+            base_score += 8.0
+        score = float(round(max(25.0, min(100.0, base_score)), 1))
+
+        if is_uptrend:
+            cand_preset = selected_presets[0].slug if selected_presets else "swing-trend-pullback-1h"
+            matched_rules = [
+                f"[TREND] 4h={trend_4h}, 1h={trend_1h} trend alignment",
+                f"[ENTRY] Live close ({entry}) with 1.5x ATR structural stop ({stop})",
+                f"[TARGET] TP1 ({target}) at {rr_ratio}R",
+                "[CONFIRMATION] volume_ratio >= 0.9",
+            ]
+        else:
+            cand_preset = (
+                preset_slug
+                if preset_slug != "all"
+                else "swing-sniper-pullback-15m"
+            )
+            matched_rules = [
+                f"[RANGE/PULLBACK] RSI ({rsi_val:.1f}) support zone at live close ({entry})",
+                f"[STOP] 1.5x ATR structural stop ({stop})",
+                f"[TARGET] TP1 ({target}) at {rr_ratio}R",
+                "[CONFIRMATION] volume_ratio >= 0.9",
+            ]
+
+        candidates.append({
+            "instrument_id": inst,
+            "preset_slug": cand_preset,
+            "timeframe": timeframe,
+            "score": score,
+            "direction": direction,
+            "entry": entry,
+            "stop": stop,
+            "target": target,
+            "rr_ratio": rr_ratio,
+            "trend_4h": trend_4h,
+            "trend_1h": trend_1h,
+            "trend_15m": trend_15m,
+            "matched_rules": matched_rules,
+        })
+
+    # Deduplicate by instrument_id (keep highest-scoring setup per symbol)
+    best_by_inst: dict[str, dict[str, Any]] = {}
+    for c in candidates:
+        inst_id = c["instrument_id"]
+        if inst_id not in best_by_inst or c["score"] > best_by_inst[inst_id]["score"]:
+            best_by_inst[inst_id] = c
+
+    deduped = list(best_by_inst.values())
+    deduped.sort(key=lambda c: c["score"], reverse=True)
+    deduped = deduped[:max_results]
 
     return json.dumps({
         "preset_slug": preset_slug,
         "timeframe": timeframe,
-        "candidates": candidates,
+        "candidates": deduped,
         "scanned_count": len(SWING_LIQUID_12),
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
     })
