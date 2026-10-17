@@ -8,6 +8,7 @@ from typing import Any, Literal
 from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
 from cryptonite_api.routes.auth import require_csrf, require_operator
 from cryptonite_api.universe import require_fed
+from cryptonite_schemas.mandate import MANDATE_INSTANCE_PREFIX
 from cryptonite_schemas.marks import read_marks, resolve_mark, unrealized_pnl
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -15,6 +16,10 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("cryptonite.api.paper")
 
 router = APIRouter(prefix="/api/v1/paper", tags=["Paper Trading"])
+
+MANDATE_INSTANCE_REFUSAL = (
+    "MANDATE_INSTANCE: AI mandates are paused and resumed in Mission Control, not as strategy instances"
+)
 
 
 # Pydantic request models
@@ -196,6 +201,13 @@ async def get_commands(request: Request, limit: int = 50, auth: dict = Depends(r
 # --- COMMAND ENDPOINTS (Writes to execution_commands ONLY) ---
 
 
+def _refuse_mandate_instance(instance_id: str) -> None:
+    """An AI mandate is paused, resumed and stopped in Mission Control. As a strategy instance it would reach the
+    orchestrator, where a RESUME raised a duplicate-key error on the mandate and blocked the queue."""
+    if instance_id.startswith(MANDATE_INSTANCE_PREFIX):
+        raise HTTPException(status_code=409, detail=MANDATE_INSTANCE_REFUSAL)
+
+
 @router.post("/strategies/deploy")
 async def deploy_strategy(req: DeployStrategyRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
@@ -222,6 +234,7 @@ async def deploy_strategy(req: DeployStrategyRequest, request: Request, auth: di
 
 @router.post("/strategies/{instance_id}/pause")
 async def pause_strategy(instance_id: str, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
+    _refuse_mandate_instance(instance_id)
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -233,6 +246,7 @@ async def pause_strategy(instance_id: str, request: Request, auth: dict = Depend
 
 @router.post("/strategies/{instance_id}/resume")
 async def resume_strategy(instance_id: str, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
+    _refuse_mandate_instance(instance_id)
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,
@@ -244,6 +258,7 @@ async def resume_strategy(instance_id: str, request: Request, auth: dict = Depen
 
 @router.post("/strategies/{instance_id}/stop")
 async def stop_strategy(instance_id: str, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
+    _refuse_mandate_instance(instance_id)
     pool = request.app.state.pool
     return await _enqueue_command(
         pool=pool,

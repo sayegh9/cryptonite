@@ -201,6 +201,41 @@ async def test_a_buy_twin_of_an_approved_card_is_a_duplicate(h, worker):
     await assert_refused_like_approve(h, worker, code="DUPLICATE_DECISION")
 
 
+async def test_a_buy_while_the_manual_trade_book_holds_the_instrument_is_refused_like_approve(h, worker):
+    """The orchestrator's mandate gate refuses an entry while another owner holds the instrument (MANDATE_INSTRUMENT_
+    CONFLICT). The dry run and approve run the same check, so the card is refused before it is claimed."""
+    await h.mandate(instruments=(BTC,))
+    await hold_position(h.pool, "MANUAL_TRADE", 0.01)
+    body = await assert_refused_like_approve(h, worker, code="MANDATE_INSTRUMENT_CONFLICT")
+    assert body["detail"].startswith("MANDATE_INSTRUMENT_CONFLICT: MANUAL_TRADE holds BTCUSDT.BINANCE; ")
+
+
+async def test_a_buy_while_a_stopped_mandate_holds_the_instrument_names_that_mandate(h, worker):
+    await h.mandate(instruments=(BTC,), name="btc-active")
+    other = await h.mandate(instruments=(BTC,), status="PAUSED", name=f"btc-other-{uuid.uuid4().hex[:6]}")
+    await hold_position(h.pool, other.instance_id, 0.01)
+    body = await assert_refused_like_approve(h, worker, code="MANDATE_INSTRUMENT_CONFLICT")
+    assert body["detail"].startswith(f"MANDATE_INSTRUMENT_CONFLICT: {other.name} holds BTCUSDT.BINANCE; ")
+
+
+async def test_a_zero_quantity_position_of_another_owner_is_no_conflict(h, worker):
+    """Only a position with quantity above zero is a holder, as the orchestrator's gate counts it."""
+    m = await h.mandate(instruments=(BTC,), name="btc-closed-check")
+    await hold_position(h.pool, "MANUAL_TRADE", 0.0)
+    body = (await ask(h, uuid.uuid4())).json()
+    assert body["ok"] is True and body["mandate"]["id"] == str(m.id)
+
+
+async def test_a_sell_is_not_refused_by_another_owner_holding_the_instrument(h, worker):
+    """The conflict is an entry refusal: a SELL closes what the mandate holds and is never refused for another owner."""
+    worker.card.update(side="SELL")
+    m = await h.mandate(instruments=(BTC,), status="PAUSED", name="btc-paused-sell")
+    await hold_spot(h.pool, m.instance_id, "0.005")
+    await hold_position(h.pool, "MANUAL_TRADE", 0.01)
+    body = (await ask(h, uuid.uuid4())).json()
+    assert body["ok"] is True and body["side"] == "SELL"
+
+
 async def test_a_sell_with_nothing_held_is_spot_sell_not_held(h, worker):
     worker.card.update(side="SELL")
     await h.mandate(instruments=(BTC,))

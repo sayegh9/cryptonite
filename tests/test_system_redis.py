@@ -108,11 +108,11 @@ def test_get_ai_state_shows_the_feed_and_a_live_exit_monitor_from_the_system_db(
     assert state["exit_monitor"]["alive"] is True
 
 
-def test_ai_state_header_says_the_exit_monitor_is_alive_and_names_the_feed():
+def test_ai_state_header_says_the_exit_monitor_is_alive_and_has_no_feed_line():
     header = ai_state_header()
     assert header is not None
     assert "Exit monitor: alive" in header
-    assert "Feed: BTCUSDT" in header
+    assert "Feed" not in header
 
 
 def test_without_the_system_setting_the_tools_fall_back_to_redis_url(monkeypatch):

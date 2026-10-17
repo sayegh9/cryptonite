@@ -5,10 +5,14 @@ import { Pause, Play, Square, TrendingUp } from "lucide-react";
 import { usePortfolioStore, type StrategyInstance } from "@/lib/stores/usePortfolioStore";
 import { postCommand } from "@/lib/portfolio/actions";
 import { fmtCompactUsd, fmtPct, fmtSignedUsd, strategyStats, type StrategyStats } from "@/lib/portfolio/metrics";
+import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import { Sparkline } from "./Sparkline";
 
 const SYSTEM_INSTANCES = new Set(["MANUAL_TRADE", "AI_DEBATE_WORKER"]);
 const SEGMENTS = 10;
+
+/** AI mandates are paused, resumed and stopped in Mission Control; the API refuses instance commands for them. */
+const isAiMandate = (instanceId: string) => instanceId.startsWith("AI_MANDATE_");
 
 function StatusDot({ status }: { status: string }) {
   if (status === "RUNNING") {
@@ -112,33 +116,53 @@ const StrategyRow = React.memo(function StrategyRow({ st, stats, equity, onSelec
       </div>
 
       <div className="flex gap-1 justify-end" onClick={(e) => e.stopPropagation()}>
-        {st.status === "RUNNING" ? (
-          <button
-            onClick={() => command("pause", "PAUSED")}
-            className={`${iconBtn} bg-yellow-950 hover:bg-yellow-900 border-yellow-800 text-yellow-300 focus-visible:ring-yellow-500/50`}
-            title="Pause"
-            aria-label={`Pause strategy ${st.strategy_name}`}
-          >
-            <Pause className="w-3 h-3" />
-          </button>
+        {isAiMandate(st.instance_id) ? (
+          <span className="max-w-[12rem] text-right text-2xs leading-snug text-zinc-400">
+            AI mandate — manage it in{" "}
+            <a
+              href={`/${buildQuery("mission", "overview")}`}
+              onClick={(e) => {
+                // Modified clicks keep the browser's behaviour (new tab, new window, download)
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                e.preventDefault();
+                dispatchSwitchWorkspace({ mode: "mission", view: "overview" });
+              }}
+              className="font-bold text-cyan-400 underline hover:text-cyan-300"
+            >
+              Mission Control
+            </a>
+          </span>
         ) : (
-          <button
-            onClick={() => command("resume", "RUNNING")}
-            className={`${iconBtn} bg-emerald-950 hover:bg-emerald-900 border-emerald-800 text-emerald-300 focus-visible:ring-emerald-500/50`}
-            title="Resume"
-            aria-label={`Resume strategy ${st.strategy_name}`}
-          >
-            <Play className="w-3 h-3" />
-          </button>
+          <>
+            {st.status === "RUNNING" ? (
+              <button
+                onClick={() => command("pause", "PAUSED")}
+                className={`${iconBtn} bg-yellow-950 hover:bg-yellow-900 border-yellow-800 text-yellow-300 focus-visible:ring-yellow-500/50`}
+                title="Pause"
+                aria-label={`Pause strategy ${st.strategy_name}`}
+              >
+                <Pause className="w-3 h-3" />
+              </button>
+            ) : (
+              <button
+                onClick={() => command("resume", "RUNNING")}
+                className={`${iconBtn} bg-emerald-950 hover:bg-emerald-900 border-emerald-800 text-emerald-300 focus-visible:ring-emerald-500/50`}
+                title="Resume"
+                aria-label={`Resume strategy ${st.strategy_name}`}
+              >
+                <Play className="w-3 h-3" />
+              </button>
+            )}
+            <button
+              onClick={() => command("stop", "STOPPED")}
+              className={`${iconBtn} bg-red-950 hover:bg-red-900 border-red-800 text-red-300 focus-visible:ring-red-500/50`}
+              title="Stop"
+              aria-label={`Stop strategy ${st.strategy_name}`}
+            >
+              <Square className="w-3 h-3" />
+            </button>
+          </>
         )}
-        <button
-          onClick={() => command("stop", "STOPPED")}
-          className={`${iconBtn} bg-red-950 hover:bg-red-900 border-red-800 text-red-300 focus-visible:ring-red-500/50`}
-          title="Stop"
-          aria-label={`Stop strategy ${st.strategy_name}`}
-        >
-          <Square className="w-3 h-3" />
-        </button>
       </div>
     </li>
   );
