@@ -441,7 +441,8 @@ def test_the_cause_and_context_chain_is_walked_to_a_bounded_depth():
 
 
 class _KillingConnection:
-    """A real connection whose first strategy-instance UPDATE first ends its own backend, as a server-side kill does."""
+    """A real connection whose first statement containing the owner's marker first ends its own backend, as a
+    server-side kill does."""
 
     def __init__(self, conn, owner):
         self._conn = conn
@@ -451,15 +452,16 @@ class _KillingConnection:
         return getattr(self._conn, name)
 
     async def execute(self, sql, *args):
-        if not self._owner.fired and "UPDATE paper_strategy_instances" in sql:
+        if not self._owner.fired and self._owner.marker in sql:
             self._owner.fired = True
             await self._conn.fetchval("SELECT pg_terminate_backend(pg_backend_pid())")
         return await self._conn.execute(sql, *args)
 
 
 class _KillOwnBackendOnce:
-    def __init__(self, pool):
+    def __init__(self, pool, marker="UPDATE paper_strategy_instances"):
         self.pool = pool
+        self.marker = marker
         self.fired = False
 
     @contextlib.asynccontextmanager
@@ -709,4 +711,213 @@ async def test_a_refused_strategy_command_on_an_ai_mandate_is_written_once_and_t
         engine.mailbox.push.assert_not_called()
     finally:
         await _sweep(pool, [command_id])
+        await pool.close()
+
+
+# --- Round 2: an effect is never retried, transient errors are narrowed, a failed settlement never re-runs a command --
+
+
+async def test_a_transient_error_after_an_applied_effect_is_unknown_and_never_retried():
+    close = _row("CLOSE_POSITION", {"instrument_id": "BTCUSDT"}, target=NORMAL, attempt_count=1)
+    engine = spot_engine()
+    engine.dispatcher.positions[SPOT] = D("0.01")  # the close is booked in memory before its row write fails
+
+    async def execute(sql, *args):
+        if "INSERT INTO paper_orders" in sql:
+            raise ConnectionResetError("connection lost")
+
+    conn = await _drive(engine, _conn(_scripted([close]), execute=execute,
+                                      fetchval=_settled), _quotes())
+
+    statements = _statements(conn)
+    assert any(UNKNOWN_SQL in a[0] for a in statements)
+    assert not any("SET attempt_count" in a[0] for a in statements)  # not retried
+    assert not any(FAILED_SQL in a[0] for a in statements)
+
+
+async def test_a_transient_error_after_a_compensated_accept_is_retried(monkeypatch):
+    monkeypatch.setattr(server, "TRANSIENT_RETRY_BACKOFF_S", 0)
+    engine = spot_engine()
+    payload = {"instrument_id": "BTCUSDT", "side": "BUY", "order_type": "LIMIT", "quantity": "0.02", "price": "49800"}
+    row = _row("MANUAL_ORDER", payload, target=None, attempt_count=1)
+
+    async def execute(sql, *args):
+        if "'ACCEPTED'" in sql:  # the working order is released again (compensated), so nothing is left to hold
+            raise ConnectionResetError("connection lost")
+
+    conn = await _drive(engine, _conn(_scripted([row]), execute=execute, fetchval=_settled),
+                        _quotes())
+
+    statements = _statements(conn)
+    assert [a[2] for a in statements if "SET attempt_count" in a[0]] == [1]  # retried, attempt count kept
+    assert not any(UNKNOWN_SQL in a[0] or FAILED_SQL in a[0] for a in statements)
+    assert engine.dispatcher.open_orders == {} and engine.dispatcher.reserved_cash == 0
+
+
+async def test_a_real_connection_killed_after_an_applied_effect_is_unknown_and_never_retried():
+    pool = await asyncpg.create_pool(DB_URL)
+    command_id = uuid.uuid4()
+    engine = spot_engine()
+    engine.dispatcher.positions[SPOT] = D("0.01")
+    killer = _KillOwnBackendOnce(pool, marker="INSERT INTO paper_orders")  # the close's row write, after its effect
+    try:
+        await pool.execute(  # the oldest PAPER row, so the poller claims it first
+            "INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, status, "
+            "environment, payload, created_at) VALUES ($1, $2, 'CLOSE_POSITION', $3, 'PENDING', 'PAPER', $4::jsonb, "
+            "'2000-01-01 00:00:00+00')",
+            command_id, f"queue-guard-kill-after-{command_id}", NORMAL, json.dumps({"instrument_id": "BTCUSDT"}),
+        )
+        poller = asyncio.create_task(server.command_poller(killer, engine, _quotes()))
+        try:
+            for _ in range(400):  # up to 20 s
+                state = await pool.fetchrow("SELECT status, command_outcome, attempt_count FROM execution_commands "
+                                            "WHERE command_id = $1", command_id)
+                if state["command_outcome"] == "UNKNOWN_PENDING_RECONCILIATION":
+                    break
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.5)  # a retry, if one wrongly happened, would show here
+        finally:
+            poller.cancel()
+            await asyncio.gather(poller, return_exceptions=True)
+        assert killer.fired  # the backend really was ended after the close's effect was applied
+        assert (state["status"], state["command_outcome"]) == ("RUNNING", "UNKNOWN_PENDING_RECONCILIATION")
+        assert state["attempt_count"] == 0  # the claim rolled back and nothing re-claimed it
+    finally:
+        await _sweep(pool, [command_id])
+        await pool.close()
+
+
+def _settled(sql, *args):
+    """fetchval for the settlement statements: the row was still PENDING, so the settlement took it (the id back)."""
+    return args[0]
+
+
+def test_interface_errors_are_transient_only_when_the_connection_is_closed():
+    for exc in (asyncpg.exceptions.InterfaceError("underlying connection is closed"),
+                asyncpg.exceptions.InterfaceError("cannot call Transaction.__aexit__(): the underlying connection "
+                                                  "is closed")):
+        assert server.is_transient_command_error(exc), exc
+    for exc in (asyncpg.exceptions.InterfaceError("cannot perform operation: another operation is in progress"),
+                asyncpg.exceptions.InterfaceError("cannot perform operation: another operation is cancelling"),
+                asyncpg.exceptions.ClientConfigurationError("invalid DSN"),
+                asyncpg.exceptions.UnsupportedClientFeatureError("feature not supported"),
+                asyncpg.exceptions.DataError("invalid input for query argument $1: 'x' (expected a number)")):
+        assert not server.is_transient_command_error(exc), exc
+
+
+def test_transaction_rollbacks_are_transient_only_for_deadlock_and_serialization():
+    for exc in (asyncpg.exceptions.DeadlockDetectedError("deadlock detected"),
+                asyncpg.exceptions.SerializationError("could not serialize access")):
+        assert server.is_transient_command_error(exc), exc
+    for exc in (asyncpg.exceptions.TransactionIntegrityConstraintViolationError("integrity"),
+                asyncpg.exceptions.StatementCompletionUnknownError("completion unknown"),
+                asyncpg.exceptions.TransactionRollbackError("rolled back")):
+        assert not server.is_transient_command_error(exc), exc
+
+
+async def test_a_client_side_data_error_settles_failed_at_once_and_is_never_retried():
+    command_id = uuid.uuid4()
+    row = _row("RESUME", {"instance_id": NORMAL}, command_id=command_id, attempt_count=1)
+
+    async def execute(sql, *args):
+        if "UPDATE paper_strategy_instances" in sql:
+            raise asyncpg.exceptions.DataError("invalid input for query argument $1: 'x' (expected a number)")
+
+    conn = await _drive(spot_engine(), _conn(_scripted([row]), execute=execute,
+                                             fetchval=_settled))
+
+    statements = _statements(conn)
+    assert not any("SET attempt_count" in a[0] for a in statements)  # no retry
+    failed = [a for a in statements if FAILED_SQL in a[0]]
+    assert len(failed) == 1 and failed[0][1] == command_id
+    assert failed[0][2].startswith("COMMAND_FAILED: DataError: invalid input for query argument")
+
+
+async def test_a_command_whose_settlement_failed_is_settled_without_running_it_again(monkeypatch):
+    monkeypatch.setattr(server, "SETTLE_BACKOFF_S", 0.0)  # the schedule itself is tested above
+    command_id = uuid.uuid4()
+    claims, bodies, settles, done = [], [], [], []
+
+    async def fetchrow(query, *args):
+        if done:
+            raise asyncio.CancelledError()
+        claims.append(command_id)
+        return _row("RESUME", {"instance_id": NORMAL}, command_id=command_id, attempt_count=len(claims))
+
+    async def execute(sql, *args):
+        if "UPDATE paper_strategy_instances" in sql:
+            bodies.append(sql)
+            raise RuntimeError("duplicate key value violates unique constraint uq_active_strategy_per_instrument")
+
+    async def fetchval(sql, *args):
+        settles.append((sql, args))
+        if len(settles) <= 2:  # the first two settlements fail, as on a row held by a half-open backend
+            raise asyncpg.exceptions.LockNotAvailableError("canceling statement due to lock timeout")
+        done.append(True)
+        return args[0]
+
+    await _drive(spot_engine(), _conn(fetchrow, execute=execute, fetchval=fetchval))
+
+    assert len(bodies) == 1  # the command body ran exactly once, though it was claimed three times
+    assert len(claims) == 3 and len(settles) == 3
+    final_sql, final_args = settles[2]
+    assert FAILED_SQL in final_sql and final_args[0] == command_id
+    assert final_args[1] == "COMMAND_FAILED: RuntimeError: duplicate key value violates unique constraint " \
+                            "uq_active_strategy_per_instrument"
+
+
+async def test_the_fallback_closes_only_a_command_that_is_still_pending_and_respects_the_socket_guard():
+    pool = await asyncpg.create_pool(DB_URL)
+    not_held, held, settled_elsewhere = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    try:
+        await _insert_queued(pool, not_held, "SUBMIT_ORDER", socket_write_started=True)
+        await _insert_queued(pool, held, "SUBMIT_ORDER", socket_write_started=True)
+        await _insert_queued(pool, settled_elsewhere, "SUBMIT_ORDER", status="COMPLETED", outcome="SUCCESS")
+        # held=False: a FAILED close, which must not touch a row whose socket write started
+        assert await server.fail_command_fallback(pool, not_held, held=False) == "NOOP"
+        assert (await _state(pool, not_held))["status"] == "PENDING"
+        assert await server.fail_command_fallback(pool, held, held=True) == "UNKNOWN"  # held: as before
+        assert (await _state(pool, held))["command_outcome"] == UNKNOWN
+        # a row no longer PENDING is not changed, and the fallback says so instead of claiming it closed it
+        assert await server.fail_command_fallback(pool, settled_elsewhere, held=False) == "NOOP"
+        assert (await _state(pool, settled_elsewhere))["command_outcome"] == "SUCCESS"
+    finally:
+        await _sweep(pool, [not_held, held, settled_elsewhere])
+        await pool.close()
+
+
+async def test_a_refused_command_stays_refused_when_its_alert_row_cannot_be_written():
+    command_id = uuid.uuid4()
+    refused = _row("RESUME", {"instance_id": AI}, target=AI, command_id=command_id)
+
+    async def execute(sql, *args):
+        if "'COMMAND_REFUSED'" in sql:  # the INFO row fails; it sits in a savepoint of its own
+            raise RuntimeError("notifications_outbox unavailable")
+
+    conn = await _drive(spot_engine(), _conn(_scripted([refused]), execute=execute))
+
+    statements = _statements(conn)
+    assert [a[2] for a in statements if FAILED_SQL in a[0]] == [REFUSAL]  # the refusal itself is written
+    assert conn.fetchval.call_count == 0  # no error reached the poller, so the claim was not rolled back and settled
+
+
+async def test_an_unknown_close_position_stays_alerted_past_the_day_window_and_other_old_rows_do_not():
+    pool = await asyncpg.create_pool(DB_URL)
+    ids = {name: uuid.uuid4() for name in ("held_close", "held_submit", "old_close")}
+    try:
+        await _insert_queued(pool, ids["held_close"], "CLOSE_POSITION", status="RUNNING", age_s=25 * 3600,
+                             outcome=UNKNOWN, instrument="BTCUSDT")  # still blocks stops: exempt from the window
+        await _insert_queued(pool, ids["held_submit"], "SUBMIT_ORDER", status="RUNNING", age_s=25 * 3600,
+                             outcome=UNKNOWN)  # held and never retried, but blocks nothing: history
+        await _insert_queued(pool, ids["old_close"], "CLOSE_POSITION", status="RUNNING", age_s=25 * 3600)
+        redis, alerted = _PublishRecorder(), set()
+        first = await ops_monitor.check_stuck_commands(pool, redis, alerted)
+        assert str(ids["held_close"]) in first
+        assert not {str(ids["held_submit"]), str(ids["old_close"])} & set(first)
+        again = await ops_monitor.check_stuck_commands(pool, redis, alerted)  # one alert per command, not per pass
+        assert str(ids["held_close"]) not in again
+        published = [m for m in redis.published if m["command_id"] == str(ids["held_close"])]
+        assert len(published) == 1 and published[0]["outcome"] == UNKNOWN
+    finally:
+        await _sweep(pool, list(ids.values()))
         await pool.close()

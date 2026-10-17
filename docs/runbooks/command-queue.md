@@ -15,8 +15,9 @@ Scope: the PAPER rows of `execution_commands`, processed one at a time by the or
 | <TYPE> ... is UNKNOWN_PENDING_RECONCILIATION   | STUCK_COMMAND    | `stuck-command:<id>`      | The held outcome. **Section 3.** |
 | Paper command refused                          | COMMAND_REFUSED (INFO) | `command-refused:<id>` | A strategy command (pause, resume, stop, deploy) was sent to an AI mandate. Expected: mandates are managed in Mission Control. No action. |
 
-Stuck-command alerts only consider PAPER commands queued in the last 24 hours. An older row is not alerted again:
-find it with the query in section 1.
+Stuck-command alerts only consider PAPER commands queued in the last 24 hours, except an UNKNOWN CLOSE_POSITION, which
+is alerted at any age until it is resolved (it still blocks stops). Any other older row is not alerted again: find it
+with the query in section 1.
 
 ## 1. Find the commands
 
@@ -25,7 +26,7 @@ SELECT command_id, command_type, target_instance_id, status, command_outcome, at
        socket_write_started, error_message, requester_id, payload, created_at, processed_at
 FROM execution_commands
 WHERE environment = 'PAPER'
-  AND (command_outcome = 'UNKNOWN_PENDING_RECONCILIATION' OR status IN ('PENDING', 'RUNNING'))
+  AND (command_outcome = 'UNKNOWN_PENDING_RECONCILIATION' OR status IN ('PENDING', 'CLAIMED', 'RUNNING', 'SENDING'))
 ORDER BY created_at;
 ```
 
@@ -80,7 +81,7 @@ a reservation. Ask the operator before you resolve it.
 BEGIN;
 UPDATE execution_commands
 SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now(),
-    error_message = error_message || ' | RESOLVED: <reason>'
+    error_message = coalesce(error_message, '') || ' | RESOLVED: <reason>'
 WHERE command_id = '<command_id>' AND command_outcome = 'UNKNOWN_PENDING_RECONCILIATION';
 -- expect UPDATE 1, then:
 COMMIT;
@@ -94,9 +95,12 @@ stuck-command alert for the row stops being raised once the row leaves the queue
 ## 4. Why the queue cannot stay blocked
 
 - A transient error (lost connection, deadlock, serialization failure) is retried up to 5 attempts, with a pause that
-  grows with each attempt, and then settled FAILED.
+  grows with each attempt, and then settled FAILED. It is retried only while no effect may exist. After an effect
+  (an order booked, a close applied) it is held as UNKNOWN, like any other error after an effect, unless the effect
+  was undone again.
 - Any other error settles the command at once: FAILED, or UNKNOWN when an effect may already exist. The poller then
   moves on to the next command.
-- If the settlement itself fails, the poller waits (0.5 s, doubling, capped at 5 s) and tries again. After 3 failed
-  settlements the command is closed by a bare status change: FAILED, or UNKNOWN when an effect may exist. The
-  settlement runs with a 2 s lock timeout, so a row held by a half-open connection cannot stall the poller.
+- If the settlement itself fails, the poller waits (0.5 s, doubling, capped at 5 s) and tries again. The command is not
+  run again meanwhile: its stored error is settled. After 3 failed settlements the command is closed by a bare status
+  change: FAILED, or UNKNOWN when an effect may exist. The settlement runs with a 2 s lock timeout, so a row held by a
+  half-open connection cannot stall the poller.

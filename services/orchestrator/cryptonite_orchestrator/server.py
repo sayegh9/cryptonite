@@ -673,18 +673,22 @@ TRANSIENT_ERROR_DEPTH = 5  # how far down the __cause__ / __context__ chain a tr
 # What counts as transient: the connection or the server went away or is saturated, a socket or asyncio timeout, or
 # the database rolled the transaction back for a deadlock or a serialization failure. Anything else (a bad payload, a
 # constraint violation, a bug) is not retried. The chain matters: when the server ends a connection inside a
-# transaction, asyncpg raises InterfaceError ("underlying connection is closed") from the transaction's exit, and the
-# original error is only in __context__.
+# transaction, asyncpg raises InterfaceError ("the underlying connection is closed") from the transaction's exit, and
+# the original error is only in __context__.
 TRANSIENT_COMMAND_ERRORS = (
     ConnectionError,  # socket reset, refused, broken pipe
     TimeoutError,  # asyncio timeouts (asyncio.TimeoutError is this class on Python 3.11+)
-    asyncpg.exceptions.PostgresConnectionError,  # SQLSTATE class 08: connection lost or never made
+    asyncpg.exceptions.PostgresConnectionError,  # SQLSTATE class 08: connection lost or never made, 08003 included
     asyncpg.exceptions.TooManyConnectionsError,  # 53300: the server or pool is saturated
     asyncpg.exceptions.CannotConnectNowError,  # 57P03: the server is starting up or shutting down
     asyncpg.exceptions.AdminShutdownError,  # 57P01: the server ended the session
-    asyncpg.exceptions.InterfaceError,  # asyncpg's client side: "underlying connection is closed"
-    asyncpg.exceptions.TransactionRollbackError,  # SQLSTATE class 40: deadlock (40P01), serialization failure (40001)
+    asyncpg.exceptions.DeadlockDetectedError,  # 40P01: a deadlock, the database picks this transaction to roll back
+    asyncpg.exceptions.SerializationError,  # 40001: a serialization failure. Not 40002 (integrity) or 40003 (unknown)
 )
+# asyncpg's client side also raises InterfaceError when the connection is closed. The other InterfaceErrors are misuse
+# or configuration (another operation in progress, an unsupported feature) and a DataError is a bad argument: none of
+# those is transient, so only InterfaceError with this text counts.
+CLOSED_CONNECTION_TEXT = "connection is closed"
 SETTLE_ATTEMPTS_BEFORE_FALLBACK = 3  # failed settlements of one command before the bare status change
 SETTLE_BACKOFF_S = 0.5  # the pause after the first failed settlement; it doubles with each further failure
 SETTLE_BACKOFF_CAP_S = 5.0
@@ -713,13 +717,14 @@ _UNKNOWN_SQL = """
 _ATTEMPT_SQL = "UPDATE execution_commands SET attempt_count = $2 WHERE command_id = $1 AND status = 'PENDING'"
 # The last resort after settle_failed_command has failed repeatedly. A held outcome (effects may exist) is UNKNOWN,
 # never FAILED; otherwise FAILED. Bare on purpose: no alert row, the stuck-command monitor shows a held one.
+# The socket guard applies to FAILED only, as in _FAILED_SQL: a held outcome may have written its socket.
 _FALLBACK_SQL = """
     UPDATE execution_commands
     SET status = CASE WHEN $3 THEN 'RUNNING' ELSE 'FAILED' END,
         command_outcome = CASE WHEN $3 THEN 'UNKNOWN_PENDING_RECONCILIATION' ELSE 'REJECTED' END,
         error_message = $2,
         processed_at = CASE WHEN $3 THEN processed_at ELSE now() END
-    WHERE command_id = $1 AND status = 'PENDING'
+    WHERE command_id = $1 AND status = 'PENDING' AND ($3 OR socket_write_started = false)
 """
 _OUTCOME_ALERT_SQL = """
     INSERT INTO notifications_outbox (tier, kind, title, body, payload, dedupe_key)
@@ -733,6 +738,12 @@ _REFUSAL_ALERT_SQL = """
 """
 
 
+def _is_transient_one(error: BaseException) -> bool:
+    if isinstance(error, TRANSIENT_COMMAND_ERRORS):
+        return True
+    return isinstance(error, asyncpg.exceptions.InterfaceError) and CLOSED_CONNECTION_TEXT in str(error).lower()
+
+
 def is_transient_command_error(exc: BaseException) -> bool:
     """True when ``exc``, or an exception it was raised from or during (at most TRANSIENT_ERROR_DEPTH links), is
     transient."""
@@ -740,7 +751,7 @@ def is_transient_command_error(exc: BaseException) -> bool:
     for _ in range(TRANSIENT_ERROR_DEPTH):
         if current is None:
             return False
-        if isinstance(current, TRANSIENT_COMMAND_ERRORS):
+        if _is_transient_one(current):
             return True
         following = current.__cause__ if current.__cause__ is not None else current.__context__
         if following is current:
@@ -797,20 +808,22 @@ def _outcome_text(decision: str, command_type: str, target: str | None, instrume
 
 
 async def settle_failed_command(pool, command_id, command_type, target, exc: BaseException, *, attempt: int,
-                                effects_applied: bool, payload: dict | None = None) -> str:
+                                effects_applied: bool, payload: dict | None = None, compensated: bool = False) -> str:
     """Settle a command whose attempt raised, and return the decision: RETRY, FAILED, UNKNOWN or NOOP.
 
     ``attempt`` is the attempt just made (the claim's count). A transient error keeps the command PENDING for another
     attempt until MAX_COMMAND_ATTEMPTS, and its count is kept in attempt_count (the claim's own increment was rolled
-    back). Any other error settles at once: FAILED, unless the attempt may already have applied an effect
-    (``effects_applied``: an order dispatched, a fill booked, a mailbox command sent, a reservation released) or its
-    socket write started. Those are UNKNOWN_PENDING_RECONCILIATION instead: held, never retried blindly.
+    back). A transient error is retried only while no effect may exist: after an attempt that applied an effect
+    (``effects_applied``: an order dispatched, a fill booked, a mailbox command sent, a reservation released) it is
+    held as UNKNOWN, unless that effect was undone again (``compensated``). Any other error settles at once: FAILED,
+    unless the attempt may already have applied an effect or its socket write started. Those are
+    UNKNOWN_PENDING_RECONCILIATION instead: held, never retried blindly.
     NOOP: the command is no longer PENDING (it committed or settled on its own), so nothing is changed.
     The settlement runs in one short transaction with a 2 s lock timeout, so a row held by a half-open backend cannot
     stall the poller; a failure raises to the caller, which counts it (settle_after_error).
     """
     code = command_failure_code(exc)
-    if is_transient_command_error(exc) and attempt < MAX_COMMAND_ATTEMPTS:
+    if is_transient_command_error(exc) and attempt < MAX_COMMAND_ATTEMPTS and (compensated or not effects_applied):
         logger.warning("Command %s: transient %s, attempt %d of %d; retrying", command_id, code, attempt,
                        MAX_COMMAND_ATTEMPTS)
         async with pool.acquire() as conn:
@@ -840,38 +853,63 @@ async def settle_failed_command(pool, command_id, command_type, target, exc: Bas
     return decision
 
 
+def _rows_changed(command_tag) -> int:
+    """The row count of an asyncpg command tag such as "UPDATE 1"; 0 when there is none to read."""
+    parts = str(command_tag).split()
+    return int(parts[-1]) if len(parts) == 2 and parts[-1].isdigit() else 0
+
+
 async def fail_command_fallback(pool, command_id, *, held: bool) -> str:
     """Close a command after settle_failed_command has failed SETTLE_ATTEMPTS_BEFORE_FALLBACK times: one bare status
-    change in a short transaction. ``held``: the outcome may exist, so UNKNOWN_PENDING_RECONCILIATION, never FAILED."""
+    change in a short transaction. ``held``: the outcome may exist, so UNKNOWN_PENDING_RECONCILIATION, never FAILED.
+    Returns UNKNOWN or FAILED, or NOOP when no row changed (it was no longer PENDING): then nothing was closed."""
     async with pool.acquire() as conn:
         async with await _transaction(conn):
             await conn.execute("SET LOCAL lock_timeout = '2s'")
-            await conn.execute(_FALLBACK_SQL, command_id, FALLBACK_ERROR, held)
+            command_tag = await conn.execute(_FALLBACK_SQL, command_id, FALLBACK_ERROR, held)
+    if _rows_changed(command_tag) == 0:
+        return "NOOP"
     return "UNKNOWN" if held else "FAILED"
 
 
-async def settle_after_error(pool, row, exc: BaseException, *, effects_applied: bool,
-                             settle_failures: dict[str, int]) -> float:
+@dataclasses.dataclass
+class _Unsettled:
+    """A command whose last attempt raised and whose settlement failed: the poller's in-process state, by command id."""
+    failures: int  # failed settlements so far
+    exc: BaseException  # the error the attempt raised: the settlement decides on it, the command is not run again
+    effects_applied: bool
+    compensated: bool
+
+
+class _SettleOnly(Exception):
+    """Raised inside a claim to roll it back: the command's earlier attempt is settled, and the command is not run."""
+
+
+async def settle_after_error(pool, row, exc: BaseException, *, effects_applied: bool, compensated: bool = False,
+                             unsettled: dict[str, _Unsettled]) -> float:
     """Settle the command an attempt raised on; return the seconds the poller waits before its next pass.
 
-    A settlement that itself fails leaves the command PENDING, and the next pass would claim it again. So each failed
-    settlement is counted per command id (``settle_failures``, in-process), the pass waits settle_backoff_s(n), and
-    after SETTLE_ATTEMPTS_BEFORE_FALLBACK failures the command is closed by fail_command_fallback.
+    A settlement that itself fails leaves the command PENDING, and the next pass would claim it again. So the error and
+    each failed settlement are kept per command id (``unsettled``, in-process): the next pass claims the command, but
+    it settles the kept error instead of running the command again. The pass waits settle_backoff_s(n) after the n-th
+    failed settlement, and after SETTLE_ATTEMPTS_BEFORE_FALLBACK failures the command is closed by the fallback.
     """
     key = str(row["command_id"])
     attempt = int(row.get("attempt_count") or 0)
     try:
         decision = await settle_failed_command(
             pool, row["command_id"], row["command_type"], row["target_instance_id"], exc,
-            attempt=attempt, effects_applied=effects_applied, payload=_payload_dict(row["payload"]),
+            attempt=attempt, effects_applied=effects_applied, compensated=compensated,
+            payload=_payload_dict(row["payload"]),
         )
     except Exception as settle_error:  # the database is unreachable or the row is locked: counted below
         logger.error("Could not settle command %s: %s", key, settle_error)
         decision = None
     if decision is not None:
-        settle_failures.pop(key, None)
+        unsettled.pop(key, None)
         return TRANSIENT_RETRY_BACKOFF_S * attempt if decision == "RETRY" else 0.0
-    failures = settle_failures[key] = settle_failures.get(key, 0) + 1
+    failures = (unsettled[key].failures if key in unsettled else 0) + 1
+    unsettled[key] = _Unsettled(failures, exc, effects_applied, compensated)
     if failures >= SETTLE_ATTEMPTS_BEFORE_FALLBACK:
         held = effects_applied or bool(row.get("socket_write_started"))
         try:
@@ -879,8 +917,12 @@ async def settle_after_error(pool, row, exc: BaseException, *, effects_applied: 
         except Exception as fallback_error:
             logger.error("Fallback settlement of command %s failed: %s", key, fallback_error)
         else:
-            settle_failures.pop(key, None)
-            logger.error("Command %s closed as %s by the fallback after %d failed settlements", key, outcome, failures)
+            unsettled.pop(key, None)
+            if outcome == "NOOP":
+                logger.error("Command %s was no longer PENDING at the fallback: nothing was changed", key)
+            else:
+                logger.error("Command %s closed as %s by the fallback after %d failed settlements", key, outcome,
+                             failures)
             return 0.0
     return settle_backoff_s(failures)
 
@@ -889,10 +931,11 @@ async def command_poller(pool, engine, quote_cache=None):
     """Poll execution_commands for PAPER environment commands."""
     if quote_cache is None:
         quote_cache = SimpleQuoteCache()
-    settle_failures: dict[str, int] = {}  # failed settlements per command id (settle_after_error)
+    unsettled: dict[str, _Unsettled] = {}  # a command whose last attempt raised and whose settlement failed
     while True:
         row = None  # the command this pass claimed; its claim is rolled back if the attempt raises
         effects_applied = False  # set before an attempt's first in-memory or outbox effect (settle_failed_command)
+        compensated = False  # set once the attempt's reservation is released again: its effect is undone
         try:
             async with pool.acquire() as conn:
                 tx = conn.transaction() if hasattr(conn, "transaction") else None
@@ -921,6 +964,10 @@ async def command_poller(pool, engine, quote_cache=None):
                         RETURNING execution_commands.*
                     """)
                     if row:
+                        if str(row["command_id"]) in unsettled:
+                            # Its last attempt raised and could not be settled: the claim is rolled back and the
+                            # stored error is settled, so the command is never run a second time
+                            raise _SettleOnly()
                         cmd_type = row["command_type"]
                         target = row["target_instance_id"]
                         payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
@@ -937,14 +984,19 @@ async def command_poller(pool, engine, quote_cache=None):
                                 "error_message = $2, processed_at = now() WHERE command_id = $1",
                                 row["command_id"], MANDATE_INSTANCE_REFUSAL,
                             )
-                            # an INFO outbox row, like COMMAND_FAILED, so the refusal is visible to the operator
-                            await conn.execute(
-                                _REFUSAL_ALERT_SQL, "Paper command refused",
-                                f"{cmd_type} for {target} was refused: {MANDATE_INSTANCE_REFUSAL}.",
-                                json.dumps({"command_id": str(row["command_id"]), "command_type": cmd_type,
-                                            "target": target, "error": MANDATE_INSTANCE_REFUSAL}),
-                                f"command-refused:{row['command_id']}",
-                            )
+                            # an INFO outbox row, like COMMAND_FAILED, so the refusal is visible to the operator. In a
+                            # savepoint: a failed alert cannot undo the refusal above (nor roll the claim back)
+                            try:
+                                async with await _transaction(conn):
+                                    await conn.execute(
+                                        _REFUSAL_ALERT_SQL, "Paper command refused",
+                                        f"{cmd_type} for {target} was refused: {MANDATE_INSTANCE_REFUSAL}.",
+                                        json.dumps({"command_id": str(row["command_id"]), "command_type": cmd_type,
+                                                    "target": target, "error": MANDATE_INSTANCE_REFUSAL}),
+                                        f"command-refused:{row['command_id']}",
+                                    )
+                            except Exception as e:
+                                logger.error("Could not publish the refusal of command %s: %s", row["command_id"], e)
                             logger.warning("Refused %s for AI mandate %s (command %s)",
                                            cmd_type, target, row["command_id"])
                             continue
@@ -1337,17 +1389,25 @@ async def command_poller(pool, engine, quote_cache=None):
                                         engine.dispatcher.release_reservation(client_oid)
                                         # Nothing was placed after all: let the retry place it again
                                         forget_dispatched(engine, client_oid)
+                                        compensated = True  # the reservation is undone: a transient error may retry
                                     raise
 
                         if cmd_type in ("STOP", "PAUSE", "CLOSE_POSITION", "TRIP_KILL_SWITCH"):
                             await reconcile_working_orders(conn, engine)
 
+        except _SettleOnly:
+            stored = unsettled[str(row["command_id"])]
+            logger.warning("Command %s: settling the error of its earlier attempt; it is not run again",
+                           row["command_id"])
+            pause = await settle_after_error(pool, row, stored.exc, effects_applied=stored.effects_applied,
+                                             compensated=stored.compensated, unsettled=unsettled)
+            await asyncio.sleep(pause)
         except Exception as e:
             logger.error("Error in command poller: %s", e)
             pause = 0.0
             if row is not None:  # its claim rolled back, so it is PENDING: settle it, never leave it at the head
                 pause = await settle_after_error(pool, row, e, effects_applied=effects_applied,
-                                                 settle_failures=settle_failures)
+                                                 compensated=compensated, unsettled=unsettled)
             await asyncio.sleep(pause)
         await asyncio.sleep(0.1)
 

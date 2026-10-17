@@ -47,6 +47,7 @@ SENTIMENT_LAST_OK = "sentiment:last_ok"
 STUCK_COMMAND_S = 120  # any command still PENDING, CLAIMED or RUNNING this long since it was queued
 STOP_COMMAND_S = 30  # a CLOSE_POSITION (a stop) waiting this long: the orchestrator queue may be blocked
 STUCK_COMMAND_WINDOW_H = 24  # only PAPER commands queued this recently: an older row is history, not a live block
+# ...except an UNKNOWN CLOSE_POSITION, which blocks stops for its instrument until someone resolves it, however old
 UNKNOWN_OUTCOME = "UNKNOWN_PENDING_RECONCILIATION"
 RUNBOOK = "docs/runbooks/command-queue.md"
 
@@ -194,7 +195,8 @@ STUCK_COMMANDS_SQL = """
     FROM execution_commands
     WHERE environment = 'PAPER'
       AND status IN ('PENDING', 'CLAIMED', 'RUNNING')
-      AND created_at > now() - make_interval(hours => $3::int)
+      AND (created_at > now() - make_interval(hours => $3::int)
+           OR (command_type = 'CLOSE_POSITION' AND command_outcome = 'UNKNOWN_PENDING_RECONCILIATION'))
       AND (created_at < now() - make_interval(secs => $1::float8)
            OR (command_type = 'CLOSE_POSITION' AND created_at < now() - make_interval(secs => $2::float8)))
     ORDER BY created_at
@@ -220,8 +222,9 @@ def stuck_command_message(row) -> str:
 
 async def check_stuck_commands(pool, redis, alerted: set[str]) -> list[str]:
     """One CRITICAL alert for each PAPER command that has waited too long (queued in the last STUCK_COMMAND_WINDOW_H
-    hours; an older row is history, not a live block): the orchestrator queue may be blocked, or, for an UNKNOWN
-    outcome, the command is held until someone resolves it (docs/runbooks/command-queue.md).
+    hours, or an UNKNOWN CLOSE_POSITION at any age; an older row is history, not a live block): the orchestrator queue
+    may be blocked, or, for an UNKNOWN outcome, the command is held until someone resolves it
+    (docs/runbooks/command-queue.md).
 
     ``alerted`` holds the command ids already alerted (one alert per command; the outbox dedupe key backs it up) and
     forgets a command once it has left the queue. Returns the command ids alerted by this pass."""
