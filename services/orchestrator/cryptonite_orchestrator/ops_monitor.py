@@ -11,6 +11,8 @@
   the same timer; a heartbeat that goes down raises one alert through the existing alert path
   (``channel:system_alerts`` + ``notifications_outbox``, where it queues while the opt-in notifier is
   stopped), and a recovery raises an INFO one. A heartbeat that was never seen is "unknown", not down.
+- Stuck commands: a command still PENDING, CLAIMED or RUNNING after ``STUCK_COMMAND_S`` (a CLOSE_POSITION after
+  ``STOP_COMMAND_S``) raises one CRITICAL alert per command id, through the same alert path.
 """
 
 import asyncio
@@ -41,6 +43,9 @@ LEARNER_HEARTBEAT = "learner:heartbeat"
 EXIT_MONITOR_HEARTBEAT = "exit_monitor:heartbeat"
 LOCAL_TIER_HEALTH = "local_tier:health"
 SENTIMENT_LAST_OK = "sentiment:last_ok"
+
+STUCK_COMMAND_S = 120  # any command still PENDING, CLAIMED or RUNNING this long since it was queued
+STOP_COMMAND_S = 30  # a CLOSE_POSITION (a stop) waiting this long: the orchestrator queue may be blocked
 
 
 def _plain(value: Decimal) -> str:
@@ -179,6 +184,48 @@ async def check_heartbeats(pool, redis, watch: HeartbeatWatch, now_s: float | No
     return events
 
 
+STUCK_COMMANDS_SQL = """
+    SELECT command_id, command_type, target_instance_id, status,
+           EXTRACT(EPOCH FROM (now() - created_at)) AS age_s
+    FROM execution_commands
+    WHERE status IN ('PENDING', 'CLAIMED', 'RUNNING')
+      AND (created_at < now() - make_interval(secs => $1::float8)
+           OR (command_type = 'CLOSE_POSITION' AND created_at < now() - make_interval(secs => $2::float8)))
+    ORDER BY created_at
+"""
+
+
+async def check_stuck_commands(pool, redis, alerted: set[str]) -> list[str]:
+    """One CRITICAL alert for each command that has waited too long: the orchestrator queue may be blocked.
+
+    ``alerted`` holds the command ids already alerted (one alert per command; the outbox dedupe key backs it up) and
+    forgets a command once it has left the queue. Returns the command ids alerted by this pass."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(STUCK_COMMANDS_SQL, float(STUCK_COMMAND_S), float(STOP_COMMAND_S))
+        waiting = {str(r["command_id"]) for r in rows}
+        new = []
+        for r in rows:
+            cid = str(r["command_id"])
+            if cid in alerted:
+                continue
+            alerted.add(cid)
+            new.append(cid)
+            kind, target, age = r["command_type"], r["target_instance_id"] or "-", int(r["age_s"])
+            if kind == "CLOSE_POSITION":
+                message = (f"A stop is waiting: CLOSE_POSITION for {target} pending {age}s "
+                           "\u2014 the orchestrator queue may be blocked")
+            else:
+                message = (f"{kind} for {target} is {r['status']} after {age}s "
+                           "\u2014 the orchestrator queue may be blocked")
+            detail = {"command_id": cid, "command_type": kind, "target": target, "status": r["status"], "age_s": age}
+            await alert(conn, redis, "STUCK_COMMAND", message, detail, tier="CRITICAL",
+                        dedupe_key=f"stuck-command:{cid}")
+        alerted &= waiting
+    if new:
+        logger.error("%d command(s) waiting too long: %s", len(new), ", ".join(new))
+    return new
+
+
 # One statement: the approval is cancelled with the reason, and the operator is told (Telegram), once per approval
 # (the dedupe key), whichever way it was approved: chat card, Mission Control or Telegram.
 RECONCILE_APPROVALS_SQL = """
@@ -217,6 +264,7 @@ async def ops_monitor(engine, pool, redis, interval_s: float = OPS_EVERY_S) -> N
     effective limits and heartbeat alerts."""
     watch = HeartbeatWatch()
     alert_values = (HEARTBEAT_GRACE_S, SENTIMENT_STALE_S)
+    stuck_alerted: set[str] = set()
     while True:
         alert_values = await load_alert_settings(pool, alert_values)  # ADR 0007: the stored grace and staleness
         watch.grace_s = alert_values[0]
@@ -245,4 +293,10 @@ async def ops_monitor(engine, pool, redis, interval_s: float = OPS_EVERY_S) -> N
             raise
         except Exception as e:
             logger.error("Heartbeat check failed: %s", e)
+        try:
+            await check_stuck_commands(pool, redis, stuck_alerted)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Stuck command check failed: %s", e)
         await asyncio.sleep(interval_s)

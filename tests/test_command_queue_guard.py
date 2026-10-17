@@ -16,7 +16,7 @@ from connections import DB_URL
 from cryptonite_api.main import create_app
 from cryptonite_api.routes import paper
 from cryptonite_api.routes.auth import require_csrf, require_operator
-from cryptonite_orchestrator import server
+from cryptonite_orchestrator import ops_monitor, server
 from cryptonite_schemas.mandate import mandate_instance_id
 from fastapi.testclient import TestClient
 from test_orchestrator_paper_matching import SPOT, spot_engine
@@ -333,3 +333,55 @@ def test_the_api_close_position_on_an_ai_mandate_is_unchanged(api):
     res = client.post(f"/api/v1/paper/strategies/{AI}/close-position", json={"instrument_id": "BTCUSDT.BINANCE"})
     assert res.status_code == 200
     assert mock_pool.fetchrow.call_args.args[4] == AI  # target_instance_id ($4, after the query and two ids)
+
+
+# --- Stuck-command alerts -------------------------------------------------------------------------------------------
+
+
+class _PublishRecorder:
+    def __init__(self):
+        self.published = []
+
+    async def publish(self, channel, message):
+        self.published.append(json.loads(message))
+
+
+async def test_stuck_commands_alert_once_per_command_with_a_stop_at_thirty_seconds():
+    pool = await asyncpg.create_pool(DB_URL)
+    ids = {name: uuid.uuid4() for name in ("stop", "stuck", "fresh_submit", "fresh_stop", "done")}
+    ages = {"stop": (("CLOSE_POSITION", "PENDING"), 40), "stuck": (("SUBMIT_ORDER", "RUNNING"), 130),
+            "fresh_submit": (("SUBMIT_ORDER", "PENDING"), 60), "fresh_stop": (("CLOSE_POSITION", "PENDING"), 20),
+            "done": (("SUBMIT_ORDER", "COMPLETED"), 900)}
+    try:
+        for name, ((kind, status), age) in ages.items():
+            await pool.execute(
+                "INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, "
+                "status, created_at) VALUES ($1, $2, $3, 'INST-QUEUE-GUARD-ALERT', $4, "
+                "now() - make_interval(secs => $5::float8))",
+                ids[name], f"queue-guard-alert-{ids[name]}", kind, status, float(age))
+        redis, alerted = _PublishRecorder(), set()
+
+        first = await ops_monitor.check_stuck_commands(pool, redis, alerted)
+        second = await ops_monitor.check_stuck_commands(pool, redis, alerted)
+
+        ours = {str(ids[n]) for n in ("stop", "stuck")}
+        assert ours <= set(first) and not ours & set(second)
+        assert not {str(ids[n]) for n in ("fresh_submit", "fresh_stop", "done")} & set(first)
+        for name in ("stop", "stuck"):
+            key = f"stuck-command:{ids[name]}"
+            assert await pool.fetchval("SELECT count(*) FROM notifications_outbox WHERE dedupe_key = $1", key) == 1
+        mine = [m for m in redis.published if m.get("command_id") in ours]
+        assert len(mine) == 2
+        stop = next(m for m in mine if m["command_type"] == "CLOSE_POSITION")
+        assert stop["message"].startswith("A stop is waiting: CLOSE_POSITION")
+        assert "the orchestrator queue may be blocked" in stop["message"]
+        assert stop["severity"] == "CRITICAL" and stop["age_s"] >= 30
+
+        await pool.execute("UPDATE execution_commands SET status = 'COMPLETED' WHERE command_id = $1", ids["stop"])
+        await ops_monitor.check_stuck_commands(pool, redis, alerted)
+        assert str(ids["stop"]) not in alerted  # forgotten once it has settled
+    finally:
+        await pool.execute("DELETE FROM notifications_outbox WHERE dedupe_key = ANY($1::text[])",
+                           [f"stuck-command:{i}" for i in ids.values()])
+        await pool.execute("DELETE FROM execution_commands WHERE command_id = ANY($1::uuid[])", list(ids.values()))
+        await pool.close()
