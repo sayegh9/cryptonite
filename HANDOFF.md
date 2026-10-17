@@ -1,13 +1,25 @@
 # HANDOFF
 
-Current state of Cryptonite and what is left to do. Main `3438e91` = Brain upgrade Waves 1–3 (#95) and the security hotfix #93, deployed 2026-10-16.
+Current state of Cryptonite and what is left to do. Main `05e7af2` = Brain upgrade Waves 1–3 (#92, #94, #95),
+the DuckDB security hotfix (#93), and post-Wave-3 fixes (#96, #97), deployed 2026-10-17.
 Earlier handovers, status reports and review plans were removed from the tree on 2026-10-13; they are in git
 history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 
+## Releases summary (15–17 Oct 2026)
+
+| PR | What | Merged | Migration | Tests | Status |
+|---|---|---|---|---|---|
+| #92 | Wave 1: SOLUSDT card fixes, onboarded symbols persist, gated Brain debates, read-only AI-state views | 15 Oct | 046 | 2,122 · PW 159 | deployed |
+| #93 | Security: DuckDB file read/write holes (model SQL tool, unauthenticated `/api/v1/bars`) | 16 Oct | – | 2,257 | security deployed |
+| #94 | Wave 2: the Brain sees its system, market context, safe degraded mode, truthful order cards | 16 Oct | – | 2,378 · PW 165 | deployed |
+| #95 | Wave 3: card dry run, past lessons, debate follow-through, trusted system events, trade post-mortems | 16 Oct | 047 | 2,672 · PW 194 | deployed |
+| #96 | Derivatives & regime for any Binance symbol; actionable "no trade" answers; range setups | 17 Oct | – | 2,765 | deployed |
+| #97 | Order queue guard: failing commands cannot block queue; stuck-command alerts; conflict dry run; calm context | 17 Oct | – | 2,815 · PW 64 | deployed |
+
 ## What runs now
 
-- **Code:** everything is on `main`; no pull requests are open. CI on GitHub does not run (see Operator items),
-  so every merge since #78 was verified locally with the commands below.
+- **Code:** everything is on `main` (`05e7af2`); no pull requests are open. CI on GitHub does not run (see Operator items),
+  so every merge was verified locally with the test commands below (2,815 Python tests passing, 0 failed; Playwright 64).
 - **Database:** dev DB `cryptonite` at Alembic `047` (single head on main). `046` adds the read-only `agent_safe_*`
   views for the Brain; `047` adds the read-only view `agent_safe_trade_timeline` (the trade post-mortem) and two
   lookup indexes.
@@ -43,12 +55,19 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
   gate refuses is recorded as `GATE_REFUSED` ("Not run (safety gate)"). Only server-written `<system_event>` blocks are
   authoritative for the Brain. A proposal that cannot become a card says why. `/postmortem [SYMBOL]` asks for a trade
   review, which the Brain reads with `get_trade_timeline`.
+  Post-Wave-3 fixes (#96, #97): derivatives and regime work for any symbol with Binance USD-M (with public API
+  fallback when not in live feed); missing data is neutral; range setups allowed with reward >= 1.5x risk; every
+  "no trade" ends with trigger, stop and target; text after tool call starts a new paragraph; per-turn state no
+  longer dumps ticker list (fixes "Mubarak" bug); order card dry run checks whether another instance holds the instrument.
 - **Web:** the 2026-10-12 UI critique is implemented ([docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md), #81):
   unknown states never read as healthy or empty, one session store, one kill-switch poller per account,
-  PAPER and DEMO kill switches told apart.
+  PAPER and DEMO kill switches told apart. In #97, Pause/Resume/Stop strategy commands are hidden for AI-mandate
+  instances in the UI blotter (Flatten is kept).
 - **Mandates:** `Brain XRPUSDT.BINANCE` is ACTIVE at L1 (created 2026-10-13 from a Brain order card; $10,000
   budget, 10% position limit, one open XRP position). `BTC-ETH spot L1` and `WLDUSDT.BINANCE` are PAUSED
-  (reduce-only); the older XRP mandate is ARCHIVED. Every risk-adding order waits for the operator's approval.
+  (reduce-only); the older XRP mandate is ARCHIVED. On 2026-10-17 12:04 UTC two poisoned RESUME commands were marked
+  FAILED, unblocking the WLD trailing stop which sold 1,871 WLD at 0.5131. At 12:08 UTC the manual 0.03 BTC position
+  was closed by the operator. Every risk-adding order waits for the operator's approval.
 - **Order outcomes (#86):** an approved Brain card follows its order to WORKING (a resting limit), FILLED or NOT
   EXECUTED with the reason, and writes the change into the conversation once, so the Brain knows. Whatever path
   approved it, an approved order that is not executed also sends an INFO notification (Telegram).
@@ -124,7 +143,18 @@ API_ORIGIN=http://127.0.0.1:8999 API_BASE=http://127.0.0.1:8999/api/v1 pnpm buil
 pnpm exec playwright test -c playwright.local.config.ts
 ```
 
-Last full results (2026-10-13, #86): pytest 1957 passed / 0 failed plus 2 destructive; Playwright 148/148.
+Last full results (2026-10-17, #97): pytest 2815 passed / 0 failed; Playwright 64 passed (on throwaway DBs).
+
+## Operator actions taken (15–17 Oct 2026)
+
+| When (UTC) | Action |
+|---|---|
+| 15 Oct 18:37 | DB backup `cryptonite-2026-10-15T1837Z.dump`; migration 045 → 046; Wave 1 (#92) deployed 18:47 |
+| 16 Oct | Security hotfix (#93) and Wave 2 (#94) deployed; `agent_worker` recreated with `SYSTEM_REDIS_URL` |
+| 16 Oct 12:17 | DB backup `cryptonite-2026-10-16T1217Z.dump`; migration 046 → 047; Wave 3 (#95) deployed |
+| 17 Oct 12:04 | Two poisoned RESUME commands marked FAILED (operator-approved); WLD trailing stop then sold 1,871 WLD at 0.5131 |
+| 17 Oct 12:08 | Manual 0.03 BTC position closed by operator |
+| 17 Oct | #96 and #97 deployed and verified (no poller errors; derivatives and regime live for WLD, XRP, SOL, BTC) |
 
 ## Operator items (only the operator can do these)
 
@@ -142,12 +172,26 @@ Last full results (2026-10-13, #86): pytest 1957 passed / 0 failed plus 2 destru
    [docs/ai-first-program.md](docs/ai-first-program.md)).
 7. **Backups:** nightly DB dumps run; the scheduled restore drill needs three consecutive passes, and a restore from
    the off-machine copy has not been proven. Keep `~/.config/cryptonite-backup/passphrase` off this machine too.
-8. **Decisions:** whether to resume a mandate (BTC exposure was 9.6% of a 10% limit, plus a manual 0.03 BTC long);
+8. **Decisions:** whether to resume a mandate (BTC exposure was 9.6% of a 10% limit; manual 0.03 BTC long closed);
    the WLD mandate and the wider symbol onboarding list; deleting strategy `ai-gen-62f49193` in the UI.
 9. **Live Brain checks (paid model):** the System state block in a Brain reply, and a BUY card on a PAUSED mandate
    (it must be refused, with the link to Mission Control, before the TOTP code is spent).
 10. **Live Brain checks for Wave 3 (paid model):** a structured order card (thesis, evidence,
     invalidation), `/postmortem XRP`, and an old debate card from before Wave 3 (it must not read "Debate failed").
+
+## Open items and follow-ups
+
+### Follow-ups
+- A transient error after a compensated effect still retries (pre-existing, pinned by a test).
+- Declare `cryptonite-orchestrator` as a dependency of the API package.
+- The spot klines path ignores `Retry-After` after a 429.
+- Fill lines echo a stored card's instrument without the new format check (low risk).
+- Descoped: trace-id linking, historic stop blind time, semantic lesson recall.
+
+### Next
+- **Wave 4:** score the Brain's cards against outcomes, check its numbers come from tools, Brain shadow comparisons,
+  Mission Control panels, offline model review.
+- **Wave 5:** needs ADR 0008 approved first (operator feed, briefings, chat-set alerts, memory across conversations).
 
 ## Waiting on time
 
@@ -172,6 +216,7 @@ Last full results (2026-10-13, #86): pytest 1957 passed / 0 failed plus 2 destru
 ## Where things are
 
 - `repo/`: the main checkout, on `main`, clean. `deploy-main/`: deploy worktree.
+- Command queue runbook: [docs/runbooks/command-queue.md](docs/runbooks/command-queue.md) (handling stuck, failed, or unknown commands).
 - Browser QA: [docs/runbooks/browser-qa-agent.md](docs/runbooks/browser-qa-agent.md) (instructions for an agent that
   tests every page, places paper trades and runs a strategy instance; reports go to `~/Documents/projects/cryptonite/qa/`).
 - Backups: `~/backups/cryptonite/` (`db/`, `data/`, `redis/`, `secrets/`, drill logs, `backup.log`); runbook

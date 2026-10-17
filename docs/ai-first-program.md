@@ -1,8 +1,8 @@
 # AI-First Program: what is built (Phases 0–7)
 
 The plan is [ai-first-blueprint.md](ai-first-blueprint.md). This page describes what actually runs on `main`
-(Alembic head `047`, including Brain upgrade Waves 1–3 as of 2026-10-16). Day-to-day state, open items and evidence
-are in [HANDOFF.md](../HANDOFF.md).
+(`05e7af2`, Alembic head `047`, including Brain upgrade Waves 1–3 and post-Wave-3 fixes #96–#97 as of 2026-10-17).
+Day-to-day state, open items and evidence are in [HANDOFF.md](../HANDOFF.md).
 
 The three rules did not change: **AI and UI propose, deterministic rules and risk controls decide,
 NautilusTrader executes.** Every order still goes through `GuardedOrderDispatcher`, and the 1–25% equity
