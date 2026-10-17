@@ -46,6 +46,9 @@ SENTIMENT_LAST_OK = "sentiment:last_ok"
 
 STUCK_COMMAND_S = 120  # any command still PENDING, CLAIMED or RUNNING this long since it was queued
 STOP_COMMAND_S = 30  # a CLOSE_POSITION (a stop) waiting this long: the orchestrator queue may be blocked
+STUCK_COMMAND_WINDOW_H = 24  # only PAPER commands queued this recently: an older row is history, not a live block
+UNKNOWN_OUTCOME = "UNKNOWN_PENDING_RECONCILIATION"
+RUNBOOK = "docs/runbooks/command-queue.md"
 
 
 def _plain(value: Decimal) -> str:
@@ -185,23 +188,46 @@ async def check_heartbeats(pool, redis, watch: HeartbeatWatch, now_s: float | No
 
 
 STUCK_COMMANDS_SQL = """
-    SELECT command_id, command_type, target_instance_id, status,
+    SELECT command_id, command_type, target_instance_id, status, command_outcome,
+           payload->>'instrument_id' AS instrument_id,
            EXTRACT(EPOCH FROM (now() - created_at)) AS age_s
     FROM execution_commands
-    WHERE status IN ('PENDING', 'CLAIMED', 'RUNNING')
+    WHERE environment = 'PAPER'
+      AND status IN ('PENDING', 'CLAIMED', 'RUNNING')
+      AND created_at > now() - make_interval(hours => $3::int)
       AND (created_at < now() - make_interval(secs => $1::float8)
            OR (command_type = 'CLOSE_POSITION' AND created_at < now() - make_interval(secs => $2::float8)))
     ORDER BY created_at
 """
 
 
+def stuck_command_message(row) -> str:
+    """The alert text for one stuck command. An UNKNOWN_PENDING_RECONCILIATION row is not a queue problem: it is a
+    held outcome, and an unresolved CLOSE_POSITION blocks stops for its instrument until it is resolved."""
+    kind, target, age = row["command_type"], row["target_instance_id"] or "-", int(row["age_s"])
+    if row["command_outcome"] == UNKNOWN_OUTCOME:
+        if kind == "CLOSE_POSITION":
+            instrument = row["instrument_id"] or target
+            return (f"CLOSE_POSITION for {target} is UNKNOWN_PENDING_RECONCILIATION after {age}s: stops for "
+                    f"{instrument} are blocked until this command is resolved. Runbook: {RUNBOOK}")
+        return (f"{kind} for {target} is UNKNOWN_PENDING_RECONCILIATION after {age}s: it is held and never retried. "
+                f"Runbook: {RUNBOOK}")
+    if kind == "CLOSE_POSITION":
+        return (f"A stop is waiting: CLOSE_POSITION for {target} pending {age}s "
+                "— the orchestrator queue may be blocked")
+    return f"{kind} for {target} is {row['status']} after {age}s — the orchestrator queue may be blocked"
+
+
 async def check_stuck_commands(pool, redis, alerted: set[str]) -> list[str]:
-    """One CRITICAL alert for each command that has waited too long: the orchestrator queue may be blocked.
+    """One CRITICAL alert for each PAPER command that has waited too long (queued in the last STUCK_COMMAND_WINDOW_H
+    hours; an older row is history, not a live block): the orchestrator queue may be blocked, or, for an UNKNOWN
+    outcome, the command is held until someone resolves it (docs/runbooks/command-queue.md).
 
     ``alerted`` holds the command ids already alerted (one alert per command; the outbox dedupe key backs it up) and
     forgets a command once it has left the queue. Returns the command ids alerted by this pass."""
     async with pool.acquire() as conn:
-        rows = await conn.fetch(STUCK_COMMANDS_SQL, float(STUCK_COMMAND_S), float(STOP_COMMAND_S))
+        rows = await conn.fetch(STUCK_COMMANDS_SQL, float(STUCK_COMMAND_S), float(STOP_COMMAND_S),
+                                STUCK_COMMAND_WINDOW_H)
         waiting = {str(r["command_id"]) for r in rows}
         new = []
         for r in rows:
@@ -210,15 +236,10 @@ async def check_stuck_commands(pool, redis, alerted: set[str]) -> list[str]:
                 continue
             alerted.add(cid)
             new.append(cid)
-            kind, target, age = r["command_type"], r["target_instance_id"] or "-", int(r["age_s"])
-            if kind == "CLOSE_POSITION":
-                message = (f"A stop is waiting: CLOSE_POSITION for {target} pending {age}s "
-                           "\u2014 the orchestrator queue may be blocked")
-            else:
-                message = (f"{kind} for {target} is {r['status']} after {age}s "
-                           "\u2014 the orchestrator queue may be blocked")
-            detail = {"command_id": cid, "command_type": kind, "target": target, "status": r["status"], "age_s": age}
-            await alert(conn, redis, "STUCK_COMMAND", message, detail, tier="CRITICAL",
+            target, age = r["target_instance_id"] or "-", int(r["age_s"])
+            detail = {"command_id": cid, "command_type": r["command_type"], "target": target, "status": r["status"],
+                      "outcome": r["command_outcome"], "age_s": age}
+            await alert(conn, redis, "STUCK_COMMAND", stuck_command_message(r), detail, tier="CRITICAL",
                         dedupe_key=f"stuck-command:{cid}")
         alerted &= waiting
     if new:

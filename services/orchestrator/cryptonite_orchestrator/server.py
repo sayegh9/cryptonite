@@ -669,8 +669,12 @@ async def risk_monitor(engine, pool, redis, interval_s: float = 1.0, reconcile_e
 # so the command is PENDING again; the poller settles it in a new short transaction instead (settle_failed_command).
 MAX_COMMAND_ATTEMPTS = 5  # attempts for a transient error before the command is settled
 TRANSIENT_RETRY_BACKOFF_S = 0.5  # times the attempt number, so a flapping database is not hammered
-# What counts as transient: the connection or the server went away or is saturated, or a socket or asyncio timeout.
-# Anything else (a bad payload, a constraint violation, a bug) is not retried.
+TRANSIENT_ERROR_DEPTH = 5  # how far down the __cause__ / __context__ chain a transient error is looked for
+# What counts as transient: the connection or the server went away or is saturated, a socket or asyncio timeout, or
+# the database rolled the transaction back for a deadlock or a serialization failure. Anything else (a bad payload, a
+# constraint violation, a bug) is not retried. The chain matters: when the server ends a connection inside a
+# transaction, asyncpg raises InterfaceError ("underlying connection is closed") from the transaction's exit, and the
+# original error is only in __context__.
 TRANSIENT_COMMAND_ERRORS = (
     ConnectionError,  # socket reset, refused, broken pipe
     TimeoutError,  # asyncio timeouts (asyncio.TimeoutError is this class on Python 3.11+)
@@ -678,7 +682,15 @@ TRANSIENT_COMMAND_ERRORS = (
     asyncpg.exceptions.TooManyConnectionsError,  # 53300: the server or pool is saturated
     asyncpg.exceptions.CannotConnectNowError,  # 57P03: the server is starting up or shutting down
     asyncpg.exceptions.AdminShutdownError,  # 57P01: the server ended the session
+    asyncpg.exceptions.InterfaceError,  # asyncpg's client side: "underlying connection is closed"
+    asyncpg.exceptions.TransactionRollbackError,  # SQLSTATE class 40: deadlock (40P01), serialization failure (40001)
 )
+SETTLE_ATTEMPTS_BEFORE_FALLBACK = 3  # failed settlements of one command before the bare status change
+SETTLE_BACKOFF_S = 0.5  # the pause after the first failed settlement; it doubles with each further failure
+SETTLE_BACKOFF_CAP_S = 5.0
+MAX_ERROR_MESSAGE_CHARS = 500  # error_message and alert text are capped; NUL bytes go (PostgreSQL refuses them)
+FALLBACK_ERROR = "COMMAND_FAILED: settlement failed"
+RUNBOOK = "docs/runbooks/command-queue.md"
 MANDATE_INSTANCE_REFUSAL = (
     "MANDATE_INSTANCE: AI mandates are paused and resumed in Mission Control, not as strategy instances"
 )
@@ -699,19 +711,93 @@ _UNKNOWN_SQL = """
     RETURNING command_id
 """
 _ATTEMPT_SQL = "UPDATE execution_commands SET attempt_count = $2 WHERE command_id = $1 AND status = 'PENDING'"
+# The last resort after settle_failed_command has failed repeatedly. A held outcome (effects may exist) is UNKNOWN,
+# never FAILED; otherwise FAILED. Bare on purpose: no alert row, the stuck-command monitor shows a held one.
+_FALLBACK_SQL = """
+    UPDATE execution_commands
+    SET status = CASE WHEN $3 THEN 'RUNNING' ELSE 'FAILED' END,
+        command_outcome = CASE WHEN $3 THEN 'UNKNOWN_PENDING_RECONCILIATION' ELSE 'REJECTED' END,
+        error_message = $2,
+        processed_at = CASE WHEN $3 THEN processed_at ELSE now() END
+    WHERE command_id = $1 AND status = 'PENDING'
+"""
 _OUTCOME_ALERT_SQL = """
     INSERT INTO notifications_outbox (tier, kind, title, body, payload, dedupe_key)
     VALUES ('CRITICAL', 'COMMAND_FAILED', $1, $2, $3::jsonb, $4)
     ON CONFLICT (dedupe_key) DO NOTHING
 """
+_REFUSAL_ALERT_SQL = """
+    INSERT INTO notifications_outbox (tier, kind, title, body, payload, dedupe_key)
+    VALUES ('INFO', 'COMMAND_REFUSED', $1, $2, $3::jsonb, $4)
+    ON CONFLICT (dedupe_key) DO NOTHING
+"""
 
 
 def is_transient_command_error(exc: BaseException) -> bool:
-    return isinstance(exc, TRANSIENT_COMMAND_ERRORS)
+    """True when ``exc``, or an exception it was raised from or during (at most TRANSIENT_ERROR_DEPTH links), is
+    transient."""
+    current: BaseException | None = exc
+    for _ in range(TRANSIENT_ERROR_DEPTH):
+        if current is None:
+            return False
+        if isinstance(current, TRANSIENT_COMMAND_ERRORS):
+            return True
+        following = current.__cause__ if current.__cause__ is not None else current.__context__
+        if following is current:
+            return False
+        current = following
+    return False
+
+
+def sanitised(text: object, limit: int = MAX_ERROR_MESSAGE_CHARS) -> str:
+    """``text`` as it is stored in error_message and alert payloads: no NUL bytes (PostgreSQL refuses them), capped."""
+    return str(text).replace("\x00", "")[:limit]
+
+
+def command_failure_code(exc: BaseException) -> str:
+    return sanitised(f"COMMAND_FAILED: {type(exc).__name__}: {str(exc)[:300]}")
+
+
+def settle_backoff_s(failures: int) -> float:
+    """The pause after the ``failures``-th failed settlement of one command: exponential, capped."""
+    return min(SETTLE_BACKOFF_CAP_S, SETTLE_BACKOFF_S * 2 ** max(0, failures - 1))
+
+
+async def _transaction(conn):
+    """The connection's transaction as an async context manager (a null one where the connection has none)."""
+    tx = conn.transaction() if hasattr(conn, "transaction") else None
+    if asyncio.iscoroutine(tx):
+        tx = await tx
+    return tx if hasattr(tx, "__aenter__") else contextlib.nullcontext()
+
+
+def _payload_dict(raw) -> dict:
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _instrument_of(command_type: str, target: str | None, payload: dict | None) -> str:
+    return (payload or {}).get("instrument_id") or target or "-"
+
+
+def _outcome_text(decision: str, command_type: str, target: str | None, instrument: str, code: str,
+                  command_id) -> tuple[str, str]:
+    """The title and body of the CRITICAL alert for a settled command."""
+    if decision == "FAILED":
+        return "Paper command failed", f"{command_type} for {target or '-'} was not run: {code}."
+    body = (f"{command_type} for {target or '-'} may have applied effects before it failed ({code}). It is held as "
+            "UNKNOWN_PENDING_RECONCILIATION and is never retried.")
+    if command_type == "CLOSE_POSITION":  # the monitors treat an unresolved close as in flight (mandate_monitor, exit)
+        body += f" So stops for {instrument} are blocked until this command is resolved."
+    body += f" Command {command_id}: see {RUNBOOK}."
+    return "Paper command outcome unknown", body
 
 
 async def settle_failed_command(pool, command_id, command_type, target, exc: BaseException, *, attempt: int,
-                                effects_applied: bool) -> str:
+                                effects_applied: bool, payload: dict | None = None) -> str:
     """Settle a command whose attempt raised, and return the decision: RETRY, FAILED, UNKNOWN or NOOP.
 
     ``attempt`` is the attempt just made (the claim's count). A transient error keeps the command PENDING for another
@@ -720,43 +806,90 @@ async def settle_failed_command(pool, command_id, command_type, target, exc: Bas
     (``effects_applied``: an order dispatched, a fill booked, a mailbox command sent, a reservation released) or its
     socket write started. Those are UNKNOWN_PENDING_RECONCILIATION instead: held, never retried blindly.
     NOOP: the command is no longer PENDING (it committed or settled on its own), so nothing is changed.
+    The settlement runs in one short transaction with a 2 s lock timeout, so a row held by a half-open backend cannot
+    stall the poller; a failure raises to the caller, which counts it (settle_after_error).
     """
-    code = f"COMMAND_FAILED: {type(exc).__name__}: {str(exc)[:300]}"
+    code = command_failure_code(exc)
     if is_transient_command_error(exc) and attempt < MAX_COMMAND_ATTEMPTS:
         logger.warning("Command %s: transient %s, attempt %d of %d; retrying", command_id, code, attempt,
                        MAX_COMMAND_ATTEMPTS)
         async with pool.acquire() as conn:
             await conn.execute(_ATTEMPT_SQL, command_id, attempt)
         return "RETRY"
+    instrument = _instrument_of(command_type, target, payload)
     async with pool.acquire() as conn:
-        decision = "FAILED"
-        settled = None if effects_applied else await conn.fetchval(_FAILED_SQL, command_id, code)
-        if settled is None:  # effects may exist, or the socket was written: the outcome is unknown
-            decision = "UNKNOWN"
-            settled = await conn.fetchval(_UNKNOWN_SQL, command_id, code)
-        if settled is None:
-            return "NOOP"
-        if decision == "FAILED":
-            title = "Paper command failed"
-            body = f"{command_type} for {target or '-'} was not run: {code}."
-        else:
-            title = "Paper command outcome unknown"
-            body = (f"{command_type} for {target or '-'} may have applied effects before it failed ({code}). "
-                    "It is held as UNKNOWN_PENDING_RECONCILIATION and will not be retried: reconcile it first.")
-        logger.error("Command %s settled as %s: %s", command_id, decision, code)
-        detail = {"command_id": str(command_id), "command_type": command_type, "target": target,
-                  "decision": decision, "error": code}
-        try:  # the outbox alert is best effort: the settlement above already stands
-            await conn.execute(_OUTCOME_ALERT_SQL, title, body, json.dumps(detail), f"command-failed:{command_id}")
-        except Exception as e:
-            logger.error("Could not publish the outcome of command %s: %s", command_id, e)
+        async with await _transaction(conn):
+            await conn.execute("SET LOCAL lock_timeout = '2s'")
+            decision = "FAILED"
+            settled = None if effects_applied else await conn.fetchval(_FAILED_SQL, command_id, code)
+            if settled is None:  # effects may exist, or the socket was written: the outcome is unknown
+                decision = "UNKNOWN"
+                settled = await conn.fetchval(_UNKNOWN_SQL, command_id, code)
+            if settled is None:
+                return "NOOP"
+            title, body = _outcome_text(decision, command_type, target, instrument, code, command_id)
+            logger.error("Command %s settled as %s: %s", command_id, decision, code)
+            detail = {"command_id": str(command_id), "command_type": command_type, "target": target,
+                      "instrument_id": instrument, "decision": decision, "error": code}
+            try:  # the outbox alert is best effort: a savepoint, so a failed insert cannot undo the settlement above
+                async with await _transaction(conn):
+                    await conn.execute(_OUTCOME_ALERT_SQL, title, body, json.dumps(detail),
+                                       f"command-failed:{command_id}")
+            except Exception as e:
+                logger.error("Could not publish the outcome of command %s: %s", command_id, e)
     return decision
+
+
+async def fail_command_fallback(pool, command_id, *, held: bool) -> str:
+    """Close a command after settle_failed_command has failed SETTLE_ATTEMPTS_BEFORE_FALLBACK times: one bare status
+    change in a short transaction. ``held``: the outcome may exist, so UNKNOWN_PENDING_RECONCILIATION, never FAILED."""
+    async with pool.acquire() as conn:
+        async with await _transaction(conn):
+            await conn.execute("SET LOCAL lock_timeout = '2s'")
+            await conn.execute(_FALLBACK_SQL, command_id, FALLBACK_ERROR, held)
+    return "UNKNOWN" if held else "FAILED"
+
+
+async def settle_after_error(pool, row, exc: BaseException, *, effects_applied: bool,
+                             settle_failures: dict[str, int]) -> float:
+    """Settle the command an attempt raised on; return the seconds the poller waits before its next pass.
+
+    A settlement that itself fails leaves the command PENDING, and the next pass would claim it again. So each failed
+    settlement is counted per command id (``settle_failures``, in-process), the pass waits settle_backoff_s(n), and
+    after SETTLE_ATTEMPTS_BEFORE_FALLBACK failures the command is closed by fail_command_fallback.
+    """
+    key = str(row["command_id"])
+    attempt = int(row.get("attempt_count") or 0)
+    try:
+        decision = await settle_failed_command(
+            pool, row["command_id"], row["command_type"], row["target_instance_id"], exc,
+            attempt=attempt, effects_applied=effects_applied, payload=_payload_dict(row["payload"]),
+        )
+    except Exception as settle_error:  # the database is unreachable or the row is locked: counted below
+        logger.error("Could not settle command %s: %s", key, settle_error)
+        decision = None
+    if decision is not None:
+        settle_failures.pop(key, None)
+        return TRANSIENT_RETRY_BACKOFF_S * attempt if decision == "RETRY" else 0.0
+    failures = settle_failures[key] = settle_failures.get(key, 0) + 1
+    if failures >= SETTLE_ATTEMPTS_BEFORE_FALLBACK:
+        held = effects_applied or bool(row.get("socket_write_started"))
+        try:
+            outcome = await fail_command_fallback(pool, row["command_id"], held=held)
+        except Exception as fallback_error:
+            logger.error("Fallback settlement of command %s failed: %s", key, fallback_error)
+        else:
+            settle_failures.pop(key, None)
+            logger.error("Command %s closed as %s by the fallback after %d failed settlements", key, outcome, failures)
+            return 0.0
+    return settle_backoff_s(failures)
 
 
 async def command_poller(pool, engine, quote_cache=None):
     """Poll execution_commands for PAPER environment commands."""
     if quote_cache is None:
         quote_cache = SimpleQuoteCache()
+    settle_failures: dict[str, int] = {}  # failed settlements per command id (settle_after_error)
     while True:
         row = None  # the command this pass claimed; its claim is rolled back if the attempt raises
         effects_applied = False  # set before an attempt's first in-memory or outbox effect (settle_failed_command)
@@ -803,6 +936,14 @@ async def command_poller(pool, engine, quote_cache=None):
                                 "UPDATE execution_commands SET status = 'FAILED', command_outcome = 'REJECTED', "
                                 "error_message = $2, processed_at = now() WHERE command_id = $1",
                                 row["command_id"], MANDATE_INSTANCE_REFUSAL,
+                            )
+                            # an INFO outbox row, like COMMAND_FAILED, so the refusal is visible to the operator
+                            await conn.execute(
+                                _REFUSAL_ALERT_SQL, "Paper command refused",
+                                f"{cmd_type} for {target} was refused: {MANDATE_INSTANCE_REFUSAL}.",
+                                json.dumps({"command_id": str(row["command_id"]), "command_type": cmd_type,
+                                            "target": target, "error": MANDATE_INSTANCE_REFUSAL}),
+                                f"command-refused:{row['command_id']}",
                             )
                             logger.warning("Refused %s for AI mandate %s (command %s)",
                                            cmd_type, target, row["command_id"])
@@ -1203,18 +1344,11 @@ async def command_poller(pool, engine, quote_cache=None):
 
         except Exception as e:
             logger.error("Error in command poller: %s", e)
+            pause = 0.0
             if row is not None:  # its claim rolled back, so it is PENDING: settle it, never leave it at the head
-                attempt = int(row.get("attempt_count") or 0)
-                try:
-                    decision = await settle_failed_command(
-                        pool, row["command_id"], row["command_type"], row["target_instance_id"], e,
-                        attempt=attempt, effects_applied=effects_applied,
-                    )
-                except Exception as settle_error:  # the database is unreachable: the next pass claims it again
-                    decision = None
-                    logger.error("Could not settle command %s: %s", row["command_id"], settle_error)
-                if decision == "RETRY":
-                    await asyncio.sleep(TRANSIENT_RETRY_BACKOFF_S * attempt)
+                pause = await settle_after_error(pool, row, e, effects_applied=effects_applied,
+                                                 settle_failures=settle_failures)
+            await asyncio.sleep(pause)
         await asyncio.sleep(0.1)
 
 
