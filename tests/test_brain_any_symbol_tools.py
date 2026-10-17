@@ -16,7 +16,8 @@ import httpx
 import polars as pl
 import pytest
 from cryptonite_agents import tools
-from cryptonite_scanner.regime import HIGH_VOL_WINDOW_BARS, MIN_BARS
+from cryptonite_scanner.regime import HIGH_VOL_WINDOW_BARS, MIN_BARS, REGIMES, classify_regime
+from cryptonite_storage.queries import AnalyticsQueryEngine
 
 FAPI = "https://fapi.binance.com"
 SPOT_KLINES = "https://api.binance.com/api/v3/klines"
@@ -252,4 +253,126 @@ def test_a_hostile_symbol_is_refused_before_any_http_redis_or_sql(monkeypatch, s
     monkeypatch.setattr(tools, "_redis_get", no_redis)
     monkeypatch.setattr(tools, "_readonly_rows", no_sql)
     assert tools.get_derivatives_context(symbol) == '{"error": "invalid symbol"}'
+    assert binance.calls == []
+
+
+# --- get_market_regime: the analytics lake for a fed symbol --------------------------------------------------------
+
+def test_a_fed_symbol_with_lake_bars_is_read_from_the_lake_and_not_from_binance(monkeypatch):
+    _fed(monkeypatch, "XRPUSDT")
+    lake_frame = _frame(_klines(REGIME_BARS, HOUR_MS, forming=False))
+    requested = []
+
+    def fake_query(self, symbol, timeframe="1m", start_ns=None, end_ns=None):
+        requested.append((symbol, timeframe, start_ns, end_ns))
+        return lake_frame
+
+    monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", fake_query)
+    binance = _binance(monkeypatch, {})
+    out = json.loads(tools.get_market_regime("XRPUSDT"))
+    assert binance.calls == []
+    assert out["source"] == "analytics lake" and out["timeframe"] == "1h"
+    assert out["regime"] == classify_regime(lake_frame)
+    (symbol, timeframe, start_ns, end_ns), = requested
+    assert (symbol, timeframe) == ("XRPUSDT", "1h")
+    assert end_ns - start_ns == REGIME_BARS * HOUR_MS * 10**6  # the learner's window, in bars of the timeframe
+
+
+def test_a_fed_symbol_with_no_lake_bars_for_the_timeframe_falls_back_to_binance(monkeypatch):
+    _fed(monkeypatch, "XRPUSDT")  # the lake directory is missing: no 15m bars
+    rows = _klines(REGIME_BARS, 15 * 60_000)
+    binance = _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    out = json.loads(tools.get_market_regime("XRPUSDT", "15m"))
+    assert out["source"] == "binance rest" and out["timeframe"] == "15m"
+    assert out["regime"] == classify_regime(_frame(rows[:-1]))
+    assert len(binance.calls) == 1
+
+
+def test_an_unknown_feed_universe_is_not_treated_as_fed(monkeypatch):
+    monkeypatch.setattr(tools, "_fed_symbols", lambda: None)
+
+    def no_read(self, *args, **kwargs):
+        raise _NoNetwork("lake")
+
+    monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", no_read)
+    rows = _klines(REGIME_BARS, HOUR_MS)
+    _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    out = json.loads(tools.get_market_regime("XRPUSDT"))
+    assert out["source"] == "binance rest"
+
+
+# --- get_market_regime: Binance spot klines for any other symbol ---------------------------------------------------
+
+def test_an_unfed_symbol_is_classified_from_spot_klines_exactly_as_the_learner_classifies_bars(monkeypatch):
+    rows = _klines(REGIME_BARS, HOUR_MS)  # the last one is still forming on the server
+    binance = _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    out = json.loads(tools.get_market_regime("XRPUSDT"))
+    expected = classify_regime(_frame(rows[:-1]))
+    assert expected in REGIMES  # not vacuous: the regime is defined on these bars
+    assert out == {"symbol": "XRPUSDT", "timeframe": "1h", "source": "binance rest", "regime": expected,
+                   "bar_time": _iso(int(rows[-2][6]))}
+    assert [(url, params) for url, params, _ in binance.calls] == [
+        (SPOT_KLINES, {"symbol": "XRPUSDT", "interval": "1h", "limit": REGIME_BARS + 2}),
+    ]
+
+
+@pytest.mark.parametrize(("timeframe", "interval_ms"), [("15m", 15 * 60_000), ("4h", 4 * HOUR_MS)])
+def test_the_timeframe_sets_the_klines_interval_and_the_bar_size(monkeypatch, timeframe, interval_ms):
+    rows = _klines(REGIME_BARS, interval_ms)
+    binance = _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    out = json.loads(tools.get_market_regime("XRPUSDT", timeframe))
+    assert out["timeframe"] == timeframe and out["source"] == "binance rest"
+    assert out["regime"] == classify_regime(_frame(rows[:-1]))
+    assert out["bar_time"] == _iso(int(rows[-2][6]))
+    assert binance.calls[0][1]["interval"] == timeframe
+
+
+def test_too_few_closed_candles_is_a_null_regime_with_a_reason(monkeypatch):
+    rows = _klines(100, HOUR_MS)
+    _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    out = json.loads(tools.get_market_regime("XRPUSDT"))
+    assert out == {
+        "symbol": "XRPUSDT", "timeframe": "1h", "source": "binance rest", "regime": None,
+        "reason": f"not enough 1h history on Binance spot for XRPUSDT to tag the regime (it needs {MIN_BARS} bars)",
+    }
+
+
+def test_a_failed_spot_request_is_a_null_regime_with_a_short_reason(monkeypatch):
+    _binance(monkeypatch, {SPOT_KLINES: _json({"msg": "secret detail"}, status=500)})
+    out = json.loads(tools.get_market_regime("XRPUSDT"))
+    assert out == {"symbol": "XRPUSDT", "timeframe": "1h", "source": "binance rest", "regime": None,
+                   "reason": "binance spot klines unavailable for XRPUSDT 1h"}
+    assert "secret" not in json.dumps(out)
+
+
+def test_the_regime_request_waits_behind_the_shared_spot_weight_gate(monkeypatch):
+    monkeypatch.setattr(tools, "_LAST_USED_WEIGHT", 3050)
+    monkeypatch.setattr(tools, "_LAST_WEIGHT_AT", time.time())
+    binance = _binance(monkeypatch, {})
+    out = json.loads(tools.get_market_regime("XRPUSDT"))
+    assert binance.calls == []
+    assert out["regime"] is None and out["source"] == "binance rest"
+
+
+@pytest.mark.parametrize("timeframe", ["5m", "1d", "1H", "", "1h;"])
+def test_a_timeframe_outside_15m_1h_4h_is_refused_before_any_read(monkeypatch, timeframe):
+    binance = _binance(monkeypatch, {})
+
+    def no_read(self, *args, **kwargs):
+        raise _NoNetwork("lake")
+
+    monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", no_read)
+    assert json.loads(tools.get_market_regime("BTCUSDT", timeframe)) == {"error": "invalid timeframe"}
+    assert binance.calls == []
+
+
+@pytest.mark.parametrize("symbol", HOSTILE_SYMBOLS)
+def test_a_hostile_symbol_is_refused_before_any_http_or_lake_read(monkeypatch, symbol):
+    binance = _binance(monkeypatch, {})
+
+    def no_read(self, *args, **kwargs):
+        raise _NoNetwork("lake")
+
+    monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", no_read)
+    assert tools.get_market_regime(symbol) == '{"error": "invalid symbol"}'
     assert binance.calls == []

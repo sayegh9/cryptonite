@@ -11,7 +11,7 @@ from collections.abc import Callable
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 from cryptonite_schemas.identifiers import to_perp_instrument_id
@@ -272,16 +272,28 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
     if not (1 <= limit_val <= 500):
         return f"Error: Limit must be between 1 and 500, got {limit_val}."
 
+    output, error = _spot_klines(clean_symbol, interval, limit_val)
+    return error if output is None else json.dumps(output, indent=2)
+
+
+def _spot_klines(clean_symbol: str, interval: str, limit_val: int,
+                 *, max_fetch: int = 500) -> tuple[dict[str, Any] | None, str | None]:
+    """The closed candles of one validated symbol on Binance spot, as get_klines' output dict, or ``(None, error)``.
+
+    Shared by get_klines and the regime tool's REST path, which asks for more candles than get_klines allows, so
+    ``max_fetch`` (the most candles one request may return) is the caller's. Never raises. The membership check, the
+    bounded cache, the shared weight gate and the one HTTP fetch are the same for both callers.
+    """
     # M2 fail-closed membership: an empty/unavailable exchangeInfo lookup => refusal, no unverified
     # symbol lookup is ever issued (stale cache is still honored on refresh failure).
     valid_symbols = _get_valid_symbols()
     if not valid_symbols:
-        return (
+        return None, (
             f"Error: Cannot verify symbol '{clean_symbol}' against Binance exchangeInfo "
             f"(symbol lookup unavailable); refusing unverified symbol lookup."
         )
     if clean_symbol not in valid_symbols:
-        return f"Error: Symbol '{clean_symbol}' is not a valid active trading pair on Binance."
+        return None, f"Error: Symbol '{clean_symbol}' is not a valid active trading pair on Binance."
 
     now = time.time()
     cache_key = (clean_symbol, interval, limit_val)
@@ -297,12 +309,12 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
             cached_time, cached_result = _KLINES_CACHE[cache_key]
             if (now - cached_time) < _KLINES_CACHE_TTL_S:
                 _KLINES_CACHE.move_to_end(cache_key)
-                return json.dumps(cached_result, indent=2)
+                return cached_result, None
 
         # Pre-flight shared-budget gate: refuse BEFORE issuing a new request while the recorded
         # 1-minute weight is at/over the cap (the recorded weight is refreshed on every response).
         if _LAST_USED_WEIGHT >= _WEIGHT_LIMIT and (now - _LAST_WEIGHT_AT) < _WEIGHT_WINDOW_S:
-            return (
+            return None, (
                 f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} >= {_WEIGHT_LIMIT} "
                 f"within the current 1-minute window). Request skipped before sending."
             )
@@ -310,7 +322,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
         try:
             import httpx
             # Fetch slightly extra candles in case the last candle is still open
-            fetch_limit = min(limit_val + 2, 500)
+            fetch_limit = min(limit_val + 2, max_fetch)
             params = {"symbol": clean_symbol, "interval": interval, "limit": fetch_limit}
             resp = httpx.get("https://api.binance.com/api/v3/klines", params=params, timeout=10.0)
 
@@ -327,15 +339,17 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
             # weight gate below.
             if resp.status_code in (429, 418):
                 retry_after = resp.headers.get("Retry-After") or resp.headers.get("retry-after") or "60"
-                return f"Error: Rate limited by Binance API (HTTP {resp.status_code}). Retry-After: {retry_after}s."
+                return None, (f"Error: Rate limited by Binance API (HTTP {resp.status_code}). "
+                              f"Retry-After: {retry_after}s.")
 
             if resp.status_code != 200:
-                return f"Binance API returned status {resp.status_code}: {resp.text}"
+                return None, f"Binance API returned status {resp.status_code}: {resp.text}"
 
             # Post-response gate for a served-but-over-budget request (kept so a 200 that pushed the
             # budget over the cap still fails closed).
             if _LAST_USED_WEIGHT > _WEIGHT_LIMIT:
-                return f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} > 3000). Request rejected."
+                return None, (f"Error: Rate limit protection triggered (weight {_LAST_USED_WEIGHT} > 3000). "
+                              "Request rejected.")
 
             # C1: the closed-candle boundary comes from the SERVER's time (the RFC 7231 'Date'
             # header on the Binance response), never from the client clock. Second granularity is
@@ -344,7 +358,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
             # before the Date second is included. Missing/unparseable server time FAILS CLOSED.
             server_time_ms = _parse_server_date_ms(resp.headers.get("Date") or resp.headers.get("date"))
             if server_time_ms is None:
-                return (
+                return None, (
                     "Error: Binance server time unavailable ('Date' header missing or unparseable); "
                     "refusing to report a closed-candle boundary."
                 )
@@ -354,7 +368,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
             trimmed = closed_klines[-limit_val:] if len(closed_klines) > limit_val else closed_klines
 
             if not trimmed:
-                return f"Error: No closed candles available for {clean_symbol} {interval}."
+                return None, f"Error: No closed candles available for {clean_symbol} {interval}."
 
             fetched_at_iso = datetime.datetime.now(datetime.UTC).isoformat()
             last_closed_close_time_iso = datetime.datetime.fromtimestamp(trimmed[-1][6] / 1000, tz=datetime.UTC).isoformat()
@@ -396,10 +410,10 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
             _KLINES_CACHE.move_to_end(cache_key)
             while len(_KLINES_CACHE) > _KLINES_CACHE_MAX:
                 _KLINES_CACHE.popitem(last=False)
-            return json.dumps(output_data, indent=2)
+            return output_data, None
 
         except Exception as e:
-            return f"Error fetching klines data: {e}"
+            return None, f"Error fetching klines data: {e}"
 
 # A model-callable DuckDB query is exactly one SELECT (DuckDB's own parser decides the statement type)
 REFUSED_NOT_A_SELECT = "Security Error: only a single SELECT is allowed"
@@ -1119,6 +1133,11 @@ _FAPI_LOCK = threading.Lock()
 _BINANCE_INVALID_SYMBOL = -1121  # "Invalid symbol": Binance lists no USD-M perpetual under this name
 NO_PERPETUAL_NOTE = "no USD-M perpetual is listed for {symbol} on Binance; derivatives data does not apply"
 
+# The regime timeframes, and the most candles one spot klines request may return (Binance's own limit)
+REGIME_TIMEFRAMES = ("15m", "1h", "4h")
+_SPOT_MAX_KLINES = 1000
+
+
 class _FapiNoPerpetual(Exception):
     """Binance answered -1121 for the symbol: there is no USD-M perpetual to read."""
 
@@ -1301,51 +1320,95 @@ def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
     return json.dumps(out, default=str)
 
 
-def get_market_regime(symbol: str = "BTCUSDT") -> str:
-    """The market regime of one symbol at the latest closed 1h bar: TREND_UP, TREND_DOWN, CHOP or HIGH_VOL. The
-    same classifier the learner uses to tag decisions. Reporting only: it does not decide any trade. bar_time is the
-    close time of the 1h bar the label is based on (UTC ISO). regime is null with a reason when the analytics lake has
-    too little 1h history for the symbol.
+def _lake_regime(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any] | None:
+    """The regime from the analytics lake's bars of ``timeframe``. None when the lake has no bars of that timeframe in
+    the window (the caller then asks Binance). A lake that cannot be read is a null regime, never another source."""
+    from cryptonite_scanner.regime import MIN_BARS, classify_regime
+    from cryptonite_storage.queries import AnalyticsQueryEngine, timeframe_ns
+
+    end_ns = time.time_ns()
+    lookback_ns = bars_needed * timeframe_ns(timeframe)  # the learner's trailing window, in bars of this timeframe
+    base = {"symbol": sym, "timeframe": timeframe, "source": "analytics lake"}
+    try:
+        lake = AnalyticsQueryEngine(Path(os.getenv("ANALYTICS_LAKE_PATH", "/app/data/analytics_lake")))
+        bars = lake.query_bars_df(symbol=sym, timeframe=timeframe, start_ns=end_ns - lookback_ns, end_ns=end_ns)
+    except Exception:
+        # The detail (DuckDB text, file paths) stays in the log; the model gets a short reason
+        logger.warning("Regime lake read failed for %s %s", sym, timeframe, exc_info=True)
+        return {**base, "regime": None, "reason": "lake read failed"}
+    if bars is None or bars.is_empty() or "ts_event_ns" not in bars.columns:
+        return None
+    bars = bars.filter(bars["ts_event_ns"] <= end_ns).sort("ts_event_ns")
+    if bars.is_empty():
+        return None
+    regime = classify_regime(bars)
+    if regime is None:
+        return {**base, "regime": None, "reason": f"not enough {timeframe} history in the analytics lake for {sym} "
+                                                  f"to tag the regime (it needs {MIN_BARS} bars)"}
+    bar_close_s = int(bars["ts_event_ns"][-1]) // 10**9
+    return {**base, "regime": regime,
+            "bar_time": datetime.datetime.fromtimestamp(bar_close_s, tz=datetime.UTC).isoformat(timespec="seconds")}
+
+
+def _rest_regime(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any]:
+    """The regime from Binance spot klines: the same number of closed candles the learner reads from the lake, and the
+    same classifier. Any failure is a null regime with a short reason; the detail goes to the log."""
+    import polars as pl
+    from cryptonite_scanner.regime import MIN_BARS, classify_regime
+
+    base = {"symbol": sym, "timeframe": timeframe, "source": "binance rest"}
+    output, error = _spot_klines(sym, timeframe, bars_needed, max_fetch=_SPOT_MAX_KLINES)
+    if output is None:
+        logger.warning("Regime klines unavailable for %s %s: %s", sym, timeframe, error)
+        return {**base, "regime": None, "reason": f"binance spot klines unavailable for {sym} {timeframe}"}
+    candles = output["candles"]
+    bars = pl.DataFrame([
+        pl.Series("ts_event_ns", [c["close_time_ms"] * 10**6 for c in candles], dtype=pl.Int64),  # the lake's stamp
+        pl.Series("high", [c["high"] for c in candles], dtype=pl.Float64),
+        pl.Series("low", [c["low"] for c in candles], dtype=pl.Float64),
+        pl.Series("close", [c["close"] for c in candles], dtype=pl.Float64),
+    ])
+    regime = classify_regime(bars)
+    if regime is None:
+        return {**base, "regime": None, "reason": f"not enough {timeframe} history on Binance spot for {sym} to tag "
+                                                  f"the regime (it needs {MIN_BARS} bars)"}
+    bar_close_s = int(bars["ts_event_ns"][-1]) // 10**9
+    return {**base, "regime": regime,
+            "bar_time": datetime.datetime.fromtimestamp(bar_close_s, tz=datetime.UTC).isoformat(timespec="seconds")}
+
+
+def get_market_regime(symbol: str = "BTCUSDT", timeframe: Literal["15m", "1h", "4h"] = "1h") -> str:
+    """The market regime of one symbol at the latest closed candle of the timeframe: TREND_UP, TREND_DOWN, CHOP or
+    HIGH_VOL. The same classifier the learner uses to tag decisions. Reporting only: it does not decide any trade.
+
+    source says where the candles came from: "analytics lake" for a symbol the live ingest feed streams, when the lake
+    has candles of the timeframe; otherwise "binance rest" (Binance spot klines). bar_time is the close time of the last
+    closed candle the label is based on (UTC ISO). regime is null, with a reason, when there is too little history or
+    the candles cannot be read.
 
     Parameters:
-        symbol: Base symbol, e.g. 'BTCUSDT'.
+        symbol: Base symbol, e.g. 'BTCUSDT' or 'XRPUSDT'.
+        timeframe: '15m', '1h' or '4h'. Default is '1h': use the timeframe the operator asked about.
     """
-    # Imported here: the analytics lake stack is needed by this tool alone
-    from cryptonite_scanner.regime import HIGH_VOL_WINDOW_BARS, MIN_BARS, classify_regime
-    from cryptonite_storage.queries import AnalyticsQueryEngine, lake_symbol
+    from cryptonite_scanner.regime import HIGH_VOL_WINDOW_BARS, MIN_BARS
+    from cryptonite_storage.queries import lake_symbol
 
     sym = _feed_symbol(symbol)
     if not _SYMBOL_REGEX.fullmatch(sym):
         return json.dumps({"error": "invalid symbol"})
     try:
-        sym = lake_symbol(sym)  # the lake's own key check, before any lake path is built from the symbol
+        sym = lake_symbol(sym)  # the lake's own key check, before any lake path, SQL or URL is built from the symbol
     except ValueError:
         return json.dumps({"error": "invalid symbol"})
-    # The same trailing window the learner reads (services/debate_worker/outcomes.REGIME_LOOKBACK_S)
-    lookback_ns = (HIGH_VOL_WINDOW_BARS + MIN_BARS) * 3600 * 10**9
-    end_ns = time.time_ns()
-    try:
-        lake = AnalyticsQueryEngine(Path(os.getenv("ANALYTICS_LAKE_PATH", "/app/data/analytics_lake")))
-        bars = lake.query_bars_df(symbol=sym, timeframe="1h", start_ns=end_ns - lookback_ns, end_ns=end_ns)
-    except Exception:
-        # The detail (DuckDB text, file paths) stays in the log; the model gets a short reason
-        logger.warning("Regime lake read failed for %s", sym, exc_info=True)
-        return json.dumps({"regime": None, "reason": "lake read failed"})
-    if bars is None or bars.is_empty() or "ts_event_ns" not in bars.columns:
-        return json.dumps({"regime": None, "reason": f"no 1h bars in the analytics lake for {sym}"})
-    bars = bars.filter(bars["ts_event_ns"] <= end_ns).sort("ts_event_ns")
-    if bars.is_empty():
-        return json.dumps({"regime": None, "reason": f"no 1h bars in the analytics lake for {sym}"})
-    regime = classify_regime(bars)
-    if regime is None:
-        return json.dumps({"regime": None, "reason": f"not enough 1h history in the analytics lake for {sym} "
-                                                     f"to tag the regime (it needs {MIN_BARS} bars)"})
-    bar_close_s = int(bars["ts_event_ns"][-1]) // 10**9
-    return json.dumps({
-        "symbol": sym,
-        "regime": regime,
-        "bar_time": datetime.datetime.fromtimestamp(bar_close_s, tz=datetime.UTC).isoformat(timespec="seconds"),
-    })
+    if timeframe not in REGIME_TIMEFRAMES:
+        return json.dumps({"error": "invalid timeframe"})
+    bars_needed = HIGH_VOL_WINDOW_BARS + MIN_BARS
+    feed = _fed_symbols()
+    if feed is not None and sym in feed:
+        from_lake = _lake_regime(sym, timeframe, bars_needed)
+        if from_lake is not None:
+            return json.dumps(from_lake)
+    return json.dumps(_rest_regime(sym, timeframe, bars_needed))
 
 
 # --- Gateway tool registry (AI-first blueprint A1.5) ---------------------------------------------

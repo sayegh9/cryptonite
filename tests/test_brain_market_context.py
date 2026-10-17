@@ -294,8 +294,10 @@ def test_the_regime_is_the_learners_label_on_the_lake_hours_with_the_bar_time(tm
     now = _last_closed_hour()
     _write_hourly_lake(tmp_path, _hourly_bars(800), int(now.timestamp()) * 1000)
     monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))
+    monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT"}))  # a fed symbol reads the lake
     out = json.loads(tools.get_market_regime("BTCUSDT"))
-    assert out == {"symbol": "BTCUSDT", "regime": "TREND_UP", "bar_time": now.isoformat(timespec="seconds")}
+    assert out == {"symbol": "BTCUSDT", "timeframe": "1h", "source": "analytics lake", "regime": "TREND_UP",
+                   "bar_time": now.isoformat(timespec="seconds")}
     # Parity with the learner: regime_at on the same lake, at the same decision time, gives the same label
     sys.path.insert(0, str(REPO / "services" / "debate_worker"))
     import outcomes  # noqa: PLC0415 - the learner's module, importable as in tests/test_regime_tags.py
@@ -303,15 +305,20 @@ def test_the_regime_is_the_learners_label_on_the_lake_hours_with_the_bar_time(tm
     assert learner == out["regime"] == "TREND_UP"
 
 
-def test_no_bars_is_a_null_regime_with_a_reason(tmp_path, monkeypatch):
-    monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))
+def test_no_lake_bars_for_a_fed_symbol_fall_back_to_binance_and_a_failure_is_a_null_regime(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT"}))
+    monkeypatch.setattr(tools, "_get_valid_symbols", lambda: {"BTCUSDT"})
+    monkeypatch.setattr(httpx, "get", lambda url, params=None, timeout=None: httpx.Response(500, text="down"))
+    monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))  # an empty lake: no 1h bars
     out = json.loads(tools.get_market_regime("BTCUSDT"))
-    assert out == {"regime": None, "reason": "no 1h bars in the analytics lake for BTCUSDT"}
+    assert out == {"symbol": "BTCUSDT", "timeframe": "1h", "source": "binance rest", "regime": None,
+                   "reason": "binance spot klines unavailable for BTCUSDT 1h"}
 
 
 def test_too_little_history_is_a_null_regime_with_a_reason(tmp_path, monkeypatch):
     _write_hourly_lake(tmp_path, _hourly_bars(50), int(_last_closed_hour().timestamp()) * 1000)
     monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))
+    monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT"}))
     out = json.loads(tools.get_market_regime("BTCUSDT"))
     assert out["regime"] is None and "not enough 1h history" in out["reason"]
 
@@ -322,8 +329,11 @@ def test_an_unreadable_lake_is_a_null_regime_with_a_reason(tmp_path, monkeypatch
 
     monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", broken)
     monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))
+    monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT"}))
     out = json.loads(tools.get_market_regime("BTCUSDT"))
-    assert out == {"regime": None, "reason": "lake read failed"}  # the detail is logged, not returned
+    # the detail is logged, not returned; a broken lake is not silently replaced by another source
+    assert out == {"symbol": "BTCUSDT", "timeframe": "1h", "source": "analytics lake", "regime": None,
+                   "reason": "lake read failed"}
 
 
 # --- Registration and the prompt -------------------------------------------------------------------------------------
@@ -407,8 +417,9 @@ def test_the_derivatives_tool_returns_invalid_symbol_and_reads_nothing(monkeypat
 
 def test_valid_symbols_still_work_through_the_tools(tmp_path, monkeypatch):
     monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path / "lake"))
-    regime = tools.get_market_regime("btcusdt")
-    assert '"reason": "no 1h bars in the analytics lake for BTCUSDT"' in regime
+    monkeypatch.setattr(httpx, "get", lambda url, params=None, timeout=None: httpx.Response(500, text="down"))
+    regime = json.loads(tools.get_market_regime("btcusdt"))
+    assert regime["symbol"] == "BTCUSDT" and regime["source"] == "binance rest" and regime["regime"] is None
 
 
 def test_a_lake_read_failure_is_a_short_reason_with_no_paths_or_driver_text(monkeypatch, tmp_path):
@@ -417,6 +428,7 @@ def test_a_lake_read_failure_is_a_short_reason_with_no_paths_or_driver_text(monk
 
     monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", broken)
     monkeypatch.setenv("ANALYTICS_LAKE_PATH", str(tmp_path))
+    monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT"}))
     out = tools.get_market_regime("BTCUSDT")
-    assert out == '{"regime": null, "reason": "lake read failed"}'
+    assert json.loads(out)["reason"] == "lake read failed"
     assert str(tmp_path) not in out and "IO Error" not in out
