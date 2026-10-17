@@ -100,9 +100,14 @@ def _klines(count: int, interval_ms: int, *, forming: bool = True) -> list[list]
     return rows
 
 
+def _lake_close_ms(row: list) -> int:
+    """A bar's close as the lake stamps it: one millisecond after Binance's close_time_ms (the bar's last millisecond)."""
+    return int(row[6]) + 1
+
+
 def _frame(rows: list[list]) -> pl.DataFrame:
     """The bars the way the lake and the REST path hand them to classify_regime: close time in ns, prices as floats."""
-    return pl.DataFrame({"ts_event_ns": [int(r[6]) * 10**6 for r in rows], "high": [float(r[2]) for r in rows],
+    return pl.DataFrame({"ts_event_ns": [_lake_close_ms(r) * 10**6 for r in rows], "high": [float(r[2]) for r in rows],
                          "low": [float(r[3]) for r in rows], "close": [float(r[4]) for r in rows]})
 
 
@@ -310,7 +315,7 @@ def test_an_unfed_symbol_is_classified_from_spot_klines_exactly_as_the_learner_c
     expected = classify_regime(_frame(rows[:-1]))
     assert expected in REGIMES  # not vacuous: the regime is defined on these bars
     assert out == {"symbol": "XRPUSDT", "timeframe": "1h", "source": "binance rest", "regime": expected,
-                   "bar_time": _iso(int(rows[-2][6]))}
+                   "bar_time": _iso(_lake_close_ms(rows[-2]))}
     assert [(url, params) for url, params, _ in binance.calls] == [
         (SPOT_KLINES, {"symbol": "XRPUSDT", "interval": "1h", "limit": REGIME_BARS + 2}),
     ]
@@ -323,7 +328,7 @@ def test_the_timeframe_sets_the_klines_interval_and_the_bar_size(monkeypatch, ti
     out = json.loads(tools.get_market_regime("XRPUSDT", timeframe))
     assert out["timeframe"] == timeframe and out["source"] == "binance rest"
     assert out["regime"] == classify_regime(_frame(rows[:-1]))
-    assert out["bar_time"] == _iso(int(rows[-2][6]))
+    assert out["bar_time"] == _iso(_lake_close_ms(rows[-2]))
     assert binance.calls[0][1]["interval"] == timeframe
 
 
@@ -376,3 +381,119 @@ def test_a_hostile_symbol_is_refused_before_any_http_or_lake_read(monkeypatch, s
     monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", no_read)
     assert tools.get_market_regime(symbol) == '{"error": "invalid symbol"}'
     assert binance.calls == []
+
+
+# --- Bounded caches, and the pause after a USD-M rate limit ---------------------------------------------------------
+
+@pytest.mark.parametrize(("raw", "seconds"), [
+    ("120", 120.0), ("0", 0.0), ("-5", 0.0), (None, 60.0), ("soon", 60.0), ("nan", 60.0), ("inf", 60.0),
+])
+def test_retry_after_is_read_as_seconds_and_a_missing_or_unreadable_one_gives_the_default_pause(raw, seconds):
+    assert tools._retry_after_s(raw) == seconds
+
+
+def test_retry_after_as_an_http_date_is_the_time_left_until_that_date():
+    now = 1_700_000_000.0
+    stamp = datetime.datetime.fromtimestamp(now + 90, tz=datetime.UTC).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    with patch("time.time", return_value=now):
+        assert tools._retry_after_s(stamp) == pytest.approx(90.0)
+
+
+@pytest.mark.parametrize("status", [429, 418])
+def test_a_rate_limit_from_usdm_pauses_every_usdm_request_until_retry_after_has_passed(monkeypatch, status):
+    binance = _binance(monkeypatch, {PREMIUM: _json({"msg": "slow down"}, status=status,
+                                                    headers={"Retry-After": "120"})})
+    clock = [1_700_000_000.0]
+    with patch("time.time", side_effect=lambda: clock[0]):
+        first = json.loads(tools.get_derivatives_context("XRPUSDT"))
+        assert [url for url, _, _ in binance.calls] == [PREMIUM]  # the other two sections were not sent
+        assert f"HTTP {status}; Retry-After 120s" in first["note"]
+        assert first["mark"] is None and first["open_interest"] is None and first["funding"] is None
+        clock[0] += 60
+        second = json.loads(tools.get_derivatives_context("ETHUSDT"))  # another symbol, still paused
+        assert len(binance.calls) == 1
+        assert "pause" in second["note"] and "60s more" in second["note"]
+        clock[0] += 61  # 121 s after the rate limit: the pause is over and the futures host is asked again
+        json.loads(tools.get_derivatives_context("SOLUSDT"))
+    assert len(binance.calls) == 2
+    assert binance.calls[1][0] == PREMIUM
+
+
+def test_the_usdm_cache_drops_expired_answers_on_every_write_and_stays_capped(monkeypatch):
+    _binance(monkeypatch, _usdm_routes())
+    clock = [1_700_000_000.0]
+    with patch("time.time", side_effect=lambda: clock[0]):
+        for i in range(100):
+            tools.get_derivatives_context(f"AAA{i:03d}USDT")
+        assert len(tools._FAPI_CACHE) == 100
+        clock[0] += 31  # the first hundred are now older than 30 s
+        for i in range(100, 200):
+            tools.get_derivatives_context(f"AAA{i:03d}USDT")
+        assert len(tools._FAPI_CACHE) == 100
+        assert "AAA000USDT" not in tools._FAPI_CACHE and "AAA150USDT" in tools._FAPI_CACHE
+        for i in range(200, 500):  # written at one instant: the cap, not the age, makes room
+            tools.get_derivatives_context(f"AAA{i:03d}USDT")
+    assert len(tools._FAPI_CACHE) == tools._FAPI_CACHE_MAX
+    assert "AAA150USDT" not in tools._FAPI_CACHE and "AAA499USDT" in tools._FAPI_CACHE
+
+
+def test_the_klines_cache_drops_expired_candles_on_every_write(monkeypatch):
+    symbols = [f"K{i:03d}USDT" for i in range(200)]
+    monkeypatch.setattr(tools, "_get_valid_symbols", lambda: set(symbols))
+    rows = _klines(5, HOUR_MS)
+    _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    clock = [1_700_000_000.0]
+    with patch("time.time", side_effect=lambda: clock[0]):
+        for symbol in symbols[:100]:
+            tools.get_klines(symbol, "1h", 2)
+        assert len(tools._KLINES_CACHE) == 100
+        clock[0] += 61  # the TTL is 60 s
+        for symbol in symbols[100:]:
+            tools.get_klines(symbol, "1h", 2)
+    assert len(tools._KLINES_CACHE) == 100
+    assert ("K000USDT", "1h", 2) not in tools._KLINES_CACHE
+    assert ("K150USDT", "1h", 2) in tools._KLINES_CACHE
+
+
+def test_the_regime_answer_is_cached_for_60_seconds_and_its_candles_are_not_kept(monkeypatch):
+    rows = _klines(REGIME_BARS, HOUR_MS)
+    binance = _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    clock = [1_700_000_000.0]
+    with patch("time.time", side_effect=lambda: clock[0]):
+        first = json.loads(tools.get_market_regime("XRPUSDT"))
+        assert len(tools._KLINES_CACHE) == 0  # the ~900 candles behind the answer are not kept
+        clock[0] += 30
+        assert json.loads(tools.get_market_regime("XRPUSDT")) == first
+        assert len(binance.calls) == 1
+        clock[0] += 31
+        json.loads(tools.get_market_regime("XRPUSDT"))
+    assert len(binance.calls) == 2
+
+
+def test_the_regime_cache_stays_bounded_and_drops_expired_answers(monkeypatch):
+    symbols = [f"R{i:03d}USDT" for i in range(600)]
+    monkeypatch.setattr(tools, "_get_valid_symbols", lambda: set(symbols))
+    rows = _klines(REGIME_BARS, HOUR_MS)
+    _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    clock = [1_700_000_000.0]
+    with patch("time.time", side_effect=lambda: clock[0]):
+        for symbol in symbols[:100]:
+            tools.get_market_regime(symbol)
+        assert len(tools._REGIME_CACHE) == 100
+        clock[0] += 61
+        for symbol in symbols[100:300]:
+            tools.get_market_regime(symbol)
+        assert len(tools._REGIME_CACHE) == 200  # the first hundred expired and were dropped by the writes
+        assert ("R000USDT", "1h") not in tools._REGIME_CACHE
+        for symbol in symbols[300:]:  # 300 writes at one instant: the cap makes room
+            tools.get_market_regime(symbol)
+    assert len(tools._REGIME_CACHE) == tools._REGIME_CACHE_MAX
+    assert len(tools._KLINES_CACHE) == 0  # only answers were kept, no candles
+
+
+def test_a_failed_spot_request_is_not_cached_so_the_next_call_asks_again(monkeypatch):
+    binance = _binance(monkeypatch, {SPOT_KLINES: _json({"msg": "down"}, status=500)})
+    json.loads(tools.get_market_regime("XRPUSDT"))
+    json.loads(tools.get_market_regime("XRPUSDT"))
+    assert len(binance.calls) == 2
+    assert not tools._REGIME_CACHE

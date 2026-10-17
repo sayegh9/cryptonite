@@ -124,7 +124,8 @@ _EXCHANGE_INFO_FETCHED_AT: float = 0.0
 _EXCHANGE_INFO_TTL_S: float = 86400.0  # 24h
 
 # Bounded LRU cache (C2): exact-key hits are served within TTL; the cache never grows past
-# _KLINES_CACHE_MAX. All reads/writes happen under _KLINES_CACHE_LOCK (see get_klines).
+# _KLINES_CACHE_MAX. Entries older than the TTL are dropped on every write (_evict_expired), not only at the cap.
+# All reads/writes happen under _KLINES_CACHE_LOCK (see get_klines).
 _KLINES_CACHE: OrderedDict[tuple[str, str, int], tuple[float, list[dict]]] = OrderedDict()
 _KLINES_CACHE_TTL_S: float = 60.0  # 60s
 _KLINES_CACHE_MAX = 256
@@ -133,6 +134,14 @@ _KLINES_CACHE_MAX = 256
 # interleave around the budget check (M1/C2): a request is only issued when the gate passed for that
 # exact request, and the weight recorded by the previous response is visible to every waiter.
 _KLINES_CACHE_LOCK = threading.Lock()
+
+
+def _evict_expired(cache: dict, ttl_s: float, now: float) -> None:
+    """Drops every entry written ``ttl_s`` or more seconds before ``now``. Each cache here maps a key to
+    ``(written_at, value)``, so an expired answer is gone at the next write rather than waiting for the size cap."""
+    for key in [k for k, entry in cache.items() if now - entry[0] >= ttl_s]:
+        del cache[key]
+
 
 # Shared rate-limit budget: the last X-MBX-USED-WEIGHT-1M weight seen and the time it was recorded.
 # New requests are refused up-front for _WEIGHT_WINDOW_S while the recorded weight is at/over the cap.
@@ -277,12 +286,13 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
 
 
 def _spot_klines(clean_symbol: str, interval: str, limit_val: int,
-                 *, max_fetch: int = 500) -> tuple[dict[str, Any] | None, str | None]:
+                 *, max_fetch: int = 500, use_cache: bool = True) -> tuple[dict[str, Any] | None, str | None]:
     """The closed candles of one validated symbol on Binance spot, as get_klines' output dict, or ``(None, error)``.
 
     Shared by get_klines and the regime tool's REST path, which asks for more candles than get_klines allows, so
     ``max_fetch`` (the most candles one request may return) is the caller's. Never raises. The membership check, the
-    bounded cache, the shared weight gate and the one HTTP fetch are the same for both callers.
+    shared weight gate and the one HTTP fetch are the same for both callers. ``use_cache=False`` keeps the candles out of
+    _KLINES_CACHE in both directions: the regime tool caches its small answer instead.
     """
     # M2 fail-closed membership: an empty/unavailable exchangeInfo lookup => refusal, no unverified
     # symbol lookup is ever issued (stale cache is still honored on refresh failure).
@@ -305,7 +315,7 @@ def _spot_klines(clean_symbol: str, interval: str, limit_val: int,
     # coalescer: identical concurrent calls share a single response.
     global _LAST_USED_WEIGHT, _LAST_WEIGHT_AT
     with _KLINES_CACHE_LOCK:
-        if cache_key in _KLINES_CACHE:
+        if use_cache and cache_key in _KLINES_CACHE:
             cached_time, cached_result = _KLINES_CACHE[cache_key]
             if (now - cached_time) < _KLINES_CACHE_TTL_S:
                 _KLINES_CACHE.move_to_end(cache_key)
@@ -404,12 +414,15 @@ def _spot_klines(clean_symbol: str, interval: str, limit_val: int,
                 "candles": candles,
             }
 
-            # Bounded LRU write: the newest entry goes to the MRU end; the oldest entry past the cap
-            # is evicted so the cache size stays <= _KLINES_CACHE_MAX.
-            _KLINES_CACHE[cache_key] = (time.time(), output_data)
-            _KLINES_CACHE.move_to_end(cache_key)
-            while len(_KLINES_CACHE) > _KLINES_CACHE_MAX:
-                _KLINES_CACHE.popitem(last=False)
+            if use_cache:
+                # Bounded LRU write: the newest entry goes to the MRU end, expired entries are dropped, and the oldest
+                # entry past the cap is evicted so the cache size stays <= _KLINES_CACHE_MAX.
+                written = time.time()
+                _KLINES_CACHE[cache_key] = (written, output_data)
+                _KLINES_CACHE.move_to_end(cache_key)
+                _evict_expired(_KLINES_CACHE, _KLINES_CACHE_TTL_S, written)
+                while len(_KLINES_CACHE) > _KLINES_CACHE_MAX:
+                    _KLINES_CACHE.popitem(last=False)
             return output_data, None
 
         except Exception as e:
@@ -1128,6 +1141,9 @@ _FAPI_WEIGHT_REFUSE_AT = 2160  # 90 % of the cap: no new request at or over this
 _FAPI_WEIGHT_WINDOW_S: float = 60.0
 _FAPI_LAST_USED_WEIGHT: int = 0
 _FAPI_LAST_WEIGHT_AT: float = 0.0
+# A 429 or 418 from the futures host pauses every request to it until its Retry-After has passed (0.0: no pause)
+_FAPI_BLOCKED_UNTIL: float = 0.0
+_FAPI_RETRY_AFTER_DEFAULT_S: float = 60.0
 # Serializes the cache, the weight gate and the requests of one symbol, as the spot path does for klines
 _FAPI_LOCK = threading.Lock()
 _BINANCE_INVALID_SYMBOL = -1121  # "Invalid symbol": Binance lists no USD-M perpetual under this name
@@ -1156,11 +1172,30 @@ def _binance_error_code(resp: Any) -> int | None:
     return body.get("code") if isinstance(body, dict) else None
 
 
+def _retry_after_s(raw: str | None) -> float:
+    """Retry-After as seconds, from its seconds form or its HTTP-date form. Missing or unreadable: the default pause."""
+    if raw is None:
+        return _FAPI_RETRY_AFTER_DEFAULT_S
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            seconds = parsedate_to_datetime(raw).timestamp() - time.time()
+        except (TypeError, ValueError):
+            return _FAPI_RETRY_AFTER_DEFAULT_S
+    if not seconds < float("inf"):  # NaN or infinite: no usable pause
+        return _FAPI_RETRY_AFTER_DEFAULT_S
+    return max(0.0, seconds)
+
+
 def _fapi_get(path: str, params: dict[str, Any]) -> Any:
     """One GET on the USD-M host, the symbol only ever in ``params``. Returns the parsed JSON, or raises
     _FapiNoPerpetual (-1121) or _FapiRefused. Every answer records the futures weight for the requests after it."""
-    global _FAPI_LAST_USED_WEIGHT, _FAPI_LAST_WEIGHT_AT
+    global _FAPI_LAST_USED_WEIGHT, _FAPI_LAST_WEIGHT_AT, _FAPI_BLOCKED_UNTIL
     now = time.time()
+    if now < _FAPI_BLOCKED_UNTIL:
+        raise _FapiRefused("Binance asked for a pause after a rate limit, so no USD-M request is sent for "
+                           f"{_FAPI_BLOCKED_UNTIL - now:.0f}s more")
     if _FAPI_LAST_USED_WEIGHT >= _FAPI_WEIGHT_REFUSE_AT and (now - _FAPI_LAST_WEIGHT_AT) < _FAPI_WEIGHT_WINDOW_S:
         raise _FapiRefused(f"the USD-M request weight ({_FAPI_LAST_USED_WEIGHT} of {_FAPI_WEIGHT_LIMIT} a minute) "
                            "is near its limit, so the request was not sent")
@@ -1177,8 +1212,11 @@ def _fapi_get(path: str, params: dict[str, Any]) -> Any:
         except ValueError:
             pass
     if resp.status_code in (429, 418):
-        retry_after = resp.headers.get("Retry-After") or "60"
-        raise _FapiRefused(f"Binance rate limited the request (HTTP {resp.status_code}; Retry-After {retry_after}s)")
+        # Retry-After is the pause Binance asks for: no request to this host until it has passed
+        retry_s = _retry_after_s(resp.headers.get("Retry-After") or resp.headers.get("retry-after"))
+        _FAPI_BLOCKED_UNTIL = time.time() + retry_s
+        raise _FapiRefused(f"Binance rate limited the request (HTTP {resp.status_code}; Retry-After {retry_s:g}s), "
+                           "so no USD-M request is sent until then")
     if resp.status_code != 200:
         if _binance_error_code(resp) == _BINANCE_INVALID_SYMBOL:
             raise _FapiNoPerpetual()
@@ -1255,7 +1293,10 @@ def _usdm_cached(symbol: str) -> dict[str, Any]:
         if hit is not None and (time.time() - hit[0]) < _FAPI_CACHE_TTL_S:
             return hit[1]
         answer = _usdm_answer(symbol)
-        _FAPI_CACHE[symbol] = (time.time(), answer)
+        written = time.time()
+        _FAPI_CACHE.pop(symbol, None)  # re-inserted at the newest end, so the cap evicts the oldest write
+        _FAPI_CACHE[symbol] = (written, answer)
+        _evict_expired(_FAPI_CACHE, _FAPI_CACHE_TTL_S, written)
         while len(_FAPI_CACHE) > _FAPI_CACHE_MAX:
             _FAPI_CACHE.pop(next(iter(_FAPI_CACHE)))
         return answer
@@ -1350,20 +1391,30 @@ def _lake_regime(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any] |
             "bar_time": datetime.datetime.fromtimestamp(bar_close_s, tz=datetime.UTC).isoformat(timespec="seconds")}
 
 
-def _rest_regime(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any]:
+# The regime tool's answer on Binance spot, per symbol and timeframe, reused for _KLINES_CACHE_TTL_S. Only the small
+# answer is kept: the ~900 candles behind it are not (about 430 KB each in _KLINES_CACHE). The lock is held across the
+# fetch too, so parallel calls for one symbol share one request.
+_REGIME_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_REGIME_CACHE_MAX = 256
+_REGIME_CACHE_LOCK = threading.Lock()
+
+
+def _rest_regime(sym: str, timeframe: str, bars_needed: int) -> tuple[dict[str, Any], bool]:
     """The regime from Binance spot klines: the same number of closed candles the learner reads from the lake, and the
-    same classifier. Any failure is a null regime with a short reason; the detail goes to the log."""
+    same classifier. Any failure is a null regime with a short reason; the detail goes to the log. Returns the answer and
+    whether it may be cached: False when Binance gave no candles, so that failure is asked again."""
     import polars as pl
     from cryptonite_scanner.regime import MIN_BARS, classify_regime
 
     base = {"symbol": sym, "timeframe": timeframe, "source": "binance rest"}
-    output, error = _spot_klines(sym, timeframe, bars_needed, max_fetch=_SPOT_MAX_KLINES)
+    output, error = _spot_klines(sym, timeframe, bars_needed, max_fetch=_SPOT_MAX_KLINES, use_cache=False)
     if output is None:
         logger.warning("Regime klines unavailable for %s %s: %s", sym, timeframe, error)
-        return {**base, "regime": None, "reason": f"binance spot klines unavailable for {sym} {timeframe}"}
+        return {**base, "regime": None, "reason": f"binance spot klines unavailable for {sym} {timeframe}"}, False
     candles = output["candles"]
     bars = pl.DataFrame([
-        pl.Series("ts_event_ns", [c["close_time_ms"] * 10**6 for c in candles], dtype=pl.Int64),  # the lake's stamp
+        # the lake's stamp: a bar is stamped at its CLOSE, one millisecond after Binance's close_time_ms
+        pl.Series("ts_event_ns", [(c["close_time_ms"] + 1) * 10**6 for c in candles], dtype=pl.Int64),
         pl.Series("high", [c["high"] for c in candles], dtype=pl.Float64),
         pl.Series("low", [c["low"] for c in candles], dtype=pl.Float64),
         pl.Series("close", [c["close"] for c in candles], dtype=pl.Float64),
@@ -1371,10 +1422,28 @@ def _rest_regime(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any]:
     regime = classify_regime(bars)
     if regime is None:
         return {**base, "regime": None, "reason": f"not enough {timeframe} history on Binance spot for {sym} to tag "
-                                                  f"the regime (it needs {MIN_BARS} bars)"}
+                                                  f"the regime (it needs {MIN_BARS} bars)"}, True
     bar_close_s = int(bars["ts_event_ns"][-1]) // 10**9
     return {**base, "regime": regime,
-            "bar_time": datetime.datetime.fromtimestamp(bar_close_s, tz=datetime.UTC).isoformat(timespec="seconds")}
+            "bar_time": datetime.datetime.fromtimestamp(bar_close_s, tz=datetime.UTC).isoformat(timespec="seconds")}, True
+
+
+def _rest_regime_cached(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any]:
+    """_rest_regime, reused for _KLINES_CACHE_TTL_S per symbol and timeframe. A failed fetch is not cached."""
+    key = (sym, timeframe)
+    with _REGIME_CACHE_LOCK:
+        hit = _REGIME_CACHE.get(key)
+        if hit is not None and (time.time() - hit[0]) < _KLINES_CACHE_TTL_S:
+            return hit[1]
+        answer, cacheable = _rest_regime(sym, timeframe, bars_needed)
+        if cacheable:
+            written = time.time()
+            _REGIME_CACHE.pop(key, None)  # re-inserted at the newest end, so the cap evicts the oldest write
+            _REGIME_CACHE[key] = (written, answer)
+            _evict_expired(_REGIME_CACHE, _KLINES_CACHE_TTL_S, written)
+            while len(_REGIME_CACHE) > _REGIME_CACHE_MAX:
+                _REGIME_CACHE.pop(next(iter(_REGIME_CACHE)))
+        return answer
 
 
 def get_market_regime(symbol: str = "BTCUSDT", timeframe: Literal["15m", "1h", "4h"] = "1h") -> str:
@@ -1408,7 +1477,7 @@ def get_market_regime(symbol: str = "BTCUSDT", timeframe: Literal["15m", "1h", "
         from_lake = _lake_regime(sym, timeframe, bars_needed)
         if from_lake is not None:
             return json.dumps(from_lake)
-    return json.dumps(_rest_regime(sym, timeframe, bars_needed))
+    return json.dumps(_rest_regime_cached(sym, timeframe, bars_needed))
 
 
 # --- Gateway tool registry (AI-first blueprint A1.5) ---------------------------------------------
@@ -1431,4 +1500,4 @@ EXECUTION_ANALYSIS = _register(RiskClass.READ)(run_execution_analysis)
 STAGE_DEBATE_PROPOSAL = _register(RiskClass.READ, side_effects=True)(stage_debate_proposal)
 COMPARE_LIVE_VS_BACKTEST = _register(RiskClass.READ)(compare_live_vs_backtest)
 DERIVATIVES_CONTEXT = _register(RiskClass.READ)(get_derivatives_context)  # WS-2C: funding, mark, open interest
-MARKET_REGIME = _register(RiskClass.READ)(get_market_regime)  # WS-2C: the learner's regime on 1h lake bars
+MARKET_REGIME = _register(RiskClass.READ)(get_market_regime)  # WS-2C: the learner's regime, 15m/1h/4h, lake or spot
