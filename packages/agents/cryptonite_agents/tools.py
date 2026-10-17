@@ -1585,6 +1585,23 @@ async def scan_swing_setups(
     finally:
         lake_repo.close()
 
+    if len(bars_by_inst) > 1:
+        max_ts_by_inst: dict[str, int] = {}
+        for inst, df_1m in bars_by_inst.items():
+            ts_col = "ts_event_ns" if "ts_event_ns" in df_1m.columns else (
+                "bar_close_inclusive_ns" if "bar_close_inclusive_ns" in df_1m.columns else None
+            )
+            if ts_col is not None and not df_1m.is_empty():
+                max_ts_by_inst[inst] = int(df_1m[ts_col].max() or 0)
+        if max_ts_by_inst:
+            global_latest_ts = max(max_ts_by_inst.values())
+            fresh_cutoff_ns = global_latest_ts - 2 * 3600 * 1_000_000_000
+            bars_by_inst = {
+                inst: df_1m
+                for inst, df_1m in bars_by_inst.items()
+                if max_ts_by_inst.get(inst, global_latest_ts) >= fresh_cutoff_ns
+            }
+
     HTF_MAP = {"15m": "1h", "1h": "4h", "4h": "1d"}
     candidates: list[dict[str, Any]] = []
     frames_by_inst: dict[str, dict[str, pl.DataFrame]] = {}
