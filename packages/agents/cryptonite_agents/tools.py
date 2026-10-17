@@ -1352,9 +1352,10 @@ def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
 
 
 def _lake_regime(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any] | None:
-    """The regime from the analytics lake's bars of ``timeframe``. None when the lake has no bars of that timeframe in
-    the window (the caller then asks Binance). A lake that cannot be read is a null regime, never another source."""
-    from cryptonite_scanner.regime import MIN_BARS, classify_regime
+    """The regime from the analytics lake's bars of ``timeframe``. None when the lake has too few bars of that timeframe
+    in the window to tag a regime, or none at all (the caller then asks Binance). A lake that cannot be read is a null
+    regime, never another source."""
+    from cryptonite_scanner.regime import classify_regime
     from cryptonite_storage.queries import AnalyticsQueryEngine, timeframe_ns
 
     end_ns = time.time_ns()
@@ -1373,9 +1374,8 @@ def _lake_regime(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any] |
     if bars.is_empty():
         return None
     regime = classify_regime(bars)
-    if regime is None:
-        return {**base, "regime": None, "reason": f"not enough {timeframe} history in the analytics lake for {sym} "
-                                                  f"to tag the regime (it needs {MIN_BARS} bars)"}
+    if regime is None:  # too few lake bars to tag a regime: the caller asks Binance, as for an un-fed symbol
+        return None
     bar_close_s = int(bars["ts_event_ns"][-1]) // 10**9
     return {**base, "regime": regime,
             "bar_time": datetime.datetime.fromtimestamp(bar_close_s, tz=datetime.UTC).isoformat(timespec="seconds")}
@@ -1441,7 +1441,7 @@ def get_market_regime(symbol: str = "BTCUSDT", timeframe: Literal["15m", "1h", "
     HIGH_VOL. The same classifier the learner uses to tag decisions. Reporting only: it does not decide any trade.
 
     source says where the candles came from: "analytics lake" for a symbol the live ingest feed streams, when the lake
-    has candles of the timeframe; otherwise "binance rest" (Binance spot klines). bar_time is the close time of the last
+    has enough candles of the timeframe to tag a regime; otherwise "binance rest" (Binance spot klines). bar_time is the close time of the last
     closed candle the label is based on (UTC ISO). regime is null, with a reason, when there is too little history or
     the candles cannot be read.
 

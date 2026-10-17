@@ -293,6 +293,24 @@ def test_a_fed_symbol_with_no_lake_bars_for_the_timeframe_falls_back_to_binance(
     assert len(binance.calls) == 1
 
 
+def test_a_fed_symbol_with_too_few_lake_bars_for_the_timeframe_falls_back_to_binance(monkeypatch):
+    """BTC 4h: the lake holds a few 4h candles, too few to tag a regime. The answer is Binance's, as for an un-fed
+    symbol, and not the lake's "not enough history" reason."""
+    _fed(monkeypatch, "BTCUSDT")
+    monkeypatch.setattr(tools, "_REGIME_CACHE", {})  # no answer cached by another test
+    few = _frame(_klines(MIN_BARS - 1, 4 * HOUR_MS, forming=False))  # fewer bars than classify_regime needs
+    monkeypatch.setattr(AnalyticsQueryEngine, "query_bars_df", lambda self, *args, **kwargs: few)
+    rows = _klines(REGIME_BARS, 4 * HOUR_MS)
+    binance = _binance(monkeypatch, {SPOT_KLINES: _json(rows, headers=_http_date(rows[-1][0]))})
+    out = json.loads(tools.get_market_regime("BTCUSDT", "4h"))
+    assert out["source"] == "binance rest" and out["timeframe"] == "4h" and out["symbol"] == "BTCUSDT"
+    assert out["regime"] == classify_regime(_frame(rows[:-1]))
+    assert out["bar_time"] == _iso(_lake_close_ms(rows[-2]))
+    assert [(url, params) for url, params, _ in binance.calls] == [
+        (SPOT_KLINES, {"symbol": "BTCUSDT", "interval": "4h", "limit": REGIME_BARS + 2}),
+    ]
+
+
 def test_an_unknown_feed_universe_is_not_treated_as_fed(monkeypatch):
     monkeypatch.setattr(tools, "_fed_symbols", lambda: None)
 
