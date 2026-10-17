@@ -344,17 +344,24 @@ async def test_brain_card_gets_only_the_room_left_under_the_position_limit(h, br
     m = await h.mandate(level=1, instruments=("BTCUSDT.BINANCE",), name=f"r-{uuid.uuid4().hex[:4]}")
     pos = """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side, entry_price, quantity,
                  current_price, status) VALUES ($1, 'PAPER-ACCOUNT-001', $2, $3, 'LONG', 50000, $4, 50000, 'OPEN')"""
-    await h.pool.execute(pos, uuid.uuid4().hex, m.instance_id, SPOT, 0.046)  # $2,300
     path = f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/call-1/approve"
-    async with h.client() as c:
-        res = await c.post(path, headers=h.headers)
-        assert res.status_code == 200, res.text
-        cmd = await h.pool.fetchrow("SELECT payload FROM execution_commands WHERE command_id = $1", uuid.UUID(res.json()["command_id"]))
-        assert json.loads(cmd["payload"])["allocation_pct"] == 2.0
+    try:
+        await h.pool.execute(pos, uuid.uuid4().hex, m.instance_id, SPOT, 0.046)  # $2,300
+        async with h.client() as c:
+            res = await c.post(path, headers=h.headers)
+            assert res.status_code == 200, res.text
+            cmd = await h.pool.fetchrow("SELECT payload FROM execution_commands WHERE command_id = $1",
+                                        uuid.UUID(res.json()["command_id"]))
+            assert json.loads(cmd["payload"])["allocation_pct"] == 2.0
 
-        brain_worker.update(status="PENDING_APPROVAL", command_id=None, trace_id=str(uuid.uuid4()))  # a new turn
-        await h.pool.execute(pos, uuid.uuid4().hex, m.instance_id, SPOT, 0.004)  # $2,500: at the limit
-        full = await c.post(f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/call-1/approve", headers=h.headers)
+            brain_worker.update(status="PENDING_APPROVAL", command_id=None, trace_id=str(uuid.uuid4()))  # a new turn
+            await h.pool.execute(pos, uuid.uuid4().hex, m.instance_id, SPOT, 0.004)  # $2,500: at the limit
+            full = await c.post(f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/call-1/approve", headers=h.headers)
+    finally:
+        # The open BTC rows would make every later test's preflight see MANDATE_INSTRUMENT_CONFLICT (the module
+        # shares one database), so this test removes its own rows and archives its own mandate.
+        await h.pool.execute("DELETE FROM paper_positions WHERE instance_id = $1", m.instance_id)
+        await h.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED' WHERE id = $1", m.id)
     assert full.status_code == 409 and "MANDATE_POSITION_LIMIT_REACHED" in full.json()["detail"]
     assert brain_worker["status"] == "PENDING_APPROVAL"
 
