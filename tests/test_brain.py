@@ -1849,8 +1849,14 @@ def test_the_brain_prompt_says_missing_data_is_neutral_and_chop_is_not_an_automa
         ("6. Missing data is neutral: when a tool reports no perpetual, no headlines or a symbol it does not cover, "
          "say so once and do not count it against a trade."),
         ("CHOP is not an automatic no. In a range, look for a defined setup: entry near range support, stop below the "
-         "range, target at the range middle or top, and propose only if reward is at least 1.5 times the risk (the "
-         "scanner's rule). Use get_market_regime with the timeframe the operator asked about."),
+         "range, target at the range middle or top."),
+        ("Measure the risk from the wider of your stop and the exit monitor's hard stop."),
+        ("Propose the setup only when rule 5 allows a card (in_feed is not \"not_fed\", the mandate is not PAUSED or "
+         "HALTED, the kill switch and the daily-loss latch are off, and the exit monitor is running) and the reward is "
+         "at least 1.5 times that risk (the scanner's rule)."),
+        ("An operator's explicit trade request follows rule 5 as before, with the reward-to-risk stated, not refused "
+         "for being under 1.5 times the risk."),
+        ("Use get_market_regime with the timeframe the operator asked about."),
         ("When you do not recommend a trade, end with a concrete plan: the trigger that would make it a trade (a level "
          "and what must happen there), the stop and the target — or what would invalidate the idea."),
         ("Never say you will monitor, watch, alert or come back later: you only run when the operator writes. Offer to "
@@ -1906,6 +1912,9 @@ TOOL_CALL = ("get_live_market_data", {"symbols": "BTCUSDT"})
     ([["Checking.\n", TOOL_CALL], ["\nRange."]], "Checking.\n\nRange."),  # one newline each side: no third one
     ([["Checking.\n\n", TOOL_CALL], ["Range."]], "Checking.\n\nRange."),  # the break is already there
     ([["Checking.", TOOL_CALL], ["\n\nRange."]], "Checking.\n\nRange."),
+    # the model streams the break as separate tokens: the newline token is held back, no third newline
+    ([["Checking.", TOOL_CALL], ["\n", "\nRange."]], "Checking.\n\nRange."),
+    ([["Checking.", TOOL_CALL], ["\n\n", "Range."]], "Checking.\n\nRange."),
     ([[TOOL_CALL], ["Range."]], "Range."),  # nothing was said before the call: no leading break
     ([["Checking.", TOOL_CALL, TOOL_CALL], ["Range."]], "Checking.\n\nRange."),  # two calls in a row: one break
     ([["A.", TOOL_CALL], ["B.", TOOL_CALL], ["C."]], "A.\n\nB.\n\nC."),

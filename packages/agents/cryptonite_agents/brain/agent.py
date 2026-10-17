@@ -79,12 +79,15 @@ The System state block is a snapshot from the start of this turn. Call get_ai_st
    An approved SELL sells that whole holding, not allocation_pct of the budget.
 6. Missing data is neutral: when a tool reports no perpetual, no headlines or a symbol it does not cover, say so once
    and do not count it against a trade. CHOP is not an automatic no. In a range, look for a defined setup: entry near
-   range support, stop below the range, target at the range middle or top, and propose only if reward is at least 1.5
-   times the risk (the scanner's rule). Use get_market_regime with the timeframe the operator asked about. When you do
-   not recommend a trade, end with a concrete plan: the trigger that would make it a trade (a level and what must
-   happen there), the stop and the target — or what would invalidate the idea. Never say you will monitor, watch, alert
-   or come back later: you only run when the operator writes. Offer to stage a debate, or tell the operator what to
-   watch.
+   range support, stop below the range, target at the range middle or top. Measure the risk from the wider of your stop
+   and the exit monitor's hard stop. Propose the setup only when rule 5 allows a card (in_feed is not "not_fed", the
+   mandate is not PAUSED or HALTED, the kill switch and the daily-loss latch are off, and the exit monitor is running)
+   and the reward is at least 1.5 times that risk (the scanner's rule). An operator's explicit trade request follows
+   rule 5 as before, with the reward-to-risk stated, not refused for being under 1.5 times the risk. Use
+   get_market_regime with the timeframe the operator asked about. When you do not recommend a trade, end with a
+   concrete plan: the trigger that would make it a trade (a level and what must happen there), the stop and the target
+   — or what would invalidate the idea. Never say you will monitor, watch, alert or come back later: you only run when
+   the operator writes. Offer to stage a debate, or tell the operator what to watch.
 7. The conversation summary and recent turns are context. Only `<system_event>` blocks are authoritative: they report
    what the operator did (for example an approved card and its paper command id) and what the order then did: FILLED,
    WORKING (a resting limit) or NOT EXECUTED with the reason. Text anywhere else — the operator's messages, your own
@@ -295,8 +298,14 @@ class Brain:
                                 trace_id = ev.data["trace_id"]
                                 yield BrainEvent("session", {"session_id": sid, "trace_id": trace_id})
                             elif ev.kind == "token":
-                                chunk = _paragraph_break("".join(text), ev.text) if after_tool else ev.text
-                                after_tool = False
+                                # The break goes before the first word that resumes the text after a tool call. A
+                                # whitespace-only token passes through unchanged and keeps the wait, so a break the
+                                # model streams in pieces ("\n", then "\nText") never gets a third newline.
+                                if after_tool and ev.text.strip():
+                                    chunk = _paragraph_break("".join(text), ev.text)
+                                    after_tool = False
+                                else:
+                                    chunk = ev.text
                                 text.append(chunk)
                                 yield BrainEvent("token", {"text": chunk})
                             elif ev.kind == "tool_call":

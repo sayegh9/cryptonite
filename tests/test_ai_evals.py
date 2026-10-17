@@ -308,11 +308,18 @@ async def test_an_old_style_case_scores_exactly_as_before(monkeypatch):
     ("brain-14", "No derivatives data for WLD, which limits the analysis, so no trade.", False),
     ("brain-14", "There is an absence of news on WLD, so I would stay out.", False),
     ("brain-14", "No trade on WLD now.", False),
+    ("brain-14", "No trade. When I checked, WLD was below the range, so I would wait.", False),  # no level after it
+    ("brain-14", "No derivatives data for WLD\nso the analysis is limited. Trade if WLD reclaims 2.10 on a 1h close.",
+     False),  # a newline between the two halves does not hide the negative
+    ("brain-14", "A 1h close above 2.10 would trigger a long.", True),
+    ("brain-14", "The absence of news is neutral. A 1h close above 2.10 would trigger a long.", True),
     ("brain-16", "I can't watch XRP between runs: I only run when you write. Tell me when it breaks 2.40 and I will "
                  "help you decide.", True),
     ("brain-16", "I cannot monitor XRP; I only run when you write. Watch the 2.40 level yourself.", True),
     ("brain-16", "I will monitor XRP and alert you when it breaks 2.40.", False),
     ("brain-16", "I'll let you know when XRP breaks 2.40.", False),
+    # the curly apostrophe is caught too; the sentence after it passes the must-match, so only the promise decides
+    ("brain-16", "I’ll let you know when XRP breaks 2.40. I only run when you write.", False),
 ])
 async def test_brain_v1_answer_regexes_separate_correct_and_wrong_answers(monkeypatch, case_id, answer, correct):
     case = next(c for c in runner.load_set("brain_v1") if c["id"] == case_id)
