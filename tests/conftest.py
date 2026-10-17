@@ -192,6 +192,7 @@ def reset_klines_shared_weight_state():
     The pre-flight weight gate (review proposal for PR #46) and the cached in_feed universe both
     keep module-level state, so they must be isolated per test; otherwise one test's 3005 reading
     would trip the gate inside its neighbor, or a cached universe could leak between tests.
+    The USD-M state (weight, Retry-After pause, 30 s answer cache) and the regime answer cache are reset the same way.
     """
     import cryptonite_agents.tools as _tools
 
@@ -200,12 +201,36 @@ def reset_klines_shared_weight_state():
         _tools._LAST_WEIGHT_AT,
         _tools._KLINES_CACHE.copy(),
         _tools._IN_FEED_CACHE,
+        _tools._FAPI_CACHE.copy(),
+        _tools._FAPI_LAST_USED_WEIGHT,
+        _tools._FAPI_LAST_WEIGHT_AT,
+        _tools._FAPI_BLOCKED_UNTIL,
+        _tools._REGIME_CACHE.copy(),
     )
     _tools._LAST_USED_WEIGHT = 0
     _tools._LAST_WEIGHT_AT = 0.0
     _tools._KLINES_CACHE.clear()
     _tools._IN_FEED_CACHE = None
+    _tools._FAPI_CACHE.clear()
+    _tools._FAPI_LAST_USED_WEIGHT = 0
+    _tools._FAPI_LAST_WEIGHT_AT = 0.0
+    _tools._FAPI_BLOCKED_UNTIL = 0.0
+    _tools._REGIME_CACHE.clear()
     yield
-    _tools._LAST_USED_WEIGHT, _tools._LAST_WEIGHT_AT, cache, _tools._IN_FEED_CACHE = old
+    (
+        _tools._LAST_USED_WEIGHT,
+        _tools._LAST_WEIGHT_AT,
+        klines,
+        _tools._IN_FEED_CACHE,
+        fapi,
+        _tools._FAPI_LAST_USED_WEIGHT,
+        _tools._FAPI_LAST_WEIGHT_AT,
+        _tools._FAPI_BLOCKED_UNTIL,
+        regime,
+    ) = old
     _tools._KLINES_CACHE.clear()
-    _tools._KLINES_CACHE.update(cache)
+    _tools._KLINES_CACHE.update(klines)
+    _tools._FAPI_CACHE.clear()
+    _tools._FAPI_CACHE.update(fapi)
+    _tools._REGIME_CACHE.clear()
+    _tools._REGIME_CACHE.update(regime)
