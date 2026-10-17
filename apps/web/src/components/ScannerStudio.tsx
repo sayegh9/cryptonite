@@ -280,34 +280,89 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
                   second: "2-digit",
                 });
 
+                const entry = Number(cand.suggested_entry);
+                const stop = Number(cand.suggested_stop);
+                const target = Number(cand.suggested_target);
+                const riskDist = Math.abs(entry - stop);
+                const rewardDist = Math.abs(target - entry);
+                const briefData = (cand as any).brief_data ?? (cand as any).metrics ?? {};
+                let rrRatio: number | null = typeof briefData.rr_ratio === "number" ? briefData.rr_ratio : null;
+                if (rrRatio === null && Number.isFinite(riskDist) && Number.isFinite(rewardDist) && riskDist > 0) {
+                  rrRatio = rewardDist / riskDist;
+                }
+                const mtfFromBrief = briefData.trend_4h || briefData.trend_1h || briefData.trend_15m;
+                const mtfRuleMatched = (cand.matched_rules || []).some((r: string) => /htf|4h|1h|15m/i.test(r));
+
                 return (
                   <div
                     key={cand.id || `candidate-${idx}-${openNs}`}
                     className="p-3 hover:bg-zinc-900/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   >
                     <div className="flex flex-col space-y-1">
-                      <div className="flex items-center space-x-2">
+                      <div className="flex items-center space-x-2 flex-wrap">
                         <span className="font-mono font-bold text-xs text-zinc-100">
                           {rawSym}
                         </span>
                         <span className="px-1.5 py-0.2 text-2xs font-mono bg-zinc-800 text-cyan-400 rounded">
                           {cand.timeframe}
                         </span>
+                        {rrRatio !== null && (
+                          <span
+                            data-testid="scanner-candidate-rr"
+                            className={`px-1.5 py-0.5 text-2xs font-mono font-bold rounded border ${
+                              rrRatio >= 1.8
+                                ? "border-emerald-700 bg-emerald-950/60 text-emerald-300"
+                                : rrRatio >= 1.2
+                                  ? "border-amber-700 bg-amber-950/60 text-amber-300"
+                                  : "border-zinc-700 bg-zinc-800 text-zinc-300"
+                            }`}
+                          >
+                            {rrRatio.toFixed(2)}R
+                          </span>
+                        )}
                         <span className="text-2xs font-mono text-zinc-500 flex items-center space-x-1">
                           <Clock className="w-2.5 h-2.5" />
                           <span>{dateStr}</span>
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap gap-1">
+                      <div className="flex flex-wrap items-center gap-1">
                         {(cand.matched_rules || []).map((r, i) => (
                           <span
                             key={i}
-                            className="px-1.5 py-0.5 text-2xs font-mono bg-emerald-950/60 text-emerald-400 border border-emerald-800/40 rounded"
+                            className={`px-1.5 py-0.5 text-2xs font-mono rounded border ${
+                              /htf|4h|1h|15m/i.test(r)
+                                ? "border-cyan-800/80 bg-cyan-950/60 text-cyan-300"
+                                : "border-emerald-800/40 bg-emerald-950/60 text-emerald-400"
+                            }`}
                           >
                             {r}
                           </span>
                         ))}
+                        {(mtfFromBrief || mtfRuleMatched) && (
+                          <div data-testid="scanner-candidate-mtf" className="flex items-center gap-1 text-2xs font-mono">
+                            {briefData.trend_4h && (
+                              <span className="px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-800 text-2xs text-zinc-300">
+                                4H: {briefData.trend_4h}
+                              </span>
+                            )}
+                            {briefData.trend_1h && (
+                              <span className="px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-800 text-2xs text-zinc-300">
+                                1H: {briefData.trend_1h}
+                              </span>
+                            )}
+                            {briefData.trend_15m && (
+                              <span className="px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-800 text-2xs text-zinc-300">
+                                15M: {briefData.trend_15m}
+                              </span>
+                            )}
+                            {!briefData.trend_4h && !briefData.trend_1h && !briefData.trend_15m && mtfRuleMatched && (
+                              <span className="px-1.5 py-0.5 rounded border border-cyan-800/80 bg-cyan-950/50 text-cyan-300 text-2xs font-bold">
+                                MTF ALIGNED
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
 

@@ -10,6 +10,9 @@ export interface PriceChartWidget {
   id: string;
   symbol: string;
   timeframe: string;
+  entry?: number | null;
+  stop?: number | null;
+  target?: number | null;
 }
 
 export interface TearsheetWidget {
@@ -38,6 +41,7 @@ export interface OrderCardWidget {
   allocation_pct: number;
   stop_loss: number | null;
   take_profit: number | null;
+  reduce_pct?: 25 | 50 | 100 | null;
   rationale: string;
   risk_class: "ADD_RISK";
   status: OrderCardStatus;
@@ -150,7 +154,37 @@ export interface DebateOutcome {
   reason: string | null;
 }
 
-export type BrainWidget = PriceChartWidget | TearsheetWidget | OrderCardWidget | DebateSummaryWidget;
+export interface SwingCandidateItem {
+  instrument_id: string;
+  preset_slug: string;
+  timeframe: string;
+  direction: "LONG" | "SHORT";
+  score: number;
+  entry: number;
+  stop: number;
+  target: number;
+  rr_ratio: number;
+  trend_4h?: string;
+  trend_1h?: string;
+  trend_15m?: string;
+  matched_rules?: string[];
+}
+
+export interface SwingRadarWidget {
+  kind: "swing_radar";
+  id?: string;
+  preset_slug: string;
+  timeframe: string;
+  scanned_count: number;
+  candidates: SwingCandidateItem[];
+}
+
+export type BrainWidget =
+  | PriceChartWidget
+  | TearsheetWidget
+  | OrderCardWidget
+  | DebateSummaryWidget
+  | SwingRadarWidget;
 
 export type ToolCallStatus = "RUNNING" | "OK" | "DENIED" | "UNKNOWN";
 

@@ -13,7 +13,7 @@ import {
   ScrollText,
   XCircle,
 } from "lucide-react";
-import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight, rejectOrderCard } from "@/lib/brain/client";
+import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight, rejectOrderCard, sendBrainMessage } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { createMandate } from "@/lib/mission/client";
@@ -29,6 +29,8 @@ import type {
   DebateVerdict,
   OrderCardWidget,
   PriceChartWidget,
+  SwingCandidateItem,
+  SwingRadarWidget,
   TearsheetWidget,
 } from "@/lib/brain/types";
 
@@ -215,16 +217,27 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
   const H = 72;
   let path = "";
   let change: number | null = null;
+  let lo = 0;
+  let hi = 0;
+  let span = 1;
+
+  const levels = [widget.entry, widget.stop, widget.target].filter(
+    (v): v is number => typeof v === "number" && Number.isFinite(v)
+  );
+
   if (closes && closes.length > 1) {
-    const lo = Math.min(...closes);
-    const hi = Math.max(...closes);
-    const span = hi - lo || 1;
+    const allVals = [...closes, ...levels];
+    lo = Math.min(...allVals);
+    hi = Math.max(...allVals);
+    span = hi - lo || 1;
     path = closes
       .map((c, i) => `${i === 0 ? "M" : "L"}${((i / (closes.length - 1)) * W).toFixed(1)},${(H - ((c - lo) / span) * H).toFixed(1)}`)
       .join(" ");
     change = ((closes[closes.length - 1] - closes[0]) / closes[0]) * 100;
   }
   const up = (change ?? 0) >= 0;
+
+  const yOf = (val: number) => Math.max(2, Math.min(H - 2, H - ((val - lo) / span) * H));
 
   return (
     <WidgetFrame testId="brain-widget-price-chart" icon={<BarChart3 className="h-3 w-3 text-cyan-400" />} title={`${widget.symbol} · ${widget.timeframe}`}>
@@ -244,6 +257,15 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
         <div>
           <svg viewBox={`0 0 ${W} ${H}`} className="h-[72px] w-full" role="img" aria-label={`${widget.symbol} price, ${closes.length} bars`}>
             <path d={path} fill="none" strokeWidth="1.5" className={up ? "stroke-emerald-400" : "stroke-rose-400"} />
+            {typeof widget.entry === "number" && Number.isFinite(widget.entry) && (
+              <line x1="0" y1={yOf(widget.entry)} x2={W} y2={yOf(widget.entry)} stroke="#38bdf8" strokeDasharray="4 3" strokeWidth="1" />
+            )}
+            {typeof widget.stop === "number" && Number.isFinite(widget.stop) && (
+              <line x1="0" y1={yOf(widget.stop)} x2={W} y2={yOf(widget.stop)} stroke="#f43f5e" strokeDasharray="3 3" strokeWidth="1" />
+            )}
+            {typeof widget.target === "number" && Number.isFinite(widget.target) && (
+              <line x1="0" y1={yOf(widget.target)} x2={W} y2={yOf(widget.target)} stroke="#10b981" strokeDasharray="4 2" strokeWidth="1" />
+            )}
           </svg>
           <div className="mt-1 flex justify-between text-2xs text-zinc-400">
             <span>
@@ -254,6 +276,52 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
               {fmt(change ?? 0)}% over {closes.length} bars
             </span>
           </div>
+          {levels.length > 0 && (
+            <div data-testid="swing-levels-legend" className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-zinc-800/80 pt-1.5 text-2xs font-mono">
+              {typeof widget.entry === "number" && (
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#38bdf8]" />
+                  <span className="text-zinc-400">Entry</span>
+                  <span className="text-zinc-100">{fmt(widget.entry)}</span>
+                </span>
+              )}
+              {typeof widget.stop === "number" && (
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#f43f5e]" />
+                  <span className="text-zinc-400">Stop</span>
+                  <span className="text-rose-300">{fmt(widget.stop)}</span>
+                  {typeof widget.entry === "number" && widget.entry > 0 && (
+                    <span className="text-rose-400/80">
+                      (-{((Math.abs(widget.entry - widget.stop) / widget.entry) * 100).toFixed(1)}%)
+                    </span>
+                  )}
+                </span>
+              )}
+              {typeof widget.target === "number" && (
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#10b981]" />
+                  <span className="text-zinc-400">TP1</span>
+                  <span className="text-emerald-300">{fmt(widget.target)}</span>
+                  {typeof widget.entry === "number" && widget.entry > 0 && (
+                    <span className="text-emerald-400/80">
+                      (+{((Math.abs(widget.target - widget.entry) / widget.entry) * 100).toFixed(1)}%)
+                    </span>
+                  )}
+                </span>
+              )}
+              {typeof widget.entry === "number" && typeof widget.stop === "number" && typeof widget.target === "number" && Math.abs(widget.entry - widget.stop) > 0 && (() => {
+                const rr = Math.abs(widget.target - widget.entry) / Math.abs(widget.entry - widget.stop);
+                return (
+                  <span className="flex items-center gap-1">
+                    <span className="text-zinc-500">R:R</span>
+                    <span className={`font-bold ${rr >= 1.8 ? "text-emerald-400" : rr >= 1.2 ? "text-amber-400" : "text-rose-400"}`}>
+                      {rr.toFixed(2)}R
+                    </span>
+                  </span>
+                );
+              })()}
+            </div>
+          )}
           {stale && (
             <div className="mt-1 flex items-start gap-1 text-amber-400" data-testid="brain-widget-price-chart-stale" role="note">
               <AlertTriangle className="mt-px h-3 w-3 flex-none" aria-hidden />
@@ -882,6 +950,14 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
 
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className={`text-sm font-black ${buy ? "text-emerald-400" : "text-rose-400"}`}>{widget.side}</span>
+        {!buy && widget.reduce_pct && widget.reduce_pct < 100 ? (
+          <span
+            data-testid="order-card-reduce-pct"
+            className="rounded border border-amber-600/80 bg-amber-500/20 px-1.5 py-0.5 text-2xs font-black tracking-wider text-amber-300"
+          >
+            SCALE-OUT {widget.reduce_pct}%
+          </span>
+        ) : null}
         <span className="text-sm text-zinc-100">{widget.instrument_id}</span>
         <span className="text-zinc-400">
           {widget.order_type}
@@ -894,6 +970,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           {buy ? (
             <dd className="text-zinc-100" title="Sized at approval from the live price; capped at the room left under the mandate's position limit">
               {widget.allocation_pct}% of mandate
+            </dd>
+          ) : widget.reduce_pct && widget.reduce_pct < 100 ? (
+            <dd className="text-zinc-100" title={`A partial spot sell closes ${widget.reduce_pct}% of the mandate's holding of this instrument`}>
+              Scale out {widget.reduce_pct}% of holding
             </dd>
           ) : (
             <dd className="text-zinc-100" title="A spot sell closes the mandate's whole holding of this instrument">Whole holding</dd>
@@ -908,6 +988,44 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <dd className="text-zinc-100">{widget.take_profit ? fmt(widget.take_profit) : "—"}</dd>
         </div>
       </dl>
+      {widget.stop_loss != null && widget.take_profit != null && (() => {
+        const refPrice = widget.limit_price ?? null;
+        const riskDist = refPrice != null ? Math.abs(refPrice - widget.stop_loss) : null;
+        const rewardDist = refPrice != null ? Math.abs(widget.take_profit - refPrice) : null;
+        const rrRatio = riskDist != null && rewardDist != null && riskDist > 0 ? rewardDist / riskDist : null;
+        const totalDist = (riskDist ?? 1) + (rewardDist ?? 2);
+        const riskPct = riskDist != null && rewardDist != null && totalDist > 0 ? (riskDist / totalDist) * 100 : 33.3;
+        const rewardPct = 100 - riskPct;
+        return (
+          <div className="mt-2 rounded border border-zinc-800 bg-zinc-950/70 p-2 font-mono text-2xs" data-testid="order-card-rr-bar">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-rose-400 font-semibold">
+                Stop: {fmt(widget.stop_loss)}{refPrice ? ` (-${((Math.abs(refPrice - widget.stop_loss) / refPrice) * 100).toFixed(1)}%)` : ""}
+              </span>
+              {rrRatio != null ? (
+                <span className={`px-1.5 py-0.5 rounded text-2xs font-bold border ${
+                  rrRatio >= 1.8
+                    ? "border-emerald-800 bg-emerald-950/60 text-emerald-300"
+                    : rrRatio >= 1.2
+                      ? "border-amber-800 bg-amber-950/60 text-amber-300"
+                      : "border-rose-800 bg-rose-950/60 text-rose-300"
+                }`}>
+                  {rrRatio.toFixed(2)}R
+                </span>
+              ) : (
+                <span className="text-zinc-500">R:R Geometry</span>
+              )}
+              <span className="text-emerald-400 font-semibold">
+                TP1: {fmt(widget.take_profit)}{refPrice ? ` (+${((Math.abs(widget.take_profit - refPrice) / refPrice) * 100).toFixed(1)}%)` : ""}
+              </span>
+            </div>
+            <div className="h-1.5 w-full flex rounded-full overflow-hidden bg-zinc-800">
+              <div style={{ width: `${riskPct.toFixed(1)}%` }} className="bg-rose-500" title={`Risk: ${riskPct.toFixed(1)}%`} />
+              <div style={{ width: `${rewardPct.toFixed(1)}%` }} className="bg-emerald-500" title={`Reward: ${rewardPct.toFixed(1)}%`} />
+            </div>
+          </div>
+        );
+      })()}
       {/* The paused-mandate notice already says this refusal: the dry-run line does not repeat it */}
       {preflight && !(mandateBlock && !preflight.ok && /^MANDATE_(PAUSED|HALTED)/.test(preflight.code)) && (
         <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />
@@ -1048,6 +1166,149 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   );
 }
 
+export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
+  const trendColor = (trend?: string) => {
+    const t = (trend || "").toUpperCase();
+    if (t.includes("BULL") || t.includes("UP")) return "border-emerald-800/80 bg-emerald-950/60 text-emerald-300";
+    if (t.includes("BEAR") || t.includes("DOWN")) return "border-rose-800/80 bg-rose-950/60 text-rose-300";
+    return "border-zinc-800 bg-zinc-900/60 text-zinc-400";
+  };
+
+  return (
+    <section
+      data-testid="swing-radar-card"
+      aria-label={`Swing Radar: ${w.preset_slug} ${w.timeframe}`}
+      className="mt-2 rounded-lg border border-zinc-800 bg-zinc-950/90 p-3.5 text-xs font-mono text-zinc-300"
+    >
+      <header className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded border border-cyan-800 bg-cyan-950/70 px-1.5 py-0.5 text-2xs font-bold uppercase tracking-wider text-cyan-300">
+            SWING RADAR
+          </span>
+          <span className="text-2xs font-bold text-zinc-200">{w.preset_slug}</span>
+          <span className="rounded bg-zinc-800/90 px-1.5 py-0.5 text-2xs text-zinc-400">{w.timeframe}</span>
+        </div>
+        <span className="text-2xs text-zinc-500">
+          Scanned {w.scanned_count} liquid symbols
+        </span>
+      </header>
+
+      {w.candidates.length === 0 ? (
+        <div className="py-3 text-center" data-testid="swing-radar-empty">
+          <p className="text-zinc-400">No swing trade candidates matched the filters.</p>
+          <button
+            type="button"
+            onClick={() => void sendBrainMessage("Inspect 15m and 1h swing setups across liquid symbols and highlight any developing structures")}
+            className="mt-2 rounded border border-cyan-800/60 bg-cyan-950/40 px-2.5 py-1 text-2xs font-semibold text-cyan-300 hover:bg-cyan-900/60 transition-colors"
+          >
+            Inspect 15m/1h setups
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {w.candidates.map((c, idx) => {
+            const isLong = c.direction === "LONG";
+            const rrHigh = c.rr_ratio >= 1.8;
+            return (
+              <div
+                key={`${c.instrument_id}-${idx}`}
+                data-testid="swing-radar-candidate"
+                className="rounded-md border border-zinc-800/80 bg-zinc-900/40 p-2.5 space-y-2"
+              >
+                {/* Symbol, Direction, Score, R:R */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-zinc-100">{c.instrument_id}</span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-2xs font-bold ${
+                        isLong
+                          ? "border border-emerald-800 bg-emerald-950/60 text-emerald-300"
+                          : "border border-rose-800 bg-rose-950/60 text-rose-300"
+                      }`}
+                    >
+                      {c.direction}
+                    </span>
+                    <span className="rounded border border-zinc-700 bg-zinc-800/70 px-1.5 py-0.5 text-2xs text-zinc-300">
+                      Score {c.score.toFixed(0)}
+                    </span>
+                  </div>
+                  <span
+                    className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${
+                      rrHigh
+                        ? "border-emerald-700 bg-emerald-950/60 text-emerald-300"
+                        : "border-amber-700 bg-amber-950/60 text-amber-300"
+                    }`}
+                  >
+                    {c.rr_ratio.toFixed(2)}R
+                  </span>
+                </div>
+
+                {/* MTF Alignment Strip */}
+                <div className="flex items-center gap-1.5 text-2xs">
+                  <span className="text-zinc-500">MTF:</span>
+                  <span className={`rounded border px-1.5 py-0.5 font-bold ${trendColor(c.trend_4h)}`}>
+                    4H: {c.trend_4h || "FLAT"}
+                  </span>
+                  <span className={`rounded border px-1.5 py-0.5 font-bold ${trendColor(c.trend_1h)}`}>
+                    1H: {c.trend_1h || "FLAT"}
+                  </span>
+                  <span className={`rounded border px-1.5 py-0.5 font-bold ${trendColor(c.trend_15m)}`}>
+                    15M: {c.trend_15m || "FLAT"}
+                  </span>
+                </div>
+
+                {/* Trade Geometry Row */}
+                <div className="text-2xs text-zinc-300">
+                  Entry <span className="font-semibold text-sky-400">{fmt(c.entry)}</span> · Stop{" "}
+                  <span className="font-semibold text-rose-400">{fmt(c.stop)}</span> · TP1{" "}
+                  <span className="font-semibold text-emerald-400">{fmt(c.target)}</span>
+                </div>
+
+                {/* 1-Click Chat Action Buttons */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void sendBrainMessage(
+                        `Show the ${c.timeframe} price chart for ${c.instrument_id} with entry ${c.entry}, stop ${c.stop}, and target ${c.target}`
+                      )
+                    }
+                    className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-2xs text-zinc-200 hover:border-cyan-700 hover:text-cyan-300 transition-colors"
+                  >
+                    <span>📈 Chart</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void sendBrainMessage(
+                        `Stage a multi-agent debate for a ${c.direction} swing trade on ${c.instrument_id} (${c.timeframe}) with entry ${c.entry}, structural stop ${c.stop}, and TP1 ${c.target}`
+                      )
+                    }
+                    className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-2xs text-zinc-200 hover:border-purple-700 hover:text-purple-300 transition-colors"
+                  >
+                    <span>⚡ Debate</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void sendBrainMessage(
+                        `Propose a ${c.direction === "LONG" ? "BUY" : "SELL"} swing order for ${c.instrument_id} with stop_loss ${c.stop} and take_profit ${c.target}`
+                      )
+                    }
+                    className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-2xs text-zinc-200 hover:border-emerald-700 hover:text-emerald-300 transition-colors"
+                  >
+                    <span>🎯 Propose Order</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function BrainWidgetView({ widget }: { widget: BrainWidget }) {
   switch (widget.kind) {
     case "price_chart":
@@ -1058,7 +1319,24 @@ export function BrainWidgetView({ widget }: { widget: BrainWidget }) {
       return <OrderCard widget={widget} />;
     case "debate_summary":
       return <DebateSummaryCard widget={widget} />;
+    case "swing_radar":
+      return <SwingRadarCard w={widget} />;
     default:
       return null;
   }
+}
+
+export function BrainWidgetList({ widgets }: { widgets: BrainWidget[] }) {
+  return (
+    <>
+      {widgets.map((w, i) => {
+        switch (w.kind) {
+          case "swing_radar":
+            return <SwingRadarCard key={w.id ?? i} w={w} />;
+          default:
+            return <BrainWidgetView key={w.id ?? i} widget={w} />;
+        }
+      })}
+    </>
+  );
 }

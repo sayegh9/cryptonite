@@ -15,11 +15,12 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 | #95 | Wave 3: card dry run, past lessons, debate follow-through, trusted system events, trade post-mortems | 16 Oct | 047 | 2,672 · PW 194 | deployed |
 | #96 | Derivatives & regime for any Binance symbol; actionable "no trade" answers; range setups | 17 Oct | – | 2,765 | deployed |
 | #97 | Order queue guard: failing commands cannot block queue; stuck-command alerts; conflict dry run; calm context | 17 Oct | – | 2,815 · PW 64 | deployed |
+| Swing (`WS-S0`–`WS-S5`) | AI-First Swing Trading: MTF `htf_*` scanner engine & presets, per-position structural stops & 50% `TP1` scale-out, partial `SELL` (`reduce_pct`), `scan_swing_setups` & `SwingRadarCard`, inline chart Entry/Stop/TP1 overlays, `/swing` chat command, and `ScannerBuilder` v2 ([docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)) | 17 Oct | – | 2,843 · tsc 0 | on `main` |
 
 ## What runs now
 
-- **Code:** everything is on `main` (`05e7af2`); no pull requests are open. CI on GitHub does not run (see Operator items),
-  so every merge was verified locally with the test commands below (2,815 Python tests passing, 0 failed; Playwright 64).
+- **Code:** everything is on `main`; no pull requests are open. CI on GitHub does not run (see Operator items),
+  so every merge was verified locally with the test commands below.
 - **Database:** dev DB `cryptonite` at Alembic `047` (single head on main). `046` adds the read-only `agent_safe_*`
   views for the Brain; `047` adds the read-only view `agent_safe_trade_timeline` (the trade post-mortem) and two
   lookup indexes.
@@ -59,10 +60,19 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
   fallback when not in live feed); missing data is neutral; range setups allowed with reward >= 1.5x risk; every
   "no trade" ends with trigger, stop and target; text after tool call starts a new paragraph; per-turn state no
   longer dumps ticker list (fixes "Mubarak" bug); order card dry run checks whether another instance holds the instrument.
+  AI-First Swing Trading (`WS-S0`–`WS-S5`, [docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)):
+  `ScannerEngine.evaluate` joins closed higher-timeframe indicator columns (`htf_*`) via backward `join_asof` with zero
+  lookahead bias; `presets.py` provides 3 gate-aligned MTF swing presets (`swing-trend-pullback-1h`,
+  `swing-sniper-pullback-15m`, `swing-squeeze-breakout-1h`); `ExitMonitor` enforces per-position `STRUCTURAL_STOP` and
+  mechanical 50% scale-out at `TP1` (`REDUCE_TP1` / `TAKE_PROFIT_1`); Brain `SELL` cards support `reduce_pct` (`25`,
+  `50`, `100`); the Brain has `scan_swing_setups` (`SwingRadarCard` with 1-click Chart/Debate/Order actions),
+  `show_price_chart` Entry/Stop/Target level lines, and the `/swing [SYMBOL]` slash command.
 - **Web:** the 2026-10-12 UI critique is implemented ([docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md), #81):
   unknown states never read as healthy or empty, one session store, one kill-switch poller per account,
   PAPER and DEMO kill switches told apart. In #97, Pause/Resume/Stop strategy commands are hidden for AI-mandate
-  instances in the UI blotter (Flatten is kept).
+  instances in the UI blotter (Flatten is kept). `BrainWidgets.tsx` renders `SwingRadarCard`, `OrderCard` R:R geometry
+  bars and scale-out badges, and `PriceChartCard` Entry/Stop/TP1 overlays; `ScannerBuilder.tsx` includes 1-click Swing
+  Preset templates and valid `ScanSpecCreate` submission.
 - **Mandates:** `Brain XRPUSDT.BINANCE` is ACTIVE at L1 (created 2026-10-13 from a Brain order card; $10,000
   budget, 10% position limit, one open XRP position). `BTC-ETH spot L1` and `WLDUSDT.BINANCE` are PAUSED
   (reduce-only); the older XRP mandate is ARCHIVED. On 2026-10-17 12:04 UTC two poisoned RESUME commands were marked

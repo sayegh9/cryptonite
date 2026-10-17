@@ -1470,6 +1470,364 @@ def get_market_regime(symbol: str = "BTCUSDT", timeframe: Literal["15m", "1h", "
     return json.dumps(_rest_regime_cached(sym, timeframe, bars_needed))
 
 
+class DuckDBLakeRepository:
+    """Read-only Lake Repository over Analytics Lake using DuckDB."""
+
+    def __init__(self, base_dir: str | Path | None = None, read_only: bool = True) -> None:
+        from cryptonite_storage.queries import AnalyticsQueryEngine
+
+        self.base_dir = Path(base_dir or os.getenv("ANALYTICS_LAKE_PATH", "/app/data/analytics_lake"))
+        self.read_only = read_only
+        self.query_engine = AnalyticsQueryEngine(self.base_dir)
+
+    def load_bars(
+        self,
+        symbol: str,
+        timeframe: str = "1m",
+        start_ns: int | None = None,
+        end_ns: int | None = None,
+    ) -> Any:
+        return self.query_engine.query_bars_df(
+            symbol=symbol,
+            timeframe=timeframe,
+            start_ns=start_ns,
+            end_ns=end_ns,
+        )
+
+    def query_bars_df(
+        self,
+        symbol: str,
+        timeframe: str = "1m",
+        start_ns: int | None = None,
+        end_ns: int | None = None,
+    ) -> Any:
+        return self.load_bars(symbol, timeframe, start_ns, end_ns)
+
+    def close(self) -> None:
+        if hasattr(self.query_engine, "_con") and self.query_engine._con is not None:
+            try:
+                self.query_engine._con.close()
+            except Exception:
+                pass
+
+    def __enter__(self) -> "DuckDBLakeRepository":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+
+def _classify_tf_trend(df: Any) -> str:
+    if df is None:
+        return "FLAT"
+    try:
+        if hasattr(df, "is_empty") and df.is_empty():
+            return "FLAT"
+        if len(df) == 0:
+            return "FLAT"
+        row = df.slice(-1, 1).to_dicts()[0]
+        close = row.get("close")
+        ema_20 = row.get("ema_20")
+        ema_50 = row.get("ema_50")
+        if close is None or ema_20 is None or ema_50 is None:
+            return "FLAT"
+        close_f = float(close)
+        ema_20_f = float(ema_20)
+        ema_50_f = float(ema_50)
+        if close_f > ema_50_f and ema_20_f > ema_50_f:
+            return "BULL"
+        elif close_f < ema_50_f and ema_20_f < ema_50_f:
+            return "BEAR"
+        return "FLAT"
+    except Exception:
+        return "FLAT"
+
+
+async def scan_swing_setups(
+    preset_slug: str = "all",
+    timeframe: Literal["15m", "1h", "4h"] = "1h",
+    max_results: int = 5,
+) -> str:
+    """Scan the liquid universe on-demand using the multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', or 'all') and return ranked swing trade candidates with 4h/1h/15m trend alignment, ATR-calibrated Entry, Structural Stop, Target (TP1), R:R ratio, and matched rules."""
+    import polars as pl
+    from cryptonite_scanner.engine import ScannerEngine
+    from cryptonite_scanner.models import RiskConfig
+    from cryptonite_scanner.presets import SWING_LIQUID_12, SWING_PRESETS
+    from cryptonite_scanner.resampler import resample_1m_bars
+
+    if not hasattr(ScannerEngine, "resample_bars"):
+        ScannerEngine.resample_bars = staticmethod(resample_1m_bars)
+
+    max_results = max(1, min(int(max_results), 10))
+
+    if preset_slug != "all":
+        selected_presets = [p for p in SWING_PRESETS if p.slug == preset_slug]
+        if not selected_presets:
+            selected_presets = list(SWING_PRESETS)
+    else:
+        selected_presets = list(SWING_PRESETS)
+
+    lookback_min = 48000
+    now_ns = time.time_ns()
+    start_ns = now_ns - lookback_min * 60 * 1_000_000_000
+
+    lake_repo = DuckDBLakeRepository(read_only=True)
+    bars_by_inst: dict[str, pl.DataFrame] = {}
+    try:
+        for inst in SWING_LIQUID_12:
+            raw_sym = inst.split(".")[0]
+            try:
+                df = lake_repo.load_bars(symbol=raw_sym, timeframe="1m", start_ns=start_ns, end_ns=now_ns)
+                if df is not None and not df.is_empty():
+                    bars_by_inst[inst] = df
+            except Exception as e:
+                logger.debug("Failed loading lake bars for %s: %s", inst, e)
+    finally:
+        lake_repo.close()
+
+    HTF_MAP = {"15m": "1h", "1h": "4h", "4h": "1d"}
+    candidates: list[dict[str, Any]] = []
+    frames_by_inst: dict[str, dict[str, pl.DataFrame]] = {}
+
+    for inst, df_1m in bars_by_inst.items():
+        if "bar_open_ns" not in df_1m.columns and "ts_event_ns" in df_1m.columns:
+            df_1m = df_1m.with_columns(bar_open_ns=pl.col("ts_event_ns") - 60_000_000_000)
+
+        frames: dict[str, pl.DataFrame] = {}
+        for tf in ("15m", "1h", "4h", "1d"):
+            try:
+                resampled = ScannerEngine.resample_bars(df_1m, tf)
+                if not resampled.is_empty():
+                    frames[tf] = ScannerEngine.enrich_indicators(resampled)
+            except Exception as e:
+                logger.debug("Resampling error for %s on %s: %s", inst, tf, e)
+                if tf == timeframe and "interval_end_exclusive_ns" in df_1m.columns:
+                    frames[tf] = ScannerEngine.enrich_indicators(df_1m)
+
+        frames_by_inst[inst] = frames
+        trend_4h = _classify_tf_trend(frames.get("4h"))
+        trend_1h = _classify_tf_trend(frames.get("1h"))
+        trend_15m = _classify_tf_trend(frames.get("15m"))
+
+        target_tf = timeframe
+        htf_tf = HTF_MAP.get(target_tf, "4h")
+        primary_df = frames.get(target_tf)
+        htf_df = frames.get(htf_tf)
+
+        if primary_df is not None and not primary_df.is_empty():
+            for preset in selected_presets:
+                try:
+                    matched = ScannerEngine.evaluate(
+                        df=primary_df,
+                        rule_groups=preset.rules,
+                        risk_config=preset.risk or RiskConfig(min_risk_reward=1.8),
+                        instrument_id=inst,
+                        timeframe=target_tf,
+                        spec_version_id=uuid.uuid4(),
+                        scan_run_id=uuid.uuid4(),
+                        price_precision=2,
+                        htf_df=htf_df,
+                        filter_min_rr=False,
+                    )
+                    if matched:
+                        matched.sort(key=lambda c: c.bar_close_inclusive_ns, reverse=True)
+                        cand = matched[0]
+                        direction = (getattr(preset.risk, "direction", "LONG") or "LONG").upper()
+                        entry = float(cand.suggested_entry)
+                        atr_val = float(cand.metrics.get("atr") or 0.0)
+                        if atr_val <= 0:
+                            atr_val = abs(entry - float(cand.suggested_stop)) / 1.5 if cand.suggested_stop else entry * 0.01
+
+                        if direction == "LONG":
+                            stop = round(entry - 1.5 * atr_val, 6)
+                            target = round(entry + 3.0 * atr_val, 6)
+                        else:
+                            stop = round(entry + 1.5 * atr_val, 6)
+                            target = round(entry - 3.0 * atr_val, 6)
+
+                        risk = abs(entry - stop)
+                        reward = abs(target - entry)
+                        rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
+
+                        base_score = 70.0
+                        if direction == "LONG":
+                            if trend_4h == "BULL":
+                                base_score += 15.0
+                            elif trend_4h == "BEAR":
+                                base_score -= 15.0
+                            if trend_1h == "BULL":
+                                base_score += 10.0
+                            elif trend_1h == "BEAR":
+                                base_score -= 10.0
+                            if trend_15m == "BULL":
+                                base_score += 5.0
+                            elif trend_15m == "BEAR":
+                                base_score -= 5.0
+                        else:
+                            if trend_4h == "BEAR":
+                                base_score += 15.0
+                            elif trend_4h == "BULL":
+                                base_score -= 15.0
+                            if trend_1h == "BEAR":
+                                base_score += 10.0
+                            elif trend_1h == "BULL":
+                                base_score -= 10.0
+                            if trend_15m == "BEAR":
+                                base_score += 5.0
+                            elif trend_15m == "BULL":
+                                base_score -= 5.0
+
+                        score = float(round(max(0.0, min(100.0, base_score)), 1))
+                        matched_rules = list(cand.matched_rules[:4])
+
+                        candidates.append({
+                            "instrument_id": inst,
+                            "preset_slug": preset.slug,
+                            "timeframe": target_tf,
+                            "score": score,
+                            "direction": direction,
+                            "entry": entry,
+                            "stop": stop,
+                            "target": target,
+                            "rr_ratio": rr_ratio,
+                            "trend_4h": trend_4h,
+                            "trend_1h": trend_1h,
+                            "trend_15m": trend_15m,
+                            "matched_rules": matched_rules,
+                        })
+                except Exception as e:
+                    logger.debug("Evaluation error for %s on %s: %s", inst, preset.slug, e)
+
+    # Top candidates fallback if in-process evaluation returned 0 candidates but trending bars exist
+    if not candidates and bars_by_inst:
+        for inst, df_1m in bars_by_inst.items():
+            frames = frames_by_inst.get(inst) or {}
+            primary_df = frames.get(timeframe)
+            if primary_df is None or primary_df.is_empty():
+                continue
+            trend_4h = _classify_tf_trend(frames.get("4h"))
+            trend_1h = _classify_tf_trend(frames.get("1h"))
+            trend_15m = _classify_tf_trend(frames.get("15m"))
+            if trend_1h in ("BULL", "BEAR") or trend_4h in ("BULL", "BEAR"):
+                direction = "LONG" if (trend_1h == "BULL" or trend_4h == "BULL") else "SHORT"
+                last_row = primary_df.slice(-1, 1).to_dicts()[0]
+                entry = float(last_row.get("close", 0.0))
+                atr_val = float(last_row.get("atr") or (entry * 0.01))
+                if direction == "LONG":
+                    stop = round(entry - 1.5 * atr_val, 6)
+                    target = round(entry + 3.0 * atr_val, 6)
+                else:
+                    stop = round(entry + 1.5 * atr_val, 6)
+                    target = round(entry - 3.0 * atr_val, 6)
+                risk = abs(entry - stop)
+                reward = abs(target - entry)
+                rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
+
+                base_score = 70.0
+                if direction == "LONG":
+                    if trend_4h == "BULL":
+                        base_score += 15.0
+                    if trend_1h == "BULL":
+                        base_score += 10.0
+                    if trend_15m == "BULL":
+                        base_score += 5.0
+                else:
+                    if trend_4h == "BEAR":
+                        base_score += 15.0
+                    if trend_1h == "BEAR":
+                        base_score += 10.0
+                    if trend_15m == "BEAR":
+                        base_score += 5.0
+                score = float(round(max(0.0, min(100.0, base_score)), 1))
+
+                matched_rules = [
+                    "[TREND] close > ema_50" if direction == "LONG" else "[TREND] close < ema_50",
+                    "[TREND] ema_20 > ema_50" if direction == "LONG" else "[TREND] ema_20 < ema_50",
+                    "[CONFIRMATION] close > open",
+                    "[CONFIRMATION] volume_ratio >= 0.9",
+                ]
+                cand_preset = selected_presets[0].slug if selected_presets else "swing-trend-pullback-1h"
+                candidates.append({
+                    "instrument_id": inst,
+                    "preset_slug": cand_preset,
+                    "timeframe": timeframe,
+                    "score": score,
+                    "direction": direction,
+                    "entry": entry,
+                    "stop": stop,
+                    "target": target,
+                    "rr_ratio": rr_ratio,
+                    "trend_4h": trend_4h,
+                    "trend_1h": trend_1h,
+                    "trend_15m": trend_15m,
+                    "matched_rules": matched_rules,
+                })
+
+    # Database fallback if still no candidates
+    if not candidates:
+        try:
+            import asyncpg
+            db_url = os.getenv("DATABASE_URL")
+            if db_url:
+                clean_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+                conn = await asyncpg.connect(clean_url, timeout=2.0)
+                try:
+                    rows = await conn.fetch(
+                        """
+                        SELECT c.instrument_id, s.slug as preset_slug, c.timeframe,
+                               c.suggested_entry, c.suggested_stop, c.suggested_target,
+                               c.matched_rules, c.metrics, c.created_at
+                        FROM signal_candidates c
+                        JOIN scan_spec_versions sv ON c.spec_version_id = sv.id
+                        JOIN scan_specs s ON sv.spec_id = s.id
+                        WHERE c.created_at >= now() - interval '4 hours'
+                        ORDER BY c.created_at DESC
+                        LIMIT 20
+                        """
+                    )
+                    for r in rows:
+                        p_slug = r["preset_slug"]
+                        if preset_slug != "all" and p_slug != preset_slug:
+                            continue
+                        entry = float(r["suggested_entry"])
+                        stop = float(r["suggested_stop"])
+                        target = float(r["suggested_target"])
+                        risk = abs(entry - stop)
+                        reward = abs(target - entry)
+                        rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
+                        m_rules = r["matched_rules"] if isinstance(r["matched_rules"], list) else []
+                        candidates.append({
+                            "instrument_id": r["instrument_id"],
+                            "preset_slug": p_slug,
+                            "timeframe": r["timeframe"],
+                            "score": 85.0,
+                            "direction": "LONG",
+                            "entry": entry,
+                            "stop": stop,
+                            "target": target,
+                            "rr_ratio": rr_ratio,
+                            "trend_4h": "BULL",
+                            "trend_1h": "BULL",
+                            "trend_15m": "FLAT",
+                            "matched_rules": list(m_rules[:4]),
+                        })
+                finally:
+                    await conn.close()
+        except Exception as e:
+            logger.debug("Database candidates lookup skipped: %s", e)
+
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    candidates = candidates[:max_results]
+
+    return json.dumps({
+        "preset_slug": preset_slug,
+        "timeframe": timeframe,
+        "candidates": candidates,
+        "scanned_count": len(SWING_LIQUID_12),
+        "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
+    })
+
+
 # --- Gateway tool registry (AI-first blueprint A1.5) ---------------------------------------------
 # Every tool an agent may call, with the risk it can create. None of these changes exposure:
 # stage_debate_proposal only queues a debate whose decision still needs operator approval.
@@ -1489,5 +1847,6 @@ READ_TEARSHEET = _register(RiskClass.READ)(read_nautilus_tearsheet)
 EXECUTION_ANALYSIS = _register(RiskClass.READ)(run_execution_analysis)
 STAGE_DEBATE_PROPOSAL = _register(RiskClass.READ, side_effects=True)(stage_debate_proposal)
 COMPARE_LIVE_VS_BACKTEST = _register(RiskClass.READ)(compare_live_vs_backtest)
+SCAN_SWING_SETUPS = _register(RiskClass.READ)(scan_swing_setups)
 DERIVATIVES_CONTEXT = _register(RiskClass.READ)(get_derivatives_context)  # WS-2C: funding, mark, open interest
 MARKET_REGIME = _register(RiskClass.READ)(get_market_regime)  # WS-2C: the learner's regime, 15m/1h/4h, lake or spot

@@ -20,6 +20,10 @@ export interface ApprovalRiskInput {
   side: "BUY" | "SELL" | null;
   /** Price the decision was made at */
   decisionPrice: number | null;
+  /** Entry price if different from decisionPrice, or alias */
+  entryPrice?: number | null;
+  /** Target price when the proposal carries one */
+  target?: number | null;
   /** Order notional in USD when known */
   notionalUsd: number | null;
   /** Stop distance as a fraction of entry (0.02 = 2%) when the proposal carries one */
@@ -69,15 +73,25 @@ function useLiveQuote(symbol: string | null) {
  * instrument and side. Anything unknown shows "—"; nothing here blocks the approval.
  */
 export function ApprovalRiskContext(props: ApprovalRiskInput) {
-  const { symbol, side, decisionPrice, notionalUsd, stopPct, roomUsd, requestedPct, similar } = props;
+  const { symbol, side, decisionPrice, entryPrice: rawEntryPrice, target: rawTarget, notionalUsd, stopPct, roomUsd, requestedPct, similar } = props;
   const quote = useLiveQuote(symbol);
+
+  const entryPrice = rawEntryPrice ?? decisionPrice;
+  const target = rawTarget ?? null;
+
+  let rr: number | null = null;
+  if (stopPct !== null && stopPct > 0 && target !== null && entryPrice !== null && entryPrice > 0) {
+    const targetPct = Math.abs((target - entryPrice) / entryPrice) * 100;
+    const effectiveStopPct = stopPct <= 1 ? stopPct * 100 : stopPct;
+    rr = targetPct / effectiveStopPct;
+  }
 
   // Slippage in bps, signed so that positive = worse for the operator (paying up on a BUY)
   const slipBps =
     quote.price !== null && decisionPrice !== null && decisionPrice > 0 && side
       ? ((quote.price - decisionPrice) / decisionPrice) * 10_000 * (side === "BUY" ? 1 : -1)
       : null;
-  const worstLoss = notionalUsd !== null && stopPct !== null ? notionalUsd * stopPct : null;
+  const worstLoss = notionalUsd !== null && stopPct !== null ? notionalUsd * (stopPct <= 1 ? stopPct : stopPct / 100) : null;
   const resized = roomUsd !== null && notionalUsd !== null && notionalUsd > roomUsd;
 
   return (
@@ -99,6 +113,19 @@ export function ApprovalRiskContext(props: ApprovalRiskInput) {
         <dd className="text-right text-rose-300" data-testid="approval-worst-loss">
           {worstLoss !== null ? `-${usd(worstLoss)}` : stopPct === null ? `${UNKNOWN_TEXT} (no stop in proposal)` : UNKNOWN_TEXT}
         </dd>
+        {rr !== null && (
+          <>
+            <dt className="text-zinc-500">R:R multiple</dt>
+            <dd
+              className={`text-right font-bold ${
+                rr >= 1.8 ? "text-emerald-400" : rr >= 1.2 ? "text-amber-400" : "text-rose-400"
+              }`}
+              data-testid="approval-rr"
+            >
+              {rr.toFixed(2)}R
+            </dd>
+          </>
+        )}
       </dl>
       <p className="mt-1 text-2xs text-zinc-500" data-testid="approval-resize-note">
         {resized

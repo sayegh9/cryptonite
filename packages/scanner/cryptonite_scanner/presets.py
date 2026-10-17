@@ -1,5 +1,9 @@
 """Built-in production scanner presets."""
 
+import json
+from typing import Any
+from uuid import uuid4
+
 from cryptonite_scanner.models import (
     RiskConfig,
     RuleCondition,
@@ -7,6 +11,7 @@ from cryptonite_scanner.models import (
     RuleOperator,
     ScanSpecCreate,
     UniverseConfig,
+    compute_spec_hash,
 )
 
 PRESET_RSI_OVERSOLD = ScanSpecCreate(
@@ -152,3 +157,228 @@ BUILTIN_PRESETS = [
     PRESET_MACD_MOMENTUM,
     PRESET_SCALP_MULTI_TF,
 ]
+
+SWING_LIQUID_12: list[str] = [
+    "BTCUSDT.BINANCE",
+    "ETHUSDT.BINANCE",
+    "SOLUSDT.BINANCE",
+    "BNBUSDT.BINANCE",
+    "XRPUSDT.BINANCE",
+    "DOGEUSDT.BINANCE",
+    "ADAUSDT.BINANCE",
+    "AVAXUSDT.BINANCE",
+    "LINKUSDT.BINANCE",
+    "SUIUSDT.BINANCE",
+    "NEARUSDT.BINANCE",
+    "WLDUSDT.BINANCE",
+]
+
+PRESET_SWING_TREND_PULLBACK_1H = ScanSpecCreate(
+    slug="swing-trend-pullback-1h",
+    name="Swing Trend Pullback (1H/4H)",
+    description="1H swing trend pullback setup requiring HTF trend confluence (4H Close > EMA50) with RSI pullback bounce and volume.",
+    universe=UniverseConfig(
+        instrument_ids=SWING_LIQUID_12,
+        timeframes=["15m", "1h", "4h"],
+    ),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="htf_close", operator=RuleOperator.GT, value="htf_ema_50", lookback=0),
+                RuleCondition(field="close", operator=RuleOperator.GT, value="ema_50", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="rsi", operator=RuleOperator.CROSS_ABOVE, value=40.0, lookback=1),
+            ],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.GT, value="open", lookback=0),
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=0.9, lookback=0),
+            ],
+        ),
+    ],
+    risk=RiskConfig(min_risk_reward=1.8),
+)
+
+PRESET_SWING_SNIPER_PULLBACK_15M = ScanSpecCreate(
+    slug="swing-sniper-pullback-15m",
+    name="Swing Sniper Pullback (15m/1H/4H)",
+    description="15m sniper entry into 1H/4H swing uptrend (HTF Close > EMA50) with lower Bollinger Band oversold bounce and volume.",
+    universe=UniverseConfig(
+        instrument_ids=SWING_LIQUID_12,
+        timeframes=["15m", "1h", "4h"],
+    ),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="htf_close", operator=RuleOperator.GT, value="htf_ema_50", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.CROSS_ABOVE, value="bb_lower", lookback=1),
+            ],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.GT, value="open", lookback=0),
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=0.9, lookback=0),
+            ],
+        ),
+    ],
+    risk=RiskConfig(min_risk_reward=1.8),
+)
+
+PRESET_SWING_SQUEEZE_BREAKOUT_1H = ScanSpecCreate(
+    slug="swing-squeeze-breakout-1h",
+    name="Swing Volatility Breakout (1H/4H)",
+    description="1H volatility breakout closing above upper Bollinger Band with HTF trend alignment (4H Close > EMA50) and volume expansion.",
+    universe=UniverseConfig(
+        instrument_ids=SWING_LIQUID_12,
+        timeframes=["15m", "1h", "4h"],
+    ),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="htf_close", operator=RuleOperator.GT, value="htf_ema_50", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.CROSS_ABOVE, value="bb_upper", lookback=1),
+            ],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.GT, value="open", lookback=0),
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=0.9, lookback=0),
+            ],
+        ),
+    ],
+    risk=RiskConfig(min_risk_reward=1.8),
+)
+
+SWING_PRESETS: list[ScanSpecCreate] = [
+    PRESET_SWING_TREND_PULLBACK_1H,
+    PRESET_SWING_SNIPER_PULLBACK_15M,
+    PRESET_SWING_SQUEEZE_BREAKOUT_1H,
+]
+
+
+async def ensure_swing_presets(conn: Any) -> list[str]:
+    """Idempotently insert or update the 3 swing trading presets in scan_specs and scan_spec_versions."""
+    seeded_slugs: list[str] = []
+    for preset in SWING_PRESETS:
+        univ_dict = preset.universe.model_dump()
+        if preset.risk:
+            univ_dict["risk"] = preset.risk.model_dump()
+        rules_dict = [rg.model_dump() for rg in preset.rules]
+        target_hash = compute_spec_hash(univ_dict, {"rules": rules_dict})
+
+        spec_row = await conn.fetchrow(
+            """
+            SELECT id, active_version_id, is_archived
+            FROM scan_specs
+            WHERE slug = $1;
+            """,
+            preset.slug,
+        )
+
+        if not spec_row:
+            spec_id = uuid4()
+            ver_id = uuid4()
+            await conn.execute(
+                """
+                INSERT INTO scan_specs (id, slug, name, description, active_version_id, is_archived)
+                VALUES ($1, $2, $3, $4, NULL, false);
+                """,
+                spec_id,
+                preset.slug,
+                preset.name,
+                preset.description,
+            )
+            await conn.execute(
+                """
+                INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                VALUES ($1, $2, 1, $3, $4::jsonb, $5::jsonb);
+                """,
+                ver_id,
+                spec_id,
+                target_hash,
+                json.dumps(univ_dict),
+                json.dumps(rules_dict),
+            )
+            await conn.execute(
+                """
+                UPDATE scan_specs
+                SET active_version_id = $1, is_archived = false, updated_at = now()
+                WHERE id = $2;
+                """,
+                ver_id,
+                spec_id,
+            )
+        else:
+            spec_id = spec_row["id"]
+            existing_ver = await conn.fetchrow(
+                """
+                SELECT id FROM scan_spec_versions
+                WHERE spec_id = $1 AND spec_hash = $2;
+                """,
+                spec_id,
+                target_hash,
+            )
+            if existing_ver:
+                ver_id = existing_ver["id"]
+            else:
+                max_ver = await conn.fetchval(
+                    "SELECT coalesce(max(version_num), 0) FROM scan_spec_versions WHERE spec_id = $1;",
+                    spec_id,
+                )
+                ver_id = uuid4()
+                await conn.execute(
+                    """
+                    INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb);
+                    """,
+                    ver_id,
+                    spec_id,
+                    max_ver + 1,
+                    target_hash,
+                    json.dumps(univ_dict),
+                    json.dumps(rules_dict),
+                )
+            await conn.execute(
+                """
+                UPDATE scan_specs
+                SET name = $1, description = $2, active_version_id = $3, is_archived = false, updated_at = now()
+                WHERE id = $4;
+                """,
+                preset.name,
+                preset.description,
+                ver_id,
+                spec_id,
+            )
+        seeded_slugs.append(preset.slug)
+
+    return seeded_slugs

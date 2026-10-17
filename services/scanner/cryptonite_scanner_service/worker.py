@@ -718,7 +718,8 @@ class ScannerWorker:
                 )
             )
 
-        risk_config = RiskConfig()
+        risk_data = universe_data.get("risk") if isinstance(universe_data, dict) else None
+        risk_config = RiskConfig(**risk_data) if isinstance(risk_data, dict) else RiskConfig()
         source_partition_paths: list[str] = []
         source_partition_checksums: dict[str, str] = {}
         all_candidates = []
@@ -727,7 +728,7 @@ class ScannerWorker:
         frames_by_inst: dict[str, dict[str, Any]] = {}  # enriched frames, for the market brief
         # Only the history the indicators need: EMA-200 plus warm-up on the largest timeframe. Loading the
         # whole lake on every run grew with every backfilled day.
-        all_eval_tfs = list(set(target_timeframes + [HTF_MAP[tf] for tf in target_timeframes if tf in HTF_MAP]))
+        all_eval_tfs = list(set(target_timeframes + source_timeframes + [HTF_MAP[tf] for tf in target_timeframes if tf in HTF_MAP]))
         lookback_min = SCAN_LOOKBACK_BARS * max(TIMEFRAME_MINUTES.get(tf, 60) for tf in (all_eval_tfs or source_timeframes))
         start_ns = time.time_ns() - lookback_min * 60 * 1_000_000_000
         since_date = time.strftime("%Y-%m-%d", time.gmtime(start_ns / 1e9))
@@ -812,6 +813,18 @@ class ScannerWorker:
                     else:
                         raise
                 all_candidates.extend(candidates)
+
+            if inst in frames_by_inst:
+                for extra_tf in source_timeframes:
+                    if extra_tf not in frames_by_inst[inst]:
+                        resampled_extra = resample_1m_bars(df_1m, extra_tf).filter(
+                            pl.col("interval_end_exclusive_ns") <= time.time_ns()
+                        )
+                        if not resampled_extra.is_empty():
+                            frames_by_inst[inst][extra_tf] = ScannerEngine.enrich_indicators(resampled_extra)
+                frames_by_inst[inst] = dict(
+                    sorted(frames_by_inst[inst].items(), key=lambda item: TIMEFRAME_MINUTES.get(item[0], 0))
+                )
 
         now_ns = time.time_ns()
         all_candidates = drop_unclosed_candidates(all_candidates, now_ns)

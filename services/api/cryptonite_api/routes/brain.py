@@ -468,6 +468,12 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
         if held < MIN_HOLDING_QTY:
             raise HTTPException(status_code=409, detail=f"SPOT_SELL_NOT_HELD: mandate {mandate.name} holds no "
                                 f"{card['instrument_id']}, and a spot sell only closes a holding; reject this card")
+        reduce_pct = card.get("reduce_pct")
+        if reduce_pct in (25, 50):
+            sell_qty = (held * Decimal(int(reduce_pct)) / Decimal(100)).normalize()
+            if sell_qty < MIN_HOLDING_QTY:
+                raise HTTPException(status_code=409, detail=f"SPOT_SELL_TOO_SMALL: {reduce_pct}% of {held:g} {card['instrument_id']} is below the minimum holding size; sell 100% or reject this card")
+            held = sell_qty
 
     # One Brain decision, one order (D4): the Brain can emit the same order as several cards in one turn
     # (3 XRP cards of one trace were approved within 6 s); a twin of an approved card is refused, unclaimed
@@ -507,6 +513,8 @@ def _card_summary(card: dict[str, Any], instrument: str, mandate: Mandate, alloc
                   held: Decimal) -> str:
     """What an approved card does, in words, for the instrument given (the card's own, or the shown one)."""
     if card["side"] == "SELL":
+        if card.get("reduce_pct") in (25, 50):
+            return f"SELL {instrument} {card['order_type']} {int(card['reduce_pct'])}% ({held:g}) of the holding in mandate {mandate.name}"
         return f"SELL {instrument} {card['order_type']} the whole holding of {held:g} in mandate {mandate.name}"
     return (f"{card['side']} {instrument} {card['order_type']} at {allocation:g}% of mandate "
             f"{mandate.name} (${budget:,.0f})")

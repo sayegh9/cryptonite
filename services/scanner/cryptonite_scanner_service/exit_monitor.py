@@ -38,6 +38,7 @@ import os
 import time
 import uuid
 from dataclasses import asdict, dataclass, replace
+from decimal import Decimal
 
 import asyncpg
 import httpx
@@ -126,6 +127,9 @@ class Position:
     funding_rate: float | None = None
     owner_instance: str = AI_INSTANCE  # the one AI instance (legacy or a mandate's) that owns every row
     price_source: str = "STREAM"  # STREAM (live quote) | REST (backup: the stream quote was stale)
+    stop_price: float | None = None
+    take_profit_price: float | None = None
+    quantity: float = 0.0
 
     @property
     def pnl_pct(self) -> float:
@@ -141,12 +145,12 @@ class Position:
 
 @dataclass(frozen=True)
 class ExitAction:
-    kind: str  # CLOSE | EXIT_DEBATE | ALERT
+    kind: str  # CLOSE | EXIT_DEBATE | ALERT | REDUCE_TP1
     reason: str
 
 
 def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawdown_episode: bool = False,
-                  t: ExitThresholds | None = None) -> list[ExitAction]:
+                  t: ExitThresholds | None = None, tp1_done: bool = False) -> list[ExitAction]:
     """Pure exit rules. ``best_price``: most favourable price since the position opened.
     ``debate_armed``: no exit debate within the debounce window. ``in_drawdown_episode``: a drawdown
     debate already ran and the loss has not recovered since. ``t``: the thresholds to apply (default: the
@@ -156,13 +160,21 @@ def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawd
     stop_reason = None
     if pos.pnl_pct <= -t.stop_loss_pct:
         stop_reason = "HARD_STOP"
-    elif pos.entry_price and best_price:
+    elif pos.stop_price is not None and pos.stop_price > 0:
+        if (pos.stop_price < pos.entry_price and pos.current_price <= pos.stop_price) if long else (pos.stop_price > pos.entry_price and pos.current_price >= pos.stop_price):
+            stop_reason = "STRUCTURAL_STOP"
+    if stop_reason is None and pos.entry_price and best_price:
         best_gain = (best_price - pos.entry_price) / pos.entry_price * 100 * (1 if long else -1)
         give_back = (best_price - pos.current_price) / best_price * 100 * (1 if long else -1)
         if best_gain >= t.trail_activate_pct and give_back >= t.trail_pct:
             stop_reason = "TRAILING_STOP"
     if stop_reason:
         return [ExitAction("CLOSE", stop_reason)] if pos.ai_owned else [ExitAction("ALERT", stop_reason)]
+
+    if not tp1_done and pos.take_profit_price is not None and pos.take_profit_price > 0:
+        tp1_hit = (pos.take_profit_price > pos.entry_price and pos.current_price >= pos.take_profit_price) if long else (pos.take_profit_price < pos.entry_price and pos.current_price <= pos.take_profit_price)
+        if tp1_hit:
+            return [ExitAction("REDUCE_TP1", "TAKE_PROFIT_1")] if pos.ai_owned else [ExitAction("ALERT", "TAKE_PROFIT_1")]
 
     funding_against = pos.funding_rate is not None and (pos.funding_rate if long else -pos.funding_rate) >= t.funding_spike
     drawdown = pos.pnl_pct <= -t.debate_drawdown_pct and not in_drawdown_episode
@@ -290,6 +302,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
             FROM open_rows GROUP BY instrument_id
         )
         SELECT r.instrument_id, r.side,
+               SUM(r.quantity) AS quantity,
                SUM(r.quantity * r.entry_price) / NULLIF(SUM(r.quantity), 0) AS entry_price,
                MIN(r.opened_at) AS opened_at, o.ai_owned, o.owner
         FROM open_rows r JOIN owners o USING (instrument_id)
@@ -319,10 +332,53 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
                 funding = float(json.loads(raw).get("funding_rate"))
         except Exception:
             pass
+        stop_price: float | None = None
+        take_profit_price: float | None = None
+        if redis_client is not None:
+            try:
+                if raw_plan := await redis_client.get(f"exit:plan:{inst}:{r['owner']}"):
+                    plan_data = json.loads(raw_plan)
+                    sl = plan_data.get("stop_price") or plan_data.get("proposed_stop_loss")
+                    if sl is not None and float(sl) > 0:
+                        stop_price = float(sl)
+                    tp = plan_data.get("take_profit_price") or plan_data.get("proposed_take_profit")
+                    if tp is not None and float(tp) > 0:
+                        take_profit_price = float(tp)
+            except Exception:
+                pass
+        if stop_price is None or take_profit_price is None:
+            try:
+                cmd_row = await conn.fetchrow(
+                    """
+                    SELECT payload FROM execution_commands
+                    WHERE target_instance_id = $1
+                      AND command_type = 'SUBMIT_ORDER'
+                      AND status = 'COMPLETED'
+                      AND (payload->>'instrument_id' = $2 OR upper(split_part(payload->>'instrument_id', '.', 1)) = upper(split_part($2, '.', 1)))
+                    ORDER BY created_at DESC, command_id DESC
+                    LIMIT 1
+                    """,
+                    r["owner"], inst,
+                )
+                if cmd_row and cmd_row["payload"]:
+                    payload = json.loads(cmd_row["payload"]) if isinstance(cmd_row["payload"], str) else cmd_row["payload"]
+                    if stop_price is None:
+                        sl = payload.get("proposed_stop_loss") or payload.get("stop_price")
+                        if sl is not None and float(sl) > 0:
+                            stop_price = float(sl)
+                    if take_profit_price is None:
+                        tp = payload.get("proposed_take_profit") or payload.get("take_profit_price") or payload.get("take_profit")
+                        if tp is not None and float(tp) > 0:
+                            take_profit_price = float(tp)
+            except Exception as e:
+                logger.debug("Failed to lookup entry command stop/target for %s: %s", inst, e)
         positions.append(Position(
             r["instrument_id"], r["side"], float(r["entry_price"] or 0), price, bool(r["ai_owned"]),
             int(r["opened_at"].timestamp()) if r["opened_at"] else 0, funding,
             r["owner"] if r["ai_owned"] else AI_INSTANCE, source,
+            stop_price=stop_price,
+            take_profit_price=take_profit_price,
+            quantity=float(r["quantity"] or 0),
         ))
     return positions
 
@@ -360,10 +416,50 @@ async def enqueue_close(conn, pos: Position, reason: str) -> bool:
     return True
 
 
+async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1") -> bool:
+    """One TP1 50% scale-out per position; enqueues a SUBMIT_ORDER to reduce holding."""
+    if pos.quantity <= 0:
+        return False
+    prefix = f"exit_monitor:{pos.key}:{reason}"
+    last = await conn.fetchrow(
+        "SELECT status, created_at FROM execution_commands WHERE idempotency_key LIKE $1 || '%' ORDER BY created_at DESC LIMIT 1",
+        prefix,
+    )
+    if last is not None:
+        if last["status"] not in ("REJECTED", "FAILED"):
+            return False  # pending, running or done
+        if time.time() - last["created_at"].timestamp() < CLOSE_RETRY_AFTER_S:
+            return False
+    attempts = await conn.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key LIKE $1 || '%'", prefix)
+    half_qty = (Decimal(str(pos.quantity)) / Decimal(2)).normalize()
+    half_qty_str = format(half_qty, "f")
+    payload = {
+        "instrument_id": pos.instrument_id,
+        "side": "SELL" if pos.side == "LONG" else "BUY",
+        "order_type": "MARKET",
+        "quantity": half_qty_str,
+        "reason": reason,
+        "source": "exit_monitor_tp1",
+    }
+    await conn.execute(
+        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
+               requester_id, payload, status, environment, account_id)
+           VALUES ($1, $2, 'SUBMIT_ORDER', $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
+           ON CONFLICT (idempotency_key) DO NOTHING""",
+        uuid.uuid4(), f"{prefix}:{attempts}", pos.owner_instance,
+        json.dumps(payload), PAPER_ACCOUNT_ID,
+    )
+    return True
+
+
 async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
     if action.kind == "CLOSE":
         if await enqueue_close(conn, pos, action.reason):
             logger.warning("%s: closing %s %s (pnl %.2f%%)", action.reason, pos.side, pos.instrument_id, pos.pnl_pct)
+    elif action.kind == "REDUCE_TP1":
+        if await enqueue_tp1_reduce(conn, pos, action.reason):
+            await redis_client.set(f"exit:tp1:{pos.key}", "1", ex=30 * 86400)
+            logger.info("%s: reducing 50%% %s %s (pnl %.2f%%)", action.reason, pos.side, pos.instrument_id, pos.pnl_pct)
     elif action.kind == "EXIT_DEBATE":
         run_id = uuid.uuid4()
         await conn.execute(
@@ -376,7 +472,7 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
         logger.info("Exit debate for %s (%s, pnl %.2f%%)", pos.instrument_id, action.reason, pos.pnl_pct)
     if await redis_client.set(f"exit:alert:{pos.key}:{action.kind}:{action.reason}", "1", nx=True, ex=ALERT_DEBOUNCE_S):
         await redis_client.publish("channel:system_alerts", json.dumps({
-            "type": "EXIT_MONITOR", "severity": "INFO" if action.kind == "EXIT_DEBATE" else "CRITICAL",
+            "type": "EXIT_MONITOR", "severity": "INFO" if action.kind in ("EXIT_DEBATE", "REDUCE_TP1") else "CRITICAL",
             "instrument_id": pos.instrument_id, "action": action.kind, "reason": action.reason,
             "pnl_pct": round(pos.pnl_pct, 2), "ai_owned": pos.ai_owned,
         }))
@@ -397,7 +493,8 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
                 await redis_client.delete(episode_key)
             armed = not await redis_client.exists(f"debounce:exit:{pos.instrument_id}")
             in_episode = bool(await redis_client.exists(episode_key))
-            for action in evaluate_exit(pos, best, armed, in_episode, t):
+            tp1_done = bool(await redis_client.exists(f"exit:tp1:{pos.key}"))
+            for action in evaluate_exit(pos, best, armed, in_episode, t, tp1_done=tp1_done):
                 if action.reason == "DRAWDOWN":
                     await redis_client.set(episode_key, "1", ex=30 * 86400)
                 await act(conn, redis_client, pos, action)

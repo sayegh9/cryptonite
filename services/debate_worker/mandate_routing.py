@@ -144,7 +144,9 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
                       allocation_pct: float, *, mandate_id: str | None = None,
                       now: datetime.datetime | None = None,
                       decision_trace_id: str | None = None,
-                      marks: dict[str, LiveMark] | None = None) -> tuple[str, Mandate | None]:
+                      marks: dict[str, LiveMark] | None = None,
+                      stop_loss: float | None = None,
+                      take_profit: float | None = None) -> tuple[str, Mandate | None]:
     """Returns (debate_runs status, mandate). ``decision_trace_id`` (R7.4) rides in the command and
     approval payloads so the order and its fill can be traced back to the scanner candidate. ``marks``
     (``cryptonite_schemas.marks.read_marks``) values the mandate's positions for its room."""
@@ -159,6 +161,12 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
             "recommendation": recommendation, "conviction_score": conviction, "source": "debate", "run_id": str(run_id)}
     if decision_trace_id:
         base["decision_trace_id"] = str(decision_trace_id)
+    if stop_loss is not None and float(stop_loss) > 0:
+        base["proposed_stop_loss"] = float(stop_loss)
+        base["stop_price"] = float(stop_loss)
+    if take_profit is not None and float(take_profit) > 0:
+        base["proposed_take_profit"] = float(take_profit)
+        base["take_profit"] = float(take_profit)
     if side == "BUY":
         room = await entry_room_pct(conn, mandate, instrument_id, marks)
         if room < MIN_MANDATE_ENTRY_PCT:

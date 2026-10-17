@@ -12,7 +12,7 @@ Market data, research SQL/Parquet and debate staging reuse the registered tools 
 """
 
 import json
-from typing import Annotated, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from cryptonite_agents.brain.widgets import (
     MAX_ALLOCATION_PCT,
@@ -31,6 +31,7 @@ from cryptonite_agents.tools import (
     NEWS_SENTIMENT,
     QUERY_PARQUET,
     QUERY_POSTGRES,
+    SCAN_SWING_SETUPS,
     SCANNER_CONTEXT,
     STAGE_DEBATE_PROPOSAL,
     TRADE_TIMELINE,
@@ -40,10 +41,24 @@ from pydantic import Field
 
 
 @tool(RiskClass.READ, name="show_price_chart")
-def show_price_chart(symbol: str, timeframe: str = "1h") -> str:
-    """Show the operator an inline price chart for a symbol (e.g. 'BTCUSDT') and timeframe
-    ('1m', '5m', '15m', '1h', '4h', '1d'). Only for symbols the ingest feed records (get_klines reports in_feed)."""
-    return f"Chart of {symbol.upper()} {timeframe} is shown to the operator."
+async def show_price_chart(
+    symbol: str,
+    timeframe: Literal["1m", "5m", "15m", "1h", "4h", "1d"] = "1h",
+    bars: int = 96,
+    entry: float | None = None,
+    stop: float | None = None,
+    target: float | None = None,
+) -> dict[str, Any]:
+    """Render an inline candlestick chart for the operator. Only for symbols the ingest feed records (get_klines reports in_feed). Optionally pass entry, stop, and target prices to overlay swing trade geometry lines."""
+    bars = max(24, min(bars, 240))
+    out: dict[str, Any] = {"rendered": "price_chart", "symbol": symbol, "timeframe": timeframe, "bars": bars}
+    if entry is not None:
+        out["entry"] = float(entry)
+    if stop is not None:
+        out["stop"] = float(stop)
+    if target is not None:
+        out["target"] = float(target)
+    return out
 
 
 @tool(RiskClass.READ, name="explain_backtest")
@@ -78,6 +93,7 @@ def propose_order(
     limit_price: Annotated[float | None, Field(gt=0)] = None,
     stop_loss: Annotated[float | None, Field(gt=0)] = None,
     take_profit: Annotated[float | None, Field(gt=0)] = None,
+    reduce_pct: Literal[25, 50, 100] | None = None,
     rationale: Annotated[str, Field(max_length=2000)] = "",
     thesis: Annotated[str | None, Field(max_length=300)] = None,
     evidence: Annotated[list[EvidenceArg], Field(max_length=5)] = [],
@@ -89,12 +105,14 @@ def propose_order(
     approves or rejects the card. instrument_id like 'BTCUSDT.BINANCE'; side BUY or SELL;
     allocation_pct is the share of the mandate's budget (1 to 25): the approved order is sized from it at
     the live price and capped at the room left under the mandate's position limit; order_type MARKET or LIMIT
-    (LIMIT needs limit_price); give a short rationale.
+    (LIMIT needs limit_price); for SELL, reduce_pct (25, 50, or 100) scales out a portion of the mandate's holding
+    (e.g., 50 for taking half profit at TP1); give a short rationale.
     Give thesis, evidence (each item: the tool it came from, the field, the value, and its as_of time),
     invalidation (what would prove the idea wrong), horizon and confidence (0-1)."""
     proposal = OrderProposal(
         instrument_id=instrument_id, side=side, allocation_pct=allocation_pct,
         order_type=order_type, limit_price=limit_price, stop_loss=stop_loss, take_profit=take_profit,
+        reduce_pct=reduce_pct,
         rationale=rationale, thesis=thesis, evidence=evidence, invalidation=invalidation, horizon=horizon,
         confidence=confidence,
     )
@@ -113,6 +131,7 @@ BRAIN_TOOLS = (
     QUERY_POSTGRES,
     QUERY_PARQUET,
     COMPARE_LIVE_VS_BACKTEST,
+    SCAN_SWING_SETUPS,
     show_price_chart,
     explain_backtest,
     STAGE_DEBATE_PROPOSAL,

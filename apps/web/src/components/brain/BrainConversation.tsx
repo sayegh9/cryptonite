@@ -41,6 +41,7 @@ const TOOL_LABELS: Record<string, string> = {
   compare_live_vs_backtest: "live vs backtest",
   stage_debate_proposal: "stage debate",
   propose_order: "propose order",
+  scan_swing_setups: "swing radar",
 };
 
 function ToolChips({ message }: { message: BrainMessage }) {
@@ -162,6 +163,28 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
       setDraft("");
       return;
     }
+    const swingMatch = t.match(/^\/swing(?:\s+([A-Za-z0-9._-]+))?\s*$/i);
+    if (swingMatch) {
+      setDraft("");
+      if (swingMatch[1]) {
+        let sym = swingMatch[1].trim().toUpperCase();
+        if (!sym.includes(".")) {
+          if (!sym.endsWith("USDT")) {
+            sym = `${sym}USDT.BINANCE`;
+          } else {
+            sym = `${sym}.BINANCE`;
+          }
+        }
+        void sendBrainMessage(
+          `Scan swing setups and evaluate a multi-timeframe (4h/1h/15m) swing trade on ${sym}. Show the 1h price chart with entry, stop, and target levels, and if R:R >= 1.8, propose an order card with structural stop_loss and take_profit.`
+        );
+      } else {
+        void sendBrainMessage(
+          `Run scan_swing_setups across the liquid universe and show me the top multi-timeframe swing trade setups with Entry, Structural Stop, TP1, and R:R.`
+        );
+      }
+      return;
+    }
     const pm = POSTMORTEM.exec(t);
     if (pm) {
       // An argument that is not a symbol leaves the draft in place, so the operator can correct it
@@ -211,6 +234,16 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
           submit(draft);
         }}
       >
+        <div className="mb-2 flex items-center gap-1.5 font-mono text-2xs text-zinc-400">
+          <span className="text-zinc-500">Quick:</span>
+          <button
+            type="button"
+            onClick={() => submit("/swing")}
+            className="rounded border border-cyan-800/60 bg-cyan-950/40 px-1.5 py-0.5 text-2xs font-semibold text-cyan-300 hover:bg-cyan-900/60 transition-colors"
+          >
+            /swing
+          </button>
+        </div>
         <div className="flex items-end gap-2">
           <label htmlFor={compact ? "brain-input-compact" : "brain-input"} className="sr-only">
             Message the Brain
@@ -226,7 +259,7 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
               }
             }}
             rows={compact ? 1 : 2}
-            placeholder="Ask the Brain… (/why opens the last trace, /new starts over, /postmortem [SYMBOL] reviews a trade)"
+            placeholder="Ask the Brain… (/swing scans MTF setups, /why opens the last trace, /new starts over, /postmortem [SYMBOL] reviews a trade)"
             className="min-h-[36px] flex-1 resize-none rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 focus:border-cyan-600 focus:outline-none"
           />
           {streaming ? (

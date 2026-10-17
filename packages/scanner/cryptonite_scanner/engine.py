@@ -113,6 +113,42 @@ class ScannerEngine:
             else:
                 enriched_htf = cls.enrich_indicators(htf_df)
 
+        if enriched_htf is not None and not enriched_htf.is_empty():
+            htf_cols = [
+                col
+                for col in (
+                    "close",
+                    "open",
+                    "high",
+                    "low",
+                    "ema_20",
+                    "ema_50",
+                    "ema_200",
+                    "rsi",
+                    "macd",
+                    "macd_signal",
+                    "macd_hist",
+                    "atr",
+                    "volume_ratio",
+                    "bb_upper",
+                    "bb_middle",
+                    "bb_lower",
+                    "donchian_upper",
+                    "donchian_middle",
+                    "donchian_lower",
+                )
+                if col in enriched_htf.columns
+            ]
+            htf_selected = enriched_htf.select(
+                [pl.col("interval_end_exclusive_ns")]
+                + [pl.col(c).alias(f"htf_{c}") for c in htf_cols]
+            ).sort("interval_end_exclusive_ns")
+            valid_df = valid_df.sort("interval_end_exclusive_ns").join_asof(
+                htf_selected,
+                on="interval_end_exclusive_ns",
+                strategy="backward",
+            )
+
         # Evaluate each rule group into a boolean mask expression
         group_masks: list[pl.Expr] = []
         rule_eval_details: list[tuple[RuleGroup, list[tuple[RuleCondition, pl.Expr]]]] = []
@@ -171,7 +207,33 @@ class ScannerEngine:
                     if actual_val is not None:
                         prec_fmt = (
                             price_precision
-                            if cond.field in ("close", "open", "high", "low", "ema_20", "ema_50", "ema_200", "bb_lower", "bb_upper", "donchian_lower", "donchian_upper", "atr")
+                            if cond.field
+                            in (
+                                "close",
+                                "open",
+                                "high",
+                                "low",
+                                "ema_20",
+                                "ema_50",
+                                "ema_200",
+                                "bb_lower",
+                                "bb_upper",
+                                "donchian_lower",
+                                "donchian_upper",
+                                "atr",
+                                "htf_close",
+                                "htf_open",
+                                "htf_high",
+                                "htf_low",
+                                "htf_ema_20",
+                                "htf_ema_50",
+                                "htf_ema_200",
+                                "htf_bb_lower",
+                                "htf_bb_upper",
+                                "htf_donchian_lower",
+                                "htf_donchian_upper",
+                                "htf_atr",
+                            )
                             else 2
                         )
                         matched_explanations.append(
