@@ -15,11 +15,11 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 | #95 | Wave 3: card dry run, past lessons, debate follow-through, trusted system events, trade post-mortems | 16 Oct | 047 | 2,672 · PW 194 | deployed |
 | #96 | Derivatives & regime for any Binance symbol; actionable "no trade" answers; range setups | 17 Oct | – | 2,765 | deployed |
 | #97 | Order queue guard: failing commands cannot block queue; stuck-command alerts; conflict dry run; calm context | 17 Oct | – | 2,815 · PW 64 | deployed |
-| Swing (`WS-S0`–`WS-S5`) | AI-First Swing Trading: MTF `htf_*` scanner engine & presets, per-position structural stops & 50% `TP1` scale-out, partial `SELL` (`reduce_pct`), `scan_swing_setups` & `SwingRadarCard`, inline chart Entry/Stop/TP1 overlays, `/swing` chat command, and `ScannerBuilder` v2 ([docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)) | 17 Oct | – | 2,843 · tsc 0 | on `main` |
+| Swing (`WS-S0`–`WS-S5`) | AI-First Swing Trading: MTF `htf_*` scanner engine & presets, per-position structural stops & 50% `TP1` scale-out, partial `SELL` (`reduce_pct`), `scan_swing_setups` & `SwingRadarCard`, inline chart Entry/Stop/TP1 overlays, `/swing` chat command, and `ScannerBuilder` v2 ([docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)) | 17 Oct | – | 2,843 · tsc 0 | deployed |
 
 ## What runs now
 
-- **Code:** everything is on `main`; no pull requests are open. CI on GitHub does not run (see Operator items),
+- **Code:** everything is on `main` (`906c550`); no pull requests are open. CI on GitHub does not run (see Operator items),
   so every merge was verified locally with the test commands below.
 - **Database:** dev DB `cryptonite` at Alembic `047` (single head on main). `046` adds the read-only `agent_safe_*`
   views for the Brain; `047` adds the read-only view `agent_safe_trade_timeline` (the trade post-mortem) and two
