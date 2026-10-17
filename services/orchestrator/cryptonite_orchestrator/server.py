@@ -20,6 +20,7 @@ from cryptonite_execution.matching import PaperFill, match_order, match_working_
 from cryptonite_execution.risk import OrderIntent
 from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.mandate import (
+    MANDATE_INSTANCE_PREFIX,
     MIN_MANDATE_ENTRY_PCT,
     MandateReject,
     mandate_id_from_instance,
@@ -678,6 +679,10 @@ TRANSIENT_COMMAND_ERRORS = (
     asyncpg.exceptions.CannotConnectNowError,  # 57P03: the server is starting up or shutting down
     asyncpg.exceptions.AdminShutdownError,  # 57P01: the server ended the session
 )
+MANDATE_INSTANCE_REFUSAL = (
+    "MANDATE_INSTANCE: AI mandates are paused and resumed in Mission Control, not as strategy instances"
+)
+MANDATE_REFUSED_COMMANDS = ("DEPLOY", "PAUSE", "RESUME", "STOP")
 
 # Settled only from PENDING. FAILED is the end. UNKNOWN is RUNNING with the demo pipeline's ambiguous-outcome outcome:
 # the claim never takes a RUNNING row, so it is never claimed or resubmitted, and the stuck-command alert shows it.
@@ -791,6 +796,18 @@ async def command_poller(pool, engine, quote_cache=None):
                         trace_id = row.get("decision_trace_id") or payload.get("decision_trace_id")
                         logger.info("Orchestrator processing %s for %s (decision_trace_id=%s)", cmd_type, target, trace_id)
                         
+                        if cmd_type in MANDATE_REFUSED_COMMANDS and (target or "").startswith(MANDATE_INSTANCE_PREFIX):
+                            # AI mandates are paused, resumed and stopped in Mission Control only. The API refuses these
+                            # with a 409; this is the defence in depth, refused before any effect so the queue moves on.
+                            await conn.execute(
+                                "UPDATE execution_commands SET status = 'FAILED', command_outcome = 'REJECTED', "
+                                "error_message = $2, processed_at = now() WHERE command_id = $1",
+                                row["command_id"], MANDATE_INSTANCE_REFUSAL,
+                            )
+                            logger.warning("Refused %s for AI mandate %s (command %s)",
+                                           cmd_type, target, row["command_id"])
+                            continue
+
                         if cmd_type == "DEPLOY":
                             await conn.execute("""
                                 INSERT INTO paper_strategy_instances (
