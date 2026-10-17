@@ -24,6 +24,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -37,7 +38,7 @@ from cryptonite_api.brain_outcomes import (
     followed_cards,
     followed_debates,
 )
-from cryptonite_api.routes.agents import sign_request
+from cryptonite_api.routes.agents import PAPER_ACCOUNT_ID, sign_request
 from cryptonite_api.routes.ai import _stopped_mandate_on
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.universe import require_fed
@@ -48,11 +49,15 @@ from cryptonite_execution.mandate_store import (
     load_mandate,
     resolve_mandate_for,
 )
+from cryptonite_execution.mandates import MandateOrder, check_mandate
+from cryptonite_orchestrator.mandate_gate import mandate_exposure
 from cryptonite_schemas.mandate import (
     MIN_HOLDING_QTY,
     MIN_MANDATE_ENTRY_PCT,
     Mandate,
+    MandateReject,
     canonical_instrument,
+    mandate_id_from_instance,
 )
 from cryptonite_schemas.marks import read_marks
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -360,6 +365,31 @@ async def _holding_mandate_for_sell(conn, instrument_id: str) -> tuple[Mandate |
     return holders[0], ""
 
 
+async def _instrument_conflict(conn, mandate: Mandate, card: dict[str, Any]) -> str | None:
+    """The MANDATE_INSTRUMENT_CONFLICT detail when another owner holds the card's instrument, else None.
+
+    The orchestrator's mandate gate refuses an entry this way: ``mandate_gate.mandate_exposure`` finds who else holds
+    the instrument and ``mandates.check_mandate`` returns the verdict. Both run here unchanged and read-only, and only
+    the verdict is read, so the dry run cannot disagree with the gate. The API has no engine, so the dispatcher's
+    in-memory orders are not visible here; the gate still refuses those at execution. Nothing is written."""
+    instrument = canonical_instrument(card["instrument_id"])
+    engine = SimpleNamespace(dispatcher=SimpleNamespace(), account_id=PAPER_ACCOUNT_ID)
+    exposure = await mandate_exposure(conn, engine, mandate, instrument, {})
+    order = MandateOrder(instrument_id=instrument, side="BUY", quantity=Decimal(str(card.get("quantity") or 0)),
+                         ref_price=None)  # the conflict is decided before the notional, so no price is needed
+    if check_mandate(mandate, order, exposure, approval_ok=True) is not MandateReject.INSTRUMENT_CONFLICT:
+        return None
+    holder = await conn.fetchval(
+        """SELECT instance_id FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
+           AND instrument_id = $2 AND instance_id <> $3 LIMIT 1""", PAPER_ACCOUNT_ID, instrument, mandate.instance_id)
+    who = holder or "another owner"
+    held_by = mandate_id_from_instance(holder)
+    if held_by is not None:  # a mandate's instance: name the mandate, not its instance id
+        who = await conn.fetchval("SELECT name FROM ai_mandates WHERE id = $1", held_by) or who
+    return (f"MANDATE_INSTRUMENT_CONFLICT: {who} holds {card['instrument_id']}; mandate {mandate.name} cannot add to "
+            "it, so nothing was queued; reject this card")
+
+
 class CardApproveRequest(BaseModel):
     mandate_id: uuid.UUID | None = None  # default: the single ACTIVE mandate that allows the instrument
 
@@ -452,6 +482,12 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
 
     allocation = Decimal(str(card["allocation_pct"]))
     if card["side"] == "BUY":  # an entry only gets the room the mandate has left under its position limit
+        # Another owner holding the instrument refuses the entry in the orchestrator's gate: refused here too, before
+        # sizing and before the card is claimed, so the dry run and approve give the same answer
+        async with pool.acquire() as conn:
+            conflict = await _instrument_conflict(conn, mandate, card)
+        if conflict is not None:
+            raise HTTPException(status_code=409, detail=conflict)
         marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
         async with pool.acquire() as conn:
             room = await entry_room_pct(conn, mandate, card["instrument_id"], marks)
