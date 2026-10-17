@@ -15,8 +15,32 @@ import {
   TrendingUp,
   Layers,
   } from "lucide-react";
+import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import { DeployStrategyModal } from "./DeployStrategyModal";
 import { ManualTradeModal } from "./ManualTradeModal";
+
+/** AI mandates are paused, resumed and stopped in Mission Control; the API refuses instance commands for them. */
+const isAiMandate = (instanceId: string) => instanceId.startsWith("AI_MANDATE_");
+
+function MandateManagedNote() {
+  return (
+    <span className="text-2xs text-zinc-400 font-sans whitespace-nowrap">
+      AI mandate — manage it in{" "}
+      <a
+        href={`/${buildQuery("mission", "overview")}`}
+        onClick={(e) => {
+          // Modified clicks keep the browser's behaviour (new tab, new window, download)
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+          e.preventDefault();
+          dispatchSwitchWorkspace({ mode: "mission", view: "overview" });
+        }}
+        className="font-bold text-cyan-400 underline hover:text-cyan-300"
+      >
+        Mission Control
+      </a>
+    </span>
+  );
+}
 
 export function StrategyInstancesPanel() {
   const [instances, setInstances] = useState<any[]>([]);
@@ -126,6 +150,7 @@ export function StrategyInstancesPanel() {
                 const isRunning = inst.status === "RUNNING";
                 const isPaused = inst.status === "PAUSED";
                 const isStopped = inst.status === "STOPPED" || inst.status === "STOP";
+                const managedByMandate = isAiMandate(inst.instance_id);
 
                 let statusColor = "text-zinc-400 bg-zinc-800";
                 if (isRunning) statusColor = "text-emerald-400 bg-emerald-950/70 border border-emerald-800/50";
@@ -162,7 +187,8 @@ export function StrategyInstancesPanel() {
                       </span>
                     </td>
                     <td className="py-3 px-3 text-right space-x-1.5" onClick={(e) => e.stopPropagation()}>
-                      {isRunning && (
+                      {managedByMandate && <MandateManagedNote />}
+                      {isRunning && !managedByMandate && (
                         <>
                           <button
                             onClick={() => handleCommand(inst.instance_id, "pause")}
@@ -180,7 +206,7 @@ export function StrategyInstancesPanel() {
                           </button>
                         </>
                       )}
-                      {isPaused && (
+                      {isPaused && !managedByMandate && (
                         <button
                           onClick={() => handleCommand(inst.instance_id, "resume")}
                           className="p-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded transition-colors inline-flex"
@@ -208,17 +234,19 @@ export function StrategyInstancesPanel() {
                           >
                             <BrainCircuit className="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            onClick={() => {
-                              if (confirm(`Are you sure you want to STOP instance ${inst.instance_id}?`)) {
-                                handleCommand(inst.instance_id, "stop");
-                              }
-                            }}
-                            className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors inline-flex"
-                            title="Stop"
-                          >
-                            <Square className="w-3.5 h-3.5" />
-                          </button>
+                          {!managedByMandate && (
+                            <button
+                              onClick={() => {
+                                if (confirm(`Are you sure you want to STOP instance ${inst.instance_id}?`)) {
+                                  handleCommand(inst.instance_id, "stop");
+                                }
+                              }}
+                              className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded transition-colors inline-flex"
+                              title="Stop"
+                            >
+                              <Square className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </>
                       )}
                     </td>
@@ -383,6 +411,10 @@ export function StrategyInstancesPanel() {
 
             {/* Drawer Footer / Quick Actions */}
             <div className="p-4 border-t border-zinc-800 bg-zinc-900/40 flex items-center justify-between gap-2">
+              {isAiMandate(selectedInstance.instance_id) ? (
+                <MandateManagedNote />
+              ) : (
+                <>
               {selectedInstance.status === "RUNNING" ? (
                 <button
                   onClick={() => handleCommand(selectedInstance.instance_id, "pause")}
@@ -413,6 +445,8 @@ export function StrategyInstancesPanel() {
                   <Square className="w-3.5 h-3.5" />
                   <span>Stop</span>
                 </button>
+              )}
+                </>
               )}
             </div>
           </div>
