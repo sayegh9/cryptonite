@@ -189,22 +189,23 @@ export function StrategyInstancesPanel() {
                     <td className="py-3 px-3 text-right space-x-1.5" onClick={(e) => e.stopPropagation()}>
                       {managedByMandate && <MandateManagedNote />}
                       {isRunning && !managedByMandate && (
-                        <>
-                          <button
-                            onClick={() => handleCommand(inst.instance_id, "pause")}
-                            className="p-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded transition-colors inline-flex"
-                            title="Pause"
-                          >
-                            <Pause className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleCommand(inst.instance_id, "close-position")}
-                            className="px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white text-2xs rounded transition-colors inline-flex font-bold uppercase"
-                            title="Flatten Position"
-                          >
-                            FLATTEN
-                          </button>
-                        </>
+                        <button
+                          onClick={() => handleCommand(inst.instance_id, "pause")}
+                          className="p-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded transition-colors inline-flex"
+                          title="Pause"
+                        >
+                          <Pause className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {isRunning && (
+                        // Flatten reduces risk, so it stays on AI mandate rows too
+                        <button
+                          onClick={() => handleCommand(inst.instance_id, "close-position")}
+                          className="px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white text-2xs rounded transition-colors inline-flex font-bold uppercase"
+                          title="Flatten Position"
+                        >
+                          FLATTEN
+                        </button>
                       )}
                       {isPaused && !managedByMandate && (
                         <button
@@ -412,7 +413,19 @@ export function StrategyInstancesPanel() {
             {/* Drawer Footer / Quick Actions */}
             <div className="p-4 border-t border-zinc-800 bg-zinc-900/40 flex items-center justify-between gap-2">
               {isAiMandate(selectedInstance.instance_id) ? (
-                <MandateManagedNote />
+                <>
+                  <MandateManagedNote />
+                  {selectedInstance.status === "RUNNING" && (
+                    // Flatten reduces risk, so it stays on AI mandates; Pause, Resume and Stop are managed in Mission Control
+                    <button
+                      onClick={() => handleCommand(selectedInstance.instance_id, "close-position")}
+                      className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded font-bold transition-colors flex items-center justify-center space-x-1"
+                      title="Flatten Position"
+                    >
+                      <span>Flatten Position</span>
+                    </button>
+                  )}
+                </>
               ) : (
                 <>
               {selectedInstance.status === "RUNNING" ? (

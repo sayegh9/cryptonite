@@ -1,14 +1,14 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// AI mandates are paused, resumed and stopped in Mission Control, so their instance rows offer no command buttons,
-// only a link there. Other instances keep their controls.
+// AI mandates are paused, resumed and stopped in Mission Control, so their instance rows and drawers offer only a link
+// there, plus FLATTEN (close-position) while running, since flattening reduces risk. Other instances keep their controls.
 const MANDATE = {
   instance_id: "AI_MANDATE_587a1f2c",
   strategy_name: "AI Mandate",
   instrument_id: "BTCUSDT.BINANCE",
   timeframe: "1m",
   allocation_usd: 2000,
-  status: "PAUSED",
+  status: "RUNNING",
   last_processed_bar_ns: 1725700000000000000,
 };
 const RUNNING = {
@@ -37,7 +37,7 @@ async function stubStrategies(page: Page) {
 }
 
 test.describe("AI mandate instances: no instance commands, link to Mission Control", () => {
-  test("operator panel hides command buttons for an AI mandate row and keeps them for other instances", async ({ page }) => {
+  test("operator panel shows only FLATTEN and the link on an AI mandate row and keeps controls for other instances", async ({ page }) => {
     await page.route("**/api/v1/auth/me", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authenticated: true, username: "op", csrf_token: "t" }) }));
     await stubStrategies(page);
@@ -48,10 +48,10 @@ test.describe("AI mandate instances: no instance commands, link to Mission Contr
     const mandateRow = page.locator("tr", { hasText: "AI_MANDATE_587a" });
     await expect(mandateRow).toBeVisible();
     await expect(mandateRow.getByRole("link", { name: "Mission Control" })).toBeVisible();
+    await expect(mandateRow.getByTitle("Flatten Position")).toBeVisible();
     await expect(mandateRow.getByTitle("Resume")).toHaveCount(0);
     await expect(mandateRow.getByTitle("Pause")).toHaveCount(0);
     await expect(mandateRow.getByTitle("Stop")).toHaveCount(0);
-    await expect(mandateRow.getByTitle("Flatten Position")).toHaveCount(0);
 
     // Other instances keep their controls
     await expect(page.locator("tr", { hasText: "INST-RSI-02" }).getByTitle("Resume")).toBeVisible();
@@ -62,7 +62,7 @@ test.describe("AI mandate instances: no instance commands, link to Mission Contr
     await expect(running.getByRole("link", { name: "Mission Control" })).toHaveCount(0);
   });
 
-  test("the instance drawer for an AI mandate offers the link instead of Resume and Stop", async ({ page }) => {
+  test("the instance drawer for an AI mandate offers the link and Flatten instead of Pause, Resume and Stop", async ({ page }) => {
     await page.route("**/api/v1/auth/me", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authenticated: true, username: "op", csrf_token: "t" }) }));
     await stubStrategies(page);
@@ -72,8 +72,26 @@ test.describe("AI mandate instances: no instance commands, link to Mission Contr
     const drawer = page.locator("div.fixed", { hasText: "INSTANCE DETAILS" });
     await expect(drawer).toBeVisible();
     await expect(drawer.getByRole("link", { name: "Mission Control" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Flatten Position" })).toBeVisible();
+    await expect(drawer.getByText("Pause Strategy")).toHaveCount(0);
     await expect(drawer.getByText("Resume Strategy")).toHaveCount(0);
     await expect(drawer.getByRole("button", { name: /Stop/ })).toHaveCount(0);
+  });
+
+  test("FLATTEN on an AI mandate row sends close-position for that instance", async ({ page }) => {
+    await page.route("**/api/v1/auth/me", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authenticated: true, username: "op", csrf_token: "t" }) }));
+    await stubStrategies(page);
+    // Registered after the strategies stub so it takes precedence for the command URL
+    const commands: string[] = [];
+    await page.route("**/api/v1/paper/strategies/AI_MANDATE_587a1f2c/close-position", (route) => {
+      commands.push(route.request().method());
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    });
+    await page.goto("/?ws=operator");
+
+    await page.locator("tr", { hasText: "AI_MANDATE_587a" }).getByTitle("Flatten Position").click();
+    await expect.poll(() => commands).toEqual(["POST"]);
   });
 
   test("the link switches to Mission Control", async ({ page }) => {
