@@ -10,8 +10,13 @@ from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD
 from cryptonite_api.routes import settings as settings_route
 from cryptonite_api.routes.settings import (
     RegistryWriteRequest,
+    ShadowPaidUpdateRequest,
+    get_environment_health,
+    get_settings_audit,
     get_settings_registry,
+    get_shadow_allow_paid,
     update_registry_setting,
+    update_shadow_allow_paid,
 )
 from cryptonite_api.settings_registry import (
     REGISTRY,
@@ -182,6 +187,12 @@ class FakeConn:
     async def fetchrow(self, sql, *args):
         return self.row
 
+    async def fetchval(self, sql, *args):
+        for k, v in self.stored.items():
+            if k in sql or (args and k in args):
+                return v
+        return None
+
 
 class FakePool:
     def __init__(self, stored, row):
@@ -245,6 +256,12 @@ class WriteConn:
 
     async def fetch(self, sql, *args):
         return [{"key": k, "value": v} for k, v in self.stored.items() if k in args[0]]
+
+    async def fetchval(self, sql, *args):
+        for k, v in self.stored.items():
+            if k in sql or (args and k in args):
+                return v
+        return None
 
     def transaction(self):
         return _Ctx()
@@ -529,3 +546,144 @@ async def test_a_runtime_value_is_written_as_a_whole_number_json_string(monkeypa
     out = await put("alerts.heartbeat_grace_s", "120", pool=pool, auth_mgr=auth_mgr)
     assert out["previous"] == "300" and out["value"] == "120"
     assert pool.inserts() == [("alerts.heartbeat_grace_s", '"120"')]
+
+
+# --- tighter direction, shadow-paid toggle, and audit trail ----------------------------------------------------
+
+def test_entry_view_includes_tighter():
+    budget = entry_view(by_key("LLM_DAILY_BUDGET_USD"), "25.00")
+    assert budget["tighter"] == "lower"
+    lockout = entry_view(by_key("auth.lockout_s"), "900")
+    assert lockout["tighter"] == "higher"
+    stop_loss = entry_view(by_key("exit.stop_loss_pct"), "5")
+    assert stop_loss["tighter"] == "lower"
+
+
+@pytest.mark.asyncio
+async def test_environment_health_includes_shadow_allow_paid():
+    # Without request / pool, defaults to False
+    health_no_req = await get_environment_health(auth={})
+    assert health_no_req["shadow_allow_paid"] is False
+
+    # With pool having AI_SHADOW_ALLOW_PAID = 'true'
+    pool_true = FakePool({"AI_SHADOW_ALLOW_PAID": "true"}, None)
+    req_true = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool_true)))
+    health_true = await get_environment_health(req_true, auth={})
+    assert health_true["shadow_allow_paid"] is True
+
+    # With pool having AI_SHADOW_ALLOW_PAID = 'false'
+    pool_false = FakePool({"AI_SHADOW_ALLOW_PAID": "false"}, None)
+    req_false = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool_false)))
+    health_false = await get_environment_health(req_false, auth={})
+    assert health_false["shadow_allow_paid"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_shadow_allow_paid_default_and_stored():
+    # When not set in system_settings
+    pool_empty = FakePool({}, None)
+    req_empty = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool_empty)))
+    out = await get_shadow_allow_paid(req_empty, auth={})
+    assert out == {"key": "AI_SHADOW_ALLOW_PAID", "allow_paid": False, "default": False}
+
+    # When set to true
+    pool_true = FakePool({"AI_SHADOW_ALLOW_PAID": "true"}, None)
+    req_true = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool_true)))
+    out_true = await get_shadow_allow_paid(req_true, auth={})
+    assert out_true == {"key": "AI_SHADOW_ALLOW_PAID", "allow_paid": True, "default": False}
+
+
+@pytest.mark.asyncio
+async def test_update_shadow_allow_paid_success_and_audit():
+    pool, auth_mgr = WritePool({}), FakeAuthMgr()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool)), client=SimpleNamespace(host="127.0.0.1"))
+    body = ShadowPaidUpdateRequest(allow_paid=True, reason="Enabling shadow test models")
+    out = await update_shadow_allow_paid(body, request, auth=OPERATOR, auth_mgr=auth_mgr, x_csrf_token="tok")
+    assert out == {"success": True, "key": "AI_SHADOW_ALLOW_PAID", "allow_paid": True}
+    assert pool.inserts() == [("AI_SHADOW_ALLOW_PAID", "true")]
+    assert len(auth_mgr.events) == 1
+    event = auth_mgr.events[0]
+    assert event["action"] == "SETTING_UPDATE"
+    assert event["username"] == "op"
+    assert event["details"] == {"key": "AI_SHADOW_ALLOW_PAID", "allow_paid": True, "reason": "Enabling shadow test models"}
+
+    # Update back to False
+    body_false = ShadowPaidUpdateRequest(allow_paid=False, reason="Disabling shadow test models")
+    out_false = await update_shadow_allow_paid(body_false, request, auth=OPERATOR, auth_mgr=auth_mgr, x_csrf_token="tok")
+    assert out_false == {"success": True, "key": "AI_SHADOW_ALLOW_PAID", "allow_paid": False}
+    assert pool.inserts()[-1] == ("AI_SHADOW_ALLOW_PAID", "false")
+
+
+@pytest.mark.asyncio
+async def test_update_shadow_allow_paid_csrf_check():
+    pool, auth_mgr = WritePool({}), FakeAuthMgr()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool)), client=SimpleNamespace(host="127.0.0.1"))
+    body = ShadowPaidUpdateRequest(allow_paid=True, reason="Valid test reason")
+    with pytest.raises(HTTPException) as exc:
+        await update_shadow_allow_paid(body, request, auth=OPERATOR, auth_mgr=auth_mgr, x_csrf_token="bad-csrf")
+    assert exc.value.status_code == 403
+    assert pool.inserts() == []
+    assert auth_mgr.events == []
+
+
+@pytest.mark.asyncio
+async def test_get_settings_audit():
+    import datetime
+    import uuid
+
+    event_id = uuid.uuid4()
+    now = datetime.datetime.now(datetime.UTC)
+    mock_events = [
+        {
+            "event_id": event_id,
+            "username": "op",
+            "action": "SETTING_UPDATE",
+            "ip_address": "127.0.0.1",
+            "details": '{"key": "AI_SHADOW_ALLOW_PAID", "allow_paid": true}',
+            "occurred_at": now,
+        },
+        {
+            "event_id": "string-id-123",
+            "username": "admin",
+            "action": "ROUTE_UPDATE",
+            "ip_address": "192.168.1.1",
+            "details": {"role": "hunter", "model": "gemini"},
+            "occurred_at": now.isoformat(),
+        },
+    ]
+
+    class FakeAuditConn:
+        async def fetch(self, sql, *args):
+            return mock_events
+
+    class FakeAuditPool:
+        def acquire(self):
+            conn = FakeAuditConn()
+
+            class _Ctx:
+                async def __aenter__(self):
+                    return conn
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            return _Ctx()
+
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=FakeAuditPool())))
+    result = await get_settings_audit(request, auth=OPERATOR)
+    assert "events" in result
+    events = result["events"]
+    assert len(events) == 2
+    assert events[0]["event_id"] == str(event_id)
+    assert events[0]["action"] == "SETTING_UPDATE"
+    assert events[0]["details"] == {"key": "AI_SHADOW_ALLOW_PAID", "allow_paid": True}
+    assert events[0]["occurred_at"] == now.isoformat()
+
+    assert events[1]["event_id"] == "string-id-123"
+    assert events[1]["details"] == {"role": "hunter", "model": "gemini"}
+    assert events[1]["occurred_at"] == now.isoformat()
+
+    # Without pool
+    no_pool_req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    assert await get_settings_audit(no_pool_req, auth=OPERATOR) == {"events": []}
+

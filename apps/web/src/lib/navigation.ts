@@ -46,6 +46,83 @@ export function buildQuery(mode: WorkspaceMode, view?: string | null): string {
   return `?${p.toString()}`;
 }
 
+export type SettingsSection =
+  | "preferences"
+  | "ai"
+  | "exit"
+  | "risk"
+  | "scanner"
+  | "alerts"
+  | "security"
+  | "system";
+
+export interface SettingsSectionMeta {
+  id: SettingsSection;
+  label: string;
+  shortLabel: string;
+  description: string;
+  keywords: string;
+}
+
+export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
+  {
+    id: "preferences",
+    label: "Desk Preferences",
+    shortLabel: "Preferences",
+    description: "Theme, density, audio alerts, quote currency & workstation defaults",
+    keywords: "theme light dark density audio volume chime pnl currency precision timezone",
+  },
+  {
+    id: "ai",
+    label: "AI Gateway & Model Routing",
+    shortLabel: "AI Gateway",
+    description: "Gemini / local LLM provider keys, temperature, latency tiers & fallback routing",
+    keywords: "ai llm gemini claude gpt model routing providers temperature tokens fallback",
+  },
+  {
+    id: "exit",
+    label: "Exit Rules & Stop Loss",
+    shortLabel: "Exit Rules",
+    description: "Dynamic trailing stops, take-profit ladders, time stops & breakeven triggers",
+    keywords: "exit stoploss takeprofit trailing breakeven ladder liquidation rmultiples",
+  },
+  {
+    id: "risk",
+    label: "Risk & Guardrails",
+    shortLabel: "Risk Guardrails",
+    description: "Mandate exposure caps, daily loss limits, leverage ceilings & drawdown controls",
+    keywords: "risk exposure drawdown leverage limits guardrails capital allocation",
+  },
+  {
+    id: "scanner",
+    label: "Scanner & Universe",
+    shortLabel: "Scanner Universe",
+    description: "Screening presets, candle poll intervals, Polars compute threads & pair universe",
+    keywords: "scanner universe polars filters momentum breakout screening refresh",
+  },
+  {
+    id: "alerts",
+    label: "Alerts & Integrations",
+    shortLabel: "Alerts & Webhooks",
+    description: "Webhook notification targets, Telegram/Discord routing & severity filters",
+    keywords: "alerts webhooks notifications telegram discord slack pagerduty email",
+  },
+  {
+    id: "security",
+    label: "Security & Session Policy",
+    shortLabel: "Security & Access",
+    description: "Operator TOTP 2FA, session timeout rules, API key rotation & CSRF policy",
+    keywords: "security totp 2fa auth session timeout apikey rotation credentials",
+  },
+  {
+    id: "system",
+    label: "System Health & Audit Log",
+    shortLabel: "System Audit",
+    description: "Database migration ledger, Redis stream telemetry & immutable audit trail",
+    keywords: "system health audit logs postgres redis stream telemetry migrations",
+  },
+];
+
 export interface NavItem {
   mode: WorkspaceMode;
   /** Visible tab text: e2e specs click these by name, keep them stable. */
@@ -56,36 +133,122 @@ export interface NavItem {
    * primary tabs fit a narrow pane instead of scrolling.
    */
   overflow?: boolean;
+  description: string;
+  iconName?: string;
 }
 
 /** Header groups. Labels are the visible tab texts. */
 export const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
-  { id: "trade", label: "Trade", items: [
-    { mode: "terminal", label: "Terminal" },
-    { mode: "markets", label: "Markets" },
-    { mode: "portfolio", label: "Portfolio" },
-  ] },
-  { id: "research", label: "Research", items: [
-    { mode: "research", label: "Research Lab" },
-    { mode: "terminal", label: "Scanner", view: "scanner", overflow: true },
-  ] },
-  { id: "ai", label: "AI", items: [
-    { mode: "debates", label: "AI Brain" },
-    { mode: "mission", label: "Mission Control" },
-  ] },
-  { id: "system", label: "System", items: [
-    { mode: "operator", label: "Operator", overflow: true },
-    { mode: "alerts", label: "Alerts", overflow: true },
-    { mode: "settings", label: "Settings", overflow: true },
-  ] },
+  {
+    id: "trade",
+    label: "Trade",
+    items: [
+      {
+        mode: "terminal",
+        label: "Terminal",
+        description: "Real-time charts, order placement & trade execution",
+        iconName: "Terminal",
+      },
+      {
+        mode: "markets",
+        label: "Markets",
+        description: "Live price tickers, volume movers & orderbook depth",
+        iconName: "TrendingUp",
+      },
+      {
+        mode: "portfolio",
+        label: "Portfolio",
+        description: "Realized PnL, open positions & asset allocation",
+        iconName: "Briefcase",
+      },
+    ],
+  },
+  {
+    id: "research",
+    label: "Research",
+    items: [
+      {
+        mode: "research",
+        label: "Research Lab",
+        description: "Vector backtesting, alpha strategy discovery & parameter sweeps",
+        iconName: "FlaskConical",
+      },
+      {
+        mode: "terminal",
+        label: "Scanner",
+        view: "scanner",
+        overflow: true,
+        description: "Vectorized Polars scanner & candidate momentum signals",
+        iconName: "Search",
+      },
+    ],
+  },
+  {
+    id: "ai",
+    label: "AI",
+    items: [
+      {
+        mode: "debates",
+        label: "AI Brain",
+        description: "Consensus debates, thesis evaluations & LLM decision audit",
+        iconName: "BrainCircuit",
+      },
+      {
+        mode: "mission",
+        label: "Mission Control",
+        description: "Trading mandates, risk autonomy levels & human-in-the-loop approvals",
+        iconName: "Gauge",
+      },
+    ],
+  },
+  {
+    id: "system",
+    label: "System",
+    items: [
+      {
+        mode: "operator",
+        label: "Operator",
+        overflow: true,
+        description: "Emergency kill switch, ledger reconciliation & engine instances",
+        iconName: "Activity",
+      },
+      {
+        mode: "alerts",
+        label: "Alerts",
+        overflow: true,
+        description: "Real-time price breach alerts & notification rules",
+        iconName: "Bell",
+      },
+      {
+        mode: "settings",
+        label: "Settings",
+        overflow: true,
+        description: "Desk preferences, risk limits, AI routing & institutional policies",
+        iconName: "Settings",
+      },
+    ],
+  },
 ];
 
 export interface SwitchWorkspaceDetail {
   mode: WorkspaceMode;
   view?: string;
+  section?: SettingsSection;
+}
+
+let lastDispatchedSection: SettingsSection | null = null;
+
+export function getLastDispatchedSettingsSection(): SettingsSection | null {
+  const sec = lastDispatchedSection;
+  lastDispatchedSection = null;
+  return sec;
 }
 
 /** Typed `cryptonite:switch-workspace` event (the page pushes a history entry for it). */
 export function dispatchSwitchWorkspace(detail: SwitchWorkspaceDetail) {
+  if (detail.section) {
+    lastDispatchedSection = detail.section;
+  }
   window.dispatchEvent(new CustomEvent<SwitchWorkspaceDetail>("cryptonite:switch-workspace", { detail }));
 }
+

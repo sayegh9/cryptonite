@@ -40,7 +40,10 @@ import { toast } from "sonner";
 import {
   Radio,
   BrainCircuit,
+  Search,
 } from "lucide-react";
+import { useDeskPreferences, applyDeskDOMPreferences } from "@/lib/stores/useDeskPreferences";
+
 
 // useSearchParams in a prerendered page must sit under a Suspense boundary (or `pnpm build` fails)
 export default function TerminalPage() {
@@ -65,9 +68,18 @@ function Workstation() {
   }, []);
   const setWorkspaceMode = useCallback((mode: WorkspaceMode) => navigate(mode), [navigate]);
 
+  // Apply desk DOM preferences (theme, density) on mount and subscribe to store changes
+  useEffect(() => {
+    applyDeskDOMPreferences(useDeskPreferences.getState());
+    return useDeskPreferences.subscribe((state) => {
+      applyDeskDOMPreferences(state);
+    });
+  }, []);
+
   // URL view -> stores (also after their persisted state rehydrates, so a stored view never overrides the URL)
   const urlViewRef = useRef({ mode: workspaceMode, view: urlView });
   urlViewRef.current = { mode: workspaceMode, view: urlView };
+
   useEffect(() => {
     const apply = () => {
       const { mode, view } = urlViewRef.current;
@@ -192,6 +204,9 @@ function Workstation() {
       const mode = parseWorkspace(e.detail?.mode);
       if (mode) {
         navigate(mode, typeof e.detail?.view === "string" ? e.detail.view : null);
+        if (e.detail?.section) {
+          window.dispatchEvent(new CustomEvent("cryptonite:settings-section", { detail: { section: e.detail.section } }));
+        }
       }
     };
     // Legacy "open copilot" callers ({ prompt, autoSend }) now talk to the Brain
@@ -292,7 +307,23 @@ function Workstation() {
           summaryClassName="md:max-w-40 lg:max-w-56 xl:max-w-xs 2xl:max-w-md"
         />
 
+        {/* Compact search & command palette trigger */}
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent("cryptonite:open-command-palette"))}
+          aria-label="Search and commands"
+          title="Search pairs, jump to any setting, or run commands (⌘K)"
+          className="flex flex-none items-center space-x-1.5 ml-2 md:ml-3 px-2 sm:px-2.5 py-1.5 bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-zinc-400 hover:text-zinc-200 rounded transition-colors font-mono text-2xs"
+        >
+          <Search className="w-3.5 h-3.5 text-zinc-400" aria-hidden="true" />
+          <span className="hidden xl:inline text-zinc-400">Search</span>
+          <kbd className="hidden sm:inline-block px-1 py-0.5 rounded bg-zinc-800 border border-zinc-700/60 text-3xs text-zinc-400 font-mono" aria-hidden="true">
+            ⌘K
+          </kbd>
+        </button>
+
         {/* On the AI Brain page the Brain chat is already on screen; the drawer would only duplicate it */}
+
         {workspaceMode !== "debates" && (
           <button
             onClick={() => setIsAgentChatOpen(true)}

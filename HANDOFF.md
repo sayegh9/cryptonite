@@ -16,6 +16,7 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 | #96 | Derivatives & regime for any Binance symbol; actionable "no trade" answers; range setups | 17 Oct | – | 2,765 | deployed |
 | #97 | Order queue guard: failing commands cannot block queue; stuck-command alerts; conflict dry run; calm context | 17 Oct | – | 2,815 · PW 64 | deployed |
 | Swing (`WS-S0`–`WS-S5`) | AI-First Swing Trading: MTF `htf_*` scanner engine & presets, per-position structural stops & 50% `TP1` scale-out, partial `SELL` (`reduce_pct`), `scan_swing_setups` & `SwingRadarCard`, inline chart Entry/Stop/TP1 overlays, `/swing` chat command, and `ScannerBuilder` v2 ([docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)) | 17 Oct | – | 2,843 · tsc 0 | deployed |
+| Settings & Header (`v2.1`) | 8-category Settings Command Center (Desk Preferences with Light/Dark/System theme & Web Audio chimes, AI Gateway & Shadow Paid toggle, interactive Exit Constraint Gauge, Risk & Guardrails, Scanner/Universe, Alerts, Security with `Tighter.HIGHER` TOTP fix, System Health & Audit trail) and App Header revamp (`⌘K` search, icons, tooltips) | 18 Oct | – | 55 pytest · PW 51 | deployed |
 
 ## What runs now
 

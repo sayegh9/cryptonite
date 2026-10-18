@@ -117,8 +117,28 @@ async def update_agent_config(agent_name: str, body: AgentConfigUpdate, request:
                 
     return {"status": "success"}
 
+def _truthy_setting(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().strip('"').lower() in {"true", "1", "yes", "on"}
+
+
+def _parse_details(details: Any) -> Any:
+    if isinstance(details, str):
+        try:
+            return json.loads(details)
+        except (json.JSONDecodeError, TypeError):
+            return details
+    return details
+
+
 @router.get("/environment")
-async def get_environment_health(auth: dict = Depends(require_operator)) -> dict[str, Any]:
+async def get_environment_health(
+    request: Request = None,
+    auth: dict = Depends(require_operator),
+) -> dict[str, Any]:
     gemini_key = os.getenv("GEMINI_API_KEY")
     binance_key = os.getenv("BINANCE_DEMO_API_KEY")
     env_mode = os.getenv("ENVIRONMENT", "DEMO")
@@ -132,6 +152,20 @@ async def get_environment_health(auth: dict = Depends(require_operator)) -> dict
     dev_totp_login = os.getenv("ALLOW_DEV_TOTP", "true").lower() in ("true", "1", "yes") and gate_env not in PROD_ENVS
     dev_totp_approvals = os.getenv("AI_ALLOW_DEV_TOTP", "false").lower() in ("true", "1", "yes")
     secure_cookie = os.getenv("SECURE_COOKIE", "false").lower() in ("true", "1", "yes")
+
+    shadow_allow_paid = False
+    if request is not None:
+        pool = getattr(getattr(request, "app", None), "state", None)
+        pool = getattr(pool, "pool", None)
+        if pool is not None:
+            try:
+                async with pool.acquire() as conn:
+                    raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = 'AI_SHADOW_ALLOW_PAID'")
+                    shadow_allow_paid = _truthy_setting(raw)
+            except Exception as e:
+                logger.warning(f"Failed to fetch shadow_allow_paid for environment: {e}")
+                shadow_allow_paid = False
+
     return {
         "gemini_key_set": bool(gemini_key and len(gemini_key) > 10),
         "binance_key_set": bool(binance_key and len(binance_key) > 10),
@@ -140,6 +174,7 @@ async def get_environment_health(auth: dict = Depends(require_operator)) -> dict
         "dev_totp_login": dev_totp_login,
         "dev_totp_approvals": dev_totp_approvals,
         "secure_cookie": secure_cookie,
+        "shadow_allow_paid": shadow_allow_paid,
         "warnings": health_warnings(
             environment=gate_env, dev_totp_login=dev_totp_login, dev_totp_approvals=dev_totp_approvals,
             secure_cookie=secure_cookie, kill_switch_active=kill_switch_active),
@@ -329,4 +364,99 @@ async def update_model_route(
         username=username, action="ROUTE_UPDATE", ip_address=client_ip,
         details={"role": role, "before": text(before), "after": text(values), "reason": body.reason, "totp_verified": True})
     return {"success": True, "role": role, "changed": True, "applies_within_s": 30}
+
+
+class ShadowPaidUpdateRequest(BaseModel):
+    allow_paid: bool
+    reason: str = Field(..., min_length=5, max_length=300, description="Audited reason for the change")
+
+
+@router.get("/shadow-paid")
+async def get_shadow_allow_paid(
+    request: Request,
+    auth: dict = Depends(require_operator),
+) -> dict[str, Any]:
+    """Check whether paid shadow candidate models are allowed."""
+    allow_paid = False
+    pool = getattr(getattr(request, "app", None), "state", None)
+    pool = getattr(pool, "pool", None)
+    if pool is not None:
+        try:
+            async with pool.acquire() as conn:
+                raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = 'AI_SHADOW_ALLOW_PAID'")
+                allow_paid = _truthy_setting(raw)
+        except Exception as e:
+            logger.warning(f"Failed to fetch shadow-paid setting: {e}")
+            allow_paid = False
+    return {"key": "AI_SHADOW_ALLOW_PAID", "allow_paid": allow_paid, "default": False}
+
+
+@router.put("/shadow-paid")
+async def update_shadow_allow_paid(
+    body: ShadowPaidUpdateRequest,
+    request: Request,
+    auth: dict = Depends(require_operator),
+    csrf: dict = Depends(require_csrf),
+    auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+) -> dict[str, Any]:
+    """Toggle whether paid shadow candidate models are allowed to run."""
+    verify_csrf(auth, x_csrf_token)
+    username = auth.get("username") or f"machine:{auth.get('role', 'operator')}"
+    client_ip = request.client.host if request.client else None
+    val_json = "true" if body.allow_paid else "false"
+
+    async with request.app.state.pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
+            "AI_SHADOW_ALLOW_PAID", val_json,
+        )
+
+    await auth_mgr.log_audit_event(
+        username=username,
+        action="SETTING_UPDATE",
+        ip_address=client_ip,
+        details={
+            "key": "AI_SHADOW_ALLOW_PAID",
+            "allow_paid": body.allow_paid,
+            "reason": body.reason,
+        },
+    )
+    return {"success": True, "key": "AI_SHADOW_ALLOW_PAID", "allow_paid": body.allow_paid}
+
+
+@router.get("/audit")
+async def get_settings_audit(
+    request: Request,
+    auth: dict = Depends(require_operator),
+) -> dict[str, Any]:
+    """The latest 50 settings-related audit events."""
+    pool = getattr(getattr(request, "app", None), "state", None)
+    pool = getattr(pool, "pool", None)
+    if pool is None:
+        return {"events": []}
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT event_id, username, action, ip_address, details, occurred_at
+               FROM auth_audit_events
+               WHERE action IN ('SETTING_UPDATE', 'SETTING_UPDATE_FAILED_AUTH', 'ROUTE_UPDATE', 'ROUTE_UPDATE_FAILED_AUTH', 'agent_config_update')
+               ORDER BY occurred_at DESC
+               LIMIT 50"""
+        )
+    events = []
+    for r in rows:
+        d = dict(r)
+        occ = d.get("occurred_at")
+        occ_str = occ.isoformat() if hasattr(occ, "isoformat") else (str(occ) if occ is not None else None)
+        events.append({
+            "event_id": str(d["event_id"]) if d.get("event_id") is not None else None,
+            "username": d.get("username"),
+            "action": d.get("action"),
+            "ip_address": d.get("ip_address"),
+            "details": _parse_details(d.get("details")),
+            "occurred_at": occ_str,
+        })
+    return {"events": events}
+
 

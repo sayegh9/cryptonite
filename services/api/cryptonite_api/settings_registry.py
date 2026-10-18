@@ -272,6 +272,7 @@ def entry_view(setting: Setting, value: Any, effective_value: Any = None) -> dic
         "value": value,
         "value_source": source,
         "effective": effective_value,
+        "tighter": setting.tighter.value,
     }
 
 

@@ -42,8 +42,8 @@
     "semantic_hash": ""
   },
   "apps/web/package.json": {
-    "mtime": 1791899017.0815473,
-    "seen": 1792177809.989813,
+    "mtime": 1792277990.6463501,
+    "seen": 1792278012.8050048,
     "ast_hash": "def9d1e22760d615621ff41290e48cbf",
     "semantic_hash": ""
   },
@@ -90,9 +90,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/app/page.tsx": {
-    "mtime": 1791904482.0165794,
-    "seen": 1792177809.990506,
-    "ast_hash": "a416007ad854e63ed7eb137ea670ed77",
+    "mtime": 1792275453.1141627,
+    "seen": 1792275559.788387,
+    "ast_hash": "7f0afecbfdc4e4aa26fc55409962650d",
     "semantic_hash": ""
   },
   "apps/web/src/components/AgentChatPanel.tsx": {
@@ -114,9 +114,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/CommandPalette.tsx": {
-    "mtime": 1791167628.251584,
-    "seen": 1792177809.9905221,
-    "ast_hash": "dc851b98c3686e246d0950cfe2772256",
+    "mtime": 1792277338.4179666,
+    "seen": 1792277515.0882084,
+    "ast_hash": "111f160987b9f3a2f1910ad371942512",
     "semantic_hash": ""
   },
   "apps/web/src/components/MarketOverview.tsx": {
@@ -192,9 +192,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/SettingsPanel.tsx": {
-    "mtime": 1792055531.6983297,
-    "seen": 1792177809.990576,
-    "ast_hash": "efd7f8cce7145028d7f0ebd205aa10ff",
+    "mtime": 1792277485.4992037,
+    "seen": 1792277515.0908,
+    "ast_hash": "ec75793d33f68869eeda8406d061d377",
     "semantic_hash": ""
   },
   "apps/web/src/components/TradingViewChart.tsx": {
@@ -468,9 +468,9 @@
     "semantic_hash": "9cfa577f022dbdf1dc3e3cd03e456cf8"
   },
   "packages/agents/cryptonite_agents/tools.py": {
-    "mtime": 1792261478.0763376,
-    "seen": 1792261554.6982489,
-    "ast_hash": "2c58c1a1b25264a0882802826e215231",
+    "mtime": 1792261779.1765046,
+    "seen": 1792275404.671793,
+    "ast_hash": "42355db469598ff03e862e795dae37aa",
     "semantic_hash": ""
   },
   "packages/agents/pyproject.toml": {
@@ -900,9 +900,9 @@
     "semantic_hash": ""
   },
   "services/api/cryptonite_api/routes/settings.py": {
-    "mtime": 1791894672.3430467,
-    "seen": 1792177810.0042806,
-    "ast_hash": "4b7c34c8a24e9cd696d8a52519e6c536",
+    "mtime": 1792275435.4292219,
+    "seen": 1792275559.8595672,
+    "ast_hash": "af140164d00c5bb272af0791e144b553",
     "semantic_hash": ""
   },
   "services/api/cryptonite_api/routes/signals.py": {
@@ -3252,15 +3252,15 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/SettingsRegistry.tsx": {
-    "mtime": 1791894672.334971,
-    "seen": 1792177809.990579,
-    "ast_hash": "4a8391cd395f12355a1954064e9b4e15",
+    "mtime": 1792277378.2297597,
+    "seen": 1792277515.0908046,
+    "ast_hash": "479c1609f65994e5c7f1f14a3c97d048",
     "semantic_hash": ""
   },
   "apps/web/src/components/WorkspaceNav.tsx": {
-    "mtime": 1791904482.0210094,
-    "seen": 1792177809.9905877,
-    "ast_hash": "72e6b4f9806ffe62c9d31dd5e0996524",
+    "mtime": 1792277355.9568753,
+    "seen": 1792277515.0911021,
+    "ast_hash": "114f00b4548c3fdc9a8ccaaf99d53ec9",
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainHistoryPanel.tsx": {
@@ -3396,9 +3396,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/lib/navigation.ts": {
-    "mtime": 1791904482.0261059,
-    "seen": 1792177809.992733,
-    "ast_hash": "87a98aeecd4732252629e3e6738082d0",
+    "mtime": 1792277415.3475668,
+    "seen": 1792277515.1033473,
+    "ast_hash": "434cd4d9c74d785da6f0b9fb07ed545e",
     "semantic_hash": ""
   },
   "apps/web/src/lib/portfolio/usePaperEquity.ts": {
@@ -3756,9 +3756,9 @@
     "semantic_hash": ""
   },
   "services/api/cryptonite_api/settings_registry.py": {
-    "mtime": 1791894672.3434093,
-    "seen": 1792177810.0044513,
-    "ast_hash": "0df72b0e4a3fc436bc448008f747d496",
+    "mtime": 1792275190.291925,
+    "seen": 1792275404.6855974,
+    "ast_hash": "d947779299837b0b69281eb2c5b29e2d",
     "semantic_hash": ""
   },
   "services/api/cryptonite_api/shadow.py": {
@@ -4194,9 +4194,9 @@
     "semantic_hash": ""
   },
   "tests/test_settings_registry.py": {
-    "mtime": 1791894672.3485384,
-    "seen": 1792177810.0131605,
-    "ast_hash": "190a4dca4a9cb5179c353ae3a1911eb0",
+    "mtime": 1792275351.3704896,
+    "seen": 1792275404.7045019,
+    "ast_hash": "f5e9b46b554e896d5dca721bc50d2941",
     "semantic_hash": ""
   },
   "tests/test_shadow_mode.py": {
@@ -4503,6 +4503,102 @@
     "mtime": 1792259514.4058955,
     "seen": 1792259766.5901854,
     "ast_hash": "44351018b77af62e8794366fcd2f7013",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/controls/ApplyModeBadge.tsx": {
+    "mtime": 1792275133.0250494,
+    "seen": 1792275404.656304,
+    "ast_hash": "ef2b9319fb201761b9175525703ecf18",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/controls/ExitConstraintGauge.tsx": {
+    "mtime": 1792276939.7110713,
+    "seen": 1792277515.0981462,
+    "ast_hash": "74026f9115c6939f509294b763de07e9",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/controls/SettingCard.tsx": {
+    "mtime": 1792277621.9944994,
+    "seen": 1792277936.5205064,
+    "ast_hash": "63833ef884fefa3a8a03801dd460a489",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/controls/TierBadge.tsx": {
+    "mtime": 1792275120.4340744,
+    "seen": 1792275404.6563118,
+    "ast_hash": "9d5171fd459e6331ff4c8e0cbf9c67e7",
+    "semantic_hash": ""
+  },
+  "apps/web/src/lib/stores/useDeskPreferences.ts": {
+    "mtime": 1792275300.0556405,
+    "seen": 1792275404.6610196,
+    "ast_hash": "85930cebf6cf63706b6bed26403ef332",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/AIGatewaySection.tsx": {
+    "mtime": 1792277085.887292,
+    "seen": 1792277515.0983152,
+    "ast_hash": "28a2044edca09d01dee8ac686cfeac4a",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/AlertsRoutingSection.tsx": {
+    "mtime": 1792277167.7698596,
+    "seen": 1792277515.0983198,
+    "ast_hash": "c61b13d239f20a827644fb494c25b72a",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/ExitRulesSection.tsx": {
+    "mtime": 1792277099.647219,
+    "seen": 1792277515.0983238,
+    "ast_hash": "958bc988d1e5e5d6a7c62d7b082fad1e",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/PreferencesSection.tsx": {
+    "mtime": 1792277506.4720953,
+    "seen": 1792277515.098328,
+    "ast_hash": "fe8732683e9823560ecd315695d5ec57",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/RiskGuardrailsSection.tsx": {
+    "mtime": 1792277126.0720794,
+    "seen": 1792277515.098332,
+    "ast_hash": "ef761f78193dca4c693e858c48b25970",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/ScannerUniverseSection.tsx": {
+    "mtime": 1792277142.1569946,
+    "seen": 1792277515.0983357,
+    "ast_hash": "e732ac394f229c7f2bc0f9e59c783bf6",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/SecurityPostureSection.tsx": {
+    "mtime": 1792277198.6036975,
+    "seen": 1792277515.098339,
+    "ast_hash": "35e596994712f8ca8c09c7acb1341f76",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/SettingsGlobalSearch.tsx": {
+    "mtime": 1792277251.768419,
+    "seen": 1792277515.0983434,
+    "ast_hash": "a4755af009bb91092d48a39f248367b1",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/sections/SystemAuditSection.tsx": {
+    "mtime": 1792277300.4191647,
+    "seen": 1792277515.098347,
+    "ast_hash": "834574d68681a30c1435eeb715197272",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/settings/types.ts": {
+    "mtime": 1792275991.7990189,
+    "seen": 1792276480.8791656,
+    "ast_hash": "821f88bba7b4c4bb1518a88c37009c75",
+    "semantic_hash": ""
+  },
+  "apps/web/e2e/settings_command_center.spec.ts": {
+    "mtime": 1792277634.1854367,
+    "seen": 1792277936.505509,
+    "ast_hash": "6334ba114d37e310ed8ac7274e8dd2eb",
     "semantic_hash": ""
   }
 }

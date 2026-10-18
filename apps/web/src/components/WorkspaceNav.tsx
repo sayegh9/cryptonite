@@ -2,7 +2,21 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  MoreHorizontal,
+  Terminal,
+  TrendingUp,
+  Briefcase,
+  FlaskConical,
+  Search,
+  BrainCircuit,
+  Gauge,
+  Activity,
+  Bell,
+  Settings,
+} from "lucide-react";
 import { NAV_GROUPS, type NavItem, type WorkspaceMode } from "@/lib/navigation";
 
 // Written out in full so the class scanner sees each utility as a literal.
@@ -12,6 +26,19 @@ const SHOW_ON_WIDE = "hidden min-[1100px]:flex";
 const HIDE_ON_WIDE = "min-[1100px]:hidden";
 
 const OVERFLOW_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items.filter((i) => i.overflow));
+
+const TAB_ICONS: Record<string, React.ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" }>> = {
+  Terminal,
+  Markets: TrendingUp,
+  Portfolio: Briefcase,
+  "Research Lab": FlaskConical,
+  Scanner: Search,
+  "AI Brain": BrainCircuit,
+  "Mission Control": Gauge,
+  Operator: Activity,
+  Alerts: Bell,
+  Settings,
+};
 
 const isActiveTab = (tab: NavItem, workspaceMode: WorkspaceMode, urlView: string | null) =>
   workspaceMode === tab.mode && (tab.view ? urlView === tab.view : !(tab.mode === "terminal" && urlView === "scanner"));
@@ -78,24 +105,34 @@ export function WorkspaceNav({
         >
           {NAV_GROUPS.map((group, gi) => {
             const allOverflow = group.items.every((i) => i.overflow);
+            const isSystem = group.id === "system";
             return (
               <div
                 key={group.id}
                 role="group"
                 aria-label={group.label}
-                className={`${allOverflow ? SHOW_ON_WIDE : "flex"} flex-none items-center h-full gap-4 ${gi > 0 ? "ml-4 pl-4 border-l border-zinc-800" : ""}`}
+                className={`${allOverflow ? SHOW_ON_WIDE : "flex"} flex-none items-center h-full gap-3 sm:gap-4 ${
+                  isSystem ? "ml-auto pl-4 border-l border-zinc-800" : gi > 0 ? "ml-4 pl-4 border-l border-zinc-800" : ""
+                }`}
               >
-                {/* Below 2xl the group borders carry the grouping; the labels' room goes to tabs */}
-                <span className="hidden 2xl:inline text-2xs uppercase tracking-widest text-zinc-500 select-none" aria-hidden="true">{group.label}</span>
+                {/* Refined category header pill visible from xl */}
+                <span
+                  className="hidden xl:inline text-2xs uppercase tracking-widest text-zinc-400 select-none px-1.5 py-0.5 rounded bg-zinc-900/60 border border-white/5"
+                  aria-hidden="true"
+                >
+                  {group.label}
+                </span>
                 {group.items.map((tab) => {
                   const active = isActiveTab(tab, workspaceMode, urlView);
+                  const Icon = TAB_ICONS[tab.label] ?? Activity;
                   return (
                     <button
                       key={`${tab.mode}-${tab.view ?? ""}`}
                       type="button"
                       onClick={() => navigate(tab.mode, tab.view)}
                       aria-current={active ? "page" : undefined}
-                      className={`h-full flex items-center border-b-2 px-1 whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${
+                      title={`${tab.label} — ${tab.description}`}
+                      className={`h-full flex items-center gap-1.5 border-b-2 px-1 whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60 ${
                         tab.overflow ? SHOW_ON_WIDE : "flex"
                       } ${
                         active
@@ -103,7 +140,7 @@ export function WorkspaceNav({
                           : "border-transparent text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
                       }`}
                     >
-                      {tab.label}
+                      <Icon className="h-3.5 w-3.5 flex-none" aria-hidden="true" /><span>{tab.label}</span>
                     </button>
                   );
                 })}
@@ -121,7 +158,7 @@ export function WorkspaceNav({
             onClick={() => scrollBy(-1)}
             className="absolute inset-y-0 left-0 flex w-8 items-center justify-start bg-gradient-to-r from-zinc-950 via-zinc-950/90 to-transparent text-zinc-400 hover:text-zinc-100"
           >
-            <ChevronLeft className="h-4 w-4" />
+            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
           </button>
         )}
         {edges.right && (
@@ -133,7 +170,7 @@ export function WorkspaceNav({
             onClick={() => scrollBy(1)}
             className="absolute inset-y-0 right-0 flex w-8 items-center justify-end bg-gradient-to-l from-zinc-950 via-zinc-950/90 to-transparent text-zinc-400 hover:text-zinc-100"
           >
-            <ChevronRight className="h-4 w-4" />
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
           </button>
         )}
       </div>
@@ -221,21 +258,23 @@ function OverflowMenu({
           >
             {OVERFLOW_ITEMS.map((tab) => {
               const active = isActiveTab(tab, workspaceMode, urlView);
+              const Icon = TAB_ICONS[tab.label] ?? Activity;
               return (
                 <button
                   key={`${tab.mode}-${tab.view ?? ""}`}
                   type="button"
                   role="menuitem"
                   aria-current={active ? "page" : undefined}
+                  title={`${tab.label} — ${tab.description}`}
                   onClick={() => {
                     navigate(tab.mode, tab.view);
                     setOpen(false);
                   }}
-                  className={`block w-full px-3 py-2 text-left font-mono text-xs ${
+                  className={`flex items-center gap-2 w-full px-3 py-2 text-left font-mono text-xs ${
                     active ? "text-cyan-400" : "text-zinc-300 hover:bg-zinc-900"
                   }`}
                 >
-                  {tab.label}
+                  <Icon className="h-3.5 w-3.5 flex-none" aria-hidden="true" /><span>{tab.label}</span>
                 </button>
               );
             })}
