@@ -1,7 +1,7 @@
 # Graph Report - repo  (2026-10-18)
 
 ## Corpus Check
-- 729 files · ~804,807 words
+- 729 files · ~804,851 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 52 file(s) not represented in the graph (top: .parquet 22, .Dockerfile 12, (none) 7)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `e10cc11e`
+- Built from commit: `e4dd527c`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -2051,7 +2051,7 @@ Nodes (3): offline(), fixture, No feed keys, no funding rows, no fed symbols, an
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `GuardedOrderDispatcher` connect `GuardedOrderDispatcher` to `ARCHITECTURE.md - System Interfaces & Contract Map`, `Mandate`, `test_ai_mandates.py`, `cryptonite_execution/__init__.py`, `send_alert`, `AI-First Cryptonite: Blueprint`, `test_risk_limits_f7.py`, `AI-First Program: what is built (Phases 0–7)`, `margin.py`, `debate_worker`, `cryptonite_execution/engine.py`, `Perpetual Futures (Paper) — System Architecture`, `make_perp_dispatcher`, `Remediation Plan (2026-10-04, reviewed)`, `signed_outcome`, `test_guarded_order_dispatcher_scaling`, `resolve_imports`?**
-  _High betweenness centrality (0.050) - this node is a cross-community bridge._
+  _High betweenness centrality (0.051) - this node is a cross-community bridge._
 - **Why does `Strategy` connect `lib/types.ts` to `SmokeTestStrategy`, `usePortfolioStore.ts`, `CanonicalSpikeStrategy`, `test_deterministic_intrabar_traversal_open_high_low_close`, `cryptonite_strategies/registry.py`?**
   _High betweenness centrality (0.037) - this node is a cross-community bridge._
 - **Why does `Unreleased — review-plan` connect `Unreleased — review-plan` to `HANDOFF.md`, `Mandate`, `cryptonite_schemas/marks.py`, `to_perp_instrument_id`, `process_debate_trigger`, `resample_1m_bars`, `CoalescedMarkToMarketProjector`, `signed_outcome`, `TradingViewChart.tsx`?**

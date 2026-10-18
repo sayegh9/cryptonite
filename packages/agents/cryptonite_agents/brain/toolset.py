@@ -109,7 +109,7 @@ def propose_order(
     confidence: Annotated[float | None, Field(ge=0, le=1)] = None,
 ) -> str:
     """Propose a PAPER order to the operator as an order card. You cannot place orders: the operator
-    approves or rejects the card. instrument_id like 'BTCUSDT.BINANCE'; side BUY or SELL;
+    approves or rejects the card. If no active mandate authorizes the instrument yet, propose anyway: the operator's card creates the mandate inline on approval. instrument_id like 'BTCUSDT.BINANCE'; side BUY or SELL;
     allocation_pct is the share of the mandate's budget (1 to 25): the approved order is sized from it at
     the live price and capped at the room left under the mandate's position limit; order_type MARKET or LIMIT
     (LIMIT needs limit_price); for SELL, reduce_pct (25, 50, or 100) scales out a portion of the mandate's holding

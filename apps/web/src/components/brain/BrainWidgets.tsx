@@ -1312,15 +1312,16 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
                   </button>
                   <button
                     type="button"
+                    data-testid="swing-radar-propose-btn"
                     onClick={() =>
                       void sendBrainMessage(
                         `Propose a ${c.direction === "LONG" ? "BUY" : "SELL"} swing order for ${c.instrument_id} with stop_loss ${c.stop} and take_profit ${c.target}`
                       )
                     }
-                    className="flex items-center gap-1 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-2xs text-zinc-200 hover:border-emerald-700 hover:text-emerald-300 transition-colors"
+                    className="flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-2xs font-semibold text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/25 transition-colors"
                   >
                     <CheckCircle2 className="h-3 w-3 text-emerald-400" />
-                    <span>Propose Order</span>
+                    <span>🎯 Propose Order</span>
                   </button>
                 </div>
               </div>

@@ -49649,7 +49649,7 @@
       "file_type": "code",
       "norm_label": "brainwidgetview()",
       "source_file": "apps/web/src/components/brain/BrainWidgets.tsx",
-      "source_location": "L1335"
+      "source_location": "L1336"
     },
     {
       "id": "apps_web_src_lib_brain_client_stopbrain",
@@ -74645,7 +74645,7 @@
       "file_type": "code",
       "norm_label": "brainwidgetlist()",
       "source_file": "apps/web/src/components/brain/BrainWidgets.tsx",
-      "source_location": "L1352"
+      "source_location": "L1353"
     },
     {
       "id": "apps_web_src_components_brain_brainwidgets_debatesummarycard",
@@ -300739,7 +300739,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/web/src/components/brain/BrainWidgets.tsx",
-      "source_location": "L1335",
+      "source_location": "L1336",
       "weight": 1.0
     },
     {
@@ -300750,7 +300750,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "apps/web/src/components/brain/BrainWidgets.tsx",
-      "source_location": "L1352",
+      "source_location": "L1353",
       "weight": 1.0
     },
     {
@@ -428877,5 +428877,5 @@
       "source_file": "docs/manual_images/05_operator_controls.png"
     }
   ],
-  "built_at_commit": "e10cc11e5cf04fd109a6637e5638cf28e46bd22b"
+  "built_at_commit": "e4dd527cce9ebdc9d40b01ecccd1471584dd5d01"
 }
