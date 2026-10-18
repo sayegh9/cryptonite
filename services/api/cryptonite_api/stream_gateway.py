@@ -30,6 +30,24 @@ PERP_CHANNELS = {
 PERP_MARK_KEY_PATTERN = "perp:mark:*"
 PERP_SUBSCRIPTION_CHANNEL = "perpetuals"
 DEFAULT_PERP_INSTRUMENTS = {"BTCUSDT-PERP.BINANCE", "ETHUSDT-PERP.BINANCE"}
+DEFAULT_SPOT_INSTRUMENTS = {
+    "BTCUSDT.BINANCE",
+    "ETHUSDT.BINANCE",
+    "SOLUSDT.BINANCE",
+    "BNBUSDT.BINANCE",
+    "XRPUSDT.BINANCE",
+    "WLDUSDT.BINANCE",
+    "MUBARAKUSDT.BINANCE",
+    "DOGEUSDT.BINANCE",
+    "NEARUSDT.BINANCE",
+    "ADAUSDT.BINANCE",
+    "AVAXUSDT.BINANCE",
+    "LINKUSDT.BINANCE",
+    "SUIUSDT.BINANCE",
+    "TRXUSDT.BINANCE",
+    "PEPEUSDT.BINANCE",
+    "SHIBUSDT.BINANCE",
+}
 
 
 class ClientConnection:
@@ -120,7 +138,7 @@ class StreamHub:
         perp_mark_key_pattern: str = PERP_MARK_KEY_PATTERN,
     ) -> None:
         self.redis_url = redis_url
-        self.allowed_instruments = allowed_instruments or {"BTCUSDT.BINANCE", "ETHUSDT.BINANCE"}
+        self.allowed_instruments = allowed_instruments or DEFAULT_SPOT_INSTRUMENTS
         self.allowed_perp_instruments = allowed_perp_instruments or DEFAULT_PERP_INSTRUMENTS
         self.perp_channels = perp_channels or PERP_CHANNELS
         self.perp_mark_key_pattern = perp_mark_key_pattern

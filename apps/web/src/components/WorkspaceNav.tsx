@@ -80,7 +80,7 @@ const isActiveTab = (tab: NavItem, workspaceMode: WorkspaceMode, urlView: string
     return !(tab.mode === "terminal" && urlView === "scanner");
   }
   // URL alias mapping:
-  if (workspaceMode === "trades" && tab.mode === "terminal" && !tab.view) return true;
+  if ((workspaceMode === "trades" || workspaceMode === "portfolio") && tab.mode === "portfolio") return true;
   if (workspaceMode === "strategies" && tab.mode === "research") return true;
   if (workspaceMode === "governance" && tab.mode === "mission") return true;
   return false;

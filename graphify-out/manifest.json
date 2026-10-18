@@ -90,9 +90,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/app/page.tsx": {
-    "mtime": 1792338680.2035291,
-    "seen": 1792338768.678222,
-    "ast_hash": "1ba8b0d786c58e3de9aa07394845a5ea",
+    "mtime": 1792341473.145718,
+    "seen": 1792341695.3629127,
+    "ast_hash": "a72f162978a78c7f88e8ff43150ff132",
     "semantic_hash": ""
   },
   "apps/web/src/components/AgentChatPanel.tsx": {
@@ -930,9 +930,9 @@
     "semantic_hash": "0e19f766367be53d233379d7cf303b8e"
   },
   "services/api/cryptonite_api/stream_gateway.py": {
-    "mtime": 1791145122.2477674,
-    "seen": 1792177810.004462,
-    "ast_hash": "4180cb6f85ba071860f3f22bca8bd3af",
+    "mtime": 1792341324.1058075,
+    "seen": 1792341695.403598,
+    "ast_hash": "42d5ab2f573095a774bf13d90b8b02db",
     "semantic_hash": ""
   },
   "services/api/pyproject.toml": {
@@ -3258,9 +3258,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/WorkspaceNav.tsx": {
-    "mtime": 1792338857.987373,
-    "seen": 1792339212.868064,
-    "ast_hash": "ecb4f26f6a5afa0184c2648e3d67baa5",
+    "mtime": 1792341413.0824022,
+    "seen": 1792341695.365414,
+    "ast_hash": "199d0eecf70a79b202977951ee807895",
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainHistoryPanel.tsx": {
@@ -3429,12 +3429,6 @@
     "mtime": 1791195023.4783568,
     "seen": 1792177809.9935908,
     "ast_hash": "08cb0a6d6f4cdc6fd1fcb67e08ce655a",
-    "semantic_hash": ""
-  },
-  "data/research_reports/28c4e31c-dff6-432d-93eb-15301467ed51.json": {
-    "mtime": 1791910228.1364872,
-    "seen": 1792177809.9946017,
-    "ast_hash": "e15c4842d9ccecc50d84c86b134321cc",
     "semantic_hash": ""
   },
   "infra/migrations/versions/032_research_validation.py": {

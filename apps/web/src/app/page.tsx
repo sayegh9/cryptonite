@@ -262,9 +262,11 @@ function Workstation() {
   useEffect(() => {
     if (!wsConnected) return;
     const client = getStreamClient();
+    const sym = selectedSymbol.includes(".") ? selectedSymbol.toUpperCase() : `${selectedSymbol.toUpperCase()}.BINANCE`;
+    const targetInstruments = Array.from(new Set([sym, "BTCUSDT.BINANCE", "ETHUSDT.BINANCE", "SOLUSDT.BINANCE", "BNBUSDT.BINANCE"]));
     client.updateSubscriptions(
       ["open_kline", "closed_bar_committed", "signal_candidate"],
-      [`${selectedSymbol}.BINANCE`, "BTCUSDT.BINANCE", "ETHUSDT.BINANCE", "SOLUSDT.BINANCE", "BNBUSDT.BINANCE"]
+      targetInstruments
     );
   }, [selectedSymbol, wsConnected]);
 
@@ -442,14 +444,9 @@ function Workstation() {
       <main className={workspaceMode === "research" ? "flex-1 overflow-hidden relative p-1 pb-[33px]" : "hidden"}>
         <ResearchLab />
       </main>
-      {workspaceMode === "trades" && (
+      {(workspaceMode === "trades" || workspaceMode === "portfolio") && (
         <div className="flex-1 min-h-0 min-w-0">
           <TradesConsole />
-        </div>
-      )}
-      {workspaceMode === "portfolio" && (
-        <div className="flex-1 min-h-0 min-w-0">
-          <PortfolioConsole />
         </div>
       )}
       {workspaceMode === "operator" && (

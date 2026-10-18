@@ -1,23 +1,23 @@
 # Graph Report - repo  (2026-10-18)
 
 ## Corpus Check
-- 730 files · ~804,243 words
+- 729 files · ~804,181 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 52 file(s) not represented in the graph (top: .parquet 22, .Dockerfile 12, (none) 7)
 
 ## Summary
-- 11047 nodes · 25671 edges · 486 communities (364 shown, 122 thin omitted)
+- 11047 nodes · 25671 edges · 499 communities (377 shown, 122 thin omitted)
 - Extraction: 90% EXTRACTED · 10% INFERRED · 0% AMBIGUOUS · INFERRED: 2489 edges (avg confidence: 0.91)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `17e44a15`
+- Built from commit: `b71576de`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - cryptonite_agents/tools.py
-- scanners.py
+- test_scanner_events_d2.py
 - peft_tuners_lora_aqlm
 - sandbox.py
 - SpotOcoManager
@@ -46,7 +46,7 @@
 - OutboxRelay
 - create_alert
 - Any
-- IngestionConflictError
+- TwoStoreCoordinator
 - .is_in_warmup
 - 0f58affc-2fe4-456b-83e5-fcd0d61f6f27/manifest.json
 - 1a6e1d19-af10-4aa2-8e5a-a68c380bacb6/manifest.json
@@ -61,12 +61,12 @@
 - 7abf5fae-fe31-4348-b290-a2be86687275/manifest.json
 - test_exit_monitor.py
 - test_autonomy.py
-- Request
+- approve_debate
 - margin.py
 - GuardedOrderDispatcher
 - autonomy.py
 - risk_limits.py
-- create_app
+- app
 - _DebateConn
 - usePerpetualStore.ts
 - BudgetGuard
@@ -79,7 +79,7 @@
 - ActionInbox.tsx
 - test_e1_feed_timeframes.py
 - test_backtest_sandbox.py
-- mandate_store.py
+- test_brain.py
 - ARCHITECTURE.md - System Interfaces & Contract Map
 - agent_worker/server.py
 - redis_double
@@ -92,8 +92,8 @@
 - Research Lab
 - test_ops_remediation.py
 - cryptonite
-- acquire
-- httpx
+- test_routing_policy.py
+- _conn
 - packaging_version
 - OnChainRPCAdapter
 - test_agent_safe_ai_state_views.py
@@ -105,7 +105,7 @@
 - make_perp_dispatcher
 - StartupWatermarkHandoffCoordinator
 - app/page.tsx
-- test_ai_evals.py
+- Gateway
 - test_regime_tags.py
 - collections_abc
 - System Status Bar
@@ -118,10 +118,10 @@
 - cryptonite_api/universe.py
 - debate_worker/main.py
 - trl_trainer_kto_trainer
-- test_reconnect_gap_recovery.py
+- update_risk_limits
 - CanonicalSpikeStrategy
 - SynchronousGuardedOrderDispatcher
-- test_brain_swing_tools.py
+- ToolSpec
 - Cryptonite Terminal with AI Strategist UI Screenshot
 - test_an_unchanged_route_writes_nothing
 - test_ops_monitor_applies_overrides_before_its_first_publish
@@ -134,9 +134,9 @@
 - IngestUniverse
 - components/GovernanceConsole.tsx
 - autonomy_metrics.py
-- agent.py
+- Brain
 - brain.py
-- test_brain.py
+- override_model
 - test_brain_card_preflight.py
 - Cryptonite AI Assistant
 - Cryptonite UI Screenshot
@@ -182,11 +182,11 @@
 - bitsandbytes
 - run_entry
 - modeBanner.ts
-- propose_order
-- test_nautilus_sandbox_spike.py
+- transcript
+- test_test_isolation.py
 - test_notifier.py
 - test_brain_trade_timeline.py
-- mandate_monitor.py
+- mandate_store.py
 - test_no_db_claim_takeover_old_attempt_writes_nothing
 - ScannerEngine
 - test_brain_ai_state.py
@@ -232,7 +232,7 @@
 - test_auth_policy.py
 - test_brain_any_symbol_tools.py
 - dependencies
-- app
+- signed_outcome
 - test_lake_open_stamped_repair.py
 - _invalid_output_model
 - AES Encryption Key
@@ -250,8 +250,8 @@
 - Cryptonite Platform
 - process_debate_trigger
 - test_compose_supervision.py
-- ops_monitor.py
-- Remediation Plan (2026-10-04, reviewed)
+- evals/runner.py
+- _spot_klines
 - test_api_perp_websocket_gateway.py
 - Security Policy
 - rules/graphify.md
@@ -278,7 +278,7 @@
 - devDependencies
 - send_alert
 - pydantic_ai_backend.py
-- Gateway
+- test_ai_gateway.py
 - test_orchestrator_kill_switch.py
 - numpy
 - ResearchApiClient
@@ -289,11 +289,11 @@
 - BacktestArtifactStore
 - build_summary_eval_set.py
 - test_perpetual_models.py
-- compare_live_vs_backtest
+- Remediation Plan (2026-10-04, reviewed)
 - test_entry_stale_before_insert_refused
 - brief.py
 - FakeConn
-- typing
+- json
 - test_trim_debate_queue.py
 - test_alembic_roundtrip_downgrade_and_upgrade
 - exit_monitor.py
@@ -305,10 +305,10 @@
 - cryptonite_backtester/__init__.py
 - @playwright/test
 - test_api_command_environment_routing.py
-- test_scanner_events_d2.py
+- SignalCandidateRead
 - peft_tuners_lora_bnb
 - cryptonite_execution/__init__.py
-- audit.py
+- Enum
 - AI-First Cryptonite: Blueprint
 - resample_1m_bars
 - _AsyncPipeline
@@ -316,8 +316,8 @@
 - _Pool
 - trl_trainer_grpo_trainer
 - EventBridgeWorker
-- _fapi_get
-- IngressHealthMonitor
+- .execute
+- unittest_mock
 - Perpetual Futures (Paper) — System Architecture
 - PaperTradingEngine
 - rerun_backtests.py
@@ -328,7 +328,7 @@
 - get_klines
 - HANDOFF
 - identifiers.py
-- contextlib
+- debate_queue.py
 - test_runtime_settings.py
 - gateway/shadow.py
 - gate.py
@@ -345,13 +345,13 @@
 - test_isotonic_calibration.py
 - .handle
 - offline.ts
-- 3. The run
+- test_ingest_perp_quotes.py
 - cryptonite_agents
 - test_gate_statistics.py
 - trl_trainer_online_dpo_trainer
 - crosshairEmitter.ts
 - trl_trainer_gkd_trainer
-- similar.py
+- normalize_verdict
 - mission-control.spec.ts
 - debate.py
 - test_brain_market_context.py
@@ -359,13 +359,13 @@
 - BacktestRunRequest
 - sentiment/server.py
 - FakeConn
-- model_validator
+- test_perpetual_liquidation_engine.py
 - trl_trainer_reward_trainer
 - 3. Release window (E1) — execute strictly in this order
 - cleanup_test_pollution.py
 - Brain upgrade plan
 - repair_catalog_series.py
-- json
+- OperatorAuthManager
 - CryptoniteStreamClient
 - cross_exposure.py
 - cryptonite_orchestrator/marks.py
@@ -374,15 +374,15 @@
 - regime.py
 - trim_debate_queue.py
 - ops_monitor
-- test_deterministic_intrabar_traversal_open_high_low_close
+- SameCandleTestStrategy
 - fixture
 - 6. AI Copilot & Multi-Agent Operations
 - catalog_history
 - debate_worker
 - test_duckdb_hardening.py
-- NodeCommandMailbox
+- Any
 - read_number
-- analyze_snapshot
+- DerivativesFeed
 - test_api_lake_stamping.py
 - E1 Deployment Runbook: Pre-Scanner-Start Preset Upgrade Sequence
 - cryptonite_strategies/validation.py
@@ -399,7 +399,7 @@
 - PerpWorld
 - SmokeTestStrategy
 - brain-home.spec.ts
-- .__init__
+- FundingSettlementTracker
 - test_paper_watermark_persistence.py
 - brain-history.spec.ts
 - test_closed_bar_event.py
@@ -408,24 +408,24 @@
 - test_labels_elapsed_horizons_then_reflects_on_the_24h_outcome
 - phase8_reporting.spec.ts
 - backfill_instrument
-- AI-First Program: what is built (Phases 0–7)
+- skip_scanner_backlog.py
 - instrument_defined
-- distill_triage_eval.py
+- test_drawdown_enforcement.py
 - lake
-- test_paper_mark_to_market_projection.py
+- ClientConnection
 - test_swing_execution_and_exits.py
 - _FakeConn
-- test_debate_decision_price.py
+- run_debate
 - ensure_strategies_seeded
 - cryptonite_schemas/research.py
 - _DuplicateDecision
-- get_signal_detail
+- cryptonite_backtester_service/server.py
 - test_recover_apply_refuses_renewal_between_precheck_and_lua_eval_trimmed_ack
 - _TraceConn
 - ADR 0007: Settings module: scope, change tiers, versioning
 - route.ts
 - resolve_imports
-- TwoStoreCoordinator
+- to_nautilus_bar_type
 - AntiCorruptionLayer
 - mandate-instance-controls.spec.ts
 - Browser QA agent: instructions
@@ -433,7 +433,7 @@
 - cryptonite-down.sh
 - create_backtest_run
 - serving
-- synthetic_lake
+- test_f_c1_window_is_not_emitted_while_its_last_minute_is_open
 - _Acquire
 - test_structural_isolation.py
 - QuoteRedis
@@ -453,7 +453,19 @@
 - test_fm6_operator_debates_list_shows_the_direction_and_the_cros_wording
 - test_guarded_order_dispatcher_scaling
 - test_duckdb_query_p95_latency
+- eval_sentiment.py
+- test_backtester_readiness_exact_branches
+- _card_worker
+- create_body
+- test_command_poller_processes_manual_order
 - test_brain_debate_followthrough.py
+- query_postgres_readonly
+- IntegritySupervisor
+- _chained
+- test_funding_backfill_fills_gaps_idempotently_across_pages
+- get_totp_aes_key
+- Cryptonite AI-First Swing Trading Wave Plan (`WS-S0` – `WS-S5`)
+- cli
 - pull_request_template.md
 - stage_debate_proposal
 - install.sh
@@ -514,10 +526,10 @@
   docs/adr/0007-settings-module.md → apps/web/src/components/operator/RiskLimitsForm.tsx
 - `7.1 Surfaces` --references--> `MarginRiskHUD()`  [INFERRED]
   docs/ai-first-blueprint.md → apps/web/src/components/terminal/MarginRiskHUD.tsx
-- `Phase 1: Navigation and layout (every page)` --references--> `Brain`  [INFERRED]
-  docs/runbooks/browser-qa-agent.md → packages/agents/cryptonite_agents/brain/agent.py
-- `Phase 7: AI Brain (at most 12 messages in total)` --references--> `Brain`  [INFERRED]
-  docs/runbooks/browser-qa-agent.md → packages/agents/cryptonite_agents/brain/agent.py
+- `1. SOLUSDT incident: what was verified` --references--> `propose_order()`  [INFERRED]
+  docs/brain-upgrade-plan.md → packages/agents/cryptonite_agents/brain/toolset.py
+- `Wave 4: measuring quality` --references--> `propose_order()`  [INFERRED]
+  docs/brain-upgrade-plan.md → packages/agents/cryptonite_agents/brain/toolset.py
 
 ## Import Cycles
 - 2-file cycle: `apps/web/src/components/PortfolioConsole.tsx -> apps/web/src/components/TradesConsole.tsx -> apps/web/src/components/PortfolioConsole.tsx`
@@ -539,15 +551,15 @@
 - **Execution Profiles** — docs_screenshots_03_research_lab_baseline_optimistic, docs_screenshots_03_research_lab_adverse_slippage, docs_screenshots_03_research_lab_conservative_institutional [INFERRED 0.95]
 - **Operator Authentication Form Components** — docs_manual_images_05_operator_controls_username_input, docs_manual_images_05_operator_controls_password_input, docs_manual_images_05_operator_controls_totp_code_input, docs_manual_images_05_operator_controls_login_button [INFERRED 0.95]
 
-## Communities (486 total, 122 thin omitted)
+## Communities (499 total, 122 thin omitted)
 
 ### Community 0 - "cryptonite_agents/tools.py"
-Cohesion: 0.05
-Nodes (89): _binance_error_code(), _classify_tf_trend(), _clean(), _clip(), _error_section(), _evict_expired(), _fed_symbols(), _fed_universe() (+81 more)
-
-### Community 1 - "scanners.py"
 Cohesion: 0.06
-Nodes (61): active_spec_cap(), compute_spec_hash(), Any, BaseModel, Compute deterministic SHA-256 hash over canonical sorted JSON., The cap on active scan specs (ADR 0007): the stored…, ScanJobCreate, ScanJobRead (+53 more)
+Nodes (71): _binance_error_code(), _classify_tf_trend(), _clean(), _clip(), _error_section(), _fapi_get(), _fapi_section(), _FapiNoPerpetual (+63 more)
+
+### Community 1 - "test_scanner_events_d2.py"
+Cohesion: 0.04
+Nodes (83): active_spec_cap(), compute_spec_hash(), Any, BaseModel, Compute deterministic SHA-256 hash over canonical sorted JSON., The cap on active scan specs (ADR 0007): the stored…, ScanJobCreate, ScanJobRead (+75 more)
 
 ### Community 3 - "sandbox.py"
 Cohesion: 0.13
@@ -558,12 +570,12 @@ Cohesion: 0.06
 Nodes (36): EntryOrderState, Any, Decimal, Process fill event on an entry order. Institutional OCO Contract: 1. 15-second…, Schedule asynchronous 15s entry protection timeout., Cancel running entry timer if entry filled or cancelled., Execute on 15s entry timer expiration: cancel remainder and install OCO., Installs protective OCO for the exact net acquired base quantity. (+28 more)
 
 ### Community 5 - "NautilusCatalogManager"
-Cohesion: 0.05
-Nodes (57): BarType, Create a Nautilus BarType from an instrument ID and timeframe., to_nautilus_bar_type(), missing_runs(), Bar close-stamps on the grid in [start, end] that no catalog file covers, as…, NautilusCatalogManager, Any, Path (+49 more)
+Cohesion: 0.06
+Nodes (47): missing_runs(), Bar close-stamps on the grid in [start, end] that no catalog file covers, as…, NautilusCatalogManager, Any, Path, Query bars from the catalog by full BarType string., List all instruments registered in the catalog., Get time intervals covered in catalog. Conforms to official API: accepts… (+39 more)
 
 ### Community 6 - "test_command_queue_guard.py"
-Cohesion: 0.05
-Nodes (61): _chained(), _cleanup(), _conn(), _drive(), _insert_command(), _insert_queued(), _KillingConnection, _KillOwnBackendOnce (+53 more)
+Cohesion: 0.12
+Nodes (25): _cleanup(), _insert_command(), _insert_queued(), _KillOwnBackendOnce, _PublishRecorder, WS-URGENT U-A: a bad command can never block the paper queue; AI-mandate…, The first run after deploy must not page for old rows: a fresh database has…, _state() (+17 more)
 
 ### Community 7 - "cryptonite_scanner/engine.py"
 Cohesion: 0.05
@@ -574,8 +586,8 @@ Cohesion: 0.05
 Nodes (71): OutcomesByRegime(), pct(), EquityCurveChart(), Props, InstanceRow, int(), LiveVsBacktestPanel(), num() (+63 more)
 
 ### Community 11 - "get_settings_registry"
-Cohesion: 0.14
-Nodes (23): _exit_monitor_heartbeat(), get_all_agent_configs(), get_environment_health(), get_model_routes(), get_settings_audit(), get_settings_registry(), get_shadow_allow_paid(), _parse_details() (+15 more)
+Cohesion: 0.13
+Nodes (24): _exit_monitor_heartbeat(), get_all_agent_configs(), get_environment_health(), get_model_routes(), get_settings_audit(), get_settings_registry(), get_shadow_allow_paid(), _parse_details() (+16 more)
 
 ### Community 12 - "DynamicExchangeFilterValidator"
 Cohesion: 0.10
@@ -594,8 +606,8 @@ Cohesion: 0.05
 Nodes (41): apps_web_src_app_globals, geist, metadata, CommandPalette(), APPLY_CONFIGS, ApplyConfig, ApplyModeBadge(), ApplyModeBadgeProps (+33 more)
 
 ### Community 16 - "test_c3_test_pollution.py"
-Cohesion: 0.06
-Nodes (44): tempfile, _connect_never_dev_db(), dev_db_env_vars(), no_paid_model_calls(), operator_auth(), fixture, pytest_configure(), Shared pytest fixtures for Cryptonite test suite. (+36 more)
+Cohesion: 0.05
+Nodes (47): tempfile, _connect_never_dev_db(), dev_db_env_vars(), no_paid_model_calls(), operator_auth(), fixture, pytest_configure(), Shared pytest fixtures for Cryptonite test suite. (+39 more)
 
 ### Community 17 - "StrategyAstEnforcer"
 Cohesion: 0.16
@@ -614,24 +626,24 @@ Cohesion: 0.13
 Nodes (27): calibration_error_pp(), calibration_interval_pp(), _ece(), ece_interval_pp(), equal_count_bins(), _fixed_buckets(), isotonic_fit(), _isotonic_or_unavailable() (+19 more)
 
 ### Community 21 - "BacktestWorker"
-Cohesion: 0.09
-Nodes (24): BacktestWorker, IntegrityIncidentError, LeaseFencingError, Any, Exception, UUID, Claim one pending or expired run using FOR UPDATE SKIP LOCKED with fresh…, Three-way crash recovery check handling all 4 recovery states explicitly. 1.… (+16 more)
+Cohesion: 0.08
+Nodes (23): BacktestWorker, IntegrityIncidentError, is_permanent_failure(), LeaseFencingError, Any, BaseException, Exception, UUID (+15 more)
 
 ### Community 22 - "test_credentialed_binance_demo.py"
-Cohesion: 0.06
-Nodes (52): base64, binance_demo, binance_demo_strict, cryptography_hazmat_primitives, cryptography_hazmat_primitives_asymmetric, cryptography_hazmat_primitives_serialization, Ed25519PrivateKey, FixtureRequest (+44 more)
+Cohesion: 0.07
+Nodes (48): base64, binance_demo, binance_demo_strict, cryptography_hazmat_primitives_serialization, Ed25519PrivateKey, FixtureRequest, hmac, nautilus_trader_adapters_binance (+40 more)
 
 ### Community 23 - "test_shadow_mode.py"
 Cohesion: 0.06
-Nodes (37): pydantic_ai_models_test, _alembic(), as_role(), _Ctx, db_url(), FakeConn, FakePool, gw() (+29 more)
+Nodes (36): _alembic(), as_role(), _Ctx, db_url(), FakeConn, FakePool, gw(), fixture (+28 more)
 
 ### Community 24 - "StrategistEngine"
-Cohesion: 0.16
-Nodes (16): Decimal, Deterministic rule-engine for the Execution Strategist Agent. Implements the…, StrategistEngine, Executes the deterministic StrategistEngine on a JSON representation of a…, run_execution_analysis(), MultiTimeframeSnapshot, BaseModel, OHLCV and indicator state for a specific timeframe. (+8 more)
+Cohesion: 0.10
+Nodes (26): Decimal, Deterministic rule-engine for the Execution Strategist Agent. Implements the…, StrategistEngine, Executes the deterministic StrategistEngine on a JSON representation of a…, run_execution_analysis(), MultiTimeframeSnapshot, BaseModel, OHLCV and indicator state for a specific timeframe. (+18 more)
 
 ### Community 25 - "migrated_database"
 Cohesion: 0.02
-Nodes (102): cryptonite_agents_gateway_providers, close_harness(), Harness, Hub, make_harness(), AsyncClient, Phase 5 API test harness: the real FastAPI app on a throwaway migrated…, assert_isolated() (+94 more)
+Nodes (104): close_harness(), Harness, Hub, make_harness(), AsyncClient, Phase 5 API test harness: the real FastAPI app on a throwaway migrated…, assert_isolated(), Guard before writing live-looking keys (heartbeats): the client must be on a… (+96 more)
 
 ### Community 26 - "BinanceDemoWebSocketApiClient"
 Cohesion: 0.08
@@ -649,9 +661,9 @@ Nodes (14): create_alert(), CreateAlertRequest, delete_alert(), list_alerts(), A
 Cohesion: 0.13
 Nodes (10): _BinanceBaseAdapter, BinanceCompositeAdapter, BinanceFuturesAdapter, BinanceSpotAdapter, Any, Decimal, Facade router segregating Spot and Futures execution requests., Base class for Binance REST adapters with Ed25519 signing. (+2 more)
 
-### Community 30 - "IngestionConflictError"
-Cohesion: 0.40
-Nodes (4): IngestionConflictError, Exception, Acquire PostgreSQL advisory lock for process-exclusive single writer., Raised when another recorder process already owns the advisory lock.
+### Community 30 - "TwoStoreCoordinator"
+Cohesion: 0.07
+Nodes (28): bar_to_nautilus(), BarType, Convert EnrichedBar to a native Nautilus Bar domain object., IngestionConflictError, Any, BarType, Exception, Pool (+20 more)
 
 ### Community 31 - ".is_in_warmup"
 Cohesion: 0.15
@@ -674,8 +686,8 @@ Cohesion: 0.06
 Nodes (34): ABC, NamedTuple, bars_to_arrow_table(), compute_payload_checksum(), Any, Table, Compute deterministic SHA256 checksum of logical bar contents., Convert list of EnrichedBar objects to an exact PyArrow Table matching… (+26 more)
 
 ### Community 36 - "pytest"
-Cohesion: 0.03
-Nodes (100): argon2, asyncpg, create_admin(), cryptography_exceptions, cryptography_hazmat_primitives_ciphers_aead, cryptonite_agents_research_queue, Atomic Parquet and JSON artifact persistence for backtest runs., pathlib (+92 more)
+Cohesion: 0.02
+Nodes (136): argparse, asyncpg, concurrent_futures, contextlib, cryptography_exceptions, cryptonite_agents_gateway, cryptonite_agents_gateway_local_tier, cryptonite_agents_gateway_providers (+128 more)
 
 ### Community 37 - "paper.py"
 Cohesion: 0.06
@@ -709,17 +721,17 @@ Nodes (26): book(), db_url(), AsyncClient, fixture, Exit monitor (blueprint A2.6
 Cohesion: 0.11
 Nodes (26): hypothesis, AutonomyTrigger, Exception, StrEnum, One level down (L1 stays L1: kind NOOP). Leaving L3 withdraws the perps opt-in., The next state for ``trigger``, or ``TransitionRefused``., _step_down(), Transition (+18 more)
 
-### Community 45 - "Request"
-Cohesion: 0.05
-Nodes (54): AIBrainTourModal(), 0. Review of the critique and the first plan, Accepted, not planned, Fourth and fifth reviews (same day): backend, migrations, tests, API paths, data, Review status, Safety rules for carrying out this plan, Second review (same day): found in the code, Third review (same day): found in the code (+46 more)
+### Community 45 - "approve_debate"
+Cohesion: 0.13
+Nodes (28): Second review (same day): found in the code, agent_chat(), agent_cro(), agent_explain(), agent_onchain(), agent_strategist(), approve_debate(), ApproveRequestOverrides (+20 more)
 
 ### Community 46 - "margin.py"
-Cohesion: 0.10
-Nodes (49): MarginMode, OrderSide, PositionSide, StrEnum, Perpetual futures domain models (USD-M linear, one-way position mode). Money is…, _build_brackets(), calculate_funding_payment(), calculate_initial_margin() (+41 more)
+Cohesion: 0.09
+Nodes (54): 1.2 Lake and DuckDB schemas (`data/analytics_lake/derivatives/binance/perpetual/`), 1. Data models, FundingRateRecord, MarginMode, OrderSide, PositionSide, StrEnum, Perpetual futures domain models (USD-M linear, one-way position mode). Money is… (+46 more)
 
 ### Community 47 - "GuardedOrderDispatcher"
 Cohesion: 0.06
-Nodes (33): 4. Fill accounting, liquidation, funding, _require_perp(), GuardedOrderDispatcher, mm_at_mark(), PerpPositionState, Any, Decimal, Spot longs plus perpetual positions in either direction (kill-switch reset… (+25 more)
+Nodes (32): 4. Fill accounting, liquidation, funding, GuardedOrderDispatcher, mm_at_mark(), PerpPositionState, Any, Decimal, Spot longs plus perpetual positions in either direction (kill-switch reset…, Entry = adds exposure: spot BUYs, and perp orders of either side unless reduce-… (+24 more)
 
 ### Community 48 - "autonomy.py"
 Cohesion: 0.10
@@ -729,9 +741,9 @@ Nodes (35): math, _calibration_upper_bound(), evaluate_gate(), _fmt(), GateCheck
 Cohesion: 0.15
 Nodes (18): apply_to_dispatcher(), ChangeCheck, cross_mandate_cap_pct(), dispatcher_targets(), effective(), _plain(), Decimal, Configurable risk limits (remediation Phase 8, F7): tighten-only overrides of… (+10 more)
 
-### Community 50 - "create_app"
-Cohesion: 0.11
-Nodes (21): create_app(), lifespan(), FastAPI, Application lifespan manager initializing DB pool, DuckDB engine, and StreamHub., Background task: evaluate active alerts every 15s against Binance live prices., run_alert_evaluator(), starlette_testclient, api_client() (+13 more)
+### Community 50 - "app"
+Cohesion: 0.06
+Nodes (39): create_app(), lifespan(), FastAPI, Application lifespan manager initializing DB pool, DuckDB engine, and StreamHub., Background task: evaluate active alerts every 15s against Binance live prices., run_alert_evaluator(), main(), starlette_testclient (+31 more)
 
 ### Community 51 - "_DebateConn"
 Cohesion: 0.10
@@ -742,31 +754,31 @@ Cohesion: 0.07
 Nodes (52): CHART_LAYOUT_EVENT, ChartConfig, GridLayout, MultiChartGrid(), Props, fmt(), formatCountdown(), liquidationRiskLevel() (+44 more)
 
 ### Community 53 - "BudgetGuard"
-Cohesion: 0.06
-Nodes (30): csv, BudgetExceeded, BudgetGuard, parse_cap(), date, Decimal, Exception, Raise BudgetExceeded if ``route`` may not call a model now. (+22 more)
+Cohesion: 0.08
+Nodes (23): BudgetExceeded, BudgetGuard, parse_cap(), date, Decimal, Exception, Raise BudgetExceeded if ``route`` may not call a model now., Raise BudgetExceeded if a shadow call for ``route`` may not run now (F2).… (+15 more)
 
 ### Community 54 - "components.json"
 Cohesion: 0.09
 Nodes (21): aliases, components, hooks, lib, ui, utils, iconLibrary, menuAccent (+13 more)
 
 ### Community 55 - "test_ai_approvals.py"
-Cohesion: 0.09
-Nodes (58): _apply_timeout(), approval_ttl_s(), ApprovalConflict, as_dict(), create_approval(), decide_approval(), Decision, enqueue_approval_command() (+50 more)
+Cohesion: 0.10
+Nodes (53): _apply_timeout(), approval_ttl_s(), ApprovalConflict, as_dict(), create_approval(), decide_approval(), Decision, enqueue_approval_command() (+45 more)
 
 ### Community 56 - "AnalyticsQueryEngine"
-Cohesion: 0.17
-Nodes (20): AnalyticsQueryEngine, Path, Fast analytical queries over date-partitioned Parquet data using DuckDB., test_concurrent_reads_each_get_the_same_bars(), test_analytics_lake_write_and_duckdb_query(), _files(), parametrize, The lake query engine refuses a symbol, timeframe, venue or market that is not… (+12 more)
+Cohesion: 0.16
+Nodes (22): AnalyticsQueryEngine, Path, Fast analytical queries over date-partitioned Parquet data using DuckDB., test_concurrent_reads_each_get_the_same_bars(), test_analytics_lake_write_and_duckdb_query(), _files(), parametrize, The lake query engine refuses a symbol, timeframe, venue or market that is not… (+14 more)
 
 ### Community 57 - "compilerOptions"
 Cohesion: 0.11
 Nodes (18): compilerOptions, allowJs, esModuleInterop, incremental, isolatedModules, jsx, lib, module (+10 more)
 
 ### Community 58 - "IngestRecorder"
-Cohesion: 0.07
-Nodes (24): IngestRecorder, _listen_for_new_instruments(), Any, Connect database and initialize coordinator with process lock., Merge the onboarded instruments rows into self.symbols on start (WS-1A); no-op…, Active TRADING SPOT BINANCE symbols from the instruments table; [] on any…, Env symbols first, in order and never truncated; then new onboarded symbols up…, Drop onboarded symbols Binance does not list for trading, so no dead symbol is… (+16 more)
+Cohesion: 0.04
+Nodes (45): IngestRecorder, _listen_for_new_instruments(), Any, Connect database and initialize coordinator with process lock., Merge the onboarded instruments rows into self.symbols on start (WS-1A); no-op…, Active TRADING SPOT BINANCE symbols from the instruments table; [] on any…, Env symbols first, in order and never truncated; then new onboarded symbols up…, Drop onboarded symbols Binance does not list for trading, so no dead symbol is… (+37 more)
 
 ### Community 59 - "test_orchestrator_paper_matching.py"
-Cohesion: 0.11
+Cohesion: 0.12
 Nodes (43): match_resting_orders(), Fill the working orders on ``instrument_id`` that this quote reaches (R7.3:…, SimpleQuoteCache, AbortingConn, cmd(), order(), pool_for(), Orchestrator paper matching: working orders fill only when the live quote… (+35 more)
 
 ### Community 60 - "ActionInbox.tsx"
@@ -781,9 +793,9 @@ Nodes (10): BarSpecification, parse_timeframe_to_nautilus_spec(), Parse timefram
 Cohesion: 0.17
 Nodes (26): collect(), RuntimeError, Validate the sandbox's result and copy its artifacts into the worker's own…, Submit a job to the strategy_sandbox container and wait for its validated…, run_in_sandbox(), SandboxError, _alive(), _fake_done() (+18 more)
 
-### Community 63 - "mandate_store.py"
-Cohesion: 0.16
-Nodes (19): apply_transition(), BreachVoidError, entry_room_pct(), load_mandate(), Any, Decimal, UUID, ValueError (+11 more)
+### Community 63 - "test_brain.py"
+Cohesion: 0.03
+Nodes (52): cryptonite_agents_evals, cryptonite_agents_evals_runner, no_card_note(), The reply's note for a held propose_order that made no card: the first…, Keyset cursor for the next page: the last row's (updated_at, id)., session_cursor(), _generate_hmac_headers(), as_role() (+44 more)
 
 ### Community 64 - "ARCHITECTURE.md - System Interfaces & Contract Map"
 Cohesion: 0.14
@@ -810,8 +822,8 @@ Cohesion: 0.12
 Nodes (27): AgentConfigUpdate, BaseModel, patch, Toggle whether paid shadow candidate models are allowed to run., RegistryWriteRequest, ShadowPaidUpdateRequest, update_agent_config(), update_shadow_allow_paid() (+19 more)
 
 ### Community 71 - "test_ai_mandates.py"
-Cohesion: 0.07
-Nodes (78): composite, copy, F4: one cap on the combined BTC risk of all mandates, ModelSettings, _settings(), action_class(), check_mandate(), entry_room_usd() (+70 more)
+Cohesion: 0.08
+Nodes (65): composite, copy, F4: one cap on the combined BTC risk of all mandates, ModelSettings, _settings(), check_mandate(), MandateExposure, None when the order is inside the mandate, else the reject code.… (+57 more)
 
 ### Community 73 - "Research Lab"
 Cohesion: 0.14
@@ -825,9 +837,13 @@ Nodes (18): Cryptonite API service package., _alembic(), api(), FakeAuth, FakeCo
 Cohesion: 0.42
 Nodes (16): cryptonite, cryptonite-agents, cryptonite-api, cryptonite-backtester, cryptonite-backtester-service, cryptonite-execution, cryptonite-executor, cryptonite-ingest (+8 more)
 
-### Community 77 - "httpx"
-Cohesion: 0.07
-Nodes (31): cryptonite_agents_research_loop, 5. Market context, email_utils, httpx, fetch_headlines(), for_symbol(), get_news_sentiment(), last_tag_ok() (+23 more)
+### Community 76 - "test_routing_policy.py"
+Cohesion: 0.08
+Nodes (30): cryptonite_api_routes, The editable fields of one route. A null field takes the code default (the…, Write one role's route (ADR 0007, Phase 2). Every change needs the operator's…, RouteWriteRequest, update_model_route(), text(), _fields(), known_model() (+22 more)
+
+### Community 77 - "_conn"
+Cohesion: 0.15
+Nodes (22): _conn(), _drive(), parametrize, _quotes(), fetchrow that hands out ``rows`` in turn, then ends the poller (CancelledError,…, Every SQL text the poller sent, through execute or fetchval, in order., fetchval for the settlement statements: the row was still PENDING, so the…, _row() (+14 more)
 
 ### Community 79 - "OnChainRPCAdapter"
 Cohesion: 0.14
@@ -839,11 +855,11 @@ Nodes (25): _alembic(), approval(), conn(), db_url(), debate_run(), decision(), 
 
 ### Community 81 - "test_orchestrator_perp_wiring.py"
 Cohesion: 0.11
-Nodes (35): consume_perp_marks(), datetime, Load cash, spot positions, and perp positions from Postgres into the dispatcher., Keep dispatcher mark prices current and run liquidation checks on fresh marks.…, One risk-monitor pass: UTC day rollover, DB kill-switch sync, daily drawdown…, rehydrate_dispatcher_state(), risk_monitor_once(), executed_sql() (+27 more)
+Nodes (33): guard(), record(), wrapper(), consume_perp_marks(), Load cash, spot positions, and perp positions from Postgres into the dispatcher., Keep dispatcher mark prices current and run liquidation checks on fresh marks.…, rehydrate_dispatcher_state(), ctx() (+25 more)
 
 ### Community 82 - "ai.py"
 Cohesion: 0.08
-Nodes (71): Enum, level_name(), The projector's marks, or ``{}`` (everything then reads as stored) when Redis…, read_marks(), actor(), ai_status(), approval_view(), _autonomy_view() (+63 more)
+Nodes (70): level_name(), The projector's marks, or ``{}`` (everything then reads as stored) when Redis…, read_marks(), actor(), ai_status(), approval_view(), _autonomy_view(), checked_totp() (+62 more)
 
 ### Community 83 - "MockRedis"
 Cohesion: 0.16
@@ -859,7 +875,7 @@ Nodes (23): OrderIntent, BaseModel, Normalized order intent emitted by strategie
 
 ### Community 86 - "make_perp_dispatcher"
 Cohesion: 0.09
-Nodes (55): test_dispatcher_clamp_is_unchanged(), test_a_breach_in_the_order_path_demotes_one_level(), deploy_and_run(), UUID, test_reduce_only_fill_without_a_position_never_opens_one(), test_stale_mark_rejects_entries_but_allows_reduce_only(), make_fresh_dispatcher(), make_perp_dispatcher() (+47 more)
+Nodes (53): test_dispatcher_clamp_is_unchanged(), test_a_breach_in_the_order_path_demotes_one_level(), test_reduce_only_fill_without_a_position_never_opens_one(), test_stale_mark_rejects_entries_but_allows_reduce_only(), make_fresh_dispatcher(), make_perp_dispatcher(), perp_intent(), Decimal (+45 more)
 
 ### Community 87 - "StartupWatermarkHandoffCoordinator"
 Cohesion: 0.18
@@ -869,9 +885,9 @@ Nodes (7): Implements and enforces the 8-step lossless startup watermark handoff
 Cohesion: 0.03
 Nodes (136): Workstation(), AgentChatPanel(), AIBrainWorkspace(), AIBrainWorkspaceProps, BrainConversation(), MessageView(), postmortemPrompt(), STARTERS (+128 more)
 
-### Community 89 - "test_ai_evals.py"
-Cohesion: 0.10
-Nodes (34): cryptonite_agents_evals, brain_stub(), db_url(), fixture, FunctionModel, parametrize, Eval harness (blueprint A1.6), offline: FunctionModels instead of Gemini, stub…, Stands in for propose_order: the eval only looks at the calls, not at what they… (+26 more)
+### Community 89 - "Gateway"
+Cohesion: 0.04
+Nodes (73): compact(), Fold older turns into a new summary when enough have piled up. Returns True if…, Gateway, settle(), GatewayError, GatewayResult, GatewayStreamEvent, InvalidModelOutput (+65 more)
 
 ### Community 90 - "test_regime_tags.py"
 Cohesion: 0.11
@@ -898,8 +914,8 @@ Cohesion: 0.16
 Nodes (21): apps_web_e2e_fixtures_closed_bar_committed, BUCKET_SECONDS, bucketSecondsOf(), CHART_STYLES, ChartStyle, ClosedBarEvent, closedBarFromEvent(), DOWN_VOLUME (+13 more)
 
 ### Community 96 - "Cryptonite: Institutional User Manual & Operations Guide"
-Cohesion: 0.07
-Nodes (28): 10.1 Mandates, 10.2 Autonomy levels, 10.3 Approvals, 10.4 Telegram and phone alerts, 10.5 Autonomy & Evals, 10.6 Local AI, 10. Mission Control: Mandates, Autonomy & Approvals, 1.1 Service Access Points (+20 more)
+Cohesion: 0.09
+Nodes (23): 10.1 Mandates, 10.2 Autonomy levels, 10.3 Approvals, 10.4 Telegram and phone alerts, 10.5 Autonomy & Evals, 10.6 Local AI, 10. Mission Control: Mandates, Autonomy & Approvals, 1.1 Service Access Points (+15 more)
 
 ### Community 98 - "cryptonite_schemas/marks.py"
 Cohesion: 0.12
@@ -913,9 +929,9 @@ Nodes (19): get_coin_profile(), get_ingest_universe(), get_market_overview(), ge
 Cohesion: 0.12
 Nodes (19): Handler, consumer_name(), DebateQueue, delete_idle_consumers(), ensure_groups(), housekeeping(), PoisonMessage, Exception (+11 more)
 
-### Community 102 - "test_reconnect_gap_recovery.py"
-Cohesion: 0.09
-Nodes (21): _make_mock_kline(), MockRestClient, asyncio, Deterministic tests for K1 Phase 2.3 reconnect gap recovery. Verifies: 1.…, Forced WebSocket reconnect triggers gap recovery for every fed symbol and…, add_symbol dynamically sends SUBSCRIBE frame on open WebSocket without closing…, add_symbol falls back to closing sockets (reconnect) if no open socket is…, When add_symbol dynamic subscribe succeeds, recovery is triggered only for the… (+13 more)
+### Community 102 - "update_risk_limits"
+Cohesion: 0.10
+Nodes (27): get_enforced_limits(), get_reconciliation_overview(), get_risk_limits(), get_system_status(), get_trading_balances(), get_trading_orders(), BaseModel, get (+19 more)
 
 ### Community 103 - "CanonicalSpikeStrategy"
 Cohesion: 0.07
@@ -925,9 +941,9 @@ Nodes (18): requires_dedicated_redis, BoundedEventBridgeQueue, CanonicalSpikeCon
 Cohesion: 0.19
 Nodes (9): ExecutionCommand, NodeCommandMailbox, OrderIntent, Decimal, Synchronous, node-thread-owned order risk evaluator and exposure reserver.…, Thread-safe queue bridging external async command loop to the dedicated node…, Spike 4: Verify synchronous risk reservation and mailbox command processing., SynchronousGuardedOrderDispatcher (+1 more)
 
-### Community 105 - "test_brain_swing_tools.py"
-Cohesion: 0.12
-Nodes (20): make_synthetic_1m_bars(), asyncio, DataFrame, Unit tests for AI Brain Chat Swing Tools (WS-S3). Verifies: 1.…, Verifies preset filtering by slug and max_results clamping to [1, 10]., Verifies graceful handling when the lake is completely empty., Verifies invalid or non-JSON content produces None., Verifies show_price_chart accepts entry, stop, and target overlay levels. (+12 more)
+### Community 105 - "ToolSpec"
+Cohesion: 0.11
+Nodes (19): cryptonite_agents_gateway_budget, cryptonite_agents_gateway_gateway, cryptonite_agents_gateway_permission, cryptonite_agents_gateway_registry, AI Gateway: routing, budget, permissions, fallback and tracing for every model…, PermissionGate, Exception, Permission gate: checked on every tool call before it runs (blueprint §4.1, §10… (+11 more)
 
 ### Community 106 - "Cryptonite Terminal with AI Strategist UI Screenshot"
 Cohesion: 0.22
@@ -942,20 +958,20 @@ Cohesion: 0.13
 Nodes (6): engine_with_defaults(), OneRowConn, Pool, test_ops_monitor_applies_overrides_before_its_first_publish(), test_orchestrator_applies_overrides_tighter_only_and_publishes_them(), test_orchestrator_reads_what_the_api_stored()
 
 ### Community 109 - "test_system_redis.py"
-Cohesion: 0.09
-Nodes (33): 3. Waves, Decisions taken during Wave 2, Decisions taken during Wave 3, Wave 2: foundation (the Brain can see its own system), Wave 3: cards and the debate loop, Wave 4: measuring quality, Wave 5: proactive and new features (needs **ADR 0008** approved first), get_ai_state() (+25 more)
+Cohesion: 0.11
+Nodes (27): 3. Waves, Decisions taken during Wave 2, Decisions taken during Wave 3, Wave 2: foundation (the Brain can see its own system), Wave 4: measuring quality, Wave 5: proactive and new features (needs **ADR 0008** approved first), get_ai_state(), The Redis URL for the live system keys (ingest universe, heartbeats, perp… (+19 more)
 
 ### Community 110 - "settings_registry.py"
 Cohesion: 0.09
-Nodes (38): Write one registry setting (ADR 0007). Lowering a value is free and raising it…, update_registry_setting(), Apply, current_values(), entry_view(), exit_rule_violations(), _exit_setting(), heartbeat_exit_values() (+30 more)
+Nodes (35): Write one registry setting (ADR 0007). Lowering a value is free and raising it…, update_registry_setting(), Apply, current_values(), exit_rule_violations(), _exit_setting(), heartbeat_exit_values(), Any (+27 more)
 
 ### Community 111 - "package.json"
 Cohesion: 0.09
 Nodes (24): name, packageManager, private, version, autoprefixer, clsx, cmdk, eslint (+16 more)
 
 ### Community 112 - "test_settings_registry.py"
-Cohesion: 0.12
-Nodes (29): cryptonite_api_routes_settings, health_warnings(), Warnings for the Settings health panel. Each flag is computed from the…, Whether a change needs the operator's TOTP (ADR 0007 tiers). Raises…, write_needs_totp(), by_key(), _codes(), The settings registry (ADR 0007), Phase 1: the read endpoint, the LLM budget… (+21 more)
+Cohesion: 0.11
+Nodes (31): cryptonite_api_routes_settings, entry_view(), health_warnings(), One registry entry as the API returns it. ``value`` is None where a service…, Warnings for the Settings health panel. Each flag is computed from the…, Whether a change needs the operator's TOTP (ADR 0007 tiers). Raises…, write_needs_totp(), by_key() (+23 more)
 
 ### Community 113 - "Notifier"
 Cohesion: 0.15
@@ -967,7 +983,7 @@ Nodes (8): Authorize Button, Dark Theme UI, Operator Control Header, Restricted 
 
 ### Community 115 - "IngestUniverse"
 Cohesion: 0.06
-Nodes (32): _bar_type_instrument(), IngestUniverse, normalize_timeframe(), Any, BaseModel, 1m' / '1H' / '15-MINUTE-LAST-EXTERNAL' / 'BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL'…, The instrument a full bar type string names ('BTCUSDT.BINANCE-1-MINUTE-...' ->…, What ingest streams right now: spot bars for ``symbols`` x ``timeframes`` (with… (+24 more)
+Nodes (34): _fed_universe(), The authoritative live ingest universe (Redis ``ingest:universe``), cached for…, _bar_type_instrument(), IngestUniverse, normalize_timeframe(), Any, BaseModel, 1m' / '1H' / '15-MINUTE-LAST-EXTERNAL' / 'BTCUSDT.BINANCE-1-HOUR-LAST-EXTERNAL'… (+26 more)
 
 ### Community 116 - "components/GovernanceConsole.tsx"
 Cohesion: 0.05
@@ -977,17 +993,17 @@ Nodes (87): ApprovalRiskInput, sideOf(), GovernanceConsoleProps, GovernanceView,
 Cohesion: 0.13
 Nodes (22): GateReport, gate_metrics(), gate_report(), _num(), propose_if_ready(), Any, datetime, Gate metrics for the autonomy ladder, measured from the database (AI-first… (+14 more)
 
-### Community 118 - "agent.py"
-Cohesion: 0.06
-Nodes (28): cryptonite_agents_brain, cryptonite_agents_brain_agent, cryptonite_agents_brain_lessons, cryptonite_agents_brain_routes, cryptonite_agents_brain_store, cryptonite_agents_brain_toolset, cryptonite_agents_gateway_budget, cryptonite_agents_gateway_gateway (+20 more)
+### Community 118 - "Brain"
+Cohesion: 0.05
+Nodes (39): cryptonite_agents_brain, cryptonite_agents_brain_agent, cryptonite_agents_brain_lessons, cryptonite_agents_brain_routes, cryptonite_agents_brain_store, cryptonite_agents_brain_toolset, 3. The run, Phase 0: Preflight and baseline (no changes) (+31 more)
 
 ### Community 119 - "brain.py"
 Cohesion: 0.12
 Nodes (22): sign_request(), brain_session_patch(), brain_sessions(), brain_stream(), BrainAskRequest, BrainNoteRequest, BrainSessionPatch, CardApproveRequest (+14 more)
 
-### Community 120 - "test_brain.py"
-Cohesion: 0.03
-Nodes (98): cryptonite_agents_evals_runner, Brain, MemorySessionStore, In-process store with the same behaviour (tests; a worker without a database)., Any, Render an inline candlestick chart for the operator. Only for symbols the…, show_price_chart(), override_model() (+90 more)
+### Community 120 - "override_model"
+Cohesion: 0.05
+Nodes (85): Field, ge, gt, le, MAX_ALLOCATION_PCT, max_length, MIN_ALLOCATION_PCT, min_length (+77 more)
 
 ### Community 121 - "test_brain_card_preflight.py"
 Cohesion: 0.08
@@ -1010,8 +1026,8 @@ Cohesion: 0.04
 Nodes (95): ExitConstraintGauge(), ExitConstraintGaugeProps, ExitValuesSet, RuleCheck, ADR-0007, decimalPattern(), formatDuration(), formatValueDisplay() (+87 more)
 
 ### Community 126 - "StreamHub"
-Cohesion: 0.08
-Nodes (19): 3.1 Transport, 3.2 Stores, 3.3 Components and behaviour, 3. UI state specification, websocket, websocket_stream_endpoint(), ClientConnection, Any (+11 more)
+Cohesion: 0.17
+Nodes (8): 3.1 Transport, websocket, websocket_stream_endpoint(), Central Redis stream listener and client broadcaster., Validate and apply client subscription message., Hydrate a new perpetuals subscriber from the cached perp:mark:* keys., Relay perpetual pub/sub channels to subscribed clients; resubscribes after…, StreamHub
 
 ### Community 127 - "BinanceRestClient"
 Cohesion: 0.12
@@ -1019,7 +1035,7 @@ Nodes (11): BinanceRestClient, Any, AsyncClient, Response, Fetch Binance Spot ex
 
 ### Community 128 - "Mandate"
 Cohesion: 0.07
-Nodes (50): 2.5 Dispatcher invariants, IntEnum, AutonomyLevel, canonical_instrument(), in_active_hours(), is_ai_instance(), is_perp_instrument(), Mandate (+42 more)
+Nodes (49): 2.5 Dispatcher invariants, IntEnum, AutonomyLevel, canonical_instrument(), in_active_hours(), is_ai_instance(), is_perp_instrument(), Mandate (+41 more)
 
 ### Community 129 - "useDebateStore.ts"
 Cohesion: 0.12
@@ -1086,12 +1102,12 @@ Cohesion: 0.08
 Nodes (53): option, query_cmd(), Run live WebSocket recorder with dual-store commit and health endpoints., Query Enriched Analytics Lake using DuckDB and display summary., Sync Binance Spot symbol metadata to DB and Nautilus catalog., record_cmd(), _run(), sync_symbols_cmd() (+45 more)
 
 ### Community 145 - "test_perpetual_funding_settlement.py"
-Cohesion: 0.07
-Nodes (54): guard(), record(), wrapper(), account(), ctx(), db_url(), fill(), open_position() (+46 more)
+Cohesion: 0.12
+Nodes (36): account(), fill(), open_position(), positions(), EventBridgeWorker persistence of perpetual fills into paper_positions /…, Dispatch + fill in the dispatcher, then persist through the bridge like the…, test_account_equity_counts_perp_unrealized_pnl_not_notional(), test_adding_to_short_updates_average_entry_and_liquidation_price() (+28 more)
 
 ### Community 146 - "test_ai_local_tier.py"
-Cohesion: 0.05
-Nodes (45): AsyncBaseTransport, MockTransport, LocalTierHealth, LocalTierStatus, ollama_root(), Any, Exception, Decode what ``LocalTierHealth`` published (API side); None when absent or… (+37 more)
+Cohesion: 0.06
+Nodes (41): AsyncBaseTransport, MockTransport, LocalTierHealth, LocalTierStatus, ollama_root(), Any, Exception, Decode what ``LocalTierHealth`` published (API side); None when absent or… (+33 more)
 
 ### Community 147 - "next-env.d.ts"
 Cohesion: 0.50
@@ -1106,8 +1122,8 @@ Cohesion: 0.50
 Nodes (4): Data Stack (DuckDB, Polars, PostgreSQL, Parquet, Redis), Execution Guard (Risk Guardrails), Nautilus 2.0.0rc4 LiveNode Engine, Portfolio & Paper Execution Console
 
 ### Community 150 - "test_mandate_card_truth.py"
-Cohesion: 0.08
-Nodes (35): Decimal, The orchestrator's command poller, with the dispatcher already holding ``held``…, run_seeded_poller(), brain_card(), _card_worker(), handler(), create_body(), db_url() (+27 more)
+Cohesion: 0.12
+Nodes (22): Decimal, The orchestrator's command poller, with the dispatcher already holding ``held``…, run_seeded_poller(), hold(), parametrize, The order card and the mandate editor tell the operator the true reason a…, A filled BUY on the mandate's own instance: what ``instance_spot_holdings``…, A notifier-signed decision, as the bot relays it (machine call, no operator… (+14 more)
 
 ### Community 151 - "Operator Workspace Screenshot"
 Cohesion: 0.67
@@ -1118,16 +1134,16 @@ Cohesion: 0.50
 Nodes (4): Dark Mode with Red Accents, Restricted Access Modal, TOTP Authentication Field, Operator Control Standalone UI
 
 ### Community 155 - "cryptonite_api/shadow.py"
-Cohesion: 0.13
-Nodes (25): cryptonite_agents_gateway_pricing, Direction, normalize_verdict(), A verdict in any case, surrounding spaces / tabs / line breaks ignored, as BUY…, ``normalize_verdict`` for callers that treat an unknown verdict as "no…, verdict_direction(), F2 shadow mode, reporting only: the routes with a shadow model (read-only;…, shadow_view() (+17 more)
+Cohesion: 0.18
+Nodes (19): cryptonite_agents_gateway_pricing, F2 shadow mode, reporting only: the routes with a shadow model (read-only;…, shadow_view(), direction(), _outcomes(), percentile(), Any, Shadow mode report (remediation Phase 8, F2): how a route's candidate model… (+11 more)
 
 ### Community 156 - "test_backup_drill.py"
 Cohesion: 0.10
 Nodes (39): 1. Initializing Roles, 2. Applying Migrations, 3. Creating the First Operator / Admin, Database Bootstrap Runbook, Description, bed(), drill_evidence(), manifest_of() (+31 more)
 
 ### Community 157 - "ScannerWorker"
-Cohesion: 0.05
-Nodes (44): builtins, 3.1 Measurements, Any, StreamReader, StreamWriter, Async HTTP server handling /health and /ready endpoints on port 8082., run_scanner_daemon(), ScannerHealthServer (+36 more)
+Cohesion: 0.04
+Nodes (50): builtins, 3.1 Measurements, 3. Workstream Breakdown, Agent Roles & Allowed Files, Wave A — Core Scanner MTF Engine & Guarded Swing Execution (Completed), Wave D — Verification, Docs, Knowledge Graph & Repo Sync (`WS-S5`, Completed), `WS-S1`: Multi-Timeframe Scanner Engine, Brief Pyramid & Swing Presets, Any, StreamReader (+42 more)
 
 ### Community 158 - "Crash-Recoverable Idempotent Commit Protocol"
 Cohesion: 0.67
@@ -1157,13 +1173,13 @@ Nodes (34): counting_model(), FakeEmbedder, live_tick_body(), FunctionModel, par
 Cohesion: 0.17
 Nodes (16): input(), m(), st(), AI_VENUE, AUTHORITY, AUTHORITY_DETAIL, computeModeBanner(), Freshness (+8 more)
 
-### Community 166 - "propose_order"
+### Community 166 - "transcript"
 Cohesion: 0.11
-Nodes (19): cryptonite_agents_brain_widgets, cryptonite_agents_research_tools, Field, ge, gt, le, MAX_ALLOCATION_PCT, max_length (+11 more)
+Nodes (23): BrainContext, _clip(), _fold(), _indent(), load_context(), _matching(), _neutral(), _operator_text() (+15 more)
 
-### Community 167 - "test_nautilus_sandbox_spike.py"
-Cohesion: 0.06
-Nodes (33): CurrencyPair, nautilus_trader_adapters_sandbox, nautilus_trader_config, nautilus_trader_core, nautilus_trader_infrastructure, pytest_report_header(), allow_live_redis_db(), dedicated_redis() (+25 more)
+### Community 167 - "test_test_isolation.py"
+Cohesion: 0.09
+Nodes (24): pytest_report_header(), allow_live_redis_db(), dedicated_redis(), isolated_redis_url(), One line for the pytest header: where the suite's Redis really points (the URL…, True only where the Redis server belongs to the test run alone (CI's service…, ``url`` (host, port, password kept) pointed at test DB ``db``; never a live…, Lets a dedicated-Redis-only test build a DB 0 client; refuses anywhere else. (+16 more)
 
 ### Community 168 - "test_notifier.py"
 Cohesion: 0.16
@@ -1171,27 +1187,27 @@ Nodes (25): approval_row(), FakePool, make_notifier(), pending(), press(), A5.4 
 
 ### Community 169 - "test_brain_trade_timeline.py"
 Cohesion: 0.08
-Nodes (26): get_trade_timeline(), The canonical instrument of 'XRPUSDT' or 'XRPUSDT.BINANCE'; None for any other…, Reconstructs recent AI trades: entry (card or debate, its summary), the debate…, _trade_instrument(), agent_tools(), Connection, fixture, parametrize (+18 more)
+Nodes (27): Wave 3: cards and the debate loop, get_trade_timeline(), The canonical instrument of 'XRPUSDT' or 'XRPUSDT.BINANCE'; None for any other…, Reconstructs recent AI trades: entry (card or debate, its summary), the debate…, _trade_instrument(), agent_tools(), Connection, fixture (+19 more)
 
-### Community 170 - "mandate_monitor.py"
-Cohesion: 0.18
-Nodes (28): AutonomyState, account_backstop(), alert(), _bid(), _cancel_pending_add_risk(), enqueue_flatten(), evaluate_drawdown(), flatten_instance() (+20 more)
+### Community 170 - "mandate_store.py"
+Cohesion: 0.09
+Nodes (48): AutonomyState, apply_transition(), BreachVoidError, entry_room_pct(), load_mandate(), Any, Decimal, UUID (+40 more)
 
 ### Community 171 - "test_no_db_claim_takeover_old_attempt_writes_nothing"
 Cohesion: 0.12
 Nodes (12): exit_decision_model(), parametrize, The exit fleet's verdict; optionally raise from the Nth call on (stale attempts…, Old consumer claims the exit run and pauses inside its claim->finalize window;…, Old acquires claim, pauses context; change only mocked Redis owner (NO new DB…, run_same_ref_takeover(), gated_context(), test_no_db_claim_takeover_old_attempt_writes_nothing() (+4 more)
 
 ### Community 172 - "ScannerEngine"
-Cohesion: 0.07
-Nodes (68): 3. Workstream Breakdown, Agent Roles & Allowed Files, Wave A — Core Scanner MTF Engine & Guarded Swing Execution (Completed), Wave B — AI Brain Chat Swing Tools (`WS-S3`, Completed), Wave D — Verification, Docs, Knowledge Graph & Repo Sync (`WS-S5`, Completed), `WS-S1`: Multi-Timeframe Scanner Engine, Brief Pyramid & Swing Presets, What runs now, Scan the liquid universe on-demand using the multi-timeframe swing presets…, scan_swing_setups() (+60 more)
+Cohesion: 0.08
+Nodes (64): Wave B — AI Brain Chat Swing Tools (`WS-S3`, Completed), What runs now, Scan the liquid universe on-demand using the multi-timeframe swing presets…, scan_swing_setups(), Expr, Vectorized rule evaluator over OHLCV DataFrames., Construct a Polars boolean expression for a rule condition., Evaluate rule groups against the DataFrame and produce SignalCandidate records. (+56 more)
 
 ### Community 173 - "test_brain_ai_state.py"
-Cohesion: 0.10
-Nodes (34): ai_state_header(), A plain-text digest of get_ai_state for the prompt: at most 12 lines, built…, _by(), _keys(), get_ai_state and ai_state_header (WS-2B): the Brain sees its own system. Runs…, The Brain gets feed coverage from get_klines (in_feed) and get_ai_state, so the…, Records the statement of every read the tools make, and still runs it., _spy_reads() (+26 more)
+Cohesion: 0.09
+Nodes (38): ai_state_header(), _header_exit(), _header_mandates(), _header_pending(), A plain-text digest of get_ai_state for the prompt: at most 12 lines, built…, _unavailable(), _by(), _keys() (+30 more)
 
 ### Community 174 - "BinanceStreamClient"
-Cohesion: 0.05
-Nodes (40): BinanceStreamClient, Any, Redis, Synchronous fallback to trigger reconnect for new symbol., One URL per connection: combined for spot, kline/quote split when quote_ws_url…, Start one WebSocket listener per stream URL, each with automatic reconnection., Manages real-time WebSocket connection to Binance combined streams., Hand closed bars to on_closed_bar one at a time, in arrival order. (+32 more)
+Cohesion: 0.07
+Nodes (28): BinanceStreamClient, Any, Redis, Synchronous fallback to trigger reconnect for new symbol., One URL per connection: combined for spot, kline/quote split when quote_ws_url…, Start one WebSocket listener per stream URL, each with automatic reconnection., Manages real-time WebSocket connection to Binance combined streams., Hand closed bars to on_closed_bar one at a time, in arrival order. (+20 more)
 
 ### Community 179 - "test_launcher_safety.py"
 Cohesion: 0.12
@@ -1199,7 +1215,7 @@ Nodes (31): _alive(), fake_bin(), port_holder(), fixture, A5 (F-M2) and A4: the 
 
 ### Community 183 - "test_mark_to_market_wiring.py"
 Cohesion: 0.12
-Nodes (22): add_instance(), add_position(), db_url(), fake_engine(), FakeQuoteCache, FakeRedis, pool(), fixture (+14 more)
+Nodes (22): Collection-level flags: stale when any mark is; the age is the oldest one (None…, summarize(), add_instance(), add_position(), db_url(), fake_engine(), FakeQuoteCache, FakeRedis (+14 more)
 
 ### Community 184 - "test_verdict_normalization.py"
 Cohesion: 0.06
@@ -1234,24 +1250,24 @@ Cohesion: 0.17
 Nodes (10): CapturingModel, post(), FunctionModel, A pydantic-ai FunctionModel that records the instructions and prompt it…, Call an agent_worker endpoint with every Gemini model served by a capturing…, run_worker(), test_budget_exhaustion_returns_429_not_a_model_call(), test_explain_backtest_endpoint_formatting() (+2 more)
 
 ### Community 194 - "test_gap_recovery.py"
-Cohesion: 0.14
-Nodes (15): _file_interval(), (start_ns, end_ns) from a catalog file name like…, Move 0-byte bar files of one bar type out of the catalog; return their (start,…, MockRestClient, asyncio, Tests for subscribe-before-backfill gap recovery and interval agreement., Committing the still-forming bar moved the checkpoint past it, so the stream's…, Mock Binance REST client for offline gap recovery testing. (+7 more)
+Cohesion: 0.13
+Nodes (17): _file_interval(), (start_ns, end_ns) from a catalog file name like…, Move 0-byte bar files of one bar type out of the catalog; return their (start,…, MockRestClient, asyncio, Tests for subscribe-before-backfill gap recovery and interval agreement., Committing the still-forming bar moved the checkpoint past it, so the stream's…, Mock Binance REST client for offline gap recovery testing. (+9 more)
 
 ### Community 195 - "Changes made (2026-10-12)"
 Cohesion: 0.07
 Nodes (27): Accessibility, Accessibility and type, Changes made (2026-10-12), Corrections to the logged-out review, Cryptonite web app: design critique (2026-10-12), Inbox, Kill-switch presentation, Limits and next steps (+19 more)
 
 ### Community 196 - "test_brain_lessons.py"
-Cohesion: 0.08
-Nodes (28): agent_tools(), _brain(), _cards(), _one_turn(), Connection, datetime, fixture, Past lessons on an order card (WS-3B, 3B-py). The learner's reflections on… (+20 more)
+Cohesion: 0.06
+Nodes (36): cryptonite_agents_brain_widgets, cryptonite_agents_research_tools, EvidenceArg, The Brain's tool set (blueprint §4.2, A3.2): the old chat personas become…, One evidence item as the model sends it. A plain dict, so the recorded call…, agent_tools(), _brain(), _cards() (+28 more)
 
 ### Community 197 - "test_ingest_onboarded_symbols.py"
 Cohesion: 0.14
 Nodes (25): db_pool(), insert_instrument(), listing_sync(), make_recorder(), fixture, Pool, Onboarded symbols survive ingest restarts (WS-1A). Onboarding a symbol from the…, Replace the coordinator and recovery manager so initialize() touches no lock or… (+17 more)
 
 ### Community 209 - "CoalescedMarkToMarketProjector"
-Cohesion: 0.13
-Nodes (7): CoalescedMarkToMarketProjector, IntegritySupervisor, Decimal, Pool, Marks open paper_positions to market (current_price, unrealized_pnl) and…, One mark-to-market pass; returns the number of position rows whose mark changed., Asynchronous background supervisor that persists integrity incident records to…
+Cohesion: 0.14
+Nodes (10): CoalescedMarkToMarketProjector, Decimal, Marks open paper_positions to market (current_price, unrealized_pnl) and…, One mark-to-market pass; returns the number of position rows whose mark changed., asyncio, Test CoalescedMarkToMarketProjector throttled updates and unrealized PnL…, Each open position is marked at its live price by one guarded UPDATE (the PnL…, Verify projector loop starts, runs periodically, and cancels cleanly. (+2 more)
 
 ### Community 210 - "limits.ts"
 Cohesion: 0.15
@@ -1266,8 +1282,8 @@ Cohesion: 0.11
 Nodes (20): get_bars(), load_resampled_bars(), Any, DataFrame, get, Request, Blocking lake read and resample, run in a worker thread by ``get_bars``. Run on…, Fetch historical OHLCV bars formatted specifically for Lightweight Charts. (+12 more)
 
 ### Community 213 - "mandate_gate.py"
-Cohesion: 0.12
-Nodes (27): same_instrument(), cross_mandate_holdings(), cross_mandate_reject(), mandate_instances(), Decimal, The orchestrator side of the F4 cross-mandate exposure check…, canonical instrument -> USD exposure summed over the given mandate instances., None when the risk-adding ``order`` fits under the cross-mandate cap, else the… (+19 more)
+Cohesion: 0.09
+Nodes (40): action_class(), entry_room_usd(), MandateOrder, max_entry_quantity(), order_notional(), Decimal, Mandate check for AI-originated orders (AI-first blueprint §4.4, A5.1). Runs in…, Spot is long-only (the dispatcher rejects spot shorts), so a spot SELL only… (+32 more)
 
 ### Community 214 - "test_auth_policy.py"
 Cohesion: 0.13
@@ -1281,13 +1297,13 @@ Nodes (31): _json(), _NoNetwork, BaseException, Exception, parametrize, _raises(
 Cohesion: 0.10
 Nodes (21): dependencies, @base-ui/react, class-variance-authority, clsx, cmdk, cn, lightweight-charts, lucide-react (+13 more)
 
-### Community 217 - "app"
+### Community 217 - "signed_outcome"
 Cohesion: 0.11
-Nodes (20): main(), Health check endpoint should always return 200 without HMAC headers., Requests to protected agent routes without HMAC headers must be rejected with…, Requests with timestamps older or newer than 300s must be rejected with 401., Requests with forged or incorrect signatures must be rejected with 401., test_agent_worker_expired_hmac_timestamp(), test_agent_worker_health_bypasses_hmac(), test_agent_worker_invalid_hmac_signature() (+12 more)
+Nodes (21): Fourth and fifth reviews (same day): backend, migrations, tests, API paths, data, apply_fix(), classify(), find_fixes(), Fix, _float(), main(), Any (+13 more)
 
 ### Community 218 - "test_lake_open_stamped_repair.py"
-Cohesion: 0.14
-Nodes (23): close_time_bar(), ingest_bar(), kline(), lake(), load_script(), old_api_bar(), fixture, parametrize (+15 more)
+Cohesion: 0.13
+Nodes (25): Duration of a Binance-style timeframe (``1m``, ``15m``, ``1h``, ``4h``, ``1d``,…, timeframe_ns(), close_time_bar(), ingest_bar(), kline(), lake(), load_script(), old_api_bar() (+17 more)
 
 ### Community 219 - "_invalid_output_model"
 Cohesion: 0.10
@@ -1317,17 +1333,17 @@ Nodes (19): is_pel_owner(), True if consumer currently owns msg_id in the stream
 Cohesion: 0.17
 Nodes (5): parametrize, A4 (F-M1, F-M10): every long-running compose service is supervised, health-…, test_every_service_rotates_its_logs(), test_long_running_service_is_supervised(), yaml
 
-### Community 238 - "ops_monitor.py"
-Cohesion: 0.24
-Nodes (13): check_heartbeats(), effective_limits(), heartbeat_states(), _plain(), publish_effective_limits(), Any, datetime, Decimal (+5 more)
+### Community 238 - "evals/runner.py"
+Cohesion: 0.21
+Nodes (17): main(), _agrees(), _case_prompt(), CaseResult, load_set(), Any, Eval harness (AI-first blueprint §8): replay a versioned case set through the…, A tool_chain case with history is asked the way the Brain is asked: clock,… (+9 more)
 
-### Community 239 - "Remediation Plan (2026-10-04, reviewed)"
-Cohesion: 0.11
-Nodes (17): ADR 0004: Mandates, the autonomy ladder, approvals and the notifier (Phase 5), Decisions, Deviations from the blueprint (and why), Evidence, Independent review (adversarial, before the PR) and what changed, Known gaps, Branches, Calendar (+9 more)
+### Community 239 - "_spot_klines"
+Cohesion: 0.13
+Nodes (17): _evict_expired(), _fed_symbols(), _feed_symbol(), get_market_regime(), _get_valid_symbols(), _parse_server_date_ms(), btcusdt-perp.binance' -> 'BTCUSDT': the base symbol the feed keys its Redis…, The regime from Binance spot klines: the same number of closed candles the… (+9 more)
 
 ### Community 240 - "test_api_perp_websocket_gateway.py"
-Cohesion: 0.23
-Nodes (14): cryptonite_api_routes_ws, gateway(), mark(), fixture, StreamHub perpetual relay: Redis perp channels -> framed WebSocket messages on…, Block until the hub's perp relay has subscribed to every channel., receive_until(), subscribe() (+6 more)
+Cohesion: 0.25
+Nodes (13): cryptonite_api_routes_ws, gateway(), mark(), fixture, StreamHub perpetual relay: Redis perp channels -> framed WebSocket messages on…, Block until the hub's perp relay has subscribed to every channel., receive_until(), subscribe() (+5 more)
 
 ### Community 245 - "scan"
 Cohesion: 0.17
@@ -1358,12 +1374,12 @@ Cohesion: 0.12
 Nodes (12): GateOwnedBarRouter, Any, Ensures every market bar passes through exactly once to strategy indicators.…, Compute durable deterministic key for a bar., Check if a bar has already been routed., Route a bar through subscribed strategies iff it has not been routed before.…, IndicatorTrackingStrategy, make_test_bar() (+4 more)
 
 ### Community 254 - "derivatives_feed.py"
-Cohesion: 0.11
-Nodes (19): Event, DerivativesFeed, FundingSettlement, main(), parse_funding_history(), Any, Perpetual futures feed: mark price, funding rate, and open interest from…, Insert settlements idempotently; returns the number of new rows. (+11 more)
+Cohesion: 0.14
+Nodes (15): FundingSettlement, main(), mark_stream_url(), parse_funding_history(), Any, AsyncClient, Pool, Redis (+7 more)
 
 ### Community 255 - "test_route_auth_guards.py"
-Cohesion: 0.14
-Nodes (22): fastapi_routing, importlib, pkgutil, _api_routes(), _dependency_calls(), parametrize, Auth guards on API routes: mutations need operator + CSRF, trading-data reads…, The agent tool (stage_debate_proposal) authenticates with an operator-scoped… (+14 more)
+Cohesion: 0.12
+Nodes (24): fastapi_routing, importlib, pkgutil, _api_routes(), client(), _dependency_calls(), fixture, parametrize (+16 more)
 
 ### Community 256 - "HANDOFF.md"
 Cohesion: 0.09
@@ -1371,11 +1387,11 @@ Nodes (14): ADR 0002: Debate cost controls (Phase 2), Decisions, Evidence (live 
 
 ### Community 257 - "widget_for_tool"
 Cohesion: 0.05
-Nodes (60): no_card_note(), The reply's note for a held propose_order that made no card: the first…, CardLesson, DebateSummaryWidget, DebateVerdict, describe_widget(), Evidence, _opt_float() (+52 more)
+Nodes (59): CardLesson, DebateSummaryWidget, DebateVerdict, describe_widget(), Evidence, _opt_float(), OrderCardWidget, OrderProposal (+51 more)
 
 ### Community 258 - "test_brain_degraded.py"
-Cohesion: 0.05
-Nodes (70): BrainContext, _clip(), _fold(), _indent(), load_context(), _matching(), _neutral(), _operator_text() (+62 more)
+Cohesion: 0.14
+Nodes (30): brain_gateway_routes(), Brain roles (blueprint §4.1, A3.2). Kept here instead of ``gateway/routes.py``…, The default gateway routes plus the Brain's., collect(), _has_tool_return(), make_brain(), models(), Exception (+22 more)
 
 ### Community 259 - "test_brain_api.py"
 Cohesion: 0.08
@@ -1398,24 +1414,24 @@ Cohesion: 0.17
 Nodes (25): match_order(), match_working_orders(), PaperFill, Any, Decimal, Paper order matching against the live top of book. Pure functions: they decide…, The touch, moved against the order when it is larger than the size shown at the…, Return the fill for one working order at this quote, or None if it keeps… (+17 more)
 
 ### Community 264 - "Any"
-Cohesion: 0.06
-Nodes (27): like_pattern(), _message_row(), parse_cursor(), _patch(), PgSessionStore, preview_text(), Any, datetime (+19 more)
+Cohesion: 0.08
+Nodes (20): like_pattern(), _message_row(), parse_cursor(), _patch(), PgSessionStore, preview_text(), Any, datetime (+12 more)
 
 ### Community 265 - "devDependencies"
 Cohesion: 0.12
 Nodes (17): devDependencies, autoprefixer, @axe-core/playwright, eslint, @eslint/js, eslint-plugin-react, globals, @playwright/test (+9 more)
 
 ### Community 266 - "send_alert"
-Cohesion: 0.14
-Nodes (13): 4.1 AI Gateway (`packages/agents/cryptonite_agents/gateway/`), 4.3 Market brief (T0, deterministic), 4.4 Mandates (enforced in code), 4.5 Autonomy ladder, 4.6 Notifier (`services/notifier`, new deployable), 4.7 Local tier (workstation), 4. Target architecture, Phase 5: Mandates, autonomy, Mission Control, Telegram (wk 10–13) (+5 more)
+Cohesion: 0.08
+Nodes (22): ADR 0004: Mandates, the autonomy ladder, approvals and the notifier (Phase 5), Decisions, Deviations from the blueprint (and why), Evidence, Independent review (adversarial, before the PR) and what changed, Known gaps, 4.1 AI Gateway (`packages/agents/cryptonite_agents/gateway/`), 4.3 Market brief (T0, deterministic) (+14 more)
 
 ### Community 267 - "pydantic_ai_backend.py"
 Cohesion: 0.07
 Nodes (47): 14.1 How each roadmap item runs (the Dev ↔ QA loop), 14.2 Roster: available agents and skills vs the orchestrator template, 14.3 Assignments per phase, 14.4 Rules for running the pipeline, 14.5 Parallel execution: Phase 2 (local) and Phase 3 (cloud), 14. Agent and skill assignments, Wave 1: fixes (SOLUSDT incident + quick fixes), functools (+39 more)
 
-### Community 268 - "Gateway"
-Cohesion: 0.03
-Nodes (107): cryptonite_agents_gateway_ledger, compact(), Fold older turns into a new summary when enough have piled up. Returns True if…, Gateway, settle(), GatewayError, GatewayResult, GatewayStreamEvent (+99 more)
+### Community 268 - "test_ai_gateway.py"
+Cohesion: 0.04
+Nodes (59): cryptonite_agents_gateway_ledger, ModelUnavailable, Random, BudgetPriority, FallbackPolicy, Any, StrEnum, Apply an ``ai_model_routes`` row over the default route (NULL columns keep the… (+51 more)
 
 ### Community 269 - "test_orchestrator_kill_switch.py"
 Cohesion: 0.27
@@ -1442,12 +1458,12 @@ Cohesion: 0.15
 Nodes (16): cryptonite_agents_brain_memory, build_case(), card(), card_facts(), main(), Random, Build the ``summarize`` eval set (blueprint A6.2): Brain conversation…, Size, status and (when queued) the paper command id: what the summary… (+8 more)
 
 ### Community 278 - "test_perpetual_models.py"
-Cohesion: 0.12
-Nodes (19): 1.1 Persistence (migration `020_perpetuals_schema.py` + follow-ups), 1.2 Lake and DuckDB schemas (`data/analytics_lake/derivatives/binance/perpetual/`), 1. Data models, FundingRateRecord, PerpetualPosition, Decimal, model_validator, One settled funding event for an instrument (mirrors the funding_rates table). (+11 more)
+Cohesion: 0.15
+Nodes (15): 1.1 Persistence (migration `020_perpetuals_schema.py` + follow-ups), PerpetualPosition, Decimal, model_validator, Perpetual position state (mirrors paper_positions perp rows).…, Absolute quantity, as stored in paper_positions.quantity., _position(), parametrize (+7 more)
 
-### Community 279 - "compare_live_vs_backtest"
-Cohesion: 0.14
-Nodes (17): Changelog, Previous Updates (v0.3.0), Previous Updates (v0.4.0 - Alpha Lifecycle Integration), Recent Updates (v0.4.5 - Operator Governance & Action Inbox Architecture), Missed in the critique, Phase 8: features (after Phases 1–5, by value), 1. Strategy Formulation & 1-Click Workflow Bridges, 2. Embedded Risk Sliders (25.0% Concentration Cap) (+9 more)
+### Community 279 - "Remediation Plan (2026-10-04, reviewed)"
+Cohesion: 0.08
+Nodes (28): AIBrainTourModal(), Previous Updates (v0.4.0 - Alpha Lifecycle Integration), 0. Review of the critique and the first plan, Accepted, not planned, Branches, Calendar, Decisions needed from the operator, Missed in the critique (+20 more)
 
 ### Community 280 - "test_entry_stale_before_insert_refused"
 Cohesion: 0.14
@@ -1457,13 +1473,13 @@ Nodes (9): debate_model(), fn(), FakeEmbedder, FunctionModel, Entry fresh INSERT
 Cohesion: 0.08
 Nodes (45): Phase 3: AI decision accuracy (~1.5 days) — live path, timing per D5, Rule S1 (`honest_paper`) Compliance, _bands(), brief_data(), build_brief(), _f(), hard_rejects(), _num() (+37 more)
 
-### Community 283 - "typing"
+### Community 283 - "json"
 Cohesion: 0.03
-Nodes (119): argparse, asyncio, click, collections, concurrent_futures, cryptonite_agents_gateway, cryptonite_agents_gateway_local_tier, cryptonite_api_routes_scanners (+111 more)
+Nodes (130): argon2, asyncio, click, cryptography_hazmat_primitives_ciphers_aead, cryptonite_agents_research_loop, cryptonite_api_routes_ai, cryptonite_api_routes_auth, dataclasses (+122 more)
 
 ### Community 284 - "test_trim_debate_queue.py"
-Cohesion: 0.14
-Nodes (23): redis, group_info(), main(), Any, A1a / C3: skip the scanner's stale closed-bar backlog instead of draining it.…, The command that puts the group back where ``g`` (its XINFO GROUPS entry) found…, XGROUP SETID <stream> <group> $; optionally XACK the PEL. Returns the…, rollback_command() (+15 more)
+Cohesion: 0.22
+Nodes (13): redis, fill(), fixture, r(), D1: the one-off ``scripts/trim_debate_queue.py`` reports exactly what it would…, n entries; the group has read the first ``read`` and acknowledged the first…, test_a_group_created_after_the_plan_blocks_the_apply(), test_apply_trims_exactly_the_planned_entries() (+5 more)
 
 ### Community 285 - "test_alembic_roundtrip_downgrade_and_upgrade"
 Cohesion: 0.29
@@ -1490,12 +1506,12 @@ Cohesion: 0.31
 Nodes (9): asyncio, Path, Case 2: Disk artifacts exist but DB results missing -> reconstructed from…, Case 3: DB has results but artifacts are missing on disk ->…, Case 1: Both disk artifacts and DB result exist -> marked COMPLETED., test_recovery_matrix_db_only_integrity_incident(), test_recovery_matrix_disk_only_reconstruction(), test_recovery_matrix_fully_consistent() (+1 more)
 
 ### Community 291 - "test_derivatives_feed.py"
-Cohesion: 0.17
-Nodes (18): parse_mark_frame(), Parse a markPriceUpdate frame: single event, ``!markPrice@arr`` list, or…, combined(), FakeWebSocket, funding_db_url(), mark_evt(), fixture, Tests for the perpetual mark price / funding / open interest feed. WebSocket… (+10 more)
+Cohesion: 0.21
+Nodes (14): combined(), FakeWebSocket, funding_db_url(), mark_evt(), fixture, Tests for the perpetual mark price / funding / open interest feed. WebSocket…, redis_client(), test_funding_settlements_are_deduplicated() (+6 more)
 
 ### Community 292 - "cryptonite_backtester/__init__.py"
-Cohesion: 0.10
-Nodes (28): DataGapError, DataIntegrityError, InsufficientWarmupError, Any, Exception, Content-level cadence and data integrity validation for backtests., Base exception for data validation failures in backtesting., Raised when a gap is detected in the input bar sequence. (+20 more)
+Cohesion: 0.13
+Nodes (24): DataGapError, DataIntegrityError, InsufficientWarmupError, Any, Exception, Content-level cadence and data integrity validation for backtests., Base exception for data validation failures in backtesting., Raised when a gap is detected in the input bar sequence. (+16 more)
 
 ### Community 293 - "@playwright/test"
 Cohesion: 0.10
@@ -1505,25 +1521,25 @@ Nodes (7): VIEWS, CONFIG, INSTRUMENTS, MANDATE, POSITIONS, @axe-core/playwright,
 Cohesion: 0.43
 Nodes (6): fake_request(), inserted_env_and_account(), execution_commands environment routing from the /paper API. The paper…, test_kill_switch_status_reads_the_paper_row(), test_manual_order_is_enqueued_for_the_paper_orchestrator(), test_paper_kill_switch_commands_route_to_the_paper_orchestrator()
 
-### Community 295 - "test_scanner_events_d2.py"
+### Community 295 - "SignalCandidateRead"
 Cohesion: 0.07
-Nodes (41): deduplicate_candidates(), Deduplicate candidates per (instrument_id, timeframe, bar_close_inclusive_ns)…, SignalCandidateRead, admin(), as_scanner(), db_url(), FakeQueryEngine, make_worker() (+33 more)
+Nodes (30): deduplicate_candidates(), model_validator, Deduplicate candidates per (instrument_id, timeframe, bar_close_inclusive_ns)…, SignalCandidateRead, _candidate_rank_key(), evaluate_window(), main(), Reproducible read-only benchmark for Phase D3: Structure-Based Stop/Target and… (+22 more)
 
 ### Community 297 - "cryptonite_execution/__init__.py"
 Cohesion: 0.02
-Nodes (149): EventBridge, Thread-safe bounded channel bridging Nautilus node callbacks to the async DB…, ClockDriftExceededError, ClockSample, ClockSyncMonitor, Exception, Clock synchronization and transport skew monitor. Implements standard NTP-style…, Perform an immediate clock sync probe using the configured fetcher. (+141 more)
+Nodes (139): cryptography_hazmat_primitives, cryptography_hazmat_primitives_asymmetric, Binance Demo WebSocket API v3 User-Data Stream Client. Pinnned exclusively to…, ClockDriftExceededError, ClockSample, ClockSyncMonitor, Exception, Clock synchronization and transport skew monitor. Implements standard NTP-style… (+131 more)
 
-### Community 298 - "audit.py"
-Cohesion: 0.33
-Nodes (6): BatchStatus, IngestBatchRecord, BaseModel, StrEnum, QuarantineBarRecord, Audit and quarantine data models.
+### Community 298 - "Enum"
+Cohesion: 0.29
+Nodes (7): Enum, BatchStatus, IngestBatchRecord, BaseModel, StrEnum, QuarantineBarRecord, Audit and quarantine data models.
 
 ### Community 299 - "AI-First Cryptonite: Blueprint"
 Cohesion: 0.12
 Nodes (17): 0. The press release (what "done" looks like), 10. Safety invariants (never broken, tested in CI), 11. Pre-mortem: "It's week 15 and this failed. Why?", 12. Test plan (summary), 13. Program goal (one goal for the whole plan), 1. Findings: how the code differs from the goal, 2.1 Agreed, 2.2 Accepted with proposed defaults (2026-09-25) (+9 more)
 
 ### Community 300 - "resample_1m_bars"
-Cohesion: 0.08
-Nodes (30): DataFrame, Resample 1m base bars into target_timeframe with strict window completeness…, resample_1m_bars(), _candidate_rank_key(), evaluate_window(), main(), Reproducible read-only benchmark for Phase D3: Structure-Based Stop/Target and…, _fixture_engine() (+22 more)
+Cohesion: 0.09
+Nodes (24): DataFrame, Resample 1m base bars into target_timeframe with strict window completeness…, resample_1m_bars(), _fixture_engine(), _native_1h(), DataFrame, parametrize, B1 change 2: no silent fallback to ``ts_init_ns`` / ``ts_event_ns`` (both are… (+16 more)
 
 ### Community 301 - "_AsyncPipeline"
 Cohesion: 0.12
@@ -1534,23 +1550,23 @@ Cohesion: 0.16
 Nodes (18): client(), fixture, parametrize, The conversation note endpoint (WS-3E): the web's Reject button is the only…, A worker holding one session whose widgets are ``state.widgets``. Notes honour…, A card stored before the instrument pattern existed is not echoed as it was…, _reject(), test_a_card_stored_with_a_non_matching_instrument_is_named_as_an_order_card() (+10 more)
 
 ### Community 305 - "EventBridgeWorker"
-Cohesion: 0.18
-Nodes (10): EventBridgeWorker, Any, Connection, total_equity = cash_balance + spot value + perp unrealized PnL, at the…, Async worker that consumes micro-batches from EventBridge and commits them…, Drain up to batch_size events and commit in a single DB transaction., Book a funding payment: account cash/realized PnL, and the open position's…, Write the dispatcher's post-fill perp position snapshot to paper_positions. A… (+2 more)
+Cohesion: 0.15
+Nodes (11): EventBridgeWorker, Any, Connection, Pool, total_equity = cash_balance + spot value + perp unrealized PnL, at the…, Async worker that consumes micro-batches from EventBridge and commits them…, Drain up to batch_size events and commit in a single DB transaction., Book a funding payment: account cash/realized PnL, and the open position's… (+3 more)
 
-### Community 306 - "_fapi_get"
-Cohesion: 0.20
-Nodes (11): _fapi_get(), _fapi_section(), _FapiNoPerpetual, _FapiRefused, Exception, Binance answered -1121 for the symbol: there is no USD-M perpetual to read., One USD-M request gave no answer: not sent near the weight cap, rate limited,…, Retry-After as seconds, from its seconds form or its HTTP-date form. Missing or… (+3 more)
+### Community 306 - ".execute"
+Cohesion: 0.15
+Nodes (9): _KillingConnection, A real connection whose first statement containing the owner's marker first…, fetchrow(), test_a_command_whose_settlement_failed_is_settled_without_running_it_again(), test_a_settlement_that_keeps_failing_is_closed_by_the_fallback_not_retried_forever(), fetchrow(), test_a_transient_error_is_retried_then_failed_after_five_attempts(), fetchrow() (+1 more)
 
-### Community 307 - "IngressHealthMonitor"
-Cohesion: 0.12
-Nodes (13): IngressHealthMonitor, Any, Tracks sequence continuity and evaluates dual freshness between telemetry and…, Update telemetry record for an instrument and check sequence continuity., Evaluate dual freshness: 1. Ingress health sequence is continuous and fresh…, make_test_quote(), QuoteTick, Verify all branches of the dual freshness contract. (+5 more)
+### Community 307 - "unittest_mock"
+Cohesion: 0.04
+Nodes (52): CurrencyPair, nautilus_trader_adapters_sandbox, nautilus_trader_config, nautilus_trader_core, nautilus_trader_infrastructure, nautilus_trader_live, EventBridge, Cross-thread EventBridge, fail-closed supervisor, and async projection worker. (+44 more)
 
 ### Community 308 - "Perpetual Futures (Paper) — System Architecture"
-Cohesion: 0.09
-Nodes (21): 1. Market data ingest, 2. Margin math (`packages/execution/cryptonite_execution/margin.py`, mirrored in `apps/web/src/lib/perp/margin.ts`), 3. Order risk (`GuardedOrderDispatcher`, `risk.py`), 5. Operational safety (orchestrator `risk_monitor_once`, every 1 s), 6. Persistence, 8. Verification, Perpetual Futures (Paper) — System Architecture, 0.1 How the code differs from the brief (+13 more)
+Cohesion: 0.08
+Nodes (24): 1. Market data ingest, 2. Margin math (`packages/execution/cryptonite_execution/margin.py`, mirrored in `apps/web/src/lib/perp/margin.ts`), 3. Order risk (`GuardedOrderDispatcher`, `risk.py`), 5. Operational safety (orchestrator `risk_monitor_once`, every 1 s), 6. Persistence, 8. Verification, Perpetual Futures (Paper) — System Architecture, 0.1 How the code differs from the brief (+16 more)
 
 ### Community 309 - "PaperTradingEngine"
-Cohesion: 0.08
+Cohesion: 0.07
 Nodes (24): FundingPaymentEvent, LiquidationEvent, BaseModel, A forced close of a perpetual position whose mark price breached its…, One funding settlement applied to an open perpetual position., PaperTradingEngine, Any, Decimal (+16 more)
 
 ### Community 310 - "rerun_backtests.py"
@@ -1570,8 +1586,8 @@ Cohesion: 0.12
 Nodes (17): anchored_folds(), check_history(), deflated_sharpe_ratio(), fold_objective(), InsufficientHistory, perturbations(), Any, ValueError (+9 more)
 
 ### Community 315 - "get_klines"
-Cohesion: 0.24
-Nodes (14): get_klines(), Fetches historical klines/candles for any valid trading symbol on Binance. The…, clear_caches(), fixture, patch, Tests for K1 Phase 1 get_klines tool (validation, caching, closed candle…, test_get_klines_caching_behavior(), test_get_klines_invalid_active_symbol() (+6 more)
+Cohesion: 0.17
+Nodes (19): get_klines(), Fetches historical klines/candles for any valid trading symbol on Binance. The…, clear_caches(), fixture, patch, Tests for K1 Phase 1 get_klines tool (validation, caching, closed candle…, test_get_klines_caching_behavior(), test_get_klines_invalid_active_symbol() (+11 more)
 
 ### Community 316 - "HANDOFF"
 Cohesion: 0.17
@@ -1579,11 +1595,11 @@ Nodes (12): Deploy, Follow-ups, HANDOFF, Known risks to watch, Next, Open items 
 
 ### Community 317 - "identifiers.py"
 Cohesion: 0.03
-Nodes (81): gc, inspect, nautilus_trader, nautilus_trader_backtest, nautilus_trader_execution, nautilus_trader_indicators, nautilus_trader_model, nautilus_trader_persistence (+73 more)
+Nodes (80): gc, inspect, nautilus_trader, nautilus_trader_backtest, nautilus_trader_execution, nautilus_trader_indicators, nautilus_trader_model, nautilus_trader_persistence (+72 more)
 
-### Community 318 - "contextlib"
+### Community 318 - "debate_queue.py"
 Cohesion: 0.12
-Nodes (21): contextlib, apply_plan(), build_plan(), main(), Plan, print_plan(), B4 (F-H6): one-off cleanup of the debate queue left behind before recovery…, Apply the plan; return the rollback commands for what was changed. (+13 more)
+Nodes (21): collections, Gate-owned deduplicating bar router for strategies and indicators., answer_all(), main(), parse(), parse_json(), A7.4 certification: does the distilled triage student beat its own base model…, The decision, in JSON or as a ``worth_debate: True`` line. Production decodes… (+13 more)
 
 ### Community 319 - "test_runtime_settings.py"
 Cohesion: 0.15
@@ -1621,9 +1637,9 @@ Nodes (15): ack_if_owner(), claim_if_owner(), current_owner(), dead_letter(), ke
 Cohesion: 0.13
 Nodes (11): card, apps_web_e2e_fixtures_offline_expect, isBackend(), test, AUTONOMY, MANDATE, REPORT, MOCK_ACCOUNT (+3 more)
 
-### Community 336 - "3. The run"
-Cohesion: 0.13
-Nodes (15): 3. The run, Phase 0: Preflight and baseline (no changes), Phase 10: Alerts, Phase 11: Settings, Phase 12: Accessibility and widths, Phase 13: Cleanup (mandatory), Phase 1: Navigation and layout (every page), Phase 2: Markets and Terminal (read) (+7 more)
+### Community 336 - "test_ingest_perp_quotes.py"
+Cohesion: 0.22
+Nodes (12): perp_quote_client(), Ingest publishes USD-M perpetual bookTicker quotes under <SYM>-PERP.BINANCE…, Fake redis whose pipeline records xadd calls as {stream: [decoded fields...]}., B5: the same pipeline writes a per-instrument latest-quote snapshot (key, TTL,…, recording_redis(), test_perp_book_ticker_is_keyed_as_perp_instrument(), test_perp_quotes_are_coalesced_per_symbol_with_contiguous_sequence(), test_quote_only_futures_client_opens_only_the_public_quote_connection() (+4 more)
 
 ### Community 337 - "cryptonite_agents"
 Cohesion: 0.21
@@ -1637,9 +1653,9 @@ Nodes (8): _Conn, parametrize, Statistically honest gates (remediation R3.3, R4.
 Cohesion: 0.33
 Nodes (3): CrosshairData, crosshairEmitter, Listener
 
-### Community 342 - "similar.py"
-Cohesion: 0.36
-Nodes (8): Any, UUID, Past decisions shown next to an approval (remediation R6.4). A plain query on…, Same convention as ``services/debate_worker/outcomes.signed_outcome`` (by…, ``similar_decisions`` with its own connection; None (field omitted) on any…, signed(), similar_decisions(), similar_or_none()
+### Community 342 - "normalize_verdict"
+Cohesion: 0.20
+Nodes (14): Direction, normalize_verdict(), A verdict in any case, surrounding spaces / tabs / line breaks ignored, as BUY…, ``normalize_verdict`` for callers that treat an unknown verdict as "no…, verdict_direction(), Any, UUID, Past decisions shown next to an approval (remediation R6.4). A plain query on… (+6 more)
 
 ### Community 343 - "mission-control.spec.ts"
 Cohesion: 0.17
@@ -1658,32 +1674,36 @@ Cohesion: 0.19
 Nodes (10): BacktestVenueConfig, FeeModel, Money, BpsFeeModel, Any, Commission at the profile's maker/taker rate in basis points of the fill's…, Resolve the BacktestVenueConfig and a deterministic configuration dictionary.…, resolve_execution_profile() (+2 more)
 
 ### Community 347 - "BacktestRunRequest"
-Cohesion: 0.03
-Nodes (88): Phase 2: backtest accuracy (~1.5 days) — safe now (S2), cost_usd(), is_free(), _p(), Price, price_for(), Decimal, Model prices (USD per 1M tokens) for the cost ledger and budget guard. Source:… (+80 more)
+Cohesion: 0.05
+Nodes (49): Phase 2: backtest accuracy (~1.5 days) — safe now (S2), BacktestRunner, quote_fee(), BacktestRunRequest, _commissions(), compute_run_config_hash(), Any, BaseModel (+41 more)
 
 ### Community 348 - "sentiment/server.py"
 Cohesion: 0.15
 Nodes (12): Classifier, classify(), ClassifyIn, health(), load(), BaseModel, get, on_event (+4 more)
 
+### Community 350 - "test_perpetual_liquidation_engine.py"
+Cohesion: 0.26
+Nodes (12): isolated(), Synthetic liquidation engine: GuardedOrderDispatcher.check_liquidations +…, test_cross_liquidation_stops_account_at_zero_equity(), test_engine_emits_liquidation_fill_event_and_ui_notification(), test_gap_through_bankruptcy_fills_at_bankruptcy_and_books_fund_deficit(), test_isolated_liquidation_clears_margin_and_loses_exactly_the_margin(), test_liquidation_at_exact_liquidation_price_triggers(), test_liquidation_cancels_resting_orders_and_ignores_kill_switch() (+4 more)
+
 ### Community 352 - "3. Release window (E1) — execute strictly in this order"
-Cohesion: 0.13
-Nodes (14): 1. Review and merge the open heads onto `main`, 2. A3: install the reviewed backup script and prove restore, 3.2 Migrations, 3.3 Deploy the updated stateless services the downstream contracts need (B5 + D2), 3.4 Verify API health, 3.5 Capture the pre-upgrade snapshot, 3.6 D2 preset upgrade — before the new scanner starts, gated on verification, 3.7 Start the released scanner and workers (gated on 3.6 verification) (+6 more)
+Cohesion: 0.12
+Nodes (15): 1. Review and merge the open heads onto `main`, 2. A3: install the reviewed backup script and prove restore, 3.1 Drain and stop the legacy workers, 3.2 Migrations, 3.3 Deploy the updated stateless services the downstream contracts need (B5 + D2), 3.4 Verify API health, 3.5 Capture the pre-upgrade snapshot, 3.6 D2 preset upgrade — before the new scanner starts, gated on verification (+7 more)
 
 ### Community 353 - "cleanup_test_pollution.py"
 Cohesion: 0.17
 Nodes (22): apply(), check_after(), CheckFailed, collect(), counts(), _expect(), _json(), main() (+14 more)
 
 ### Community 354 - "Brain upgrade plan"
-Cohesion: 0.15
-Nodes (12): 0. Purpose charter (every spec quotes it, every review checks it), 1. SOLUSDT incident: what was verified, 2. How the work runs, 4. Checkpoints that need the operator, 5. Risks and how the plan handles them, Brain upgrade plan, No code conflicts: one writer per hot file per wave, Protocol for every workstream (+4 more)
+Cohesion: 0.20
+Nodes (9): 1. SOLUSDT incident: what was verified, 2. How the work runs, 4. Checkpoints that need the operator, 5. Risks and how the plan handles them, Brain upgrade plan, No code conflicts: one writer per hot file per wave, Protocol for every workstream, Roles (+1 more)
 
 ### Community 355 - "repair_catalog_series.py"
 Cohesion: 0.50
 Nodes (4): contiguous_runs(), main(), Rewrite Nautilus catalog bar series without duplicate bars (LE-1 repair). Reads…, shutil
 
-### Community 356 - "json"
-Cohesion: 0.02
-Nodes (126): cryptonite_api_routes_ai, cryptonite_api_routes_auth, datetime, fastapi, fastapi_middleware_cors, fastapi_testclient, json, Daily LLM budget guard (blueprint D12, §4.1). Spend comes from… (+118 more)
+### Community 356 - "OperatorAuthManager"
+Cohesion: 0.03
+Nodes (62): create_admin(), main(), main(), seed_admin(), OperatorAuthManager, Any, UUID, Used by the next login and the next request: sessions already open are checked… (+54 more)
 
 ### Community 358 - "cross_exposure.py"
 Cohesion: 0.24
@@ -1713,9 +1733,9 @@ Nodes (13): apply_trim(), _id_time(), _id_tuple(), main(), plan_trim(), Redis, R
 Cohesion: 0.18
 Nodes (9): check_stuck_commands(), HeartbeatWatch, ops_monitor(), Raises one alert per outage (after ``grace_s``) and one when it recovers., Transitions to report: (name, "down" | "recovered")., The alert text for one stuck command. An UNKNOWN_PENDING_RECONCILIATION row is…, One CRITICAL alert for each PAPER command that has waited too long (queued in…, Start-up publish, then every ``interval_s``: risk-limit overrides (F7) and… (+1 more)
 
-### Community 365 - "test_deterministic_intrabar_traversal_open_high_low_close"
-Cohesion: 0.22
-Nodes (6): Path, StrategyConfig, Submits a long market order, then sets TP above open and SL below open., SameCandleTestStrategy, SameCandleTestStrategyConfig, test_deterministic_intrabar_traversal_open_high_low_close()
+### Community 365 - "SameCandleTestStrategy"
+Cohesion: 0.25
+Nodes (4): StrategyConfig, Submits a long market order, then sets TP above open and SL below open., SameCandleTestStrategy, SameCandleTestStrategyConfig
 
 ### Community 366 - "fixture"
 Cohesion: 0.25
@@ -1730,24 +1750,24 @@ Cohesion: 0.20
 Nodes (10): Why the window cannot be backtested, or None. ``history`` is the contiguous…, _when(), window_problem(), catalog_history(), contiguous_history(), Contiguous catalog history and bar step (ns) of a bar type; raises 400 for an…, The 422 reason for a window the catalog cannot supply, or None (runs in a…, (start, end) of the run of catalog intervals that ends at the newest bar,… (+2 more)
 
 ### Community 369 - "debate_worker"
-Cohesion: 0.08
-Nodes (25): Architecture Rules, Commands, Exploration Protocol, Stack, Topology, 9. Delivery roadmap, Phase 0: Foundation (wk 1–2), Phase 1: AI Gateway + evals v1 (wk 2–4) (+17 more)
+Cohesion: 0.05
+Nodes (37): Architecture Rules, Commands, Exploration Protocol, Stack, Topology, 9. Delivery roadmap, Phase 0: Foundation (wk 1–2), Phase 1: AI Gateway + evals v1 (wk 2–4) (+29 more)
 
 ### Community 370 - "test_duckdb_hardening.py"
-Cohesion: 0.11
-Nodes (19): duckdb, chr47(), db_url(), _files(), _memory_limit_bytes(), _payload(), fixture, parametrize (+11 more)
+Cohesion: 0.07
+Nodes (31): main(), backfill_regimes(), label_pending(), label_window(), Any, DataFrame, datetime, Outcome labeller (AI-first blueprint A7.1): what the market did after each… (+23 more)
 
-### Community 371 - "NodeCommandMailbox"
-Cohesion: 0.22
-Nodes (6): NodeCommandMailbox, Any, Push a command from an external or async thread into the mailbox., Non-blocking drain of all pending commands from within the node worker thread., Return approximate current size of mailbox., Thread-safe queue for dispatching operational commands into the dedicated…
+### Community 371 - "Any"
+Cohesion: 0.20
+Nodes (5): Any, Enqueue a superseded-by-next-tick message (perp marks); drop it when the queue…, Reliably enqueue committed bars and signals. Returns False if client queue is…, Reads from Redis Streams and routes events to matching client connections., Enqueue open tick with coalescing/dropping under backpressure.
 
 ### Community 372 - "read_number"
 Cohesion: 0.27
 Nodes (10): Bound, _parse(), Any, A stored value: a JSON string (as the API writes it), a bare number or text., The value to apply for a stored ``raw``, and a problem to report when the…, read_number(), load_alert_settings(), The heartbeat grace and the sentiment staleness for this pass (ADR 0007): the… (+2 more)
 
-### Community 373 - "analyze_snapshot"
-Cohesion: 0.20
-Nodes (10): analyze_snapshot(), get_instructions(), Any, get, post, Request, Run the deterministic strategy engine on a provided MultiTimeframeSnapshot., Retrieve the custom agent instructions from Redis. (+2 more)
+### Community 373 - "DerivativesFeed"
+Cohesion: 0.29
+Nodes (4): Event, DerivativesFeed, Consume the mark stream until ``stop`` is set, reconnecting with jittered…, test_backoff_is_exponential_capped_and_jittered()
 
 ### Community 374 - "test_api_lake_stamping.py"
 Cohesion: 0.09
@@ -1806,16 +1826,16 @@ Cohesion: 0.22
 Nodes (4): PerpWorld, Connection, Redis, One unique perpetual symbol: its Redis keys and funding rows, removed again in…
 
 ### Community 388 - "SmokeTestStrategy"
-Cohesion: 0.25
-Nodes (5): BarType, StrategyConfig, Simple test strategy that tracks bar events., SmokeTestStrategy, SmokeTestStrategyConfig
+Cohesion: 0.24
+Nodes (6): BarType, StrategyConfig, Simple test strategy that tracks bar events., SmokeTestStrategy, SmokeTestStrategyConfig, test_nautilus_backtest_node_exact_apis_smoke()
 
 ### Community 389 - "brain-home.spec.ts"
 Cohesion: 0.26
 Nodes (9): collectReactErrors(), mockBackend(), oddDryRun(), openBrainHome(), openCard(), ORDER_CARD, sse(), TURN (+1 more)
 
-### Community 390 - ".__init__"
-Cohesion: 0.16
-Nodes (8): FundingSettlementTracker, mark_stream_url(), MarkTick, AsyncClient, Pool, Redis, Detects funding settlements from rollovers of the next-funding-time field ``T``., test_mark_stream_url()
+### Community 390 - "FundingSettlementTracker"
+Cohesion: 0.21
+Nodes (7): FundingSettlementTracker, MarkTick, parse_mark_frame(), Parse a markPriceUpdate frame: single event, ``!markPrice@arr`` list, or…, Detects funding settlements from rollovers of the next-funding-time field ``T``., test_tracker_detects_rollover_and_infers_interval(), observe()
 
 ### Community 391 - "test_paper_watermark_persistence.py"
 Cohesion: 0.33
@@ -1845,33 +1865,33 @@ Nodes (5): AUTONOMY, backtestRun(), BINS, MANDATE, mockResearch()
 Cohesion: 0.36
 Nodes (8): BackgroundTasks, backfill_instrument(), BackfillRequest, onboard_instrument(), OnboardRequest, BaseModel, post, Request
 
-### Community 399 - "AI-First Program: what is built (Phases 0–7)"
-Cohesion: 0.25
-Nodes (8): 2. AI gateway (`packages/agents/cryptonite_agents/gateway`, [ADR 0001](adr/0001-ai-provider-layer.md), [ADR 0005](adr/0005-local-tier-and-learning.md)), 3. Mandates, autonomy and approvals (Phase 5, [ADR 0004](adr/0004-mandates-and-autonomy.md)), 4. Learning loop (Phase 7, [ADR 0005](adr/0005-local-tier-and-learning.md)), 6. Research loop (Phase 4, [ADR 0003](adr/0003-strategy-research-loop.md)), 7. Security hardening (backlog LE-1 … LE-10), 8. Database tables added by the program, 9. Redis keys the program added, AI-First Program: what is built (Phases 0–7)
+### Community 399 - "skip_scanner_backlog.py"
+Cohesion: 0.36
+Nodes (10): group_info(), main(), Any, A1a / C3: skip the scanner's stale closed-bar backlog instead of draining it.…, The command that puts the group back where ``g`` (its XINFO GROUPS entry) found…, XGROUP SETID <stream> <group> $; optionally XACK the PEL. Returns the…, rollback_command(), _s() (+2 more)
 
 ### Community 400 - "instrument_defined"
 Cohesion: 0.25
 Nodes (8): instrument_defined(), Path, True when the catalog holds an instrument definition (the backtest runner needs…, get_instruments(), Any, get, List active trading instruments with precision and metadata. ``catalog_only``…, test_instrument_defined_needs_a_parquet_definition()
 
-### Community 401 - "distill_triage_eval.py"
-Cohesion: 0.43
-Nodes (7): answer_all(), main(), parse(), parse_json(), A7.4 certification: does the distilled triage student beat its own base model…, The decision, in JSON or as a ``worth_debate: True`` line. Production decodes…, score()
+### Community 401 - "test_drawdown_enforcement.py"
+Cohesion: 0.35
+Nodes (10): datetime, One risk-monitor pass: UTC day rollover, DB kill-switch sync, daily drawdown…, risk_monitor_once(), executed_sql(), Orchestrator risk monitor: daily drawdown circuit breaker, UTC day rollover, DB…, setup(), test_db_latch_from_control_endpoint_stops_the_engine(), test_drawdown_over_limit_trips_kill_switch_persists_and_alerts_once() (+2 more)
 
 ### Community 402 - "lake"
-Cohesion: 0.29
-Nodes (8): cwd(), lake(), fixture, Path, One derivatives file, so a payload that reaches the SQL gets past the first…, A lake with three BTCUSDT minutes, so a payload glob such as BTCUSDT/*/* would…, The working directory a COPY ... TO 'pwned' would write into, empty before each…, _seed_derivatives()
+Cohesion: 0.40
+Nodes (6): cwd(), lake(), fixture, Path, A lake with three BTCUSDT minutes, so a payload glob such as BTCUSDT/*/* would…, The working directory a COPY ... TO 'pwned' would write into, empty before each…
 
-### Community 403 - "test_paper_mark_to_market_projection.py"
-Cohesion: 0.32
-Nodes (6): asyncio, Test CoalescedMarkToMarketProjector throttled updates and unrealized PnL…, Each open position is marked at its live price by one guarded UPDATE (the PnL…, Verify projector loop starts, runs periodically, and cancels cleanly., test_mark_to_market_projection_calculation(), test_mark_to_market_projector_loop_lifecycle()
+### Community 403 - "ClientConnection"
+Cohesion: 0.24
+Nodes (4): ClientConnection, WebSocket, Manages an active WebSocket client session with a bounded delivery queue., test_non_subscribers_and_backpressure()
 
 ### Community 404 - "test_swing_execution_and_exits.py"
 Cohesion: 0.14
 Nodes (27): evaluate_exit(), ExitAction, Pure exit rules. ``best_price``: most favourable price since the position…, pos(), parametrize, (missed_hard_stop, new_rule_debates, old_rule_debates) for one random-walk…, replay(), test_exit_debates_only_on_events_and_when_armed() (+19 more)
 
-### Community 406 - "test_debate_decision_price.py"
-Cohesion: 0.05
-Nodes (54): cryptonite_agents_gateway_providers_pydantic_ai_backend, cryptonite_agents_gateway_routes, 4.2 Brain, hmac, importlib_util, pydantic_ai_messages, pydantic_ai_models_function, server (+46 more)
+### Community 406 - "run_debate"
+Cohesion: 0.11
+Nodes (17): 4.2 Brain, debate_model(), fn(), FakeEmbedder, fresh_marks(), fresh_tick_body(), FunctionModel, A5.7: no global execution mode; an L3 mandate that allows the instrument gets… (+9 more)
 
 ### Community 407 - "ensure_strategies_seeded"
 Cohesion: 0.23
@@ -1881,9 +1901,9 @@ Nodes (12): delete_strategy(), ensure_strategies_seeded(), get_strategies(), get
 Cohesion: 0.33
 Nodes (6): ParamSpec, BaseModel, Strategy research contracts (AI-first blueprint Phase 4)., Pro review of a candidate that already passed validation, backtests and the…, One tunable parameter of a drafted strategy; the optimizer searches [low, high]., StrategyReview
 
-### Community 410 - "get_signal_detail"
-Cohesion: 0.38
-Nodes (7): get_signal_detail(), get_signals(), get, Request, UUID, Query recent signal candidates with optional filters., Get single candidate detail by ID.
+### Community 410 - "cryptonite_backtester_service/server.py"
+Cohesion: 0.24
+Nodes (9): health_check(), lifespan(), Any, FastAPI, get, Response, FastAPI HTTP service for Backtester daemon health and readiness probes., readiness_check() (+1 more)
 
 ### Community 411 - "test_recover_apply_refuses_renewal_between_precheck_and_lua_eval_trimmed_ack"
 Cohesion: 0.33
@@ -1902,12 +1922,12 @@ Cohesion: 0.22
 Nodes (6): dynamic, GET(), ADR 0006: Cross-mandate exposure (F4) and configurable risk limits (F7), Decisions, Deploy (operator, after the L2 review), F7: tighten-only overrides
 
 ### Community 415 - "resolve_imports"
-Cohesion: 0.17
-Nodes (14): ADR 0003: Closed strategy research loop and sandboxed model-written strategies (Phase 4), Decisions, Evidence, Finding that shaped the phase, Not done / next, Check that every import resolves in this runtime to an allowed, non-module…, resolve_imports(), create_strategy() (+6 more)
+Cohesion: 0.14
+Nodes (17): ADR 0003: Closed strategy research loop and sandboxed model-written strategies (Phase 4), Decisions, Evidence, Finding that shaped the phase, Not done / next, 0. Purpose charter (every spec quotes it, every review checks it), queue_strategy_research(), Propose a trading idea for overnight research (the system drafts a strategy,… (+9 more)
 
-### Community 416 - "TwoStoreCoordinator"
-Cohesion: 0.05
-Nodes (68): bar_to_nautilus(), EnrichedBar, BarType, BaseModel, Convert EnrichedBar to a native Nautilus Bar domain object., Raw structure from Binance WebSocket or REST kline., Normalized, enriched bar record with exact decimal representations., RawBinanceKline (+60 more)
+### Community 416 - "to_nautilus_bar_type"
+Cohesion: 0.04
+Nodes (98): cost_usd(), is_free(), _p(), Price, price_for(), Decimal, Model prices (USD per 1M tokens) for the cost ledger and budget guard. Source:…, Local (Ollama) and test models cost nothing per token. (+90 more)
 
 ### Community 417 - "AntiCorruptionLayer"
 Cohesion: 0.29
@@ -1933,9 +1953,9 @@ Nodes (6): create_backtest_run(), CreateBacktestRequest, BaseModel, post, Payloa
 Cohesion: 0.40
 Nodes (6): catalog(), fixture, Path, Stand-in for the strategy_sandbox container's serve loop., serving(), loop()
 
-### Community 424 - "synthetic_lake"
-Cohesion: 0.33
-Nodes (6): _minute(), fixture, Minute i after T0: distinct, exactly representable values so every aggregate is…, Minutes opening 09:00 .. 11:59 with extremes planted on the hour boundaries,…, synthetic_lake(), _synthetic_minutes()
+### Community 424 - "test_f_c1_window_is_not_emitted_while_its_last_minute_is_open"
+Cohesion: 0.25
+Nodes (8): _minute(), fixture, The second window (09:15 for 15m, 10:00 for 1h): every minute but its last has…, Minute i after T0: distinct, exactly representable values so every aggregate is…, Minutes opening 09:00 .. 11:59 with extremes planted on the hour boundaries,…, synthetic_lake(), _synthetic_minutes(), test_f_c1_window_is_not_emitted_while_its_last_minute_is_open()
 
 ### Community 427 - "QuoteRedis"
 Cohesion: 0.33
@@ -1985,9 +2005,53 @@ Nodes (3): test_a_lake_read_failure_is_a_short_reason_with_no_paths_or_driver_te
 Cohesion: 0.67
 Nodes (3): performance, Verify DuckDB analytical bar query p95 latency is < 50ms., test_duckdb_query_p95_latency()
 
+### Community 445 - "eval_sentiment.py"
+Cohesion: 0.31
+Nodes (8): csv, BaseModel, SentimentTag, load_news(), macro_f1(), main(), A6.3 tagging eval: sentiment service models vs LLM taggers on labelled…, run_tagger()
+
+### Community 446 - "test_backtester_readiness_exact_branches"
+Cohesion: 0.25
+Nodes (8): asyncio, Path, Verify alembic migration head is 003 and all backtest tables and columns exist…, Test all edge case branches of the /ready endpoint., Verify cryptonite_backtester role has required table permissions but cannot…, test_alembic_migration_schema_integrity(), test_backtester_readiness_exact_branches(), test_backtester_role_least_privilege_enforcement()
+
+### Community 447 - "_card_worker"
+Cohesion: 0.33
+Nodes (7): brain_card(), _card_worker(), handler(), db_url(), fixture, The Brain session worker as the approve route sees it: one card on BTC of…, sell_card()
+
+### Community 448 - "create_body"
+Cohesion: 0.29
+Nodes (6): create_body(), Two submits of one fresh code race: the second one's check ran before the first…, test_a_code_recorded_by_a_concurrent_submit_is_reused_not_wrong(), test_a_totp_code_used_twice_is_refused_as_reused_and_never_locks_the_operator_out(), test_a_wrong_code_is_refused_as_required_and_counted(), test_creating_a_mandate_under_a_stopped_mandate_does_not_spend_the_code()
+
+### Community 449 - "test_command_poller_processes_manual_order"
+Cohesion: 0.33
+Nodes (6): asyncio, Command poller dispatches MANUAL_ORDER directly to engine dispatcher., Command poller claims PENDING DEPLOY command and inserts into…, test_command_poller_processes_deploy_command(), fake_fetchrow(), test_command_poller_processes_manual_order()
+
 ### Community 450 - "test_brain_debate_followthrough.py"
-Cohesion: 0.11
-Nodes (28): cryptonite_api_routes, parametrize, POST /paper/orders forwards perpetual order attributes into the MANUAL_ORDER…, submit(), test_out_of_range_perp_fields_are_rejected_at_the_api(), test_perp_fields_reach_command_payload(), test_spot_style_order_sends_neutral_defaults(), brain_payload() (+20 more)
+Cohesion: 0.17
+Nodes (21): brain_payload(), client(), db_url(), debate_main(), latch_kill_switch(), pool(), fixture, WS-3C (python): a Brain debate card follows its run to the verdict, and a… (+13 more)
+
+### Community 451 - "query_postgres_readonly"
+Cohesion: 0.33
+Nodes (6): get_scanner_context(), query_postgres_readonly(), The statement without a trailing ';', or None when it contains more than one., Executes one SELECT query against the PostgreSQL database and returns the rows…, Gets the most recent signal candidates from the scanner for the instrument., _single_statement()
+
+### Community 453 - "_chained"
+Cohesion: 0.33
+Nodes (5): _chained(), BaseException, ``outer`` raised while ``inner`` was being handled, so outer.__context__ is…, test_connection_loss_inside_a_transaction_is_transient_through_the_exit_error(), test_the_cause_and_context_chain_is_walked_to_a_bounded_depth()
+
+### Community 454 - "test_funding_backfill_fills_gaps_idempotently_across_pages"
+Cohesion: 0.33
+Nodes (5): funding_row(), test_funding_backfill_fills_gaps_idempotently_across_pages(), test_open_interest_poll_caches_each_symbol_and_isolates_failures(), handler(), test_parse_funding_history_infers_interval_and_tolerates_missing_mark()
+
+### Community 455 - "get_totp_aes_key"
+Cohesion: 0.40
+Nodes (4): get_totp_aes_key(), Pool, Redis, Retrieve 32-byte AES-GCM key from Docker secret or environment variable.
+
+### Community 456 - "Cryptonite AI-First Swing Trading Wave Plan (`WS-S0` – `WS-S5`)"
+Cohesion: 0.50
+Nodes (3): 2.1 Fee-Adjusted Swing Expectancy Model, 2. Quantitative & Architectural Specification (`WS-S0`), Cryptonite AI-First Swing Trading Wave Plan (`WS-S0` – `WS-S5`)
+
+### Community 457 - "cli"
+Cohesion: 0.67
+Nodes (3): group, cli(), Cryptonite Ingest & Catalog CLI.
 
 ### Community 458 - "pull_request_template.md"
 Cohesion: 0.50
@@ -2005,11 +2069,11 @@ Nodes (3): offline(), fixture, No feed keys, no funding rows, no fed symbols, an
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Strategy` connect `StrategyInspectorDrawer.tsx` to `SmokeTestStrategy`, `usePortfolioStore.ts`, `CanonicalSpikeStrategy`, `test_deterministic_intrabar_traversal_open_high_low_close`, `identifiers.py`?**
+- **Why does `Strategy` connect `StrategyInspectorDrawer.tsx` to `SmokeTestStrategy`, `usePortfolioStore.ts`, `CanonicalSpikeStrategy`, `SameCandleTestStrategy`, `identifiers.py`?**
   _High betweenness centrality (0.041) - this node is a cross-community bridge._
-- **Why does `OrderCard()` connect `app/page.tsx` to `Brain upgrade plan`, `pydantic_ai_backend.py`, `ScannerEngine`, `test_system_redis.py`, `components/GovernanceConsole.tsx`, `lucide-react`?**
+- **Why does `OrderCard()` connect `app/page.tsx` to `Brain upgrade plan`, `test_brain_trade_timeline.py`, `pydantic_ai_backend.py`, `ScannerEngine`, `components/GovernanceConsole.tsx`, `lucide-react`?**
   _High betweenness centrality (0.034) - this node is a cross-community bridge._
-- **Why does `GuardedOrderDispatcher` connect `GuardedOrderDispatcher` to `Mandate`, `send_alert`, `AI-First Program: what is built (Phases 0–7)`, `migrated_database`, `typing`, `cryptonite_execution/__init__.py`, `AI-First Cryptonite: Blueprint`, `Request`, `margin.py`, `IngressHealthMonitor`, `Perpetual Futures (Paper) — System Architecture`, `PaperTradingEngine`, `test_guarded_order_dispatcher_scaling`, `ARCHITECTURE.md - System Interfaces & Contract Map`, `test_ai_mandates.py`, `make_perp_dispatcher`, `Brain upgrade plan`, `Remediation Plan (2026-10-04, reviewed)`, `debate_worker`?**
+- **Why does `GuardedOrderDispatcher` connect `GuardedOrderDispatcher` to `ARCHITECTURE.md - System Interfaces & Contract Map`, `Mandate`, `test_ai_mandates.py`, `cryptonite_execution/__init__.py`, `send_alert`, `AI-First Cryptonite: Blueprint`, `margin.py`, `debate_worker`, `unittest_mock`, `Perpetual Futures (Paper) — System Architecture`, `PaperTradingEngine`, `make_perp_dispatcher`, `Remediation Plan (2026-10-04, reviewed)`, `signed_outcome`, `test_guarded_order_dispatcher_scaling`, `migrated_database`, `resolve_imports`?**
   _High betweenness centrality (0.031) - this node is a cross-community bridge._
 - **Are the 107 inferred relationships involving `Gateway` (e.g. with `Brain` and `compact()`) actually correct?**
   _`Gateway` has 107 INFERRED edges - model-reasoned connections that need verification._
@@ -2018,4 +2082,4 @@ _Questions this graph is uniquely positioned to answer:_
 - **What connects `$schema`, `style`, `rsc` to the rest of the system?**
   _841 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `cryptonite_agents/tools.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.05093632958801498 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06455399061032864 - nodes in this community are weakly interconnected._
