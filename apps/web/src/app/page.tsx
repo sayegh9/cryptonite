@@ -20,6 +20,7 @@ import { MarketOverview } from "@/components/MarketOverview";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { AIBrainWorkspace } from "@/components/brain/AIBrainWorkspace";
 import { DecisionTraceDrawer } from "@/components/brain/DecisionTraceDrawer";
+import { GovernanceConsole } from "@/components/GovernanceConsole";
 import { MissionControl } from "@/components/mission/MissionControl";
 import { ModeBanner } from "@/components/mission/ModeBanner";
 import { WorkspaceNav } from "@/components/WorkspaceNav";
@@ -33,8 +34,10 @@ import { TerminalWorkspace } from "@/components/terminal/TerminalWorkspace";
 import { DebateTranscriptViewer } from "@/components/debate/DebateTranscriptViewer";
 
 import { ResearchLab } from "@/components/ResearchLab/ResearchLab";
+import { StrategyStudio } from "@/components/StrategyStudio";
 import { useBacktestStore } from "@/lib/stores/useBacktestStore";
 import { PortfolioConsole } from "@/components/PortfolioConsole";
+import { TradesConsole } from "@/components/TradesConsole";
 import { getStreamClient } from "@/lib/ws";
 import { toast } from "sonner";
 import {
@@ -62,7 +65,7 @@ function Workstation() {
   const navigate = useCallback((mode: WorkspaceMode, view?: string | null) => {
     // Workspaces with sub-views always carry one, so Back restores the exact view
     if (!view && mode === "debates") view = useBrainStore.getState().workspaceView === "debates" ? "debates" : "home";
-    if (!view && mode === "mission") view = useMandateStore.getState().view;
+    if (!view && (mode === "mission" || mode === "governance")) view = useMandateStore.getState().view;
     const query = buildQuery(mode, view);
     if (query !== window.location.search) window.history.pushState(null, "", query);
   }, []);
@@ -307,13 +310,13 @@ function Workstation() {
           summaryClassName="md:max-w-40 lg:max-w-56 xl:max-w-xs 2xl:max-w-md"
         />
 
-        {/* Compact search & command palette trigger */}
+        {/* Header Utility Bar: Compact search & command palette trigger (⌘K) */}
         <button
           type="button"
           onClick={() => window.dispatchEvent(new CustomEvent("cryptonite:open-command-palette"))}
           aria-label="Search and commands"
           title="Search pairs, jump to any setting, or run commands (⌘K)"
-          className="flex flex-none items-center space-x-1.5 ml-2 md:ml-3 px-2 sm:px-2.5 py-1.5 bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-zinc-400 hover:text-zinc-200 rounded transition-colors font-mono text-2xs"
+          className="flex flex-none items-center space-x-1.5 ml-2 md:ml-3 px-2 sm:px-2.5 py-1.5 bg-zinc-900/90 hover:bg-zinc-800 border border-white/10 text-zinc-400 hover:text-zinc-200 rounded transition-colors font-mono text-2xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/60"
         >
           <Search className="w-3.5 h-3.5 text-zinc-400" aria-hidden="true" />
           <span className="hidden xl:inline text-zinc-400">Search</span>
@@ -398,6 +401,13 @@ function Workstation() {
         <AIBrainWorkspace selectedSymbol={selectedSymbol} isActive={workspaceMode === "debates"} />
       </div>
 
+      {/* Risk & Governance Flight Deck: Unified institutional control plane */}
+      {workspaceMode === "governance" && (
+        <div className="flex-1 min-h-0 min-w-0">
+          <GovernanceConsole isActive initialView={urlView ?? undefined} />
+        </div>
+      )}
+
       {/* Mission Control: mandates, approvals, autonomy (blueprint §7.1) */}
       {workspaceMode === "mission" && (
         <div className="flex-1 min-h-0 min-w-0">
@@ -424,9 +434,19 @@ function Workstation() {
           <SettingsPanel />
         </div>
       )}
+      {workspaceMode === "strategies" && (
+        <main className="flex-1 overflow-hidden relative">
+          <StrategyStudio />
+        </main>
+      )}
       <main className={workspaceMode === "research" ? "flex-1 overflow-hidden relative p-1 pb-[33px]" : "hidden"}>
         <ResearchLab />
       </main>
+      {workspaceMode === "trades" && (
+        <div className="flex-1 min-h-0 min-w-0">
+          <TradesConsole />
+        </div>
+      )}
       {workspaceMode === "portfolio" && (
         <div className="flex-1 min-h-0 min-w-0">
           <PortfolioConsole />

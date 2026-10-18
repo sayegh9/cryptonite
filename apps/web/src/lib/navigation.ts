@@ -3,18 +3,45 @@
  * Internal workspace ids are kept (the AI Brain is "debates" internally, "brain" in the URL).
  */
 export type WorkspaceMode =
-  | "terminal" | "markets" | "portfolio" | "research" | "debates" | "mission" | "operator" | "alerts" | "settings";
+  | "trades"
+  | "strategies"
+  | "governance"
+  | "terminal"
+  | "markets"
+  | "portfolio"
+  | "research"
+  | "debates"
+  | "mission"
+  | "operator"
+  | "alerts"
+  | "settings";
 
 /** Landing workspace when the URL names none (R6.3: Mission Control). */
 export const DEFAULT_WORKSPACE: WorkspaceMode = "mission";
 
 const URL_ALIAS: Partial<Record<WorkspaceMode, string>> = { debates: "brain" };
-const MODES: WorkspaceMode[] = ["terminal", "markets", "portfolio", "research", "debates", "mission", "operator", "alerts", "settings"];
+const MODES: WorkspaceMode[] = [
+  "trades",
+  "strategies",
+  "governance",
+  "terminal",
+  "markets",
+  "portfolio",
+  "research",
+  "debates",
+  "mission",
+  "operator",
+  "alerts",
+  "settings",
+];
 
 export function parseWorkspace(ws: string | null | undefined): WorkspaceMode | null {
   if (!ws) return null;
-  const v = ws.toLowerCase();
+  const v = ws.toLowerCase().trim();
   if (v === "brain") return "debates";
+  if (v === "trade") return "trades";
+  if (v === "strategy") return "strategies";
+  if (v === "gov") return "governance";
   return (MODES as string[]).includes(v) ? (v as WorkspaceMode) : null;
 }
 
@@ -23,6 +50,7 @@ export const workspaceParam = (mode: WorkspaceMode) => URL_ALIAS[mode] ?? mode;
 /** Sub-views that have their own URL. */
 export const VIEWS: Partial<Record<WorkspaceMode, { id: string; label: string }[]>> = {
   terminal: [{ id: "scanner", label: "Scanner" }],
+  trades: [{ id: "scanner", label: "Scanner" }],
   debates: [
     { id: "home", label: "Brain Home" },
     { id: "debates", label: "Debates" },
@@ -30,6 +58,14 @@ export const VIEWS: Partial<Record<WorkspaceMode, { id: string; label: string }[
   mission: [
     { id: "overview", label: "Overview" },
     { id: "mandates", label: "Mandate editor" },
+    { id: "autonomy", label: "Autonomy & Evals" },
+  ],
+  governance: [
+    { id: "overview", label: "Overview" },
+    { id: "mandates", label: "Mandate editor" },
+    { id: "approvals", label: "Approval queue" },
+    { id: "limits", label: "Risk limits" },
+    { id: "reconciliation", label: "Reconciliation" },
     { id: "autonomy", label: "Autonomy & Evals" },
   ],
 };
@@ -127,6 +163,7 @@ export interface NavItem {
   mode: WorkspaceMode;
   /** Visible tab text: e2e specs click these by name, keep them stable. */
   label: string;
+  shortLabel?: string;
   view?: string;
   /**
    * Secondary destinations. Below the header's overflow breakpoint they move into the "More" menu, so the
@@ -137,11 +174,96 @@ export interface NavItem {
   iconName?: string;
 }
 
-/** Header groups. Labels are the visible tab texts. */
-export const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
+export interface NavGroup {
+  id: string;
+  label: string;
+  pillarTitle: string;
+  shortLabel: string;
+  pillarNumber: number;
+  description: string;
+  iconName: string;
+  items: NavItem[];
+}
+
+export interface PillarMeta {
+  id: string;
+  pillar: string;
+  pillarNumber: number;
+  label: string;
+  shortLabel: string;
+  description: string;
+  mode: WorkspaceMode;
+  iconName: string;
+}
+
+export const FOUR_PILLARS: PillarMeta[] = [
+  {
+    id: "trades",
+    pillar: "Pillar 1",
+    pillarNumber: 1,
+    label: "Trades & Execution",
+    shortLabel: "Trades",
+    description: "Real-time charts, order placement, blotter & execution terminal",
+    mode: "trades",
+    iconName: "TrendingUp",
+  },
+  {
+    id: "strategies",
+    pillar: "Pillar 2",
+    pillarNumber: 2,
+    label: "Strategy Studio",
+    shortLabel: "Strategies",
+    description: "Vector backtesting, alpha strategy discovery & parameter sweeps",
+    mode: "strategies",
+    iconName: "FlaskConical",
+  },
+  {
+    id: "ai-brain",
+    pillar: "Pillar 3",
+    pillarNumber: 3,
+    label: "AI Brain",
+    shortLabel: "AI Brain",
+    description: "Consensus debates, thesis evaluations & LLM decision audit",
+    mode: "debates",
+    iconName: "BrainCircuit",
+  },
+  {
+    id: "governance",
+    pillar: "Pillar 4",
+    pillarNumber: 4,
+    label: "Risk & Governance",
+    shortLabel: "Risk & Governance",
+    description: "Trading mandates, risk autonomy levels, kill switch & operator controls",
+    mode: "governance",
+    iconName: "ShieldAlert",
+  },
+];
+
+export const UTILITY_ITEMS: NavItem[] = [
+  {
+    mode: "alerts",
+    label: "Alerts",
+    description: "Real-time price breach alerts & notification rules",
+    iconName: "Bell",
+  },
+  {
+    mode: "settings",
+    label: "Settings",
+    description: "Desk preferences, risk limits, AI routing & institutional policies",
+    iconName: "Settings",
+  },
+];
+
+/** Header groups reflecting the Institutional 4 Core Pillars. Labels match existing e2e groups. */
+export const NAV_GROUPS: NavGroup[] = [
   {
     id: "trade",
     label: "Trade",
+    pillarTitle: "Trades & Execution",
+    shortLabel: "Trades",
+    pillarNumber: 1,
+    description: "Real-time charts, blotter & execution terminal",
+    iconName: "TrendingUp",
     items: [
       {
         mode: "terminal",
@@ -166,6 +288,11 @@ export const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
   {
     id: "research",
     label: "Research",
+    pillarTitle: "Strategy Studio",
+    shortLabel: "Strategies",
+    pillarNumber: 2,
+    description: "Vector backtesting, alpha strategy discovery & parameter sweeps",
+    iconName: "FlaskConical",
     items: [
       {
         mode: "research",
@@ -186,6 +313,11 @@ export const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
   {
     id: "ai",
     label: "AI",
+    pillarTitle: "AI Brain",
+    shortLabel: "AI Brain",
+    pillarNumber: 3,
+    description: "Consensus debates, thesis evaluations & LLM decision audit",
+    iconName: "BrainCircuit",
     items: [
       {
         mode: "debates",
@@ -204,6 +336,11 @@ export const NAV_GROUPS: { id: string; label: string; items: NavItem[] }[] = [
   {
     id: "system",
     label: "System",
+    pillarTitle: "Risk & Governance",
+    shortLabel: "Risk & Governance",
+    pillarNumber: 4,
+    description: "Emergency kill switch, ledger reconciliation & engine instances",
+    iconName: "ShieldAlert",
     items: [
       {
         mode: "operator",

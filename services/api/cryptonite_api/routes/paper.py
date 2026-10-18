@@ -3,6 +3,7 @@
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
@@ -99,6 +100,17 @@ async def _enqueue_command(
     return dict(row)
 
 
+def _resolve_strategy_name(instance_id: str | None, joined_name: str | None) -> str:
+    if joined_name and joined_name not in ("ManualTrading", "AIDebateTrading"):
+        return joined_name
+    inst = (instance_id or "").upper()
+    if "MANUAL" in inst or joined_name == "ManualTrading":
+        return "Manual Trade"
+    if "DEBATE" in inst or "AI" in inst or "MANDATE" in inst or joined_name == "AIDebateTrading":
+        return "AI Debate Worker"
+    return joined_name or instance_id or "Manual Trade"
+
+
 # --- READ ENDPOINTS (Projections) ---
 
 
@@ -114,11 +126,53 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
     pool = request.app.state.pool
     if account_id:
         rows = await pool.fetch(
-            "SELECT * FROM paper_positions WHERE account_id = $1 ORDER BY opened_at DESC;",
+            """
+            SELECT p.*, s.strategy_name
+            FROM paper_positions p
+            LEFT JOIN paper_strategy_instances s ON p.instance_id = s.instance_id
+            WHERE p.account_id = $1
+            ORDER BY p.opened_at DESC;
+            """,
             account_id,
         )
     else:
-        rows = await pool.fetch("SELECT * FROM paper_positions ORDER BY opened_at DESC;")
+        rows = await pool.fetch(
+            """
+            SELECT p.*, s.strategy_name
+            FROM paper_positions p
+            LEFT JOIN paper_strategy_instances s ON p.instance_id = s.instance_id
+            ORDER BY p.opened_at DESC;
+            """
+        )
+
+    # Dynamic exit rules from system_settings or default exit thresholds (stop loss 2.5%, trail activate / take profit 4.0%)
+    stop_loss_pct = 2.5
+    take_profit_pct = 4.0
+    if pool:
+        try:
+            settings_rows = await pool.fetch(
+                "SELECT key, value FROM system_settings WHERE key IN ('exit.stop_loss_pct', 'exit.trail_activate_pct', 'exit.take_profit_pct');"
+            )
+            for sr in settings_rows:
+                k = sr["key"]
+                v = sr["value"]
+                if isinstance(v, str):
+                    try:
+                        v = json.loads(v)
+                    except Exception:
+                        pass
+                try:
+                    val = float(v)
+                    if k == "exit.stop_loss_pct":
+                        stop_loss_pct = val
+                    elif k in ("exit.trail_activate_pct", "exit.take_profit_pct"):
+                        take_profit_pct = val
+                except (ValueError, TypeError):
+                    pass
+        except Exception:
+            pass
+
+    now_dt = datetime.now(timezone.utc)
     # B3 (F-H3): an open position shows its live mark and PnL, else its stored mark flagged stale
     marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
     out = []
@@ -130,6 +184,48 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
                 row["current_price"] = view.price
                 row["unrealized_pnl"] = unrealized_pnl(row["side"], row["quantity"], row["entry_price"], view.price)
             row.update(view.fields())
+
+        # Strategy name resolution
+        row["strategy_name"] = _resolve_strategy_name(row.get("instance_id"), row.get("strategy_name"))
+
+        # opened_at formatted and duration_s calculation
+        opened_at = row.get("opened_at")
+        opened_at_dt = None
+        if isinstance(opened_at, datetime):
+            opened_at_dt = opened_at if opened_at.tzinfo else opened_at.replace(tzinfo=timezone.utc)
+            row["opened_at"] = opened_at_dt.isoformat()
+        elif isinstance(opened_at, str):
+            row["opened_at"] = opened_at
+            try:
+                opened_at_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+                if opened_at_dt.tzinfo is None:
+                    opened_at_dt = opened_at_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                opened_at_dt = None
+        else:
+            row["opened_at"] = now_dt.isoformat()
+
+        if opened_at_dt:
+            row["duration_s"] = round(max(0.0, (now_dt - opened_at_dt).total_seconds()), 2)
+        else:
+            row["duration_s"] = 0.0
+
+        # Dynamic stop loss and take profit calculation
+        entry_price = float(row["entry_price"]) if row.get("entry_price") is not None else 0.0
+        side = str(row.get("side") or "").upper()
+        if entry_price > 0:
+            if side == "SHORT":
+                sl_price = entry_price * (1.0 + stop_loss_pct / 100.0)
+                tp_price = entry_price * (1.0 - take_profit_pct / 100.0)
+            else:
+                sl_price = entry_price * (1.0 - stop_loss_pct / 100.0)
+                tp_price = entry_price * (1.0 + take_profit_pct / 100.0)
+            row["stop_loss_price"] = round(sl_price, 8)
+            row["take_profit_price"] = round(tp_price, 8)
+        else:
+            row["stop_loss_price"] = None
+            row["take_profit_price"] = None
+
         out.append(row)
     return out
 
@@ -139,13 +235,34 @@ async def get_orders(request: Request, account_id: str | None = None, limit: int
     pool = request.app.state.pool
     if account_id:
         rows = await pool.fetch(
-            "SELECT * FROM paper_orders WHERE account_id = $1 ORDER BY created_at DESC LIMIT $2;",
+            """
+            SELECT o.*, s.strategy_name
+            FROM paper_orders o
+            LEFT JOIN paper_strategy_instances s ON o.instance_id = s.instance_id
+            WHERE o.account_id = $1
+            ORDER BY o.created_at DESC
+            LIMIT $2;
+            """,
             account_id,
             limit,
         )
     else:
-        rows = await pool.fetch("SELECT * FROM paper_orders ORDER BY created_at DESC LIMIT $1;", limit)
-    return [dict(r) for r in rows]
+        rows = await pool.fetch(
+            """
+            SELECT o.*, s.strategy_name
+            FROM paper_orders o
+            LEFT JOIN paper_strategy_instances s ON o.instance_id = s.instance_id
+            ORDER BY o.created_at DESC
+            LIMIT $1;
+            """,
+            limit,
+        )
+    out = []
+    for r in rows:
+        row = dict(r)
+        row["strategy_name"] = _resolve_strategy_name(row.get("instance_id"), row.get("strategy_name"))
+        out.append(row)
+    return out
 
 
 @router.get("/trades")
@@ -153,13 +270,50 @@ async def get_trades(request: Request, account_id: str | None = None, limit: int
     pool = request.app.state.pool
     if account_id:
         rows = await pool.fetch(
-            "SELECT * FROM paper_trades WHERE account_id = $1 ORDER BY executed_at DESC LIMIT $2;",
+            """
+            SELECT t.*, s.strategy_name, o.price AS order_price
+            FROM paper_trades t
+            LEFT JOIN paper_strategy_instances s ON t.instance_id = s.instance_id
+            LEFT JOIN paper_orders o ON t.client_order_id = o.client_order_id
+            WHERE t.account_id = $1
+            ORDER BY t.executed_at DESC
+            LIMIT $2;
+            """,
             account_id,
             limit,
         )
     else:
-        rows = await pool.fetch("SELECT * FROM paper_trades ORDER BY executed_at DESC LIMIT $1;", limit)
-    return [dict(r) for r in rows]
+        rows = await pool.fetch(
+            """
+            SELECT t.*, s.strategy_name, o.price AS order_price
+            FROM paper_trades t
+            LEFT JOIN paper_strategy_instances s ON t.instance_id = s.instance_id
+            LEFT JOIN paper_orders o ON t.client_order_id = o.client_order_id
+            ORDER BY t.executed_at DESC
+            LIMIT $1;
+            """,
+            limit,
+        )
+    out = []
+    for r in rows:
+        row = dict(r)
+        row["strategy_name"] = _resolve_strategy_name(row.get("instance_id"), row.get("strategy_name"))
+
+        order_price = row.pop("order_price", None)
+        slippage_bps = None
+        if order_price is not None:
+            try:
+                op_val = float(order_price)
+                tp_val = float(row.get("price") or 0.0)
+                if op_val > 0 and tp_val > 0:
+                    diff = ((tp_val - op_val) / op_val) * 10000.0
+                    side = str(row.get("side") or "").upper()
+                    slippage_bps = round(diff if side == "BUY" else -diff, 2)
+            except (ValueError, TypeError, ZeroDivisionError):
+                slippage_bps = None
+        row["slippage_bps"] = slippage_bps
+        out.append(row)
+    return out
 
 
 @router.get("/strategies")

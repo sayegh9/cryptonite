@@ -26,6 +26,7 @@ data/nautilus_catalog/*
 !data/nautilus_catalog/.gitkeep
 data/analytics_lake/*
 !data/analytics_lake/.gitkeep
+data/research_reports/*
 infra/postgres_data/
 
 # IDE

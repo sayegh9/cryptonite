@@ -27,7 +27,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm start",
+    command: "pnpm --pm-on-fail=ignore start",
     url: "http://127.0.0.1:3000",
     reuseExistingServer: !CI,
     timeout: 30000,

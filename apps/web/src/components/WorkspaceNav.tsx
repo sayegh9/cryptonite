@@ -16,6 +16,9 @@ import {
   Activity,
   Bell,
   Settings,
+  Layers,
+  Cpu,
+  ShieldAlert,
 } from "lucide-react";
 import { NAV_GROUPS, type NavItem, type WorkspaceMode } from "@/lib/navigation";
 
@@ -29,19 +32,59 @@ const OVERFLOW_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items.filter((i) =
 
 const TAB_ICONS: Record<string, React.ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" }>> = {
   Terminal,
+  Trades: TrendingUp,
+  "Trades & Execution": TrendingUp,
   Markets: TrendingUp,
   Portfolio: Briefcase,
   "Research Lab": FlaskConical,
+  Strategies: FlaskConical,
+  "Strategy Studio": FlaskConical,
   Scanner: Search,
   "AI Brain": BrainCircuit,
   "Mission Control": Gauge,
+  Governance: ShieldAlert,
+  "Risk & Governance": ShieldAlert,
   Operator: Activity,
   Alerts: Bell,
   Settings,
+  Layers,
+  Cpu,
 };
 
-const isActiveTab = (tab: NavItem, workspaceMode: WorkspaceMode, urlView: string | null) =>
-  workspaceMode === tab.mode && (tab.view ? urlView === tab.view : !(tab.mode === "terminal" && urlView === "scanner"));
+const isPillarActive = (groupId: string, workspaceMode: WorkspaceMode) => {
+  if (groupId === "trade") {
+    return workspaceMode === "trades" || workspaceMode === "terminal" || workspaceMode === "markets" || workspaceMode === "portfolio";
+  }
+  if (groupId === "research") {
+    return workspaceMode === "strategies" || workspaceMode === "research";
+  }
+  if (groupId === "ai") {
+    return workspaceMode === "debates" || workspaceMode === "mission";
+  }
+  if (groupId === "system") {
+    return workspaceMode === "governance" || workspaceMode === "operator" || workspaceMode === "alerts" || workspaceMode === "settings";
+  }
+  return false;
+};
+
+const PILLAR_MODE_MAP: Record<string, WorkspaceMode> = {
+  trade: "trades",
+  research: "strategies",
+  ai: "debates",
+  system: "governance",
+};
+
+const isActiveTab = (tab: NavItem, workspaceMode: WorkspaceMode, urlView: string | null) => {
+  if (workspaceMode === tab.mode) {
+    if (tab.view) return urlView === tab.view;
+    return !(tab.mode === "terminal" && urlView === "scanner");
+  }
+  // URL alias mapping:
+  if (workspaceMode === "trades" && tab.mode === "terminal" && !tab.view) return true;
+  if (workspaceMode === "strategies" && tab.mode === "research") return true;
+  if (workspaceMode === "governance" && tab.mode === "mission") return true;
+  return false;
+};
 
 /**
  * The header's grouped workspace tabs. When they do not fit (the mode banner takes priority) the nav
@@ -71,7 +114,19 @@ export function WorkspaceNav({
   }, []);
 
   const revealCurrent = useCallback(() => {
-    navRef.current?.querySelector<HTMLElement>('[aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const el = navRef.current;
+    if (!el) return;
+    const current = el.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!current) return;
+    const curLeft = current.offsetLeft;
+    const curRight = current.offsetLeft + current.offsetWidth;
+    const viewLeft = el.scrollLeft;
+    const viewRight = el.scrollLeft + el.clientWidth;
+    if (curLeft < viewLeft) {
+      el.scrollLeft = curLeft;
+    } else if (curRight > viewRight) {
+      el.scrollLeft = curRight - el.clientWidth;
+    }
   }, []);
 
   // The nav narrows when the mode banner grows (data arrives): keep the current tab in view
@@ -115,12 +170,28 @@ export function WorkspaceNav({
                   isSystem ? "ml-auto pl-4 border-l border-zinc-800" : gi > 0 ? "ml-4 pl-4 border-l border-zinc-800" : ""
                 }`}
               >
-                {/* Refined category header pill visible from xl */}
+                {/* Refined Institutional 4-Pillars header badge */}
                 <span
-                  className="hidden xl:inline text-2xs uppercase tracking-widest text-zinc-400 select-none px-1.5 py-0.5 rounded bg-zinc-900/60 border border-white/5"
-                  aria-hidden="true"
+                  role="link"
+                  tabIndex={0}
+                  onClick={() => navigate(PILLAR_MODE_MAP[group.id] ?? "trades")}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      navigate(PILLAR_MODE_MAP[group.id] ?? "trades");
+                    }
+                  }}
+                  data-pillar={group.shortLabel ?? group.label}
+                  data-active={isPillarActive(group.id, workspaceMode)}
+                  aria-label={group.shortLabel ?? group.label}
+                  title={`Jump to ${group.pillarTitle ?? group.label}`}
+                  className={`hidden xl:inline-flex items-center text-2xs uppercase tracking-widest select-none px-1.5 py-0.5 rounded border transition-colors cursor-pointer ${
+                    isPillarActive(group.id, workspaceMode)
+                      ? "text-cyan-400 bg-cyan-950/60 border-cyan-500/50 shadow-xs font-bold"
+                      : "text-zinc-400 bg-zinc-900/60 border-white/5 hover:text-zinc-200 hover:border-zinc-700"
+                  }`}
                 >
-                  {group.label}
+                  {group.shortLabel ?? group.label}
                 </span>
                 {group.items.map((tab) => {
                   const active = isActiveTab(tab, workspaceMode, urlView);

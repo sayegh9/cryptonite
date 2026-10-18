@@ -118,6 +118,10 @@ export interface Strategy {
   code_hash: string;
   default_parameters: Record<string, any>;
   parameter_schema: Record<string, any>;
+  thesis?: string;
+  category?: string;
+  market_regime?: string;
+  timeframe_default?: string;
 }
 
 export interface BacktestMetrics extends VersionedMetrics {

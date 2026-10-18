@@ -599,3 +599,6 @@ export function PortfolioConsole() {
     </div>
   );
 }
+
+export { TradesConsole } from "./TradesConsole";
+export default PortfolioConsole;

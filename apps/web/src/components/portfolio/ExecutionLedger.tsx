@@ -10,6 +10,8 @@ import {
 } from "@/lib/stores/usePortfolioStore";
 import { postCommand } from "@/lib/portfolio/actions";
 import { downloadCsv, fmtLedgerQty, fmtPrice, toCsv } from "@/lib/portfolio/metrics";
+import { OrderStatusBadge } from "@/components/trades";
+import { cn } from "@/lib/utils";
 
 const RANGE_MS: Record<LedgerRange, number> = { "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, all: Infinity };
 const CANCELLABLE = new Set(["PENDING", "SUBMITTED", "ACCEPTED"]);
@@ -31,29 +33,95 @@ const ts = (iso: string) => {
   return Number.isFinite(t) ? new Date(t).toISOString().replace("T", " ").slice(0, 19) : "—";
 };
 
+const slippageCell = (bps: number | null | undefined) => {
+  if (bps == null || !Number.isFinite(bps)) {
+    return <span className="text-zinc-500 font-mono">—</span>;
+  }
+  const formatted = `${bps > 0 ? "+" : ""}${bps.toFixed(1)} bps`;
+  let colorClass = "text-zinc-400";
+  if (bps < 0) {
+    colorClass = "text-emerald-400 font-bold";
+  } else if (bps > 0) {
+    colorClass = bps > 2.0 ? "text-rose-400 font-bold" : "text-amber-400 font-medium";
+  }
+  return (
+    <span className={cn("tabular-nums font-mono text-2xs", colorClass)} title={`Execution Slippage: ${formatted}`}>
+      {formatted}
+    </span>
+  );
+};
+
 const ORDER_COLUMNS: Column<PaperOrder>[] = [
-  { key: "time", header: "Time (UTC)", sort: (o) => Date.parse(o.created_at) || 0, csv: (o) => o.created_at, cell: (o) => <span className="text-zinc-400">{ts(o.created_at)}</span> },
-  { key: "id", header: "Client Order ID", sort: (o) => o.client_order_id, csv: (o) => o.client_order_id, cell: (o) => <span className="text-zinc-400">{o.client_order_id}</span> },
+  { key: "time", header: "Time (UTC)", sort: (o) => Date.parse(o.created_at) || 0, csv: (o) => o.created_at, cell: (o) => <span className="text-zinc-400 font-mono text-2xs">{ts(o.created_at)}</span> },
+  { key: "id", header: "Client Order ID", sort: (o) => o.client_order_id, csv: (o) => o.client_order_id, cell: (o) => <span className="text-zinc-400 font-mono text-2xs">{o.client_order_id}</span> },
   { key: "instrument", header: "Instrument", sort: (o) => o.instrument_id, csv: (o) => o.instrument_id, cell: (o) => <span className="font-bold text-white">{o.instrument_id}</span> },
-  { key: "origin", header: "Origin", sort: (o) => o.instance_id, csv: (o) => o.instance_id, cell: (o) => <span className="text-indigo-300">{o.instance_id}</span> },
+  {
+    key: "origin",
+    header: "Strategy / Origin",
+    sort: (o) => o.strategy_name || o.instance_id,
+    csv: (o) => o.strategy_name || o.instance_id,
+    cell: (o) => (
+      <span
+        className="px-1.5 py-0.5 rounded text-2xs border bg-indigo-500/15 text-indigo-300 border-indigo-500/30"
+        title={o.strategy_name && o.instance_id ? `${o.strategy_name} (${o.instance_id})` : o.strategy_name || o.instance_id}
+      >
+        {o.strategy_name || (o.instance_id && o.instance_id.length > 15 ? `${o.instance_id.substring(0, 15)}…` : o.instance_id)}
+      </span>
+    ),
+  },
   { key: "side", header: "Side", sort: (o) => o.side, csv: (o) => o.side, cell: (o) => sideTag(o.side) },
   { key: "type", header: "Type", sort: (o) => o.order_type, csv: (o) => o.order_type, cell: (o) => o.order_type },
   { key: "qty", header: "Qty", align: "right", sort: (o) => Number(o.quantity), csv: (o) => o.quantity, cell: (o) => fmtLedgerQty(Number(o.quantity)) },
   { key: "price", header: "Limit", align: "right", sort: (o) => Number(o.price ?? 0), csv: (o) => o.price ?? "MKT", cell: (o) => (o.price ? fmtPrice(Number(o.price)) : "MKT") },
   { key: "filled", header: "Filled", align: "right", sort: (o) => Number(o.filled_qty), csv: (o) => o.filled_qty, cell: (o) => fmtLedgerQty(Number(o.filled_qty)) },
-  { key: "status", header: "Status", sort: (o) => o.status, csv: (o) => o.status, cell: (o) => <span className="px-1.5 py-0.5 rounded text-2xs bg-zinc-800 text-zinc-300">{o.status}</span> },
+  { key: "status", header: "Status", sort: (o) => o.status, csv: (o) => o.status, cell: (o) => <OrderStatusBadge status={o.status} size="sm" /> },
 ];
 
 const TRADE_COLUMNS: Column<PaperTrade>[] = [
-  { key: "time", header: "Time (UTC)", sort: (t) => Date.parse(t.executed_at) || 0, csv: (t) => t.executed_at, cell: (t) => <span className="text-zinc-300">{ts(t.executed_at)}</span> },
-  { key: "id", header: "Trade ID", sort: (t) => t.trade_id, csv: (t) => t.trade_id, cell: (t) => <span className="text-zinc-400">{t.trade_id}</span> },
+  {
+    key: "time",
+    header: "Time (UTC)",
+    sort: (t) => Date.parse(t.executed_at) || 0,
+    csv: (t) => t.executed_at,
+    cell: (t) => (
+      <time
+        dateTime={t.executed_at}
+        title={`Exact UTC: ${t.executed_at}`}
+        className="text-zinc-300 font-mono text-2xs tabular-nums"
+      >
+        {ts(t.executed_at)}
+      </time>
+    ),
+  },
+  { key: "id", header: "Trade ID", sort: (t) => t.trade_id, csv: (t) => t.trade_id, cell: (t) => <span className="text-zinc-400 font-mono text-2xs">{t.trade_id}</span> },
   { key: "instrument", header: "Instrument", sort: (t) => t.instrument_id, csv: (t) => t.instrument_id, cell: (t) => <span className="font-bold text-white">{t.instrument_id}</span> },
-  { key: "origin", header: "Origin", sort: (t) => t.instance_id ?? "", csv: (t) => t.instance_id, cell: (t) => <span className="text-indigo-300">{t.instance_id ?? "—"}</span> },
+  {
+    key: "origin",
+    header: "Strategy / Origin",
+    sort: (t) => t.strategy_name || t.instance_id || "",
+    csv: (t) => t.strategy_name || t.instance_id,
+    cell: (t) => (
+      <span
+        className="px-1.5 py-0.5 rounded text-2xs border bg-indigo-500/15 text-indigo-300 border-indigo-500/30"
+        title={t.strategy_name && t.instance_id ? `${t.strategy_name} (${t.instance_id})` : t.strategy_name || t.instance_id || "—"}
+      >
+        {t.strategy_name || (t.instance_id && t.instance_id.length > 15 ? `${t.instance_id.substring(0, 15)}…` : t.instance_id || "—")}
+      </span>
+    ),
+  },
   { key: "side", header: "Side", sort: (t) => t.side, csv: (t) => t.side, cell: (t) => sideTag(t.side) },
   { key: "price", header: "Fill Price", align: "right", sort: (t) => Number(t.price), csv: (t) => t.price, cell: (t) => fmtPrice(Number(t.price)) },
+  {
+    key: "slippage",
+    header: "Slippage",
+    align: "right",
+    sort: (t) => (t.slippage_bps != null ? Number(t.slippage_bps) : 9999),
+    csv: (t) => (t.slippage_bps != null ? `${t.slippage_bps > 0 ? "+" : ""}${t.slippage_bps.toFixed(1)} bps` : ""),
+    cell: (t) => slippageCell(t.slippage_bps),
+  },
   { key: "qty", header: "Qty", align: "right", sort: (t) => Number(t.quantity), csv: (t) => t.quantity, cell: (t) => fmtLedgerQty(Number(t.quantity)) },
   { key: "notional", header: "Notional", align: "right", sort: (t) => Number(t.price) * Number(t.quantity), csv: (t) => Number(t.price) * Number(t.quantity), cell: (t) => fmtPrice(Number(t.price) * Number(t.quantity)) },
-  { key: "fee", header: "Fee (USDT)", align: "right", sort: (t) => Number(t.commission), csv: (t) => t.commission, cell: (t) => <span className="text-red-400">-{Number(t.commission).toFixed(4)}</span> },
+  { key: "fee", header: "Fee (USDT)", align: "right", sort: (t) => Number(t.commission), csv: (t) => t.commission, cell: (t) => <span className="text-red-400 font-mono">-{Number(t.commission).toFixed(4)}</span> },
 ];
 
 const selectCls =
@@ -164,14 +232,22 @@ export function ExecutionLedger() {
 
   const { symbols, origins } = useMemo(() => {
     const sym = new Set<string>(), org = new Set<string>();
-    for (const o of orders) { sym.add(o.instrument_id); if (o.instance_id) org.add(o.instance_id); }
-    for (const t of trades) { sym.add(t.instrument_id); if (t.instance_id) org.add(t.instance_id); }
+    for (const o of orders) {
+      sym.add(o.instrument_id);
+      if (o.strategy_name) org.add(o.strategy_name);
+      else if (o.instance_id) org.add(o.instance_id);
+    }
+    for (const t of trades) {
+      sym.add(t.instrument_id);
+      if (t.strategy_name) org.add(t.strategy_name);
+      else if (t.instance_id) org.add(t.instance_id);
+    }
     return { symbols: [...sym].sort(), origins: [...org].sort() };
   }, [orders, trades]);
 
-  const matches = (instrument: string, origin: string | undefined, side: string, iso: string) => {
+  const matches = (instrument: string, origin: string | undefined, strategyName: string | null | undefined, side: string, iso: string) => {
     if (prefs.symbol && instrument !== prefs.symbol) return false;
-    if (prefs.origin && origin !== prefs.origin) return false;
+    if (prefs.origin && origin !== prefs.origin && strategyName !== prefs.origin) return false;
     if (prefs.side && side !== prefs.side) return false;
     if (prefs.range !== "all") {
       const t = Date.parse(iso);
@@ -179,8 +255,8 @@ export function ExecutionLedger() {
     }
     return true;
   };
-  const filteredOrders = orders.filter((o) => matches(o.instrument_id, o.instance_id, o.side, o.created_at));
-  const filteredTrades = trades.filter((t) => matches(t.instrument_id, t.instance_id, t.side, t.executed_at));
+  const filteredOrders = orders.filter((o) => matches(o.instrument_id, o.instance_id, o.strategy_name, o.side, o.created_at));
+  const filteredTrades = trades.filter((t) => matches(t.instrument_id, t.instance_id, t.strategy_name, t.side, t.executed_at));
   const filtersActive = prefs.range !== "all" || !!prefs.symbol || !!prefs.origin || !!prefs.side;
 
   const cancel = async (id: string) => {

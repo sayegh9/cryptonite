@@ -40,6 +40,9 @@ import {
 } from "@/lib/navigation";
 
 const MODE_ICON: Record<WorkspaceMode, React.ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" }>> = {
+  trades: TrendingUp,
+  strategies: FlaskConical,
+  governance: ShieldAlert,
   terminal: Terminal,
   markets: TrendingUp,
   portfolio: Briefcase,
@@ -306,6 +309,59 @@ export function CommandPalette() {
               <span>Launch AI Copilot Assistant</span>
             </div>
             <span className="text-2xs font-mono text-zinc-400">Copilot</span>
+          </CommandItem>
+        </CommandGroup>
+
+        <CommandSeparator className="my-1 border-white/5" />
+
+        {/* Institutional 4-Pillars Direct Jump */}
+        <CommandGroup heading="Institutional Pillars" className="text-zinc-400 font-semibold px-2 py-1.5 uppercase text-2xs tracking-wider">
+          <CommandItem
+            value="Trades & Execution Pillar 1 Terminal Blotter Positions Charts"
+            onSelect={() => switchWorkspace("trades")}
+            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
+          >
+            <div className="flex items-center space-x-2.5">
+              <TrendingUp className="mr-2 h-4 w-4 text-cyan-400" aria-hidden="true" />
+              <span className="font-semibold">Trades & Execution</span>
+            </div>
+            <span className="text-2xs font-mono text-cyan-400/80">Pillar 1</span>
+          </CommandItem>
+
+          <CommandItem
+            value="Strategy Studio Pillar 2 Research Backtest Alpha Lab Catalog Instances"
+            onSelect={() => switchWorkspace("strategies")}
+            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
+          >
+            <div className="flex items-center space-x-2.5">
+              <FlaskConical className="mr-2 h-4 w-4 text-cyan-400" aria-hidden="true" />
+              <span className="font-semibold">Strategy Studio</span>
+            </div>
+            <span className="text-2xs font-mono text-cyan-400/80">Pillar 2</span>
+          </CommandItem>
+
+          <CommandItem
+            value="AI Brain Pillar 3 Consensus Debates Thesis LLM Decision Audit"
+            onSelect={() => switchWorkspace("debates")}
+            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-purple-500/10 data-[selected=true]:text-purple-400"
+          >
+            <div className="flex items-center space-x-2.5">
+              <BrainCircuit className="mr-2 h-4 w-4 text-purple-400" aria-hidden="true" />
+              <span className="font-semibold">AI Brain</span>
+            </div>
+            <span className="text-2xs font-mono text-purple-400/80">Pillar 3</span>
+          </CommandItem>
+
+          <CommandItem
+            value="Risk & Governance Pillar 4 Mission Control Mandates Autonomy Kill Switch Operator Limits"
+            onSelect={() => switchWorkspace("governance")}
+            className="flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors text-zinc-200 data-[selected=true]:bg-cyan-500/10 data-[selected=true]:text-cyan-400"
+          >
+            <div className="flex items-center space-x-2.5">
+              <ShieldAlert className="mr-2 h-4 w-4 text-amber-400" aria-hidden="true" />
+              <span className="font-semibold">Risk & Governance</span>
+            </div>
+            <span className="text-2xs font-mono text-amber-400/80">Pillar 4</span>
           </CommandItem>
         </CommandGroup>
 

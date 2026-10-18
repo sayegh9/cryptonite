@@ -48,9 +48,9 @@
     "semantic_hash": ""
   },
   "apps/web/playwright.config.ts": {
-    "mtime": 1791315793.5657616,
-    "seen": 1792177809.9898157,
-    "ast_hash": "6552d7cbc7095d61b6f2b1886f37cf22",
+    "mtime": 1792339113.900043,
+    "seen": 1792339212.8647916,
+    "ast_hash": "2463804ff5ca84f3759caed76962e2c0",
     "semantic_hash": ""
   },
   "apps/web/postcss.config.mjs": {
@@ -90,9 +90,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/app/page.tsx": {
-    "mtime": 1792275453.1141627,
-    "seen": 1792275559.788387,
-    "ast_hash": "7f0afecbfdc4e4aa26fc55409962650d",
+    "mtime": 1792338680.2035291,
+    "seen": 1792338768.678222,
+    "ast_hash": "1ba8b0d786c58e3de9aa07394845a5ea",
     "semantic_hash": ""
   },
   "apps/web/src/components/AgentChatPanel.tsx": {
@@ -114,9 +114,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/CommandPalette.tsx": {
-    "mtime": 1792277338.4179666,
-    "seen": 1792277515.0882084,
-    "ast_hash": "111f160987b9f3a2f1910ad371942512",
+    "mtime": 1792334428.0842986,
+    "seen": 1792335033.9261386,
+    "ast_hash": "469106e25f9561e326429bdf2dce4977",
     "semantic_hash": ""
   },
   "apps/web/src/components/MarketOverview.tsx": {
@@ -132,9 +132,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/PortfolioConsole.tsx": {
-    "mtime": 1792055531.6982155,
-    "seen": 1792177809.9905343,
-    "ast_hash": "92d1bd74c4b2cb1c4ce13bc907988a11",
+    "mtime": 1792335537.8765414,
+    "seen": 1792335595.4060133,
+    "ast_hash": "30bc4493b16545dd27fe079a18cca838",
     "semantic_hash": ""
   },
   "apps/web/src/components/ResearchLab/EquityCurveChart.tsx": {
@@ -306,9 +306,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/lib/types.ts": {
-    "mtime": 1791315793.5732388,
-    "seen": 1792177809.9935946,
-    "ast_hash": "6d192208708dba9a77064eebb022b40d",
+    "mtime": 1792335370.7754543,
+    "seen": 1792335595.431408,
+    "ast_hash": "ccaf0013a567059768fbd3a34beeb03b",
     "semantic_hash": ""
   },
   "apps/web/src/lib/utils.ts": {
@@ -780,10 +780,10 @@
     "semantic_hash": "7b9d53140e7bccc8c8ca07a8eb24fb21"
   },
   "packages/strategies/cryptonite_strategies/registry.py": {
-    "mtime": 1790789371.216694,
-    "seen": 1790800746.2226043,
-    "ast_hash": "f602fe73af0f57b4947751be3ce7136f",
-    "semantic_hash": "f602fe73af0f57b4947751be3ce7136f"
+    "mtime": 1792334099.7388096,
+    "seen": 1792334404.8514962,
+    "ast_hash": "567e789f376c8c730ee3076364584fbb",
+    "semantic_hash": ""
   },
   "packages/strategies/cryptonite_strategies/rsi_reversal.py": {
     "mtime": 1790789371.216694,
@@ -888,9 +888,9 @@
     "semantic_hash": ""
   },
   "services/api/cryptonite_api/routes/paper.py": {
-    "mtime": 1792249066.6807058,
-    "seen": 1792250076.6318808,
-    "ast_hash": "964804a90d35cd282907bd41791ed967",
+    "mtime": 1792334196.443658,
+    "seen": 1792334404.857632,
+    "ast_hash": "bdbea84e4f818f3ae7d6c86e46dcac07",
     "semantic_hash": ""
   },
   "services/api/cryptonite_api/routes/scanners.py": {
@@ -912,9 +912,9 @@
     "semantic_hash": ""
   },
   "services/api/cryptonite_api/routes/strategies.py": {
-    "mtime": 1791788332.9036407,
-    "seen": 1792177810.0042868,
-    "ast_hash": "8540d8b40dfb06da1eb3a3554dc2fe57",
+    "mtime": 1792334119.891778,
+    "seen": 1792334404.8581126,
+    "ast_hash": "82646cb95c63f2ec63d1da1c87a3ec0c",
     "semantic_hash": ""
   },
   "services/api/cryptonite_api/routes/strategist.py": {
@@ -1962,9 +1962,9 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1792260035.2626271,
-    "seen": 1792261554.7338712,
-    "ast_hash": "7e29554b07dcedd2fa4c7cd0bf3ce596",
+    "mtime": 1792286750.1375,
+    "seen": 1792334050.2167385,
+    "ast_hash": "65e432c5ad5b00e2863e486831993db1",
     "semantic_hash": ""
   },
   "apps/web/src/components/ResearchLab/StrategyManagerModal.tsx": {
@@ -2070,9 +2070,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/portfolio/ActivePositionsTable.tsx": {
-    "mtime": 1792055531.699566,
-    "seen": 1792177809.9907074,
-    "ast_hash": "1d8e4a6d15fd2fa97145b853c9725f78",
+    "mtime": 1792335389.0469878,
+    "seen": 1792335595.417939,
+    "ast_hash": "5661900c246aa5894aae1e7ed109c8f7",
     "semantic_hash": ""
   },
   "apps/web/src/components/portfolio/DrawdownMeter.tsx": {
@@ -2082,9 +2082,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/portfolio/ExecutionLedger.tsx": {
-    "mtime": 1791315793.5712452,
-    "seen": 1792177809.9907136,
-    "ast_hash": "34c71b4edc505db7ff3f755d8a5b6bcc",
+    "mtime": 1792335475.0039256,
+    "seen": 1792335595.4181366,
+    "ast_hash": "e921390aec537f1b2c7cfc10f77069ec",
     "semantic_hash": ""
   },
   "apps/web/src/components/portfolio/ExposureBreakdown.tsx": {
@@ -2220,9 +2220,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/lib/stores/usePortfolioStore.ts": {
-    "mtime": 1791167628.2648377,
-    "seen": 1792177809.9935834,
-    "ast_hash": "fa95b322aa6ef0b6cb3770e4eb2de08c",
+    "mtime": 1792335198.2424438,
+    "seen": 1792335595.431057,
+    "ast_hash": "0c0fc4cefe67eb117bd4b16c86ba56fa",
     "semantic_hash": ""
   },
   "infra/migrations/versions/020_perpetuals_schema.py": {
@@ -3258,9 +3258,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/WorkspaceNav.tsx": {
-    "mtime": 1792277355.9568753,
-    "seen": 1792277515.0911021,
-    "ast_hash": "114f00b4548c3fdc9a8ccaaf99d53ec9",
+    "mtime": 1792338857.987373,
+    "seen": 1792339212.868064,
+    "ast_hash": "ecb4f26f6a5afa0184c2648e3d67baa5",
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainHistoryPanel.tsx": {
@@ -3396,9 +3396,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/lib/navigation.ts": {
-    "mtime": 1792277415.3475668,
-    "seen": 1792277515.1033473,
-    "ast_hash": "434cd4d9c74d785da6f0b9fb07ed545e",
+    "mtime": 1792335418.3702605,
+    "seen": 1792335595.428663,
+    "ast_hash": "9373182d22ed39f4475bf2ccc774e1b1",
     "semantic_hash": ""
   },
   "apps/web/src/lib/portfolio/usePaperEquity.ts": {
@@ -4194,9 +4194,9 @@
     "semantic_hash": ""
   },
   "tests/test_settings_registry.py": {
-    "mtime": 1792275351.3704896,
-    "seen": 1792275404.7045019,
-    "ast_hash": "f5e9b46b554e896d5dca721bc50d2941",
+    "mtime": 1792286711.1268063,
+    "seen": 1792334050.2145169,
+    "ast_hash": "4133204782b1de243aca721e3e539e23",
     "semantic_hash": ""
   },
   "tests/test_shadow_mode.py": {
@@ -4599,6 +4599,96 @@
     "mtime": 1792277634.1854367,
     "seen": 1792277936.505509,
     "ast_hash": "6334ba114d37e310ed8ac7274e8dd2eb",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/strategies/MarketRegimePill.tsx": {
+    "mtime": 1792335769.6181498,
+    "seen": 1792335824.7224867,
+    "ast_hash": "7536b90ddb7975ae15f69f9fc4973c85",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/strategies/StrategyIdentityBadge.tsx": {
+    "mtime": 1792333971.1850126,
+    "seen": 1792334050.1551197,
+    "ast_hash": "a89480c0daa914a566b314125b748629",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/strategies/index.ts": {
+    "mtime": 1792335470.1410367,
+    "seen": 1792335595.4218912,
+    "ast_hash": "65ccce1e12c38afd558ec3f15600fbd2",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/trades/DurationTimer.tsx": {
+    "mtime": 1792333928.3910806,
+    "seen": 1792334050.1561787,
+    "ast_hash": "6364358e4037aebd6da722357166f956",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/trades/PositionLifecycleGauge.tsx": {
+    "mtime": 1792339340.9011674,
+    "seen": 1792339424.074717,
+    "ast_hash": "aa7d78f87d158b4767699c9f9b96eea4",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/trades/TradeStatusBadge.tsx": {
+    "mtime": 1792333947.3610504,
+    "seen": 1792334050.1561868,
+    "ast_hash": "dccc0dc69ff28285f08aaa7aa1fba4fb",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/trades/index.ts": {
+    "mtime": 1792333951.3510442,
+    "seen": 1792334050.1561902,
+    "ast_hash": "159a2111767f5012a628faddd55e82ee",
+    "semantic_hash": ""
+  },
+  "tests/test_paper_enriched.py": {
+    "mtime": 1792334307.8604848,
+    "seen": 1792334404.8749406,
+    "ast_hash": "701eec6bcdd1d164f228a3a38e5eab36",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/GovernanceConsole.tsx": {
+    "mtime": 1792335520.5369136,
+    "seen": 1792335595.4056702,
+    "ast_hash": "0762365dce45e28faa575a8b4f7a4b95",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/StrategyStudio.tsx": {
+    "mtime": 1792339279.745898,
+    "seen": 1792339424.0617182,
+    "ast_hash": "1918f4a885693ea4798e5133451eaf4f",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/TradesConsole.tsx": {
+    "mtime": 1792338693.7044423,
+    "seen": 1792338768.6809194,
+    "ast_hash": "9002819e20a7e541875f7cb3016f6864",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/governance/GovernanceConsole.tsx": {
+    "mtime": 1792335528.5667403,
+    "seen": 1792335595.4139328,
+    "ast_hash": "a45a8671d384678f59bf4e7f214dd6b3",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/governance/index.ts": {
+    "mtime": 1792335524.9768176,
+    "seen": 1792335595.4139376,
+    "ast_hash": "a45a8671d384678f59bf4e7f214dd6b3",
+    "semantic_hash": ""
+  },
+  "apps/web/src/components/strategies/StrategyInspectorDrawer.tsx": {
+    "mtime": 1792335707.4702334,
+    "seen": 1792335824.7226532,
+    "ast_hash": "2626feb362b6a42af369c3270e099efa",
+    "semantic_hash": ""
+  },
+  "apps/web/e2e/unified_hubs.spec.ts": {
+    "mtime": 1792338924.624878,
+    "seen": 1792339212.8644037,
+    "ast_hash": "f4e48fb99fb9632e5d29bf21276e6cc8",
     "semantic_hash": ""
   }
 }

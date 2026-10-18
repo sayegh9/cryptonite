@@ -30,6 +30,10 @@ export interface PaperPosition {
   status: 'OPEN' | 'CLOSED';
   opened_at?: string | null;
   closed_at?: string | null;
+  strategy_name?: string | null;
+  duration_s?: number | null;
+  stop_loss_price?: number | null;
+  take_profit_price?: number | null;
   // Perpetual-only (null/absent on spot rows)
   leverage?: number | null;
   margin_mode?: 'ISOLATED' | 'CROSS' | null;
@@ -40,6 +44,7 @@ export interface PaperPosition {
 export interface PaperOrder {
   client_order_id: string;
   instance_id: string;
+  strategy_name?: string | null;
   instrument_id: string;
   side: 'BUY' | 'SELL';
   order_type: 'MARKET' | 'LIMIT' | 'STOP_MARKET';
@@ -55,6 +60,8 @@ export interface PaperTrade {
   trade_id: string;
   client_order_id: string;
   instance_id?: string;
+  strategy_name?: string | null;
+  slippage_bps?: number | null;
   instrument_id: string;
   side: 'BUY' | 'SELL';
   price: number;

@@ -145,6 +145,20 @@ async def get_strategies(request: Request) -> list[dict[str, Any]]:
         # Include if registered OR if it's an AI generated strategy
         if r["slug"] not in valid_slugs and not r["slug"].startswith("ai-gen"):
             continue
+        slug = r["slug"]
+        reg = STRATEGY_REGISTRY.get(slug, {})
+        thesis = reg.get("thesis") or (
+            "Autonomous AI-generated trading model optimizing multi-factor market signals."
+            if slug.startswith("ai-gen") else ""
+        )
+        category = reg.get("category") or (
+            "ai_generated" if slug.startswith("ai-gen") else "trend_following"
+        )
+        market_regime = reg.get("market_regime") or (
+            "Dynamic / Adaptive" if slug.startswith("ai-gen") else "High Volatility Trends"
+        )
+        timeframe_default = reg.get("timeframe_default", "15m")
+
         results.append({
             "id": str(r["id"]),
             "name": r["name"],
@@ -156,6 +170,10 @@ async def get_strategies(request: Request) -> list[dict[str, Any]]:
             "code_hash": r["code_hash"],
             "default_parameters": json.loads(r["default_parameters"]) if isinstance(r["default_parameters"], str) else r["default_parameters"],
             "parameter_schema": json.loads(r["parameter_schema"]) if isinstance(r["parameter_schema"], str) else r["parameter_schema"],
+            "thesis": thesis,
+            "category": category,
+            "market_regime": market_regime,
+            "timeframe_default": timeframe_default,
         })
     return results
 
@@ -180,6 +198,20 @@ async def get_strategy_by_slug(slug: str, request: Request) -> dict[str, Any]:
     if not r:
         raise HTTPException(status_code=404, detail=f"Strategy '{slug}' not found.")
 
+    r_slug = r["slug"]
+    reg = STRATEGY_REGISTRY.get(r_slug, {})
+    thesis = reg.get("thesis") or (
+        "Autonomous AI-generated trading model optimizing multi-factor market signals."
+        if r_slug.startswith("ai-gen") else ""
+    )
+    category = reg.get("category") or (
+        "ai_generated" if r_slug.startswith("ai-gen") else "trend_following"
+    )
+    market_regime = reg.get("market_regime") or (
+        "Dynamic / Adaptive" if r_slug.startswith("ai-gen") else "High Volatility Trends"
+    )
+    timeframe_default = reg.get("timeframe_default", "15m")
+
     return {
         "id": str(r["id"]),
         "name": r["name"],
@@ -192,6 +224,10 @@ async def get_strategy_by_slug(slug: str, request: Request) -> dict[str, Any]:
         "python_code": r["python_code"] if "python_code" in r and r["python_code"] else None,
         "default_parameters": json.loads(r["default_parameters"]) if isinstance(r["default_parameters"], str) else r["default_parameters"],
         "parameter_schema": json.loads(r["parameter_schema"]) if isinstance(r["parameter_schema"], str) else r["parameter_schema"],
+        "thesis": thesis,
+        "category": category,
+        "market_regime": market_regime,
+        "timeframe_default": timeframe_default,
     }
 
 
