@@ -81,9 +81,24 @@ def get_scanner_context(instrument_id: str) -> str:
     sql = f"SELECT * FROM signal_candidates WHERE instrument_id = '{inst}' ORDER BY created_at DESC LIMIT 5"
     return query_postgres_readonly(sql)
 
+_QUOTE_SUFFIXES = frozenset({"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI"})
+
+
+def _strip_venue_preserve_quote(symbol: str) -> str:
+    """Strip a trailing venue suffix (e.g. '.BINANCE') while preserving dot-separated quote assets ('MUBARAK.USDT' -> 'MUBARAKUSDT')."""
+    parts = symbol.strip().upper().split(".")
+    if len(parts) >= 2 and parts[1] in _QUOTE_SUFFIXES and not parts[0].endswith(tuple(_QUOTE_SUFFIXES)):
+        return f"{parts[0]}{parts[1]}"
+    return parts[0]
+
+
 def get_live_market_data(symbols: str = "BTCUSDT") -> str:
     """Fetches real-time live 24h ticker prices, 24h change %, and volume from Binance for one or more comma-separated symbols (e.g. 'BTCUSDT' or 'BTCUSDT,ETHUSDT')."""
-    sym_list = [s.strip().split(".")[0].upper() for s in symbols.split(",") if s.strip()]
+    raw_list = [_strip_venue_preserve_quote(s) for s in symbols.split(",") if s.strip()]
+    sym_list = [
+        f"{s}USDT" if (_EXCHANGE_INFO_CACHE and s not in _EXCHANGE_INFO_CACHE and f"{s}USDT" in _EXCHANGE_INFO_CACHE) else s
+        for s in raw_list
+    ]
     if not sym_list:
         return "Error: No symbols provided"
     try:
@@ -264,7 +279,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
         interval: Candle timeframe ('1m', '5m', '15m', '1h', '4h', '1d'). Default is '1h'.
         limit: Number of candles to retrieve (1 to 500). Default is 200.
     """
-    clean_symbol = symbol.strip().split(".")[0].upper()
+    clean_symbol = _strip_venue_preserve_quote(symbol)
     if not _SYMBOL_REGEX.match(clean_symbol):
         return f"Error: Invalid symbol format '{symbol}'. Symbol must be alphanumeric (3-20 chars)."
 
@@ -303,7 +318,10 @@ def _spot_klines(clean_symbol: str, interval: str, limit_val: int,
             f"(symbol lookup unavailable); refusing unverified symbol lookup."
         )
     if clean_symbol not in valid_symbols:
-        return None, f"Error: Symbol '{clean_symbol}' is not a valid active trading pair on Binance."
+        if f"{clean_symbol}USDT" in valid_symbols:
+            clean_symbol = f"{clean_symbol}USDT"
+        else:
+            return None, f"Error: Symbol '{clean_symbol}' is not a valid active trading pair on Binance."
 
     now = time.time()
     cache_key = (clean_symbol, interval, limit_val)
@@ -1072,8 +1090,8 @@ PERP_OI_KEY = "perp:oi:{symbol}"  # OI_KEY of the feed: 90 s TTL
 
 
 def _feed_symbol(symbol: str) -> str:
-    """'btcusdt-perp.binance' -> 'BTCUSDT': the base symbol the feed keys its Redis values by."""
-    return symbol.strip().upper().split(".")[0].split("-")[0]
+    """'btcusdt-perp.binance' -> 'BTCUSDT', 'mubarak.usdt' -> 'MUBARAKUSDT': the base symbol the feed keys its Redis values by."""
+    return _strip_venue_preserve_quote(symbol).split("-")[0]
 
 
 def _perp_payload(key_template: str, symbol: str, label: str, ttl: str, notes: list[str]) -> Any:
@@ -1543,12 +1561,33 @@ def _classify_tf_trend(df: Any) -> str:
         return "FLAT"
 
 
+def _spot_candles_to_enriched_df(candles: list[dict[str, Any]], ScannerEngine: Any) -> Any:
+    """Convert _spot_klines candle dicts into an indicator-enriched Polars DataFrame."""
+    import polars as pl
+
+    if not candles:
+        return None
+    df = pl.DataFrame({
+        "bar_open_ns": [int(c["open_time_ms"]) * 1_000_000 for c in candles],
+        "bar_close_inclusive_ns": [int(c["close_time_ms"]) * 1_000_000 for c in candles],
+        "interval_end_exclusive_ns": [(int(c["close_time_ms"]) + 1) * 1_000_000 for c in candles],
+        "ts_event_ns": [(int(c["close_time_ms"]) + 1) * 1_000_000 for c in candles],
+        "open": [float(c["open"]) for c in candles],
+        "high": [float(c["high"]) for c in candles],
+        "low": [float(c["low"]) for c in candles],
+        "close": [float(c["close"]) for c in candles],
+        "volume": [float(c["volume"]) for c in candles],
+    })
+    return ScannerEngine.enrich_indicators(df)
+
+
 async def scan_swing_setups(
     preset_slug: str = "all",
     timeframe: Literal["15m", "1h", "4h"] = "1h",
     max_results: int = 5,
+    symbol: str | None = None,
 ) -> str:
-    """Scan the liquid universe on-demand using the multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', or 'all') and return ranked swing trade candidates with 4h/1h/15m trend alignment, ATR-calibrated Entry, Structural Stop, Target (TP1), R:R ratio, and matched rules."""
+    """Scan the liquid universe (or a specific symbol such as 'MUBARAKUSDT' or 'SOLUSDT') on-demand using the multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', or 'all') and return ranked swing trade candidates with 4h/1h/15m trend alignment, ATR-calibrated Entry, Structural Stop, Target (TP1), R:R ratio, and matched rules."""
     import polars as pl
     from cryptonite_scanner.engine import ScannerEngine
     from cryptonite_scanner.models import RiskConfig
@@ -1567,6 +1606,19 @@ async def scan_swing_setups(
     else:
         selected_presets = list(SWING_PRESETS)
 
+    target_inst: str | None = None
+    target_sym: str | None = None
+    if symbol and symbol.strip():
+        sym_clean = _strip_venue_preserve_quote(symbol).split("-")[0].replace("/", "")
+        if not sym_clean.endswith(tuple(_QUOTE_SUFFIXES)):
+            sym_clean = f"{sym_clean}USDT"
+        target_sym = sym_clean
+        target_inst = f"{sym_clean}.BINANCE"
+
+    scan_universe = list(SWING_LIQUID_12)
+    if target_inst and target_inst not in scan_universe:
+        scan_universe = [target_inst, *scan_universe]
+
     lookback_min = 48000
     now_ns = time.time_ns()
     start_ns = now_ns - lookback_min * 60 * 1_000_000_000
@@ -1574,7 +1626,7 @@ async def scan_swing_setups(
     lake_repo = DuckDBLakeRepository(read_only=True)
     bars_by_inst: dict[str, pl.DataFrame] = {}
     try:
-        for inst in SWING_LIQUID_12:
+        for inst in scan_universe:
             raw_sym = inst.split(".")[0]
             try:
                 df = lake_repo.load_bars(symbol=raw_sym, timeframe="1m", start_ns=start_ns, end_ns=now_ns)
@@ -1606,22 +1658,44 @@ async def scan_swing_setups(
     candidates: list[dict[str, Any]] = []
     frames_by_inst: dict[str, dict[str, pl.DataFrame]] = {}
 
-    for inst, df_1m in bars_by_inst.items():
-        if "bar_open_ns" not in df_1m.columns and "ts_event_ns" in df_1m.columns:
-            df_1m = df_1m.with_columns(bar_open_ns=pl.col("ts_event_ns") - 60_000_000_000)
-
-        frames: dict[str, pl.DataFrame] = {}
-        for tf in ("15m", "1h", "4h", "1d"):
+    # If a specific symbol was requested and is not in the local DuckDB lake, fetch 15m/1h/4h from Binance Spot
+    if target_inst and target_sym and target_inst not in bars_by_inst:
+        rest_frames: dict[str, pl.DataFrame] = {}
+        for tf in ("15m", "1h", "4h"):
             try:
-                resampled = ScannerEngine.resample_bars(df_1m, tf)
-                if not resampled.is_empty():
-                    frames[tf] = ScannerEngine.enrich_indicators(resampled)
+                out, _err = _spot_klines(target_sym, tf, 120)
+                if out and out.get("candles"):
+                    enriched = _spot_candles_to_enriched_df(out["candles"], ScannerEngine)
+                    if enriched is not None and not enriched.is_empty():
+                        rest_frames[tf] = enriched
             except Exception as e:
-                logger.debug("Resampling error for %s on %s: %s", inst, tf, e)
-                if tf == timeframe and "interval_end_exclusive_ns" in df_1m.columns:
-                    frames[tf] = ScannerEngine.enrich_indicators(df_1m)
+                logger.debug("REST kline fallback failed for %s %s: %s", target_sym, tf, e)
+        if rest_frames:
+            frames_by_inst[target_inst] = rest_frames
+            bars_by_inst[target_inst] = (
+                rest_frames[timeframe] if timeframe in rest_frames else next(iter(rest_frames.values()))
+            )
 
-        frames_by_inst[inst] = frames
+    for inst, df_1m in bars_by_inst.items():
+        if inst in frames_by_inst:
+            frames = frames_by_inst[inst]
+        else:
+            if "bar_open_ns" not in df_1m.columns and "ts_event_ns" in df_1m.columns:
+                df_1m = df_1m.with_columns(bar_open_ns=pl.col("ts_event_ns") - 60_000_000_000)
+
+            frames = {}
+            for tf in ("15m", "1h", "4h", "1d"):
+                try:
+                    resampled = ScannerEngine.resample_bars(df_1m, tf)
+                    if not resampled.is_empty():
+                        frames[tf] = ScannerEngine.enrich_indicators(resampled)
+                except Exception as e:
+                    logger.debug("Resampling error for %s on %s: %s", inst, tf, e)
+                    if tf == timeframe and "interval_end_exclusive_ns" in df_1m.columns:
+                        frames[tf] = ScannerEngine.enrich_indicators(df_1m)
+
+            frames_by_inst[inst] = frames
+
         trend_4h = _classify_tf_trend(frames.get("4h"))
         trend_1h = _classify_tf_trend(frames.get("1h"))
         trend_15m = _classify_tf_trend(frames.get("15m"))
@@ -1650,6 +1724,7 @@ async def scan_swing_setups(
                     else 0
                 )
 
+                prec = 6 if latest_close < 0.1 else (4 if latest_close < 10 else 2)
                 matched = ScannerEngine.evaluate(
                     df=primary_df,
                     rule_groups=preset.rules,
@@ -1658,7 +1733,7 @@ async def scan_swing_setups(
                     timeframe=target_tf,
                     spec_version_id=uuid.uuid4(),
                     scan_run_id=uuid.uuid4(),
-                    price_precision=4 if latest_close < 10 else 2,
+                    price_precision=prec,
                     htf_df=htf_df,
                     filter_min_rr=False,
                 )
@@ -1671,7 +1746,6 @@ async def scan_swing_setups(
                     fresh_matched.sort(key=lambda c: c.bar_close_inclusive_ns, reverse=True)
                     cand = fresh_matched[0]
                     direction = "LONG"
-                    prec = 4 if latest_close < 10 else 2
                     entry = round(latest_close, prec)
                     stop = round(entry - 1.5 * latest_atr, prec)
                     target = round(entry + 3.0 * latest_atr, prec)
@@ -1743,7 +1817,7 @@ async def scan_swing_setups(
 
         # Spot mandates only support LONG entries; score trend-continuation vs range-pullback setups at live price
         direction = "LONG"
-        prec = 4 if latest_close < 10 else 2
+        prec = 6 if latest_close < 0.1 else (4 if latest_close < 10 else 2)
         entry = round(latest_close, prec)
         stop = round(entry - 1.5 * latest_atr, prec)
         target = round(entry + 3.0 * latest_atr, prec)
@@ -1753,9 +1827,6 @@ async def scan_swing_setups(
 
         is_uptrend = trend_4h == "BULL" or trend_1h == "BULL"
         is_pullback = rsi_val <= 48.0 or trend_15m == "BULL"
-        if not is_uptrend and not is_pullback and len(bars_by_inst) > 1:
-            # Still include live range-support / mean-reversion levels if within liquid feed, scored honestly
-            pass
 
         base_score = 68.0
         if trend_4h == "BULL":
@@ -1817,14 +1888,14 @@ async def scan_swing_setups(
             best_by_inst[inst_id] = c
 
     deduped = list(best_by_inst.values())
-    deduped.sort(key=lambda c: c["score"], reverse=True)
+    deduped.sort(key=lambda c: (0 if (target_inst and c["instrument_id"] == target_inst) else 1, -c["score"]))
     deduped = deduped[:max_results]
 
     return json.dumps({
         "preset_slug": preset_slug,
         "timeframe": timeframe,
         "candidates": deduped,
-        "scanned_count": len(SWING_LIQUID_12),
+        "scanned_count": len(scan_universe),
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
     })
 

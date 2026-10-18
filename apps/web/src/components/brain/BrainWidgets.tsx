@@ -35,7 +35,22 @@ import type {
 } from "@/lib/brain/types";
 
 const fmt = (n: number, digits = 2) => n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
-const fmtPrice = (n: number) => (Math.abs(n) > 0 && Math.abs(n) < 1 ? fmt(n, 4) : Math.abs(n) < 10 ? fmt(n, 3) : fmt(n, 2));
+const fmtPrice = (n: number) =>
+  Math.abs(n) > 0 && Math.abs(n) < 0.1
+    ? n.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 6 })
+    : Math.abs(n) > 0 && Math.abs(n) < 1
+      ? fmt(n, 4)
+      : Math.abs(n) < 10
+        ? fmt(n, 3)
+        : fmt(n, 2);
+const QUOTE_SUFFIXES = new Set(["USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI"]);
+function stripVenuePreserveQuote(raw: string): string {
+  const parts = raw.trim().toUpperCase().split(".");
+  if (parts.length >= 2 && QUOTE_SUFFIXES.has(parts[1]) && ![...QUOTE_SUFFIXES].some((q) => parts[0].endsWith(q))) {
+    return `${parts[0]}${parts[1]}`;
+  }
+  return parts[0];
+}
 const cardInput = "rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 focus:border-amber-600 focus:outline-none";
 
 /** Milliseconds for a bar timeframe string such as "1m", "15m", "1h", "4h", "1d". Defaults to 1m. */
@@ -184,7 +199,7 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
 
   useEffect(() => {
     let cancelled = false;
-    const symbol = widget.symbol.split(".")[0];
+    const symbol = stripVenuePreserveQuote(widget.symbol);
     fetch(`/api/v1/bars?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(widget.timeframe)}&limit=120`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((body) => {
@@ -198,7 +213,7 @@ function PriceChartCard({ widget }: { widget: PriceChartWidget }) {
     };
   }, [widget.symbol, widget.timeframe]);
 
-  const symbol = widget.symbol.split(".")[0];
+  const symbol = stripVenuePreserveQuote(widget.symbol);
   const closes = (bars ?? []).map((b) => Number(b.close)).filter((v) => Number.isFinite(v));
 
   // Staleness: this card shows STORED bars from the analytics lake (/api/v1/bars). A chart is stale

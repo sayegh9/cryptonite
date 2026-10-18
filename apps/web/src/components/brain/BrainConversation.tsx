@@ -165,20 +165,29 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
       setDraft("");
       return;
     }
-    const swingMatch = t.match(/^\/swing(?:\s+([A-Za-z0-9._-]+))?\s*$/i);
+    const swingMatch = t.match(/^\/swing(?:\s+([A-Za-z0-9._\/-]+))?\s*$/i);
     if (swingMatch) {
       setDraft("");
       if (swingMatch[1]) {
-        let sym = swingMatch[1].trim().toUpperCase();
-        if (!sym.includes(".")) {
-          if (!sym.endsWith("USDT")) {
-            sym = `${sym}USDT.BINANCE`;
+        let sym = swingMatch[1].trim().toUpperCase().replace(/[\/\-_]/g, ".");
+        if (sym.endsWith(".BINANCE")) {
+          sym = sym.slice(0, -".BINANCE".length);
+        }
+        const quoteSuffixes = ["USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI"];
+        if (sym.includes(".")) {
+          const parts = sym.split(".");
+          if (parts.length >= 2 && quoteSuffixes.includes(parts[1]) && !quoteSuffixes.some((q) => parts[0].endsWith(q))) {
+            sym = `${parts[0]}${parts[1]}.BINANCE`;
           } else {
-            sym = `${sym}.BINANCE`;
+            sym = `${parts[0]}.BINANCE`;
           }
+        } else if (!quoteSuffixes.some((q) => sym.endsWith(q))) {
+          sym = `${sym}USDT.BINANCE`;
+        } else {
+          sym = `${sym}.BINANCE`;
         }
         void sendBrainMessage(
-          `Scan swing setups and evaluate a multi-timeframe (4h/1h/15m) swing trade on ${sym}. Show the 1h price chart with entry, stop, and target levels, and if R:R >= 1.8, propose an order card with structural stop_loss and take_profit.`
+          `Run scan_swing_setups with symbol="${sym}" and evaluate a multi-timeframe (4h/1h/15m) swing trade on ${sym}. If R:R >= 1.8, propose an order card with structural stop_loss and take_profit.`
         );
       } else {
         void sendBrainMessage(

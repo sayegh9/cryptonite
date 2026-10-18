@@ -66,8 +66,11 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
   lookahead bias; `presets.py` provides 3 gate-aligned MTF swing presets (`swing-trend-pullback-1h`,
   `swing-sniper-pullback-15m`, `swing-squeeze-breakout-1h`); `ExitMonitor` enforces per-position `STRUCTURAL_STOP` and
   mechanical 50% scale-out at `TP1` (`REDUCE_TP1` / `TAKE_PROFIT_1`); Brain `SELL` cards support `reduce_pct` (`25`,
-  `50`, `100`); the Brain has `scan_swing_setups` (`SwingRadarCard` with 1-click Chart/Debate/Order actions),
-  `show_price_chart` Entry/Stop/Target level lines, and the `/swing [SYMBOL]` slash command.
+  `50`, `100`); the Brain has `scan_swing_setups` (`SwingRadarCard` with 1-click Chart/Debate/Order actions, plus
+  optional `symbol` parameter with Binance Spot REST fallback and 6-decimal precision for sub-\$0.10 tokens),
+  `show_price_chart` Entry/Stop/Target level lines, the `/swing [SYMBOL]` slash command, and dot-separated quote
+  normalization (`MUBARAK.USDT` / `MUBARAK` $\rightarrow$ `MUBARAKUSDT`) across `get_klines`, `get_live_market_data`,
+  `get_derivatives_context`, `get_market_regime`, and `scan_swing_setups`.
 - **Web:** the 2026-10-12 UI critique is implemented ([docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md), #81):
   unknown states never read as healthy or empty, one session store, one kill-switch poller per account,
   PAPER and DEMO kill switches told apart. In #97, Pause/Resume/Stop strategy commands are hidden for AI-mandate

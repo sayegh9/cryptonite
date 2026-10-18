@@ -468,9 +468,9 @@
     "semantic_hash": "9cfa577f022dbdf1dc3e3cd03e456cf8"
   },
   "packages/agents/cryptonite_agents/tools.py": {
-    "mtime": 1792261779.1765046,
-    "seen": 1792275404.671793,
-    "ast_hash": "42355db469598ff03e862e795dae37aa",
+    "mtime": 1792352297.9120593,
+    "seen": 1792352400.5645127,
+    "ast_hash": "f961254d601bbf89eb98ae320c894da4",
     "semantic_hash": ""
   },
   "packages/agents/pyproject.toml": {
@@ -1962,9 +1962,9 @@
     "semantic_hash": ""
   },
   "HANDOFF.md": {
-    "mtime": 1792286750.1375,
-    "seen": 1792334050.2167385,
-    "ast_hash": "65e432c5ad5b00e2863e486831993db1",
+    "mtime": 1792352348.1877003,
+    "seen": 1792352400.6037755,
+    "ast_hash": "7dae70e12c89929e9f0a8e43f2c6b3d8",
     "semantic_hash": ""
   },
   "apps/web/src/components/ResearchLab/StrategyManagerModal.tsx": {
@@ -2010,9 +2010,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainConversation.tsx": {
-    "mtime": 1792261401.5428052,
-    "seen": 1792261554.6773076,
-    "ast_hash": "51a44c52637161b83518761d4c48550b",
+    "mtime": 1792352160.677053,
+    "seen": 1792352400.5313892,
+    "ast_hash": "251df16211be84759da49c12cc98c64e",
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainHome.tsx": {
@@ -2022,9 +2022,9 @@
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/BrainWidgets.tsx": {
-    "mtime": 1792261429.9456315,
-    "seen": 1792261554.6776717,
-    "ast_hash": "e55edd23c580754d9a046857c3673216",
+    "mtime": 1792352159.3590624,
+    "seen": 1792352400.5318785,
+    "ast_hash": "815fb9e962ca52a34f5cee982d0a94ed",
     "semantic_hash": ""
   },
   "apps/web/src/components/brain/DecisionTraceDrawer.tsx": {
@@ -4494,9 +4494,9 @@
     "semantic_hash": ""
   },
   "tests/test_brain_swing_tools.py": {
-    "mtime": 1792259514.4058955,
-    "seen": 1792259766.5901854,
-    "ast_hash": "44351018b77af62e8794366fcd2f7013",
+    "mtime": 1792352191.0138314,
+    "seen": 1792352400.5927615,
+    "ast_hash": "797587cdfddfb0357aed9dc3cc9e0e44",
     "semantic_hash": ""
   },
   "apps/web/src/components/settings/controls/ApplyModeBadge.tsx": {

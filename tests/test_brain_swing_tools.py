@@ -310,3 +310,57 @@ def test_scan_swing_setups_is_read_tool_and_ordered_correctly():
     doc = " ".join(show_price_chart.func.__doc__.split())
     assert "Only for symbols the ingest feed records (get_klines reports in_feed)." in doc
     assert "Use it whenever you discuss price action." not in doc
+
+
+@pytest.mark.asyncio
+async def test_dot_quote_and_bare_symbol_normalization_in_klines_and_swing_scan(monkeypatch):
+    """Verifies MUBARAK.USDT and bare MUBARAK resolve to MUBARAKUSDT in get_klines and scan_swing_setups."""
+    from cryptonite_agents import tools
+
+    assert tools._strip_venue_preserve_quote("MUBARAK.USDT") == "MUBARAKUSDT"
+    assert tools._strip_venue_preserve_quote("MUBARAK.USDT.BINANCE") == "MUBARAKUSDT"
+    assert tools._strip_venue_preserve_quote("BTCUSDT.BINANCE") == "BTCUSDT"
+
+    fake_candles = [
+        {
+            "open_time_ms": 1_700_000_000_000 + i * 3_600_000,
+            "close_time_ms": 1_700_000_000_000 + (i + 1) * 3_600_000 - 1,
+            "open": 0.0500 + i * 0.0001,
+            "high": 0.0505 + i * 0.0001,
+            "low": 0.0495 + i * 0.0001,
+            "close": 0.0502 + i * 0.0001,
+            "volume": 100000.0,
+        }
+        for i in range(60)
+    ]
+
+    def fake_spot_klines(sym: str, interval: str, limit_val: int, **kwargs):
+        if sym in ("MUBARAK", "MUBARAKUSDT"):
+            return {"symbol": "MUBARAKUSDT", "interval": interval, "candles": fake_candles}, None
+        return None, f"Error: Symbol '{sym}' is not a valid active trading pair on Binance."
+
+    monkeypatch.setattr(tools, "_spot_klines", fake_spot_klines)
+
+    class EmptyLake:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def load_bars(self, *args, **kwargs):
+            return None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tools, "DuckDBLakeRepository", EmptyLake)
+
+    klines_out = json.loads(tools.get_klines("MUBARAK.USDT", "1h", 5))
+    assert klines_out["symbol"] == "MUBARAKUSDT"
+
+    swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
+    assert len(swing_out["candidates"]) == 1
+    cand = swing_out["candidates"][0]
+    assert cand["instrument_id"] == "MUBARAKUSDT.BINANCE"
+    assert cand["entry"] > 0.05
+    assert cand["stop"] < cand["entry"]
+    assert cand["target"] > cand["entry"]
+
