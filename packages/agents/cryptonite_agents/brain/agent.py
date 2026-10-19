@@ -342,6 +342,14 @@ class Brain:
                                 widget = widget_for_tool(ev.data["tool"], args, call_id=call_id, status=status,
                                                          content=ev.data.get("content"), trace_id=trace_id)
                                 if widget is not None:
+                                    if widget.get("kind") == "price_chart":
+                                        sym = widget.get("symbol")
+                                        tf = widget.get("timeframe")
+                                        if any(w.get("kind") == "price_chart" and w.get("symbol") == sym and w.get("timeframe") == tf for w in widgets):
+                                            continue
+                                    elif widget.get("kind") == "swing_radar":
+                                        if any(w.get("kind") == "swing_radar" for w in widgets):
+                                            continue
                                     if widget.get("kind") == "order_card":
                                         # Only an entry needs a live feed; a SELL closes a holding and is never
                                         # refused for it.

@@ -1,7 +1,7 @@
 # Graph Report - repo  (2026-10-19)
 
 ## Corpus Check
-- 729 files · ~805,510 words
+- 729 files · ~805,568 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 52 file(s) not represented in the graph (top: .parquet 22, .Dockerfile 12, (none) 7)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `e1b855b2`
+- Built from commit: `6e93e999`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -2044,9 +2044,9 @@ _Questions this graph is uniquely positioned to answer:_
 - **Why does `GuardedOrderDispatcher` connect `GuardedOrderDispatcher` to `Mandate`, `send_alert`, `propose_order`, `Remediation Plan (2026-10-04, reviewed)`, `make_harness`, `json`, `AI-First Cryptonite: Blueprint`, `margin.py`, `LatchedKillSwitch`, `Perpetual Futures (Paper) — System Architecture`, `check_mandate`, `test_guarded_order_dispatcher_scaling`, `ARCHITECTURE.md - System Interfaces & Contract Map`, `PaperTradingEngine`, `command_poller`, `Unreleased — review-plan`, `make_perp_dispatcher`, `derivatives.py`, `debate_worker`?**
   _High betweenness centrality (0.054) - this node is a cross-community bridge._
 - **Why does `Strategy` connect `StrategyInspectorDrawer.tsx` to `SmokeTestStrategy`, `usePortfolioStore.ts`, `CanonicalSpikeStrategy`, `test_deterministic_intrabar_traversal_open_high_low_close`, `CryptoniteStrategy`?**
-  _High betweenness centrality (0.035) - this node is a cross-community bridge._
+  _High betweenness centrality (0.036) - this node is a cross-community bridge._
 - **Why does `ActionInbox()` connect `lucide-react` to `app/page.tsx`, `CommandPalette.tsx`, `approve_debate`, `components/GovernanceConsole.tsx`, `usePerpetualStore.ts`, `Unreleased — review-plan`, `Remediation Plan (2026-10-04, reviewed)`, `MissionHealth.tsx`, `metricOrNull`?**
-  _High betweenness centrality (0.029) - this node is a cross-community bridge._
+  _High betweenness centrality (0.028) - this node is a cross-community bridge._
 - **Are the 107 inferred relationships involving `Gateway` (e.g. with `Brain` and `compact()`) actually correct?**
   _`Gateway` has 107 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 122 inferred relationships involving `override_model()` (e.g. with `run_worker()` and `test_budget_exhaustion_returns_429_not_a_model_call()`) actually correct?**

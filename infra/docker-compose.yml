@@ -428,6 +428,7 @@ services:
       - ../data:/app/data:rw
       - ../services/api:/app/services/api
       - ../packages/agents:/app/packages/agents
+      - ../services/agent_worker:/app/services/agent_worker
     ports:
       - "127.0.0.1:8085:8085"
     restart: unless-stopped

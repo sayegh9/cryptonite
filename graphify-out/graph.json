@@ -11345,7 +11345,7 @@
       "file_type": "code",
       "norm_label": "._keep_partial()",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L439"
+      "source_location": "L447"
     },
     {
       "id": "packages_agents_cryptonite_agents_brain_agent_brain_note",
@@ -11357,7 +11357,7 @@
       "file_type": "code",
       "norm_label": ".note()",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L460"
+      "source_location": "L468"
     },
     {
       "id": "packages_agents_cryptonite_agents_brain_agent_brain_open_session",
@@ -78327,7 +78327,7 @@
       "source_location": "L254"
     },
     {
-      "id": "packages_agents_cryptonite_agents_brain_agent_rationale_463",
+      "id": "packages_agents_cryptonite_agents_brain_agent_rationale_471",
       "label": "Record what the operator did (e.g. approved a card) so later turns know it.\u2026",
       "_origin": "ast",
       "community": 105,
@@ -78335,7 +78335,7 @@
       "file_type": "rationale",
       "norm_label": "record what the operator did (e.g. approved a card) so later turns know it....",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L463"
+      "source_location": "L471"
     },
     {
       "id": "packages_agents_cryptonite_agents_brain_lessons_rationale_1",
@@ -137869,7 +137869,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L467",
+      "source_location": "L475",
       "weight": 1.0
     },
     {
@@ -137965,7 +137965,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L352",
+      "source_location": "L360",
       "weight": 1.0
     },
     {
@@ -137977,7 +137977,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L359",
+      "source_location": "L367",
       "weight": 1.0
     },
     {
@@ -137989,7 +137989,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L370",
+      "source_location": "L378",
       "weight": 1.0
     },
     {
@@ -138001,7 +138001,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L410",
+      "source_location": "L418",
       "weight": 1.0
     },
     {
@@ -211315,7 +211315,7 @@
       "confidence_score": 1.0,
       "context": "generic_arg",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L439",
+      "source_location": "L447",
       "weight": 1.0
     },
     {
@@ -211327,7 +211327,7 @@
       "confidence_score": 1.0,
       "context": "generic_arg",
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L460",
+      "source_location": "L468",
       "weight": 1.0
     },
     {
@@ -364610,7 +364610,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L439",
+      "source_location": "L447",
       "weight": 1.0
     },
     {
@@ -364621,7 +364621,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L460",
+      "source_location": "L468",
       "weight": 1.0
     },
     {
@@ -376549,14 +376549,14 @@
       "weight": 1.0
     },
     {
-      "source": "packages_agents_cryptonite_agents_brain_agent_rationale_463",
+      "source": "packages_agents_cryptonite_agents_brain_agent_rationale_471",
       "target": "packages_agents_cryptonite_agents_brain_agent_brain_note",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L463",
+      "source_location": "L471",
       "weight": 1.0
     },
     {
@@ -414985,7 +414985,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.95,
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L396",
+      "source_location": "L404",
       "weight": 0.8
     },
     {
@@ -414996,7 +414996,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.95,
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L407",
+      "source_location": "L415",
       "weight": 0.8
     },
     {
@@ -415007,7 +415007,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.95,
       "source_file": "packages/agents/cryptonite_agents/brain/agent.py",
-      "source_location": "L422",
+      "source_location": "L430",
       "weight": 0.8
     },
     {
@@ -429168,5 +429168,5 @@
       "source_file": "docs/manual_images/05_operator_controls.png"
     }
   ],
-  "built_at_commit": "e1b855b237e29eb54da946588448ff641ca2dd17"
+  "built_at_commit": "6e93e99954fe6ff403967428a6fd2994776c9e98"
 }

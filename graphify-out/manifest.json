@@ -1488,9 +1488,9 @@
     "semantic_hash": ""
   },
   "infra/docker-compose.yml": {
-    "mtime": 1792135202.7168293,
-    "seen": 1792177810.0156326,
-    "ast_hash": "a74214e88fba3e4ec024cf9b32316777",
+    "mtime": 1792427957.8378546,
+    "seen": 1792428123.801984,
+    "ast_hash": "e5b7c1821beb66955ee370bafff8d584",
     "semantic_hash": ""
   },
   "docs/manual_images/00_operator_login.png": {
@@ -2274,9 +2274,9 @@
     "semantic_hash": ""
   },
   "packages/agents/cryptonite_agents/brain/agent.py": {
-    "mtime": 1792422098.9999747,
-    "seen": 1792422423.1931646,
-    "ast_hash": "5e42388ca0f226d504ac10e0e80d1ac3",
+    "mtime": 1792427918.4319625,
+    "seen": 1792428123.7551694,
+    "ast_hash": "f4275119ada25f49480649c82793dcff",
     "semantic_hash": ""
   },
   "packages/agents/cryptonite_agents/brain/memory.py": {
@@ -2340,9 +2340,9 @@
     "semantic_hash": ""
   },
   "packages/agents/cryptonite_agents/gateway/gateway.py": {
-    "mtime": 1792089133.1711035,
-    "seen": 1792177809.9979482,
-    "ast_hash": "7770593aa475808120bb8d636228fc87",
+    "mtime": 1792428049.7665932,
+    "seen": 1792428123.7571816,
+    "ast_hash": "1f176c6070eade6f9803ccd9357070de",
     "semantic_hash": ""
   },
   "packages/agents/cryptonite_agents/gateway/ledger.py": {

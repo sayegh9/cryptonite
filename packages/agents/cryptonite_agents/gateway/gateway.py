@@ -248,7 +248,7 @@ class Gateway:
                         return (f"{HELD_FOR_APPROVAL_PREFIX}: the order card is staged and shown to the operator with "
                                 f"Approve / Reject. This is the expected result, not an error. Do not call "
                                 f"{spec.name} again in this turn; tell the operator the card is waiting for their "
-                                "approval.")
+                                "approval. Do not call any more tools in this turn; provide your summary to the operator now.")
                     return (f"Refused: only one order card per turn, and the first card is already waiting for the "
                             f"operator. Do not call {spec.name} again; tell the operator the card is waiting.")
                 return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
