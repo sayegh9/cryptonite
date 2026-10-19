@@ -15,6 +15,7 @@ goes to the operator, whose approval uses the existing paper manual-order API.
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -182,7 +183,8 @@ class Brain:
                  holdings: Callable[[str], Awaitable[Decimal]] | None = None,
                  feed: Callable[[str], Awaitable[str | None]] | None = None,
                  state: Callable[[], Awaitable[str | None]] | None = None,
-                 lessons: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None) -> None:
+                 lessons: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
+                 redis: Any | None = None) -> None:
         self.gateway = gateway
         self.store = store
         self.persona = persona
@@ -194,6 +196,8 @@ class Brain:
         self._state = state
         # The past lessons on an instrument, shown on its order card (None: no lessons).
         self._lessons = lessons
+        # Redis client (system Redis DB 0) to cache staged active cards during streaming turns
+        self._redis = redis
 
     async def _system_state(self) -> str | None:
         """The system state header for this turn, or None. Bounded by STATE_TIMEOUT_S: a failed or slow read never
@@ -353,6 +357,11 @@ class Brain:
                                                          "or the Watchlist first.")
                                         # The past lessons come from the reader alone, for a BUY or a SELL card
                                         widget["lessons"] = await self._card_lessons(instrument)
+                                        if self._redis is not None and widget.get("id"):
+                                            try:
+                                                await self._redis.set(f"brain:active_card:{widget['id']}", json.dumps(widget), ex=1800)
+                                            except Exception as e:
+                                                logger.warning("Could not stage active card %s in Redis: %s", widget.get("id"), e)
                                     widgets.append(widget)
                                     if widget.get("kind") == "order_card":
                                         order_cards += 1
@@ -366,6 +375,15 @@ class Brain:
                                     content = DEGRADED_PREFIX + content
                                 if notes:
                                     content = "\n\n".join([content, *notes])
+                                if self._redis is not None:
+                                    for w in widgets:
+                                        if w.get("id") and w.get("kind") == "order_card":
+                                            try:
+                                                raw = await self._redis.get(f"brain:active_card:{w['id']}")
+                                                if raw:
+                                                    w.update(json.loads(raw))
+                                            except Exception:
+                                                pass
                                 msg_id = await self.store.append_message(
                                     sid, "assistant", content, widgets, str(res.trace_id))
                                 finished = True
@@ -425,6 +443,15 @@ class Brain:
         content = "".join(text).strip() + note
         if degraded:  # a partial read-only answer keeps its label
             content = DEGRADED_PREFIX + content
+        if self._redis is not None:
+            for w in widgets:
+                if w.get("id") and w.get("kind") == "order_card":
+                    try:
+                        raw = await self._redis.get(f"brain:active_card:{w['id']}")
+                        if raw:
+                            w.update(json.loads(raw))
+                    except Exception:
+                        pass
         try:
             await self.store.append_message(sid, "assistant", content, widgets, trace_id)
         except Exception as e:
@@ -439,7 +466,30 @@ class Brain:
         if await self.store.get_session(session_id, operator_id) is None:
             raise SessionNotFound(session_id)
         if widget_id and widget_patch:
-            if not await self.store.update_widget(session_id, widget_id, widget_patch, expect_status) and expect_status:
+            updated = await self.store.update_widget(session_id, widget_id, widget_patch, expect_status)
+            if not updated and self._redis is not None:
+                try:
+                    raw = await self._redis.get(f"brain:active_card:{widget_id}")
+                    if raw:
+                        cached = json.loads(raw)
+                        cur_status = cached.get("status", "PENDING_APPROVAL")
+                        if expect_status and cur_status != expect_status:
+                            return False
+                        cached.update(widget_patch)
+                        await self._redis.set(f"brain:active_card:{widget_id}", json.dumps(cached), ex=1800)
+                        updated = True
+                except Exception as e:
+                    logger.warning("Could not patch active card %s in Redis: %s", widget_id, e)
+            elif updated and self._redis is not None:
+                try:
+                    raw = await self._redis.get(f"brain:active_card:{widget_id}")
+                    if raw:
+                        cached = json.loads(raw)
+                        cached.update(widget_patch)
+                        await self._redis.set(f"brain:active_card:{widget_id}", json.dumps(cached), ex=1800)
+                except Exception:
+                    pass
+            if not updated and expect_status:
                 return False
         await self.store.append_message(session_id, "system", content)
         return True

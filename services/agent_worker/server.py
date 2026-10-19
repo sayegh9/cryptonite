@@ -137,7 +137,8 @@ async def startup_event():
                             holdings=lambda instrument: ai_spot_holding(app.state.pool, instrument),
                             feed=ingest_refusal,
                             state=lambda: asyncio.to_thread(ai_state_header),
-                            lessons=lambda instrument: asyncio.to_thread(card_lessons, instrument))
+                            lessons=lambda instrument: asyncio.to_thread(card_lessons, instrument),
+                            redis=app.state.system_redis)
 
 @app.on_event("shutdown")
 async def shutdown_event():

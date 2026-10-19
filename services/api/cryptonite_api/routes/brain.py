@@ -250,9 +250,7 @@ async def brain_session(sid: uuid.UUID, request: Request, auth: dict = Depends(r
 @router.get("/sessions/{sid}/cards/{widget_id}/outcome")
 async def brain_card_outcome(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator)):
     """What an approved card's order did, for a card waiting on screen. Records a change in the conversation."""
-    session = await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}")
-    card = next((w for m in session.get("messages", []) for w in (m.get("widgets") or [])
-                 if w.get("id") == widget_id and w.get("kind") == "order_card"), None)
+    card = await _get_card(request, operator_id(auth), sid, widget_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
     if not card.get("command_id"):
@@ -318,10 +316,37 @@ def _shown_instrument(card: dict[str, Any]) -> str:
     return raw if isinstance(raw, str) and re.fullmatch(INSTRUMENT_ID, raw) else "an order card"
 
 
+def _find_card(session: dict[str, Any], widget_id: str) -> dict[str, Any] | None:
+    for msg in session.get("messages", []):
+        for w in msg.get("widgets") or []:
+            if w.get("id") == widget_id and w.get("kind") == "order_card":
+                return w
+    return None
+
+
+async def _get_card(request: Request, op: str, sid: uuid.UUID, widget_id: str) -> dict[str, Any] | None:
+    """Find an order card in the conversation or from the active staged Redis cache if still streaming."""
+    session = await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}")
+    card = _find_card(session, widget_id)
+    if card is not None:
+        return card
+    redis_client = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
+    if redis_client:
+        try:
+            raw = await redis_client.get(f"brain:active_card:{widget_id}")
+            if raw:
+                cached = json.loads(raw)
+                if isinstance(cached, dict) and cached.get("kind") == "order_card":
+                    return cached
+        except Exception:
+            pass
+    return None
+
+
 @router.post("/sessions/{sid}/notes", dependencies=OPERATOR_WRITE)
-async def brain_note(sid: uuid.UUID, req: BrainNoteRequest, auth: dict = Depends(require_operator)):
+async def brain_note(sid: uuid.UUID, req: BrainNoteRequest, request: Request, auth: dict = Depends(require_operator)):
     op = operator_id(auth)
-    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), req.widget_id)
+    card = await _get_card(request, op, sid, req.widget_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
     content = (f"Operator rejected order card {card['id']} ({card['side']} {_shown_instrument(card)}, "
@@ -331,14 +356,6 @@ async def brain_note(sid: uuid.UUID, req: BrainNoteRequest, auth: dict = Depends
     if await _worker_note(sid, body) == 409:
         raise HTTPException(status_code=409, detail="The card is no longer pending")
     return {"status": "ok"}
-
-
-def _find_card(session: dict[str, Any], widget_id: str) -> dict[str, Any] | None:
-    for msg in session.get("messages", []):
-        for w in msg.get("widgets") or []:
-            if w.get("id") == widget_id and w.get("kind") == "order_card":
-                return w
-    return None
 
 
 async def _held_qty(conn, instance_id: str, instrument_id: str) -> Decimal:
@@ -528,7 +545,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     op = operator_id(auth)
     if len(widget_id) > 128:
         raise HTTPException(status_code=422, detail="Invalid card id")
-    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{op}/sessions/{sid}"), widget_id)
+    card = await _get_card(request, op, sid, widget_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Order card not found")
     if card.get("status") == "APPROVED" and card.get("command_id"):
@@ -616,7 +633,7 @@ async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request,
     other reads of this router; approve itself stays human-only."""
     if len(widget_id) > 128:
         raise HTTPException(status_code=422, detail="Invalid card id")
-    card = _find_card(await _worker_get(f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}"), widget_id)
+    card = await _get_card(request, operator_id(auth), sid, widget_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Order card not found")
     if card.get("status") != "PENDING_APPROVAL":  # approve refuses such a card before it plans it too

@@ -393,3 +393,81 @@ async def test_dot_quote_and_bare_symbol_normalization_in_klines_and_swing_scan(
     assert cand["stop"] < cand["entry"]
     assert cand["target"] > cand["entry"]
 
+
+# -----------------------------------------------------------------------------
+# 5. Staged Active Card Redis Cache Tests
+# -----------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_staged_active_card_redis_lookup():
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from cryptonite_api.routes.brain import _get_card, _find_card
+    import uuid
+
+    sid = uuid.uuid4()
+    card_id = f"card_test_{uuid.uuid4().hex[:8]}"
+    fake_card = {
+        "id": card_id,
+        "kind": "order_card",
+        "instrument_id": "BTCUSDT.BINANCE",
+        "side": "BUY",
+        "order_type": "MARKET",
+        "allocation_pct": 5.0,
+        "status": "PENDING_APPROVAL",
+    }
+
+    empty_session = {"messages": []}
+    assert _find_card(empty_session, card_id) is None
+
+    fake_redis = AsyncMock()
+    fake_redis.get.return_value = json.dumps(fake_card)
+
+    fake_request = MagicMock()
+    fake_request.app.state.stream_hub.redis = fake_redis
+
+    with patch("cryptonite_api.routes.brain._worker_get", AsyncMock(return_value=empty_session)):
+        card = await _get_card(fake_request, "operator:test", sid, card_id)
+        assert card is not None
+        assert card["id"] == card_id
+        assert card["status"] == "PENDING_APPROVAL"
+        fake_redis.get.assert_awaited_once_with(f"brain:active_card:{card_id}")
+
+
+@pytest.mark.asyncio
+async def test_brain_note_updates_redis_when_streaming():
+    from unittest.mock import AsyncMock, MagicMock
+    from cryptonite_agents.brain import Brain
+
+    fake_store = MagicMock()
+    fake_store.get_session = AsyncMock(return_value={"id": "s1"})
+    fake_store.update_widget = AsyncMock(return_value=False)
+    fake_store.append_message = AsyncMock(return_value=1)
+
+    fake_redis = AsyncMock()
+    cached_card = {"id": "c1", "status": "PENDING_APPROVAL", "kind": "order_card"}
+    fake_redis.get.return_value = json.dumps(cached_card)
+
+    brain = Brain(
+        gateway=MagicMock(),
+        store=fake_store,
+        redis=fake_redis,
+    )
+
+    applied = await brain.note(
+        operator_id="op1",
+        session_id="s1",
+        content="Operator approved order card c1.",
+        widget_id="c1",
+        widget_patch={"status": "APPROVED", "command_id": "cmd-123"},
+        expect_status="PENDING_APPROVAL",
+    )
+
+    assert applied is True
+    fake_redis.get.assert_awaited_with("brain:active_card:c1")
+    call_args = fake_redis.set.call_args
+    assert call_args[0][0] == "brain:active_card:c1"
+    updated_card = json.loads(call_args[0][1])
+    assert updated_card["status"] == "APPROVED"
+    assert updated_card["command_id"] == "cmd-123"
+
+
