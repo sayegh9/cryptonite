@@ -150,14 +150,43 @@ async def test_scan_swing_setups_preset_filter_and_clamping(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scan_swing_setups_empty_lake_fallback(monkeypatch):
-    """Verifies graceful handling when the lake is completely empty."""
+    """Verifies graceful handling when both the lake and REST fallback return no data."""
     monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, *args, **kwargs: pl.DataFrame())
+    monkeypatch.setattr("cryptonite_agents.tools._spot_klines", lambda *args, **kwargs: (None, "unavailable"))
     monkeypatch.setenv("DATABASE_URL", "")
 
     raw = await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=5)
     data = json.loads(raw)
     assert data["candidates"] == []
     assert data["scanned_count"] == len(SWING_LIQUID_12)
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_empty_lake_rest_fallback(monkeypatch):
+    """Verifies that when the lake is empty, scan_swing_setups falls back to REST klines."""
+    fake_candles = [
+        {
+            "open_time_ms": 1_700_000_000_000 + i * 3_600_000,
+            "close_time_ms": 1_700_000_000_000 + (i + 1) * 3_600_000 - 1,
+            "open": 50000.0 + i * 10.0,
+            "high": 50020.0 + i * 10.0,
+            "low": 49980.0 + i * 10.0,
+            "close": 50015.0 + i * 10.0,
+            "volume": 500.0,
+        }
+        for i in range(60)
+    ]
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, *args, **kwargs: pl.DataFrame())
+    monkeypatch.setattr(
+        "cryptonite_agents.tools._spot_klines",
+        lambda sym, interval, limit_val, **kwargs: ({"symbol": sym, "interval": interval, "candles": fake_candles}, None),
+    )
+    monkeypatch.setenv("DATABASE_URL", "")
+
+    raw = await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=3)
+    data = json.loads(raw)
+    assert len(data["candidates"]) > 0
+    assert data["candidates"][0]["instrument_id"] in ("BTCUSDT.BINANCE", "ETHUSDT.BINANCE", "SOLUSDT.BINANCE", "XRPUSDT.BINANCE")
 
 
 # -----------------------------------------------------------------------------

@@ -1619,7 +1619,7 @@ async def scan_swing_setups(
     if target_inst and target_inst not in scan_universe:
         scan_universe = [target_inst, *scan_universe]
 
-    lookback_min = 48000
+    lookback_min = 20160
     now_ns = time.time_ns()
     start_ns = now_ns - lookback_min * 60 * 1_000_000_000
 
@@ -1658,9 +1658,29 @@ async def scan_swing_setups(
     candidates: list[dict[str, Any]] = []
     frames_by_inst: dict[str, dict[str, pl.DataFrame]] = {}
 
-    # If a specific symbol was requested and is not in the local DuckDB lake, fetch 15m/1h/4h from Binance Spot
-    if target_inst and target_sym and target_inst not in bars_by_inst:
-        rest_frames: dict[str, pl.DataFrame] = {}
+    # If the local DuckDB lake returned no bars for any symbol (or cold lake),
+    # fall back to Binance Spot REST for the primary liquid symbols
+    if not bars_by_inst:
+        fallback_syms = [target_sym] if (target_sym and target_inst) else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+        for sym_cand in fallback_syms:
+            inst_cand = f"{sym_cand}.BINANCE"
+            rest_frames: dict[str, pl.DataFrame] = {}
+            for tf in ("15m", "1h", "4h"):
+                try:
+                    out, _err = _spot_klines(sym_cand, tf, 120)
+                    if out and out.get("candles"):
+                        enriched = _spot_candles_to_enriched_df(out["candles"], ScannerEngine)
+                        if enriched is not None and not enriched.is_empty():
+                            rest_frames[tf] = enriched
+                except Exception as e:
+                    logger.debug("REST kline fallback failed for %s %s: %s", sym_cand, tf, e)
+            if rest_frames:
+                frames_by_inst[inst_cand] = rest_frames
+                bars_by_inst[inst_cand] = (
+                    rest_frames[timeframe] if timeframe in rest_frames else next(iter(rest_frames.values()))
+                )
+    elif target_inst and target_sym and target_inst not in bars_by_inst:
+        rest_frames = {}
         for tf in ("15m", "1h", "4h"):
             try:
                 out, _err = _spot_klines(target_sym, tf, 120)
@@ -1717,10 +1737,10 @@ async def scan_swing_setups(
                 if latest_atr <= 0:
                     latest_atr = latest_close * 0.015
 
-                tail_2 = primary_df.tail(2)
+                tail_recent = primary_df.tail(6)
                 min_recent_close_ns = (
-                    int(tail_2["bar_close_inclusive_ns"].min())
-                    if "bar_close_inclusive_ns" in tail_2.columns
+                    int(tail_recent["bar_close_inclusive_ns"].min())
+                    if "bar_close_inclusive_ns" in tail_recent.columns
                     else 0
                 )
 
@@ -1740,7 +1760,7 @@ async def scan_swing_setups(
                 fresh_matched = [
                     c for c in matched
                     if c.bar_close_inclusive_ns >= min_recent_close_ns
-                    and abs(float(c.suggested_entry) - latest_close) / latest_close <= 0.02
+                    and abs(float(c.suggested_entry) - latest_close) / latest_close <= 0.025
                 ]
                 if fresh_matched:
                     fresh_matched.sort(key=lambda c: c.bar_close_inclusive_ns, reverse=True)
