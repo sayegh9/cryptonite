@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
 from cryptonite_api.leverage_card import manual_ticket_preview
+from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import require_csrf, require_operator
 from cryptonite_api.universe import require_fed
 from cryptonite_schemas.mandate import MANDATE_INSTANCE_PREFIX
@@ -437,6 +438,38 @@ async def close_position(instance_id: str, req: ClosePositionRequest, request: R
         target_instance_id=instance_id,
         payload={"instance_id": instance_id, "instrument_id": req.instrument_id, "price": req.price},
     )
+
+
+class FlattenPerpsRequest(BaseModel):
+    totp_code: str | None = None
+    reason: str = Field(default="Flatten perps from the header", max_length=300)
+
+
+@router.post("/perps/flatten")
+async def flatten_perps(req: FlattenPerpsRequest, request: Request, auth: dict = Depends(require_operator),
+                        csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
+    """Close every open perp position with a reduce-only market close and leave spot alone (leverage plan 4.7).
+    It needs the operator's TOTP, like the other one-click account actions; one CLOSE_POSITION per perp, sent to the
+    instance that holds it (the orchestrator closes at the live quote, reduce-only, and releases its resting stop)."""
+    await require_totp(request, auth, req.totp_code)
+    pool = request.app.state.pool
+    rows = await pool.fetch(
+        """SELECT DISTINCT instance_id, instrument_id FROM paper_positions
+           WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0 AND split_part(instrument_id, '.', 1) LIKE '%-PERP'
+           ORDER BY instrument_id""", PAPER_ACCOUNT_ID)
+    batch = uuid.uuid4().hex[:12]
+    commands = []
+    for r in rows:
+        res = await _enqueue_command(
+            pool=pool, command_type="CLOSE_POSITION", target_instance_id=r["instance_id"],
+            payload={"instance_id": r["instance_id"], "instrument_id": r["instrument_id"], "price": None,
+                     "reason": "FLATTEN_PERPS", "operator_reason": req.reason},
+            requester_id=f"web-ui:{auth.get('username', 'operator')}",
+            idempotency_key=f"flatten-perps:{batch}:{r['instance_id']}:{r['instrument_id']}")
+        commands.append({"instrument_id": r["instrument_id"], "instance_id": r["instance_id"],
+                         "command_id": str(res.get("command_id"))})
+    logger.warning("Flatten perps by %s: %d close command(s) (%s)", auth.get("username"), len(commands), req.reason)
+    return {"closed": len(commands), "commands": commands}
 
 
 @router.post("/orders/{client_order_id}/cancel")

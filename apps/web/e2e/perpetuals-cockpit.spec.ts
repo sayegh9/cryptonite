@@ -164,6 +164,39 @@ test.describe("Perpetuals cockpit: order ticket and margin HUD", () => {
     expect(reactErrors).toEqual([]);
   });
 
+  test("header: Flatten perps shows while a perp is open and needs a TOTP code", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const bodies: unknown[] = [];
+    await page.route("**/api/v1/paper/positions*", (route) =>
+      route.fulfill({
+        status: 200,
+        json: [
+          { instrument_id: PERP, side: "LONG", quantity: "0.04", status: "OPEN" },
+          { instrument_id: "BTCUSDT.BINANCE", side: "LONG", quantity: "0.1", status: "OPEN" },
+        ],
+      }));
+    await page.route("**/api/v1/paper/perps/flatten", (route) => {
+      bodies.push(route.request().postDataJSON());
+      return route.fulfill({ status: 200, json: { closed: 1, commands: [] } });
+    });
+    await mockOperatorSession(page);
+    await page.addInitScript(() => localStorage.setItem("csrf_token", "csrf-test"));
+    await page.goto("/?ws=terminal");
+
+    const button = page.getByRole("button", { name: "Flatten perps (1)" });
+    await expect(button).toBeVisible();
+    await button.click();
+    const form = page.getByRole("form", { name: "Flatten perps" });
+    await expect(form).toContainText("Closes BTCUSDT-PERP with reduce-only market orders");
+    const submit = form.getByRole("button", { name: "Flatten 1 perp" });
+    await expect(submit).toBeDisabled();
+    await form.getByLabel("TOTP code").fill("123456");
+    await submit.click();
+    await expect(form).toHaveCount(0);
+    expect(bodies).toEqual([{ totp_code: "123456" }]);
+    expect(reactErrors).toEqual([]);
+  });
+
   test("margin HUD: live marks drive risk bands, funding countdown, and liquidation banner", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     // Isolated long 0.04 BTC @ 50,000, 10x -> IM 200, P_liq 45,180.72, MM 8 at 2,000 notional
