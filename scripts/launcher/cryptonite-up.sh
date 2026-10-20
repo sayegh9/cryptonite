@@ -32,7 +32,12 @@ set -Eeuo pipefail
 HELD_SERVICES="${CRYPTONITE_HELD_SERVICES-}"
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
-COMPOSE_FILE="$REPO/infra/docker-compose.yml"
+# The stack runs from the deploy worktree (HANDOFF.md "Deploy"): its compose file mounts the live data/ and the
+# deployed code, so a container this script creates gets the same mounts as the running ones. repo/ only when
+# there is no deploy worktree. CRYPTONITE_DEPLOY overrides the location.
+DEPLOY="${CRYPTONITE_DEPLOY:-$(dirname "$REPO")/deploy-main}"
+if [[ -f "$DEPLOY/infra/docker-compose.yml" ]]; then COMPOSE_FILE="$DEPLOY/infra/docker-compose.yml"
+else COMPOSE_FILE="$REPO/infra/docker-compose.yml"; fi
 PROFILES="${CRYPTONITE_PROFILES:-monitoring notifier}"
 WEB_URL="http://localhost:3000"
 API_HEALTH="http://127.0.0.1:8000/health"
@@ -116,6 +121,7 @@ else
 fi
 
 step "Starting the stack (profiles: $PROFILES; held: ${HELD_SERVICES:-none})"
+ok "compose file: $COMPOSE_FILE"
 # Every service the active profiles enable, minus the held ones. --no-deps keeps compose from
 # starting a held service as someone's dependency; postgres and redis are already up from above.
 services=()

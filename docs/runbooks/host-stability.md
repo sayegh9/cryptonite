@@ -484,81 +484,60 @@ and carries on. **Run compaction soon after the deploy** (§6.3), so that window
 - `ingest_batches.analytics_paths` is an audit column that no code reads back. After compaction it names files
   that now sit in quarantine.
 
-### 6.3 Operator order
+### 6.3 Nightly maintenance (automatic)
 
-Run on the host as `samx` (uid 1000, which owns `data/`), from `repo/` on `main`. Do not use the `test` container:
-`deploy-main/data` is a symlink into `repo/`, and it does not resolve inside that container. Each heavy step runs
-in a user scope capped at 2 GB, so the kernel stops it before it can starve the stack. Before each step, check that
-`free -g` shows at least 6 GB available (compaction peaked at 1.7 GB).
+**Correction (2026-10-20).** An earlier version of this section said to run compaction from `repo/` on
+`data/analytics_lake`, assuming `deploy-main/data` was a symlink into `repo/`. It is not: the stack has written
+`deploy-main/data` since 2026-10-19, and `repo/data` is a stale copy. §7 makes `deploy-main/data` the only data
+folder. Never compact `repo/data`.
 
-```bash
-cd ~/Documents/projects/cryptonite/repo && git pull --ff-only          # repo/ stays on main (launchers)
-CAP="systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0"
-```
+The `lake_maintenance` compose service (`cryptonite_storage.lake_maintenance`) does the routine work. It starts with
+the stack, runs on the data folder next to its compose file, and is capped at 2 GB. Every night at **01:30 UTC** it:
 
-1. **Deploy the code** (HANDOFF.md "Deploy"): `build` and then `up -d --no-deps scanner api learner agent_worker`.
-   Then check:
-   - `docker exec cryptonite_scanner env | grep -E 'DUCKDB|POLARS'` shows the four values.
-   - `docker logs --since 10m cryptonite_scanner 2>&1 | grep -c "analytics lake read failed"` counts lake failures.
-     A few are expected until compaction. Many mean you should go straight to step 2.
-2. **Dry run.** Reads Parquet footers only and changes nothing:
-   ```bash
-   $CAP uv run python scripts/compact_lake.py --lake data/analytics_lake --dry-run | tail -5
-   ```
-3. **Take a reference, then compact one symbol.** The reference covers the last 3 whole UTC days. Run after
-   01:00 UTC, so yesterday's partition gets no more stragglers between the two reads:
-   ```bash
-   REF='import sys, time; from cryptonite_storage.queries import AnalyticsQueryEngine as E
-   end = int(time.time()) // 86400 * 86400 * 10**9; start = end - 3 * 86400 * 10**9
-   df = E("data/analytics_lake", threads=4, memory_limit="1GB", temp_directory="/tmp").query_bars_df("BTCUSDT", "1m", start, end - 1)
-   print(df.height, df.drop("date").hash_rows(seed=0).sum())'
-   $CAP uv run python -c "$REF"                                                            # before
-   $CAP uv run python scripts/compact_lake.py --lake data/analytics_lake --symbol BTCUSDT --timeframe 1m
-   ```
-4. **Verify.**
-   - The script exits 0, and every line says `compacted`. A `failed` partition is left exactly as it was.
-   - `$CAP uv run python -c "$REF"` prints the same two numbers as before.
-   - `ls data/analytics_lake/binance_klines_enriched/binance/spot/1m/BTCUSDT/date=$(date -u -d '-2 day' +%F)` shows a
-     single `part-compacted-*.parquet` file.
-   - The originals and the manifest are under
-     `data/analytics_lake_quarantine/binance_klines_enriched/binance/spot/1m/BTCUSDT/date=…/`.
-   - The scanner keeps scanning (`scan_runs` grows), and the chart for BTCUSDT loads in the UI.
-5. **Compact everything:** `$CAP uv run python scripts/compact_lake.py --lake data/analytics_lake`.
-   Check the file count afterwards: `find data/analytics_lake -name '*.parquet' | wc -l` (78,598 on 2026-10-20).
-6. **Nightly schedule** (user crontab, next to the backups). Cron runs in local time: 04:30 local is 01:30 UTC
-   in summer time and 02:30 UTC in winter time. Both are after 01:00 UTC, and both come well after the Sunday
-   02:30 `data` backup has started:
-   ```
-   30 4 * * * cd $HOME/Documents/projects/cryptonite/repo && XDG_RUNTIME_DIR=/run/user/$(id -u) systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 $HOME/.local/bin/uv run python scripts/compact_lake.py --lake data/analytics_lake >> $HOME/.local/state/cryptonite/compact-lake.log 2>&1
-   ```
-   - The `systemd-run --user` scope needs the user manager to be running, which means the desktop session is logged
-     in or lingering is enabled (`loginctl enable-linger samx`). Without it the job fails and logs, and the lake is
-     untouched.
-   - Exit 75 means a backfill or the repair held the lock. The next night catches up.
-   - Exit 1 means a partition failed its check. Read the log.
+1. **compacts** every closed date partition (`cryptonite_storage.lake_compaction`, each one checked before it is
+   swapped in; the originals go to `data/analytics_lake_quarantine/`);
+2. **prunes** the quarantine of every compaction older than **14 days**, but only once its rows are proven to be in
+   the lake: the compacted file named in the manifest must still match the row count, distinct bars and row hash
+   recorded when it was checked against the originals (or, if a later night recompacted the partition, the later
+   manifest must pass the same test). Anything unproven is kept;
+3. **alerts only on problems**, as a CRITICAL message on `channel:system_alerts`, which the notifier sends to
+   Telegram and ntfy: a partition that failed its check, a quarantine entry it could not prove, an error, or the lake
+   lock held by a backfill all night (it retries hourly, 6 times).
 
-**Quarantine.** Keep it until the partitions are verified, then prune it after **14 days**. File mtimes are the
-originals' own, so prune by manifest age rather than file age. List the candidates first:
+Its state is in `data/analytics_lake_quarantine/.lake-maintenance-state.json`. The healthcheck turns the container
+unhealthy when the last night failed or nothing has succeeded for 36 hours. Settings (compose environment):
+`LAKE_MAINTENANCE_AT` (01:30), `LAKE_QUARANTINE_DAYS` (14), `LAKE_LOCK_RETRY_S` (3600), `LAKE_LOCK_RETRIES` (6).
+
+Nothing here needs a person. To look anyway:
 
 ```bash
-cd ~/Documents/projects/cryptonite/repo/data/analytics_lake_quarantine
-find . -name 'compaction-*.json' -mtime +14 -print0 \
-  | xargs -0 -r python3 -c 'import json,sys; [print(f) for m in sys.argv[1:] for f in json.load(open(m))["quarantined_as"]]'
-# when the list looks right: pipe the same output to  xargs -d '\n' rm --  and then delete those manifests
+docker logs --since 2d cryptonite_lake_maintenance 2>&1 | grep -E "lake maintenance (ok|problems|failed)|ALERT"
+docker inspect -f '{{.State.Health.Status}}' cryptonite_lake_maintenance
+docker exec cryptonite_lake_maintenance cat /app/data/analytics_lake_quarantine/.lake-maintenance-state.json
 ```
 
-Quarantine lives under `data/`, so **the weekly `cryptonite-backup data` tarball carries it** until it is pruned.
-That is roughly one extra copy of the uncompacted lake (1.1 GB on 2026-10-20) per kept week.
+**By hand** (a dry run, one symbol, or a run right now), from a checkout on `main`, against the live lake:
+
+```bash
+cd ~/Documents/projects/cryptonite/repo
+uv run python scripts/compact_lake.py --lake ../deploy-main/data/analytics_lake --dry-run | tail -3
+docker exec cryptonite_lake_maintenance python -m cryptonite_storage.lake_maintenance --once
+```
+
+Both take the lake maintenance lock (exit 75 while the nightly run, a backfill or the repair holds it).
+
+**Backups.** Quarantine lives under `data/`, so the weekly `cryptonite-backup data` archive carries it until it is
+pruned: every compacted original is in at least one weekly archive before it is deleted.
 
 **Rollback.**
-- Code: deploy the previous `main`. To undo only the caps, remove the four env lines from the services.
+- Stop the automation: `docker compose -f infra/docker-compose.yml stop lake_maintenance` (from `deploy-main`).
 - One partition: move the files listed in its manifest's `quarantined_as` back into the partition, then move its
   `part-compacted-<stamp>.parquet` into quarantine. Readers de-duplicate per bar, so the order of the two moves does
   not matter.
 
 ### 6.4 24 h measurement checklist, then memory limits
 
-Start right after step 5 (or after the deploy, if compaction waits). VmHWM and `memory.peak` count from container
+Start after the first nightly compaction (§6.3). VmHWM and `memory.peak` count from container
 start, so recreate a container first if it predates the change.
 
 ```bash
@@ -601,3 +580,76 @@ stats` maximum), in a separate change. `MALLOC_ARENA_MAX` stays out until it has
   writing temp files outside the partition, as compaction does.
 - **Prune partitions by date.** `query_bars_df` filters on `ts_event_ns` only, so DuckDB still opens every
   partition's footer. A `date >= <start date>` predicate on the hive column would skip old partitions entirely.
+
+---
+
+## 7. One data folder (2026-10-20)
+
+### 7.1 What was wrong
+
+HANDOFF.md said `deploy-main/data` was a symlink into `repo/data`. Since 2026-10-18/19 it has been a real folder:
+
+| | `deploy-main/data` | `repo/data` |
+|---|---|---|
+| Used by the stack | **yes**: every container that mounts `data/` was created from `deploy-main/infra` | no; last write 2026-10-19 14:26 local |
+| Analytics lake | full history, growing | same history to 2026-10-19 (hard links) plus 16 bars written in the last minutes before the switch |
+| Nautilus catalog | **only from 2026-10-19 11:27 UTC** | **the only full history**, 2026-03-18 to 2026-10-19 11:26 UTC |
+
+So the live catalog had lost its history, the weekly `data` backup archived the stale `repo/data`, and the launchers
+(which ran `repo/infra/docker-compose.yml`) would have mounted `repo/data` into any container they had to create.
+Also, `.env.notifier` and `infra/security/*.pem` exist only in `repo/`.
+
+### 7.2 What changed
+
+- **`deploy-main/data` is the one data folder.** The launchers start and stop the stack with the deploy worktree's
+  compose file (falling back to `repo/` only when there is no deploy worktree), so every container mounts it.
+- **The backup archives it** (`backup.sh data`: `CRYPTONITE_DATA_DIR`, else `deploy-main/data`, else `repo/data`),
+  tolerates files that change while it reads, and logs a WARNING when the lake has not changed in two days.
+- **`scripts/merge_data_dirs.py`** brings into it everything only `repo/data` holds (catalog history, the 16 lake
+  files, a research report): hard links, never overwriting, refusing any catalog bar file that overlaps one already
+  there. Its dry run on 2026-10-20: 70,716 files to link, 0 conflicts.
+
+### 7.3 Cut-over (once, about 10 minutes, the stack keeps running)
+
+Each step is safe to repeat. From the host, as `samx`:
+
+```bash
+cd ~/Documents/projects/cryptonite
+git -C repo pull --ff-only && git -C deploy-main checkout --detach origin/main     # after the PR is merged
+cryptonite-backup data          # still the old script: archives repo/data, the only full catalog history
+```
+
+1. **Secrets for deploy-main** (links, like its `.env`):
+   ```bash
+   ln -s ../repo/.env.notifier deploy-main/.env.notifier
+   ln -s ../../../repo/infra/security/binance_demo_private_key.pem deploy-main/infra/security/binance_demo_private_key.pem
+   ```
+2. **Merge the history into the live folder** (dry run, then apply; expect 0 conflicts):
+   ```bash
+   cd repo && uv run python scripts/merge_data_dirs.py --src ../repo/data --dst ../deploy-main/data && \
+     uv run python scripts/merge_data_dirs.py --src ../repo/data --dst ../deploy-main/data --apply; cd ..
+   ```
+3. **Retire the old folder** (moved, not deleted; the files stay reachable through their hard links in
+   `deploy-main/data`), and put back the placeholders git tracks:
+   ```bash
+   mv repo/data ~/backups/cryptonite/repo-data-retired-$(date +%F) && git -C repo checkout -- data
+   ```
+4. **New backup script and the maintenance service:**
+   ```bash
+   install -m 755 repo/scripts/backup.sh ~/.local/bin/cryptonite-backup
+   cd deploy-main && set -a && . ./.env && set +a && \
+     docker compose -f infra/docker-compose.yml build lake_maintenance && \
+     docker compose -f infra/docker-compose.yml up -d --no-deps lake_maintenance
+   ```
+5. **Check:**
+   - `cryptonite-backup data` logs `of …/deploy-main/data` and no WARNING.
+   - `ls deploy-main/data/nautilus_catalog/data/bars/BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL | head -1` starts in March.
+   - `docker inspect -f '{{.State.Health.Status}}' cryptonite_lake_maintenance` is `healthy` (after about a minute).
+   - The launchers print `compose file: …/deploy-main/infra/docker-compose.yml`.
+
+After about a month without surprises, `~/backups/cryptonite/repo-data-retired-*` can be deleted.
+
+**Rollback:** `mv ~/backups/cryptonite/repo-data-retired-<date> repo/data` (after moving the placeholders aside),
+reinstall the previous `backup.sh`, `docker compose stop lake_maintenance`. The merged files in `deploy-main/data`
+are harmless to keep.
+

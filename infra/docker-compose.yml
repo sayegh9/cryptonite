@@ -612,6 +612,36 @@ services:
       start_period: 600s
     logging: *default-logging
 
+  # Nightly Analytics Lake maintenance (host-stability runbook §6): at 01:30 UTC it compacts every closed date
+  # partition (each one checked before it is swapped in) and prunes quarantined originals after 14 days, once
+  # their rows are proven to be in the lake. Problems go to channel:system_alerts (the notifier sends them to
+  # Telegram and ntfy). Shares the lake maintenance lock with the backfill scripts and the repair.
+  lake_maintenance:
+    build:
+      context: ..
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: cryptonite_lake_maintenance
+    command: ["python", "-m", "cryptonite_storage.lake_maintenance"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
+      ANALYTICS_LAKE_PATH: /app/data/analytics_lake
+      LAKE_QUARANTINE_PATH: /app/data/analytics_lake_quarantine
+      LAKE_MAINTENANCE_AT: "01:30"
+      LAKE_QUARANTINE_DAYS: "14"
+      POLARS_MAX_THREADS: "4"
+    volumes:
+      - ../data:/app/data:rw
+    mem_limit: 2g  # compaction peaked at 1.7 GB RSS with DuckDB at 4 threads / 1 GB
+    restart: unless-stopped
+    healthcheck:  # fails when the last night failed, or nothing succeeded for 36 h
+      <<: *default-healthcheck
+      test: ["CMD", "python", "-m", "cryptonite_storage.lake_maintenance", "--check"]
+      interval: 300s  # it only reads a small state file; no need to start Python every 30 s
+    logging: *default-logging
+
   # Sentiment (A6.3): CryptoBERT + FinBERT on CPU, internal network only, no secrets, no host port.
   # Weights live outside the repo (default ~/models/hf), mounted read-only.
   sentiment:

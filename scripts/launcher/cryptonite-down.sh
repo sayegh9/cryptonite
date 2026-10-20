@@ -11,7 +11,12 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
-COMPOSE_FILE="$REPO/infra/docker-compose.yml"
+# The stack runs from the deploy worktree (HANDOFF.md "Deploy"): its compose file mounts the live data/ and the
+# deployed code, so a container this script creates gets the same mounts as the running ones. repo/ only when
+# there is no deploy worktree. CRYPTONITE_DEPLOY overrides the location.
+DEPLOY="${CRYPTONITE_DEPLOY:-$(dirname "$REPO")/deploy-main}"
+if [[ -f "$DEPLOY/infra/docker-compose.yml" ]]; then COMPOSE_FILE="$DEPLOY/infra/docker-compose.yml"
+else COMPOSE_FILE="$REPO/infra/docker-compose.yml"; fi
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cryptonite"
 WEB_PID="$STATE_DIR/web.pid"
 LOG="$STATE_DIR/launcher.log"

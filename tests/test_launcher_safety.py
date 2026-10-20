@@ -76,7 +76,7 @@ def fake_bin(tmp_path):
 
 
 def run_launcher(fake_bin, tmp_path, *, alembic_current="036 (head)", held=" ".join(HELD), existing=HELD,
-                 services=SERVICES, port_holder=None, ps_status=None):
+                 services=SERVICES, port_holder=None, ps_status=None, deploy=None):
     log, calls_log, state = tmp_path / "docker.log", tmp_path / "calls.log", tmp_path / "fake-state"
     state.mkdir(exist_ok=True)
     env = {
@@ -91,6 +91,7 @@ def run_launcher(fake_bin, tmp_path, *, alembic_current="036 (head)", held=" ".j
         "FAKE_ALL_SERVICES": " ".join((*services, *OPT_IN)),
         "FAKE_ALEMBIC_CURRENT": alembic_current,
         "FAKE_EXISTING": " ".join(existing),
+        "CRYPTONITE_DEPLOY": str(deploy or tmp_path / "no-deploy-worktree"),
     }
     if held is not None:
         env["CRYPTONITE_HELD_SERVICES"] = held
@@ -297,13 +298,14 @@ def test_start_writes_a_log(fake_bin, tmp_path):
     assert "===== start" in log and "Checking Docker and Ollama" in log
 
 
-def run_stopper(fake_bin, tmp_path, *, running=("api", "postgres", "redis"), still_running=""):
+def run_stopper(fake_bin, tmp_path, *, running=("api", "postgres", "redis"), still_running="", deploy=None):
     state = tmp_path / "fake-state"
     state.mkdir(exist_ok=True)
     log = tmp_path / "docker.log"
     env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "HOME": str(tmp_path), "XDG_STATE_HOME": str(tmp_path / "state"),
            "FAKE_LOG": str(log), "FAKE_CALLS": str(tmp_path / "calls.log"), "FAKE_STATE": str(state),
-           "FAKE_RUNNING": " ".join(running), "FAKE_STILL_RUNNING": still_running}
+           "FAKE_RUNNING": " ".join(running), "FAKE_STILL_RUNNING": still_running,
+           "CRYPTONITE_DEPLOY": str(deploy or tmp_path / "no-deploy-worktree")}
     proc = subprocess.run(["bash", str(STOPPER)], env=env, capture_output=True, text=True, timeout=60)
     return proc, (log.read_text().splitlines() if log.exists() else [])
 
@@ -333,3 +335,34 @@ def test_the_stop_launcher_keeps_its_window_open_on_error():
     install = (REPO / "scripts" / "launcher" / "install.sh").read_text()
     assert "cryptonite-down.sh --pause-on-error" in install
     assert os.access(STOPPER, os.X_OK)
+
+
+def _deploy_worktree(tmp_path):
+    deploy = tmp_path / "deploy-main"
+    (deploy / "infra").mkdir(parents=True)
+    (deploy / "infra" / "docker-compose.yml").write_text("services: {}\n")
+    return deploy
+
+
+def test_the_stack_is_started_from_the_deploy_worktree(fake_bin, tmp_path):
+    """Containers the launcher creates must mount the live data/ and deployed code of deploy-main, like the running
+    ones (host-stability runbook §7), never repo/data."""
+    deploy = _deploy_worktree(tmp_path)
+    proc, calls, _ = run_launcher(fake_bin, tmp_path, deploy=deploy)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    compose_calls = [c for c in calls if c.startswith("compose ")]
+    assert compose_calls and all(f"-f {deploy}/infra/docker-compose.yml" in c for c in compose_calls)
+    assert f"compose file: {deploy}/infra/docker-compose.yml" in proc.stdout
+
+
+def test_without_a_deploy_worktree_the_repo_compose_file_is_used(fake_bin, tmp_path):
+    proc, calls, _ = run_launcher(fake_bin, tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert all(f"-f {REPO}/infra/docker-compose.yml" in c for c in calls if c.startswith("compose "))
+
+
+def test_stop_uses_the_deploy_worktree_too(fake_bin, tmp_path):
+    deploy = _deploy_worktree(tmp_path)
+    proc, calls = run_stopper(fake_bin, tmp_path, deploy=deploy)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert all(f"-f {deploy}/infra/docker-compose.yml" in c for c in calls if c.startswith("compose "))
