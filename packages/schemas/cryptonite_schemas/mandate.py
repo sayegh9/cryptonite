@@ -86,6 +86,7 @@ class MandateReject(StrEnum):
     APPROVAL_REQUIRED = "MANDATE_APPROVAL_REQUIRED"  # ADD_RISK below L3 without a valid approval
     NO_REFERENCE_PRICE = "MANDATE_NO_REFERENCE_PRICE"
     INSTANCE_UNAVAILABLE = "MANDATE_INSTANCE_UNAVAILABLE"
+    MARGIN_MODE_NOT_ALLOWED = "MANDATE_MARGIN_MODE_NOT_ALLOWED"  # ADR 0009 D5: mandate perps are ISOLATED only
     # The orchestrator sized the entry itself and the check still found it over a limit: a system fault (sizing
     # and the check disagreeing), not the AI overstepping. Refused, logged as an error, never a breach.
     SIZING_CONFLICT = "MANDATE_SIZING_CONFLICT"

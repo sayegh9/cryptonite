@@ -192,7 +192,7 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
     order = MandateOrder(
         instrument_id=intent.instrument_id, side=side, quantity=intent.quantity, ref_price=ref,
         order_type=intent.order_type, reduce_only=intent.reduce_only, leverage=intent.leverage,
-        conviction_level=intent.conviction_level,
+        conviction_level=intent.conviction_level, margin_mode=intent.margin_mode,
     )
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     ok = await approval_granted(conn, row, payload, mandate)

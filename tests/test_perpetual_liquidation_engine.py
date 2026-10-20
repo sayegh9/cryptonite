@@ -41,9 +41,9 @@ def test_long_liquidates_at_or_below_liquidation_price_only():
     assert liq.liquidation_price.quantize(D("0.01")) == D("45180.72")
     assert (liq.fill_price, liq.bankruptcy_price) == (D("45180"), D("45000"))
     assert liq.realized_pnl == D("-192.8")  # 0.04 * (45,180 - 50,000)
-    assert liq.trading_fee == D("1.80720") and liq.clearance_fee == D("9.03600")
-    # 192.8 + 10.8432 exceeds the 200 margin: the loss stops at the margin, the fund covers 3.6432
-    assert liq.shortfall_covered == D("3.64320") == liq.insurance_fund_deficit
+    assert liq.trading_fee == D("0.90360") and liq.clearance_fee == D("9.03600")  # 1,807.2 * 0.05% and * 0.5%
+    # 192.8 + 9.9396 exceeds the 200 margin: the loss stops at the margin, the fund covers 2.7396
+    assert liq.shortfall_covered == D("2.73960") == liq.insurance_fund_deficit
     assert d.get_perp_position_qty(PERP) == 0
 
 
@@ -86,9 +86,9 @@ def test_gap_through_bankruptcy_fills_at_bankruptcy_and_books_fund_deficit():
     d = isolated(+1)
     (liq,) = d.check_liquidations({PERP: D("44000")})  # wick below the 45,000 bankruptcy price
     assert liq.fill_price == D("45000") and liq.realized_pnl == D("-200")
-    assert liq.shortfall_covered == D("10.8000")  # fees on 1,800 notional, beyond the margin
-    assert liq.insurance_fund_deficit == D("50.8000")  # + 0.04 * (45,000 - 44,000) gap
-    assert d.insurance_fund_deficit == D("50.8000")
+    assert liq.shortfall_covered == D("9.9000")  # fees (0.05% + 0.5%) on 1,800 notional, beyond the margin
+    assert liq.insurance_fund_deficit == D("49.9000")  # + 0.04 * (45,000 - 44,000) gap
+    assert d.insurance_fund_deficit == D("49.9000")
     assert d.cash_balance == D("9800")
 
 
@@ -100,7 +100,7 @@ def test_cross_liquidation_stops_account_at_zero_equity():
     assert d.check_liquidations({PERP: D("298000")}) == []
     (liq,) = d.check_liquidations({PERP: D("300000")})
     assert liq.bankruptcy_price is None and liq.realized_pnl == D("-10000")
-    assert liq.shortfall_covered == D("72.000")  # 12,000 notional * 0.6% fees beyond the wallet
+    assert liq.shortfall_covered == D("66.000")  # 12,000 notional * 0.55% fees beyond the wallet
     assert d.cash_balance == 0 and d.locked_margin == 0
 
 

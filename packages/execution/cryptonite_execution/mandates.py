@@ -43,6 +43,7 @@ class MandateOrder:
     reduce_only: bool = False
     leverage: int | None = None
     conviction_level: str | None = None
+    margin_mode: str | None = None  # perps: None means the ISOLATED default
 
     @property
     def is_perp(self) -> bool:
@@ -135,6 +136,8 @@ def check_mandate(
             return MandateReject.PERPS_NOT_ALLOWED
         if (order.leverage or 1) > min(mandate.max_leverage, MAX_PERP_LEVERAGE_CAP):
             return MandateReject.LEVERAGE_EXCEEDED
+        if (order.margin_mode or "ISOLATED").upper() != "ISOLATED":
+            return MandateReject.MARGIN_MODE_NOT_ALLOWED
     if exposure.other_owner:
         return MandateReject.INSTRUMENT_CONFLICT
     notional = order_notional(order)

@@ -247,11 +247,11 @@ def test_perp_accepts_leverage_bounds(leverage):
     assert (approved, reason) == (True, "APPROVED")
 
 
-def test_perp_defaults_leverage_1_and_cross_and_validates_margin_mode():
+def test_perp_defaults_leverage_1_and_isolated_and_validates_margin_mode():
     dispatcher = make_perp_dispatcher()
     intent = perp_intent("BUY", "0.01")
     assert dispatcher.evaluate_intent(intent)[0] is True
-    assert (intent.leverage, intent.margin_mode) == (1, "CROSS")
+    assert (intent.leverage, intent.margin_mode) == (1, "ISOLATED")  # ADR 0009 D5 (was CROSS)
 
     isolated = perp_intent("BUY", "0.01", margin_mode="isolated")
     assert dispatcher.evaluate_intent(isolated)[0] is True
@@ -358,10 +358,10 @@ def test_reduce_only_skips_margin_reservation_concentration_and_conviction():
 
 def test_perp_entry_reserves_initial_margin_and_releases_it():
     dispatcher = make_perp_dispatcher()
-    # 0.04 BTC at mark 50,000, 10x: IM 200 + taker fee 2,000 * 0.001 = 202
+    # 0.04 BTC at mark 50,000, 10x: IM 200 + USD-M taker fee 2,000 * 0.0005 = 201
     ok, _ = dispatcher.dispatch(perp_intent("SELL", "0.04", "SHORT-1", leverage=10), MagicMock(), MagicMock())
     assert ok is True
-    assert dispatcher.reserved_cash == Decimal("202")
+    assert dispatcher.reserved_cash == Decimal("201")
     dispatcher.release_reservation("SHORT-1")
     assert dispatcher.reserved_cash == Decimal("0")
 
@@ -369,9 +369,9 @@ def test_perp_entry_reserves_initial_margin_and_releases_it():
 def test_perp_flip_reserves_margin_only_for_opened_exposure():
     dispatcher = make_perp_dispatcher()
     dispatcher.set_perp_position(PERP, Decimal("0.02"), Decimal("50000"))
-    # Sell 0.05: closes 0.02, opens 0.03 short -> IM 0.03 * 50k / 10 = 150, fee 0.05 * 50k * 0.001 = 2.5
+    # Sell 0.05: closes 0.02, opens 0.03 short -> IM 0.03 * 50k / 10 = 150, fee 0.05 * 50k * 0.0005 = 1.25
     approved, _, margin = dispatcher.evaluate_intent(perp_intent("SELL", "0.05", leverage=10))
-    assert approved is True and margin == Decimal("152.5")
+    assert approved is True and margin == Decimal("151.25")
 
 
 def test_perp_rejects_insufficient_margin_and_missing_mark():

@@ -161,7 +161,7 @@ async def test_adding_to_short_updates_average_entry_and_liquidation_price(ctx):
 
 
 async def test_cross_position_stores_cross_mode_without_isolated_margin(ctx):
-    await fill(ctx, "S-1", "SELL", "0.04", "50000", leverage=10)  # margin mode defaults to CROSS
+    await fill(ctx, "S-1", "SELL", "0.04", "50000", leverage=10, margin_mode="CROSS")  # the default is ISOLATED now
     row = await open_position(ctx)
     assert (row["margin_mode"], row["isolated_margin"]) == ("CROSS", 0)
     # Cross wallet 10,000 backs the short, so liquidation sits far above entry

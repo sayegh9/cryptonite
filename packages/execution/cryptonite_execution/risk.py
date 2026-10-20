@@ -51,7 +51,8 @@ class OrderIntent(BaseModel):
     # Perpetual-only flags; spot intents must leave them at their defaults
     reduce_only: bool = False
     leverage: int | None = None  # perps: 1..max_perp_leverage, defaults to 1
-    margin_mode: str | None = None  # perps: ISOLATED or CROSS, defaults to CROSS
+    # perps: ISOLATED or CROSS; defaults to the open position's mode, else ISOLATED (ADR 0009 D5)
+    margin_mode: str | None = None
     stop_price: Decimal | None = None  # perps, order_type STOP_MARKET: a resting reduce-only stop (triggers on mark)
 
 
@@ -60,7 +61,7 @@ class PerpPositionState:
     signed_qty: Decimal  # >0 long, <0 short
     entry_price: Decimal
     leverage: int = 1
-    margin_mode: str = MarginMode.CROSS
+    margin_mode: str = MarginMode.ISOLATED
     initial_margin: Decimal = Decimal("0")  # locked from available cash while the position is open
     instance_id: str = ""  # strategy instance that owns it (paper_positions key); "" = unowned (seeded)
     cumulative_funding: Decimal = Decimal("0")  # Σ funding cash flows while open
@@ -95,6 +96,7 @@ class GuardedOrderDispatcher:
         max_position_concentration_pct: Decimal = Decimal("0.25"),
         min_order_equity_pct: Decimal = Decimal("0.01"),
         max_perp_leverage: int = 20,
+        perp_taker_fee: Decimal = Decimal("0.0005"),  # Binance USD-M taker; spot keeps ``taker_fee``
         perp_trading_enabled: bool = True,
         liquidation_clearance_pct: Decimal = Decimal("0.005"),
         max_mark_age_s: float = 10.0,
@@ -124,6 +126,7 @@ class GuardedOrderDispatcher:
         # they lock initial margin and settle realized PnL and fees into cash.
         self.min_order_equity_pct = min_order_equity_pct
         self.max_perp_leverage = max_perp_leverage
+        self.perp_taker_fee = perp_taker_fee
         self.perp_trading_enabled = perp_trading_enabled
         self.locked_margin: Decimal = Decimal("0")  # Σ initial margin of open perp positions
         self.liquidation_clearance_pct = liquidation_clearance_pct
@@ -397,7 +400,7 @@ class GuardedOrderDispatcher:
             self.release_reservation(cid)
 
         notional = qty * fill_price
-        trading_fee = notional * self.taker_fee
+        trading_fee = notional * self.perp_taker_fee
         clearance_fee = notional * self.liquidation_clearance_pct
         client_order_id = f"LIQ-{uuid.uuid4().hex[:12].upper()}"
         cash_before = self.cash_balance
@@ -556,9 +559,13 @@ class GuardedOrderDispatcher:
         leverage = 1 if intent.leverage is None else intent.leverage
         if not 1 <= leverage <= self.max_perp_leverage:
             return f"LEVERAGE_OUT_OF_RANGE: {leverage} not in 1..{self.max_perp_leverage}"
-        mode = (intent.margin_mode or MarginMode.CROSS).upper()
+        held = self.perp_positions.get(intent.instrument_id)
+        mode = (intent.margin_mode or (held.margin_mode if held else MarginMode.ISOLATED)).upper()
         if mode not in MarginMode.__members__:
             return f"INVALID_MARGIN_MODE: {intent.margin_mode}"
+        # As on Binance, the margin mode cannot change while a position is open
+        if held is not None and held.signed_qty != 0 and not intent.reduce_only and mode != held.margin_mode:
+            return f"MARGIN_MODE_LOCKED: {intent.instrument_id} is held {held.margin_mode}"
         intent.leverage, intent.margin_mode = leverage, mode
         return None
 
@@ -656,7 +663,7 @@ class GuardedOrderDispatcher:
         else:
             opening_qty = max(Decimal("0"), intent.quantity - abs(pos_qty))
         required_margin = (
-            opening_qty * price_estimate / Decimal(intent.leverage) + order_notional * self.taker_fee
+            opening_qty * price_estimate / Decimal(intent.leverage) + order_notional * self.perp_taker_fee
         )
         if required_margin > self.available_cash:
             return (
@@ -906,7 +913,7 @@ class GuardedOrderDispatcher:
         pos = self.perp_positions.get(instrument_id)
         leverage = (intent.leverage if intent and intent.leverage else None) or (pos.leverage if pos else 1)
         margin_mode = (intent.margin_mode if intent and intent.margin_mode else None) or (
-            pos.margin_mode if pos else MarginMode.CROSS
+            pos.margin_mode if pos else MarginMode.ISOLATED
         )
         fill_sign = Decimal("1") if side == "BUY" else Decimal("-1")
         realized = Decimal("0")

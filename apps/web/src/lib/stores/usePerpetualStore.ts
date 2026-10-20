@@ -136,7 +136,7 @@ function parseMark(d: Record<string, unknown>): MarkTick | null {
 
 export const usePerpetualStore = create<PerpetualState>()(persist((set, get) => ({
   leverage: 1,
-  marginMode: 'CROSS',
+  marginMode: 'ISOLATED', // ADR 0009 D5: the manual ticket defaults to ISOLATED
   reduceOnly: false,
   marks: {},
   positions: {},

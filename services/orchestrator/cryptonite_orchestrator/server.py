@@ -107,6 +107,7 @@ class SimpleQuoteCache:
 
 
 DEFAULT_FEE_RATE = Decimal("0.001")
+DEFAULT_PERP_FEE_RATE = Decimal("0.0005")  # Binance USD-M taker (leverage plan 1.6)
 MAX_MATCH_QUOTE_AGE_NS = 5_000_000_000  # a backlog of older quotes never fills working orders
 # An entry sized to the mandate's room keeps 1% back, so a quote tick between sizing and the mandate
 # check cannot push it over the limit
@@ -227,7 +228,9 @@ async def apply_paper_fill(
 
 
 def fee_rate_for(dispatcher, instrument_id: str) -> Decimal:
-    """Taker fee for a paper fill."""
+    """Taker fee for a paper fill: the USD-M rate on perps (leverage plan 1.6), the spot rate otherwise."""
+    if instrument_id.split(".", 1)[0].upper().endswith("-PERP"):
+        return getattr(dispatcher, "perp_taker_fee", None) or DEFAULT_PERP_FEE_RATE
     return getattr(dispatcher, "taker_fee", None) or DEFAULT_FEE_RATE
 
 
@@ -1376,7 +1379,11 @@ async def command_poller(pool, engine, quote_cache=None):
                                     # Perp attributes; the dispatcher defaults leverage to 1 and CROSS,
                                     # and rejects them on spot instruments
                                     leverage=payload.get("leverage"),
-                                    margin_mode=payload.get("margin_mode"),
+                                    # mandate perps are ISOLATED (ADR 0009 D5): the default is explicit, a CROSS
+                                    # request is refused by the mandate check
+                                    margin_mode=payload.get("margin_mode") or (
+                                        "ISOLATED" if mandate is not None and canonical_inst.split(".")[0].endswith("-PERP")
+                                        else None),
                                     reduce_only=payload.get("reduce_only") or False,
                                     stop_price=Decimal(str(payload["stop_price"])) if payload.get("stop_price") else None,
                                 )
