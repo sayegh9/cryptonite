@@ -35,6 +35,8 @@ from cryptonite_orchestrator.mandate_gate import (
     instance_spot_holdings,
     is_ai_command,
     mandate_entry_room,
+    mandate_risk_budget,
+    plan_perp_entry,
 )
 from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
 from cryptonite_orchestrator.marks import start_mark_to_market
@@ -1316,7 +1318,27 @@ async def command_poller(pool, engine, quote_cache=None):
                                 mandate = await load_mandate(conn, mandate_ref)
 
                             # Determine quantity
+                            is_perp_order = canonical_inst.split(".")[0].endswith("-PERP")
+                            perp_entry = is_perp_order and not payload.get("reduce_only")
+                            planned_leverage = None
                             qty_val = Decimal(str(payload["quantity"])) if payload.get("quantity") else None
+                            if not qty_val and mandate is not None and perp_entry:
+                                # Leverage plan 2.4: a mandate's perp entry, long or short, is sized by
+                                # plan_leveraged_order to the mandate's room and risk budget (the allocation is the
+                                # margin); the mandate gate and the dispatcher check it with the same valuation
+                                plan = await plan_perp_entry(conn, engine, mandate, canonical_inst, side, payload,
+                                                             quote_cache.quote(canonical_inst))
+                                if not plan.ok:
+                                    logger.info("AI perp entry %s not placed: %s", row["command_id"], plan.reject)
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"], f"{plan.reject}: perp sizing ({plan.binding_ceiling or 'no plan'})",
+                                    )
+                                    continue
+                                qty_val, planned_leverage = plan.quantity, plan.leverage
+                                logger.info("AI perp entry %s sized: %s %s %s at %sx (%s), margin %s, loss at stop %s",
+                                            row["command_id"], side, qty_val, canonical_inst, plan.leverage,
+                                            plan.binding_ceiling, plan.margin_usd, plan.loss_at_stop_usd)
                             if not qty_val:
                                 alloc_pct = Decimal(str(payload.get("allocation_pct", 5.0)))
                                 quote = quote_cache.quote(canonical_inst)
@@ -1331,7 +1353,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                 base = mandate.capital_budget_usd if mandate is not None else engine.dispatcher.cash_balance
                                 notional = base * (alloc_pct / Decimal("100.0"))
                                 qty_val = max(Decimal("0.0001"), notional / mark_px)
-                                if mandate is not None and side == "BUY" and not payload.get("reduce_only"):
+                                if mandate is not None and not is_perp_order and side == "BUY" and not payload.get("reduce_only"):
                                     # An entry adds to what the mandate already holds: size it down to the
                                     # room left under its position limit and budget (an approval is an upper
                                     # bound), so it passes the mandate check instead of being refused as a breach
@@ -1378,14 +1400,17 @@ async def command_poller(pool, engine, quote_cache=None):
                                     price=price_dec,
                                     # Perp attributes; the dispatcher defaults leverage to 1 and CROSS,
                                     # and rejects them on spot instruments
-                                    leverage=payload.get("leverage"),
+                                    leverage=planned_leverage or payload.get("leverage"),
                                     # mandate perps are ISOLATED (ADR 0009 D5): the default is explicit, a CROSS
                                     # request is refused by the mandate check
                                     margin_mode=payload.get("margin_mode") or (
-                                        "ISOLATED" if mandate is not None and canonical_inst.split(".")[0].endswith("-PERP")
-                                        else None),
+                                        "ISOLATED" if mandate is not None and is_perp_order else None),
                                     reduce_only=payload.get("reduce_only") or False,
                                     stop_price=Decimal(str(payload["stop_price"])) if payload.get("stop_price") else None,
+                                    # a perp entry carries its stop; an AI one must (leverage plan 2.3)
+                                    stop_loss=Decimal(str(payload["stop_loss"])) if perp_entry and payload.get("stop_loss") else None,
+                                    require_stop=bool(ai_order and perp_entry),
+                                    risk_budget_usd=mandate_risk_budget(mandate) if mandate is not None and perp_entry else None,
                                 )
                             except ValidationError as e:
                                 await conn.execute(
@@ -1459,9 +1484,8 @@ async def command_poller(pool, engine, quote_cache=None):
                                 try:
                                     quote = quote_cache.quote(canonical_inst)
                                     order_info = engine.dispatcher.open_orders.get(client_oid)
-                                    if (order_info is not None and order_info.get("is_perp") and not intent.reduce_only
-                                            and payload.get("stop_loss")):
-                                        order_info["attach_stop"] = Decimal(str(payload["stop_loss"]))
+                                    if order_info is not None and order_info.get("is_perp") and intent.stop_loss is not None:
+                                        order_info["attach_stop"] = intent.stop_loss
                                     fill = None
                                     if quote and order_info is not None:
                                         fill = match_order(

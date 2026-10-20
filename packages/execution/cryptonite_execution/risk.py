@@ -24,6 +24,12 @@ from cryptonite_execution.derivatives import (
 )
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
+from cryptonite_execution.leverage import (
+    ACCOUNT_MAX_LEVERAGE,
+    DEFAULT_SLIPPAGE_ALLOWANCE,
+    MANUAL_RISK_PER_TRADE_PCT,
+    check_leveraged_order,
+)
 from cryptonite_execution.margin import (
     bracket_source,
     calculate_funding_payment,
@@ -54,6 +60,12 @@ class OrderIntent(BaseModel):
     # perps: ISOLATED or CROSS; defaults to the open position's mode, else ISOLATED (ADR 0009 D5)
     margin_mode: str | None = None
     stop_price: Decimal | None = None  # perps, order_type STOP_MARKET: a resting reduce-only stop (triggers on mark)
+    # Perp entries (leverage plan 2.3): the protective stop the entry carries (it becomes a resting stop once filled),
+    # whether one is required (AI entries), and the loss at the stop it may risk (a mandate's budget x its
+    # max_risk_per_trade_pct; None: 2% of account equity when a stop is given)
+    stop_loss: Decimal | None = None
+    require_stop: bool = False
+    risk_budget_usd: Decimal | None = None
 
 
 @dataclass
@@ -95,8 +107,9 @@ class GuardedOrderDispatcher:
         max_daily_loss_pct: Decimal = Decimal("0.05"),
         max_position_concentration_pct: Decimal = Decimal("0.25"),
         min_order_equity_pct: Decimal = Decimal("0.01"),
-        max_perp_leverage: int = 20,
+        max_perp_leverage: int = ACCOUNT_MAX_LEVERAGE,  # ADR 0009 D2: 10x (was 20)
         perp_taker_fee: Decimal = Decimal("0.0005"),  # Binance USD-M taker; spot keeps ``taker_fee``
+        slippage_allowance_pct: Decimal = DEFAULT_SLIPPAGE_ALLOWANCE,  # leverage plan §2.1, an operator setting
         perp_trading_enabled: bool = True,
         liquidation_clearance_pct: Decimal = Decimal("0.005"),
         max_mark_age_s: float = 10.0,
@@ -127,6 +140,7 @@ class GuardedOrderDispatcher:
         self.min_order_equity_pct = min_order_equity_pct
         self.max_perp_leverage = max_perp_leverage
         self.perp_taker_fee = perp_taker_fee
+        self.slippage_allowance_pct = slippage_allowance_pct
         self.perp_trading_enabled = perp_trading_enabled
         self.locked_margin: Decimal = Decimal("0")  # Σ initial margin of open perp positions
         self.liquidation_clearance_pct = liquidation_clearance_pct
@@ -656,6 +670,21 @@ class GuardedOrderDispatcher:
                 f"> limit {self.max_position_concentration_pct:.1%}",
                 Decimal("0"),
             )
+
+        # Leverage plan 2.3: an AI entry carries its stop; a stop must sit inside half the liquidation distance and
+        # its loss within the risk budget; the leverage within the exchange bracket for the notional
+        if intent.require_stop and intent.stop_loss is None:
+            return False, "STOP_REQUIRED: a leveraged AI entry needs a stop", Decimal("0")
+        risk_budget = intent.risk_budget_usd
+        if risk_budget is None and intent.stop_loss is not None:
+            risk_budget = equity * MANUAL_RISK_PER_TRADE_PCT / Decimal("100")
+        leverage_reject = check_leveraged_order(
+            intent.instrument_id, side, intent.quantity, price_estimate, intent.stop_loss, intent.leverage,
+            risk_budget_usd=risk_budget, slippage_pct=self.slippage_allowance_pct, fee_pct=2 * self.perp_taker_fee,
+        )
+        if leverage_reject is not None:
+            stop = f" (stop {intent.stop_loss})" if intent.stop_loss is not None else ""
+            return False, f"{leverage_reject}: {intent.leverage}x on {order_notional:.2f}{stop}", Decimal("0")
 
         # Initial margin only on the exposure this order opens; closing part of an opposite position frees margin
         if pos_qty == 0 or (pos_qty > 0) == order_is_long:

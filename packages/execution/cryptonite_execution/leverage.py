@@ -57,6 +57,7 @@ class LeverageReject(StrEnum):
     EXPOSURE_LIMIT_REACHED = "EXPOSURE_LIMIT_REACHED"
     LEVERAGE_ABOVE_BRACKET = "LEVERAGE_ABOVE_BRACKET"
     LEVERAGE_ABOVE_MAXIMUM = "LEVERAGE_ABOVE_MAXIMUM"
+    ORDER_BELOW_MIN_NOTIONAL = "ORDER_BELOW_MIN_NOTIONAL"
     SETUP_NO_TRADE = "SETUP_NO_TRADE"
     NO_LEVERAGE_BRACKETS = "NO_LEVERAGE_BRACKETS"
     STALE_LEVERAGE_BRACKETS = "STALE_LEVERAGE_BRACKETS"
@@ -87,6 +88,7 @@ class LeverageLimits:
     slippage_pct: Decimal = DEFAULT_SLIPPAGE_ALLOWANCE
     fee_pct: Decimal = DEFAULT_FEE_ROUND_TRIP
     maximum_label: str = Ceiling.MAXIMUM.value  # "account maximum" on the manual ticket
+    min_notional_usd: Decimal = Decimal("0")  # the dispatcher's 1%-of-equity minimum order
 
 
 @dataclass(frozen=True)
@@ -261,6 +263,8 @@ def plan_leveraged_order(
     isolated_margin = notional / Decimal(leverage)
     liq, dist = liquidation_distance(instrument_id, side, quantity, entry_price, isolated_margin) if quantity > 0 \
         else (None, None)
+    if notional < limits.min_notional_usd:
+        return refused(LeverageReject.ORDER_BELOW_MIN_NOTIONAL, binding=binding, ceilings=ceilings, margin_cut=margin_cut)
     loss = notional * cost
     sign = Decimal("1") if _is_long(side) else Decimal("-1")
     return LeveragePlan(

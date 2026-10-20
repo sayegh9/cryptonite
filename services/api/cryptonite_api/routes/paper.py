@@ -3,7 +3,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
@@ -54,8 +54,9 @@ class ManualOrderRequest(BaseModel):
     order_type: str = "MARKET"
     quantity: float = Field(..., gt=0)
     price: float | None = None  # Required if LIMIT
-    # Perpetual-only; the dispatcher rejects them on spot and defaults leverage 1 / CROSS
-    leverage: int | None = Field(None, ge=1, le=20)
+    # Perpetual-only; the dispatcher rejects them on spot and defaults leverage 1 / ISOLATED. 10x account maximum
+    # (ADR 0009 D2; was 20)
+    leverage: int | None = Field(None, ge=1, le=10)
     margin_mode: Literal["ISOLATED", "CROSS"] | None = None
     reduce_only: bool = False
 
@@ -172,7 +173,7 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
         except Exception:
             pass
 
-    now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(UTC)
     # B3 (F-H3): an open position shows its live mark and PnL, else its stored mark flagged stale
     marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
     out = []
@@ -192,14 +193,14 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
         opened_at = row.get("opened_at")
         opened_at_dt = None
         if isinstance(opened_at, datetime):
-            opened_at_dt = opened_at if opened_at.tzinfo else opened_at.replace(tzinfo=timezone.utc)
+            opened_at_dt = opened_at if opened_at.tzinfo else opened_at.replace(tzinfo=UTC)
             row["opened_at"] = opened_at_dt.isoformat()
         elif isinstance(opened_at, str):
             row["opened_at"] = opened_at
             try:
                 opened_at_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
                 if opened_at_dt.tzinfo is None:
-                    opened_at_dt = opened_at_dt.replace(tzinfo=timezone.utc)
+                    opened_at_dt = opened_at_dt.replace(tzinfo=UTC)
             except Exception:
                 opened_at_dt = None
         else:

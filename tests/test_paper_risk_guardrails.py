@@ -233,14 +233,14 @@ def test_perp_kill_flag_rejects_perp_orders():
     assert (approved, reason) == (False, "PERP_TRADING_DISABLED")
 
 
-@pytest.mark.parametrize("leverage", [0, -1, 21, 125])
-def test_perp_rejects_leverage_outside_1_to_20(leverage):
+@pytest.mark.parametrize("leverage", [0, -1, 11, 20, 21, 125])
+def test_perp_rejects_leverage_outside_1_to_10(leverage):  # ADR 0009 D2: the account maximum is 10x (was 20x)
     dispatcher = make_perp_dispatcher()
     approved, reason, _ = dispatcher.evaluate_intent(perp_intent("BUY", "0.01", leverage=leverage))
     assert approved is False and reason.startswith("LEVERAGE_OUT_OF_RANGE")
 
 
-@pytest.mark.parametrize("leverage", [1, 20])
+@pytest.mark.parametrize("leverage", [1, 10])
 def test_perp_accepts_leverage_bounds(leverage):
     dispatcher = make_perp_dispatcher()
     approved, reason, _ = dispatcher.evaluate_intent(perp_intent("BUY", "0.01", leverage=leverage))
