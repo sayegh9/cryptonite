@@ -32,6 +32,46 @@ function Meter({ label, value, max, text, tone }: { label: string; value: number
   );
 }
 
+/**
+ * Display tiers for the distance from the mark to the liquidation price (colour only; the exit monitor's own
+ * thresholds, which act, are relative to the stop): under 5% liquidation colour, under 10% high, else low.
+ */
+function liqTone(distancePct: number): string {
+  if (distancePct < 5) return "text-leverage-liquidation";
+  if (distancePct < 10) return "text-leverage-high";
+  return "text-leverage-low";
+}
+
+/** The mandate's perp positions: side, leverage, margin mode, notional and the distance to liquidation */
+function PerpPositions({ mandate: m }: { mandate: Mandate }) {
+  const perps = m.positions.filter((p) => p.instrument_id.split(".")[0].endsWith("-PERP"));
+  if (perps.length === 0) return null;
+  return (
+    <div className="mt-2 rounded border border-zinc-800 p-2" data-testid="mandate-perps">
+      <p className="mb-1 text-zinc-500">
+        Perps · exposure {usd(m.perp_exposure_usd ?? "0")}
+      </p>
+      <ul className="space-y-0.5">
+        {perps.map((p) => {
+          const dist = p.liquidation_distance_pct != null ? Number(p.liquidation_distance_pct) : null;
+          return (
+            <li key={`${p.instrument_id}:${p.side}`} className="flex flex-wrap justify-between gap-x-2" data-testid="mandate-perp-position">
+              <span className="text-zinc-200">
+                {p.instrument_id.split(".")[0]} {p.side} {p.leverage ?? 1}x {p.margin_mode ?? ""} · {usd(p.notional_usd ?? "0")}
+              </span>
+              <span className={dist == null ? "text-zinc-500" : liqTone(dist)}>
+                {p.liquidation_price
+                  ? `liq ${Number(p.liquidation_price).toLocaleString(undefined, { maximumFractionDigits: 2 })}${dist != null ? ` · ${dist.toFixed(1)}% away` : ""}`
+                  : "no liquidation price"}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 const STATUS_STYLE: Record<string, string> = {
   ACTIVE: "border-emerald-700 text-emerald-300",
   PAUSED: "border-zinc-600 text-zinc-300",
@@ -130,6 +170,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
           </dd>
         </div>
       </dl>
+      <PerpPositions mandate={m} />
       {m.pending_proposal && (
         <p className="mt-2 text-2xs text-cyan-300">Promotion to L{m.pending_proposal.to_level} proposed: confirm in Autonomy &amp; Evals.</p>
       )}

@@ -95,6 +95,9 @@ async def test_monitor_alerts_then_closes_near_liquidation(db_url):  # noqa: F81
         assert await pool.fetchval("SELECT count(*) FROM execution_commands") == 0
         alerts = [p for p in redis.published if p["reason"] == "LIQUIDATION_PROXIMITY"]
         assert alerts and alerts[0]["action"] == "ALERT"
+        # Leverage plan 4.6: a CRITICAL alert the notifier sends to Telegram and ntfy, saying how close it is
+        assert alerts[0]["severity"] == "CRITICAL" and alerts[0]["liquidation_price"] == 96.0
+        assert "used 52% of the buffer from the stop (else the entry) to liquidation (96)" in alerts[0]["message"]
         _mark(redis, 96.9)  # 77 %
         await em.monitor_once(pool, redis, book(100.0, PERP))
         rows = await pool.fetch("SELECT command_type, payload FROM execution_commands")

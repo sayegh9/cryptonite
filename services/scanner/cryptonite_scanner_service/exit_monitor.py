@@ -542,11 +542,25 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
         await redis_client.set(f"debounce:exit:{pos.instrument_id}", "1", ex=DEBATE_DEBOUNCE_S)
         logger.info("Exit debate for %s (%s, pnl %.2f%%)", pos.instrument_id, action.reason, pos.pnl_pct)
     if await redis_client.set(f"exit:alert:{pos.key}:{action.kind}:{action.reason}", "1", nx=True, ex=ALERT_DEBOUNCE_S):
-        await redis_client.publish("channel:system_alerts", json.dumps({
+        alert = {
             "type": "EXIT_MONITOR", "severity": "INFO" if action.kind in ("EXIT_DEBATE", "REDUCE_TP1") else "CRITICAL",
             "instrument_id": pos.instrument_id, "action": action.kind, "reason": action.reason,
             "pnl_pct": round(pos.pnl_pct, 2), "ai_owned": pos.ai_owned,
-        }))
+        }
+        if action.reason == "LIQUIDATION_PROXIMITY":
+            # Leverage plan 4.6: the notifier sends CRITICAL system alerts to Telegram and ntfy; this one says how
+            # close the position is and what the monitor does about it
+            used = pos.liquidation_buffer_used
+            alert.update({
+                "leverage": pos.leverage, "mark_price": pos.current_price, "liquidation_price": pos.liquidation_price,
+                "buffer_used_pct": round(used * 100, 1) if used is not None else None,
+                "message": (f"{pos.instrument_id} {pos.side} {pos.leverage}x: the mark {pos.current_price:g} has used "
+                            f"{(used or 0) * 100:.0f}% of the buffer from the stop (else the entry) to liquidation "
+                            f"({pos.liquidation_price:g}). "
+                            + ("Closing it (reduce-only market)." if action.kind == "CLOSE" else
+                               "Alert only: a manual position is not closed by the monitor.")),
+            })
+        await redis_client.publish("channel:system_alerts", json.dumps(alert))
 
 
 async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds | None = None,

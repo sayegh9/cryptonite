@@ -18,6 +18,14 @@ export interface MandatePosition {
   mark_stale?: boolean;
   /** Seconds since the quote (live) or since the mark was last confirmed (stored); null = never marked. */
   mark_age_s?: number | null;
+  /** Perp positions only (leverage plan 4.6) */
+  leverage?: number;
+  margin_mode?: "ISOLATED" | "CROSS" | null;
+  isolated_margin?: string | null;
+  notional_usd?: string;
+  liquidation_price?: string | null;
+  /** |mark − liquidation| / mark, %; "0" once the mark has crossed it; null when no positive price liquidates */
+  liquidation_distance_pct?: string | null;
 }
 
 export interface Mandate {
@@ -44,6 +52,8 @@ export interface Mandate {
   hwm: string;
   drawdown_pct: string;
   exposure_usd: string;
+  /** The notional of the mandate's perp positions at the mark */
+  perp_exposure_usd?: string;
   budget_used_pct: string;
   positions: MandatePosition[];
   /** B3: true when any position is valued at a stored (not live) mark; exposure is then approximate. */

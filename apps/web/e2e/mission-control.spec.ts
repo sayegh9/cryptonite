@@ -181,6 +181,28 @@ async function openMissionControl(page: Page) {
 }
 
 test.describe("Mission Control", () => {
+  test("a mandate card lists its perps with leverage and distance to liquidation", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockBackend(page, {
+      mandates: [mandate({
+        allow_perps: true, max_leverage: 7, perp_exposure_usd: "1800",
+        positions: [{
+          instrument_id: "BTCUSDT-PERP.BINANCE", side: "LONG", quantity: "0.03", entry_price: "60000", current_price: "54000",
+          leverage: 7, margin_mode: "ISOLATED", isolated_margin: "257.14", notional_usd: "1620", liquidation_price: "52000",
+          liquidation_distance_pct: "3.7",
+        }],
+      })],
+    });
+    await openMissionControl(page);
+    const perps = page.getByTestId("mandate-perps").first();
+    await expect(perps).toContainText("Perps · exposure $1,800");
+    const row = perps.getByTestId("mandate-perp-position");
+    await expect(row).toContainText("BTCUSDT-PERP LONG 7x ISOLATED · $1,620");
+    await expect(row).toContainText("liq 52,000 · 3.7% away");
+    await expect(row.getByText("liq 52,000 · 3.7% away")).toHaveClass(/text-leverage-liquidation/);
+    expect(reactErrors).toEqual([]);
+  });
+
   test("approve and veto pending approvals with countdowns", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     const calls = await mockBackend(page, {

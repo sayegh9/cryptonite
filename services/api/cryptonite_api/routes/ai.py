@@ -268,6 +268,26 @@ def _dec(v: Any) -> str | None:
     return format(d, "f")
 
 
+def _is_perp(instrument_id: str) -> bool:
+    return instrument_id.split(".")[0].upper().endswith("-PERP")
+
+
+def _perp_fields(p: Any, mark: Decimal) -> dict[str, Any]:
+    """A perp position's leverage, margin, notional and how far the mark is from its liquidation price (leverage plan
+    4.6): ``liquidation_distance_pct`` is |mark - liquidation| / mark, 0 once the mark has crossed it; None without a
+    liquidation price (a position no positive price liquidates)."""
+    if not _is_perp(p["instrument_id"]):
+        return {}
+    liq = Decimal(str(p["liquidation_price"])) if p["liquidation_price"] is not None else None
+    distance = None
+    if liq is not None and liq > 0 and mark > 0:
+        gap = (mark - liq) if p["side"] == "LONG" else (liq - mark)
+        distance = max(Decimal("0"), gap) / mark * 100
+    return {"leverage": p["leverage"], "margin_mode": p["margin_mode"], "isolated_margin": _dec(p["isolated_margin"]),
+            "notional_usd": _dec(Decimal(str(p["quantity"])) * mark), "liquidation_price": _dec(liq),
+            "liquidation_distance_pct": str(round(distance, 2)) if distance is not None else None}
+
+
 async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None) -> dict[str, Any]:
     """``marks`` (``read_marks``): positions and exposure at the live mark, else the stored mark flagged
     stale (B3, F-H3); ``marks_stale`` / ``marks_age_s`` say which."""
@@ -275,10 +295,14 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
     eq = await conn.fetchrow(
         "SELECT equity, hwm, drawdown_pct, ts FROM ai_mandate_equity WHERE mandate_id = $1 ORDER BY ts DESC, id DESC LIMIT 1", m.id)
     positions = await conn.fetch(
-        """SELECT instrument_id, side, quantity, entry_price, current_price FROM paper_positions
+        """SELECT instrument_id, side, quantity, entry_price, current_price, leverage, margin_mode, isolated_margin,
+                  liquidation_price
+           FROM paper_positions
            WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0 ORDER BY instrument_id""", m.instance_id)
     views = [resolve_mark(p["instrument_id"], p["current_price"], marks) for p in positions]
     exposure = sum((Decimal(str(p["quantity"])) * v.price for p, v in zip(positions, views)), Decimal("0"))
+    perp_exposure = sum((Decimal(str(p["quantity"])) * v.price for p, v in zip(positions, views)
+                         if _is_perp(p["instrument_id"])), Decimal("0"))
     pending = await conn.fetchval("SELECT count(*) FROM ai_approvals WHERE mandate_id = $1 AND status = 'PENDING'", m.id)
     proposal = await conn.fetchrow(
         """SELECT id, to_level, detail, created_at FROM ai_autonomy_events
@@ -297,10 +321,11 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
         "equity": _dec(eq["equity"]) if eq else _dec(m.capital_budget_usd), "hwm": _dec(eq["hwm"]) if eq else _dec(m.capital_budget_usd),
         "drawdown_pct": _dec(eq["drawdown_pct"]) if eq else "0", "equity_ts": eq["ts"].isoformat() if eq else None,
         "exposure_usd": _dec(exposure), "budget_used_pct": str(round(Decimal(_dec(exposure)) / m.capital_budget_usd * 100, 2)),
+        "perp_exposure_usd": _dec(perp_exposure),
         "positions": [{"instrument_id": p["instrument_id"], "side": p["side"], "quantity": _dec(p["quantity"]),
                        "entry_price": _dec(p["entry_price"]), "current_price": _dec(v.price),
                        "unrealized_pnl": _dec(unrealized_pnl(p["side"], p["quantity"], p["entry_price"], v.price)),
-                       **v.fields()} for p, v in zip(positions, views)],
+                       **v.fields(), **_perp_fields(p, v.price)} for p, v in zip(positions, views)],
         **summarize(views),
         "pending_approvals": pending,
         "pending_proposal": {"id": proposal["id"], "to_level": proposal["to_level"],
