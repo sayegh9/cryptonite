@@ -295,7 +295,7 @@ def test_an_alert_reaches_the_notifier_as_a_critical_system_alert(monkeypatch):
     import redis
 
     monkeypatch.setattr(redis.Redis, "from_url", classmethod(lambda cls, url, **kw: FakeRedis()))
-    lm.redis_publisher("redis://example:6379/0")("Lake maintenance needs a look", "compaction failed: x")
+    lm.redis_publisher("redis://example:6390/5")("Lake maintenance needs a look", "compaction failed: x")
     channel, payload = sent[0]
     alert = json.loads(payload)
     assert channel == "channel:system_alerts" and alert["severity"] == "CRITICAL"  # what on_system_alert forwards
