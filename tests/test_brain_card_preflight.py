@@ -391,3 +391,109 @@ async def test_a_machine_token_reads_with_the_operator_scope_but_never_approves(
         res = await c.post(APPROVE.format(sid=sid, wid="card-1"))
     assert res.status_code == 403  # approve stays human-only: an operator session, never a machine token
     assert worker.notes == [] and worker.card["status"] == "PENDING_APPROVAL"
+
+
+# --- The fix a refusal offers: the mandate change that would let approve queue, applied through the mandate routes ---
+
+ETH = "ETHUSDT.BINANCE"
+
+
+async def set_limit(pool, m, pct: int):
+    await pool.execute("UPDATE ai_mandates SET max_position_pct = $2 WHERE id = $1", m.id, pct)
+    async with pool.acquire() as conn:
+        return await brain_routes.load_mandate(conn, m.id)
+
+
+async def refusal(h, worker, code: str) -> dict:
+    """The dry run's refusal (approve gives the same, checked above) and its remedy; nothing was written."""
+    before = await snapshot(h.pool)
+    body = (await ask(h, uuid.uuid4())).json()
+    assert body["ok"] is False and body["code"] == code, body
+    assert await snapshot(h.pool) == before
+    return body
+
+
+async def test_a_full_position_under_a_low_limit_offers_the_raised_limit_and_the_fix_queues(h, worker):
+    """The 2026-10-20 XRP card: the mandate the card created holds its 10% limit. The fix raises the limit to what the
+    holding plus the card's 5% needs; applied with TOTP through the editor's route, approve then queues the full 5%."""
+    m = await set_limit(h.pool, await h.mandate(instruments=(BTC,), name="brain-btc"), 10)
+    await hold_position(h.pool, m.instance_id, 0.02)  # $1,000: the 10% limit of $10,000
+    body = await refusal(h, worker, "MANDATE_POSITION_LIMIT_REACHED")
+    assert body["remedy"] == {"kind": "EDIT_MANDATE", "mandate_id": str(m.id), "mandate_name": "brain-btc",
+                              "autonomy_level": 1, "field": "max_position_pct", "from": 10.0, "to": 15.0,
+                              "max_position_pct": 10.0, "capital_budget_usd": 10000.0, "held_pct": 10.0,
+                              "requested_pct": 5.0, "allocation_after_pct": 5.0}
+
+    sid = uuid.uuid4()
+    source = f"brain_card:{sid}:card-1"
+    async with h.client() as c:
+        no_code = await c.patch(f"/api/v1/ai/mandates/{m.id}", json={"max_position_pct": 15, "source": source},
+                                headers=h.headers)
+        assert no_code.status_code == 401  # a wider limit gives the AI room: TOTP, as in the Mandate editor
+        edited = await c.patch(f"/api/v1/ai/mandates/{m.id}",
+                               json={"max_position_pct": 15, "totp_code": h.totp.now(), "source": source},
+                               headers=h.headers)
+    assert edited.status_code == 200, edited.text
+    detail = json.loads(await h.pool.fetchval(
+        "SELECT detail FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'EDITED'", m.id))
+    assert detail["source"] == source and Decimal(detail["changes"]["max_position_pct"][1]) == 15
+
+    pre = (await ask(h, sid)).json()
+    assert pre["ok"] is True and pre["allocation_pct"] == 5.0 and pre["clipped_from_pct"] is None
+    res = await approve(h, sid)
+    assert res.status_code == 200, res.text
+    [cmd] = await h.pool.fetch("SELECT payload FROM execution_commands")
+    assert json.loads(cmd["payload"])["allocation_pct"] == 5.0
+
+
+async def test_a_full_position_at_the_cap_offers_a_bigger_budget(h, worker):
+    m = await h.mandate(instruments=(BTC,))  # the harness's 25%: the cap
+    await hold_position(h.pool, m.instance_id, 0.05)  # $2,500
+    remedy = (await refusal(h, worker, "MANDATE_POSITION_LIMIT_REACHED"))["remedy"]
+    assert (remedy["field"], remedy["from"], remedy["to"], remedy["allocation_after_pct"]) == (
+        "capital_budget_usd", 10000.0, 12500.0, 5.0)
+
+
+async def test_a_budget_full_of_other_holdings_offers_a_bigger_budget_not_a_higher_limit(h, worker):
+    m = await set_limit(h.pool, await h.mandate(instruments=(BTC, ETH)), 10)
+    await hold_position(h.pool, m.instance_id, 0.2, instrument_id=ETH)  # $10,000 of ETH: the whole budget
+    remedy = (await refusal(h, worker, "MANDATE_POSITION_LIMIT_REACHED"))["remedy"]
+    assert remedy["field"] == "capital_budget_usd" and remedy["to"] == 10600.0 and remedy["allocation_after_pct"] == 5.0
+
+
+async def test_no_mandate_offers_a_new_one_or_an_active_mandate_with_room(h, worker):
+    roomy = await h.mandate(instruments=(ETH,), name="eth-roomy")
+    full = await h.mandate(instruments=(ETH,), name="eth-full")
+    await hold_position(h.pool, full.instance_id, 0.2, instrument_id=ETH)  # its whole budget: no room for BTC
+    body = await refusal(h, worker, "NO_MANDATE")
+    assert body["needs_mandate"] is True
+    assert body["remedy"] == {"kind": "CREATE_MANDATE", "can_create": True, "position_pct": 25.0, "add_to": [
+        {"id": str(roomy.id), "name": "eth-roomy", "autonomy_level": 1, "instruments": [ETH], "max_position_pct": 25.0,
+         "capital_budget_usd": 10000.0, "room_pct": 25.0}]}
+
+    # Adding the instrument is an edit that gives the AI room: TOTP; then approve queues inside that mandate
+    sid = uuid.uuid4()
+    async with h.client() as c:
+        edited = await c.patch(f"/api/v1/ai/mandates/{roomy.id}",
+                               json={"instruments": [ETH, BTC], "totp_code": h.totp.now()}, headers=h.headers)
+    assert edited.status_code == 200, edited.text
+    res = await approve(h, sid, mandate_id=roomy.id)
+    assert res.status_code == 200, res.text
+    assert res.json()["mandate_id"] == str(roomy.id)
+
+
+async def test_a_paused_mandate_offers_resuming_it_and_a_halted_one_offers_nothing(h, worker):
+    paused = await h.mandate(instruments=(BTC,), status="PAUSED", name="btc-paused-fix")
+    assert (await refusal(h, worker, "MANDATE_PAUSED"))["remedy"] == {
+        "kind": "RESUME_MANDATE", "mandate_id": str(paused.id), "mandate_name": "btc-paused-fix"}
+    await h.pool.execute("UPDATE ai_mandates SET status = 'HALTED' WHERE id = $1", paused.id)
+    # A hard stop is looked at in Mission Control before anything resumes it
+    assert (await refusal(h, worker, "MANDATE_HALTED"))["remedy"] is None
+
+
+async def test_refusals_no_mandate_change_fixes_offer_nothing(h, worker):
+    await h.mandate(instruments=(BTC,))
+    await hold_position(h.pool, "MANUAL_TRADE", 0.01)
+    assert (await refusal(h, worker, "MANDATE_INSTRUMENT_CONFLICT"))["remedy"] is None
+    worker.card.update(side="SELL")
+    assert (await refusal(h, worker, "SPOT_SELL_NOT_HELD"))["remedy"] is None

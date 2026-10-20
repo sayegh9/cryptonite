@@ -237,12 +237,14 @@ test.describe("Brain Home", () => {
     await expect(create).toBeEnabled();
     await create.click();
 
-    await expect(card.getByRole("status")).toContainText("Approved · sending the order · paper command cmd-12345678");
-    // The API checks the TOTP code; the mandate starts at L1 with the editor's defaults, on this instrument only
+    await expect(card.getByTestId("card-outcome")).toContainText("Approved · sending the order · paper command cmd-12345678");
+    // The API checks the TOTP code; the mandate starts at L1 on this instrument only. Its budget serves this instrument
+    // alone, so the position limit starts at the 25% cap (not a share that would leave most of the budget unusable)
     expect(mandateBodies).toEqual([
       {
-        name: "Brain BTCUSDT.BINANCE", capital_budget_usd: "10000", instruments: ["BTCUSDT.BINANCE"], max_position_pct: 10,
+        name: "Brain BTCUSDT.BINANCE", capital_budget_usd: "10000", instruments: ["BTCUSDT.BINANCE"], max_position_pct: 25,
         max_drawdown_pct: 20, veto_window_s: 600, allow_perps: false, totp_code: "123456",
+        source: `brain_card:${SESSION}:call-1`,
       },
     ]);
     expect(orderBodies).toHaveLength(2);
@@ -455,7 +457,7 @@ test.describe("Brain Home", () => {
 
     await group.getByLabel("TOTP code").fill("654321");
     await group.getByRole("button", { name: "Create mandate and confirm" }).click();
-    await expect(card.getByRole("status")).toContainText("Approved · sending the order · paper command cmd-12345678");
+    await expect(card.getByTestId("card-outcome")).toContainText("Approved · sending the order · paper command cmd-12345678");
     expect(mandateBodies.map((b) => b.totp_code)).toEqual(["123456", "654321"]);
     expect(reactErrors).toEqual([]);
   });
@@ -871,6 +873,228 @@ test.describe("Brain Home", () => {
     await expect(group.getByLabel("TOTP code")).toBeVisible();
     await expect(group.getByRole("button", { name: "Create mandate and confirm" })).toBeDisabled();
     expect(reactErrors).toEqual([]);
+  });
+
+  // --- The fix a refusal offers: the card applies the server's suggested mandate change (TOTP), then approves ---
+
+  const LIMIT_DETAIL =
+    "MANDATE_POSITION_LIMIT_REACHED: mandate BTC L1 already holds its limit of 10.000% in BTCUSDT.BINANCE; nothing was queued";
+  const editRemedy = (over: Record<string, unknown> = {}) => ({
+    kind: "EDIT_MANDATE", mandate_id: "mandate-btc", mandate_name: "BTC L1", autonomy_level: 1, field: "max_position_pct",
+    from: 10, to: 15, max_position_pct: 10, capital_budget_usd: 10000, held_pct: 10, requested_pct: 5,
+    allocation_after_pct: 5, ...over,
+  });
+  const refusedWith = (remedy: unknown, code = "MANDATE_POSITION_LIMIT_REACHED", detail = LIMIT_DETAIL) =>
+    ({ json: { ok: false, code, detail, needs_mandate: code === "NO_MANDATE", remedy } });
+
+  /** The mandate routes the card's fix calls: each request's method, path and body */
+  async function mockMandateRoutes(page: Page, reply: (path: string) => { status?: number; json: unknown } = () => ({ json: { id: "mandate-btc" } })) {
+    const calls: { method: string; path: string; body: any }[] = [];
+    await page.route(/\/api\/v1\/ai\/mandates(\/.*)?$/, (route) => {
+      const req = route.request();
+      const path = new URL(req.url()).pathname;
+      if (req.method() === "GET") return route.fulfill({ json: { mandates: [] } });
+      calls.push({ method: req.method(), path, body: req.postDataJSON() });
+      const r = reply(path);
+      return route.fulfill({ status: r.status ?? 200, json: r.json });
+    });
+    return calls;
+  }
+
+  /** Approve, answered like the API: refused without a mandate id, queued with one; or always `refuse` */
+  async function mockApprove(page: Page, refuse?: string) {
+    const bodies: any[] = [];
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/*/approve`, (route) => {
+      const body = route.request().postDataJSON();
+      bodies.push(body);
+      if (refuse || !body?.mandate_id) return route.fulfill({ status: 409, json: { detail: refuse ?? LIMIT_DETAIL } });
+      return route.fulfill({ json: { command_id: "cmd-12345678", status: "APPROVED", mandate_id: body.mandate_id } });
+    });
+    return bodies;
+  }
+
+  test("a full position limit offers the raised limit; the card edits the mandate with TOTP, then approves", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockPreflight(page, () => refusedWith(editRemedy()));
+    const mandateCalls = await mockMandateRoutes(page);
+    const card = await openCard(page, ORDER_CARD);
+    const approveBodies = await mockApprove(page);
+
+    await expect(card.getByTestId("brain-card-preflight")).toContainText(
+      "Fix and approve offers to raise the position limit 10% → 15% (TOTP)",
+    );
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group).toContainText("No room left in BTCUSDT: mandate BTC L1 holds 10% of its $10,000 budget in it, at its 10% limit.");
+    await expect(group).toContainText("Raising the limit to 15% fits this order at 5%.");
+    // The edit is the mandate's, not this order's: the card says so, and what it means at the mandate's level
+    await expect(group).toContainText("This changes the mandate for all its future AI orders, not only this one.");
+    await expect(group).toContainText("At L1 Copilot every order still needs your approval.");
+    const limit = group.getByLabel(/Position limit \(%\), now 10%/);
+    await expect(limit).toHaveValue("15");
+
+    const raise = group.getByRole("button", { name: "Raise limit and confirm" });
+    await expect(raise).toBeDisabled();
+    await group.getByLabel("TOTP code").fill("123456");
+    await limit.fill("30");  // over the 25% cap: the card does not send it
+    await expect(raise).toBeDisabled();
+    await limit.fill("20");
+    await raise.click();
+
+    await expect(card.getByTestId("card-outcome")).toContainText("Approved · sending the order · paper command cmd-12345678");
+    await expect(card.getByTestId("card-fix-done")).toHaveText("Mandate BTC L1: position limit raised 10% → 20%.");
+    expect(mandateCalls).toEqual([{
+      method: "PATCH", path: "/api/v1/ai/mandates/mandate-btc",
+      body: { max_position_pct: 20, totp_code: "123456", source: `brain_card:${SESSION}:call-1` },
+    }]);
+    expect(approveBodies).toEqual([{ mandate_id: "mandate-btc" }]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a limit at the cap offers a bigger budget, and says a new budget restarts the drawdown baseline", async ({ page }) => {
+    await mockPreflight(page, () => refusedWith(editRemedy({ field: "capital_budget_usd", from: 10000, to: 12500, max_position_pct: 25, held_pct: 25 })));
+    const mandateCalls = await mockMandateRoutes(page);
+    const card = await openCard(page, ORDER_CARD);
+    await mockApprove(page);
+
+    await expect(card.getByTestId("brain-card-preflight")).toContainText("to raise the budget $10,000 → $12,500 (TOTP)");
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group).toContainText("raising the budget to $12,500 fits this order at 5%");
+    await expect(group).toContainText("A new budget also restarts the mandate's drawdown baseline.");
+    await group.getByLabel("TOTP code").fill("123456");
+    await group.getByRole("button", { name: "Raise budget and confirm" }).click();
+    await expect(card.getByTestId("card-fix-done")).toHaveText("Mandate BTC L1: budget raised $10,000 → $12,500.");
+    expect(mandateCalls[0]?.body).toEqual({ capital_budget_usd: 12500, totp_code: "123456", source: `brain_card:${SESSION}:call-1` });
+  });
+
+  test("a wider mandate above L1 says the AI can use the room without asking", async ({ page }) => {
+    await mockPreflight(page, () => refusedWith(editRemedy({ autonomy_level: 3 })));
+    const card = await openCard(page, ORDER_CARD);
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    await expect(card.getByRole("group", { name: "Confirm paper order" })).toContainText(
+      "At L3 Autonomous the AI can use the extra room without asking.",
+    );
+  });
+
+  test("an edit that succeeds before approve is refused stays in view next to the refusal", async ({ page }) => {
+    await mockPreflight(page, () => refusedWith(editRemedy()));
+    await mockMandateRoutes(page);
+    const card = await openCard(page, ORDER_CARD);
+    await mockApprove(page, "EXIT_MONITOR_DOWN: start the exit monitor");
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await group.getByLabel("TOTP code").fill("123456");
+    await group.getByRole("button", { name: "Raise limit and confirm" }).click();
+
+    await expect(card.getByRole("alert")).toContainText("Order not queued: EXIT_MONITOR_DOWN");
+    await expect(card.getByTestId("card-fix-done")).toHaveText("Mandate BTC L1: position limit raised 10% → 15%.");
+    // A used code is never sent again
+    await expect(group.getByLabel("TOTP code")).toHaveValue("");
+  });
+
+  test("a refused edit queues nothing and shows the API's reason", async ({ page }) => {
+    await mockPreflight(page, () => refusedWith(editRemedy()));
+    await mockMandateRoutes(page, () => ({ status: 401, json: { detail: "TOTP_REQUIRED: this change gives the AI more room; enter your current TOTP code" } }));
+    const card = await openCard(page, ORDER_CARD);
+    const approveBodies = await mockApprove(page);
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await group.getByLabel("TOTP code").fill("000000");
+    await group.getByRole("button", { name: "Raise limit and confirm" }).click();
+
+    await expect(card.getByRole("alert")).toContainText("TOTP_REQUIRED");
+    await expect(card.getByTestId("card-fix-done")).toHaveCount(0);
+    expect(approveBodies).toEqual([]);
+  });
+
+  test("a paused mandate offers resuming it with TOTP, then approves inside it", async ({ page }) => {
+    const detail = "MANDATE_PAUSED: BTC L1 already covers BTCUSDT.BINANCE; resume it in Mission Control, then approve this card";
+    await mockPreflight(page, () => refusedWith({ kind: "RESUME_MANDATE", mandate_id: "mandate-btc", mandate_name: "BTC L1" }, "MANDATE_PAUSED", detail));
+    const mandateCalls = await mockMandateRoutes(page);
+    const card = await openCard(page, ORDER_CARD);
+    const approveBodies = await mockApprove(page);
+
+    await expect(card.getByTestId("brain-card-preflight")).toContainText("Fix and approve offers to resume BTC L1 (TOTP)");
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group).toContainText("Mandate BTC L1 covers BTCUSDT and is PAUSED.");
+    await group.getByLabel("TOTP code").fill("123456");
+    await group.getByRole("button", { name: "Resume mandate and confirm" }).click();
+
+    await expect(card.getByTestId("card-fix-done")).toHaveText("Resumed mandate BTC L1.");
+    expect(mandateCalls).toEqual([{
+      method: "POST", path: "/api/v1/ai/mandates/mandate-btc/resume",
+      body: { totp_code: "123456", reason: "resumed from Brain order card call-1" },
+    }]);
+    expect(approveBodies).toEqual([{ mandate_id: "mandate-btc" }]);
+  });
+
+  test("no mandate: the card can add the instrument to an ACTIVE mandate with room instead of creating one", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const detail = "NO_MANDATE: approve this card inside an ACTIVE mandate that allows BTCUSDT.BINANCE (Mission Control → Mandates)";
+    await mockPreflight(page, () => refusedWith({
+      kind: "CREATE_MANDATE", can_create: true, position_pct: 25, add_to: [{
+        id: "mandate-eth", name: "ETH L2", autonomy_level: 2, instruments: ["ETHUSDT.BINANCE"], max_position_pct: 20,
+        capital_budget_usd: 5000, room_pct: 20,
+      }],
+    }, "NO_MANDATE", detail));
+    const mandateCalls = await mockMandateRoutes(page, () => ({ json: { id: "mandate-eth" } }));
+    const card = await openCard(page, ORDER_CARD);
+    const approveBodies = await mockApprove(page);
+
+    await expect(card.getByTestId("brain-card-preflight")).toHaveText(
+      "No ACTIVE mandate allows BTCUSDT yet: approving creates one or adds it to an existing one (TOTP)",
+    );
+    await card.getByRole("button", { name: "Approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    // A new mandate is the default; its position limit is an editable field that starts at the cap
+    await expect(group.getByLabel("creates a new mandate for BTCUSDT")).toBeChecked();
+    await expect(group.getByLabel("Position limit (%)")).toHaveValue("25");
+    await expect(group).toContainText("Up to $2,500 in BTCUSDT (25% at most); this order uses 5% of the budget.");
+
+    await group.getByLabel("adds BTCUSDT to ETH L2 (L2, 20% room)").check();
+    await expect(group.getByLabel("Mandate name")).toHaveCount(0);
+    await expect(group).toContainText("ETH L2 can trade BTCUSDT from then on, up to its 20% position limit of $5,000");
+    await expect(group).toContainText("At L2 Supervised the AI can use the extra room after a veto window");
+    await group.getByLabel("TOTP code").fill("123456");
+    await group.getByRole("button", { name: "Add to mandate and confirm" }).click();
+
+    await expect(card.getByTestId("card-fix-done")).toHaveText("Added BTCUSDT to mandate ETH L2.");
+    expect(mandateCalls).toEqual([{
+      method: "PATCH", path: "/api/v1/ai/mandates/mandate-eth",
+      body: { instruments: ["ETHUSDT.BINANCE", "BTCUSDT.BINANCE"], totp_code: "123456", source: `brain_card:${SESSION}:call-1` },
+    }]);
+    expect(approveBodies).toEqual([{ mandate_id: "mandate-eth" }]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("the inline mandate's position limit is editable and capped at 25%", async ({ page }) => {
+    const detail = "NO_MANDATE: approve this card inside an ACTIVE mandate that allows BTCUSDT.BINANCE (Mission Control → Mandates)";
+    await mockPreflight(page, () => refusedWith({ kind: "CREATE_MANDATE", can_create: true, position_pct: 25, add_to: [] }, "NO_MANDATE", detail));
+    const mandateCalls = await mockMandateRoutes(page, () => ({ status: 201, json: { id: "mandate-new" } }));
+    const card = await openCard(page, ORDER_CARD);
+    await mockApprove(page);
+    await card.getByRole("button", { name: "Approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await group.getByLabel("TOTP code").fill("123456");
+    const create = group.getByRole("button", { name: "Create mandate and confirm" });
+    await group.getByLabel("Position limit (%)").fill("40");
+    await expect(create).toBeDisabled();
+    await group.getByLabel("Position limit (%)").fill("15");
+    await expect(group).toContainText("Up to $1,500 in BTCUSDT");
+    await create.click();
+    await expect(card.getByTestId("card-fix-done")).toContainText("Created mandate Brain BTCUSDT.BINANCE ($10,000, 15% limit in BTCUSDT).");
+    expect(mandateCalls[0]?.body.max_position_pct).toBe(15);
+  });
+
+  test("a refusal no mandate change fixes keeps Approve anyway and offers no fix", async ({ page }) => {
+    await mockPreflight(page, () => refusedWith(null, "MANDATE_INSTRUMENT_CONFLICT", "MANDATE_INSTRUMENT_CONFLICT: MANUAL_TRADE holds BTCUSDT.BINANCE; mandate BTC L1 cannot add to it, so nothing was queued; reject this card"));
+    const card = await openCard(page, ORDER_CARD);
+    await expect(card.getByTestId("brain-card-preflight")).not.toContainText("Fix and approve");
+    await card.getByRole("button", { name: "Approve anyway…" }).click();
+    await expect(card.getByLabel("TOTP code")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Confirm paper order" })).toBeVisible();
   });
 
   for (const code of ["MANDATE_PAUSED", "MANDATE_HALTED"]) {

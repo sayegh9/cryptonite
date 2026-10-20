@@ -31,7 +31,8 @@ export const decideApproval = (id: string, decision: "APPROVE" | "VETO") => writ
 export const createMandate = (body: Record<string, unknown>): Promise<Mandate> => write("/ai/mandates", body);
 export const editMandate = (id: string, body: Record<string, unknown>): Promise<Mandate> => write(`/ai/mandates/${id}`, body, "PATCH");
 export const pauseMandate = (id: string): Promise<Mandate> => write(`/ai/mandates/${id}/pause`, {});
-export const resumeMandate = (id: string, totp_code: string): Promise<Mandate> => write(`/ai/mandates/${id}/resume`, { totp_code });
+export const resumeMandate = (id: string, totp_code: string, reason?: string): Promise<Mandate> =>
+  write(`/ai/mandates/${id}/resume`, reason ? { totp_code, reason } : { totp_code });
 export const demoteMandate = (id: string): Promise<Mandate> => write(`/ai/mandates/${id}/demote`, {});
 export const evaluateAutonomy = (id: string): Promise<AutonomyView> => write(`/ai/mandates/${id}/autonomy/evaluate`, {});
 export const confirmPromotion = (id: string, proposal_id: number, totp_code: string): Promise<AutonomyView> =>

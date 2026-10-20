@@ -44,7 +44,9 @@ from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, r
 from cryptonite_api.universe import require_fed
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
 from cryptonite_execution.mandate_store import (
+    MANDATE_COLUMNS,
     entry_room_pct,
+    held_values,
     instance_spot_holdings,
     load_mandate,
     resolve_mandate_for,
@@ -52,12 +54,15 @@ from cryptonite_execution.mandate_store import (
 from cryptonite_execution.mandates import MandateOrder, check_mandate
 from cryptonite_orchestrator.mandate_gate import mandate_exposure
 from cryptonite_schemas.mandate import (
+    MAX_POSITION_PCT_CAP,
     MIN_HOLDING_QTY,
     MIN_MANDATE_ENTRY_PCT,
     Mandate,
     MandateReject,
     canonical_instrument,
+    is_perp_instrument,
     mandate_id_from_instance,
+    room_remedy,
 )
 from cryptonite_schemas.marks import read_marks
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -624,6 +629,67 @@ def _refusal_code(detail: str) -> str:
     return code if sep else "REFUSED"
 
 
+MAX_MANDATE_INSTRUMENTS = 20  # MandatePatch's instruments limit: a mandate this full cannot take one more
+
+
+async def _card_remedy(request: Request, card: dict[str, Any], code: str, mandate_id: uuid.UUID | None) -> dict[str, Any] | None:
+    """The mandate change that would let approve queue a refused BUY, for the refusals a mandate change fixes; None
+    for the others. Reads only, like the dry run. The fix stays the operator's: the card sends it through the mandate
+    routes (TOTP, the hard caps, the audit event), then approves, and approve checks everything again.
+
+    - NO_MANDATE: create a mandate for the instrument, or add it to an ACTIVE mandate with room for it.
+    - MANDATE_POSITION_LIMIT_REACHED: the one edit ``room_remedy`` picks (the position limit, else the budget).
+    - MANDATE_PAUSED: resume it. A HALTED mandate hit its hard stop; that is looked at in Mission Control, not here."""
+    if card["side"] != "BUY":
+        return None
+    instrument = canonical_instrument(card["instrument_id"])
+    pool = request.app.state.pool
+    marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
+    if code == "NO_MANDATE":
+        add_to = []
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE status = 'ACTIVE' ORDER BY created_at")
+            for row in rows:
+                m = Mandate.from_row(row)
+                if len(m.instruments) >= MAX_MANDATE_INSTRUMENTS or (is_perp_instrument(instrument) and not m.allow_perps):
+                    continue
+                room = await entry_room_pct(conn, m, instrument, marks)
+                if room >= MIN_MANDATE_ENTRY_PCT:
+                    add_to.append({"id": str(m.id), "name": m.name, "autonomy_level": int(m.autonomy_level),
+                                   "instruments": m.instruments, "max_position_pct": float(m.max_position_pct),
+                                   "capital_budget_usd": float(m.capital_budget_usd),
+                                   "room_pct": float(room.quantize(Decimal("0.01")))})
+        # A new mandate is spot only (perps come after L3), so a perp can only join an existing one
+        return {"kind": "CREATE_MANDATE", "can_create": not is_perp_instrument(instrument),
+                "position_pct": float(MAX_POSITION_PCT_CAP), "add_to": add_to}
+    if code == MandateReject.POSITION_LIMIT_REACHED:
+        async with pool.acquire() as conn:
+            mandate, _ = await resolve_mandate_for(conn, instrument, mandate_id)
+            if mandate is None:
+                return None
+            inst, gross = await held_values(conn, mandate, instrument, marks)
+        requested = Decimal(str(card["allocation_pct"]))
+        fix = room_remedy(mandate.capital_budget_usd, mandate.max_position_pct, inst, gross, requested)
+        if fix is None:
+            return None
+        return {"kind": "EDIT_MANDATE", "mandate_id": str(mandate.id), "mandate_name": mandate.name,
+                "autonomy_level": int(mandate.autonomy_level), "field": fix.field, "from": float(fix.old),
+                "to": float(fix.new), "max_position_pct": float(mandate.max_position_pct),
+                "capital_budget_usd": float(mandate.capital_budget_usd),
+                "held_pct": float((inst / mandate.capital_budget_usd * 100).quantize(Decimal("0.01"))),
+                "requested_pct": float(requested),
+                "allocation_after_pct": float(min(requested, fix.room_after_pct).quantize(Decimal("0.01")))}
+    if code == "MANDATE_PAUSED":
+        async with pool.acquire() as conn:  # the stopped mandate approve named: the first, by creation
+            row = await conn.fetchrow(
+                """SELECT id, name, status FROM ai_mandates WHERE status IN ('PAUSED', 'HALTED') AND $1 = ANY(instruments)
+                   ORDER BY created_at LIMIT 1""", instrument)
+        if row is None or row["status"] != "PAUSED":
+            return None
+        return {"kind": "RESUME_MANDATE", "mandate_id": str(row["id"]), "mandate_name": row["name"]}
+    return None
+
+
 @router.get("/sessions/{sid}/cards/{widget_id}/preflight")
 async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_operator),
                                mandate_id: uuid.UUID | None = Query(default=None)):
@@ -638,15 +704,17 @@ async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request,
         raise HTTPException(status_code=404, detail="Order card not found")
     if card.get("status") != "PENDING_APPROVAL":  # approve refuses such a card before it plans it too
         detail = f"The card is {card.get('status')}"
-        return {"ok": False, "code": "NOT_PENDING", "detail": detail, "needs_mandate": False}
+        return {"ok": False, "code": "NOT_PENDING", "detail": detail, "needs_mandate": False, "remedy": None}
     try:
         plan = await _plan_card(request, sid, card, mandate_id)
     except HTTPException as e:
         detail = str(e.detail)
         code = _refusal_code(detail)
-        # approve's NO_MANDATE for a BUY is the one refusal that makes the card offer to create a mandate
+        # approve's NO_MANDATE for a BUY makes the card offer to create a mandate; the remedy says how (and which
+        # other refusals a mandate change fixes)
         needs_mandate = code == "NO_MANDATE" and card["side"] == "BUY"
-        return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate}
+        remedy = await _card_remedy(request, card, code, mandate_id)
+        return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate, "remedy": remedy}
     requested = Decimal(str(card["allocation_pct"]))
     return {
         "ok": True, "mandate": {"id": str(plan.mandate.id), "name": plan.mandate.name,

@@ -95,6 +95,8 @@ class MandateIn(BaseModel):
     active_hours_utc: str | None = None
     veto_window_s: int = Field(default=600, ge=60, le=3600)
     totp_code: str | None = None
+    # Where the request came from when it is not the Mandate editor ("brain_card:<session>:<card>"): kept in the audit event
+    source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_:.-]{1,200}$")
 
 
 class MandatePatch(BaseModel):
@@ -110,6 +112,8 @@ class MandatePatch(BaseModel):
     clear_active_hours: bool = False
     veto_window_s: int | None = Field(default=None, ge=60, le=3600)
     totp_code: str | None = None
+    # Where the request came from when it is not the Mandate editor ("brain_card:<session>:<card>"): kept in the audit event
+    source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_:.-]{1,200}$")
 
 
 class TotpIn(BaseModel):
@@ -356,7 +360,7 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
             raise HTTPException(status_code=409, detail=stopped)
     await require_totp(request, auth, req.totp_code)
     try:
-        m = Mandate(id=uuid.uuid4(), **req.model_dump(exclude={"totp_code"}))
+        m = Mandate(id=uuid.uuid4(), **req.model_dump(exclude={"totp_code", "source"}))
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
     async with request.app.state.pool.acquire() as conn:
@@ -375,7 +379,7 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
                     raise HTTPException(status_code=409, detail="A mandate with this name exists")
                 raise
             await record_event(conn, m.id, "CREATED", to_level=1, reason="created", actor=actor(auth),
-                               detail=json.loads(m.model_dump_json()))
+                               detail={**json.loads(m.model_dump_json()), **({"source": req.source} if req.source else {})})
             row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
             view = await mandate_view(conn, row, await read_marks(_redis(request)))
     await _publish_updated(request, m.id, "created")
@@ -392,7 +396,7 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 raise HTTPException(status_code=404, detail="Mandate not found")
             if old.status is MandateStatus.ARCHIVED:
                 raise HTTPException(status_code=409, detail="The mandate is archived")
-            patch = req.model_dump(exclude_none=True, exclude={"totp_code", "clear_active_hours"})
+            patch = req.model_dump(exclude_none=True, exclude={"totp_code", "clear_active_hours", "source"})
             if req.clear_active_hours:
                 patch["active_hours_utc"] = None
             try:
@@ -417,7 +421,8 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 new.allow_perps, new.max_leverage, new.strategies, new.active_hours_utc, new.veto_window_s)
             changed = {k: [str(getattr(old, k)), str(getattr(new, k))] for k in patch if getattr(old, k) != getattr(new, k)}
             await record_event(conn, mandate_id, "EDITED", reason=", ".join(changed) or "no change", actor=actor(auth),
-                               detail={"changes": changed, "risk_adding": risk_adding_change(old, new)})
+                               detail={"changes": changed, "risk_adding": risk_adding_change(old, new),
+                                       **({"source": req.source} if req.source else {})})
             view = await mandate_view(conn, await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mandate_id),
                                      await read_marks(_redis(request)))
     await _publish_updated(request, mandate_id, "edited")

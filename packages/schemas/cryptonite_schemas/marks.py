@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from cryptonite_schemas.mandate import room_pct
+
 logger = logging.getLogger("cryptonite.marks")
 
 MARKS_KEY = "paper:marks"
@@ -230,11 +232,10 @@ def summarize(views: list[MarkView]) -> dict[str, Any]:
     return {"marks_stale": any(v.stale for v in views), "marks_age_s": age}
 
 
-def entry_room_pct(budget: Decimal, max_position_pct: Decimal, positions: list[Any], instrument_id: str,
-                   marks: dict[str, LiveMark] | None, now_ns: int | None = None) -> Decimal:
-    """Room for a new entry, as % of the mandate budget: under the instrument's position limit and under
-    the budget, with the mandate's open positions (rows with ``instrument_id``, ``quantity``,
-    ``current_price``) at their live mark, else their stored mark."""
+def position_values(positions: list[Any], instrument_id: str, marks: dict[str, LiveMark] | None,
+                    now_ns: int | None = None) -> tuple[Decimal, Decimal]:
+    """(value held in ``instrument_id``, value held in all) of a mandate's open positions (rows with
+    ``instrument_id``, ``quantity``, ``current_price``), at their live mark, else their stored mark."""
     target = _canonical(instrument_id)
     gross = inst = Decimal("0")
     for r in positions:
@@ -242,5 +243,12 @@ def entry_room_pct(budget: Decimal, max_position_pct: Decimal, positions: list[A
         gross += value
         if _canonical(r["instrument_id"]) == target:
             inst += value
-    room = min(budget * max_position_pct / 100 - inst, budget - gross)
-    return max(Decimal("0"), room / budget * 100)
+    return inst, gross
+
+
+def entry_room_pct(budget: Decimal, max_position_pct: Decimal, positions: list[Any], instrument_id: str,
+                   marks: dict[str, LiveMark] | None, now_ns: int | None = None) -> Decimal:
+    """Room for a new entry, as % of the mandate budget: under the instrument's position limit and under
+    the budget, with the mandate's open positions valued by ``position_values``."""
+    inst, gross = position_values(positions, instrument_id, marks, now_ns)
+    return room_pct(budget, max_position_pct, inst, gross)

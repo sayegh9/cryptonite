@@ -17,6 +17,7 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 | #97 | Order queue guard: failing commands cannot block queue; stuck-command alerts; conflict dry run; calm context | 17 Oct | – | 2,815 · PW 64 | deployed |
 | Swing (`WS-S0`–`WS-S5`) | AI-First Swing Trading: MTF `htf_*` scanner engine & presets, per-position structural stops & 50% `TP1` scale-out, partial `SELL` (`reduce_pct`), `scan_swing_setups` & `SwingRadarCard`, inline chart Entry/Stop/TP1 overlays, `/swing` chat command, and `ScannerBuilder` v2 ([docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)) | 17 Oct | – | 2,843 · tsc 0 | deployed |
 | Settings & Header (`v2.1`) | 8-category Settings Command Center (Desk Preferences with Light/Dark/System theme & Web Audio chimes, AI Gateway & Shadow Paid toggle, interactive Exit Constraint Gauge, Risk & Guardrails, Scanner/Universe, Alerts, Security with `Tighter.HIGHER` TOTP fix, System Health & Audit trail) and App Header revamp (`⌘K` search, icons, tooltips) | 18 Oct | – | 55 pytest · PW 51 | deployed |
+| Card mandate fix (`fix/card-mandate-remedy`) | A refused BUY card offers the mandate change that fixes it: raise the position limit (to what the order needs, max 25%; the budget only at the cap or when the budget is full), add the coin to an ACTIVE mandate or create one, resume a PAUSED mandate (HALTED stays in Mission Control). Applied with TOTP through the mandate routes, audit event names the card. The inline mandate's limit is an editable field defaulting to 25% (was a hard-coded 10%) | 20 Oct | – | 243 targeted · PW 63 | awaiting merge |
 
 ## What runs now
 
@@ -192,6 +193,9 @@ Last full results (2026-10-17, #97): pytest 2815 passed / 0 failed; Playwright 6
    (it must be refused, with the link to Mission Control, before the TOTP code is spent).
 10. **Live Brain checks for Wave 3 (paid model):** a structured order card (thesis, evidence,
     invalidation), `/postmortem XRP`, and an old debate card from before Wave 3 (it must not read "Debate failed").
+11. **Live check for the card mandate fix:** a BUY card on a coin whose mandate is at its position limit (the
+    2026-10-20 XRP case): the card offers "Fix and approve…", raising the limit needs the TOTP code, and the order
+    then queues at the size the card showed.
 
 ## Open items and follow-ups
 
