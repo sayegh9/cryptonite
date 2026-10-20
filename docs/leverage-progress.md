@@ -121,6 +121,44 @@ Notes and choices (Stage 3):
   is graded with every input when the Brain stages it.
 - The view `agent_safe_trade_timeline` read spot only (entry = BUY, exit = SELL); 048 makes it read perp shorts too.
 
+### Stage 4: Brain and UI
+
+| # | Item | Status | Commit | Tests |
+|---|---|---|---|---|
+| 4.1 | `OrderProposal`: perp instruments, BUY/SELL = long/short, optional `leverage` (1–10, perps only), a perp entry needs `stop_loss` | done | `80da5c7` | `tests/test_brain.py` (normalisation), `tests/test_brain_perp_cards.py` |
+| 4.2 | Brain prompt: perps only with `allow_perps`, a structural stop, state the grade and the binding ceiling, shorts on perps only, never claim a leverage the dry run did not allow | done | `80da5c7` | prompt text only (checked by the paid-model run below, not in the cloud) |
+| 4.3 | Order card: `7x ISOLATED` pill, margin, notional, liquidation price (also on a price ladder with stop, entry, target), buffer bar, loss at stop ($ and % of budget), funding per 8 h, grade and reasons, "7x (risk at stop)", pills `1x 2x 3x 5x 7x 10x` + recommended ★, refused pills disabled with the ceiling, re-planned by the dry run (`?leverage=`), locked once decided | done | `80da5c7` (API), `8975e37` (web) | `tests/test_brain_perp_cards.py`; Playwright `e2e/brain-perp-card.spec.ts` |
+| 4.4 | Card remedies: "Allow perps" (L1 only, 3x), "Raise max leverage", new mandate with perps; each with TOTP | done | `80da5c7`, `8975e37` | `tests/test_brain_perp_cards.py`, `tests/test_brain_card_preflight.py`; Playwright `brain-perp-card.spec.ts` |
+| 4.5 | Manual ticket: dispatcher preview (`GET /api/v1/paper/perp/plan`), 10x pills (20x chip gone), "Attach stop" | done | `8545c62` | `tests/test_manual_perp_ticket.py`, `tests/test_api_manual_order_perp_fields.py`; Playwright `e2e/perpetuals-cockpit.spec.ts` |
+| 4.6 | Mission Control: perp exposure and liquidation distance per position; `LIQUIDATION_PROXIMITY` to Telegram and ntfy | done | `6f6a9ef` | `tests/test_mission_perp_positions.py`, `tests/test_exit_monitor_liquidation.py`, `tests/test_notifier.py`; Playwright `e2e/mission-control.spec.ts` |
+| 4.7 | "Flatten perps" in the header (TOTP), spot left alone | done | `6345e82` | `tests/test_mission_perp_positions.py`; Playwright `e2e/perpetuals-cockpit.spec.ts` |
+| 4.8 | Approval: TOTP on every perp entry, the dialog states loss at stop and loss if liquidated, second confirmation at 8x+ | done | `80da5c7`, `8975e37` | `tests/test_brain_perp_cards.py`; Playwright `brain-perp-card.spec.ts` |
+| 4.9 | Leverage colour tokens (low/mid/high/liquidation) for light and dark in `globals.css` | done | `8975e37` | used by the card, ticket, Mission Control and header; checked in Playwright (class names) |
+
+Notes and choices (Stage 4):
+
+- **A perp fix spends its own TOTP code.** A TOTP code works once (`TOTP_REUSED`), and approving a perp entry needs a
+  code too (ADR 0009 D3). So "Allow perps", "Raise max leverage", or creating/editing a mandate for a perp card is a
+  step of its own: the mandate change takes this code, the card re-reads its dry run, and approve takes the next code.
+  Spot fixes keep the old one-step flow (spot approve needs no code).
+- **The manual ticket fixes the quantity, not the margin.** Each pill is judged by the dispatcher's own
+  `check_leveraged_order` for the typed quantity (bracket; with a stop, the liquidation buffer and a loss within 2%
+  of equity), plus the 1% minimum order and the 25% concentration limit. Submit is held while the preview refuses.
+  Without a stop, only the bracket judges the leverage (manual orders are not required to carry a stop; AI ones are).
+  A CROSS ticket is still checked the same way; the preview shows the ISOLATED liquidation price and says so.
+- **The pills lock once the card is decided** (approved, rejected), not only once filled: after approval the order is
+  queued at that leverage, so changing it would not change the order. The approved leverage is returned by approve.
+- **"Chart overlay" is a price ladder on the card** (liquidation, stop, entry, target on one axis). The separate price
+  chart widget (`show_price_chart`) is drawn from the model's arguments and has no liquidation price; adding one there
+  would need the model to supply it, which it must not.
+- **Flatten perps needs TOTP**, as the plan says; the kill switch trip itself does not (unchanged). It closes through
+  the existing `CLOSE_POSITION` path (one per perp, to the instance that holds it), so a mandate's close checks stay.
+- **Mission Control colours** for the liquidation distance (<5% liquidation colour, <10% high, else low) are display
+  tiers only; the exit monitor's thresholds, which act, are relative to the stop (50% alert, 75% close for AI).
+- The Mandate editor now allows perps at L1 (it allowed them only at L3), up to 10x, with a 3x default when turned on,
+  and shows the risk-per-trade field (≤ 2%).
+- A leverage remembered by the ticket from before the 10x cap is clamped on load.
+
 ## Not verified in the cloud (the operator must run these locally)
 
 (Filled in at the end.)

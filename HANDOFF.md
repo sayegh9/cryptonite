@@ -19,6 +19,7 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 | Settings & Header (`v2.1`) | 8-category Settings Command Center (Desk Preferences with Light/Dark/System theme & Web Audio chimes, AI Gateway & Shadow Paid toggle, interactive Exit Constraint Gauge, Risk & Guardrails, Scanner/Universe, Alerts, Security with `Tighter.HIGHER` TOTP fix, System Health & Audit trail) and App Header revamp (`⌘K` search, icons, tooltips) | 18 Oct | – | 55 pytest · PW 51 | deployed |
 | Card mandate fix (`fix/card-mandate-remedy`) | A refused BUY card offers the mandate change that fixes it: raise the position limit (to what the order needs, max 25%; the budget only at the cap or when the budget is full), add the coin to an ACTIVE mandate or create one, resume a PAUSED mandate (HALTED stays in Mission Control). Applied with TOTP through the mandate routes, audit event names the card. The inline mandate's limit is an editable field defaulting to 25% (was a hard-coded 10%) | 20 Oct | – | 2,948 · PW 63 | deployed (#100) |
 | Card: choose the mandate (`fix/card-ambiguous-mandate`) | `AMBIGUOUS_MANDATE` (two ACTIVE mandates allow the coin, e.g. "BTC-ETH spot L1" and "3 assets" on BTC) is chosen on the card: each mandate with what the order sizes to in it; the holder of the coin is the only choice; optionally stop the overlap (remove the coin from the others, or pause one that covers only it; no TOTP, it takes room away) | 20 Oct | – | 2,952 · PW 67 | awaiting merge |
+| Leverage perps (`feat/leverage-perps`) | Leveraged perpetuals, Stages 1–4 of [docs/leverage-trading-plan.md](docs/leverage-trading-plan.md) under [ADR 0009](docs/adr/0009-leveraged-perpetuals.md): live leverage brackets (read-only key), resting STOP_MARKET on the mark, ISOLATED liquidation buffer, `plan_leveraged_order` (six ceilings), perps at L1 only with TOTP on every entry, 10x cap (was 20x manual / 5x mandate), 1–2% risk per trade, setup grade A/B/C/NO_TRADE, perp order cards with leverage pills, manual ticket preview + attached stop, Mission Control liquidation distance, "Flatten perps". Progress and what was not verified: [docs/leverage-progress.md](docs/leverage-progress.md) | – | 048 | see progress doc | awaiting local verification |
 
 ## What runs now
 
@@ -197,6 +198,12 @@ Last full results (2026-10-17, #97): pytest 2815 passed / 0 failed; Playwright 6
 11. **Live check for the card mandate fix:** a BUY card on a coin whose mandate is at its position limit (the
     2026-10-20 XRP case): the card offers "Fix and approve…", raising the limit needs the TOTP code, and the order
     then queues at the size the card showed.
+12. **Leverage perps (`feat/leverage-perps`, before merging):** run the full local verification listed in
+    [docs/leverage-progress.md](docs/leverage-progress.md) ("Not verified in the cloud"), including migration 048
+    up and down on a copy of the live DB. For live leverage brackets, mount a **read-only** Binance futures key for
+    the `derivatives_feed` service: `BINANCE_FUTURES_READONLY_API_KEY` and `BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH`
+    (Ed25519 PEM path inside the container). Without them BTC and ETH use the built-in reference brackets and every
+    other perp entry is refused with `NO_LEVERAGE_BRACKETS`.
 
 ## Open items and follow-ups
 
