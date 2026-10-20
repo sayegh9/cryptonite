@@ -1,4 +1,4 @@
-"""``scripts/compact_lake.py`` rewrites each closed date partition as one file without changing a row, moves (never
+"""Compaction (``cryptonite_storage.lake_compaction``, run by hand through ``scripts/compact_lake.py``) rewrites each closed date partition as one file without changing a row, moves (never
 deletes) the originals to quarantine, recompacts when stragglers or a backfill add files, and shares the lake
 maintenance lock with the backfill scripts and the open-stamped repair."""
 
@@ -14,6 +14,7 @@ import duckdb
 import pyarrow.parquet as pq
 import pytest
 from cryptonite_schemas.bar import EnrichedBar
+from cryptonite_storage import lake_compaction as core
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
 from cryptonite_storage.lake_lock import EXIT_LOCKED, LakeLockBusy, lake_maintenance_lock
 from cryptonite_storage.queries import AnalyticsQueryEngine
@@ -102,9 +103,9 @@ def schema(lake: Path, symbol: str = "BTCUSDT", tf: str = "1m") -> list[tuple]:
 
 
 def test_last_compactable_date_waits_until_0100_utc():
-    assert compact.last_compactable_date(datetime(2026, 10, 7, 0, 59, tzinfo=UTC)) == date(2026, 10, 5)
-    assert compact.last_compactable_date(datetime(2026, 10, 7, 1, 0, tzinfo=UTC)) == date(2026, 10, 6)
-    assert compact.last_compactable_date(datetime(2026, 10, 7, 23, 59, tzinfo=UTC)) == date(2026, 10, 6)
+    assert core.last_compactable_date(datetime(2026, 10, 7, 0, 59, tzinfo=UTC)) == date(2026, 10, 5)
+    assert core.last_compactable_date(datetime(2026, 10, 7, 1, 0, tzinfo=UTC)) == date(2026, 10, 6)
+    assert core.last_compactable_date(datetime(2026, 10, 7, 23, 59, tzinfo=UTC)) == date(2026, 10, 6)
 
 
 def test_compaction_is_lossless_and_moves_the_originals_to_quarantine(lake):
@@ -113,7 +114,7 @@ def test_compaction_is_lossless_and_moves_the_originals_to_quarantine(lake):
     originals = {d: visible(partition(lake, "BTCUSDT", d)) for d in ("2026-10-04", "2026-10-05", "2026-10-06")}
     today_files = visible(partition(lake, "BTCUSDT", "2026-10-07"))
 
-    results = compact.run(lake, q, now=NOW)
+    results = core.run(lake, q, now=NOW)
 
     done = {(r.partition.symbol, r.partition.timeframe, str(r.partition.day)): r for r in results}
     assert {k for k, r in done.items() if r.status == "compacted"} == {
@@ -145,15 +146,15 @@ def test_compaction_is_lossless_and_moves_the_originals_to_quarantine(lake):
 
 def test_a_second_run_changes_nothing(lake):
     q = lake.parent / "q"
-    compact.run(lake, q, now=NOW)
+    core.run(lake, q, now=NOW)
     snapshot = sorted(str(p) for p in lake.rglob("*"))
-    assert compact.run(lake, q, now=NOW) == []
+    assert core.run(lake, q, now=NOW) == []
     assert sorted(str(p) for p in lake.rglob("*")) == snapshot
 
 
 def test_a_straggler_or_backfill_is_recompacted_with_the_compacted_file(lake):
     q = lake.parent / "q"
-    compact.run(lake, q, now=NOW)
+    core.run(lake, q, now=NOW)
     part = partition(lake, "BTCUSDT", "2026-10-06")
     first = visible(part)[0]
     # a straggler re-sends two minutes (received later, so it wins) and a backfill adds the rest of the day
@@ -162,7 +163,7 @@ def test_a_straggler_or_backfill_is_recompacted_with_the_compacted_file(lake):
     write(lake, "BTCUSDT", D1 + 2 * DAY + 200 * MIN, 30, "btc-backfill")
     before_bars, before_rows = read_all(lake), raw_rows(lake)
 
-    results = compact.run(lake, q, now=NOW)
+    results = core.run(lake, q, now=NOW)
 
     assert [(str(r.partition.day), r.status) for r in results] == [("2026-10-06", "compacted")]
     files = visible(part)
@@ -178,7 +179,7 @@ def test_a_straggler_or_backfill_is_recompacted_with_the_compacted_file(lake):
 def test_filters_and_dry_run(lake, capsys):
     q = lake.parent / "q"
     snapshot = sorted(str(p) for p in lake.rglob("*"))
-    planned = compact.run(lake, q, now=NOW, dry_run=True)
+    planned = core.run(lake, q, now=NOW, dry_run=True)
     assert {r.status for r in planned} == {"planned"} and len(planned) == 4
     assert sum(r.rows for r in planned if r.partition.timeframe == "1m") == 300 + 3 + 300 + 20 + 100
     assert sorted(str(p) for p in lake.rglob("*")) == snapshot and not q.exists()
@@ -188,16 +189,16 @@ def test_filters_and_dry_run(lake, capsys):
     assert rc == 0 and "dry run, nothing changed" in capsys.readouterr().out
     assert sorted(str(p) for p in lake.rglob("*")) == snapshot
 
-    only_1h = compact.run(lake, q, now=NOW, timeframes={"1h"})
+    only_1h = core.run(lake, q, now=NOW, timeframes={"1h"})
     assert [(r.partition.timeframe, r.status) for r in only_1h] == [("1h", "compacted")]
-    assert compact.run(lake, q, now=NOW, symbols={"ETHUSDT"}) == []
+    assert core.run(lake, q, now=NOW, symbols={"ETHUSDT"}) == []
 
 
 def test_a_failed_check_leaves_the_partition_as_it_was(lake, monkeypatch):
     q = lake.parent / "q"
     first = partition(lake, "BTCUSDT", "2026-10-04")  # the first partition the run reaches
     names = visible(first)
-    real = compact.fingerprint
+    real = core.fingerprint
     calls = []
 
     def lying_fingerprint(con, files):
@@ -207,8 +208,8 @@ def test_a_failed_check_leaves_the_partition_as_it_was(lake, monkeypatch):
             fp = {**fp, "row_hash": "0"}
         return fp
 
-    monkeypatch.setattr(compact, "fingerprint", lying_fingerprint)
-    results = compact.run(lake, q, now=NOW, symbols={"BTCUSDT"}, timeframes={"1m"})
+    monkeypatch.setattr(core, "fingerprint", lying_fingerprint)
+    results = core.run(lake, q, now=NOW, symbols={"BTCUSDT"}, timeframes={"1m"})
     assert [(str(r.partition.day), r.status) for r in results] == [
         ("2026-10-04", "failed"), ("2026-10-05", "compacted"), ("2026-10-06", "compacted")]
     assert "row_hash" in results[0].detail
@@ -218,7 +219,7 @@ def test_a_failed_check_leaves_the_partition_as_it_was(lake, monkeypatch):
 
 
 def test_a_failed_partition_makes_the_run_exit_1(lake, monkeypatch, capsys):
-    monkeypatch.setattr(compact, "fingerprint", lambda con, files, n=iter(range(10**6)): {"columns": [], "rows": 0, "bars": 0, "row_hash": next(n)})
+    monkeypatch.setattr(core, "fingerprint", lambda con, files, n=iter(range(10**6)): {"columns": [], "rows": 0, "bars": 0, "row_hash": next(n)})
     assert compact.main(["--lake", str(lake), "--quarantine", str(lake.parent / "q"), "--timeframe", "1h"]) == 1
     assert "failed" in capsys.readouterr().out
 
@@ -227,7 +228,7 @@ def test_mixed_schemas_are_skipped(lake):
     part = partition(lake, "BTCUSDT", "2026-10-06")
     odd = part / "part-odd.parquet"
     duckdb.connect().execute(f"COPY (SELECT 1::BIGINT AS ts_init_ns) TO '{odd}' (FORMAT parquet)")
-    results = {str(r.partition.day): r for r in compact.run(lake, lake.parent / "q", now=NOW)}
+    results = {str(r.partition.day): r for r in core.run(lake, lake.parent / "q", now=NOW)}
     assert results["2026-10-06"].status == "skipped" and "schemas" in results["2026-10-06"].detail
     assert "part-odd.parquet" in visible(part)
     assert results["2026-10-05"].status == "compacted"
@@ -237,7 +238,7 @@ def test_writer_temp_files_are_not_compacted(lake):
     part = partition(lake, "BTCUSDT", "2026-10-06")
     tmp = part / ".tmp.deadbeef.parquet"
     tmp.write_bytes(b"half-written")
-    compact.run(lake, lake.parent / "q", now=NOW)
+    core.run(lake, lake.parent / "q", now=NOW)
     assert tmp.exists()
 
 

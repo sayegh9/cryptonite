@@ -94,3 +94,18 @@ def test_lake_readers_bound_duckdb_and_polars(name):
     assert env["DUCKDB_THREADS"] == "8" and env["POLARS_MAX_THREADS"] == "8"
     assert env["DUCKDB_MEMORY_LIMIT"] == "1GB" and env["DUCKDB_TEMP_DIR"] == "/tmp"
     assert "mem_limit" not in svc and "MALLOC_ARENA_MAX" not in env
+
+
+def test_lake_maintenance_runs_capped_on_the_live_data():
+    """Host stability §6: the nightly compaction + quarantine prune service, memory-capped, on the data/ next to the
+    compose file, alerting through Redis, with a healthcheck that fails when a night failed."""
+    svc = SERVICES["lake_maintenance"]
+    assert svc["command"] == ["python", "-m", "cryptonite_storage.lake_maintenance"]
+    assert svc["mem_limit"] == "2g"
+    assert "../data:/app/data:rw" in svc["volumes"]
+    env = svc["environment"]
+    assert env["ANALYTICS_LAKE_PATH"] == "/app/data/analytics_lake"
+    assert env["LAKE_QUARANTINE_PATH"] == "/app/data/analytics_lake_quarantine"
+    assert env["REDIS_URL"].endswith("@redis:6379/0")
+    assert svc["healthcheck"]["test"][-1] == "--check"
+    assert "profiles" not in svc  # starts with the stack, no opt-in

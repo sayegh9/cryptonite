@@ -108,7 +108,7 @@ the scripts in `repo/`, so keep `repo/` on `main`.
 
 ## Deploy
 
-Deploys run from the `deploy-main` worktree (detached at `main`; `.env` and `data/` are symlinks into `repo/`).
+Deploys run from the `deploy-main` worktree (detached at `main`). Its `data/` is the **one live data folder** (a real folder, not a link; host-stability runbook §7); `.env`, `.env.notifier` and `infra/security/*.pem` are symlinks into `repo/`. The launchers and `backup.sh data` use `deploy-main` too. The `lake_maintenance` service compacts the lake and prunes its quarantine every night (runbook §6.3).
 
 ```bash
 git -C ~/Documents/projects/cryptonite/repo fetch && git -C ~/Documents/projects/cryptonite/deploy-main checkout --detach origin/main

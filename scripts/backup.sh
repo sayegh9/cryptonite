@@ -3,7 +3,9 @@
 #
 #   backup.sh db       nightly: pg_dump -Fc of the dev database, 14-day rotation,
 #                      plus a per-table row-count manifest beside the dump
-#   backup.sh data     weekly: data/ (Nautilus catalog, analytics lake, backtest artifacts), 4 kept
+#   backup.sh data     weekly: the live data/ (Nautilus catalog, analytics lake, backtest artifacts), 4 kept.
+#                      Live means the folder the stack mounts: deploy-main/data (the stack runs from the
+#                      deploy worktree), else repo/data when there is no deploy worktree
 #   backup.sh secrets  weekly: .env, .env.notifier, infra/security/*.pem, gpg-encrypted, 4 kept
 #   backup.sh drill    restore the newest DB dump into a scratch database, prove the restore
 #                      byte-for-byte at the row-count level, then drop the scratch database
@@ -12,7 +14,8 @@
 # together with the secrets archive. Passphrase: $PASSPHRASE_FILE (mode 600); keep a copy off this machine.
 #
 # Environment overrides (defaults preserve production behavior; tests point these at throwaways):
-#   CRYPTONITE_REPO, CRYPTONITE_BACKUP_DIR, CRYPTONITE_PG_CONTAINER,
+#   CRYPTONITE_REPO, CRYPTONITE_DEPLOY (default: deploy-main next to the repo), CRYPTONITE_DATA_DIR
+#   (default: $CRYPTONITE_DEPLOY/data if it exists, else $CRYPTONITE_REPO/data), CRYPTONITE_BACKUP_DIR, CRYPTONITE_PG_CONTAINER,
 #   CRYPTONITE_BACKUP_DB (source database, default cryptonite),
 #   CRYPTONITE_BACKUP_SCRATCH (scratch database, default cryptonite_restore_drill),
 #   CRYPTONITE_PG_DIRECT=1 (or PGHOST/PGPORT/PGDATABASE) to run PG clients directly instead of
@@ -21,6 +24,10 @@ set -euo pipefail
 umask 077  # dumps hold password hashes and encrypted TOTP secrets
 
 REPO="${CRYPTONITE_REPO:-$HOME/Documents/projects/cryptonite/repo}"
+DEPLOY="${CRYPTONITE_DEPLOY:-$(dirname "$REPO")/deploy-main}"
+if [ -n "${CRYPTONITE_DATA_DIR:-}" ]; then DATA_DIR="$CRYPTONITE_DATA_DIR"
+elif [ -d "$DEPLOY/data" ]; then DATA_DIR="$DEPLOY/data"
+else DATA_DIR="$REPO/data"; fi
 DEST="${CRYPTONITE_BACKUP_DIR:-$HOME/backups/cryptonite}"
 PG_CONTAINER="${CRYPTONITE_PG_CONTAINER:-infra-postgres-1}"
 DB="${CRYPTONITE_BACKUP_DB:-cryptonite}"
@@ -174,10 +181,20 @@ db)
     ;;
 data)
     out="$DEST/data/data-$STAMP.tar.zst"
-    tar -C "$REPO" -cf - data | zstd -q -T0 -o "$out.part"
+    data_dir="$(readlink -f "$DATA_DIR")"  # archived as "data/", whatever the folder is called
+    # The stack keeps writing while tar reads: ingest adds files and renames its temp files into place. GNU tar
+    # exits 1 for "file changed/removed as we read it"; those files are in the next archive. Any other tar error
+    # (exit 2, e.g. no such folder) still fails the run.
+    { tar -C "$(dirname "$data_dir")" --warning=no-file-changed --warning=no-file-removed \
+          --transform "s|^$(basename "$data_dir")|data|" -cf - "$(basename "$data_dir")" || [ $? -eq 1 ]; } \
+        | zstd -q -T0 -o "$out.part"
     mv "$out.part" "$out"
     prune "$DEST/data" 'data-*.tar.zst' 4
-    log "data backup $out ($(du -h "$out" | cut -f1))"
+    log "data backup $out ($(du -h "$out" | cut -f1)) of $data_dir"
+    # A lake that stopped changing two days ago is almost certainly not the folder the stack writes
+    if [ -d "$data_dir/analytics_lake" ] && [ -z "$(find "$data_dir/analytics_lake" -name '*.parquet' -mmin -2880 -print -quit)" ]; then
+        log "WARNING: no lake file in $data_dir changed in 2 days: is the stack stopped, or is this not the live data folder?"
+    fi
     ;;
 secrets)
     [ -r "$PASSPHRASE_FILE" ] || { echo "missing passphrase file $PASSPHRASE_FILE" >&2; exit 1; }
