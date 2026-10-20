@@ -196,3 +196,36 @@ Notes and choices (Stage 4):
    header closing perps only.
 8. Telegram and ntfy delivery of a real `LIQUIDATION_PROXIMITY` alert (the notifier path is unit-tested only).
 9. Light theme look of the leverage colour tokens (only class names were checked).
+
+## Local verification (2026-10-21, operator's machine, branch merged with main `871bc34`)
+
+Run by Claude in a local session on the merge commit `0bf0de8` (main's #102 stop fixes merged in; conflicts in
+`exit_monitor.py` and the orchestrator's `CLOSE_POSITION` path resolved keeping both sides: per-owner positions and
+owner-scoped order release from #102, perp leverage/liquidation fields and the partial-close stop keep from this
+branch).
+
+- `uv run pytest tests -q` on throwaway `ci-pg-budget` / `ci-redis-budget` (HANDOFF "Test"): **3,293 passed, 0
+  failed**. This includes the 19 `test_backup_drill.py` tests the cloud could not run.
+- `uv run pytest tests -q -m destructive`: **2 passed**. Ruff on every changed Python file: clean.
+- `pnpm typecheck`: clean. `pnpm lint`: 0 errors, the same 2 warnings as on `main`.
+- Playwright (production build, API at a closed port, `:3100`): **227 passed, 8 failed**. The same 8 fail on a build of
+  `main` (`871bc34`), checked the same way: `mandate-instance-controls:107`, `mode-banner:216`, `portfolio_console`
+  (5), `units-formatting:77`. Pre-existing, not caused by this branch.
+- Migration 048 on a **copy of the live DB** (restore of `cryptonite-2026-10-20T2039Z.dump` into a separate throwaway
+  container): upgrade 047 → 048 clean; the three CHECKs in place (leverage 1–10, perps only at L1, risk per trade
+  0–2%); all five mandates keep `allow_perps=false`, 1x, 1%; all 11 `agent_safe_*` views read by
+  `cryptonite_agent_ro` (the timeline view has the new grade, confidence and leverage columns); downgrade to 047
+  restores the 5x CHECK; upgrade again clean.
+- Review of the branch (correctness, high effort): one fix applied — an AI mandate perp entry that arrives with its own
+  quantity is not re-sized by the plan, so it is now refused when its leverage is above its setup grade's ceiling
+  (`LEVERAGE_ABOVE_GRADE_CEILING`; ungraded = grade C, 2x), with a test. Follow-ups recorded, not changed:
+  - the plan's account room subtracts the held perp notional in either direction (a flip is sized smaller than the
+    dispatcher would allow; safe direction);
+  - a resting stop whose mark has already crossed the liquidation price is left to the liquidation engine; for a
+    manual CROSS position that loses more than a stop fill (manual tickets default to ISOLATED);
+  - `LIQUIDATION_PROXIMITY` measures against the `paper_positions` liquidation snapshot (rewritten on fills and
+    funding), not a fresh recomputation after a bracket-table change.
+
+Still for the operator: merge, deploy (`reports/deploy-leverage-release.sh` in the operator's folder), the read-only
+key, and items 6–9 of "Not verified in the cloud" (live Brain checks with the paid model, a paper round trip, a real
+Telegram/ntfy alert, the light theme).

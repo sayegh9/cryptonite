@@ -18,8 +18,11 @@ history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
 | Swing (`WS-S0`–`WS-S5`) | AI-First Swing Trading: MTF `htf_*` scanner engine & presets, per-position structural stops & 50% `TP1` scale-out, partial `SELL` (`reduce_pct`), `scan_swing_setups` & `SwingRadarCard`, inline chart Entry/Stop/TP1 overlays, `/swing` chat command, and `ScannerBuilder` v2 ([docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)) | 17 Oct | – | 2,843 · tsc 0 | deployed |
 | Settings & Header (`v2.1`) | 8-category Settings Command Center (Desk Preferences with Light/Dark/System theme & Web Audio chimes, AI Gateway & Shadow Paid toggle, interactive Exit Constraint Gauge, Risk & Guardrails, Scanner/Universe, Alerts, Security with `Tighter.HIGHER` TOTP fix, System Health & Audit trail) and App Header revamp (`⌘K` search, icons, tooltips) | 18 Oct | – | 55 pytest · PW 51 | deployed |
 | Card mandate fix (`fix/card-mandate-remedy`) | A refused BUY card offers the mandate change that fixes it: raise the position limit (to what the order needs, max 25%; the budget only at the cap or when the budget is full), add the coin to an ACTIVE mandate or create one, resume a PAUSED mandate (HALTED stays in Mission Control). Applied with TOTP through the mandate routes, audit event names the card. The inline mandate's limit is an editable field defaulting to 25% (was a hard-coded 10%) | 20 Oct | – | 2,948 · PW 63 | deployed (#100) |
-| Card: choose the mandate (`fix/card-ambiguous-mandate`) | `AMBIGUOUS_MANDATE` (two ACTIVE mandates allow the coin, e.g. "BTC-ETH spot L1" and "3 assets" on BTC) is chosen on the card: each mandate with what the order sizes to in it; the holder of the coin is the only choice; optionally stop the overlap (remove the coin from the others, or pause one that covers only it; no TOTP, it takes room away) | 20 Oct | – | 2,952 · PW 67 | awaiting merge |
-| Leverage perps (`feat/leverage-perps`) | Leveraged perpetuals, Stages 1–4 of [docs/leverage-trading-plan.md](docs/leverage-trading-plan.md) under [ADR 0009](docs/adr/0009-leveraged-perpetuals.md): live leverage brackets (read-only key), resting STOP_MARKET on the mark, ISOLATED liquidation buffer, `plan_leveraged_order` (six ceilings), perps at L1 only with TOTP on every entry, 10x cap (was 20x manual / 5x mandate), 1–2% risk per trade, setup grade A/B/C/NO_TRADE, perp order cards with leverage pills, manual ticket preview + attached stop, Mission Control liquidation distance, "Flatten perps". Progress and what was not verified: [docs/leverage-progress.md](docs/leverage-progress.md) | – | 048 | see progress doc | awaiting local verification |
+| Card: choose the mandate (`fix/card-ambiguous-mandate`) | `AMBIGUOUS_MANDATE` (two ACTIVE mandates allow the coin, e.g. "BTC-ETH spot L1" and "3 assets" on BTC) is chosen on the card: each mandate with what the order sizes to in it; the holder of the coin is the only choice; optionally stop the overlap (remove the coin from the others, or pause one that covers only it; no TOTP, it takes room away) | 20 Oct | – | 2,952 · PW 67 | deployed (#101) |
+| Stop failure modes (#102) | The three stop failures the leverage replay found: an AI stop on a coin a manual position shares closes the AI's own quantity (was alert-only); a manual SELL cannot sell a mandate's coins (`SELL_EXCEEDS_OWN_HOLDING`), and a mandate close that sells less than it owns raises CRITICAL `CLOSE_SHORT`; stop and kill-switch commands are claimed ahead of older commands | 20 Oct | – | 2,956 + fix · destructive 2 | deployed 20 Oct (orchestrator, exit_monitor, scanner) |
+| Phantom-sell reconcile (#103) | `scripts/reconcile_phantom_manual_sells.py`: the cash credited by the manual sells that sold mandate coins (BTC 10-05, WLD 10-17 ×2). Applied 20 Oct 20:41 UTC after backup `cryptonite-2026-10-20T2039Z.dump`: −$1,366.64, cash 101,185.94 → 99,819.30, `audit_events` #1 | 20 Oct | – | 9 | applied; PR open |
+| Leverage replay (#104) | Stage 0 of the leverage plan, read-only: [docs/research/leverage-replay-2026-10.md](docs/research/leverage-replay-2026-10.md). No edge yet (−0.39 R over 12 trades), 0 liquidations up to 10x, 4 of 12 stops failed (fixed by #102) | 20 Oct | – | – | PR open |
+| Leverage perps (`feat/leverage-perps`) | Leveraged perpetuals, Stages 1–4 of [docs/leverage-trading-plan.md](docs/leverage-trading-plan.md) under [ADR 0009](docs/adr/0009-leveraged-perpetuals.md): live leverage brackets (read-only key), resting STOP_MARKET on the mark, ISOLATED liquidation buffer, `plan_leveraged_order` (six ceilings), perps at L1 only with TOTP on every entry, 10x cap (was 20x manual / 5x mandate), 1–2% risk per trade, setup grade A/B/C/NO_TRADE, perp order cards with leverage pills, manual ticket preview + attached stop, Mission Control liquidation distance, "Flatten perps". Progress and what was not verified: [docs/leverage-progress.md](docs/leverage-progress.md) | 21 Oct (verified) | 048 | see progress doc ("Local verification") | awaiting merge + deploy |
 
 ## What runs now
 
@@ -162,7 +165,7 @@ pnpm exec playwright test -c playwright.local.config.ts
 
 Last full results (2026-10-17, #97): pytest 2815 passed / 0 failed; Playwright 64 passed (on throwaway DBs).
 
-## Operator actions taken (15–17 Oct 2026)
+## Operator actions taken (15–20 Oct 2026)
 
 | When (UTC) | Action |
 |---|---|
@@ -172,6 +175,10 @@ Last full results (2026-10-17, #97): pytest 2815 passed / 0 failed; Playwright 6
 | 17 Oct 12:04 | Two poisoned RESUME commands marked FAILED (operator-approved); WLD trailing stop then sold 1,871 WLD at 0.5131 |
 | 17 Oct 12:08 | Manual 0.03 BTC position closed by operator |
 | 17 Oct | #96 and #97 deployed and verified (no poller errors; derivatives and regime live for WLD, XRP, SOL, BTC) |
+| 20 Oct 19:35 | Operator closed every open position (XRP, BTC, ETH; all AI mandates flat) |
+| 20 Oct 20:39 | DB backup `cryptonite-2026-10-20T2039Z.dump`; #102 merged (`871bc34`) |
+| 20 Oct 20:41 | Phantom manual sells reconciled (`--apply`): cash 101,185.94 → 99,819.30, `audit_events` #1 `PHANTOM_SELL_RECONCILED` |
+| 20 Oct 20:44 | #102 deployed: orchestrator (rehydrated cash 99,819.30), exit_monitor, scanner; all healthy |
 
 ## Operator items (only the operator can do these)
 
@@ -198,12 +205,15 @@ Last full results (2026-10-17, #97): pytest 2815 passed / 0 failed; Playwright 6
 11. **Live check for the card mandate fix:** a BUY card on a coin whose mandate is at its position limit (the
     2026-10-20 XRP case): the card offers "Fix and approve…", raising the limit needs the TOTP code, and the order
     then queues at the size the card showed.
-12. **Leverage perps (`feat/leverage-perps`, before merging):** run the full local verification listed in
-    [docs/leverage-progress.md](docs/leverage-progress.md) ("Not verified in the cloud"), including migration 048
-    up and down on a copy of the live DB. For live leverage brackets, mount a **read-only** Binance futures key for
-    the `derivatives_feed` service: `BINANCE_FUTURES_READONLY_API_KEY` and `BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH`
-    (Ed25519 PEM path inside the container). Without them BTC and ETH use the built-in reference brackets and every
-    other perp entry is refused with `NO_LEVERAGE_BRACKETS`.
+12. **Leverage perps (`feat/leverage-perps`):** verified locally on 21 Oct (see "Local verification" in
+    [docs/leverage-progress.md](docs/leverage-progress.md), including migration 048 up/down on a copy of the live DB).
+    Left for the operator: merge the PR, then run `reports/deploy-leverage-release.sh` (backup, migration 048 through
+    the test runner, rebuild of every running service, health and code checks). For live leverage brackets, mount a
+    **read-only** Binance futures key for the `derivatives_feed` service: `BINANCE_FUTURES_READONLY_API_KEY` and
+    `BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH` (Ed25519 PEM path inside the container). Without them BTC and ETH use
+    the built-in reference brackets and every other perp entry is refused with `NO_LEVERAGE_BRACKETS`. No mandate has
+    perps on: turning them on is "Allow perps" (TOTP) on a perp card or in the mandate editor, L1 only. Stage 5 (paper
+    validation: at least 30 closed perp trades, expectancy above zero, 0 stop failures) gates any testnet step.
 
 ## Open items and follow-ups
 

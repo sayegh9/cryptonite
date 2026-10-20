@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from cryptonite_orchestrator.mandate_gate import (
     command_mandate_id,
     gate_ai_order,
+    grade_ceiling,
     instance_spot_holdings,
     is_ai_command,
     mandate_entry_room,
@@ -1362,6 +1363,18 @@ async def command_poller(pool, engine, quote_cache=None):
                             perp_entry = is_perp_order and not payload.get("reduce_only")
                             planned_leverage = None
                             qty_val = Decimal(str(payload["quantity"])) if payload.get("quantity") else None
+                            if qty_val and mandate is not None and perp_entry:
+                                # A mandate perp entry with its own quantity is not re-sized, but it is still held to
+                                # its setup grade's ceiling (ungraded: grade C), as a plan-sized entry is
+                                ceiling = grade_ceiling(payload, getattr(engine, "grade_ceilings", None))
+                                if int(payload.get("leverage") or 1) > ceiling:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                        f"LEVERAGE_ABOVE_GRADE_CEILING: {payload.get('leverage')}x > {ceiling}x for grade "
+                                        f"{payload.get('setup_grade') or 'ungraded'}",
+                                    )
+                                    continue
                             if not qty_val and mandate is not None and perp_entry:
                                 # Leverage plan 2.4: a mandate's perp entry, long or short, is sized by
                                 # plan_leveraged_order to the mandate's room and risk budget (the allocation is the

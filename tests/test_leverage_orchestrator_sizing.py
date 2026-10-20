@@ -161,10 +161,19 @@ async def test_entry_without_a_stop_is_never_placed():
 
 
 async def test_explicit_oversized_ai_order_is_refused_by_the_gate_not_the_dispatcher():
-    conn, engine = await run_perp_command({"side": "BUY", "quantity": "0.04", "leverage": 10, "stop_loss": "47500"},
-                                          perp_mandate())
+    conn, engine = await run_perp_command({"side": "BUY", "quantity": "0.04", "leverage": 10, "stop_loss": "47500",
+                                           "setup_grade": "A"}, perp_mandate())
     assert conn.outcome() == ("REJECTED", "LIQUIDATION_BUFFER_TOO_THIN")
     assert engine.dispatcher.open_orders == {}
+
+
+async def test_explicit_quantity_ai_entry_is_held_to_its_grade_ceiling():
+    # not re-sized, but never above the grade's ceiling (ungraded = grade C, 2x)
+    conn, engine = await run_perp_command({"side": "BUY", "quantity": "0.004", "leverage": 5, "stop_loss": "49000"},
+                                          perp_mandate())
+    status, reason = conn.outcome()
+    assert status == "REJECTED" and reason.startswith("LEVERAGE_ABOVE_GRADE_CEILING")
+    assert engine.dispatcher.open_orders == {} and engine.dispatcher.perp_positions == {}
 
 
 @pytest.mark.parametrize("alloc", ["0.5", "2.5", "10", "25"])
