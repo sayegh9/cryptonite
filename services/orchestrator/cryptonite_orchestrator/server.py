@@ -15,7 +15,7 @@ import asyncpg
 import redis.asyncio as aioredis
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.engine import PaperTradingEngine
-from cryptonite_execution.mandate_store import load_mandate
+from cryptonite_execution.mandate_store import load_mandate, others_spot_holding
 from cryptonite_execution.matching import PaperFill, match_order, match_working_orders
 from cryptonite_execution.risk import OrderIntent
 from cryptonite_schemas.debate import verdict_direction
@@ -36,7 +36,11 @@ from cryptonite_orchestrator.mandate_gate import (
     is_ai_command,
     mandate_entry_room,
 )
-from cryptonite_orchestrator.mandate_monitor import mandate_monitor_once, sweep_approvals_once
+from cryptonite_orchestrator.mandate_monitor import (
+    alert,
+    mandate_monitor_once,
+    sweep_approvals_once,
+)
 from cryptonite_orchestrator.marks import start_mark_to_market
 from cryptonite_orchestrator.ops_monitor import ops_monitor
 from cryptonite_orchestrator.source_hash import instance_source_hash, risk_policy_hash
@@ -927,6 +931,20 @@ async def settle_after_error(pool, row, exc: BaseException, *, effects_applied: 
     return settle_backoff_s(failures)
 
 
+async def alert_short_close(conn, row, target: str, instrument_id: str, wanted: Decimal, sold: Decimal,
+                            account_qty: Decimal) -> None:
+    """A CRITICAL alert for a mandate close that sold less than the mandate owns (``account_qty``: what the
+    dispatcher held). ``alert`` writes it in a savepoint, so a failed alert never undoes the close."""
+    reason = _payload_dict(row["payload"]).get("reason") or "-"
+    detail = {"command_id": str(row["command_id"]), "target": target, "instrument_id": instrument_id, "reason": reason,
+              **{k: format(v.normalize(), "f") for k, v in (("wanted", wanted), ("sold", sold), ("account_qty", account_qty))}}
+    message = (f"Stop close short: {reason} for {target} sold {detail['sold']} of its {detail['wanted']} {instrument_id}; "
+               f"the account held only {detail['account_qty']}. The rest is still booked open: reconcile and close it. "
+               f"Runbook: {RUNBOOK}")
+    logger.critical(message)
+    await alert(conn, None, "CLOSE_SHORT", message, detail, dedupe_key=f"close-short:{row['command_id']}")
+
+
 async def command_poller(pool, engine, quote_cache=None):
     """Poll execution_commands for PAPER environment commands."""
     if quote_cache is None:
@@ -1044,6 +1062,10 @@ async def command_poller(pool, engine, quote_cache=None):
 
                             pos_qty = engine.dispatcher.get_position_qty(canonical_inst)
                             perp_qty = engine.dispatcher.get_perp_position_qty(canonical_inst)
+                            own_spot = None  # a mandate's own filled spot holding: what its close must sell
+                            if perp_qty == 0 and mandate_id_from_instance(target) is not None:
+                                own_spot = (await instance_spot_holdings(conn, target)).get(canonical_inst, (Decimal("0"), None))[0]
+                            sold = Decimal("0")
                             if pos_qty > Decimal("0") or perp_qty != 0:
                                 # Spot long closes with a SELL; a perp closes with an opposing reduce-only order
                                 close_side = "BUY" if perp_qty < 0 else "SELL"
@@ -1064,8 +1086,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                             )
                                             continue
                                     else:
-                                        own = (await instance_spot_holdings(conn, target)).get(canonical_inst, (Decimal("0"), None))[0]
-                                        close_qty = min(close_qty, own)
+                                        close_qty = min(close_qty, own_spot)
                             if (pos_qty > Decimal("0") or perp_qty != 0) and close_qty <= 0:
                                 # nothing of the target's own left to close
                                 await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
@@ -1100,6 +1121,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                         side="SELL",
                                         instrument_id=canonical_inst,
                                     )
+                                    sold = close_qty
                                 await conn.execute(
                                     """
                                     INSERT INTO paper_orders (
@@ -1130,6 +1152,12 @@ async def command_poller(pool, engine, quote_cache=None):
                             else:
                                 effects_applied = True
                                 release_instrument_orders()
+                            if own_spot is not None:
+                                wanted = min(own_spot, Decimal(str(payload["quantity"]))) if payload.get("quantity") else own_spot
+                                if sold < wanted:
+                                    # The account holds less than the mandate's own position: something else sold
+                                    # its coins. Never a silent success: the rest stays open and unprotected
+                                    await alert_short_close(conn, row, target, canonical_inst, wanted, sold, pos_qty)
                             await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
                         elif cmd_type == "CANCEL_ORDER":
                             client_oid = payload.get("client_order_id")
@@ -1304,6 +1332,23 @@ async def command_poller(pool, engine, quote_cache=None):
                                         row["command_id"], "DUPLICATE_CLIENT_ORDER_ID",
                                     )
                                 continue
+
+                            if not ai_order and side == "SELL" and "-PERP." not in canonical_inst:
+                                # The dispatcher holds one account-level quantity per instrument, so it would let
+                                # a manual SELL sell an AI mandate's coins; the bridge then books the SELL on no
+                                # position row and the mandate's next stop finds nothing left to sell (WLD
+                                # 2026-10-17: two manual sells of 972.86 left its structural stop 0.0000017)
+                                others = await others_spot_holding(conn, acc_id, canonical_inst, instance_id)
+                                sellable = max(engine.dispatcher.get_position_qty(canonical_inst) - others, Decimal("0"))
+                                if qty_dec > sellable:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                        f"SELL_EXCEEDS_OWN_HOLDING: {instance_id} can sell {format(sellable.normalize(), 'f')} "
+                                        f"{canonical_inst}; {format(others.normalize(), 'f')} belongs to other owners "
+                                        "(close an AI position with its own Close position)",
+                                    )
+                                    continue
 
                             if ai_order:
                                 mandate_reject = await gate_ai_order(
