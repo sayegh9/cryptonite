@@ -1581,6 +1581,114 @@ def _spot_candles_to_enriched_df(candles: list[dict[str, Any]], ScannerEngine: A
     return ScannerEngine.enrich_indicators(df)
 
 
+def _frame_trend(df: Any) -> str | None:
+    """A timeframe's trend for the grade: None (unknown) when there is no frame, not FLAT."""
+    return None if df is None or (hasattr(df, "is_empty") and df.is_empty()) else _classify_tf_trend(df)
+
+
+def _scan_grade(frames: dict[str, Any], direction: str, entry: float, stop: float, target: float) -> dict[str, Any]:
+    """The setup grade of a scan candidate from the frames the scan already has (trends, the 1h regime and volatility).
+    Funding and liquidity are not read here, so a scan grade is at most B; ``grade_setup`` reads them for a card."""
+    from cryptonite_scanner.setup_grade import GradeInputs, regime_trend_inputs, side_of
+    from cryptonite_scanner.setup_grade import grade_setup as _grade
+
+    try:
+        reg = regime_trend_inputs(frames.get("1h"))
+    except Exception:  # too few or unreadable bars: the regime and volatility are unknown
+        reg = {}
+    g = _grade(GradeInputs(side=side_of(direction), entry=float(entry), stop=float(stop), target=float(target),
+                           trend_4h=_frame_trend(frames.get("4h")), trend_1h=_frame_trend(frames.get("1h")),
+                           trend_15m=_frame_trend(frames.get("15m")), **reg))
+    return {"setup_grade": g.grade, "grade_reasons": list(g.reasons)}
+
+
+def _funding_8h(deriv: dict[str, Any]) -> float | None:
+    """The latest funding rate per 8 h: the rate scaled by the symbol's own interval (from its settlement times; 8 h
+    when they do not say), so a 4h or 1h symbol is not under-read."""
+    rate = ((deriv.get("mark") or {}).get("funding_rate")) if isinstance(deriv, dict) else None
+    if rate is None:
+        return None
+    hours = 8.0
+    times = [r.get("funding_time") for r in (deriv.get("funding") or []) if r.get("funding_time")]
+    if len(times) >= 2:
+        gap = (datetime.datetime.fromisoformat(times[0]) - datetime.datetime.fromisoformat(times[1])).total_seconds() / 3600
+        if gap in (1.0, 2.0, 4.0, 8.0):
+            hours = gap
+    return float(rate) * 8.0 / hours
+
+
+def _grade_inputs(symbol: str, side: str, entry: float, stop: float, target: float) -> Any:
+    """Everything the setup grade reads, from Binance public data: spot klines (4h, 1h, 15m: trends, the 1h regime
+    and volatility) and USD-M (funding, 24 h open interest change, spread and 24 h volume). A part that cannot be read
+    is None, which the grade counts as a weak input. Never raises."""
+    from cryptonite_scanner.engine import ScannerEngine
+    from cryptonite_scanner.setup_grade import GradeInputs, regime_trend_inputs, side_of
+
+    frames: dict[str, Any] = {}
+    for tf, limit in (("4h", 120), ("1h", 300), ("15m", 120)):
+        try:
+            out, _err = _spot_klines(symbol, tf, limit, max_fetch=500)
+            frames[tf] = _spot_candles_to_enriched_df(out["candles"], ScannerEngine) if out and out.get("candles") else None
+        except Exception:
+            frames[tf] = None
+    try:
+        reg = regime_trend_inputs(frames.get("1h"))
+    except Exception:
+        reg = {}
+    funding = oi_change = spread = volume = None
+    try:
+        funding = _funding_8h(_usdm_cached(symbol))
+    except Exception:
+        pass
+    try:
+        hist = _fapi_get("/futures/data/openInterestHist", {"symbol": symbol, "period": "1h", "limit": 25})
+        first, last = float(hist[0]["sumOpenInterest"]), float(hist[-1]["sumOpenInterest"])
+        oi_change = (last - first) / first * 100 if first > 0 else None
+    except Exception:
+        pass
+    try:
+        book = _fapi_get("/fapi/v1/ticker/bookTicker", {"symbol": symbol})
+        bid, ask = float(book["bidPrice"]), float(book["askPrice"])
+        spread = (ask - bid) / ((ask + bid) / 2) * 100 if bid > 0 and ask > 0 else None
+        volume = float(_fapi_get("/fapi/v1/ticker/24hr", {"symbol": symbol})["quoteVolume"])
+    except Exception:
+        spread = volume = None
+    return GradeInputs(side=side_of(side), entry=float(entry), stop=float(stop), target=float(target),
+                       trend_4h=_frame_trend(frames.get("4h")), trend_1h=_frame_trend(frames.get("1h")),
+                       trend_15m=_frame_trend(frames.get("15m")), funding_rate_8h=funding,
+                       oi_change_24h_pct=oi_change, spread_pct=spread, volume_24h_usd=volume, **reg)
+
+
+def grade_setup(symbol: str, side: Literal["BUY", "SELL", "LONG", "SHORT"], entry: float, stop: float,
+                target: float) -> str:
+    """The system's setup grade for a trade idea: A, B, C or NO_TRADE, with its reasons and the inputs it used.
+    Computed by deterministic code from 4h/1h/15m trend alignment, reward to target over risk to stop, the 1h trend
+    regime, volatility, funding/open-interest crowding and futures liquidity; you cannot change it. The grade sets the
+    leverage ceiling of a perp card (A 10x, B 5x, C 2x by default; NO_TRADE: no perp card). State the grade and its
+    reasons; never claim a better one.
+
+    Parameters:
+        symbol: e.g. 'BTCUSDT'.
+        side: BUY/LONG or SELL/SHORT.
+        entry, stop, target: the planned entry, the structural stop and TP1.
+    """
+    from cryptonite_scanner.setup_grade import grade_setup as _grade
+
+    sym = _feed_symbol(symbol)
+    if not _SYMBOL_REGEX.fullmatch(sym):
+        return json.dumps({"error": "invalid symbol"})
+    try:
+        entry_f, stop_f, target_f = float(entry), float(stop), float(target)
+    except (TypeError, ValueError):
+        return json.dumps({"error": "entry, stop and target must be numbers"})
+    g = _grade(_grade_inputs(sym, side, entry_f, stop_f, target_f))
+    from cryptonite_execution.leverage import DEFAULT_GRADE_CEILINGS
+
+    return json.dumps({"symbol": sym, "side": side.upper(), **g.as_dict(),
+                       "default_leverage_ceiling": DEFAULT_GRADE_CEILINGS[g.grade],
+                       "as_of": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")})
+
+
 async def scan_swing_setups(
     preset_slug: str = "all",
     timeframe: Literal["15m", "1h", "4h"] = "1h",
@@ -1805,6 +1913,7 @@ async def scan_swing_setups(
                         "trend_1h": trend_1h,
                         "trend_15m": trend_15m,
                         "matched_rules": matched_rules,
+                        **_scan_grade(frames, direction, entry, stop, target),
                     })
             except Exception as e:
                 logger.debug("Evaluation error for %s on %s: %s", inst, preset.slug, e)
@@ -1846,7 +1955,6 @@ async def scan_swing_setups(
         rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
 
         is_uptrend = trend_4h == "BULL" or trend_1h == "BULL"
-        is_pullback = rsi_val <= 48.0 or trend_15m == "BULL"
 
         base_score = 68.0
         if trend_4h == "BULL":
@@ -1898,6 +2006,7 @@ async def scan_swing_setups(
             "trend_1h": trend_1h,
             "trend_15m": trend_15m,
             "matched_rules": matched_rules,
+            **_scan_grade(frames, direction, entry, stop, target),
         })
 
     # Deduplicate by instrument_id (keep highest-scoring setup per symbol)
@@ -1942,3 +2051,4 @@ COMPARE_LIVE_VS_BACKTEST = _register(RiskClass.READ)(compare_live_vs_backtest)
 SCAN_SWING_SETUPS = _register(RiskClass.READ)(scan_swing_setups)
 DERIVATIVES_CONTEXT = _register(RiskClass.READ)(get_derivatives_context)  # WS-2C: funding, mark, open interest
 MARKET_REGIME = _register(RiskClass.READ)(get_market_regime)  # WS-2C: the learner's regime, 15m/1h/4h, lake or spot
+GRADE_SETUP = _register(RiskClass.READ)(grade_setup)  # leverage plan 3.2: the system's A/B/C/NO_TRADE grade

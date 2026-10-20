@@ -47,6 +47,9 @@ class SwingCandidateItem(BaseModel):
     trend_1h: str = "FLAT"
     trend_15m: str = "FLAT"
     matched_rules: list[str] = Field(default_factory=list)
+    # The system's setup grade (leverage plan 3.2); a scan grade reads no funding or liquidity, so it is at most B
+    setup_grade: Literal["A", "B", "C", "NO_TRADE"] | None = None
+    grade_reasons: list[str] = Field(default_factory=list)
 
 
 class SwingRadarWidget(BaseModel):
