@@ -476,6 +476,10 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
             # free text and may hold a ";", so cut at the last one: the tail is the helper's own and is never repeated
             reason = stopped.rsplit(";", 1)[0]
             raise HTTPException(status_code=409, detail=f"{reason}; resume it in Mission Control, then approve this card")
+    if mandate is None and why == "AMBIGUOUS_MANDATE" and card["side"] == "BUY" and not mandate_id:
+        # The card offers the choice (and stopping the overlap) itself: the detail says so, not "go to Mission Control"
+        raise HTTPException(status_code=409, detail=f"AMBIGUOUS_MANDATE: more than one ACTIVE mandate allows "
+                            f"{card['instrument_id']}; nothing was queued; choose the mandate on this card")
     if mandate is None:
         raise HTTPException(status_code=409, detail=f"{why}: approve this card inside an ACTIVE mandate that allows "
                             f"{card['instrument_id']} (Mission Control → Mandates)")
@@ -679,6 +683,8 @@ async def _card_remedy(request: Request, card: dict[str, Any], code: str, mandat
                 "held_pct": float((inst / mandate.capital_budget_usd * 100).quantize(Decimal("0.01"))),
                 "requested_pct": float(requested),
                 "allocation_after_pct": float(min(requested, fix.room_after_pct).quantize(Decimal("0.01")))}
+    if code == "AMBIGUOUS_MANDATE":
+        return await _choose_mandate_remedy(conn_pool=pool, instrument=instrument, card=card, marks=marks)
     if code == "MANDATE_PAUSED":
         async with pool.acquire() as conn:  # the stopped mandate approve named: the first, by creation
             row = await conn.fetchrow(
@@ -688,6 +694,55 @@ async def _card_remedy(request: Request, card: dict[str, Any], code: str, mandat
             return None
         return {"kind": "RESUME_MANDATE", "mandate_id": str(row["id"]), "mandate_name": row["name"]}
     return None
+
+
+async def _choose_mandate_remedy(*, conn_pool, instrument: str, card: dict[str, Any], marks) -> dict[str, Any] | None:
+    """AMBIGUOUS_MANDATE: several ACTIVE mandates allow the instrument, so approve needs one named. Each candidate says
+    what approve would size to in it. When one of them holds the instrument it is the only one that can add to it (the
+    others would be refused as MANDATE_INSTRUMENT_CONFLICT); when an owner outside them holds it, no choice helps.
+
+    Each other candidate may also be tidied, so the overlap does not come back: the instrument removed from it, or the
+    mandate paused when the instrument is all it covers. Both take room away, so neither needs TOTP. A candidate that
+    holds the instrument is never tidied: its position stays in the mandate that owns it."""
+    requested = Decimal(str(card["allocation_pct"]))
+    candidates = []
+    async with conn_pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE status = 'ACTIVE' AND $1 = ANY(instruments) ORDER BY created_at",
+            instrument)
+        mandates = [Mandate.from_row(r) for r in rows]
+        if len(mandates) < 2:
+            return None
+        outside = await conn.fetchval(
+            """SELECT 1 FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
+               AND instrument_id = $2 AND NOT (instance_id = ANY($3::text[])) LIMIT 1""",
+            PAPER_ACCOUNT_ID, instrument, [m.instance_id for m in mandates])
+        if outside:
+            return None
+        for m in mandates:
+            inst, _ = await held_values(conn, m, instrument, marks)
+            room = await entry_room_pct(conn, m, instrument, marks)
+            candidates.append((m, inst > 0, room))
+    holder = next((m for m, holds, _ in candidates if holds), None)
+    out = []
+    for m, holds, room in candidates:
+        if holds:
+            blocked = None
+        elif holder is not None:
+            blocked = f"{holder.name} holds {instrument}, so only it can add to it"
+        elif room < MIN_MANDATE_ENTRY_PCT:
+            blocked = f"no room left under its {m.max_position_pct:g}% limit"
+        else:
+            blocked = None
+        tidy = None if holds else ("PAUSE" if m.instruments == [instrument] else "REMOVE_INSTRUMENT")
+        out.append({"id": str(m.id), "name": m.name, "autonomy_level": int(m.autonomy_level),
+                    "instruments": m.instruments, "max_position_pct": float(m.max_position_pct),
+                    "capital_budget_usd": float(m.capital_budget_usd), "room_pct": float(room.quantize(Decimal("0.01"))),
+                    "allocation_pct": float(min(requested, room).quantize(Decimal("0.01"))), "holds": holds,
+                    "blocked": blocked, "tidy": tidy})
+    if all(c["blocked"] for c in out):
+        return None
+    return {"kind": "CHOOSE_MANDATE", "candidates": out}
 
 
 @router.get("/sessions/{sid}/cards/{widget_id}/preflight")

@@ -497,3 +497,63 @@ async def test_refusals_no_mandate_change_fixes_offer_nothing(h, worker):
     assert (await refusal(h, worker, "MANDATE_INSTRUMENT_CONFLICT"))["remedy"] is None
     worker.card.update(side="SELL")
     assert (await refusal(h, worker, "SPOT_SELL_NOT_HELD"))["remedy"] is None
+
+
+# --- AMBIGUOUS_MANDATE: the card picks the mandate in the chat, and can stop the overlap ----------------------------
+
+async def test_two_active_mandates_offer_a_choice_and_approve_queues_in_the_one_chosen(h, worker):
+    """The 2026-10-20 BTC card: "BTC-ETH spot L1" and a newer "3 assets" both allow BTC. The dry run lists both with
+    what approve would size to in each; approve with the chosen one's id queues inside it."""
+    old = await set_limit(h.pool, await h.mandate(instruments=(BTC, ETH), name="btc-eth"), 10)
+    new = await h.mandate(instruments=(BTC,), name="btc-only")
+    body = await refusal(h, worker, "AMBIGUOUS_MANDATE")
+    assert body["remedy"] == {"kind": "CHOOSE_MANDATE", "candidates": [
+        {"id": str(old.id), "name": "btc-eth", "autonomy_level": 1, "instruments": [BTC, ETH], "max_position_pct": 10.0,
+         "capital_budget_usd": 10000.0, "room_pct": 10.0, "allocation_pct": 5.0, "holds": False, "blocked": None,
+         "tidy": "REMOVE_INSTRUMENT"},
+        {"id": str(new.id), "name": "btc-only", "autonomy_level": 1, "instruments": [BTC], "max_position_pct": 25.0,
+         "capital_budget_usd": 10000.0, "room_pct": 25.0, "allocation_pct": 5.0, "holds": False, "blocked": None,
+         "tidy": "PAUSE"}]}
+
+    res = await approve(h, uuid.uuid4(), mandate_id=new.id)
+    assert res.status_code == 200, res.text
+    assert res.json()["mandate_id"] == str(new.id)
+
+
+async def test_stopping_the_overlap_needs_no_totp_and_leaves_one_owner(h, worker):
+    """Removing the instrument from the other mandate, or pausing it, takes room away: no TOTP, as in the editor."""
+    keep = await h.mandate(instruments=(BTC, ETH), name="keep")
+    drop = await h.mandate(instruments=(BTC, ETH), name="drop")
+    await refusal(h, worker, "AMBIGUOUS_MANDATE")
+    async with h.client() as c:
+        removed = await c.patch(f"/api/v1/ai/mandates/{drop.id}", json={"instruments": [ETH]}, headers=h.headers)
+    assert removed.status_code == 200, removed.text
+    pre = (await ask(h, uuid.uuid4())).json()
+    assert pre["ok"] is True and pre["mandate"]["id"] == str(keep.id)
+
+    only = await h.mandate(instruments=(BTC,), name="only-btc")
+    assert (await refusal(h, worker, "AMBIGUOUS_MANDATE"))["remedy"]["candidates"][1]["tidy"] == "PAUSE"
+    async with h.client() as c:
+        paused = await c.post(f"/api/v1/ai/mandates/{only.id}/pause", json={"reason": "card"}, headers=h.headers)
+    assert paused.status_code == 200, paused.text
+    assert (await ask(h, uuid.uuid4())).json()["ok"] is True
+
+
+async def test_the_mandate_that_holds_the_instrument_is_the_only_choice_and_is_never_tidied(h, worker):
+    holder = await h.mandate(instruments=(BTC,), name="holder")
+    other = await h.mandate(instruments=(BTC, ETH), name="other")
+    await hold_position(h.pool, holder.instance_id, 0.01)  # $500 of its $2,500 limit
+    candidates = (await refusal(h, worker, "AMBIGUOUS_MANDATE"))["remedy"]["candidates"]
+    assert [(c["name"], c["holds"], c["tidy"]) for c in candidates] == [
+        ("holder", True, None), ("other", False, "REMOVE_INSTRUMENT")]
+    assert candidates[0]["blocked"] is None and candidates[0]["allocation_pct"] == 5.0
+    assert candidates[1]["blocked"] == f"holder holds {BTC}, so only it can add to it"
+    res = await approve(h, uuid.uuid4(), mandate_id=other.id)  # what the blocked choice would get
+    assert res.status_code == 409 and res.json()["detail"].startswith("MANDATE_INSTRUMENT_CONFLICT")
+
+
+async def test_an_owner_outside_the_mandates_holding_the_instrument_offers_no_choice(h, worker):
+    await h.mandate(instruments=(BTC,))
+    await h.mandate(instruments=(BTC,))
+    await hold_position(h.pool, "MANUAL_TRADE", 0.01)
+    assert (await refusal(h, worker, "AMBIGUOUS_MANDATE"))["remedy"] is None

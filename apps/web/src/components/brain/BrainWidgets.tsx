@@ -16,7 +16,7 @@ import {
 import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight, rejectOrderCard, sendBrainMessage } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
-import { createMandate, editMandate, resumeMandate } from "@/lib/mission/client";
+import { createMandate, editMandate, pauseMandate, resumeMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import type {
   BrainWidget,
@@ -62,7 +62,13 @@ function levelNote(level: number): string {
   return `At L${level} Autonomous the AI can use the extra room without asking.`;
 }
 
-function fixLabel(fix: "create" | "add" | "edit" | "resume" | null, field?: string): string {
+/** BTCUSDT / btcusdt.binance -> BTCUSDT.BINANCE, as the API stores a mandate's instruments */
+function canonicalInstrument(raw: string): string {
+  const s = raw.trim().toUpperCase();
+  return s.includes(".") ? s : `${s}.BINANCE`;
+}
+
+function fixLabel(fix: "create" | "add" | "edit" | "resume" | "choose" | null, field?: string): string {
   if (fix === "create") return "Create mandate and confirm";
   if (fix === "add") return "Add to mandate and confirm";
   if (fix === "edit") return field === "capital_budget_usd" ? "Raise budget and confirm" : "Raise limit and confirm";
@@ -752,6 +758,7 @@ function remedyWords(remedy: CardRemedy): string {
       : `to raise the budget $${fmt(remedy.from, 0)} → $${fmt(remedy.to, 0)}`;
   }
   if (remedy.kind === "RESUME_MANDATE") return `to resume ${remedy.mandate_name}`;
+  if (remedy.kind === "CHOOSE_MANDATE") return "a choice of mandate";
   return "a mandate for it";
 }
 
@@ -772,7 +779,11 @@ function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; 
         <AlertTriangle className="mt-px h-3 w-3 flex-none" aria-hidden />
         <span>
           Would be refused: {preflight.detail}
-          {preflight.remedy && <span className="text-zinc-300"> · Fix and approve offers {remedyWords(preflight.remedy)} (TOTP)</span>}
+          {preflight.remedy && (
+            <span className="text-zinc-300">
+              {" "}· Fix and approve offers {remedyWords(preflight.remedy)}{preflight.remedy.kind === "CHOOSE_MANDATE" ? "" : " (TOTP)"}
+            </span>
+          )}
         </span>
       </p>
     );
@@ -917,6 +928,9 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [editValue, setEditValue] = useState("");
   // What the fix changed, kept in view: if approve is refused after it, the change is not hidden
   const [fixed, setFixed] = useState<string | null>(null);
+  // AMBIGUOUS_MANDATE: the mandate chosen to trade this order, and whether the others are taken off the instrument
+  const [chosenId, setChosenId] = useState("");
+  const [tidyOthers, setTidyOthers] = useState(false);
   const [totp, setTotp] = useState("");
   const pending = widget.status === "PENDING_APPROVAL";
   const buy = widget.side === "BUY";
@@ -935,6 +949,15 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const createRemedy = remedy?.kind === "CREATE_MANDATE" ? remedy : null;
   const editRemedy = remedy?.kind === "EDIT_MANDATE" ? remedy : null;
   const resumeRemedy = remedy?.kind === "RESUME_MANDATE" ? remedy : null;
+  const chooseRemedy = remedy?.kind === "CHOOSE_MANDATE" ? remedy : null;
+  // The first mandate that can take the whole order, else the first that can take any of it
+  const firstChoice = chooseRemedy
+    ? (chooseRemedy.candidates.find((c) => !c.blocked && c.allocation_pct >= widget.allocation_pct)
+      ?? chooseRemedy.candidates.find((c) => !c.blocked))?.id ?? ""
+    : "";
+  useEffect(() => setChosenId(firstChoice), [firstChoice]);
+  const chosen = chooseRemedy?.candidates.find((c) => c.id === chosenId && !c.blocked) ?? null;
+  const others = chooseRemedy?.candidates.filter((c) => c.id !== chosen?.id && c.tidy) ?? [];
   // Approve stays enabled when the dry run says it would be refused (the server decides); the label says so
   const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate && !remedy;
   // A dry run that finds no ACTIVE mandate for a BUY readies the create form, so the first Approve already shows it
@@ -951,10 +974,15 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   }, [editKey]); // keyed on the suggestion, not on the object, which every re-read replaces
   const addTo = createRemedy?.add_to.find((m) => m.id === mandateTarget) ?? null;
   const canCreate = createRemedy?.can_create ?? true; // without a remedy (an older read), the create form as before
-  const fix = needsMandate ? (addTo ? "add" : canCreate ? "create" : null) : editRemedy ? "edit" : resumeRemedy ? "resume" : null;
+  const fix = needsMandate
+    ? (addTo ? "add" : canCreate ? "create" : null)
+    : editRemedy ? "edit" : resumeRemedy ? "resume" : chooseRemedy ? "choose" : null;
+  // Choosing a mandate changes none (and tidying the others only takes room away): only the other fixes need TOTP
+  const needsTotp = fix !== null && fix !== "choose";
   const symbol = widget.instrument_id.split(".")[0];
 
   const fixReady = (() => {
+    if (fix === "choose") return chosen !== null;
     if (totp.length !== 6) return false;
     if (fix === "create") {
       const pct = Number(mandatePct);
@@ -1002,6 +1030,23 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
             ? `Mandate ${editRemedy.mandate_name}: position limit raised ${editRemedy.from}% → ${editValue}%.`
             : `Mandate ${editRemedy.mandate_name}: budget raised $${fmt(editRemedy.from, 0)} → $${fmt(Number(editValue), 0)}.`,
         );
+      } else if (fix === "choose" && chosen) {
+        // The others first, so the instrument has one ACTIVE owner again; a refusal here stops before any order is sent
+        const done: string[] = [];
+        if (tidyOthers) {
+          for (const c of others) {
+            if (c.tidy === "PAUSE") {
+              await pauseMandate(c.id, `paused from Brain order card ${widget.id}: ${chosen.name} trades ${symbol}`);
+              done.push(`paused ${c.name}`);
+            } else {
+              const instrument = canonicalInstrument(widget.instrument_id);
+              await editMandate(c.id, { instruments: c.instruments.filter((i) => i !== instrument), source });
+              done.push(`removed ${symbol} from ${c.name}`);
+            }
+          }
+        }
+        mandateId = chosen.id;
+        setFixed(`Trading in mandate ${chosen.name}${done.length ? `; ${done.join(", ")}` : ""}.`);
       } else if (fix === "resume" && resumeRemedy) {
         mandateId = (await resumeMandate(resumeRemedy.mandate_id, totp, `resumed from Brain order card ${widget.id}`)).id;
         setFixed(`Resumed mandate ${resumeRemedy.mandate_name}.`);
@@ -1274,6 +1319,42 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
                 </span>
               </p>
             </div>
+          ) : chooseRemedy ? (
+            <div data-testid="card-fix-choose">
+              <fieldset className="mb-2 flex flex-col gap-1 text-zinc-300">
+                <legend className="mb-1 text-zinc-400">
+                  {chooseRemedy.candidates.length} ACTIVE mandates allow {symbol}. Trade this order in:
+                </legend>
+                {chooseRemedy.candidates.map((c) => (
+                  <label key={c.id} className={`flex items-start gap-1.5 ${c.blocked ? "text-zinc-500" : ""}`}>
+                    <input
+                      type="radio"
+                      className="mt-0.5"
+                      name={`choose-${widget.id}`}
+                      disabled={!!c.blocked}
+                      checked={chosenId === c.id}
+                      onChange={() => setChosenId(c.id)}
+                    />
+                    <span>
+                      {c.name} (L{c.autonomy_level}, {c.max_position_pct}% limit of ${fmt(c.capital_budget_usd, 0)})
+                      {c.blocked
+                        ? ` · ${c.blocked}`
+                        : ` · sized to ${c.allocation_pct}% ($${fmt(c.capital_budget_usd * c.allocation_pct / 100, 0)})${c.holds ? `, adds to its ${symbol}` : ""}`}
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+              {chosen && others.length > 0 && (
+                <label className="mb-2 flex items-start gap-1.5 text-zinc-300">
+                  <input type="checkbox" className="mt-0.5" checked={tidyOthers} onChange={(e) => setTidyOthers(e.target.checked)} />
+                  <span>
+                    Also stop the overlap, so {chosen.name} is the only ACTIVE mandate on {symbol}:{" "}
+                    {others.map((c) => (c.tidy === "PAUSE" ? `pause ${c.name} (${symbol} is all it covers)` : `remove ${symbol} from ${c.name}`)).join("; ")}.
+                    This takes room away, so it needs no TOTP.
+                  </span>
+                </label>
+              )}
+            </div>
           ) : resumeRemedy ? (
             <p className="mb-2 text-zinc-300" data-testid="card-fix-resume">
               Mandate {resumeRemedy.mandate_name} covers {symbol} and is PAUSED. Confirming resumes it (it can take new risk again;
@@ -1292,7 +1373,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
               monitor&apos;s hard and trailing stops, not by the proposed stop price; approval is refused while the exit monitor is down.
             </p>
           )}
-          {fix && (
+          {needsTotp && (
             <label className="mb-2 flex w-1/2 flex-col gap-1 text-2xs text-zinc-400">
               TOTP code
               <input
@@ -1313,7 +1394,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
               onClick={approve}
               className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-zinc-950 hover:bg-amber-500 disabled:opacity-50"
             >
-              {busy ? "Sending…" : fixLabel(fix, editRemedy?.field)}
+              {busy ? "Sending…" : fix === "choose" && chosen ? `Confirm in ${chosen.name}` : fixLabel(fix, editRemedy?.field)}
             </button>
             <button
               type="button"

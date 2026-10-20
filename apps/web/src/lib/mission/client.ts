@@ -30,7 +30,8 @@ export const fetchShadow = async (role: string | null, days: number): Promise<Sh
 export const decideApproval = (id: string, decision: "APPROVE" | "VETO") => write(`/ai/approvals/${id}/decision`, { decision });
 export const createMandate = (body: Record<string, unknown>): Promise<Mandate> => write("/ai/mandates", body);
 export const editMandate = (id: string, body: Record<string, unknown>): Promise<Mandate> => write(`/ai/mandates/${id}`, body, "PATCH");
-export const pauseMandate = (id: string): Promise<Mandate> => write(`/ai/mandates/${id}/pause`, {});
+export const pauseMandate = (id: string, reason?: string): Promise<Mandate> =>
+  write(`/ai/mandates/${id}/pause`, reason ? { reason } : {});
 export const resumeMandate = (id: string, totp_code: string, reason?: string): Promise<Mandate> =>
   write(`/ai/mandates/${id}/resume`, reason ? { totp_code, reason } : { totp_code });
 export const demoteMandate = (id: string): Promise<Mandate> => write(`/ai/mandates/${id}/demote`, {});
