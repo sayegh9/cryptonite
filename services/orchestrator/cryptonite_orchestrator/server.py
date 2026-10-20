@@ -577,6 +577,25 @@ async def consume_perp_marks(
                 await pubsub.aclose()
 
 
+BRACKET_RELOAD_INTERVAL_S = 300.0
+
+
+async def reload_leverage_brackets(redis, interval_s: float = BRACKET_RELOAD_INTERVAL_S) -> None:
+    """Install the leverage bracket tables the derivatives feed caches daily (leverage plan 1.2), so the
+    dispatcher values margin and liquidation with them and refuses entries on missing or stale tables."""
+    from cryptonite_execution.brackets import load_brackets
+
+    while True:
+        try:
+            loaded = await load_brackets(redis)
+            logger.debug("Loaded %d leverage bracket tables", loaded)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Could not load leverage brackets: %s", e)
+        await asyncio.sleep(interval_s)
+
+
 SYSTEM_ALERTS_CHANNEL = "channel:system_alerts"
 DAILY_DRAWDOWN_REASON = "DAILY_DRAWDOWN_LIMIT_BREACHED"
 
@@ -1643,6 +1662,7 @@ async def main():
     asyncio.create_task(command_poller(pool, engine, quote_cache))
     asyncio.create_task(consume_market_data(redis, engine, quote_cache, pool))
     asyncio.create_task(consume_perp_marks(redis, engine))
+    asyncio.create_task(reload_leverage_brackets(redis))
     asyncio.create_task(risk_monitor(engine, pool, redis))
     asyncio.create_task(publish_positions())
     mark_projector = await start_mark_to_market(pool, redis, engine, quote_cache)  # noqa: F841 (B3; kept referenced)

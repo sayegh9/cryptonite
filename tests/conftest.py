@@ -94,6 +94,16 @@ def no_paid_model_calls(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_live_leverage_brackets():
+    """Live bracket tables are process-wide (``margin._LIVE_BRACKETS``): none leak from one test to the next."""
+    from cryptonite_execution.margin import clear_live_brackets
+
+    clear_live_brackets()
+    yield
+    clear_live_brackets()
+
+
 @pytest.fixture
 def temp_nautilus_dir():
     with tempfile.TemporaryDirectory() as tmp:

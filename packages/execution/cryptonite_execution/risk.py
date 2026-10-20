@@ -3,19 +3,17 @@
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 from cryptonite_schemas.identifiers import parse_instrument_id
 from nautilus_trader.model import (
-    ClientOrderId,
     InstrumentId,
-    LimitOrder,
-    MarketOrder,
     QuoteTick,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from cryptonite_execution.derivatives import (
     FundingPaymentEvent,
@@ -27,6 +25,7 @@ from cryptonite_execution.derivatives import (
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
 from cryptonite_execution.margin import (
+    bracket_source,
     calculate_funding_payment,
     calculate_liquidation_price,
     calculate_maintenance_margin,
@@ -526,6 +525,10 @@ class GuardedOrderDispatcher:
                     Decimal("0"),
                 )
             return True, "APPROVED", Decimal("0")
+
+        # No entry without a bracket table (margin and liquidation cannot be valued), nor on a stale live one
+        if (bracket_reject := bracket_source(intent.instrument_id, self._clock_ns()).entry_reject) is not None:
+            return False, f"{bracket_reject}: {intent.instrument_id}", Decimal("0")
 
         equity = self._portfolio_equity()
         if equity <= 0:

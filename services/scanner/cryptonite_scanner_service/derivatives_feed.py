@@ -9,6 +9,9 @@
   with source BINANCE_REST, so settlements missed while the stream was down are filled in.
   Rows already present (from either source) are left untouched.
 - Open interest is polled from REST (Binance has no OI stream) into ``perp:oi:{symbol}``.
+- Leverage brackets (leverage plan 1.2): with a read-only mainnet key (``BINANCE_FUTURES_READONLY_API_KEY``,
+  ``BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH``) the signed ``/fapi/v1/leverageBracket`` is fetched daily into
+  ``perp:brackets:{symbol}`` (``cryptonite_execution.brackets``). Without the key nothing is fetched.
 - ``derivatives_feed:heartbeat`` (90s TTL) is rewritten every 30 s by the event loop itself, whether or
   not Binance is reachable: process liveness for the container healthcheck (mark freshness is its own
   signal).
@@ -56,6 +59,8 @@ HEARTBEAT_INTERVAL_S = 30
 HEARTBEAT_TTL_S = 3 * HEARTBEAT_INTERVAL_S
 STALE_STREAM_S = 30  # @1s stream: no frame for this long means a dead connection
 FUNDING_INTERVAL_HOURS = {1, 2, 4, 8}
+BRACKETS_REFRESH_INTERVAL_S = 24 * 3_600
+BRACKETS_RETRY_S = 3_600
 
 MS_TO_NS = 1_000_000
 HOUR_NS = 3_600 * 1_000_000_000
@@ -348,6 +353,24 @@ class DerivativesFeed:
             except TimeoutError:
                 pass
 
+    async def run_bracket_refresh(self, stop: asyncio.Event, fetch: Callable[[], Any],
+                                  interval_s: float = BRACKETS_REFRESH_INTERVAL_S,
+                                  retry_s: float = BRACKETS_RETRY_S) -> None:
+        """Refresh the leverage bracket cache daily; after a failure retry sooner (the old tables age into stale)."""
+        from cryptonite_execution.brackets import refresh_brackets
+
+        while not stop.is_set():
+            wait = interval_s
+            try:
+                await refresh_brackets(fetch, self.redis)
+            except Exception as exc:  # noqa: BLE001 - an exchange or Redis error must not kill the feed
+                logger.warning("Leverage bracket refresh failed: %s", exc)
+                wait = retry_s
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=wait)
+            except TimeoutError:
+                pass
+
     async def run_oi_poller(self, stop: asyncio.Event, interval_s: float = OI_POLL_INTERVAL_S) -> None:
         while not stop.is_set():
             await self.poll_open_interest_once()
@@ -366,12 +389,31 @@ async def main() -> None:
     )
     redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"))
     stop = asyncio.Event()
+    bracket_adapter = None
+    api_key = os.getenv("BINANCE_FUTURES_READONLY_API_KEY", "").strip()
+    pem_path = os.getenv("BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH", "").strip()
+    if api_key and pem_path:
+        from pathlib import Path
+
+        from cryptonite_execution.binance_adapter import BinanceFuturesAdapter
+        try:
+            bracket_adapter = BinanceFuturesAdapter(api_key, Path(pem_path).read_bytes(), BINANCE_FUTURES_REST_URL)
+        except (OSError, ValueError, TypeError) as e:  # a missing or bad key file must not stop the mark feed
+            logger.error("Read-only futures key at %s is unusable (%s); leverage brackets are not fetched", pem_path, e)
+    else:
+        logger.warning("No read-only futures key: leverage brackets are not fetched (BTC/ETH use the reference "
+                       "snapshot; other symbols refuse perp entries)")
     try:
         async with httpx.AsyncClient(timeout=10) as http:
             feed = DerivativesFeed(redis, pool, symbols, http_client=http)
-            await asyncio.gather(feed.run_mark_stream(stop), feed.run_oi_poller(stop), feed.run_funding_backfill(stop),
-                                 feed.run_heartbeat(stop))
+            tasks = [feed.run_mark_stream(stop), feed.run_oi_poller(stop), feed.run_funding_backfill(stop),
+                     feed.run_heartbeat(stop)]
+            if bracket_adapter is not None:
+                tasks.append(feed.run_bracket_refresh(stop, bracket_adapter.get_leverage_brackets))
+            await asyncio.gather(*tasks)
     finally:
+        if bracket_adapter is not None:
+            await bracket_adapter.close()
         stop.set()
         await redis.aclose()
         await pool.close()

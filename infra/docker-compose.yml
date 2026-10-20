@@ -183,6 +183,10 @@ services:
       DATABASE_URL: postgresql://cryptonite:cryptonite_dev_pass@postgres:5432/cryptonite
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       PERP_SYMBOLS: BTCUSDT,ETHUSDT
+      # Leverage brackets (leverage plan 1.2): a READ-ONLY mainnet USD-M key (Ed25519). Empty = not fetched.
+      # The PEM path is inside the container: mount the key file read-only and point this at it (HANDOFF).
+      BINANCE_FUTURES_READONLY_API_KEY: ${BINANCE_FUTURES_READONLY_API_KEY:-}
+      BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH: ${BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH:-}
     restart: unless-stopped
     healthcheck:  # process liveness, not Binance reachability: its event loop rewrites this key every 30 s (90 s TTL)
       <<: *default-healthcheck
