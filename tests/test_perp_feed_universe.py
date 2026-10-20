@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from cryptonite_ingest.recorder import IngestRecorder
-from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from cryptonite_scanner_service.derivatives_feed import DerivativesFeed, mark_stream_url
+from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 
 
 def recorder(tmp_path, symbols, perp_env=(), max_symbols=12, monkeypatch=None):
