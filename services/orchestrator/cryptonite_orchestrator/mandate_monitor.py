@@ -3,7 +3,7 @@
 Runs inside the orchestrator's risk monitor. Per mandate:
 
 - equity = budget + spot cash flow of its fills (fees included) + its open spot positions at the live
-  bid + its perp realized and unrealized PnL; tracked against the high-water mark since the mandate was
+  bid + its perp realized PnL (fees and the funding it paid or received included) and unrealized PnL; tracked against the high-water mark since the mandate was
   created or last resumed (``hwm_rebased_at``) and written to ``ai_mandate_equity``;
 - drawdown >= ``max_drawdown_pct`` (at most 20% of its own budget): the mandate is HALTED and demoted
   to L1, and each of its positions is closed with a PAPER ``CLOSE_POSITION`` (risk reducing, through
