@@ -233,3 +233,8 @@ branch).
 Still for the operator: merge, deploy (`reports/deploy-leverage-release.sh` in the operator's folder), the read-only
 key, and items 6–9 of "Not verified in the cloud" (live Brain checks with the paid model, a paper round trip, a real
 Telegram/ntfy alert, the light theme).
+
+Final head `920c30d` (after the review fixes, the Stage 5 gate and the CROSS stop fix): pytest 3,305 passed, 1 failed —
+`test_mark_to_market_wiring.py::test_price_move_updates_marks_and_account_within_the_throttle_window`, a 2.5 s
+timing deadline missed under full-suite load; it passed 5 of 5 runs alone and in both earlier full runs. Destructive 2
+passed; ruff clean.
