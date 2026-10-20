@@ -19,6 +19,11 @@ opened by one AI owner: ``AI_DEBATE_WORKER`` or a mandate's own instance ``AI_MA
 targets that owner, so the bridge books it on the owner's position row). CLOSE_POSITION flattens the account's whole instrument, so a
 shared instrument only gets an alert. A rejected close is retried; alerts are debounced.
 
+Perps (leverage plan 1.7): a perp position is priced at its mark (``perp:mark:<SYM>``, the price liquidation
+uses) and carries its leverage and liquidation price. ``LIQUIDATION_PROXIMITY``: once the mark has used half of
+the buffer between the stop (else the entry) and the liquidation price, a CRITICAL alert; at three quarters, a
+reduce-only close of an AI-owned position, as the backup to the resting stop.
+
 Model-proposed exit stops (``exit_decisions.target_stop_price``) are recommendations for the
 operator and never trigger an automatic close.
 
@@ -73,6 +78,8 @@ COVERAGE_KEY = "exit_monitor:coverage"
 BLIND_S_KEY = "exit_monitor:blind_s:{hour}"  # hash: instrument -> blind seconds in that UTC hour
 BLIND_S_TTL_S = 26 * 3600
 REST_TIMEOUT_S = 3.0
+LIQ_ALERT_BUFFER_USED = 0.5  # stop-to-liquidation buffer used: CRITICAL alert
+LIQ_CLOSE_BUFFER_USED = 0.75  # ... and a reduce-only close of an AI-owned perp (backup to the resting stop)
 SPOT_BOOK_TICKER_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
 PERP_BOOK_TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/bookTicker"
 
@@ -130,6 +137,24 @@ class Position:
     stop_price: float | None = None
     take_profit_price: float | None = None
     quantity: float = 0.0
+    leverage: int = 1  # perps
+    liquidation_price: float | None = None  # perps: the snapshot written with the position (margin.py)
+
+    @property
+    def liquidation_buffer_used(self) -> float | None:
+        """How much of the buffer between the stop (else the entry) and the liquidation price the price has used:
+        0 at the stop, 1 at liquidation, negative while on the safe side of the stop. None without a liquidation
+        price."""
+        liq = self.liquidation_price
+        if liq is None or liq <= 0 or not self.entry_price:
+            return None
+        long = self.side == "LONG"
+        stop_ok = self.stop_price is not None and (liq < self.stop_price if long else self.stop_price < liq)
+        ref = self.stop_price if stop_ok else self.entry_price
+        span = (ref - liq) if long else (liq - ref)
+        if span <= 0:
+            return None
+        return ((ref - self.current_price) if long else (self.current_price - ref)) / span
 
     @property
     def pnl_pct(self) -> float:
@@ -157,6 +182,10 @@ def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawd
     env-or-code defaults)."""
     t = t or default_thresholds()
     long = pos.side == "LONG"
+    used = pos.liquidation_buffer_used
+    if used is not None and used >= LIQ_CLOSE_BUFFER_USED:
+        return [ExitAction("CLOSE", "LIQUIDATION_PROXIMITY")] if pos.ai_owned else [ExitAction("ALERT", "LIQUIDATION_PROXIMITY")]
+    proximity = [ExitAction("ALERT", "LIQUIDATION_PROXIMITY")] if used is not None and used >= LIQ_ALERT_BUFFER_USED else []
     stop_reason = None
     if pos.pnl_pct <= -t.stop_loss_pct:
         stop_reason = "HARD_STOP"
@@ -169,7 +198,9 @@ def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawd
         if best_gain >= t.trail_activate_pct and give_back >= t.trail_pct:
             stop_reason = "TRAILING_STOP"
     if stop_reason:
-        return [ExitAction("CLOSE", stop_reason)] if pos.ai_owned else [ExitAction("ALERT", stop_reason)]
+        return proximity + ([ExitAction("CLOSE", stop_reason)] if pos.ai_owned else [ExitAction("ALERT", stop_reason)])
+    if proximity:
+        return proximity
 
     if not tp1_done and pos.take_profit_price is not None and pos.take_profit_price > 0:
         tp1_hit = (pos.take_profit_price > pos.entry_price and pos.current_price >= pos.take_profit_price) if long else (pos.take_profit_price < pos.entry_price and pos.current_price <= pos.take_profit_price)
@@ -224,7 +255,7 @@ class QuoteBook:
             pass
 
 
-_SOURCE_RANK = {"STREAM": 0, "REST": 1, None: 2}
+_SOURCE_RANK = {"STREAM": 0, "MARK": 0, "REST": 1, None: 2}  # MARK: a perp at its live mark
 
 
 async def rest_exit_price(http: httpx.AsyncClient | None, instrument_id: str, side: str) -> float | None:
@@ -304,7 +335,10 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         SELECT r.instrument_id, r.side,
                SUM(r.quantity) AS quantity,
                SUM(r.quantity * r.entry_price) / NULLIF(SUM(r.quantity), 0) AS entry_price,
-               MIN(r.opened_at) AS opened_at, o.ai_owned, o.owner
+               MIN(r.opened_at) AS opened_at, o.ai_owned, o.owner,
+               MAX(r.leverage) AS leverage,
+               -- the liquidation nearest the price: highest for a long, lowest for a short
+               CASE WHEN r.side = 'SHORT' THEN MIN(r.liquidation_price) ELSE MAX(r.liquidation_price) END AS liquidation_price
         FROM open_rows r JOIN owners o USING (instrument_id)
         GROUP BY r.instrument_id, r.side, o.ai_owned, o.owner
         """,
@@ -314,7 +348,11 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
     sources = {} if sources is None else sources
     for r in rows:
         inst = r["instrument_id"]
-        price, source = quotes.exit_price(inst, r["side"]), "STREAM"
+        mark = await perp_mark(redis_client, inst) if is_perp(inst) else None
+        if mark is not None:  # a perp is valued at its mark, the price liquidation uses
+            price, source = mark, "MARK"
+        else:
+            price, source = quotes.exit_price(inst, r["side"]), "STREAM"
         if price is None:
             price, source = await rest_exit_price(http, inst, r["side"]), "REST"
         if price is None:
@@ -322,7 +360,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
             # A stop monitor without prices must fail loudly, not silently skip (Coverage alerts)
             logger.warning("No fresh or backup price for %s: stops are not being evaluated", inst)
         # both sides of an instrument: it is as covered as its worst-covered side
-        sources[inst] = max(sources.get(inst, "STREAM"), source, key=_SOURCE_RANK.__getitem__)
+        sources[inst] = max(sources[inst], source, key=_SOURCE_RANK.__getitem__) if inst in sources else source
         if price is None:
             continue
         funding = None
@@ -379,8 +417,29 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
             stop_price=stop_price,
             take_profit_price=take_profit_price,
             quantity=float(r["quantity"] or 0),
+            leverage=int(_row(r, "leverage") or 1),
+            liquidation_price=float(_row(r, "liquidation_price")) if _row(r, "liquidation_price") else None,
         ))
     return positions
+
+
+def _row(r, key):
+    try:
+        return r[key]
+    except (KeyError, IndexError):
+        return None
+
+
+async def perp_mark(redis_client, instrument_id: str) -> float | None:
+    """The cached mark (15 s TTL, so a present key is fresh), or None."""
+    if redis_client is None:
+        return None
+    sym = instrument_id.split(".")[0].replace("-PERP", "").upper()
+    try:
+        raw = await redis_client.get(f"perp:mark:{sym}")
+        return float(json.loads(raw)["mark_price"]) if raw else None
+    except Exception:
+        return None
 
 
 async def best_price_since_open(redis_client, pos: Position) -> float:

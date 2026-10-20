@@ -95,7 +95,7 @@ export interface StopCoverage {
   /** Unix seconds of the exit monitor's last check */
   checked_at: number | null;
   /** STREAM = live quote, REST = backup price (the stream was stale), null = blind: stops not checked */
-  positions: { instrument_id: string; source: "STREAM" | "REST" | null; blind_since: number | null }[];
+  positions: { instrument_id: string; source: "STREAM" | "MARK" | "REST" | null; blind_since: number | null }[]; // MARK: a perp at its mark
   /** Seconds each instrument had no price at all over the last 24 hours */
   blind_s_24h: Record<string, number>;
 }
