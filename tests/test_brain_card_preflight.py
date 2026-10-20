@@ -467,7 +467,7 @@ async def test_no_mandate_offers_a_new_one_or_an_active_mandate_with_room(h, wor
     await hold_position(h.pool, full.instance_id, 0.2, instrument_id=ETH)  # its whole budget: no room for BTC
     body = await refusal(h, worker, "NO_MANDATE")
     assert body["needs_mandate"] is True
-    assert body["remedy"] == {"kind": "CREATE_MANDATE", "can_create": True, "position_pct": 25.0, "add_to": [
+    assert body["remedy"] == {"kind": "CREATE_MANDATE", "can_create": True, "allow_perps": False, "position_pct": 25.0, "add_to": [
         {"id": str(roomy.id), "name": "eth-roomy", "autonomy_level": 1, "instruments": [ETH], "max_position_pct": 25.0,
          "capital_budget_usd": 10000.0, "room_pct": 25.0}]}
 

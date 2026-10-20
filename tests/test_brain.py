@@ -1535,7 +1535,8 @@ def test_an_order_names_only_a_platform_instrument(instrument):
     ("1000PEPEUSDT.BINANCE", "1000PEPEUSDT.BINANCE"),
 ])
 def test_a_platform_instrument_is_normalised_then_accepted(given, normal):
-    assert OrderProposal(instrument_id=given, side="BUY", allocation_pct=5).instrument_id == normal
+    # a perp entry needs its stop (leverage plan 4.1), so every case carries one
+    assert OrderProposal(instrument_id=given, side="BUY", allocation_pct=5, stop_loss=1).instrument_id == normal
 
 
 async def test_a_hostile_instrument_is_a_tool_error_for_the_brain_and_makes_no_card():

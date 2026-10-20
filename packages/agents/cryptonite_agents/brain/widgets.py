@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 logger = logging.getLogger("cryptonite.agents.brain.widgets")
 
 MIN_ALLOCATION_PCT, MAX_ALLOCATION_PCT = 1.0, 25.0  # mirrors the dispatcher's invariant equity clamp
+MAX_CARD_LEVERAGE = 10  # ADR 0009 D2: the mandate ceiling
 # A platform instrument (BTCUSDT.BINANCE, BTCUSDT-PERP.BINANCE). Checked after the normaliser in OrderProposal,
 # so a value the server echoes into a system event (the reject line) cannot carry a line or a tag.
 INSTRUMENT_ID = r"^[A-Z0-9]{2,20}(-PERP)?\.[A-Z0-9]{2,16}$"
@@ -95,6 +96,9 @@ class OrderProposal(BaseModel):
     stop_loss: float | None = Field(default=None, gt=0)
     take_profit: float | None = Field(default=None, gt=0)
     reduce_pct: Literal[25, 50, 100] | None = Field(default=None)
+    # Perps (leverage plan 4.1): BUY opens a long, SELL a short; allocation_pct is the margin. The leverage asked for;
+    # the dry run caps it at the lowest ceiling, and the system fills in the highest allowed when it is None
+    leverage: int | None = Field(default=None, ge=1, le=MAX_CARD_LEVERAGE)
     rationale: str = Field(default="", max_length=2000)
     # Optional structured rationale: a card made before these existed still validates and renders without them
     thesis: str | None = Field(default=None, max_length=300)
@@ -120,7 +124,20 @@ class OrderProposal(BaseModel):
     def _limit_needs_price(self) -> "OrderProposal":
         if self.order_type == "LIMIT" and self.limit_price is None:
             raise ValueError("LIMIT orders need a limit_price")
+        if self.is_perp_entry and self.stop_loss is None:
+            raise ValueError("a perp entry needs a stop_loss")
+        if self.leverage is not None and not self.is_perp:
+            raise ValueError("leverage is for perps only")
         return self
+
+    @property
+    def is_perp(self) -> bool:
+        return self.instrument_id.split(".")[0].endswith("-PERP")
+
+    @property
+    def is_perp_entry(self) -> bool:
+        """A perp card that adds risk (long or short); ``reduce_pct`` makes it a reduction."""
+        return self.is_perp and self.reduce_pct is None
 
 
 # Card fields only the server sets: a value the model passes in its arguments is dropped

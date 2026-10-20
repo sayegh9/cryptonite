@@ -78,6 +78,14 @@ The System state block is a snapshot from the start of this turn. Call get_ai_st
    for the same idea. Before proposing a SELL, check what the mandate holds (query_postgres_readonly on
    agent_safe_ai_holdings). Spot cannot be shorted: propose a SELL only to close a position the mandate already holds.
    An approved SELL sells that whole holding, not allocation_pct of the budget.
+   Perpetuals (USD-M, instrument like 'BTCUSDT-PERP.BINANCE'): propose one only in a mandate whose allow_perps is on
+   (get_ai_state; perps live at L1, so the operator approves every perp card with TOTP). On a perp, BUY opens a long and
+   SELL opens a short: shorting is possible on perps only, never on spot. Every perp entry needs a structural
+   stop_loss from the setup (a level, not a fixed percent) and a take_profit (TP1). Call grade_setup first and state
+   the grade and its reasons; do not propose a perp on a NO_TRADE grade. allocation_pct on a perp is the margin, and
+   leverage is optional: the system caps it at the lowest ceiling (risk at the stop, the liquidation buffer, the
+   mandate's room and maximum, the setup grade, the exchange) and the card's dry run shows the leverage it allows and
+   which ceiling binds. Say that; never claim a leverage the dry run did not allow.
 6. Missing data is neutral: when a tool reports no perpetual, no headlines or a symbol it does not cover, say so once
    and do not count it against a trade. CHOP is not an automatic no. In a range, look for a defined setup: entry near
    range support, stop below the range, target at the range middle or top. Measure the risk from the wider of your stop
@@ -120,6 +128,7 @@ _FIELD_REASONS = {
     "take_profit": "the take profit must be a positive number",
     "quantity": "the quantity must be a positive number",
     "rationale": "the rationale is too long",
+    "leverage": "the leverage must be a whole number from 1 to 10",
 }
 
 
@@ -138,6 +147,10 @@ def no_card_note(args: dict[str, Any]) -> str:
                 reason = f"the {field.replace('_', ' ')} is missing"
         elif "LIMIT" in str(first.get("msg", "")):  # the model validator: a LIMIT order without its price
             reason = "a LIMIT order needs a limit price"
+        elif "perp entry needs a stop_loss" in str(first.get("msg", "")):
+            reason = "a perp entry needs a structural stop_loss"
+        elif "perps only" in str(first.get("msg", "")):
+            reason = "leverage is for perp instruments only"
         else:
             reason = "the proposal is not valid"
     else:
@@ -347,7 +360,9 @@ class Brain:
                                     held = str(ev.data.get("content") or "").startswith(HELD_FOR_APPROVAL_PREFIX)
                                     if not held or order_cards:
                                         continue
-                                    if args.get("side") == "SELL":
+                                    # A spot SELL closes a holding; a perp SELL opens or adds to a short (leverage
+                                    # plan 4.1), so only spot needs a holding to make a card
+                                    if args.get("side") == "SELL" and "-PERP" not in str(args.get("instrument_id", "")).upper():
                                         instrument = str(args.get("instrument_id", ""))
                                         if not await self._holds(instrument):
                                             # Spot cannot be shorted: no card. The reply says why, so the operator knows
@@ -371,7 +386,8 @@ class Brain:
                                         # The reader alone sets the field: a value the model passed in its arguments
                                         # never survives
                                         instrument = str(widget.get("instrument_id", ""))
-                                        entry = widget.get("side") == "BUY"
+                                        perp_entry = "-PERP." in instrument and not widget.get("reduce_pct")
+                                        entry = widget.get("side") == "BUY" or perp_entry
                                         widget["feed_refusal"] = await self._feed_refusal(instrument) if entry else None
                                         if widget["feed_refusal"]:
                                             symbol = instrument.split(".")[0]
@@ -382,7 +398,7 @@ class Brain:
                                         widget["lessons"] = await self._card_lessons(instrument)
                                         # The setup grade comes from the grader alone, for an entry (a BUY, or a perp
                                         # order that is not a reduction)
-                                        if entry or ("-PERP." in instrument and not widget.get("reduce_pct")):
+                                        if entry:
                                             if graded := await self._card_grade(widget):
                                                 widget["setup_grade"] = graded.get("grade")
                                                 widget["grade_reasons"] = list(graded.get("reasons") or [])[:12]
