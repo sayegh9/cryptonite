@@ -17,6 +17,7 @@ from decimal import ROUND_DOWN, Decimal
 
 from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
+    PERPS_AUTONOMY_LEVEL,
     ActionClass,
     AutonomyLevel,
     Mandate,
@@ -132,7 +133,7 @@ def check_mandate(
     if not mandate.allows_instrument(order.instrument_id):
         return MandateReject.INSTRUMENT_NOT_ALLOWED
     if order.is_perp:
-        if not mandate.allow_perps or mandate.autonomy_level < AutonomyLevel.L3:
+        if not mandate.allow_perps or mandate.autonomy_level != PERPS_AUTONOMY_LEVEL:
             return MandateReject.PERPS_NOT_ALLOWED
         if (order.leverage or 1) > min(mandate.max_leverage, MAX_PERP_LEVERAGE_CAP):
             return MandateReject.LEVERAGE_EXCEEDED

@@ -78,15 +78,21 @@ def test_promotion_is_refused(state, kw, code):
 @pytest.mark.parametrize("trigger", [AutonomyTrigger.BREACH, AutonomyTrigger.HALF_DRAWDOWN])
 @pytest.mark.parametrize("before,after,kind", [(L3, L2, "DEMOTED"), (L2, L1, "DEMOTED"), (L1, L1, "NOOP")])
 def test_breach_or_half_drawdown_drops_one_level(trigger, before, after, kind):
-    t = transition(s(before, perps=before == L3), trigger)
+    t = transition(s(before, perps=before == L1), trigger)
     assert (t.after.level, t.kind, t.after.status) == (after, kind, ACTIVE)
-    assert t.after.allow_perps is False  # leaving L3 withdraws the perps opt-in (O1)
+    # ADR 0009 D3: perps live at L1 only; a NOOP at L1 keeps them, nothing else can carry them
+    assert t.after.allow_perps is (before == L1)
+
+
+def test_promotion_off_l1_withdraws_the_perps_opt_in():
+    t = transition(s(L1, perps=True), AutonomyTrigger.PROMOTION_CONFIRMED, totp_ok=True, gate=evaluate_gate(L1, L2_READY))
+    assert (t.after.level, t.after.allow_perps, t.kind) == (L2, False, "PROMOTED")
 
 
 @pytest.mark.parametrize("trigger,kind", [(AutonomyTrigger.HARD_STOP, "HALTED"), (AutonomyTrigger.BACKSTOP, "BACKSTOP")])
 @pytest.mark.parametrize("before", [L1, L2, L3])
 def test_hard_stop_and_backstop_halt_at_l1(trigger, kind, before):
-    t = transition(s(before, perps=before == L3), trigger)
+    t = transition(s(before, perps=before == L1), trigger)
     assert (t.after.level, t.after.status, t.after.allow_perps, t.kind) == (L1, HALTED, False, kind)
 
 
@@ -114,11 +120,11 @@ def test_pause_and_resume():
        totp=st.booleans())
 def test_no_trigger_but_a_confirmed_promotion_ever_raises_the_level(level, status, trigger, totp):
     try:
-        t = transition(s(level, status, perps=level == L3), trigger, totp_ok=totp, gate=evaluate_gate(level, L2_READY))
+        t = transition(s(level, status, perps=level == L1), trigger, totp_ok=totp, gate=evaluate_gate(level, L2_READY))
     except TransitionRefused:
         return
     assert t.after.level <= t.before.level
-    assert not t.after.allow_perps or t.after.level == L3
+    assert not t.after.allow_perps or t.after.level == L1  # ADR 0009 D3
 
 
 # ------------------------------------------------------------------------------ gate evaluator
@@ -301,8 +307,13 @@ async def test_mandate_editor_totp_rules(h):
     body = {"name": f"alt-{uuid.uuid4().hex[:5]}", "capital_budget_usd": "5000", "instruments": ["ETHUSDT"], "max_position_pct": "10"}
     async with h.client() as c:
         assert (await c.post("/api/v1/ai/mandates", json=body, headers=h.headers)).status_code == 401  # creating adds room
-        assert (await c.post("/api/v1/ai/mandates", json={**body, "allow_perps": True, "totp_code": "000000"},
-                             headers=h.headers)).status_code == 422  # O1
+        perps = await c.post("/api/v1/ai/mandates", json={**body, "name": body["name"] + "-p", "allow_perps": True,
+                                                         "totp_code": "000000"}, headers=h.headers)
+        assert perps.status_code == 201, perps.text  # ADR 0009 D3: perps at L1 (was refused, O1)
+        assert (perps.json()["allow_perps"], perps.json()["max_leverage"], perps.json()["max_risk_per_trade_pct"]) == \
+            (True, 3, "1")  # D2 default 3x, D6 default 1%
+        assert (await c.post("/api/v1/ai/mandates", json={**body, "name": body["name"] + "-x", "max_leverage": 11,
+                                                          "totp_code": "000000"}, headers=h.headers)).status_code == 422
         created = await c.post("/api/v1/ai/mandates", json={**body, "totp_code": "000000"}, headers=h.headers)
         assert created.status_code == 201, created.text
         mid = created.json()["id"]

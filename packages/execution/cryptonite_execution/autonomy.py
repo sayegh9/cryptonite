@@ -7,7 +7,7 @@ Pure functions only; callers persist the result as an ``ai_autonomy_events`` row
   applied only when the operator confirms it with TOTP (never silently, §10 invariant 6);
 - demotion is automatic: any breach, or a drawdown >= half the hard stop, drops one level;
 - the hard stop (and the account-wide backstop) halts the mandate and drops it to L1;
-- leaving L3 always withdraws the perps opt-in (O1);
+- leaving L1 always withdraws the perps opt-in (ADR 0009 D3; was "leaving L3", O1);
 - a halted or paused mandate resumes only with operator TOTP, at the level it holds (L1 after a stop).
 
 Informational checks (``GateCheck.informational``, remediation R4.2/R4.3/R4.7, ADR 0004 amendment)
@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
-from cryptonite_schemas.mandate import AutonomyLevel, MandateStatus
+from cryptonite_schemas.mandate import PERPS_AUTONOMY_LEVEL, AutonomyLevel, MandateStatus
 
 from cryptonite_execution.stats import mean_interval, sortino_diff_interval
 
@@ -121,9 +121,9 @@ class GateMetrics:
 
 
 def _step_down(state: AutonomyState, reason: str) -> Transition:
-    """One level down (L1 stays L1: kind NOOP). Leaving L3 withdraws the perps opt-in."""
+    """One level down (L1 stays L1: kind NOOP). Perps live only at L1 (ADR 0009 D3), so they survive only a NOOP."""
     level = AutonomyLevel(max(int(state.level) - 1, int(AutonomyLevel.L1)))
-    after = AutonomyState(level, state.status, state.allow_perps and level == AutonomyLevel.L3)
+    after = AutonomyState(level, state.status, state.allow_perps and level == PERPS_AUTONOMY_LEVEL)
     return Transition(state, after, "DEMOTED" if level != state.level else "NOOP", reason)
 
 
@@ -146,7 +146,9 @@ def transition(
         target = AutonomyLevel(int(state.level) + 1)
         if gate is None or gate.level != state.level or gate.target_level != target or not gate.passed:
             raise TransitionRefused("GATE_NOT_PASSED")
-        return Transition(state, AutonomyState(target, state.status, state.allow_perps), "PROMOTED",
+        # leaving L1 withdraws the perps opt-in (ADR 0009 D3)
+        return Transition(state, AutonomyState(target, state.status, state.allow_perps and target == PERPS_AUTONOMY_LEVEL),
+                          "PROMOTED",
                           reason or f"operator confirmed promotion to L{int(target)}")
 
     if trigger is AutonomyTrigger.BREACH:

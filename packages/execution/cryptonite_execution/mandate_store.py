@@ -16,7 +16,7 @@ from cryptonite_schemas.marks import entry_room_pct as room_at_marks
 from cryptonite_execution.autonomy import Transition
 
 MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
-                   "max_leverage, strategies, autonomy_level, status, active_hours_utc, veto_window_s")
+                   "max_leverage, max_risk_per_trade_pct, strategies, autonomy_level, status, active_hours_utc, veto_window_s")
 
 
 async def load_mandate(conn, mandate_id: str | uuid.UUID, *, for_update: bool = False) -> Mandate | None:

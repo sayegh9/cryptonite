@@ -69,11 +69,19 @@ def test_contract_repeats_the_hard_ceilings():
         mandate(max_position_pct=D("26"))
     with pytest.raises(ValidationError):
         mandate(max_drawdown_pct=D("21"))
+    with pytest.raises(ValidationError):  # ADR 0009 D2: 10x ceiling (was 5x)
+        mandate(max_leverage=11)
+    assert mandate(max_leverage=10).max_leverage == 10
+    for level in (AutonomyLevel.L2, AutonomyLevel.L3):  # D3: perps only at L1 (was only at L3)
+        with pytest.raises(ValidationError):
+            mandate(allow_perps=True, autonomy_level=level)
+    assert mandate(allow_perps=True).allow_perps
+    assert mandate(allow_perps=True).max_leverage == 3  # D2: enabling perps without a maximum gives 3x
+    assert mandate(allow_perps=True, max_leverage=7).max_leverage == 7
+    assert mandate().max_leverage == 1
+    assert mandate().max_risk_per_trade_pct == D("1")  # D6: 1% default, 2% cap
     with pytest.raises(ValidationError):
-        mandate(max_leverage=6)
-    with pytest.raises(ValidationError):  # O1: perps only at L3
-        mandate(allow_perps=True, autonomy_level=AutonomyLevel.L2)
-    assert mandate(allow_perps=True, autonomy_level=AutonomyLevel.L3).allow_perps
+        mandate(max_risk_per_trade_pct=D("2.01"))
     assert mandate().instruments == ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"]
     assert mandate().instance_id == "AI_MANDATE_" + uuid.UUID(int=1).hex
 
@@ -96,14 +104,21 @@ def test_instrument_outside_the_mandate():
                          approval_ok=True) is MandateReject.INSTRUMENT_NOT_ALLOWED
 
 
-def test_perps_need_l3_and_the_opt_in():
+def test_perps_need_the_opt_in_at_l1_and_an_approval():
     m = mandate(instruments=["BTCUSDT-PERP"])
     assert check_mandate(m, buy(inst=PERP), MandateExposure(), approval_ok=True) is MandateReject.PERPS_NOT_ALLOWED
     l3 = mandate(instruments=["BTCUSDT-PERP"], autonomy_level=AutonomyLevel.L3)
     assert check_mandate(l3, buy(inst=PERP), MandateExposure(), approval_ok=True) is MandateReject.PERPS_NOT_ALLOWED
-    ok = mandate(instruments=["BTCUSDT-PERP"], autonomy_level=AutonomyLevel.L3, allow_perps=True, max_leverage=5)
-    assert check_mandate(ok, buy(inst=PERP, leverage=5), MandateExposure(), approval_ok=False) is None
-    assert check_mandate(ok, buy(inst=PERP, leverage=6), MandateExposure(), approval_ok=False) is MandateReject.LEVERAGE_EXCEEDED
+    ok = mandate(instruments=["BTCUSDT-PERP"], allow_perps=True, max_leverage=5)
+    assert check_mandate(ok, buy(inst=PERP, leverage=5), MandateExposure(), approval_ok=True) is None
+    # L1: every risk-adding perp order needs the operator's approval (D3)
+    assert check_mandate(ok, buy(inst=PERP, leverage=5), MandateExposure(), approval_ok=False) \
+        is MandateReject.APPROVAL_REQUIRED
+    assert check_mandate(ok, buy(inst=PERP, leverage=6), MandateExposure(), approval_ok=True) is MandateReject.LEVERAGE_EXCEEDED
+    ten = mandate(instruments=["BTCUSDT-PERP"], allow_perps=True, max_leverage=10)
+    assert check_mandate(ten, buy(inst=PERP, leverage=10), MandateExposure(), approval_ok=True) is None
+    assert check_mandate(ten, buy(inst=PERP, leverage=11), MandateExposure(), approval_ok=True) \
+        is MandateReject.LEVERAGE_EXCEEDED
 
 
 def test_budget_and_position_limits_count_existing_exposure():
@@ -189,7 +204,7 @@ def test_reducing_is_always_allowed_for_what_the_mandate_holds_even_halted():
 
 
 def test_perp_reduce_must_close_the_mandates_own_side():
-    m = mandate(instruments=["BTCUSDT-PERP"], autonomy_level=AutonomyLevel.L3, allow_perps=True, max_leverage=5)
+    m = mandate(instruments=["BTCUSDT-PERP"], allow_perps=True, max_leverage=5)
     close_long = MandateOrder(instrument_id=PERP, side="SELL", quantity=D("0.01"), ref_price=D("50000"), reduce_only=True)
     exp = MandateExposure(instrument_qty=D("0.01"), instrument_side="LONG")
     assert check_mandate(m, close_long, exp, approval_ok=False) is None
@@ -208,12 +223,12 @@ instruments = st.sampled_from([SPOT, "ETHUSDT.BINANCE", "SOLUSDT.BINANCE", PERP,
 @st.composite
 def mandates(draw):
     level = draw(st.sampled_from(list(AutonomyLevel)))
-    perps = draw(st.booleans()) and level == AutonomyLevel.L3
+    perps = draw(st.booleans()) and level == AutonomyLevel.L1
     return Mandate(
         id=uuid.uuid4(), name="m", capital_budget_usd=draw(st.decimals(min_value=D("100"), max_value=D("100000"), places=2)),
         instruments=draw(st.lists(instruments, min_size=1, max_size=4)),
         max_position_pct=draw(st.decimals(min_value=D("1"), max_value=D("25"), places=1)),
-        allow_perps=perps, max_leverage=draw(st.integers(1, 5)), autonomy_level=level,
+        allow_perps=perps, max_leverage=draw(st.integers(1, 10)), autonomy_level=level,
         status=draw(st.sampled_from(list(MandateStatus))),
     )
 
@@ -255,7 +270,7 @@ def test_no_accepted_ai_order_escapes_its_mandate(m, order, exposure, approval):
     assert exposure.instrument_usd + notional <= m.capital_budget_usd * m.max_position_pct / 100
     assert m.max_position_pct <= 25
     if order.is_perp:
-        assert m.autonomy_level == AutonomyLevel.L3 and m.allow_perps and (order.leverage or 1) <= min(m.max_leverage, 5)
+        assert m.autonomy_level == AutonomyLevel.L1 and m.allow_perps and (order.leverage or 1) <= min(m.max_leverage, 10)
     if m.autonomy_level < AutonomyLevel.L3:
         assert approval
 
