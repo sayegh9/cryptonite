@@ -1031,9 +1031,15 @@ async def command_poller(pool, engine, quote_cache=None):
                         elif cmd_type == "CLOSE_POSITION":
                             inst_raw = payload.get("instrument_id", "")
                             canonical_inst = to_canonical_instrument(inst_raw) if inst_raw else ""
+                            # A close with a quantity closes only the target's own holding (a stop on an instrument
+                            # another owner shares): only the target's working orders go with it
+                            owner_scoped = bool(payload.get("quantity")) and target is not None
+
                             def release_instrument_orders():
                                 # Working orders on the instrument would outlive the position being closed
-                                for cid in [c for c, o in engine.dispatcher.open_orders.items() if o.get("instrument_id") == canonical_inst]:
+                                for cid in [c for c, o in engine.dispatcher.open_orders.items()
+                                            if o.get("instrument_id") == canonical_inst
+                                            and (not owner_scoped or o.get("instance_id") == target)]:
                                     engine.dispatcher.release_reservation(cid)
 
                             pos_qty = engine.dispatcher.get_position_qty(canonical_inst)

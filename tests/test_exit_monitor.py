@@ -223,14 +223,28 @@ async def test_stale_quotes_are_never_acted_on(db_url):
         await pool.close()
 
 
-async def test_shared_instrument_only_alerts(db_url):
+async def test_shared_spot_instrument_closes_only_the_ai_owners_quantity(db_url):
+    """The 2026-10-08 BTC hard stop: a manual position on the same instrument left the AI stop alert-only."""
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
     try:
         await seed(pool, ["AI_DEBATE_WORKER", "MANUAL_TRADE"], price=94.0)
+        await pool.execute("UPDATE paper_positions SET quantity = 0.5 WHERE instance_id = 'MANUAL_TRADE'")
         redis = Redis()
         await em.monitor_once(pool, redis, book(94.0))
-        assert await pool.fetchval("SELECT count(*) FROM execution_commands") == 0
-        assert redis.published[-1]["action"] == "ALERT"
+        rows = await pool.fetch("SELECT target_instance_id, payload FROM execution_commands")
+        assert [(r["target_instance_id"], json.loads(r["payload"])) for r in rows] == [
+            ("AI_DEBATE_WORKER", {"instrument_id": "BTCUSDT.BINANCE", "reason": "HARD_STOP", "quantity": "0.1"})]
+        assert sorted((p["action"], p["ai_owned"]) for p in redis.published) == [("ALERT", False), ("CLOSE", True)]
+    finally:
+        await pool.close()
+
+
+async def test_an_unshared_close_flattens_the_instrument(db_url):
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        await seed(pool, ["AI_DEBATE_WORKER"], price=94.0)
+        await em.monitor_once(pool, Redis(), book(94.0))
+        assert "quantity" not in json.loads(await pool.fetchval("SELECT payload FROM execution_commands"))
     finally:
         await pool.close()
 
@@ -325,14 +339,19 @@ async def test_mandate_position_is_protected_and_closed_under_its_own_instance(d
         await pool.close()
 
 
-async def test_two_ai_owners_on_one_instrument_only_alert(db_url):
+async def test_two_ai_owners_on_one_instrument_each_close_their_own(db_url):
+    mandate_instance = "AI_MANDATE_" + uuid.uuid4().hex
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
     try:
-        await seed(pool, ["AI_MANDATE_" + uuid.uuid4().hex, "AI_DEBATE_WORKER"], price=94.0)
+        await seed(pool, [mandate_instance, "AI_DEBATE_WORKER"], price=94.0)
+        await pool.execute("UPDATE paper_positions SET opened_at = date_trunc('second', now())")  # same second
+        await pool.execute("UPDATE paper_positions SET quantity = 0.3 WHERE instance_id = 'AI_DEBATE_WORKER'")
         redis = Redis()
         await em.monitor_once(pool, redis, book(94.0))
-        assert await pool.fetchval("SELECT count(*) FROM execution_commands") == 0
-        assert redis.published[-1]["action"] == "ALERT"
+        await em.monitor_once(pool, redis, book(94.0))  # pending: neither close is queued twice
+        rows = await pool.fetch("SELECT target_instance_id, payload->>'quantity' AS qty FROM execution_commands")
+        assert sorted((r["target_instance_id"], r["qty"]) for r in rows) == sorted(
+            [(mandate_instance, "0.1"), ("AI_DEBATE_WORKER", "0.3")])
     finally:
         await pool.close()
 

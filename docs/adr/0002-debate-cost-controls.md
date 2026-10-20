@@ -14,7 +14,7 @@
 7. **Deterministic exits** (`exit_monitor.py`), priced from the live quote stream the orchestrator fills against (a position without a quote fresher than 10 s is not evaluated):
    - hard stop at −5%;
    - trailing stop of 2% once a position is +3% up.
-   A triggered stop auto-closes only instruments whose open rows, on both sides, are all AI-owned (CLOSE_POSITION flattens the whole instrument); shared instruments only get an alert. A rejected close is retried after 60 s; alerts are debounced hourly. **Model-proposed exit stops are recommendations only** and never auto-close: the exit debate's output is staged for the operator. Exit debates run only on events: the first −2% crossing per drawdown episode (re-armed after recovering to −1%), or a funding spike against the position. They no longer run just because a position is 24 h old.
+   A triggered stop auto-closes an AI owner's position, evaluated per owner: alone on its instrument the close flattens it; on a spot instrument another owner shares, the close carries the owner's own quantity and sells only that (2026-10-20, after the 2026-10-08 BTC stop alerted for 99 minutes instead of closing). A shared perp, and any position no AI owns, only gets an alert. A rejected close is retried after 60 s; alerts are debounced hourly. **Model-proposed exit stops are recommendations only** and never auto-close: the exit debate's output is staged for the operator. Exit debates run only on events: the first −2% crossing per drawdown episode (re-armed after recovering to −1%), or a funding spike against the position. They no longer run just because a position is 24 h old.
 
 ## Evidence (live runs stored in `ai_eval_runs`, plus a replay test)
 

@@ -14,10 +14,13 @@ Every ``INTERVAL_S`` each open paper position is evaluated with pure rules (``ev
   best price seen since the position opened
 
 A triggered stop closes the position with a PAPER ``CLOSE_POSITION`` command (risk reducing, so it
-runs immediately; blueprint D8) — only when every open row on the instrument, on either side, was
-opened by one AI owner: ``AI_DEBATE_WORKER`` or a mandate's own instance ``AI_MANDATE_<id>`` (the close
-targets that owner, so the bridge books it on the owner's position row). CLOSE_POSITION flattens the account's whole instrument, so a
-shared instrument only gets an alert. A rejected close is retried; alerts are debounced.
+runs immediately; blueprint D8) when the position belongs to an AI owner: ``AI_DEBATE_WORKER`` or a
+mandate's own instance ``AI_MANDATE_<id>`` (the close targets that owner, so the bridge books it on the
+owner's position row). Positions are evaluated per owner. On a spot instrument another owner also holds
+(a manual trade, another mandate) the close carries the owner's own ``quantity``, so it sells only that
+and leaves the other holding alone; the 2026-10-08 BTC hard stop only alerted for 99 minutes because a
+manual position shared the instrument. A perp is one net position per instrument, so a shared perp
+still only gets an alert, as does any position no AI owns. A rejected close is retried; alerts are debounced.
 
 Model-proposed exit stops (``exit_decisions.target_stop_price``) are recommendations for the
 operator and never trigger an automatic close.
@@ -122,14 +125,17 @@ class Position:
     side: str  # LONG | SHORT
     entry_price: float
     current_price: float  # live exit price: bid for longs, ask for shorts
-    ai_owned: bool  # every open row on the instrument (either side) was opened by the AI
+    ai_owned: bool  # an AI owner's position the monitor may close (on a perp: the AI owns the whole instrument)
     opened_ts: int = 0  # identity of the position (earliest open row), for per-position state
     funding_rate: float | None = None
-    owner_instance: str = AI_INSTANCE  # the one AI instance (legacy or a mandate's) that owns every row
+    owner_instance: str = AI_INSTANCE  # the AI instance (legacy or a mandate's) whose rows these are
     price_source: str = "STREAM"  # STREAM (live quote) | REST (backup: the stream quote was stale)
     stop_price: float | None = None
     take_profit_price: float | None = None
     quantity: float = 0.0
+    shared: bool = False  # another owner also holds the instrument: a close sells only ``own_quantity``
+    own_quantity: str | None = None  # the owner's exact open quantity (decimal string), for a shared close
+    key_owner: bool = False  # the key names the owner: another owner's position opened in the same second
 
     @property
     def pnl_pct(self) -> float:
@@ -140,7 +146,8 @@ class Position:
 
     @property
     def key(self) -> str:
-        return f"{self.instrument_id}:{self.side}:{self.opened_ts}"
+        key = f"{self.instrument_id}:{self.side}:{self.opened_ts}"
+        return f"{key}:{self.owner_instance}" if self.key_owner else key
 
 
 @dataclass(frozen=True)
@@ -294,24 +301,27 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         """
         WITH open_rows AS (
             SELECT * FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
-        ), owners AS (  -- CLOSE_POSITION flattens the whole instrument: ownership spans both sides.
-            -- AI-owned: one owner, the legacy AI instance or a mandate's own instance (A5.2)
-            SELECT instrument_id,
-                   BOOL_AND(instance_id = $2 OR instance_id LIKE 'AI!_MANDATE!_%' ESCAPE '!') AND COUNT(DISTINCT instance_id) = 1 AS ai_owned,
-                   MIN(instance_id) AS owner
-            FROM open_rows GROUP BY instrument_id
+        ), owners AS (  -- how many instances hold the instrument (either side)
+            SELECT instrument_id, COUNT(DISTINCT instance_id) AS n_owners FROM open_rows GROUP BY instrument_id
         )
-        SELECT r.instrument_id, r.side,
+        -- one position per owner: an AI owner (the legacy AI instance or a mandate's own instance, A5.2)
+        -- keeps its stops on a spot instrument another owner shares
+        SELECT r.instrument_id, r.side, r.instance_id AS owner,
                SUM(r.quantity) AS quantity,
                SUM(r.quantity * r.entry_price) / NULLIF(SUM(r.quantity), 0) AS entry_price,
-               MIN(r.opened_at) AS opened_at, o.ai_owned, o.owner
+               MIN(r.opened_at) AS opened_at,
+               (r.instance_id = $2 OR r.instance_id LIKE 'AI!_MANDATE!_%' ESCAPE '!')
+                   AND (o.n_owners = 1 OR r.instrument_id NOT LIKE '%-PERP.%') AS ai_owned,
+               o.n_owners > 1 AS shared
         FROM open_rows r JOIN owners o USING (instrument_id)
-        GROUP BY r.instrument_id, r.side, o.ai_owned, o.owner
+        GROUP BY r.instrument_id, r.side, r.instance_id, o.n_owners
+        ORDER BY r.instrument_id, r.side, MIN(r.opened_at), r.instance_id
         """,
         PAPER_ACCOUNT_ID, AI_INSTANCE,
     )
     positions = []
     sources = {} if sources is None else sources
+    keys: set[str] = set()
     for r in rows:
         inst = r["instrument_id"]
         price, source = quotes.exit_price(inst, r["side"]), "STREAM"
@@ -372,14 +382,21 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
                             take_profit_price = float(tp)
             except Exception as e:
                 logger.debug("Failed to lookup entry command stop/target for %s: %s", inst, e)
-        positions.append(Position(
+        opened_ts = int(r["opened_at"].timestamp()) if r["opened_at"] else 0
+        position = Position(
             r["instrument_id"], r["side"], float(r["entry_price"] or 0), price, bool(r["ai_owned"]),
-            int(r["opened_at"].timestamp()) if r["opened_at"] else 0, funding,
+            opened_ts, funding,
             r["owner"] if r["ai_owned"] else AI_INSTANCE, source,
             stop_price=stop_price,
             take_profit_price=take_profit_price,
             quantity=float(r["quantity"] or 0),
-        ))
+            shared=bool(r["shared"]),
+            own_quantity=format(Decimal(str(r["quantity"] or 0)).normalize(), "f"),
+        )
+        if position.key in keys:  # two owners opened in the same second: keep their state and closes apart
+            position = replace(position, key_owner=True)
+        keys.add(position.key)
+        positions.append(position)
     return positions
 
 
@@ -410,10 +427,18 @@ async def enqueue_close(conn, pos: Position, reason: str) -> bool:
                requester_id, payload, status, environment, account_id)
            VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
            ON CONFLICT (idempotency_key) DO NOTHING""",
-        uuid.uuid4(), f"{prefix}:{attempts}", pos.owner_instance,
-        json.dumps({"instrument_id": pos.instrument_id, "reason": reason}), PAPER_ACCOUNT_ID,
+        uuid.uuid4(), f"{prefix}:{attempts}", pos.owner_instance, json.dumps(close_payload(pos, reason)), PAPER_ACCOUNT_ID,
     )
     return True
+
+
+def close_payload(pos: Position, reason: str) -> dict:
+    """The CLOSE_POSITION payload. Alone on its instrument the owner's close flattens the instrument; on a shared
+    spot instrument it carries the owner's own quantity, so the orchestrator sells only that."""
+    payload = {"instrument_id": pos.instrument_id, "reason": reason}
+    if pos.shared and pos.own_quantity:
+        payload["quantity"] = pos.own_quantity
+    return payload
 
 
 async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1") -> bool:
