@@ -159,6 +159,40 @@ Notes and choices (Stage 4):
   and shows the risk-per-trade field (≤ 2%).
 - A leverage remembered by the ticket from before the 10x cap is clamped on load.
 
+## Final cloud run (branch head, fresh test DB `cryptonite_ci_local` at 048, Redis flushed)
+
+- `uv run pytest tests -q`: **3,269 passed, 0 failed, 19 errors, 14 deselected** (baseline was 2,933 passed /
+  19 errors). The 19 errors are the same `tests/test_backup_drill.py` errors as the baseline (needs a Docker
+  Postgres container by name).
+- `uv run pytest tests -m destructive -q`: **2 passed** (Alembic roundtrip base ↔ head, including 048 up and down).
+- `uv run ruff check` on every Python file changed on the branch: clean.
+- `pnpm typecheck`: clean. `pnpm lint`: 0 errors, 2 warnings (both already on `main`: unused `PortfolioConsole`
+  import in `page.tsx`, unused `SwingCandidateItem` type import in `BrainWidgets.tsx`).
+- Playwright (production build, the preinstalled Chromium through a local config that only sets `executablePath`):
+  **227 passed, 8 failed**. All 8 also fail with `main`'s web sources built and run the same way (checked):
+  `mandate-instance-controls.spec.ts:107`, `mode-banner.spec.ts:216` (1024px), `portfolio_console.spec.ts`
+  (5 tests) and `units-formatting.spec.ts:77`. The Portfolio console is not mounted on `main` (the unused import
+  above), which accounts for 7 of them. New and changed specs all pass: `brain-perp-card.spec.ts` (7),
+  `perpetuals-cockpit.spec.ts` (5), `mission-control.spec.ts`.
+
 ## Not verified in the cloud (the operator must run these locally)
 
-(Filled in at the end.)
+1. `tests/test_backup_drill.py` (19 tests): needs the Docker Postgres container (`CRYPTONITE_PG_CONTAINER`).
+2. The whole suite in the project's Docker test environment (HANDOFF "Test"), on arm64, and the Playwright suite
+   with the Playwright-pinned browser (`npx playwright test` with the default config).
+3. Migration 048 on a **copy of the live DB**: upgrade (it refuses if any mandate has perps away from L1), the view
+   `agent_safe_trade_timeline` read by `cryptonite_agent_ro`, and downgrade (refuses while any mandate has
+   `max_leverage > 5` or perps not at L3).
+4. Live leverage brackets: mount the read-only key (`BINANCE_FUTURES_READONLY_API_KEY`,
+   `BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH`, Ed25519 PEM) on `derivatives_feed`, confirm `perp:brackets:*` keys
+   appear and the orchestrator loads them (5-minute reload). No Binance call was made from the cloud.
+5. The perp quote/mark feeds against Binance (ingest perp quotes for onboarded symbols, mark stream reconnect on a
+   universe change).
+6. Live Brain checks (paid model, never run in tests): a perp card for BTC with a structural stop (grade, binding
+   ceiling and leverage in the reply match the dry run), a short card, a perp card on a mandate without perps
+   ("Allow perps" then approve with the next TOTP code), and a card at 8x+ (second confirmation).
+7. End to end on paper: approve a perp card, see the entry fill, the resting stop appear and fire on the mark, the
+   TP1 half close, the liquidation-proximity alert (and close for an AI position), and "Flatten perps" from the
+   header closing perps only.
+8. Telegram and ntfy delivery of a real `LIQUIDATION_PROXIMITY` alert (the notifier path is unit-tested only).
+9. Light theme look of the leverage colour tokens (only class names were checked).
