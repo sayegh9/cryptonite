@@ -138,6 +138,19 @@ def test_mark_beyond_liquidation_is_left_to_the_liquidation_engine():
     assert d.resting_stops(PERP) == {}  # cancelled with the position
 
 
+def test_a_cross_position_past_liquidation_is_stopped_not_liquidated():
+    """CROSS: the stop at the mark loses less than a liquidation (same move plus the clearance fee, from the whole
+    cross wallet), so it fires even when the mark already crossed the liquidation price."""
+    d = make_perp_dispatcher()
+    d.cash_balance = D("250")  # a thin cross wallet, so the CROSS long has a liquidation price (~43,900)
+    d.set_perp_position(PERP, D("0.04"), D("50000"), leverage=10, margin_mode="CROSS", instance_id="INST-001")
+    d.place_resting_stop("STOP-1", PERP, D("48000"))
+    _, liq = d._perp_risk_levels(PERP)
+    assert liq is not None and D("43000") < liq
+    fills, _ = d.triggered_stops({PERP: D("43000")})
+    assert [(f.client_order_id, f.price) for f in fills] == [("STOP-1", D("43000"))]
+
+
 def test_stop_outliving_its_position_is_cancelled():
     d = long_10x()
     d.place_resting_stop("STOP-1", PERP, D("48000"))
