@@ -57,7 +57,8 @@ const REFERENCE_BRACKETS: Record<string, Bracket[]> = {
   ]),
 };
 
-export const MAX_PERP_LEVERAGE = 20;
+/** The account maximum (ADR 0009 D2: was 20) */
+export const MAX_PERP_LEVERAGE = 10;
 
 /** "BTCUSDT-PERP.BINANCE" -> "BTCUSDT"; null for spot ids. */
 export function perpSymbol(instrumentId: string): string | null {

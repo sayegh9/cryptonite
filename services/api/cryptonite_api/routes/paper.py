@@ -4,14 +4,16 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
+from cryptonite_api.leverage_card import manual_ticket_preview
 from cryptonite_api.routes.auth import require_csrf, require_operator
 from cryptonite_api.universe import require_fed
 from cryptonite_schemas.mandate import MANDATE_INSTANCE_PREFIX
 from cryptonite_schemas.marks import read_marks, resolve_mark, unrealized_pnl
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("cryptonite.api.paper")
@@ -59,6 +61,9 @@ class ManualOrderRequest(BaseModel):
     leverage: int | None = Field(None, ge=1, le=10)
     margin_mode: Literal["ISOLATED", "CROSS"] | None = None
     reduce_only: bool = False
+    # A perp entry's stop (leverage plan 4.5): the dispatcher checks it (liquidation buffer, loss within 2% of
+    # equity) and places a resting reduce-only STOP_MARKET on the mark once the entry fills
+    stop_loss: float | None = Field(None, gt=0)
 
 
 # Helper to insert into execution_commands
@@ -473,6 +478,24 @@ async def reset_kill_switch(req: ResetKillSwitchRequest, request: Request, auth:
     )
 
 
+@router.get("/perp/plan")
+async def perp_ticket_plan(request: Request, instrument_id: str, side: Literal["BUY", "SELL"],
+                           quantity: float = Query(..., gt=0), leverage: int = Query(..., ge=1, le=10),
+                           price: float | None = None, stop_loss: float | None = None,
+                           auth: dict = Depends(require_operator)) -> dict[str, Any]:
+    """The manual perp ticket's preview (leverage plan 4.5): which leverage pills the dispatcher would accept for this
+    quantity, and the margin, liquidation price, buffer and losses at the chosen one. Read only; the dispatcher
+    checks the order again when it is sent."""
+    if not instrument_id.split(".")[0].upper().endswith("-PERP"):
+        raise HTTPException(status_code=422, detail="NOT_A_PERP: the preview is for perp instruments")
+    if (price is not None and price <= 0) or (stop_loss is not None and stop_loss <= 0):
+        raise HTTPException(status_code=422, detail="INVALID_ORDER: quantity, price and stop must be positive")
+    return await manual_ticket_preview(
+        request.app.state.pool, getattr(getattr(request.app.state, "stream_hub", None), "redis", None), instrument_id, side,
+        Decimal(str(quantity)), leverage, price=Decimal(str(price)) if price else None,
+        stop_loss=Decimal(str(stop_loss)) if stop_loss else None)
+
+
 @router.post("/orders")
 async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     client_order_id = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
@@ -489,6 +512,10 @@ async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: d
         "margin_mode": req.margin_mode,
         "reduce_only": req.reduce_only,
     }
+    if req.stop_loss is not None:
+        if not req.instrument_id.split(".")[0].upper().endswith("-PERP") or req.reduce_only:
+            raise HTTPException(status_code=422, detail="STOP_ONLY_ON_PERP_ENTRY: an attached stop is for a perp entry")
+        payload["stop_loss"] = str(req.stop_loss)
     # A machine token (agent/research workers) is not the operator's hand: its orders are AI orders,
     # so the orchestrator holds them to a mandate (A5.1) instead of treating them as manual trades.
     machine = auth.get("type") == "machine_token"
