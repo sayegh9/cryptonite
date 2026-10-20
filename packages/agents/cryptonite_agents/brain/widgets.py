@@ -123,6 +123,10 @@ class OrderProposal(BaseModel):
         return self
 
 
+# Card fields only the server sets: a value the model passes in its arguments is dropped
+SERVER_CARD_FIELDS = frozenset({"lessons", "setup_grade", "grade_reasons", "grade_inputs", "grade_version"})
+
+
 class CardLesson(BaseModel):
     """A past lesson on an order card. ``lesson_text`` was written by a model: it is shown as quoted data."""
 
@@ -143,6 +147,13 @@ class OrderCardWidget(OrderProposal):
     feed_refusal: str | None = None
     # The instrument's past lessons, attached by the Brain from the reader alone (lessons.py); never from the model
     lessons: list[CardLesson] = Field(default_factory=list, max_length=3)
+    # The system's setup grade (leverage plan 3.3), attached by the Brain from the grader alone; never from the model.
+    # The inputs are kept so the grade can be recomputed. ``confidence`` (the model's) is stored next to it for
+    # scoring and never raises leverage.
+    setup_grade: Literal["A", "B", "C", "NO_TRADE"] | None = None
+    grade_reasons: list[str] = Field(default_factory=list, max_length=12)
+    grade_inputs: dict[str, Any] | None = None
+    grade_version: str | None = None
 
 
 class DebateVerdict(BaseModel):
@@ -243,7 +254,7 @@ def widget_for_tool(
             # The gate holds ADD_RISK for approval (status DENIED): that is exactly when the card shows
             # A ``lessons`` argument from the model is dropped here: the Brain sets the field from the reader alone
             card = OrderCardWidget(id=call_id, trace_id=trace_id,
-                                   **{k: v for k, v in args.items() if k != "lessons"})
+                                   **{k: v for k, v in args.items() if k not in SERVER_CARD_FIELDS})
             return card.model_dump()
         if active_tool == "stage_debate_proposal" and status == "OK":
             queued = bool(active_content) and active_content.startswith("Success")

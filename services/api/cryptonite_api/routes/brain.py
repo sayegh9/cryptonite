@@ -581,6 +581,10 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         "source": "brain_order_card", "brain_session_id": str(sid), "brain_card_id": widget_id,
         "trace_id": card.get("trace_id"), "proposed_stop_loss": card.get("stop_loss"),
         "proposed_take_profit": card.get("take_profit"), "protection": protection,
+        # Stored with the order for scoring (leverage plan 3.3): the system's setup grade sets a perp's leverage
+        # ceiling; the model's confidence never does
+        "setup_grade": card.get("setup_grade"), "grade_reasons": list(card.get("grade_reasons") or [])[:12],
+        "confidence": card.get("confidence"),
     }
     if card["order_type"] == "LIMIT":
         payload["price"] = card["limit_price"]

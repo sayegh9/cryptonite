@@ -148,6 +148,7 @@ def no_card_note(args: dict[str, Any]) -> str:
 CANCELLED_NOTE = "\n\n_[stopped by the operator]_"
 STATE_TIMEOUT_S = 3.0  # a slow system-state read never delays a turn by more than this
 LESSONS_TIMEOUT_S = 2.0  # a slow lessons read never delays an order card by more than this
+GRADE_TIMEOUT_S = 8.0  # the setup grade reads klines and futures data; an ungraded card is held to grade C
 
 
 def _assert_read_only(tools) -> None:
@@ -184,6 +185,7 @@ class Brain:
                  feed: Callable[[str], Awaitable[str | None]] | None = None,
                  state: Callable[[], Awaitable[str | None]] | None = None,
                  lessons: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
+                 grader: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None,
                  redis: Any | None = None) -> None:
         self.gateway = gateway
         self.store = store
@@ -196,6 +198,8 @@ class Brain:
         self._state = state
         # The past lessons on an instrument, shown on its order card (None: no lessons).
         self._lessons = lessons
+        # The system's setup grade for an entry card (leverage plan 3.3; None: cards are ungraded).
+        self._grader = grader
         # Redis client (system Redis DB 0) to cache staged active cards during streaming turns
         self._redis = redis
 
@@ -231,6 +235,17 @@ class Brain:
         except Exception as e:
             logger.warning("Could not read the past lessons for %s; the card shows none: %s", instrument_id, e)
             return []
+
+    async def _card_grade(self, card: dict[str, Any]) -> dict[str, Any] | None:
+        """The setup grade of an entry card with a stop and a target. Bounded by GRADE_TIMEOUT_S: a failed or slow read
+        leaves the card ungraded (sizing then holds a perp entry to grade C) and never blocks or breaks the card."""
+        if self._grader is None or not card.get("stop_loss") or not card.get("take_profit"):
+            return None
+        try:
+            return await asyncio.wait_for(self._grader(card), timeout=GRADE_TIMEOUT_S)
+        except Exception as e:
+            logger.warning("Could not grade the setup of card %s; it stays ungraded: %s", card.get("id"), e)
+            return None
 
     async def _feed_refusal(self, instrument_id: str) -> str | None:
         """Why the live feed does not cover ``instrument_id``, or None. Display only, so a failed read shows nothing."""
@@ -365,6 +380,14 @@ class Brain:
                                                          "or the Watchlist first.")
                                         # The past lessons come from the reader alone, for a BUY or a SELL card
                                         widget["lessons"] = await self._card_lessons(instrument)
+                                        # The setup grade comes from the grader alone, for an entry (a BUY, or a perp
+                                        # order that is not a reduction)
+                                        if entry or ("-PERP." in instrument and not widget.get("reduce_pct")):
+                                            if graded := await self._card_grade(widget):
+                                                widget["setup_grade"] = graded.get("grade")
+                                                widget["grade_reasons"] = list(graded.get("reasons") or [])[:12]
+                                                widget["grade_inputs"] = graded.get("inputs")
+                                                widget["grade_version"] = graded.get("version")
                                         if self._redis is not None and widget.get("id"):
                                             try:
                                                 await self._redis.set(f"brain:active_card:{widget['id']}", json.dumps(widget), ex=1800)

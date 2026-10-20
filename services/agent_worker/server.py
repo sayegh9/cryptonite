@@ -23,7 +23,7 @@ from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
 from cryptonite_agents.persona import Persona
-from cryptonite_agents.tools import ai_state_header, system_redis_url
+from cryptonite_agents.tools import ai_state_header, card_setup_grade, system_redis_url
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -138,6 +138,7 @@ async def startup_event():
                             feed=ingest_refusal,
                             state=lambda: asyncio.to_thread(ai_state_header),
                             lessons=lambda instrument: asyncio.to_thread(card_lessons, instrument),
+                            grader=lambda card: asyncio.to_thread(card_setup_grade, card),
                             redis=app.state.system_redis)
 
 @app.on_event("shutdown")

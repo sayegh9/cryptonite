@@ -1689,6 +1689,26 @@ def grade_setup(symbol: str, side: Literal["BUY", "SELL", "LONG", "SHORT"], entr
                        "as_of": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")})
 
 
+def card_setup_grade(card: dict[str, Any]) -> dict[str, Any] | None:
+    """The setup grade of an order card (leverage plan 3.3): its stop and take-profit around its limit price, else
+    the latest 15m close. None when the card has no stop or target or the symbol is not valid."""
+    if not card.get("stop_loss") or not card.get("take_profit"):
+        return None
+    sym = str(card.get("instrument_id", "")).upper().split(".")[0].removesuffix("-PERP")
+    if not _SYMBOL_REGEX.fullmatch(sym):
+        return None
+    entry = card.get("limit_price")
+    if not entry:
+        out, _err = _spot_klines(sym, "15m", 2, max_fetch=500)
+        if not out or not out.get("candles"):
+            return None
+        entry = out["candles"][-1]["close"]
+    from cryptonite_scanner.setup_grade import grade_setup as _grade
+
+    return _grade(_grade_inputs(sym, str(card.get("side", "BUY")), float(entry), float(card["stop_loss"]),
+                                float(card["take_profit"]))).as_dict()
+
+
 async def scan_swing_setups(
     preset_slug: str = "all",
     timeframe: Literal["15m", "1h", "4h"] = "1h",
