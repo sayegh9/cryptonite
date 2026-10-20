@@ -386,20 +386,28 @@ test.describe("Mission Control", () => {
     await expect(editor.getByTestId("mandate-totp")).toHaveCount(0);
     await editor.getByLabel("Budget (USD)").fill("12000");
     await expect(editor.getByTestId("mandate-totp")).toContainText("a larger budget");
-    // Perps stay locked below L3 (O1)
-    await expect(editor.getByRole("checkbox", { name: "allow perps" })).toBeDisabled();
+    // Perps are an L1 Copilot feature (ADR 0009 D3): open at L1; turning them on from 1x starts at the 3x default and
+    // needs TOTP
+    await editor.getByLabel("Budget (USD)").fill("10000");
+    const perps = editor.getByRole("checkbox", { name: "allow perps" });
+    await expect(perps).toBeEnabled();
+    await perps.check();
+    await expect(editor.getByLabel("Max leverage")).toHaveValue("3");
+    await expect(editor.getByTestId("mandate-totp")).toContainText("perps");
+    await perps.uncheck();
 
     // A new mandate always needs TOTP and starts at L1
     await editor.getByLabel("Mandate", { exact: true }).selectOption("");
     await editor.getByLabel("Name").fill("Majors");
-    await editor.getByLabel("Instruments (comma separated; spot until L3)").fill("btcusdt, ETHUSDT");
+    await editor.getByLabel("Instruments (comma separated; a perp is SYMBOL-PERP and needs perps allowed)").fill("btcusdt, ETHUSDT");
     await expect(editor.getByRole("button", { name: "Create mandate (starts at L1)" })).toBeDisabled();
     await editor.getByLabel("TOTP code").fill("654321");
     await editor.getByRole("button", { name: "Create mandate (starts at L1)" }).click();
     await expect.poll(() => calls.creates.length).toBe(1);
     expect(calls.creates[0].csrf).toBe("csrf-test");
     expect(calls.creates[0].body).toMatchObject({ name: "Majors", instruments: ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"], totp_code: "654321" });
-    expect(calls.creates[0].body).not.toHaveProperty("allow_perps");
+    // A new mandate may start with perps (it starts at L1, ADR 0009 D3); left unticked it is spot only
+    expect(calls.creates[0].body).toMatchObject({ allow_perps: false, max_leverage: 1, max_risk_per_trade_pct: "1" });
     expect(reactErrors).toEqual([]);
   });
 

@@ -690,16 +690,18 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
                                  "content": f"Order card {widget_id} was approved but could not be queued."})
         raise HTTPException(status_code=502, detail="Could not queue the order")
 
+    guard = (f"a resting stop at {card.get('stop_loss')} (on the mark) and the exit monitor's liquidation-proximity "
+             f"close protect the position." if lev_plan is not None else
+             f"the exit monitor's {protection.get('stop_loss_pct')}% hard stop and {protection.get('trail_pct')}% "
+             f"trailing stop (after +{protection.get('trail_activate_pct')}%) protect the position.")
     await _worker_note(sid, {
         "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "command_id": command_id,
         "expect_status": "APPROVED",
-        "content": (f"Paper command {command_id} queued for the dispatcher inside mandate {mandate.name} ({shown}); "
-                    f"the exit monitor's "
-                    f"{protection.get('stop_loss_pct')}% hard stop and {protection.get('trail_pct')}% trailing stop "
-                    f"(after +{protection.get('trail_activate_pct')}%) protect the position."),
+        "content": f"Paper command {command_id} queued for the dispatcher inside mandate {mandate.name} ({shown}); {guard}",
     })
     return {"command_id": command_id, "status": "APPROVED", "protection": protection, "mandate_id": str(mandate.id),
-            "approval_id": str(decision.approval_id)}
+            "approval_id": str(decision.approval_id),
+            "leverage": lev_plan["leverage"] if lev_plan is not None else None}
 
 
 def _refusal_code(detail: str) -> str:

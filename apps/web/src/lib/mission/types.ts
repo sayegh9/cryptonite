@@ -29,6 +29,8 @@ export interface Mandate {
   max_drawdown_pct: string;
   allow_perps: boolean;
   max_leverage: number;
+  /** The loss at the stop one perp trade may take, % of the budget (1 by default, at most 2) */
+  max_risk_per_trade_pct?: string;
   strategies: string[];
   autonomy_level: 1 | 2 | 3;
   level_name: string;
