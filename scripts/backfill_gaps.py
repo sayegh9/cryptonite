@@ -10,14 +10,12 @@ import os
 import sys
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 
 import httpx
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_spot_instrument_id
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
 from cryptonite_storage.lake_lock import lake_maintenance_lock_or_exit
-from cryptonite_storage.queries import AnalyticsQueryEngine
 
 logging.basicConfig(
     level=logging.INFO,
