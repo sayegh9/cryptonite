@@ -512,9 +512,9 @@ class GuardedOrderDispatcher:
 
         Trigger on mark: a SELL stop (protecting a long) at mark <= stop, a BUY stop at mark >= stop. The fill is
         at the worse of the stop and the mark (a gap through the stop fills at the gap price), for what is left of
-        the position. A position whose mark already crossed its liquidation price is left to ``check_liquidations``,
-        which caps an ISOLATED loss at the margin. Run it before the liquidation check on every mark pass, so a
-        stop that the mark reached first always fires first.
+        the position. An ISOLATED position whose mark already crossed its liquidation price is left to
+        ``check_liquidations``, which caps its loss at the margin; a CROSS one is stopped. Run it before the
+        liquidation check on every mark pass, so a stop that the mark reached first always fires first.
         """
         fills: list[PaperFill] = []
         cancelled: list[str] = []
@@ -535,8 +535,12 @@ class GuardedOrderDispatcher:
                 self.release_reservation(cid)
                 cancelled.append(cid)
                 continue
+            # An ISOLATED position whose mark already crossed its liquidation price is left to the liquidation
+            # engine, which caps the loss at the margin. A CROSS one is stopped at the mark: a liquidation would lose
+            # the same move plus the clearance fee, from the whole cross wallet
             _, liq = self._perp_risk_levels(inst)
-            if liq is not None and (mark <= liq if pos.signed_qty > 0 else mark >= liq):
+            if (liq is not None and pos.margin_mode == MarginMode.ISOLATED
+                    and (mark <= liq if pos.signed_qty > 0 else mark >= liq)):
                 continue
             price = min(stop, mark) if side == "SELL" else max(stop, mark)
             fills.append(PaperFill(cid, inst, side, qty, price, TAKER))

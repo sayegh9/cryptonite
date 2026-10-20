@@ -220,9 +220,10 @@ branch).
   quantity is not re-sized by the plan, so it is now refused when its leverage is above its setup grade's ceiling
   (`LEVERAGE_ABOVE_GRADE_CEILING`; ungraded = grade C, 2x), with a test. Follow-ups recorded, not changed:
   - the plan's account room subtracts the held perp notional in either direction (a flip is sized smaller than the
-    dispatcher would allow; safe direction);
-  - a resting stop whose mark has already crossed the liquidation price is left to the liquidation engine; for a
-    manual CROSS position that loses more than a stop fill (manual tickets default to ISOLATED);
+    dispatcher would allow). Kept on purpose: the safe direction, and a flip by an AI entry is rare;
+  - ~~a resting stop whose mark has already crossed the liquidation price is left to the liquidation engine~~ fixed
+    for CROSS: a CROSS position is stopped at the mark (a liquidation would lose the same move plus the 0.5% clearance
+    fee); an ISOLATED one is still left to the liquidation engine, which caps its loss at the margin;
   - ~~`LIQUIDATION_PROXIMITY` measures against the `paper_positions` liquidation snapshot~~ fixed: the exit monitor
     recomputes an ISOLATED perp's liquidation price from its isolated margin and the live bracket tables (reloaded
     every 5 minutes) and measures against whichever of that and the snapshot is nearer the price.
