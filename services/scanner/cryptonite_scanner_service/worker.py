@@ -21,6 +21,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
+import duckdb
 import polars as pl
 import redis.asyncio as aioredis
 from cryptonite_scanner.brief import brief_data, build_brief
@@ -747,6 +748,12 @@ class ScannerWorker:
             except ValueError as e:
                 # the lake refuses a key that is not a plain symbol: skip this instrument, scan the others
                 logger.warning("Skipping %s in the scan: the analytics lake refused it (%s)", inst, e)
+                continue
+            except duckdb.Error as e:
+                # a failed read (out of memory, a corrupt or half-written file) costs this instrument this run, not
+                # the event: without this the error escaped before XACK and the later specs never ran
+                logger.warning("Skipping %s in the scan: the analytics lake read failed (%s: %s)",
+                               inst, type(e).__name__, e)
                 continue
             if df_1m.is_empty():
                 continue

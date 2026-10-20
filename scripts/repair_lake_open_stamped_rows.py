@@ -42,6 +42,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from cryptonite_storage.lake_lock import lake_maintenance_lock_or_exit
 from cryptonite_storage.queries import (
     EARLY_RECEIPT_TOLERANCE_NS,
     open_stamped_receipt_lag_ns,
@@ -223,9 +224,13 @@ def main() -> None:
         print("dry run: nothing changed (pass --apply after backing up the lake)")
         return
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    for rep in reports:
-        new_file = apply(rep, lake, quarantine, stamp)
-        print(f"quarantined {rep.path.relative_to(lake)} -> {quarantine}; wrote {new_file.name if new_file else 'nothing'}")
+    # never at the same time as lake compaction or a backfill. The scan above ran without the lock, so a job that
+    # finished in between may have moved a file: apply() then fails on it and the run should be repeated.
+    with lake_maintenance_lock_or_exit(lake):
+        for rep in reports:
+            new_file = apply(rep, lake, quarantine, stamp)
+            print(f"quarantined {rep.path.relative_to(lake)} -> {quarantine}; "
+                  f"wrote {new_file.name if new_file else 'nothing'}")
 
 
 if __name__ == "__main__":
