@@ -154,6 +154,7 @@ async def run_commands(engine, payloads, quote_cache):
         raise asyncio.CancelledError()
 
     conn.fetchrow = fake_fetchrow
+    conn.fetchval = AsyncMock(return_value=None)  # no paper_orders rows: nothing booked, no other owner holds
     pool = MagicMock()
     pool.acquire.return_value.__aenter__.return_value = conn
     with pytest.raises(asyncio.CancelledError):
