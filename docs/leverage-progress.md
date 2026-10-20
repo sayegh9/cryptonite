@@ -223,8 +223,11 @@ branch).
     dispatcher would allow; safe direction);
   - a resting stop whose mark has already crossed the liquidation price is left to the liquidation engine; for a
     manual CROSS position that loses more than a stop fill (manual tickets default to ISOLATED);
-  - `LIQUIDATION_PROXIMITY` measures against the `paper_positions` liquidation snapshot (rewritten on fills and
-    funding), not a fresh recomputation after a bracket-table change.
+  - ~~`LIQUIDATION_PROXIMITY` measures against the `paper_positions` liquidation snapshot~~ fixed: the exit monitor
+    recomputes an ISOLATED perp's liquidation price from its isolated margin and the live bracket tables (reloaded
+    every 5 minutes) and measures against whichever of that and the snapshot is nearer the price.
+- Stage 5 prepared: `scripts/perp_gate_status.py` (pure checks in `cryptonite_execution.perp_gate`, 9 tests; SQL run
+  against a migrated DB) and [runbooks/leverage-stage5.md](runbooks/leverage-stage5.md).
 
 Still for the operator: merge, deploy (`reports/deploy-leverage-release.sh` in the operator's folder), the read-only
 key, and items 6–9 of "Not verified in the cloud" (live Brain checks with the paid model, a paper round trip, a real

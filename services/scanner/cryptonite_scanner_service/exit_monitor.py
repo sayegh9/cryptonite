@@ -346,7 +346,8 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
                o.n_owners > 1 AS shared,
                MAX(r.leverage) AS leverage,
                -- the liquidation nearest the price: highest for a long, lowest for a short
-               CASE WHEN r.side = 'SHORT' THEN MIN(r.liquidation_price) ELSE MAX(r.liquidation_price) END AS liquidation_price
+               CASE WHEN r.side = 'SHORT' THEN MIN(r.liquidation_price) ELSE MAX(r.liquidation_price) END AS liquidation_price,
+               SUM(r.isolated_margin) FILTER (WHERE r.margin_mode = 'ISOLATED') AS isolated_margin
         FROM open_rows r JOIN owners o USING (instrument_id)
         GROUP BY r.instrument_id, r.side, r.instance_id, o.n_owners
         ORDER BY r.instrument_id, r.side, MIN(r.opened_at), r.instance_id
@@ -429,7 +430,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
             take_profit_price=take_profit_price,
             quantity=float(r["quantity"] or 0),
             leverage=int(_row(r, "leverage") or 1),
-            liquidation_price=float(_row(r, "liquidation_price")) if _row(r, "liquidation_price") else None,
+            liquidation_price=nearer_liquidation(r, inst),
             shared=bool(r["shared"]),
             own_quantity=format(Decimal(str(r["quantity"] or 0)).normalize(), "f"),
         )
@@ -438,6 +439,52 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         keys.add(position.key)
         positions.append(position)
     return positions
+
+
+def nearer_liquidation(r, instrument_id: str) -> float | None:
+    """The liquidation price the monitor measures against: the snapshot written with the position, or the price
+    recomputed now from its isolated margin and the current bracket table, whichever is nearer the price (higher for
+    a long, lower for a short). The snapshot is only rewritten on fills and funding, so a bracket revision that moves
+    liquidation closer would otherwise make the proximity alert and close late. Without an isolated margin (CROSS,
+    or a row without one) or a bracket table, the snapshot alone."""
+    snap = float(_row(r, "liquidation_price")) if _row(r, "liquidation_price") else None
+    margin, qty, entry = _row(r, "isolated_margin"), _row(r, "quantity"), _row(r, "entry_price")
+    if not is_perp(instrument_id) or not margin or not qty or not entry or Decimal(str(margin)) <= 0:
+        return snap
+    try:
+        from cryptonite_execution.derivatives import MarginMode
+        from cryptonite_execution.margin import calculate_liquidation_price
+
+        fresh = calculate_liquidation_price(instrument_id, "BUY" if r["side"] == "LONG" else "SELL",
+                                            Decimal(str(qty)), Decimal(str(entry)), Decimal(str(margin)),
+                                            MarginMode.ISOLATED)
+    except Exception:  # no bracket table for the symbol: keep the snapshot
+        return snap
+    if fresh is None:
+        return snap
+    fresh_f = float(fresh)
+    if snap is None:
+        return fresh_f
+    return max(snap, fresh_f) if r["side"] == "LONG" else min(snap, fresh_f)
+
+
+BRACKET_RELOAD_S = 300.0
+_brackets_loaded_at = 0.0
+
+
+async def refresh_brackets(redis_client) -> None:
+    """Install the cached live bracket tables (derivatives feed, daily) at most every 5 minutes, so the recomputed
+    liquidation price uses the tables the dispatcher uses. Best effort: the reference BTC/ETH tables otherwise."""
+    global _brackets_loaded_at
+    if redis_client is None or time.monotonic() - _brackets_loaded_at < BRACKET_RELOAD_S:
+        return
+    _brackets_loaded_at = time.monotonic()
+    try:
+        from cryptonite_execution.brackets import load_brackets
+
+        await load_brackets(redis_client)
+    except Exception as e:
+        logger.debug("Leverage brackets not reloaded: %s", e)
 
 
 def _row(r, key):
@@ -592,6 +639,7 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
                        http: httpx.AsyncClient | None = None, coverage: Coverage | None = None) -> None:
     t = t or default_thresholds()
     sources: dict[str, str | None] = {}
+    await refresh_brackets(redis_client)
     async with pool.acquire() as conn:
         positions = await load_positions(conn, redis_client, quotes, http, sources)
         # the loop passes one Coverage for its lifetime: blind checks in a row are counted across cycles

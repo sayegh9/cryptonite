@@ -105,3 +105,25 @@ async def test_monitor_alerts_then_closes_near_liquidation(db_url):  # noqa: F81
             [("CLOSE_POSITION", "LIQUIDATION_PROXIMITY")]
     finally:
         await pool.close()
+
+
+def _liq_row(side="LONG", snap=90.5, margin="10", qty="1", entry="100"):
+    return {"side": side, "liquidation_price": snap, "isolated_margin": margin, "quantity": qty, "entry_price": entry}
+
+
+def test_the_nearer_of_snapshot_and_recomputed_liquidation_is_used():
+    # 1 BTC long from 100 on 10 of isolated margin: liquidation ~90.36 with the 0.4% first-tier MMR
+    assert em.nearer_liquidation(_liq_row(snap=90.5), PERP) == 90.5  # the snapshot is nearer: kept
+    fresh = em.nearer_liquidation(_liq_row(snap=88.0), PERP)  # a stale, farther snapshot: the recomputed price wins
+    assert 90.3 < fresh < 90.4
+    # a short: nearer means lower
+    short = em.nearer_liquidation(_liq_row(side="SHORT", snap=112.0), PERP)
+    assert 109.5 < short < 109.7
+    assert em.nearer_liquidation(_liq_row(side="SHORT", snap=109.0), PERP) == 109.0
+
+
+def test_without_isolated_margin_or_brackets_the_snapshot_stands():
+    assert em.nearer_liquidation(_liq_row(margin=None), PERP) == 90.5  # CROSS: no isolated margin
+    assert em.nearer_liquidation(_liq_row(margin="0"), PERP) == 90.5
+    assert em.nearer_liquidation(_liq_row(), "WIFUSDT-PERP.BINANCE") == 90.5  # no bracket table for the symbol
+    assert em.nearer_liquidation(_liq_row(snap=None, margin=None), PERP) is None
