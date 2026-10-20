@@ -167,8 +167,10 @@ async def apply_paper_fill(
     also creates the paper_orders row if missing), then a best-effort paper_orders upsert for
     immediate UI consistency. A failed upsert therefore never leaves memory ahead of the database.
     """
-    fee_rate = getattr(engine.dispatcher, "taker_fee", None) or DEFAULT_FEE_RATE  # maker fills pay it too
+    fee_rate = fee_rate_for(engine.dispatcher, fill.instrument_id)  # maker fills pay it too
     comm = fill.quantity * fill.price * fee_rate
+    # A perp entry that carries its stop (``stop_loss``) gets a resting stop once it fills (leverage plan 1.4)
+    attach_stop = (engine.dispatcher.open_orders.get(fill.client_order_id) or {}).get("attach_stop")
     realized = engine.dispatcher.handle_fill(
         client_order_id=fill.client_order_id,
         fill_qty=fill.quantity,
@@ -209,6 +211,69 @@ async def apply_paper_fill(
     except Exception as e:  # the bridge event above still records the fill
         logger.error("paper_orders upsert failed for %s (bridge will record it): %s", fill.client_order_id, e)
     logger.info("Order %s filled %s %s @ %s (%s)", fill.client_order_id, fill.side, fill.quantity, fill.price, fill.liquidity)
+    if attach_stop is not None:
+        await attach_resting_stop(conn, engine, fill.instrument_id, Decimal(str(attach_stop)), instance_id)
+
+
+def fee_rate_for(dispatcher, instrument_id: str) -> Decimal:
+    """Taker fee for a paper fill."""
+    return getattr(dispatcher, "taker_fee", None) or DEFAULT_FEE_RATE
+
+
+async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Decimal, instance_id: str) -> bool:
+    """Protect the filled perp position with a resting reduce-only stop (it replaces the owner's earlier one).
+
+    A stop the dispatcher refuses (the mark already went through it, say) leaves the position without a resting
+    stop: that is logged CRITICAL; the exit monitor's structural stop and the liquidation-proximity close stay as
+    the backup."""
+    client_oid = f"STOP-{uuid.uuid4().hex[:12].upper()}"
+    ok, reason = engine.dispatcher.place_resting_stop(client_oid, instrument_id, stop_price, instance_id)
+    if not ok:
+        logger.critical("Resting stop for %s (%s) at %s refused: %s; the position has no resting stop",
+                        instrument_id, instance_id, stop_price, reason)
+        return False
+    info = engine.dispatcher.open_orders[client_oid]
+    try:
+        async with _savepoint(conn):
+            await conn.execute(
+                """
+                INSERT INTO paper_orders (
+                    client_order_id, instance_id, account_id, instrument_id, side,
+                    order_type, quantity, price, filled_qty, status,
+                    last_event_version, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, 'STOP_MARKET', $6, $7, 0, 'ACCEPTED', 0, now(), now())
+                ON CONFLICT (client_order_id) DO NOTHING
+                """,
+                client_oid, info["instance_id"], getattr(engine, "account_id", ACCOUNT_ID), instrument_id,
+                info["side"], info["quantity"], stop_price,
+            )
+        # the replaced stops are no longer working
+        await reconcile_working_orders(conn, engine)
+    except Exception as e:  # the stop rests in memory either way
+        logger.error("paper_orders row for resting stop %s failed: %s", client_oid, e)
+    logger.info("Resting stop %s: %s %s %s @ %s", client_oid, info["side"], info["quantity"], instrument_id, stop_price)
+    return True
+
+
+async def fire_resting_stops(pool, engine, mark_prices: dict[str, Decimal]) -> int:
+    """Fill the resting stops the mark reached (leverage plan 1.4). Runs on every mark pass before the
+    liquidation check, so it works when the exit monitor is blind. Returns the number of stops filled."""
+    d = engine.dispatcher
+    fills, cancelled = d.triggered_stops(mark_prices)
+    if not fills and not cancelled:
+        return 0
+    async with pool.acquire() as conn:
+        for fill in fills:
+            info = d.open_orders.get(fill.client_order_id)
+            if info is None:
+                continue
+            intent = info["intent"]
+            await apply_paper_fill(conn, engine, fill, intent.instance_id, "STOP_MARKET", intent.stop_price)
+            logger.warning("Resting stop %s fired: %s %s %s @ %s (stop %s)", fill.client_order_id, fill.side,
+                           fill.quantity, fill.instrument_id, fill.price, intent.stop_price)
+        if cancelled:
+            await reconcile_working_orders(conn, engine)
+    return len(fills)
 
 
 async def reconcile_working_orders(conn, engine) -> None:
@@ -534,6 +599,7 @@ async def consume_perp_marks(
     channel: str = PERP_MARK_CHANNEL,
     key_pattern: str = PERP_MARK_KEY_PATTERN,
     liquidation_interval_s: float = 1.0,
+    pool=None,
 ):
     """Keep dispatcher mark prices current and run liquidation checks on fresh marks.
 
@@ -560,6 +626,10 @@ async def consume_perp_marks(
                 if now - last_check >= liquidation_interval_s:
                     last_check = now
                     fresh = engine.dispatcher.fresh_mark_prices()
+                    # Resting stops first: a stop the mark reached fires before the liquidation check
+                    if fresh and pool is not None and any(engine.dispatcher.is_stop_order(o)
+                                                          for o in engine.dispatcher.open_orders.values()):
+                        await fire_resting_stops(pool, engine, fresh)
                     if fresh and engine.dispatcher.perp_positions:
                         for liq in await engine.process_liquidations(fresh):
                             logger.critical(
@@ -1288,6 +1358,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                     leverage=payload.get("leverage"),
                                     margin_mode=payload.get("margin_mode"),
                                     reduce_only=payload.get("reduce_only") or False,
+                                    stop_price=Decimal(str(payload["stop_price"])) if payload.get("stop_price") else None,
                                 )
                             except ValidationError as e:
                                 await conn.execute(
@@ -1361,6 +1432,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                 try:
                                     quote = quote_cache.quote(canonical_inst)
                                     order_info = engine.dispatcher.open_orders.get(client_oid)
+                                    if (order_info is not None and order_info.get("is_perp") and not intent.reduce_only
+                                            and payload.get("stop_loss")):
+                                        order_info["attach_stop"] = Decimal(str(payload["stop_loss"]))
                                     fill = None
                                     if quote and order_info is not None:
                                         fill = match_order(
@@ -1386,7 +1460,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                             ON CONFLICT (client_order_id) DO NOTHING;
                                             """,
                                             client_oid, instance_id, acc_id, canonical_inst,
-                                            side, order_type, qty_dec, price_dec,
+                                            side, order_type, qty_dec, intent.stop_price or price_dec,
                                         )
                                         logger.info("Order %s accepted and working: %s %s %s @ %s (decision_trace_id=%s)",
                                                     client_oid, order_type, side, qty_dec, price_dec, trace_id)
@@ -1661,7 +1735,7 @@ async def main():
     asyncio.create_task(sync_strategies())
     asyncio.create_task(command_poller(pool, engine, quote_cache))
     asyncio.create_task(consume_market_data(redis, engine, quote_cache, pool))
-    asyncio.create_task(consume_perp_marks(redis, engine))
+    asyncio.create_task(consume_perp_marks(redis, engine, pool=pool))
     asyncio.create_task(reload_leverage_brackets(redis))
     asyncio.create_task(risk_monitor(engine, pool, redis))
     asyncio.create_task(publish_positions())
