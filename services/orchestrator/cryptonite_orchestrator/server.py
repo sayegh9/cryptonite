@@ -703,6 +703,11 @@ MANDATE_INSTANCE_REFUSAL = (
     "MANDATE_INSTANCE: AI mandates are paused and resumed in Mission Control, not as strategy instances"
 )
 MANDATE_REFUSED_COMMANDS = ("DEPLOY", "PAUSE", "RESUME", "STOP")
+# Claimed ahead of every older command. A stop queued behind other work waits for all of it: the WLD trailing stop of
+# 2026-10-17 06:55 waited 5 h 10 min behind two RESUME commands that failed on every attempt, and a +2.3% exit became
+# -0.58%. Failing commands are settled now instead of retried, but a backlog, a slow command or a future poison command
+# must still never hold a stop or the kill switch.
+RISK_REDUCING_COMMANDS = ("TRIP_KILL_SWITCH", "CLOSE_POSITION")
 
 # Settled only from PENDING. FAILED is the end. UNKNOWN is RUNNING with the demo pipeline's ambiguous-outcome outcome:
 # the claim never takes a RUNNING row, so it is never claimed or resubmitted, and the stuck-command alert shows it.
@@ -968,7 +973,8 @@ async def command_poller(pool, engine, quote_cache=None):
                               AND environment = 'PAPER'
                               AND command_type IN ('DEPLOY', 'STOP', 'PAUSE', 'RESUME', 'CLOSE_POSITION', 'MANUAL_ORDER', 'SUBMIT_ORDER', 'CANCEL_ORDER', 'TRIP_KILL_SWITCH', 'RESET_SWITCH', 'KILL_SWITCH_RESET_REQUEST')
                               AND (lease_expires_at IS NULL OR lease_expires_at < now())
-                            ORDER BY created_at ASC LIMIT 1
+                            -- risk-reducing commands first (blueprint D8): a stop never waits behind older work
+                            ORDER BY command_type = ANY($1::text[]) DESC, created_at ASC LIMIT 1
                             FOR UPDATE SKIP LOCKED
                         )
                         UPDATE execution_commands
@@ -980,7 +986,7 @@ async def command_poller(pool, engine, quote_cache=None):
                         FROM claimed
                         WHERE execution_commands.command_id = claimed.command_id
                         RETURNING execution_commands.*
-                    """)
+                    """, list(RISK_REDUCING_COMMANDS))
                     if row:
                         if str(row["command_id"]) in unsettled:
                             # Its last attempt raised and could not be settled: the claim is rolled back and the

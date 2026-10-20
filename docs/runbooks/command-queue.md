@@ -36,7 +36,9 @@ Each alert's `command_id` is in its `payload`. The orchestrator log also has one
 
 ## 2. A command is PENDING or RUNNING for a long time
 
-- PENDING: the poller has not claimed it. Usually another command is ahead of it, or a row is locked. Check whether
+- PENDING: the poller has not claimed it. Usually another command is ahead of it, or a row is locked. Stops
+  (CLOSE_POSITION) and TRIP_KILL_SWITCH are claimed before every other command, oldest first, so a waiting stop
+  means another stop or kill switch is ahead of it, a row is locked, or the orchestrator is not polling. Check whether
   the head of the queue is an UNKNOWN row (section 3), and the orchestrator log for `Error in command poller`.
 - RUNNING without the UNKNOWN outcome: a claim that never finished. Do not force it; escalate to the operator.
 

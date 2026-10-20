@@ -7,6 +7,7 @@ through the exit monitor and the real orchestrator command poller on a throwaway
 3. WLD 2026-10-17: a trailing-stop close waited 5 h 10 min behind failing RESUME commands at the queue head.
 """
 
+import datetime
 import json
 import uuid
 from decimal import Decimal
@@ -142,3 +143,25 @@ async def test_a_close_that_sells_less_than_the_mandate_owns_raises_a_critical_a
     again = await queue(db, m, {"_type": "CLOSE_POSITION", "instrument_id": SPOT, "reason": "HARD_STOP"})
     await drain(db, engine, quotes_at(47000), [again])
     assert await db.fetchval("SELECT count(*) FROM notifications_outbox WHERE kind = 'CLOSE_SHORT'") == 2
+
+
+# --- 3. A stop is claimed ahead of older commands ----------------------------------------------------------------------
+
+async def test_a_stop_is_claimed_ahead_of_older_queued_commands(db):
+    m = await make_mandate(db, level=3)
+    await hold(db, m.instance_id, "0.1", "50000")
+    engine = engine_holding("0.1")
+    older = []
+    for _ in range(2):  # queued hours before the stop, like the 2026-10-16 21:59 RESUMEs
+        cid = await manual_order(db, "BUY", "0.001")
+        await db.execute("UPDATE execution_commands SET created_at = now() - interval '9 hours' WHERE command_id = $1", cid)
+        older.append(cid)
+    stop = await queue(db, m, {"_type": "CLOSE_POSITION", "instrument_id": SPOT, "reason": "TRAILING_STOP"})
+
+    await drain(db, engine, quotes_at(51000), [stop, *older])
+    order = [r["command_id"] for r in await db.fetch(
+        "SELECT command_id FROM execution_commands WHERE command_id = ANY($1::uuid[]) ORDER BY processed_at", [stop, *older])]
+    assert order[0] == stop
+    processed = await db.fetchval("SELECT processed_at FROM execution_commands WHERE command_id = $1", stop)
+    created = await db.fetchval("SELECT created_at FROM execution_commands WHERE command_id = $1", stop)
+    assert processed - created < datetime.timedelta(seconds=5)
