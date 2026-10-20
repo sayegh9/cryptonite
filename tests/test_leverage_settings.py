@@ -7,7 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from cryptonite_api.settings_registry import REGISTRY, Tier, WriteRefused, entry_view, write_needs_totp
+from cryptonite_api.settings_registry import (
+    REGISTRY,
+    Tier,
+    WriteRefused,
+    entry_view,
+    write_needs_totp,
+)
 from cryptonite_orchestrator.mandate_gate import grade_ceiling
 from cryptonite_orchestrator.ops_monitor import apply_leverage_settings, load_leverage_settings
 from cryptonite_schemas.runtime_settings import default_leverage_settings, read_leverage_settings
