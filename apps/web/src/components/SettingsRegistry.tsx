@@ -27,6 +27,11 @@ const GROUPS: { title: string; hint?: string; opens?: "operator"; match: (key: s
   { title: "Alerts", match: (k) => k.startsWith("alerts.") },
   { title: "Scanner", match: (k) => k.startsWith("scanner.") },
   { title: "Universe", hint: "Changed through symbol onboarding, not here.", match: (k) => k.startsWith("universe.") },
+  {
+    title: "Leverage",
+    hint: "ADR 0009. Lowering a grade ceiling or raising the slippage allowance is free; the other way needs TOTP.",
+    match: (k) => k.startsWith("leverage."),
+  },
   { title: "Fixed guardrails", hint: "Set in code. Shown for reference; never editable here.", match: (k) => k.startsWith("guard.") },
   { title: "Authentication & Security", hint: "Session lifetimes and brute-force lockout thresholds.", match: (k) => k.startsWith("auth.") },
 ];

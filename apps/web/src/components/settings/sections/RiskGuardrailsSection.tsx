@@ -33,6 +33,26 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
     "guard.min_order_pct",
   ];
 
+  // ADR 0009: the grade ceilings and the slippage allowance are the operator's; the leverage guardrails are fixed
+  const leverageKeys = [
+    "leverage.grade_ceiling_a",
+    "leverage.grade_ceiling_b",
+    "leverage.grade_ceiling_c",
+    "leverage.slippage_allowance_pct",
+  ];
+  const leverageGuardKeys = [
+    "guard.mandate_max_leverage",
+    "guard.account_max_leverage",
+    "guard.perps_level",
+    "guard.max_risk_per_trade_pct",
+    "guard.liquidation_buffer_pct",
+    "guard.perp_notional_pct",
+  ];
+  const leverageEntries = leverageKeys.map((k) => getEntry(k)).filter((e): e is RegistryEntry => Boolean(e));
+  const leverageGuardEntries = leverageGuardKeys
+    .map((k) => getEntry(k))
+    .filter((e): e is RegistryEntry => Boolean(e));
+
   const dynamicEntries = dynamicRiskKeys
     .map((k) => getEntry(k))
     .filter((e): e is RegistryEntry => Boolean(e));
@@ -114,7 +134,44 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
         </div>
       </section>
 
-      {/* Part 3: Mandate & Execution Safety Invariants Reference Card */}
+      {/* Part 3: Leverage (ADR 0009) */}
+      <section className="space-y-4" data-testid="leverage-settings">
+        <div>
+          <h3 className="text-sm font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+            <Scale className="w-4 h-4" aria-hidden="true" />
+            Leverage (ADR 0009)
+          </h3>
+          <p className="text-xs text-zinc-400 mt-0.5">
+            Setup-grade ceilings and the stop slippage allowance feed every leverage plan (card, sizing, dispatcher).
+            Lowering a ceiling or raising the allowance is free; the other way needs TOTP. The guardrails below are fixed,
+            each with its source.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {leverageEntries.map((entry) => (
+            <SettingCard
+              key={entry.key}
+              entry={entry}
+              allEntries={entries}
+              onSaved={() => void onReload()}
+              highlight={highlightedKey === entry.key}
+            />
+          ))}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {leverageGuardEntries.map((entry) => (
+            <SettingCard
+              key={entry.key}
+              entry={entry}
+              allEntries={entries}
+              onSaved={() => void onReload()}
+              highlight={highlightedKey === entry.key}
+            />
+          ))}
+        </div>
+      </section>
+
+      {/* Part 4: Mandate & Execution Safety Invariants Reference Card */}
       <section className="rounded-xl border border-white/10 bg-zinc-950/60 p-5 space-y-4">
         <div className="flex items-center gap-2 text-zinc-200">
           <ShieldCheck className="w-5 h-5 text-emerald-400" aria-hidden="true" />
@@ -147,10 +204,12 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
           <div className="rounded-lg border border-white/5 bg-zinc-900/40 p-3.5 space-y-2">
             <div className="flex items-center gap-2 text-xs font-semibold text-emerald-300">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
-              Leverage Ceilings by Autonomy Level
+              Leveraged Perpetuals (ADR 0009)
             </div>
             <p className="text-[11px] text-zinc-400 leading-relaxed">
-              Level 1 (Assisted) permits max 2x leverage. Level 2 (Supervised) permits max 3x leverage. Level 3 (Autonomous) imposes a strict invariant ceiling of 5x perpetual leverage on certified symbols.
+              Perps only at L1, opted in per mandate with TOTP, so every entry is approved with TOTP. ISOLATED only, a
+              stop on every entry, at most 10x (each mandate&apos;s own maximum, default 3x), the loss at the stop within
+              1% of the budget (cap 2%), and notional within 25% of equity.
             </p>
           </div>
 

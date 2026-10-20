@@ -26,7 +26,14 @@ from decimal import Decimal
 from typing import Any
 
 from cryptonite_schemas.mandate import ACCOUNT_BACKSTOP_DRAWDOWN_PCT
-from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
+from cryptonite_schemas.runtime_settings import (
+    LEVERAGE_KEYS,
+    RUNTIME_BOUNDS,
+    LeverageSettings,
+    default_leverage_settings,
+    read_leverage_settings,
+    read_number,
+)
 
 from cryptonite_orchestrator import risk_overrides
 from cryptonite_orchestrator.mandate_monitor import alert
@@ -290,15 +297,39 @@ async def reconcile_approvals(pool) -> int:
     return len(rows)
 
 
+async def load_leverage_settings(pool, last_good: LeverageSettings) -> LeverageSettings:
+    """The grade ceilings and slippage allowance (ADR 0009, leverage plan 2.7), read every pass; a failed read or a
+    refused value keeps the last valid one."""
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key = ANY($1)", list(LEVERAGE_KEYS))
+    except Exception as e:
+        logger.warning("Leverage settings not re-read (%s); keeping the last valid values", e)
+        return last_good
+    applied, problems = read_leverage_settings({r["key"]: r["value"] for r in rows}, last_good)
+    for problem in problems:
+        logger.error("Leverage setting refused, keeping the last valid value: %s", problem)
+    return applied
+
+
+def apply_leverage_settings(engine, settings: LeverageSettings) -> None:
+    """Sizing reads ``engine.grade_ceilings``; the dispatcher prices its stop checks with the slippage allowance."""
+    engine.grade_ceilings = dict(settings.grade_ceilings)
+    engine.dispatcher.slippage_allowance_pct = Decimal(str(settings.slippage_pct)) / Decimal("100")
+
+
 async def ops_monitor(engine, pool, redis, interval_s: float = OPS_EVERY_S) -> None:
     """Start-up publish, then every ``interval_s``: risk-limit overrides (F7) and betas (F4, hourly),
     effective limits and heartbeat alerts."""
     watch = HeartbeatWatch()
     alert_values = (HEARTBEAT_GRACE_S, SENTIMENT_STALE_S)
     stuck_alerted: set[str] = set()
+    leverage = default_leverage_settings()
     while True:
         alert_values = await load_alert_settings(pool, alert_values)  # ADR 0007: the stored grace and staleness
         watch.grace_s = alert_values[0]
+        leverage = await load_leverage_settings(pool, leverage)
+        apply_leverage_settings(engine, leverage)
         try:
             await reconcile_approvals(pool)
         except asyncio.CancelledError:
