@@ -16,6 +16,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import asyncpg
@@ -393,10 +394,12 @@ async def _orchestrate_sideless_order(recommendation: str):
     conn = AsyncMock()
     conn.fetchrow = fetchrow
     conn.execute = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=None)  # no other owner holds the coin (SELL_EXCEEDS_OWN_HOLDING check)
     pool = MagicMock()
     pool.acquire.return_value.__aenter__.return_value = conn
     engine = MagicMock(spec=PaperTradingEngine)
     engine.dispatcher = MagicMock()
+    engine.dispatcher.get_position_qty.return_value = Decimal("1")  # the account holds enough for a SELL of 0.01
     with pytest.raises(asyncio.CancelledError):
         await command_poller(pool, engine)
     return engine, [c.args for c in conn.execute.call_args_list]

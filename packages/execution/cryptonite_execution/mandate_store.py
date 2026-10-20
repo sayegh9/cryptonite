@@ -156,3 +156,17 @@ async def instance_spot_holdings(conn, instance_id: str) -> dict[str, tuple[Deci
         instance_id,
     )
     return {r["instrument_id"]: (max(Decimal(str(r["net"] or 0)), Decimal("0")), Decimal(str(r["avg_px"] or 0))) for r in rows}
+
+
+async def others_spot_holding(conn, account_id: str, instrument_id: str, instance_id: str) -> Decimal:
+    """The spot quantity of ``instrument_id`` that instances other than ``instance_id`` hold: each one's net filled
+    quantity from ``paper_orders`` (fresh, see ``instance_spot_holdings``), never below zero. The dispatcher tracks
+    one account-level quantity per instrument, so this is the part of it ``instance_id`` must not sell."""
+    return Decimal(str(await conn.fetchval(
+        """SELECT COALESCE(SUM(GREATEST(net, 0)), 0) FROM (
+               SELECT SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE -filled_qty END) AS net
+               FROM paper_orders
+               WHERE account_id = $1 AND instrument_id = $2 AND instance_id <> $3 AND filled_qty > 0
+               GROUP BY instance_id) owned""",
+        account_id, instrument_id, instance_id,
+    ) or 0))

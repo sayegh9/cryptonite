@@ -14,6 +14,7 @@ Scope: the PAPER rows of `execution_commands`, processed one at a time by the or
 | <TYPE> for <target> is PENDING/RUNNING ...     | STUCK_COMMAND    | `stuck-command:<id>`      | Any other command has waited over 120 s. Section 2. |
 | <TYPE> ... is UNKNOWN_PENDING_RECONCILIATION   | STUCK_COMMAND    | `stuck-command:<id>`      | The held outcome. **Section 3.** |
 | Paper command refused                          | COMMAND_REFUSED (INFO) | `command-refused:<id>` | A strategy command (pause, resume, stop, deploy) was sent to an AI mandate. Expected: mandates are managed in Mission Control. No action. |
+| Stop close short: <reason> for <mandate> ...   | CLOSE_SHORT      | `close-short:<id>`        | A mandate's close sold less than the mandate owns: the account held less than its booked position (something else sold its coins). The rest is still booked open and its stops will not sell it. Section 5. |
 
 Stuck-command alerts only consider PAPER commands queued in the last 24 hours, except an UNKNOWN CLOSE_POSITION, which
 is alerted at any age until it is resolved (it still blocks stops). Any other older row is not alerted again: find it
@@ -35,7 +36,9 @@ Each alert's `command_id` is in its `payload`. The orchestrator log also has one
 
 ## 2. A command is PENDING or RUNNING for a long time
 
-- PENDING: the poller has not claimed it. Usually another command is ahead of it, or a row is locked. Check whether
+- PENDING: the poller has not claimed it. Usually another command is ahead of it, or a row is locked. Stops
+  (CLOSE_POSITION) and TRIP_KILL_SWITCH are claimed before every other command, oldest first, so a waiting stop
+  means another stop or kill switch is ahead of it, a row is locked, or the orchestrator is not polling. Check whether
   the head of the queue is an UNKNOWN row (section 3), and the orchestrator log for `Error in command poller`.
 - RUNNING without the UNKNOWN outcome: a claim that never finished. Do not force it; escalate to the operator.
 
@@ -104,3 +107,12 @@ stuck-command alert for the row stops being raised once the row leaves the queue
   run again meanwhile: its stored error is settled. After 3 failed settlements the command is closed by a bare status
   change: FAILED, or UNKNOWN when an effect may exist. The settlement runs with a 2 s lock timeout, so a row held by a
   half-open connection cannot stall the poller.
+
+## 5. A close sold less than the mandate owns (CLOSE_SHORT)
+
+The dispatcher keeps one account-level quantity per spot instrument; a mandate's close sells
+`min(account quantity, the mandate's own filled quantity)`. A shortfall means the account quantity fell below the
+mandate's booked holding. Since 2026-10-20 a manual SELL can no longer sell a mandate's coins
+(`SELL_EXCEEDS_OWN_HOLDING`), which was the 2026-10-17 WLD cause. Compare the mandate's `paper_orders` net with its
+open `paper_positions` row and with what the orchestrator log reports, then escalate to the operator: an orchestrator
+restart re-reads the account quantity from the open rows, after which the next stop can sell the rest.
