@@ -9,6 +9,9 @@
   with source BINANCE_REST, so settlements missed while the stream was down are filled in.
   Rows already present (from either source) are left untouched.
 - Open interest is polled from REST (Binance has no OI stream) into ``perp:oi:{symbol}``.
+- Symbols (leverage plan 1.3): ``PERP_SYMBOLS`` plus every perp ingest feeds quotes for (``ingest:universe``
+  ``perp_symbols``: the onboarded symbols with a USD-M perpetual, under the ingest cap), re-read every minute;
+  a change reconnects the mark stream with the new list. ``PERP_SYMBOLS_FROM_UNIVERSE=0`` turns that off.
 - Leverage brackets (leverage plan 1.2): with a read-only mainnet key (``BINANCE_FUTURES_READONLY_API_KEY``,
   ``BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH``) the signed ``/fapi/v1/leverageBracket`` is fetched daily into
   ``perp:brackets:{symbol}`` (``cryptonite_execution.brackets``). Without the key nothing is fetched.
@@ -37,6 +40,7 @@ import asyncpg
 import httpx
 import redis.asyncio as aioredis
 from cryptonite_schemas.identifiers import to_perp_instrument_id
+from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from websockets.asyncio.client import connect as ws_connect
 
 logger = logging.getLogger("cryptonite.scanner.derivatives_feed")
@@ -61,6 +65,7 @@ STALE_STREAM_S = 30  # @1s stream: no frame for this long means a dead connectio
 FUNDING_INTERVAL_HOURS = {1, 2, 4, 8}
 BRACKETS_REFRESH_INTERVAL_S = 24 * 3_600
 BRACKETS_RETRY_S = 3_600
+UNIVERSE_FOLLOW_INTERVAL_S = 60
 
 MS_TO_NS = 1_000_000
 HOUR_NS = 3_600 * 1_000_000_000
@@ -224,6 +229,9 @@ class DerivativesFeed:
         self.redis = redis
         self.pool = pg_pool
         self.symbols = [s.upper() for s in symbols]
+        self.base_symbols = list(self.symbols)  # PERP_SYMBOLS: always streamed
+        self.ws_base_url = ws_base_url
+        self._resubscribe = False  # set when the symbol list changed: the mark stream reconnects with it
         self.http = http_client
         self._connect = connect
         self.ws_url = mark_stream_url(self.symbols, ws_base_url)
@@ -267,6 +275,10 @@ class DerivativesFeed:
                             raw = await ws.recv()
                         await self.handle_frame(raw)
                         attempt = 0
+                        if self._resubscribe:
+                            self._resubscribe = False
+                            logger.info("Perp symbols changed; reconnecting the mark stream for %s", self.symbols)
+                            break
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - any stream failure means reconnect
@@ -353,6 +365,34 @@ class DerivativesFeed:
             except TimeoutError:
                 pass
 
+    def update_symbols(self, extra: list[str]) -> bool:
+        """Stream ``PERP_SYMBOLS`` plus ``extra``; True (and a reconnect on the next frame) when the list changed."""
+        wanted = list(self.base_symbols) + sorted({s.upper() for s in extra} - set(self.base_symbols))
+        if wanted == self.symbols:
+            return False
+        self.symbols = wanted
+        self.ws_url = mark_stream_url(self.symbols, self.ws_base_url)
+        self._resubscribe = True
+        return True
+
+    async def follow_universe_once(self) -> bool:
+        """Read the perps ingest feeds quotes for; an unknown universe keeps the current list."""
+        universe = IngestUniverse.parse(await self.redis.get(INGEST_UNIVERSE_KEY))
+        if universe is None:
+            return False
+        return self.update_symbols(universe.perp_symbols)
+
+    async def run_universe_follow(self, stop: asyncio.Event, interval_s: float = UNIVERSE_FOLLOW_INTERVAL_S) -> None:
+        while not stop.is_set():
+            try:
+                await self.follow_universe_once()
+            except Exception as exc:  # noqa: BLE001 - Redis down: keep streaming what we have
+                logger.warning("Could not read the ingest universe: %s", exc)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval_s)
+            except TimeoutError:
+                pass
+
     async def run_bracket_refresh(self, stop: asyncio.Event, fetch: Callable[[], Any],
                                   interval_s: float = BRACKETS_REFRESH_INTERVAL_S,
                                   retry_s: float = BRACKETS_RETRY_S) -> None:
@@ -408,6 +448,12 @@ async def main() -> None:
             feed = DerivativesFeed(redis, pool, symbols, http_client=http)
             tasks = [feed.run_mark_stream(stop), feed.run_oi_poller(stop), feed.run_funding_backfill(stop),
                      feed.run_heartbeat(stop)]
+            if os.getenv("PERP_SYMBOLS_FROM_UNIVERSE", "1") != "0":
+                try:  # start on the full list when ingest already published it
+                    await feed.follow_universe_once()
+                except Exception as exc:  # noqa: BLE001 - Redis down at start: the follow loop retries
+                    logger.warning("Could not read the ingest universe at start: %s", exc)
+                tasks.append(feed.run_universe_follow(stop))
             if bracket_adapter is not None:
                 tasks.append(feed.run_bracket_refresh(stop, bracket_adapter.get_leverage_brackets))
             await asyncio.gather(*tasks)

@@ -104,6 +104,18 @@ def no_live_leverage_brackets():
     clear_live_brackets()
 
 
+@pytest.fixture(autouse=True)
+def no_usdm_exchange_info_call(monkeypatch):
+    """Ingest start-up lists USD-M perpetuals from Binance (leverage plan 1.3); tests never reach Binance, so the
+    list is unknown unless a test stubs it."""
+    from cryptonite_ingest.recorder import IngestRecorder
+
+    async def _unknown(self):
+        return None
+
+    monkeypatch.setattr(IngestRecorder, "_fetch_usdm_perpetuals", _unknown)
+
+
 @pytest.fixture
 def temp_nautilus_dir():
     with tempfile.TemporaryDirectory() as tmp:

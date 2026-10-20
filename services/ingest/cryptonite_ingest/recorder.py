@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 import asyncpg
+import httpx
 import redis.asyncio as aioredis
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_schemas.identifiers import (
@@ -43,6 +44,7 @@ logger = logging.getLogger("cryptonite.recorder")
 
 # Raw symbols an onboarded instrument may carry; anything else is skipped when loading from the DB (WS-1A)
 _ONBOARDED_SYMBOL_RE = re.compile(r"[A-Z0-9]{2,20}")
+BINANCE_FUTURES_REST_URL = "https://fapi.binance.com"
 
 
 class IngestRecorder:
@@ -63,6 +65,11 @@ class IngestRecorder:
         self.symbols = [s.upper() for s in symbols]
         # USD-M perpetual bookTicker quotes (no bars), published as <SYM>-PERP.BINANCE
         self.perp_quote_symbols = [s.upper() for s in perp_quote_symbols or []]
+        self._env_perp_symbols = list(self.perp_quote_symbols)  # INGEST_PERP_SYMBOLS as given
+        # Leverage plan 1.3: every fed spot symbol that has a USD-M perpetual also gets perp quotes (default on),
+        # under the same INGEST_MAX_SYMBOLS cap; env perp symbols always stay
+        self.perp_from_onboarded = os.getenv("INGEST_PERP_FROM_ONBOARDED", "1") != "0"
+        self._usdm_perpetuals: set[str] | None = None  # TRADING USD-M perpetuals, None = unknown
         self.perp_quote_client: BinanceStreamClient | None = None
         self.perp_quote_hz = perp_quote_hz
         self.spot_quote_hz = spot_quote_hz  # 0 = publish every spot bookTicker update
@@ -131,6 +138,7 @@ class IngestRecorder:
             logger.error("Empty instrument file check failed: %s", e)
         await self.sync_instruments()
         self._drop_unlisted_onboarded_symbols()
+        await self._apply_perp_quote_symbols()
 
         # Reconcile any uncommitted batches from previous crashes
         for symbol in self.symbols:
@@ -206,6 +214,75 @@ class IngestRecorder:
         if dead:
             self.symbols = [s for s in self.symbols if s not in dead]
             logger.warning("Dropping onboarded symbols Binance does not list for trading: %s", dead)
+
+    async def _fetch_usdm_perpetuals(self) -> set[str] | None:
+        """USDT-margined perpetuals Binance lists as TRADING (public ``/fapi/v1/exchangeInfo``); None on failure."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                resp = await http.get(f"{BINANCE_FUTURES_REST_URL}/fapi/v1/exchangeInfo")
+                resp.raise_for_status()
+                return {
+                    str(s["symbol"]).upper() for s in resp.json().get("symbols", [])
+                    if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING"
+                    and s.get("quoteAsset") == "USDT"
+                }
+        except Exception as e:  # start-up must never fail because of this
+            logger.warning("Could not list USD-M perpetuals: %s", e)
+            return None
+
+    def _merged_perp_symbols(self) -> list[str]:
+        """Env perp symbols first, never dropped; then fed spot symbols with a USD-M perpetual, up to max_symbols."""
+        merged = list(self._env_perp_symbols)
+        if not self.perp_from_onboarded or not self._usdm_perpetuals:
+            return merged
+        dropped = []
+        for sym in self.symbols:
+            if sym in merged or sym not in self._usdm_perpetuals:
+                continue
+            if len(merged) >= self.max_symbols:
+                dropped.append(sym)
+                continue
+            merged.append(sym)
+        if dropped:
+            logger.warning("INGEST_MAX_SYMBOLS=%d reached; perp quotes not fed for: %s", self.max_symbols, dropped)
+        return merged
+
+    async def _apply_perp_quote_symbols(self) -> None:
+        if not self.perp_from_onboarded:
+            return
+        self._usdm_perpetuals = await self._fetch_usdm_perpetuals()
+        self.perp_quote_symbols = self._merged_perp_symbols()
+        logger.info("Perp quote symbols: env %s + with a USD-M perpetual %s", self._env_perp_symbols,
+                    [s for s in self.perp_quote_symbols if s not in self._env_perp_symbols])
+
+    async def _on_perp_stream_reconnect(self) -> None:
+        """The futures bookTicker socket reconnected (about twice a minute): publish a REST book ticker for every
+        perp symbol at once, so the dispatcher and the paper matcher are not left on the pre-drop quote until the
+        next socket update. Published as a fresh quote with the usual sequence (no feed gap)."""
+        client = self.perp_quote_client
+        if client is None or not self.perp_quote_symbols:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=5) as http:
+                resp = await http.get(f"{BINANCE_FUTURES_REST_URL}/fapi/v1/ticker/bookTicker")
+                resp.raise_for_status()
+                rows = resp.json()
+        except Exception as e:
+            logger.warning("Perp quote recovery after reconnect failed: %s", e)
+            return
+        wanted = set(self.perp_quote_symbols)
+        published = 0
+        for row in rows if isinstance(rows, list) else [rows]:
+            sym = str(row.get("symbol", "")).upper()
+            if sym not in wanted:
+                continue
+            client._last_published_quote.pop(sym, None)  # bypass coalescing: this quote must go out
+            await client._handle_book_ticker(
+                {"s": sym, "b": row["bidPrice"], "B": row["bidQty"], "a": row["askPrice"], "A": row["askQty"]},
+                time.time_ns(),
+            )
+            published += 1
+        logger.info("Perp quote recovery after reconnect: published %d REST book tickers", published)
 
     async def sync_instruments(self, symbols: list[str] | None = None) -> None:
         """Fetch instrument definitions, write to Nautilus catalog and PostgreSQL."""
@@ -398,6 +475,11 @@ class IngestRecorder:
         dynamic_subscribed = False
         if self.stream_client:
             dynamic_subscribed = await self.stream_client.add_symbol(sym)
+        # A runtime-onboarded symbol with a USD-M perpetual gets perp quotes too (leverage plan 1.3)
+        # (only when the perp socket runs: the universe must never claim a perp feed nobody streams)
+        if self.perp_quote_client and sym not in self.perp_quote_symbols and sym in self._merged_perp_symbols():
+            self.perp_quote_symbols.append(sym)
+            await self.perp_quote_client.add_symbol(sym)
 
         await self.publish_universe()
 
@@ -457,6 +539,7 @@ class IngestRecorder:
                 quote_ws_url=BINANCE_FUTURES_WS_QUOTE_STREAM_URL,
                 instrument_suffix="-PERP",
                 min_quote_interval_ms=1000.0 / self.perp_quote_hz if self.perp_quote_hz > 0 else 0,
+                on_reconnect=self._on_perp_stream_reconnect,
             )
             asyncio.create_task(self.perp_quote_client.start())
 
