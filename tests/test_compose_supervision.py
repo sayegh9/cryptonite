@@ -83,3 +83,14 @@ def test_slow_endpoints_get_headroom():
     assert "timeout=20" in " ".join(scanner["test"]) and scanner["timeout"] == "25s"
     sentiment = " ".join(SERVICES["sentiment"]["healthcheck"]["test"])
     assert "timeout=8" in sentiment and SERVICES["sentiment"]["healthcheck"]["timeout"] == "10s"
+
+
+@pytest.mark.parametrize("name", ["scanner", "api", "learner", "agent_worker"])
+def test_lake_readers_bound_duckdb_and_polars(name):
+    """Host stability §6: bounded DuckDB/Polars pools and a writable spill dir for every AnalyticsQueryEngine user.
+    No mem_limit until 24 h of measurements exist (then 1.5-2x the measured peak)."""
+    svc = SERVICES[name]
+    env = svc["environment"]
+    assert env["DUCKDB_THREADS"] == "8" and env["POLARS_MAX_THREADS"] == "8"
+    assert env["DUCKDB_MEMORY_LIMIT"] == "1GB" and env["DUCKDB_TEMP_DIR"] == "/tmp"
+    assert "mem_limit" not in svc and "MALLOC_ARENA_MAX" not in env

@@ -403,3 +403,201 @@ User units stop at logout unless lingering is enabled (`loginctl enable-linger $
 - Root cause: **open.** The next decisive data points are real GPU `power.draw` under load (§4.6), the PSU and
   BIOS log, a week at `-pl 250` with suspend disabled, and kdump/rasdaemon output if another crash happens. If crashes continue after §4.1–4.5,
   go ahead with A1b (move the always-on core off this box).
+
+---
+
+## 6. Memory: lake compaction and bounded DuckDB (2026-10-20)
+
+### 6.1 What happened
+
+On a 62 GiB host with no swap, these services reach the following resident memory within minutes of boot:
+
+| Service | RSS |
+|---|---|
+| scanner | 15 GB |
+| api | 13.7 GB |
+| agent_worker | 13.6 GB |
+| learner | 5.8 GB |
+
+The host hit a global OOM on 2026-10-20 at 14:24–14:27. The kernel killed the scanner, and systemd-oomd killed Chrome,
+the Claude app and dbus. The operator then powered the host off. Benchmark containers from the investigation itself
+(5 GB caps, with about 7 GB available) helped trigger it. Lesson: **no benchmark or test container on this host unless
+`free -g` shows at least 12 GB available, and always use `--memory` ≤ 2g.**
+
+All four services read the lake through `AnalyticsQueryEngine.query_bars_df`, and every read opens every file it
+globs. There are two root causes, measured in 2 GB-capped throwaway containers on a read-only lake (BTCUSDT 1m):
+
+1. **Small files.** 23,424 files hold only 310,767 rows (79.5 MB uncompressed), and about 700 new files arrive
+   every day (one per ingest flush).
+2. **`SELECT DISTINCT ON (ts_init_ns) * … ORDER BY ts_init_ns, <5 tie-break keys>` cannot spill to disk.** The
+   full-history read fails even single-threaded at 1.6 GB.
+
+The fix and its evidence:
+
+- **QUALIFY gives the same pick.** `SELECT * … QUALIFY row_number() OVER (PARTITION BY ts_init_ns ORDER BY <same
+  tie-break keys>) = 1 ORDER BY ts_init_ns` picked exactly the same row for all 302,867 bars. `EXCEPT ALL` returned 0
+  rows in both directions. 3,921 timestamps have more than one candidate row, and there are 0 ties on the full key.
+  On a 12.5-day window the content hash is identical.
+- **Compaction is lossless.** Compacting each date partition to one zstd file kept the row count, the distinct
+  count and the row hash identical. The schema stayed identical too, including the hive `date` column. File counts
+  went from 23,424 to 217 for 1m, and from 465 to 40 for 1h. Compaction peaked at 1.7 GB RSS with DuckDB
+  `threads=4` and `memory_limit=1GB`.
+- **Read cost before and after:**
+
+  | Read | Today (DISTINCT ON, uncompacted) | QUALIFY, uncompacted | QUALIFY, compacted |
+  |---|---|---|---|
+  | 12.5-day scanner window | 5.5 s / 4.1 GB (8.2 s / 2.7 GB in the run that measured QUALIFY alone) | 7.6 s / 1.7 GB | **0.14 s / 289 MB** |
+  | Full history | fails | not measured | **0.7 s**, fits a 300 MB DuckDB limit |
+
+**Not measured:** the uncompacted lake under `DUCKDB_MEMORY_LIMIT=1GB`. This matters most for the 300-day 1d
+HTF read (specs with 4h pull 1d through `HTF_MAP`). QUALIFY can spill, so it should complete, but slowly. If it
+fails, the scanner now logs `Skipping <inst> in the scan: the analytics lake read failed (OutOfMemoryException …)`
+and carries on. **Run compaction soon after the deploy** (§6.3), so that window stays short.
+
+### 6.2 What changed (PR "lake compaction + bounded DuckDB")
+
+- `query_bars_df` now uses the QUALIFY form above, with the same tie-break and the same output order. When a
+  file vanishes between DuckDB's glob and its open (compaction or the repair script moved it), it reads once more
+  before returning an empty frame.
+- `scripts/compact_lake.py` compacts each partition up to yesterday, counted from one hour ago. Before 01:00 UTC
+  that means the day before yesterday, because yesterday can still receive a straggler file just after midnight.
+  For each partition with more than one file it:
+  - writes a temp copy outside every `date=*` glob;
+  - checks the copy's column types, row count, distinct `ts_init_ns` and order-independent row hash against the
+    originals;
+  - moves the copy in with `os.replace`;
+  - **only then moves** the originals to `data/analytics_lake_quarantine/<same path>`, with a `compaction-<stamp>.json`
+    manifest. It never deletes anything.
+
+  The script is idempotent: a partition that gains files later (a straggler or a backfill) is recompacted together
+  with its compacted file. It holds `<lake>/.lake-maintenance.lock`. `backfill_history.py`, `backfill_gaps.py` and
+  `repair_lake_open_stamped_rows.py --apply` take the same lock and exit 75 while another job holds it.
+  `backfill_regime_tags.py` only reads the lake, so it does not take the lock.
+- The scanner catches `duckdb.Error` per instrument (log and skip), as it already did for `ValueError`. Before
+  this, the error escaped before `XACK` and every later spec was skipped.
+- `AnalyticsQueryEngine` reads `DUCKDB_THREADS`, `DUCKDB_MEMORY_LIMIT` and `DUCKDB_TEMP_DIR`. When they are unset,
+  DuckDB keeps its defaults: all cores, 80% of RAM, and `.tmp` in the working directory, which is not writable for
+  api/scanner (uid 1000). Compose sets `8` / `1GB` / `/tmp` and `POLARS_MAX_THREADS=8` for scanner, api, learner and
+  agent_worker. There is **no `mem_limit` and no `MALLOC_ARENA_MAX` yet**: §6.4 measures first.
+  `SCAN_LOOKBACK_BARS`, `HTF_MAP` and `/api/v1/bars` are unchanged.
+- The model-callable DuckDB tool reads only the Nautilus catalog and has its own caps, so it is unaffected.
+- `ingest_batches.analytics_paths` is an audit column that no code reads back. After compaction it names files
+  that now sit in quarantine.
+
+### 6.3 Operator order
+
+Run on the host as `samx` (uid 1000, which owns `data/`), from `repo/` on `main`. Do not use the `test` container:
+`deploy-main/data` is a symlink into `repo/`, and it does not resolve inside that container. Each heavy step runs
+in a user scope capped at 2 GB, so the kernel stops it before it can starve the stack. Before each step, check that
+`free -g` shows at least 6 GB available (compaction peaked at 1.7 GB).
+
+```bash
+cd ~/Documents/projects/cryptonite/repo && git pull --ff-only          # repo/ stays on main (launchers)
+CAP="systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0"
+```
+
+1. **Deploy the code** (HANDOFF.md "Deploy"): `build` and then `up -d --no-deps scanner api learner agent_worker`.
+   Then check:
+   - `docker exec cryptonite_scanner env | grep -E 'DUCKDB|POLARS'` shows the four values.
+   - `docker logs --since 10m cryptonite_scanner 2>&1 | grep -c "analytics lake read failed"` counts lake failures.
+     A few are expected until compaction. Many mean you should go straight to step 2.
+2. **Dry run.** Reads Parquet footers only and changes nothing:
+   ```bash
+   $CAP uv run python scripts/compact_lake.py --lake data/analytics_lake --dry-run | tail -5
+   ```
+3. **Take a reference, then compact one symbol.** The reference covers the last 3 whole UTC days. Run after
+   01:00 UTC, so yesterday's partition gets no more stragglers between the two reads:
+   ```bash
+   REF='import sys, time; from cryptonite_storage.queries import AnalyticsQueryEngine as E
+   end = int(time.time()) // 86400 * 86400 * 10**9; start = end - 3 * 86400 * 10**9
+   df = E("data/analytics_lake", threads=4, memory_limit="1GB", temp_directory="/tmp").query_bars_df("BTCUSDT", "1m", start, end - 1)
+   print(df.height, df.drop("date").hash_rows(seed=0).sum())'
+   $CAP uv run python -c "$REF"                                                            # before
+   $CAP uv run python scripts/compact_lake.py --lake data/analytics_lake --symbol BTCUSDT --timeframe 1m
+   ```
+4. **Verify.**
+   - The script exits 0, and every line says `compacted`. A `failed` partition is left exactly as it was.
+   - `$CAP uv run python -c "$REF"` prints the same two numbers as before.
+   - `ls data/analytics_lake/binance_klines_enriched/binance/spot/1m/BTCUSDT/date=$(date -u -d '-2 day' +%F)` shows a
+     single `part-compacted-*.parquet` file.
+   - The originals and the manifest are under
+     `data/analytics_lake_quarantine/binance_klines_enriched/binance/spot/1m/BTCUSDT/date=…/`.
+   - The scanner keeps scanning (`scan_runs` grows), and the chart for BTCUSDT loads in the UI.
+5. **Compact everything:** `$CAP uv run python scripts/compact_lake.py --lake data/analytics_lake`.
+   Check the file count afterwards: `find data/analytics_lake -name '*.parquet' | wc -l` (78,598 on 2026-10-20).
+6. **Nightly schedule** (user crontab, next to the backups). Cron runs in local time: 04:30 local is 01:30 UTC
+   in summer time and 02:30 UTC in winter time. Both are after 01:00 UTC, and both come well after the Sunday
+   02:30 `data` backup has started:
+   ```
+   30 4 * * * cd $HOME/Documents/projects/cryptonite/repo && XDG_RUNTIME_DIR=/run/user/$(id -u) systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 $HOME/.local/bin/uv run python scripts/compact_lake.py --lake data/analytics_lake >> $HOME/.local/state/cryptonite/compact-lake.log 2>&1
+   ```
+   - The `systemd-run --user` scope needs the user manager to be running, which means the desktop session is logged
+     in or lingering is enabled (`loginctl enable-linger samx`). Without it the job fails and logs, and the lake is
+     untouched.
+   - Exit 75 means a backfill or the repair held the lock. The next night catches up.
+   - Exit 1 means a partition failed its check. Read the log.
+
+**Quarantine.** Keep it until the partitions are verified, then prune it after **14 days**. File mtimes are the
+originals' own, so prune by manifest age rather than file age. List the candidates first:
+
+```bash
+cd ~/Documents/projects/cryptonite/repo/data/analytics_lake_quarantine
+find . -name 'compaction-*.json' -mtime +14 -print0 \
+  | xargs -0 -r python3 -c 'import json,sys; [print(f) for m in sys.argv[1:] for f in json.load(open(m))["quarantined_as"]]'
+# when the list looks right: pipe the same output to  xargs -d '\n' rm --  and then delete those manifests
+```
+
+Quarantine lives under `data/`, so **the weekly `cryptonite-backup data` tarball carries it** until it is pruned.
+That is roughly one extra copy of the uncompacted lake (1.1 GB on 2026-10-20) per kept week.
+
+**Rollback.**
+- Code: deploy the previous `main`. To undo only the caps, remove the four env lines from the services.
+- One partition: move the files listed in its manifest's `quarantined_as` back into the partition, then move its
+  `part-compacted-<stamp>.parquet` into quarantine. Readers de-duplicate per bar, so the order of the two moves does
+  not matter.
+
+### 6.4 24 h measurement checklist, then memory limits
+
+Start right after step 5 (or after the deploy, if compaction waits). VmHWM and `memory.peak` count from container
+start, so recreate a container first if it predates the change.
+
+```bash
+# every 10 min for 24 h: memory and CPU of the lake readers (stop with: kill %1)
+nohup bash -c 'while true; do date -Is; docker stats --no-stream --format "{{.Name}} {{.MemUsage}} {{.CPUPerc}}" \
+  cryptonite_scanner cryptonite_api cryptonite_learner cryptonite_agent_worker; sleep 600; done' \
+  >> ~/lake-readers-24h.log 2>&1 &
+
+# at the end: peak RSS of every process (VmHWM) and the container's own peak (cgroup v2)
+for c in cryptonite_scanner cryptonite_api cryptonite_learner cryptonite_agent_worker; do
+  echo "== $c"; docker exec $c sh -c 'grep -H VmHWM /proc/[0-9]*/status 2>/dev/null; cat /sys/fs/cgroup/memory.peak'
+done
+
+# scanner keeps up: the scanner-worker group's lag stays near 0 (it was 661-1,189 on Oct 5-6)
+docker exec cryptonite_scanner python -c "import os,redis; r=redis.Redis.from_url(os.environ['REDIS_URL']); print([(g['name'], g.get('lag'), g['pending']) for g in r.xinfo_groups('cryptonite:stream:closed_bar_committed')])"
+
+# lake read failures and OOM kills in the window
+docker logs --since 24h cryptonite_scanner 2>&1 | grep -c "analytics lake read failed"
+journalctl -k --since -24h | grep -iE "out of memory|oom-kill|killed process"
+free -g
+```
+
+Record the results:
+
+| Service | `docker stats` max | `memory.peak` | max VmHWM | Lake read failures | `mem_limit` = 1.5–2× peak |
+|---|---|---|---|---|---|
+| scanner | | | | | |
+| api | | | | — | |
+| learner | | | | — | |
+| agent_worker | | | | — | |
+
+After 24 h, set `mem_limit` per service at 1.5–2× the measured peak (the larger of `memory.peak` and the `docker
+stats` maximum), in a separate change. `MALLOC_ARENA_MAX` stays out until it has been measured the same way.
+
+### 6.5 Follow-ups
+
+- **DuckDB 1.5.5's glob matches dot-files.** `date=*/*.parquet` also returns the writers' in-progress `.tmp.*.parquet`.
+  A read that lands on a half-written one fails with `InvalidInputException`. The scanner now skips that
+  instrument for that run, but `/api/v1/bars` would return an error. Fix it by globbing `part-*.parquet`, or by
+  writing temp files outside the partition, as compaction does.
+- **Prune partitions by date.** `query_bars_df` filters on `ts_event_ns` only, so DuckDB still opens every
+  partition's footer. A `date >= <start date>` predicate on the hive column would skip old partitions entirely.

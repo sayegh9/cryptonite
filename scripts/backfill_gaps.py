@@ -16,6 +16,7 @@ import httpx
 from cryptonite_schemas.bar import EnrichedBar, RawBinanceKline
 from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_spot_instrument_id
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
+from cryptonite_storage.lake_lock import lake_maintenance_lock_or_exit
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
 logging.basicConfig(
@@ -186,11 +187,13 @@ async def main():
     symbols = sys.argv[1].split(",") if len(sys.argv) > 1 else ["BTCUSDT", "ETHUSDT", "XRPUSDT"]
     days = int(sys.argv[2]) if len(sys.argv) > 2 else 2
 
-    for sym in symbols:
-        try:
-            await backfill_symbol(symbol=sym, timeframe="1m", days=days, analytics_dir=analytics_dir)
-        except Exception as e:
-            logger.error("Error backfilling %s: %s", sym, e, exc_info=True)
+    # never at the same time as lake compaction or the open-stamped repair
+    with lake_maintenance_lock_or_exit(analytics_dir):
+        for sym in symbols:
+            try:
+                await backfill_symbol(symbol=sym, timeframe="1m", days=days, analytics_dir=analytics_dir)
+            except Exception as e:
+                logger.error("Error backfilling %s: %s", sym, e, exc_info=True)
 
 
 if __name__ == "__main__":

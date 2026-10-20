@@ -1,10 +1,14 @@
 """DuckDB analytical query engine over the date-partitioned Analytics Lake."""
 
+import logging
+import os
 import re
 from pathlib import Path
 
 import duckdb
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 _UNIT_NS = {"m": 60 * 10**9, "h": 3600 * 10**9, "d": 86400 * 10**9, "w": 7 * 86400 * 10**9}
 
@@ -66,12 +70,41 @@ def open_stamped_receipt_lag_ns(tf_ns: int) -> int:
     return tf_ns - 1_000_000
 
 
+def duckdb_config(
+    threads: int | None = None, memory_limit: str | None = None, temp_directory: str | None = None
+) -> dict[str, str | int]:
+    """DuckDB settings from the arguments, else from ``DUCKDB_THREADS`` / ``DUCKDB_MEMORY_LIMIT`` /
+    ``DUCKDB_TEMP_DIR``. A setting left unset (or empty) is not passed, so DuckDB keeps its default."""
+    config: dict[str, str | int] = {}
+    raw_threads = threads if threads is not None else os.getenv("DUCKDB_THREADS", "").strip()
+    if raw_threads != "":
+        n = int(raw_threads)
+        if n < 1:
+            raise ValueError(f"DUCKDB_THREADS must be >= 1, got {raw_threads!r}")
+        config["threads"] = n
+    if mem := (memory_limit if memory_limit is not None else os.getenv("DUCKDB_MEMORY_LIMIT", "")).strip():
+        config["memory_limit"] = mem
+    if tmp := (temp_directory if temp_directory is not None else os.getenv("DUCKDB_TEMP_DIR", "")).strip():
+        config["temp_directory"] = tmp
+    return config
+
+
 class AnalyticsQueryEngine:
     """Fast analytical queries over date-partitioned Parquet data using DuckDB."""
 
-    def __init__(self, base_dir: str | Path) -> None:
+    def __init__(
+        self,
+        base_dir: str | Path,
+        *,
+        threads: int | None = None,
+        memory_limit: str | None = None,
+        temp_directory: str | None = None,
+    ) -> None:
+        """``threads``, ``memory_limit`` and ``temp_directory`` default to ``DUCKDB_THREADS``,
+        ``DUCKDB_MEMORY_LIMIT`` and ``DUCKDB_TEMP_DIR``; unset or empty keeps DuckDB's own default (all cores,
+        80% of RAM, ``.tmp`` in the working directory). They are database-wide, so every cursor shares them."""
         self.base_dir = Path(base_dir).resolve()
-        self._con = duckdb.connect(":memory:")
+        self._con = duckdb.connect(":memory:", config=duckdb_config(threads, memory_limit, temp_directory))
 
     def _get_glob_path(
         self,
@@ -133,25 +166,41 @@ class AnalyticsQueryEngine:
             where_clauses.append(f"ts_event_ns <= {end_ns}")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        # row_number() ... QUALIFY rather than DISTINCT ON: same pick (same ORDER BY inside the window), but a
+        # window sort can spill to temp_directory and DISTINCT ON cannot, so the full-history read failed even
+        # single-threaded at 1.6 GB (docs/runbooks/host-stability.md).
         query = f"""
-            SELECT DISTINCT ON (ts_init_ns) *, ts_event_ns::BIGINT - {tf_ns} AS bar_open_ns
+            SELECT *, ts_event_ns::BIGINT - {tf_ns} AS bar_open_ns
             FROM read_parquet('{glob_path}')
             {where_sql}
-            ORDER BY ts_init_ns ASC,
-                CASE
-                    WHEN received_at_ns::BIGINT - ts_event_ns::BIGINT = {open_stamped_receipt_lag_ns(tf_ns)} THEN 2
-                    WHEN received_at_ns::BIGINT < ts_event_ns::BIGINT - {EARLY_RECEIPT_TOLERANCE_NS} THEN 1
-                    ELSE 0
-                END ASC,
-                ts_event_ns DESC, received_at_ns DESC, ingest_batch_id DESC, payload_checksum DESC
+            QUALIFY row_number() OVER (
+                PARTITION BY ts_init_ns
+                ORDER BY
+                    CASE
+                        WHEN received_at_ns::BIGINT - ts_event_ns::BIGINT = {open_stamped_receipt_lag_ns(tf_ns)} THEN 2
+                        WHEN received_at_ns::BIGINT < ts_event_ns::BIGINT - {EARLY_RECEIPT_TOLERANCE_NS} THEN 1
+                        ELSE 0
+                    END ASC,
+                    ts_event_ns DESC, received_at_ns DESC, ingest_batch_id DESC, payload_checksum DESC
+            ) = 1
+            ORDER BY ts_init_ns ASC
         """
         # One cursor per call: DuckDB connections are not safe for concurrent use, and the API calls this from
         # worker threads (routes/bars.py).
         con = self._con.cursor()
         try:
-            arrow_table = con.execute(query).to_arrow_table()
-            return pl.from_arrow(arrow_table)  # type: ignore
-        except duckdb.IOException:
+            # A file can vanish between DuckDB's glob and its open (compaction moves the originals of a partition
+            # once their compacted copy is in place; the repair script moves files too). The second attempt
+            # globs again and sees the new layout.
+            for attempt in (1, 2):
+                try:
+                    arrow_table = con.execute(query).to_arrow_table()
+                    return pl.from_arrow(arrow_table)  # type: ignore
+                except duckdb.IOException as e:
+                    if "No files found" in str(e):  # nothing in the lake for this key: not a race
+                        break
+                    if attempt == 2:
+                        logger.warning("Lake read of %s %s failed twice, returning no bars: %s", symbol, timeframe, e)
             return pl.DataFrame()
         finally:
             con.close()

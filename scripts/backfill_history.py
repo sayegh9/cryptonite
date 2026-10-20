@@ -36,6 +36,7 @@ from cryptonite_schemas.bar import EnrichedBar
 from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_spot_instrument_id
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
 from cryptonite_storage.coordinator import TwoStoreCoordinator, missing_runs
+from cryptonite_storage.lake_lock import lake_maintenance_lock_or_exit
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from cryptonite_storage.queries import timeframe_ns
 
@@ -108,12 +109,14 @@ async def main() -> None:
     coordinator = TwoStoreCoordinator(nautilus_manager=catalog, analytics_writer=AnalyticsLakeWriter(args.lake),
                                       pg_pool=None)
     total = 0
-    async with BinanceRestClient() as rest:
-        for symbol in [s.strip().upper() for s in args.symbols.split(",")]:
-            meta = (await rest.get_exchange_info(symbol))[0]
-            precisions = {"price_precision": meta["price_precision"], "size_precision": meta["size_precision"]}
-            for tf in [t.strip() for t in args.timeframes.split(",")]:
-                total += await backfill(rest, coordinator, catalog, symbol, tf, args.days, precisions)
+    # never at the same time as lake compaction or the open-stamped repair
+    with lake_maintenance_lock_or_exit(args.lake):
+        async with BinanceRestClient() as rest:
+            for symbol in [s.strip().upper() for s in args.symbols.split(",")]:
+                meta = (await rest.get_exchange_info(symbol))[0]
+                precisions = {"price_precision": meta["price_precision"], "size_precision": meta["size_precision"]}
+                for tf in [t.strip() for t in args.timeframes.split(",")]:
+                    total += await backfill(rest, coordinator, catalog, symbol, tf, args.days, precisions)
     logger.info("backfill done: %d bars written", total)
 
 

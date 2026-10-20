@@ -146,6 +146,11 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       PORT: 8082
+      # DuckDB lake reads (AnalyticsQueryEngine) and Polars: bounded pools, spill to /tmp (host-stability runbook §6)
+      DUCKDB_THREADS: "8"
+      DUCKDB_MEMORY_LIMIT: 1GB
+      DUCKDB_TEMP_DIR: /tmp
+      POLARS_MAX_THREADS: "8"
     volumes:
       - ../data:/app/data:rw
       - ../services/api:/app/services/api
@@ -208,6 +213,11 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis_dev_pass}@redis:6379/0
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       PORT: 8000
+      # DuckDB lake reads (AnalyticsQueryEngine) and Polars: bounded pools, spill to /tmp (host-stability runbook §6)
+      DUCKDB_THREADS: "8"
+      DUCKDB_MEMORY_LIMIT: 1GB
+      DUCKDB_TEMP_DIR: /tmp
+      POLARS_MAX_THREADS: "8"
     volumes:
       - ../data:/app/data:rw
       - ../services/api:/app/services/api
@@ -422,6 +432,11 @@ services:
       AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       NAUTILUS_CATALOG_PATH: /app/data/nautilus_catalog
       PORT: 8085
+      # DuckDB lake reads (AnalyticsQueryEngine) and Polars: bounded pools, spill to /tmp (host-stability runbook §6)
+      DUCKDB_THREADS: "8"
+      DUCKDB_MEMORY_LIMIT: 1GB
+      DUCKDB_TEMP_DIR: /tmp
+      POLARS_MAX_THREADS: "8"
     env_file:
       - ../.env
     volumes:
@@ -581,6 +596,11 @@ services:
       AI_TELEMETRY_DATABASE_URL: postgresql://cryptonite_ai_telemetry:ai_telemetry_dev_pass@postgres:5432/cryptonite
       ANALYTICS_LAKE_PATH: /app/data/analytics_lake
       LEARNER_INTERVAL_S: "300"
+      # DuckDB lake reads (AnalyticsQueryEngine) and Polars: bounded pools, spill to /tmp (host-stability runbook §6)
+      DUCKDB_THREADS: "8"
+      DUCKDB_MEMORY_LIMIT: 1GB
+      DUCKDB_TEMP_DIR: /tmp
+      POLARS_MAX_THREADS: "8"
     env_file:
       - ../.env
     volumes:
