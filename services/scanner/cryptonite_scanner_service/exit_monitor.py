@@ -433,23 +433,35 @@ async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1")
     attempts = await conn.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key LIKE $1 || '%'", prefix)
     half_qty = (Decimal(str(pos.quantity)) / Decimal(2)).normalize()
     half_qty_str = format(half_qty, "f")
-    payload = {
-        "instrument_id": pos.instrument_id,
-        "side": "SELL" if pos.side == "LONG" else "BUY",
-        "order_type": "MARKET",
-        "quantity": half_qty_str,
-        "reason": reason,
-        "source": "exit_monitor_tp1",
-    }
+    if is_perp(pos.instrument_id):
+        # A perp scales out through the close path with a quantity (a reduce-only fill of half, the resting stop
+        # stays for the rest): a SUBMIT_ORDER on the other side would be a new entry, not a reduction
+        command_type = "CLOSE_POSITION"
+        payload = {"instrument_id": pos.instrument_id, "quantity": half_qty_str, "reason": reason,
+                   "source": "exit_monitor_tp1"}
+    else:
+        command_type = "SUBMIT_ORDER"
+        payload = {
+            "instrument_id": pos.instrument_id,
+            "side": "SELL" if pos.side == "LONG" else "BUY",
+            "order_type": "MARKET",
+            "quantity": half_qty_str,
+            "reason": reason,
+            "source": "exit_monitor_tp1",
+        }
     await conn.execute(
         """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
                requester_id, payload, status, environment, account_id)
-           VALUES ($1, $2, 'SUBMIT_ORDER', $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
+           VALUES ($1, $2, $6, $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
            ON CONFLICT (idempotency_key) DO NOTHING""",
         uuid.uuid4(), f"{prefix}:{attempts}", pos.owner_instance,
-        json.dumps(payload), PAPER_ACCOUNT_ID,
+        json.dumps(payload), PAPER_ACCOUNT_ID, command_type,
     )
     return True
+
+
+def is_perp(instrument_id: str) -> bool:
+    return instrument_id.split(".", 1)[0].upper().endswith("-PERP")
 
 
 async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:

@@ -142,7 +142,12 @@ def test_stop_outliving_its_position_is_cancelled():
     d = long_10x()
     d.place_resting_stop("STOP-1", PERP, D("48000"))
     d.flatten_perp_position(PERP, D("50000"), D("0"), "CLOSE-1")
-    assert d.triggered_stops({PERP: D("47000")}) == ([], ["STOP-1"])
+    assert d.open_orders == {}  # dropped with the position
+    # one that is still there when the mark reaches it (e.g. rehydrated) is cancelled, never filled
+    d.set_perp_position(PERP, D("0.04"), D("50000"), leverage=10, margin_mode="ISOLATED", instance_id="INST-001")
+    d.place_resting_stop("STOP-2", PERP, D("48000"))
+    d.perp_positions.clear()
+    assert d.triggered_stops({PERP: D("47000")}) == ([], ["STOP-2"])
     assert d.open_orders == {}
 
 

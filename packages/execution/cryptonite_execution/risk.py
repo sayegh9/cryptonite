@@ -215,17 +215,19 @@ class GuardedOrderDispatcher:
             self.locked_margin += im
 
     def flatten_perp_position(
-        self, instrument_id: str, fill_price: Decimal, commission: Decimal, client_order_id: str
+        self, instrument_id: str, fill_price: Decimal, commission: Decimal, client_order_id: str,
+        quantity: Decimal | None = None,
     ) -> tuple[str, Decimal, Decimal] | None:
-        """Close a perp position with an opposing reduce-only order filled at ``fill_price``.
+        """Close a perp position, or ``quantity`` of it (a partial close, e.g. the TP1 scale-out), with an
+        opposing reduce-only order filled at ``fill_price``. The quantity is capped at the position.
 
         Returns (side, quantity, gross realized PnL) of the closing order, or None when flat.
         """
         signed_qty = self.get_perp_position_qty(instrument_id)
-        if signed_qty == 0:
+        if signed_qty == 0 or (quantity is not None and quantity <= 0):
             return None
         side = "BUY" if signed_qty < 0 else "SELL"
-        qty = abs(signed_qty)
+        qty = abs(signed_qty) if quantity is None else min(abs(signed_qty), quantity)
         self.open_orders[client_order_id] = {
             "intent": None,
             "reserved_notional": Decimal("0"),
@@ -951,7 +953,19 @@ class GuardedOrderDispatcher:
 
         self.cash_balance += realized - commission
         self.daily_realized_pnl += realized - commission
+        self._fit_resting_stops(instrument_id)
         return realized if closed_any else None
+
+    def _fit_resting_stops(self, instrument_id: str) -> None:
+        """Keep resting stops matched to the position after a fill: shrink them to what is left, and drop them
+        when the position is gone or flipped (a stop protecting the old side would add exposure)."""
+        pos = self.perp_positions.get(instrument_id)
+        for cid, info in list(self.resting_stops(instrument_id).items()):
+            protects_long = info["side"] == "SELL"
+            if pos is None or (pos.signed_qty > 0) != protects_long:
+                self.release_reservation(cid)
+            elif info["quantity"] > abs(pos.signed_qty):
+                info["quantity"] = abs(pos.signed_qty)
 
     def portfolio_equity(self) -> Decimal:
         """Cash + spot longs at bid + perpetual unrealized PnL at mark."""

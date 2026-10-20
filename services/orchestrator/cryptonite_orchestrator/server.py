@@ -171,6 +171,8 @@ async def apply_paper_fill(
     comm = fill.quantity * fill.price * fee_rate
     # A perp entry that carries its stop (``stop_loss``) gets a resting stop once it fills (leverage plan 1.4)
     attach_stop = (engine.dispatcher.open_orders.get(fill.client_order_id) or {}).get("attach_stop")
+    stops_before = set(engine.dispatcher.resting_stops(fill.instrument_id)) if hasattr(
+        engine.dispatcher, "resting_stops") else set()
     realized = engine.dispatcher.handle_fill(
         client_order_id=fill.client_order_id,
         fill_qty=fill.quantity,
@@ -211,6 +213,15 @@ async def apply_paper_fill(
     except Exception as e:  # the bridge event above still records the fill
         logger.error("paper_orders upsert failed for %s (bridge will record it): %s", fill.client_order_id, e)
     logger.info("Order %s filled %s %s @ %s (%s)", fill.client_order_id, fill.side, fill.quantity, fill.price, fill.liquidity)
+    stops_before.discard(fill.client_order_id)  # a stop that just fired is filled, not dropped
+    if stops_before and (released_stops := stops_before - set(engine.dispatcher.resting_stops(fill.instrument_id))):
+        # the fill closed or flipped the position, so its resting stops were dropped: mark their rows cancelled
+        logger.info("Resting stops %s dropped with the position on %s", sorted(released_stops), fill.instrument_id)
+        try:
+            async with _savepoint(conn):
+                await reconcile_working_orders(conn, engine)
+        except Exception as e:
+            logger.error("Could not cancel the rows of dropped stops %s: %s", sorted(released_stops), e)
     if attach_stop is not None:
         await attach_resting_stop(conn, engine, fill.instrument_id, Decimal(str(attach_stop)), instance_id)
 
@@ -1120,9 +1131,14 @@ async def command_poller(pool, engine, quote_cache=None):
                         elif cmd_type == "CLOSE_POSITION":
                             inst_raw = payload.get("instrument_id", "")
                             canonical_inst = to_canonical_instrument(inst_raw) if inst_raw else ""
-                            def release_instrument_orders():
-                                # Working orders on the instrument would outlive the position being closed
-                                for cid in [c for c, o in engine.dispatcher.open_orders.items() if o.get("instrument_id") == canonical_inst]:
+                            def release_instrument_orders(keep_stops: bool = False):
+                                # Working orders on the instrument would outlive the position being closed; a partial
+                                # perp close keeps the resting stop (it shrinks to what is left)
+                                for cid, o in list(engine.dispatcher.open_orders.items()):
+                                    if o.get("instrument_id") != canonical_inst:
+                                        continue
+                                    if keep_stops and engine.dispatcher.is_stop_order(o):
+                                        continue
                                     engine.dispatcher.release_reservation(cid)
 
                             pos_qty = engine.dispatcher.get_position_qty(canonical_inst)
@@ -1134,6 +1150,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                 if perp_qty == 0 and payload.get("quantity"):
                                     # a mandate stop closes only the mandate's own quantity (A5.2)
                                     close_qty = min(pos_qty, Decimal(str(payload["quantity"])))
+                                elif perp_qty != 0 and payload.get("quantity"):
+                                    # a partial perp close (the TP1 scale-out): a reduce-only fill of that quantity
+                                    close_qty = min(abs(perp_qty), Decimal(str(payload["quantity"])))
                                 if mandate_id_from_instance(target) is not None:
                                     # A mandate's close never sells what it does not own, whatever the
                                     # (possibly stale) payload says: cap at its own filled holding, and
@@ -1164,15 +1183,16 @@ async def command_poller(pool, engine, quote_cache=None):
                                     )
                                     continue
                                 effects_applied = True
-                                release_instrument_orders()
-                                comm = close_qty * fill_px * (getattr(engine.dispatcher, "taker_fee", None) or DEFAULT_FEE_RATE)
+                                partial_perp = perp_qty != 0 and close_qty < abs(perp_qty)
+                                release_instrument_orders(keep_stops=partial_perp)
+                                comm = close_qty * fill_px * fee_rate_for(engine.dispatcher, canonical_inst)
                                 client_oid = f"CLOSE-{uuid.uuid4().hex[:8].upper()}"
                                 instance_id = target or "MANUAL_TRADE"
 
                                 realized = None
                                 if perp_qty != 0:
                                     _, _, realized = engine.dispatcher.flatten_perp_position(
-                                        canonical_inst, fill_px, comm, client_oid
+                                        canonical_inst, fill_px, comm, client_oid, quantity=close_qty
                                     )
                                 else:
                                     engine.dispatcher.handle_fill(
