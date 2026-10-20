@@ -16,13 +16,14 @@ import {
 import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight, rejectOrderCard, sendBrainMessage } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
-import { createMandate } from "@/lib/mission/client";
+import { createMandate, editMandate, resumeMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import type {
   BrainWidget,
   CardEvidence,
   CardLesson,
   CardPreflight,
+  CardRemedy,
   DebateCardStatus,
   DebateOutcome,
   DebateSummaryWidget,
@@ -51,6 +52,24 @@ function stripVenuePreserveQuote(raw: string): string {
   }
   return parts[0];
 }
+/** The hard ceiling of a mandate's position limit (MAX_POSITION_PCT_CAP on the server; the API refuses more) */
+const MAX_POSITION_PCT = 25;
+
+/** What a wider mandate means at its autonomy level: at L1 every order still waits for the operator; above, it does not */
+function levelNote(level: number): string {
+  if (level <= 1) return "At L1 Copilot every order still needs your approval.";
+  if (level === 2) return "At L2 Supervised the AI can use the extra room after a veto window, without asking first.";
+  return `At L${level} Autonomous the AI can use the extra room without asking.`;
+}
+
+function fixLabel(fix: "create" | "add" | "edit" | "resume" | null, field?: string): string {
+  if (fix === "create") return "Create mandate and confirm";
+  if (fix === "add") return "Add to mandate and confirm";
+  if (fix === "edit") return field === "capital_budget_usd" ? "Raise budget and confirm" : "Raise limit and confirm";
+  if (fix === "resume") return "Resume mandate and confirm";
+  return "Confirm paper order";
+}
+
 const cardInput = "rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 focus:border-amber-600 focus:outline-none";
 
 /** Milliseconds for a bar timeframe string such as "1m", "15m", "1h", "4h", "1d". Defaults to 1m. */
@@ -725,6 +744,17 @@ function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, liv
   return { preflight: live ? preflight : null, check };
 }
 
+/** The fix the card offers, in a few words, for the dry-run line */
+function remedyWords(remedy: CardRemedy): string {
+  if (remedy.kind === "EDIT_MANDATE") {
+    return remedy.field === "max_position_pct"
+      ? `to raise the position limit ${remedy.from}% → ${remedy.to}%`
+      : `to raise the budget $${fmt(remedy.from, 0)} → $${fmt(remedy.to, 0)}`;
+  }
+  if (remedy.kind === "RESUME_MANDATE") return `to resume ${remedy.mandate_name}`;
+  return "a mandate for it";
+}
+
 /** The dry run in plain words, under the size row: the sizing, the sell, the mandate Approve would create, or the refusal */
 function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; instrumentId: string }) {
   const symbol = instrumentId.split(".")[0];
@@ -732,14 +762,18 @@ function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; 
     if (preflight.needs_mandate) {
       return (
         <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
-          No ACTIVE mandate allows {symbol} yet: approving creates one (TOTP)
+          No ACTIVE mandate allows {symbol} yet: approving creates one
+          {preflight.remedy?.kind === "CREATE_MANDATE" && preflight.remedy.add_to.length > 0 ? " or adds it to an existing one" : ""} (TOTP)
         </p>
       );
     }
     return (
       <p role="note" data-testid="brain-card-preflight" className="mt-2 flex items-start gap-1 text-amber-300">
         <AlertTriangle className="mt-px h-3 w-3 flex-none" aria-hidden />
-        <span>Would be refused: {preflight.detail}</span>
+        <span>
+          Would be refused: {preflight.detail}
+          {preflight.remedy && <span className="text-zinc-300"> · Fix and approve offers {remedyWords(preflight.remedy)} (TOTP)</span>}
+        </span>
       </p>
     );
   }
@@ -874,6 +908,15 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [mandateBlock, setMandateBlock] = useState<string | null>(null);
   const [mandateName, setMandateName] = useState(`Brain ${widget.instrument_id}`);
   const [mandateBudget, setMandateBudget] = useState("10000");
+  // A mandate made for one instrument spends its budget on it alone, so its limit starts at the cap (the server's
+  // default), not at a share that would leave most of the budget unusable; the budget is the dollar control
+  const [mandatePct, setMandatePct] = useState(String(MAX_POSITION_PCT));
+  // "new" creates a mandate; a mandate id adds the instrument to that ACTIVE mandate instead
+  const [mandateTarget, setMandateTarget] = useState("new");
+  // The edited value of an EDIT_MANDATE fix (the position limit or the budget), prefilled with the server's
+  const [editValue, setEditValue] = useState("");
+  // What the fix changed, kept in view: if approve is refused after it, the change is not hidden
+  const [fixed, setFixed] = useState<string | null>(null);
   const [totp, setTotp] = useState("");
   const pending = widget.status === "PENDING_APPROVAL";
   const buy = widget.side === "BUY";
@@ -887,33 +930,81 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   useCardOutcome(widget, sessionId);
   // Only a card that can still be approved is checked: not decided, and not locked by the feed
   const { preflight, check: checkPreflight } = useCardPreflight(widget, sessionId, pending && !feedLocked);
+  // The mandate change the dry run says would let this BUY queue (create, add to, raise, resume), or none
+  const remedy = buy && preflight && !preflight.ok ? preflight.remedy ?? null : null;
+  const createRemedy = remedy?.kind === "CREATE_MANDATE" ? remedy : null;
+  const editRemedy = remedy?.kind === "EDIT_MANDATE" ? remedy : null;
+  const resumeRemedy = remedy?.kind === "RESUME_MANDATE" ? remedy : null;
   // Approve stays enabled when the dry run says it would be refused (the server decides); the label says so
-  const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate;
+  const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate && !remedy;
   // A dry run that finds no ACTIVE mandate for a BUY readies the create form, so the first Approve already shows it
   useEffect(() => {
     if (buy && preflight) setNeedsMandate(!preflight.ok && preflight.needs_mandate);
   }, [buy, preflight]);
+  // A perp cannot get a new (spot-only) mandate: the first mandate it can join is preselected
+  const firstTarget = createRemedy && !createRemedy.can_create ? createRemedy.add_to[0]?.id ?? "new" : "new";
+  useEffect(() => setMandateTarget(firstTarget), [firstTarget]);
+  // The server's suggestion fills the field again only when the suggestion itself changes, not on every re-read
+  const editKey = editRemedy ? `${editRemedy.mandate_id}:${editRemedy.field}:${editRemedy.to}` : "";
+  useEffect(() => {
+    if (editRemedy) setEditValue(String(editRemedy.to));
+  }, [editKey]); // keyed on the suggestion, not on the object, which every re-read replaces
+  const addTo = createRemedy?.add_to.find((m) => m.id === mandateTarget) ?? null;
+  const canCreate = createRemedy?.can_create ?? true; // without a remedy (an older read), the create form as before
+  const fix = needsMandate ? (addTo ? "add" : canCreate ? "create" : null) : editRemedy ? "edit" : resumeRemedy ? "resume" : null;
+  const symbol = widget.instrument_id.split(".")[0];
+
+  const fixReady = (() => {
+    if (totp.length !== 6) return false;
+    if (fix === "create") {
+      const pct = Number(mandatePct);
+      return !!mandateName.trim() && Number(mandateBudget) > 0 && pct >= 1 && pct <= MAX_POSITION_PCT;
+    }
+    if (fix === "edit" && editRemedy) {
+      const v = Number(editValue);
+      return v > editRemedy.from && (editRemedy.field !== "max_position_pct" || v <= MAX_POSITION_PCT);
+    }
+    return fix === "add" || fix === "resume";
+  })();
 
   const approve = async () => {
     setBusy(true);
     setError(null);
     setMandateBlock(null);
+    // Every mandate change from here gives the AI room, so each needs the current TOTP code (the Mandate editor's
+    // rule, checked by the API with its caps), and its audit event names this card
+    const source = sessionId ? `brain_card:${sessionId}:${widget.id}` : undefined;
     try {
       let mandateId: string | undefined;
-      if (needsMandate) {
-        // A mandate gives the AI room, so creating one needs the current TOTP code (the same rule as the Mandate editor).
-        // The API also refuses an instrument a paused or halted mandate holds (MANDATE_PAUSED / MANDATE_HALTED).
+      if (fix === "create") {
+        // The API also refuses an instrument a paused or halted mandate holds (MANDATE_PAUSED / MANDATE_HALTED)
         mandateId = (await createMandate({
           name: mandateName.trim(),
           capital_budget_usd: mandateBudget,
           instruments: [widget.instrument_id],
-          max_position_pct: 10,
+          max_position_pct: Number(mandatePct),
           max_drawdown_pct: 20,
           veto_window_s: 600,
           allow_perps: false,
           totp_code: totp,
+          source,
         })).id;
         setNeedsMandate(false);
+        setFixed(`Created mandate ${mandateName.trim()} ($${fmt(Number(mandateBudget), 0)}, ${mandatePct}% limit in ${symbol}).`);
+      } else if (fix === "add" && addTo) {
+        mandateId = (await editMandate(addTo.id, { instruments: [...addTo.instruments, widget.instrument_id], totp_code: totp, source })).id;
+        setNeedsMandate(false);
+        setFixed(`Added ${symbol} to mandate ${addTo.name}.`);
+      } else if (fix === "edit" && editRemedy) {
+        mandateId = (await editMandate(editRemedy.mandate_id, { [editRemedy.field]: Number(editValue), totp_code: totp, source })).id;
+        setFixed(
+          editRemedy.field === "max_position_pct"
+            ? `Mandate ${editRemedy.mandate_name}: position limit raised ${editRemedy.from}% → ${editValue}%.`
+            : `Mandate ${editRemedy.mandate_name}: budget raised $${fmt(editRemedy.from, 0)} → $${fmt(Number(editValue), 0)}.`,
+        );
+      } else if (fix === "resume" && resumeRemedy) {
+        mandateId = (await resumeMandate(resumeRemedy.mandate_id, totp, `resumed from Brain order card ${widget.id}`)).id;
+        setFixed(`Resumed mandate ${resumeRemedy.mandate_name}.`);
       }
       await approveOrderCard(widget, mandateId);
       setConfirming(false);
@@ -1074,7 +1165,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
             }}
             className="flex-1 rounded border border-amber-600 bg-amber-600/20 px-2 py-1.5 text-2xs font-bold text-amber-200 hover:bg-amber-600/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {refused ? "Approve anyway…" : "Approve…"}
+            {refused ? "Approve anyway…" : remedy && !needsMandate ? "Fix and approve…" : "Approve…"}
           </button>
           <button
             type="button"
@@ -1088,34 +1179,106 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       {pending && confirming && !feedLocked && (
         <div className="mt-3 rounded border border-amber-700 bg-zinc-950 p-2" role="group" aria-label="Confirm paper order">
           {needsMandate ? (
-            <>
+            <div data-testid="card-fix-create">
+              {createRemedy && createRemedy.add_to.length > 0 && (
+                <fieldset className="mb-2 flex flex-col gap-1 text-zinc-300">
+                  <legend className="mb-1 text-zinc-400">No ACTIVE mandate allows {symbol} yet. Confirming:</legend>
+                  {canCreate && (
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" name={`target-${widget.id}`} checked={mandateTarget === "new"} onChange={() => setMandateTarget("new")} />
+                      creates a new mandate for {symbol}
+                    </label>
+                  )}
+                  {createRemedy.add_to.map((m) => (
+                    <label key={m.id} className="flex items-center gap-1.5">
+                      <input type="radio" name={`target-${widget.id}`} checked={mandateTarget === m.id} onChange={() => setMandateTarget(m.id)} />
+                      adds {symbol} to {m.name} (L{m.autonomy_level}, {m.room_pct}% room)
+                    </label>
+                  ))}
+                </fieldset>
+              )}
+              {fix === "add" && addTo ? (
+                <p className="mb-2 text-zinc-300">
+                  {addTo.name} can trade {symbol} from then on, up to its {addTo.max_position_pct}% position limit of $
+                  {fmt(addTo.capital_budget_usd, 0)}; then this order is queued.{" "}
+                  {levelNote(addTo.autonomy_level)}
+                </p>
+              ) : fix === "create" ? (
+                <>
+                  {!(createRemedy && createRemedy.add_to.length > 0) && (
+                    <p className="mb-2 text-zinc-300">
+                      No ACTIVE mandate allows {widget.instrument_id} yet. Confirming creates one with the budget below, at L1 Copilot
+                      (every order still needs your approval), then queues this order.
+                    </p>
+                  )}
+                  <div className="mb-2 grid grid-cols-2 gap-2 text-2xs">
+                    <label className="col-span-2 flex flex-col gap-1 text-zinc-400">
+                      Mandate name
+                      <input className={cardInput} value={mandateName} maxLength={80} onChange={(e) => setMandateName(e.target.value)} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-zinc-400">
+                      Budget (USD)
+                      <input className={cardInput} type="number" min="1" step="any" value={mandateBudget} onChange={(e) => setMandateBudget(e.target.value)} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-zinc-400">
+                      Position limit (%)
+                      <input
+                        className={cardInput}
+                        type="number"
+                        min="1"
+                        max={MAX_POSITION_PCT}
+                        step="any"
+                        value={mandatePct}
+                        onChange={(e) => setMandatePct(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <p className="mb-2 text-zinc-500">
+                    Up to ${fmt((Number(mandateBudget) || 0) * (Number(mandatePct) || 0) / 100, 0)} in {symbol} ({MAX_POSITION_PCT}% at
+                    most); this order uses {widget.allocation_pct}% of the budget.
+                  </p>
+                </>
+              ) : (
+                <p className="mb-2 text-zinc-300">
+                  A new mandate is spot only, so {symbol} needs an ACTIVE mandate that allows perps (Mission Control → Mandates).
+                </p>
+              )}
+            </div>
+          ) : editRemedy ? (
+            <div data-testid="card-fix-edit">
               <p className="mb-2 text-zinc-300">
-                No ACTIVE mandate allows {widget.instrument_id} yet. Confirming creates one with the budget below, at L1 Copilot
-                (every order still needs your approval), then queues this order.
+                No room left in {symbol}: mandate {editRemedy.mandate_name} holds {editRemedy.held_pct}% of its $
+                {fmt(editRemedy.capital_budget_usd, 0)} budget in it, at its {editRemedy.max_position_pct}% limit.{" "}
+                {editRemedy.field === "max_position_pct"
+                  ? <>Raising the limit to {editRemedy.to}% fits this order at {editRemedy.allocation_after_pct}%.</>
+                  : <>The limit is already at its {MAX_POSITION_PCT}% cap (or the budget is full), so raising the budget to $
+                    {fmt(editRemedy.to, 0)} fits this order at {editRemedy.allocation_after_pct}%.</>}
               </p>
-              <div className="mb-2 grid grid-cols-2 gap-2 text-2xs">
-                <label className="col-span-2 flex flex-col gap-1 text-zinc-400">
-                  Mandate name
-                  <input className={cardInput} value={mandateName} maxLength={80} onChange={(e) => setMandateName(e.target.value)} />
-                </label>
-                <label className="flex flex-col gap-1 text-zinc-400">
-                  Budget (USD)
-                  <input className={cardInput} type="number" min="1" step="any" value={mandateBudget} onChange={(e) => setMandateBudget(e.target.value)} />
-                </label>
-                <label className="flex flex-col gap-1 text-zinc-400">
-                  TOTP code
-                  <input
-                    className={cardInput}
-                    aria-label="TOTP code"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    value={totp}
-                    onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
-                  />
-                </label>
-              </div>
-            </>
+              <label className="mb-2 flex flex-col gap-1 text-2xs text-zinc-400">
+                {editRemedy.field === "max_position_pct" ? `Position limit (%), now ${editRemedy.from}%, at most ${MAX_POSITION_PCT}%` : `Budget (USD), now $${fmt(editRemedy.from, 0)}`}
+                <input
+                  className={cardInput}
+                  type="number"
+                  min={editRemedy.from}
+                  max={editRemedy.field === "max_position_pct" ? MAX_POSITION_PCT : undefined}
+                  step="any"
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                />
+              </label>
+              <p className="mb-2 flex items-start gap-1 text-amber-300">
+                <AlertTriangle className="mt-px h-3 w-3 flex-none" aria-hidden />
+                <span>
+                  This changes the mandate for all its future AI orders, not only this one. {levelNote(editRemedy.autonomy_level)}
+                  {editRemedy.field === "capital_budget_usd" && " A new budget also restarts the mandate's drawdown baseline."}
+                </span>
+              </p>
+            </div>
+          ) : resumeRemedy ? (
+            <p className="mb-2 text-zinc-300" data-testid="card-fix-resume">
+              Mandate {resumeRemedy.mandate_name} covers {symbol} and is PAUSED. Confirming resumes it (it can take new risk again;
+              its high-water mark restarts from now), then queues this order.
+            </p>
           ) : !buy ? (
             <p className="mb-2 text-zinc-300">
               Send a PAPER SELL {widget.instrument_id} {widget.order_type} order for the whole holding the mandate has in it? It only
@@ -1129,14 +1292,28 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
               monitor&apos;s hard and trailing stops, not by the proposed stop price; approval is refused while the exit monitor is down.
             </p>
           )}
+          {fix && (
+            <label className="mb-2 flex w-1/2 flex-col gap-1 text-2xs text-zinc-400">
+              TOTP code
+              <input
+                className={cardInput}
+                aria-label="TOTP code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={totp}
+                onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
+              />
+            </label>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={busy || (needsMandate && (totp.length !== 6 || !mandateName.trim() || !(Number(mandateBudget) > 0)))}
+              disabled={busy || (needsMandate && !fix) || (!!fix && !fixReady)}
               onClick={approve}
               className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-zinc-950 hover:bg-amber-500 disabled:opacity-50"
             >
-              {busy ? "Sending…" : needsMandate ? "Create mandate and confirm" : "Confirm paper order"}
+              {busy ? "Sending…" : fixLabel(fix, editRemedy?.field)}
             </button>
             <button
               type="button"
@@ -1148,6 +1325,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
             </button>
           </div>
         </div>
+      )}
+      {fixed && (
+        <p role="status" data-testid="card-fix-done" className="mt-2 flex items-center gap-1 text-cyan-300">
+          <CheckCircle2 className="h-3 w-3" aria-hidden /> {fixed}
+        </p>
       )}
       <OrderOutcome widget={widget} />
       {widget.status === "REJECTED" && (

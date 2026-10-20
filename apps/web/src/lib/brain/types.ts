@@ -93,9 +93,51 @@ export interface CardOutcome {
   limit_price?: string | null;
 }
 
+/** An ACTIVE mandate a refused BUY's instrument could be added to, with the room the entry would have in it */
+export interface RemedyMandate {
+  id: string;
+  name: string;
+  autonomy_level: number;
+  instruments: string[];
+  max_position_pct: number;
+  capital_budget_usd: number;
+  room_pct: number;
+}
+
+/**
+ * The mandate change that would let a refused BUY be queued, worked out by the server's own sizing. The card sends it
+ * through the mandate routes (TOTP, caps, audit) and then approves; approve checks everything again.
+ */
+export type CardRemedy =
+  | {
+      kind: "CREATE_MANDATE";
+      /** False for a perp: a new mandate is spot only, so it can only join an existing mandate that allows perps */
+      can_create: boolean;
+      /** The position limit a new single-instrument mandate starts with */
+      position_pct: number;
+      add_to: RemedyMandate[];
+    }
+  | {
+      kind: "EDIT_MANDATE";
+      mandate_id: string;
+      mandate_name: string;
+      autonomy_level: number;
+      field: "max_position_pct" | "capital_budget_usd";
+      from: number;
+      to: number;
+      max_position_pct: number;
+      capital_budget_usd: number;
+      held_pct: number;
+      requested_pct: number;
+      /** The size the entry gets after the edit (the request, or the room left when that is smaller) */
+      allocation_after_pct: number;
+    }
+  | { kind: "RESUME_MANDATE"; mandate_id: string; mandate_name: string };
+
 /**
  * What approving an order card would do now, from /brain/sessions/{id}/cards/{card}/preflight. Read-only: the card stays
- * PENDING_APPROVAL and nothing is claimed or queued. `needs_mandate` is true for a BUY that has no ACTIVE mandate yet.
+ * PENDING_APPROVAL and nothing is claimed or queued. `needs_mandate` is true for a BUY that has no ACTIVE mandate yet;
+ * `remedy` is the mandate change that would fix the refusal, when one does.
  */
 export type CardPreflight =
   | {
@@ -109,7 +151,7 @@ export type CardPreflight =
       sell_quantity: string | null;
       summary: string;
     }
-  | { ok: false; code: string; detail: string; needs_mandate: boolean };
+  | { ok: false; code: string; detail: string; needs_mandate: boolean; remedy?: CardRemedy | null };
 
 /**
  * Where a Brain debate stands, from its debate run (QUEUED until the run exists). UNTRACKED: a card queued before Wave 3

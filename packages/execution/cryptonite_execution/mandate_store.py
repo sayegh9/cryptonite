@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 
 from cryptonite_schemas.mandate import Mandate, MandateStatus, canonical_instrument
-from cryptonite_schemas.marks import LiveMark
+from cryptonite_schemas.marks import LiveMark, position_values
 from cryptonite_schemas.marks import entry_room_pct as room_at_marks
 
 from cryptonite_execution.autonomy import Transition
@@ -124,11 +124,21 @@ async def entry_room_pct(conn, mandate: Mandate, instrument_id: str, marks: dict
     the budget, with the mandate's open positions at their live mark (``marks``, B3), else at their last
     stored mark. (The orchestrator sizes the order to the exact room at execution; this is for deciding
     whether to ask at all.)"""
-    rows = await conn.fetch(
+    rows = await _open_positions(conn, mandate)
+    return room_at_marks(mandate.capital_budget_usd, mandate.max_position_pct, rows, instrument_id, marks)
+
+
+async def held_values(conn, mandate: Mandate, instrument_id: str,
+                      marks: dict[str, LiveMark] | None = None) -> tuple[Decimal, Decimal]:
+    """(value held in ``instrument_id``, value held in all) by the mandate, valued as ``entry_room_pct`` values them."""
+    return position_values(await _open_positions(conn, mandate), instrument_id, marks)
+
+
+async def _open_positions(conn, mandate: Mandate):
+    return await conn.fetch(
         """SELECT instrument_id, quantity, current_price FROM paper_positions
            WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0""",
         mandate.instance_id)
-    return room_at_marks(mandate.capital_budget_usd, mandate.max_position_pct, rows, instrument_id, marks)
 
 
 async def instance_spot_holdings(conn, instance_id: str) -> dict[str, tuple[Decimal, Decimal]]:

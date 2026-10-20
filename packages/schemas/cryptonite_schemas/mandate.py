@@ -7,8 +7,10 @@ state machine in ``cryptonite_execution.autonomy``.
 """
 
 import datetime
+import math
 import re
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 from enum import IntEnum, StrEnum
 
@@ -224,6 +226,58 @@ class Mandate(BaseModel):
             status=MandateStatus(r["status"]), active_hours_utc=r.get("active_hours_utc"),
             veto_window_s=r.get("veto_window_s") or DEFAULT_VETO_WINDOW_S,
         )
+
+
+def room_pct(budget: Decimal, max_position_pct: Decimal, inst_value: Decimal, gross_value: Decimal) -> Decimal:
+    """Room for a new entry, as % of the budget: under the instrument's position limit (``inst_value`` is what the
+    mandate holds of it) and under the budget (``gross_value`` is everything it holds)."""
+    room = min(budget * max_position_pct / 100 - inst_value, budget - gross_value)
+    return max(Decimal("0"), room / budget * 100)
+
+
+@dataclass(frozen=True)
+class RoomRemedy:
+    """The one mandate edit that gives a refused entry room again: ``field`` goes from ``old`` to ``new``."""
+
+    field: str  # max_position_pct | capital_budget_usd
+    old: Decimal
+    new: Decimal
+    room_after_pct: Decimal  # the room the entry has after the edit (the entry is sized to it, at most the request)
+
+
+# Holdings come from float fills (0.05 BTC is 0.0500000000000000027...): the remedy rounds to cents before it rounds
+# up, so a hair over $2,500 asks for a 15% limit or a $12,500 budget, not 16% or $12,600
+_CENT = Decimal("0.01")
+
+
+def room_remedy(budget: Decimal, max_position_pct: Decimal, inst_value: Decimal, gross_value: Decimal,
+                requested_pct: Decimal) -> RoomRemedy | None:
+    """The smallest edit that makes room for an entry of ``requested_pct`` of the budget, or None.
+
+    Raise the instrument's position limit first, to what the holding plus the request needs, at most the 25% cap.
+    Raise the budget only when the limit is already at the cap or a higher limit gives no room (the budget is full
+    of other holdings); the new budget fits the request under the current limit, rounded up to $100. An edit that
+    still leaves less than the smallest entry is not offered. Pure: the caller values the holdings."""
+    if budget <= 0 or requested_pct <= 0:
+        return None
+    if max_position_pct < MAX_POSITION_PCT_CAP:
+        need = Decimal(math.ceil((inst_value / budget * 100 + requested_pct).quantize(_CENT)))
+        limit = min(MAX_POSITION_PCT_CAP, need)
+        if limit > max_position_pct:
+            room = room_pct(budget, limit, inst_value, gross_value)
+            if room >= MIN_MANDATE_ENTRY_PCT:
+                return RoomRemedy("max_position_pct", max_position_pct, limit, room)
+    # The request takes a share of the new budget, so a request at or above the limit can never fit whole: aim for
+    # half the limit then, not for a budget that grows without bound
+    target = requested_pct if requested_pct < max_position_pct else max_position_pct / 2
+    need_budget = max(inst_value * 100 / (max_position_pct - target), gross_value * 100 / (100 - target))
+    new_budget = Decimal(math.ceil(need_budget.quantize(_CENT) / 100) * 100)
+    if new_budget <= budget:
+        return None
+    room = room_pct(new_budget, max_position_pct, inst_value, gross_value)
+    if room < MIN_MANDATE_ENTRY_PCT:
+        return None
+    return RoomRemedy("capital_budget_usd", budget, new_budget, room)
 
 
 def risk_adding_change(old: Mandate | None, new: Mandate) -> bool:
