@@ -75,12 +75,17 @@ def effective_limits(dispatcher, now: datetime.datetime | None = None,
             "min_order_equity_pct": _plain(Decimal(str(dispatcher.min_order_equity_pct)) * pct),
             "max_order_equity_pct": _plain(Decimal(str(dispatcher.max_position_concentration_pct)) * pct),
             "taker_fee_bps": _plain(Decimal(str(dispatcher.taker_fee)) * Decimal("10000")),
-            "perp_taker_fee_bps": _plain(Decimal(str(getattr(dispatcher, "perp_taker_fee", dispatcher.taker_fee)))
-                                         * Decimal("10000")),
+            "perp_taker_fee_bps": _plain(Decimal(str(_perp_fee(dispatcher))) * Decimal("10000")),
             "account_backstop_drawdown_pct": _plain(Decimal(str(ACCOUNT_BACKSTOP_DRAWDOWN_PCT))),
             "cross_mandate_exposure_pct": _plain(Decimal(str(cross_mandate_exposure_pct))),
         },
     }
+
+
+def _perp_fee(dispatcher) -> Decimal:
+    """The USD-M taker fee (leverage plan 1.6); a dispatcher without one (an older double) reports its spot fee."""
+    fee = getattr(dispatcher, "perp_taker_fee", None)
+    return fee if isinstance(fee, Decimal | int | float) else dispatcher.taker_fee
 
 
 async def publish_effective_limits(engine, redis, now: datetime.datetime | None = None) -> dict[str, Any] | None:
