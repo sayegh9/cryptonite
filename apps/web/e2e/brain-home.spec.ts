@@ -1097,6 +1097,100 @@ test.describe("Brain Home", () => {
     await expect(card.getByRole("button", { name: "Confirm paper order" })).toBeVisible();
   });
 
+  // --- AMBIGUOUS_MANDATE: two ACTIVE mandates allow the coin; the card picks one in the chat --------------------------
+
+  const AMBIGUOUS_DETAIL =
+    "AMBIGUOUS_MANDATE: more than one ACTIVE mandate allows BTCUSDT.BINANCE; nothing was queued; choose the mandate on this card";
+  const choice = (over: Record<string, unknown>) => ({
+    id: "m-old", name: "BTC-ETH spot L1", autonomy_level: 1, instruments: ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
+    max_position_pct: 10, capital_budget_usd: 10000, room_pct: 10, allocation_pct: 5, holds: false, blocked: null,
+    tidy: "REMOVE_INSTRUMENT", ...over,
+  });
+  const ambiguous = (candidates: unknown[]) =>
+    refusedWith({ kind: "CHOOSE_MANDATE", candidates }, "AMBIGUOUS_MANDATE", AMBIGUOUS_DETAIL);
+  const THREE_ASSETS = choice({
+    id: "m-new", name: "3 assets", instruments: ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE", "WLDUSDT.BINANCE"],
+    max_position_pct: 20, room_pct: 20,
+  });
+
+  test("two mandates on the coin: the card picks one in the chat, without TOTP, and can stop the overlap", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockPreflight(page, () => ambiguous([choice({}), THREE_ASSETS]));
+    const mandateCalls = await mockMandateRoutes(page);
+    const card = await openCard(page, ORDER_CARD);
+    const approveBodies = await mockApprove(page);
+
+    await expect(card.getByTestId("brain-card-preflight")).toContainText("Fix and approve offers a choice of mandate");
+    await expect(card.getByTestId("brain-card-preflight")).not.toContainText("(TOTP)");
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group).toContainText("2 ACTIVE mandates allow BTCUSDT. Trade this order in:");
+    await expect(group.getByLabel(/^BTC-ETH spot L1 \(L1, 10% limit of \$10,000\) · sized to 5% \(\$500\)/)).toBeChecked();
+    await group.getByLabel(/^3 assets/).check();
+    // Choosing changes no mandate: no TOTP box
+    await expect(group.getByLabel("TOTP code")).toHaveCount(0);
+
+    const tidy = group.getByLabel(/Also stop the overlap, so 3 assets is the only ACTIVE mandate on BTCUSDT/);
+    await expect(tidy).not.toBeChecked();
+    await expect(group).toContainText("remove BTCUSDT from BTC-ETH spot L1. This takes room away, so it needs no TOTP.");
+    await tidy.check();
+    await group.getByRole("button", { name: "Confirm in 3 assets" }).click();
+
+    await expect(card.getByTestId("card-outcome")).toContainText("Approved · sending the order · paper command cmd-12345678");
+    await expect(card.getByTestId("card-fix-done")).toHaveText("Trading in mandate 3 assets; removed BTCUSDT from BTC-ETH spot L1.");
+    expect(mandateCalls).toEqual([{
+      method: "PATCH", path: "/api/v1/ai/mandates/m-old",
+      body: { instruments: ["ETHUSDT.BINANCE"], source: `brain_card:${SESSION}:call-1` },
+    }]);
+    expect(approveBodies).toEqual([{ mandate_id: "m-new" }]);
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a chosen mandate with the overlap left alone changes no mandate", async ({ page }) => {
+    await mockPreflight(page, () => ambiguous([choice({}), THREE_ASSETS]));
+    const mandateCalls = await mockMandateRoutes(page);
+    const card = await openCard(page, ORDER_CARD);
+    const approveBodies = await mockApprove(page);
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    await card.getByRole("group", { name: "Confirm paper order" }).getByRole("button", { name: "Confirm in BTC-ETH spot L1" }).click();
+    await expect(card.getByTestId("card-fix-done")).toHaveText("Trading in mandate BTC-ETH spot L1.");
+    expect(mandateCalls).toEqual([]);
+    expect(approveBodies).toEqual([{ mandate_id: "m-old" }]);
+  });
+
+  test("a mandate that covers only the coin is paused, not emptied, to stop the overlap", async ({ page }) => {
+    await mockPreflight(page, () => ambiguous([
+      THREE_ASSETS, choice({ id: "m-btc", name: "BTC only", instruments: ["BTCUSDT.BINANCE"], tidy: "PAUSE" }),
+    ]));
+    const mandateCalls = await mockMandateRoutes(page);
+    const card = await openCard(page, ORDER_CARD);
+    await mockApprove(page);
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group).toContainText("pause BTC only (BTCUSDT is all it covers)");
+    await group.getByLabel(/Also stop the overlap/).check();
+    await group.getByRole("button", { name: "Confirm in 3 assets" }).click();
+    await expect(card.getByTestId("card-fix-done")).toHaveText("Trading in mandate 3 assets; paused BTC only.");
+    expect(mandateCalls).toEqual([{
+      method: "POST", path: "/api/v1/ai/mandates/m-btc/pause",
+      body: { reason: "paused from Brain order card call-1: 3 assets trades BTCUSDT" },
+    }]);
+  });
+
+  test("a mandate that cannot take the order is shown disabled with the reason", async ({ page }) => {
+    await mockPreflight(page, () => ambiguous([
+      choice({ holds: true, tidy: null, name: "Holder" }),
+      choice({ id: "m-new", name: "3 assets", blocked: "Holder holds BTCUSDT.BINANCE, so only it can add to it" }),
+    ]));
+    const card = await openCard(page, ORDER_CARD);
+    await card.getByRole("button", { name: "Fix and approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group.getByLabel(/^Holder .*adds to its BTCUSDT/)).toBeChecked();
+    await expect(group.getByLabel(/^3 assets .*only it can add to it/)).toBeDisabled();
+    // The holder is never tidied, and the blocked mandate holds nothing to protect: removing BTC from it is offered
+    await expect(group).toContainText("remove BTCUSDT from 3 assets");
+  });
+
   for (const code of ["MANDATE_PAUSED", "MANDATE_HALTED"]) {
     test(`a ${code} notice replaces the dry run's duplicate refusal line`, async ({ page }) => {
       const reactErrors = collectReactErrors(page);

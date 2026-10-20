@@ -132,7 +132,27 @@ export type CardRemedy =
       /** The size the entry gets after the edit (the request, or the room left when that is smaller) */
       allocation_after_pct: number;
     }
-  | { kind: "RESUME_MANDATE"; mandate_id: string; mandate_name: string };
+  | { kind: "RESUME_MANDATE"; mandate_id: string; mandate_name: string }
+  | { kind: "CHOOSE_MANDATE"; candidates: MandateChoice[] };
+
+/** One of several ACTIVE mandates that allow a BUY's instrument (AMBIGUOUS_MANDATE): approve needs one named */
+export interface MandateChoice {
+  id: string;
+  name: string;
+  autonomy_level: number;
+  instruments: string[];
+  max_position_pct: number;
+  capital_budget_usd: number;
+  room_pct: number;
+  /** What approve would size the entry to inside this mandate */
+  allocation_pct: number;
+  holds: boolean;
+  /** Why this mandate cannot take the order, or null */
+  blocked: string | null;
+  /** How this mandate can be taken off the instrument when another one trades it: neither needs TOTP (both take room
+   * away); null for the mandate that holds it */
+  tidy: "REMOVE_INSTRUMENT" | "PAUSE" | null;
+}
 
 /**
  * What approving an order card would do now, from /brain/sessions/{id}/cards/{card}/preflight. Read-only: the card stays
