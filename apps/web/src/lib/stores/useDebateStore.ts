@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { MandateChoice } from '@/lib/brain/types';
 
 export interface DebateTurn {
   runId: string;
@@ -30,6 +31,8 @@ interface DebateState {
   approveDebate: (runId: string, overrides?: ApproveOverrides) => Promise<Record<string, unknown>>;
   rejectDebate: (runId: string) => Promise<void>;
   fetchDecisionData: (runId: string) => Promise<any>;
+  /** The approve dry run (GET /debates/{id}/sizing); null when it could not be read */
+  fetchDebateSizing: (runId: string) => Promise<DebateSizing | null>;
   removeDebate: (runId: string) => void;
   clearCompleted: () => void;
   setDebates: (debates: Record<string, DebateRun>) => void;
@@ -38,11 +41,33 @@ interface DebateState {
 
 /** Fields the server's `ApproveRequestOverrides` accepts; anything else is silently dropped by Pydantic. */
 export interface ApproveOverrides {
+  /** % of the mandate's budget (1–25) */
   allocation_pct?: number;
+  /** AMBIGUOUS_MANDATE: the ACTIVE mandate the operator chose to trade the debate in */
+  mandate_id?: string;
   order_type?: string;
   limit_offset_pct?: number;
   stop_loss_pct?: number;
 }
+
+/**
+ * What approving a debate would do now: the mandate it trades in, the room a BUY has left there and its size, as % of
+ * that mandate's budget; or the refusal approve would give, with the mandates to choose from when more than one
+ * ACTIVE mandate allows the coin (AMBIGUOUS_MANDATE).
+ */
+export type DebateSizing =
+  | {
+      ok: true;
+      side: 'BUY' | 'SELL';
+      mandate: { id: string; name: string; autonomy_level: number; capital_budget_usd: number; max_position_pct: number };
+      room_pct: number | null;
+      room_usd: number | null;
+      requested_pct: number;
+      allocation_pct: number;
+      budget_usd: number;
+      sell_quantity: string | null;
+    }
+  | { ok: false; code: string; detail: string; remedy: { kind: 'CHOOSE_MANDATE'; candidates: MandateChoice[] } | null };
 
 export interface DebateActionError extends Error {
   status?: number;
@@ -173,6 +198,16 @@ export const useDebateStore = create<DebateState>()(persist((set) => ({
     });
     if (!res.ok) throw await responseError(res, 'Rejection failed');
     setRunStatus(set, runId, 'REJECTED');
+  },
+  fetchDebateSizing: async (runId: string) => {
+    try {
+      const res = await fetch(`/api/v1/agents/debates/${encodeURIComponent(runId)}/sizing`, { credentials: 'include' });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data && typeof data.ok === 'boolean' ? (data as DebateSizing) : null;
+    } catch {
+      return null;
+    }
   },
   fetchDecisionData: async (runId: string) => {
     try {

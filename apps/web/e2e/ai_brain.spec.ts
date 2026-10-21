@@ -158,12 +158,14 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     await page.route(`**/api/v1/agents/debates/${RUN_ID}/decision`, async (route) => {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ run_id: RUN_ID, allocation_pct: 5 }) });
     });
+    // The approve dry run: one ACTIVE mandate allows ETH; its budget (not the account's equity) is the sizing base
+    await page.route(`**/api/v1/agents/debates/${RUN_ID}/sizing`, (route) => route.fulfill({ json: sizedIn(ETH_SPOT, 20) }));
     await page.route(`**/api/v1/agents/debates/${RUN_ID}/approve`, async (route) => {
       approveBody = route.request().postDataJSON();
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ status: "approved", run_id: RUN_ID, allocation_pct: 2 }),
+        body: JSON.stringify({ status: "approved", run_id: RUN_ID, allocation_pct: 2, mandate_name: "ETH spot", budget_usd: 200 }),
       });
     });
 
@@ -172,12 +174,14 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
 
     await expect(page.locator("text=PENDING_APPROVAL")).toBeVisible({ timeout: 5000 });
-    // The slider starts at the AI's proposal and shows USD only from the known equity (10,000)
+    // The slider starts at the AI's proposal: a share of the mandate's $10,000 budget, not of the account's equity
     await expect(page.getByText("AI proposed 5%")).toBeVisible();
-    await expect(page.getByTestId("inbox-size-usd")).toContainText("$500");
+    await expect(page.getByTestId("inbox-size-usd")).toHaveText("≈ $500");
+    await expect(page.getByTestId("inbox-size-mandate")).toHaveText("in mandate ETH spot ($10,000 budget)");
+    await expect(page.getByTestId("approval-room")).toHaveText("$2,000");
 
-    await page.getByLabel(/Allocation: \d+% of equity/).fill("2");
-    await expect(page.getByTestId("inbox-size-usd")).toContainText("$200");
+    await page.getByLabel(/Allocation: \d+% of mandate budget/).fill("2");
+    await expect(page.getByTestId("inbox-size-usd")).toHaveText("≈ $200");
 
     const approveBtn = page.getByTestId("approve-debate-btn");
     await expect(approveBtn).toBeEnabled();
@@ -332,6 +336,7 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
       body: JSON.stringify([{ runId: RUN_ID, instrumentId: "BTCUSDT.BINANCE", status: "PENDING_APPROVAL", decision: "BUY", timestamp: Date.now(), turns: [] }]),
     }));
     await page.route(`**/api/v1/agents/debates/${RUN_ID}/decision`, (route) => route.fulfill({ status: 404, contentType: "application/json", body: "{}" }));
+    await page.route(`**/api/v1/agents/debates/${RUN_ID}/sizing`, (route) => route.fulfill({ json: sizedIn(ETH_SPOT, 20) }));
     await page.route(`**/api/v1/agents/debates/${RUN_ID}/approve`, async (route) => {
       approveCalled = true;
       await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
@@ -359,6 +364,7 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
       body: JSON.stringify([{ runId: "bbbbbbbb-2222-4333-8444-555555555555", instrumentId: "BTCUSDT.BINANCE", status: "PENDING_APPROVAL", decision: "BUY", timestamp: Date.now(), turns: [] }]),
     }));
     await page.route("**/api/v1/agents/debates/*/decision", (route) => route.fulfill({ status: 500, contentType: "application/json", body: "{}" }));
+    await page.route("**/api/v1/agents/debates/*/sizing", (route) => route.fulfill({ status: 500, contentType: "application/json", body: "{}" }));
 
     await page.goto("/");
     await page.locator("button", { hasText: "AI Brain" }).click();
@@ -370,8 +376,137 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     const canvas = page.locator("main");
     await expect(canvas.getByText(/RSI|CRO approved|Setup approved/)).toHaveCount(0);
 
-    // Unknown equity: size shows as unavailable and Approve is disabled
-    await expect(page.getByTestId("inbox-size-usd")).toHaveText("equity unavailable");
+    // Unknown mandate size: shown as unavailable and Approve is disabled
+    await expect(page.getByTestId("inbox-size-usd")).toHaveText("mandate size unavailable");
     await expect(page.getByTestId("approve-debate-btn")).toBeDisabled();
   });
+
+  // --- AMBIGUOUS_MANDATE: two ACTIVE mandates allow the coin; the Inbox picks one (as a Brain card does, #101) -------
+
+  const PICK_RUN = "2026a021-2222-4333-8444-555555555555";
+  const AMBIGUOUS_DETAIL =
+    "AMBIGUOUS_MANDATE: more than one ACTIVE mandate allows ETHUSDT.BINANCE; nothing was queued; choose the mandate in the Inbox";
+  const choice = (over: Record<string, unknown>) => ({
+    id: "m-old", name: "BTC-ETH spot L1", autonomy_level: 1, instruments: ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
+    max_position_pct: 10, capital_budget_usd: 10000, room_pct: 10, allocation_pct: 10, holds: false, blocked: null,
+    tidy: "REMOVE_INSTRUMENT", ...over,
+  });
+  const THREE_ASSETS = choice({
+    id: "m-new", name: "3 assets", instruments: ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE", "WLDUSDT.BINANCE"],
+    max_position_pct: 20, capital_budget_usd: 20000, room_pct: 20,
+  });
+  const ambiguous = (candidates: unknown[]) => ({
+    ok: false, code: "AMBIGUOUS_MANDATE", detail: AMBIGUOUS_DETAIL, remedy: { kind: "CHOOSE_MANDATE", candidates },
+  });
+
+  /** The 2026-10-21 ETH debate awaiting approval; `sizing` answers each dry run in turn (the last one repeats) */
+  async function openPickDebate(page: import("@playwright/test").Page, sizing: unknown[]) {
+    const approveBodies: unknown[] = [];
+    const mandateCalls: { method: string; path: string; body: unknown }[] = [];
+    let reads = 0;
+    await page.addInitScript(() => {
+      localStorage.setItem("csrf_token", "test-csrf");
+      localStorage.setItem("cryptonite:ai-brain-tour-seen", "true");
+    });
+    await page.route("**/api/v1/paper/**", (route) => route.fulfill({ json: route.request().url().includes("/paper/kill-switch") ? { id: 1, is_latched: false } : [] }));
+    await page.route("**/api/v1/agents/debates*", (route) => route.fulfill({
+      json: [{ runId: PICK_RUN, instrumentId: "ETHUSDT.BINANCE", status: "PENDING_APPROVAL", decision: "BUY (70% Conviction) • test", timestamp: Date.now(), turns: [] }],
+    }));
+    await page.route(`**/api/v1/agents/debates/${PICK_RUN}/decision`, (route) => route.fulfill({ json: { run_id: PICK_RUN, allocation_pct: 10 } }));
+    await page.route(`**/api/v1/agents/debates/${PICK_RUN}/sizing`, (route) => route.fulfill({ json: sizing[Math.min(reads++, sizing.length - 1)] }));
+    await page.route(/\/api\/v1\/ai\/mandates(\/.*)?$/, (route) => {
+      const req = route.request();
+      if (req.method() === "GET") return route.fulfill({ json: { mandates: [] } });
+      mandateCalls.push({ method: req.method(), path: new URL(req.url()).pathname, body: req.postDataJSON() });
+      return route.fulfill({ json: { id: "m-old" } });
+    });
+    await page.route(`**/api/v1/agents/debates/${PICK_RUN}/approve`, (route) => {
+      const body = route.request().postDataJSON();
+      approveBodies.push(body);
+      if (!body?.mandate_id) return route.fulfill({ status: 409, json: { detail: AMBIGUOUS_DETAIL } });
+      return route.fulfill({ json: { status: "approved", run_id: PICK_RUN, allocation_pct: body.allocation_pct, mandate_id: body.mandate_id, mandate_name: "3 assets", budget_usd: 2000 } });
+    });
+    await page.goto("/");
+    await page.locator("button", { hasText: "AI Brain" }).click();
+    await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
+    await expect(page.locator("text=PENDING_APPROVAL")).toBeVisible({ timeout: 5000 });
+    return { approveBodies, mandateCalls, reads: () => reads };
+  }
+
+  test("two mandates on the coin: the Inbox picks one, sized by its budget, and approves in it", async ({ page }) => {
+    const { approveBodies, mandateCalls } = await openPickDebate(page, [ambiguous([choice({}), THREE_ASSETS])]);
+    const picker = page.getByTestId("inbox-choose-mandate");
+    await expect(picker).toContainText("2 ACTIVE mandates allow ETHUSDT. Trade this order in:");
+    // The first that can take the whole 10% is chosen: BTC-ETH spot L1 has exactly 10% of room left
+    await expect(picker.getByLabel(/^BTC-ETH spot L1 \(L1, 10% limit of \$10,000\) · sized to 10% \(\$1,000\)/)).toBeChecked();
+    await expect(page.getByTestId("inbox-size-usd")).toHaveText("≈ $1,000");
+    await expect(page.getByTestId("approval-room")).toHaveText("$1,000");
+
+    await picker.getByLabel(/^3 assets \(L1, 20% limit of \$20,000\) · sized to 10% \(\$2,000\)/).check();
+    await expect(page.getByTestId("inbox-size-usd")).toHaveText("≈ $2,000");
+    await expect(page.getByTestId("inbox-size-mandate")).toHaveText("in mandate 3 assets ($20,000 budget)");
+    await expect(page.getByTestId("approval-room")).toHaveText("$4,000");
+    // Choosing changes no mandate: the overlap box is offered, unchecked
+    await expect(picker.getByLabel(/Also stop the overlap, so 3 assets is the only ACTIVE mandate on ETHUSDT/)).not.toBeChecked();
+
+    await page.getByTestId("approve-debate-btn").click();
+    await expect(page.getByTestId("confirm-debate-btn")).toHaveText("Confirm approve at 10% in 3 assets");
+    await page.getByTestId("confirm-debate-btn").click();
+    await expect.poll(() => approveBodies.length).toBe(1);
+    expect(approveBodies).toEqual([{ allocation_pct: 10, mandate_id: "m-new" }]);
+    expect(mandateCalls).toEqual([]);
+    await expect(page.getByText(/Order requested at 10% of mandate 3 assets \(≈ \$2,000\)/)).toBeVisible();
+  });
+
+  test("stopping the overlap takes the coin off the other mandate before the approve", async ({ page }) => {
+    const { approveBodies, mandateCalls } = await openPickDebate(page, [ambiguous([choice({}), THREE_ASSETS])]);
+    const picker = page.getByTestId("inbox-choose-mandate");
+    await picker.getByLabel(/^3 assets/).check();
+    await expect(picker).toContainText("remove ETHUSDT from BTC-ETH spot L1. This takes room away, so it needs no TOTP.");
+    await picker.getByLabel(/Also stop the overlap/).check();
+    await page.getByTestId("approve-debate-btn").click();
+    await page.getByTestId("confirm-debate-btn").click();
+    await expect.poll(() => approveBodies.length).toBe(1);
+    expect(mandateCalls).toEqual([{
+      method: "PATCH", path: "/api/v1/ai/mandates/m-old",
+      body: { instruments: ["BTCUSDT.BINANCE"], source: `debate:${PICK_RUN}` },
+    }]);
+    expect(approveBodies).toEqual([{ allocation_pct: 10, mandate_id: "m-new" }]);
+  });
+
+  test("the mandate that holds the coin is the only choice; the other is disabled with the reason", async ({ page }) => {
+    await openPickDebate(page, [ambiguous([
+      choice({ name: "Holder", holds: true, tidy: null, room_pct: 5 }),
+      THREE_ASSETS, // listed second, blocked by the holder
+    ].map((c, i) => (i === 1 ? { ...(c as object), blocked: "Holder holds ETHUSDT.BINANCE, so only it can add to it" } : c)))]);
+    const picker = page.getByTestId("inbox-choose-mandate");
+    await expect(picker.getByLabel(/^Holder .*sized to 5% \(\$500\), adds to its ETHUSDT/)).toBeChecked();
+    await expect(picker.getByLabel(/^3 assets .*only it can add to it/)).toBeDisabled();
+    await expect(page.getByTestId("inbox-size-usd")).toHaveText("≈ $1,000");
+    await expect(page.getByTestId("approval-resize-note")).toHaveText("Larger than the mandate's room: it will be resized to fit $500.");
+  });
+
+  test("an approve refused as AMBIGUOUS_MANDATE reloads the dry run and shows the picker", async ({ page }) => {
+    // The dry run found one mandate; a second one then allowed ETH before the operator approved
+    const { approveBodies, reads } = await openPickDebate(page, [sizedIn(ETH_SPOT, 10), ambiguous([choice({}), THREE_ASSETS])]);
+    await expect(page.getByTestId("inbox-choose-mandate")).toHaveCount(0);
+    await page.getByTestId("approve-debate-btn").click();
+    await page.getByTestId("confirm-debate-btn").click();
+    await expect(page.getByTestId("inbox-action-error")).toHaveText(AMBIGUOUS_DETAIL);
+    await expect(page.getByTestId("inbox-choose-mandate")).toContainText("2 ACTIVE mandates allow ETHUSDT.");
+    expect(reads()).toBe(2);
+    expect(approveBodies).toEqual([{ allocation_pct: 10 }]);
+    await expect(page.locator("text=PENDING_APPROVAL")).toBeVisible();
+  });
 });
+
+const ETH_SPOT = { id: "m-eth", name: "ETH spot", autonomy_level: 1, capital_budget_usd: 10000, max_position_pct: 25 };
+
+/** The approve dry run when one ACTIVE mandate takes the BUY, with `roomPct` of its budget left */
+function sizedIn(mandate: typeof ETH_SPOT, roomPct: number) {
+  return {
+    ok: true, side: "BUY", mandate, room_pct: roomPct, room_usd: (mandate.capital_budget_usd * roomPct) / 100,
+    requested_pct: 5, allocation_pct: Math.min(5, roomPct), budget_usd: (mandate.capital_budget_usd * Math.min(5, roomPct)) / 100,
+    sell_quantity: null,
+  };
+}
