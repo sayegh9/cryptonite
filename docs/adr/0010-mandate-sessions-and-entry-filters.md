@@ -94,7 +94,9 @@ Review fixes to Phase B (same amendment, no further decision rows):
   `SUBMIT_ORDER reduce_only` of the size held at routing. The orchestrator caps it to the live perp position and
   checks ownership (`CLOSE_NOT_OWNED`), so a position that shrank during the 5-minute L1 veto window (TP1 half close,
   partial stop fill) is still reduced, and one that closed is a no-op, instead of a `REDUCE_ONLY_OVERSIZE` refusal.
-  Approval class, window and proceed-at-timeout are unchanged.
+  The command carries `position_side` (the side being reduced): when the live position is flat or on the other side by
+  then, it is a no-op, so a reduction never closes or flips a position opened in the window. Approval class, window and
+  proceed-at-timeout are unchanged.
 - **Routed twice.** `route_entry` enqueues an order directly only when `timeout_policy_for` says no approval is needed
   (ADD_RISK at L3). A run routed a second time hits the approval's `ON CONFLICT` and returns the existing approval's
   status (PENDING, approved → COMPLETED, vetoed or expired → NO_TRADE), logged at WARNING, without queueing anything.

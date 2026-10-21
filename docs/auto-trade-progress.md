@@ -142,6 +142,7 @@ Branch `feat/auto-trade-phase-b`, cut from `main` at `aa5cf6d`. Decisions: the P
 | R4 | Review fix: the routed payload carries the dry run's `leverage`; `plan_leveraged_order` clamps a requested leverage (no change needed there) | done | `afaa9c6` | `test_debate_perp_routing.py`: price toward the stop → executed leverage = approved, uncapped would be higher; price away → clamped, not refused |
 | R5 | Review fix: `instrument_conflict` on the perp route → `NO_TRADE` `INSTRUMENT_CONFLICT` | done | `afaa9c6` | `test_debate_perp_routing.py` |
 | R6 | Review fix: Telegram decision path requires TOTP for a debate perp entry (rendered card, bot asks for the code, signed endpoint refuses no/wrong code) | done | `150dcd1` | `test_notifier.py` |
+| R7 | Review fix: a debate's perp reduction carries `position_side` (LONG/SHORT); the orchestrator's CLOSE_POSITION handler does nothing (COMPLETED, WARNING) when the live perp position is flat or on the other side, so a reduction never closes or flips a position opened in the veto window. Commands without `position_side` are unchanged | done | `COMMIT` | `test_debate_perp_routing.py` (still long → closes; flipped → no-op; no `position_side` → closes), `test_partial_perp_close.py` |
 
 Notes and choices made (the safer or simpler option where the plan was open):
 

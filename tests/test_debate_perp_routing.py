@@ -636,6 +636,33 @@ async def test_a_position_closed_meanwhile_is_a_no_op_not_a_refusal(h, routing):
     engine.bridge.enqueue_event.assert_not_called()  # nothing was filled: no new position, no alert
 
 
+async def test_a_reduction_never_closes_the_other_side_opened_during_the_veto_window(h, routing, caplog):
+    m, payload, _ = await routed_reduction(h, routing)  # reduces a LONG
+    assert payload["position_side"] == "LONG"
+    conn, engine = await run_debate_command(payload, m, "approval:web:operator:u1", command_type="CLOSE_POSITION",
+                                            held="0.01")
+    assert conn.outcome() == ("COMPLETED", None) and engine.dispatcher.get_perp_position_qty(PERP) == 0  # still long
+    with caplog.at_level("WARNING"):  # the mandate flipped to a short meanwhile
+        conn, engine = await run_debate_command(payload, m, "approval:web:operator:u1", command_type="CLOSE_POSITION",
+                                                held="-0.01")
+    assert conn.outcome() == ("COMPLETED", None)
+    assert engine.dispatcher.get_perp_position_qty(PERP) == D("-0.01")  # untouched: no close, no flip
+    engine.bridge.enqueue_event.assert_not_called()
+    assert "skipped: reduces a LONG" in caplog.text
+    # a command without position_side (exit monitor, kill switch, manual) keeps closing whatever is held
+    legacy = {k: v for k, v in payload.items() if k != "position_side"}
+    conn, engine = await run_debate_command(legacy, m, "approval:web:operator:u1", command_type="CLOSE_POSITION",
+                                            held="-0.01")
+    assert engine.dispatcher.get_perp_position_qty(PERP) == 0
+
+
+async def test_a_short_reduction_is_held_to_the_short_side_the_same_way(h, routing):
+    m, payload, _ = await routed_reduction(h, routing, "SHORT", "Buy")
+    assert payload["position_side"] == "SHORT"
+    conn, engine = await run_debate_command(payload, m, "ai:debate_worker", command_type="CLOSE_POSITION", held="0.01")
+    assert conn.outcome() == ("COMPLETED", None) and engine.dispatcher.get_perp_position_qty(PERP) == D("0.01")
+
+
 async def test_the_close_never_touches_a_perp_another_owner_holds(h, routing):
     m, payload, _ = await routed_reduction(h, routing)
     other = await perp_mandate(h)

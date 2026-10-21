@@ -388,8 +388,10 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
         # Against the mandate's position: close it, reduce-only. Never refused by a filter or the session. Sent as
         # CLOSE_POSITION with a quantity (as route_exit does): the orchestrator caps it to the live perp position and
         # checks ownership at execution, so a position that shrank during the veto window (TP1 half close, a partial
-        # stop fill) is still reduced, and one that closed is a no-op, instead of a REDUCE_ONLY_OVERSIZE refusal
-        payload = {**base, "quantity": format(held, "f"), "reduce_only": True, "reason": "DEBATE_REDUCE"}
+        # stop fill) is still reduced, and one that closed is a no-op, instead of a REDUCE_ONLY_OVERSIZE refusal. ``position_side``
+        # makes it a no-op too when the mandate holds the other side by then (never a flip)
+        payload = {**base, "quantity": format(held, "f"), "reduce_only": True, "reason": "DEBATE_REDUCE",
+                   "position_side": held_side}
         return (ActionClass.REDUCE_RISK, payload,
                 f"{side} {instrument} reduce-only {held:g} (closes the mandate's {held_side}) · conviction {conviction:.2f}")
     if not mandate.allow_perps or mandate.autonomy_level != AutonomyLevel.L1:

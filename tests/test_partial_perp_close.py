@@ -117,3 +117,17 @@ async def test_exit_monitor_tp1_on_spot_is_unchanged():
     args = conn.execute.call_args.args
     assert args[6] == "SUBMIT_ORDER"
     assert json.loads(args[4])["side"] == "SELL" and json.loads(args[4])["quantity"] == "50"
+
+
+async def test_position_side_makes_a_close_a_no_op_on_the_other_side_and_is_optional():
+    for side, held_long, expect in (("LONG", True, "0"), ("SHORT", True, "0.04"), ("LONG", False, "-0.04")):
+        d = make_perp_dispatcher()
+        d.set_perp_position(PERP, D("0.04") if held_long else D("-0.04"), D("50000"), leverage=5,
+                            margin_mode="ISOLATED", instance_id="INST-001")
+        engine = make_engine(d)
+        engine.bridge = MagicMock()
+        quotes = SimpleQuoteCache()
+        quotes.set_quote(PERP, 51000.0, 51010.0)
+        conn = await run(engine, [close_row(quantity="0.04", position_side=side)], quotes)
+        assert command_outcomes(conn) == [("COMPLETED", None)]
+        assert d.get_perp_position_qty(PERP) == D(expect)

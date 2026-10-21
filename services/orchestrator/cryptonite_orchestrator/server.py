@@ -1586,6 +1586,16 @@ async def command_poller(pool, engine, quote_cache=None):
 
                             pos_qty = engine.dispatcher.get_position_qty(canonical_inst)
                             perp_qty = engine.dispatcher.get_perp_position_qty(canonical_inst)
+                            position_side = str(payload.get("position_side") or "").upper()
+                            if position_side in ("LONG", "SHORT") and (
+                                    perp_qty == 0 or (perp_qty > 0) != (position_side == "LONG")):
+                                # A reduction of a LONG/SHORT (a debate's) never closes the other side: the position it
+                                # was routed against closed meanwhile and a new one may have opened. A no-op, nothing
+                                # released or filled
+                                logger.warning("CLOSE_POSITION %s for %s skipped: reduces a %s but the live perp "
+                                               "position is %s", row["command_id"], canonical_inst, position_side, perp_qty)
+                                await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
+                                continue
                             own_spot = None  # a mandate's own filled spot holding: what its close must sell
                             if perp_qty == 0 and mandate_id_from_instance(target) is not None:
                                 own_spot = (await instance_spot_holdings(conn, target)).get(canonical_inst, (Decimal("0"), None))[0]
