@@ -212,3 +212,18 @@ Branch head, test DB `cryptonite_ci_local` at 049 (no new migration), Redis flus
    input).
 5. `tests/test_backup_drill.py` (needs the Docker Postgres container), the suite on arm64 in Docker, and Playwright
    with the pinned browser and the default config.
+
+### Phase B: local verification (2026-10-21, operator's machine, head `cd409e0`)
+
+An adversarial review (Opus) of `11fd1ff` found no CRITICAL or HIGH issues. The MEDIUM and LOW findings, the operator's
+`debate.perp_routing` decision (option 1) and the opposite-side guard are fixed in R1–R7. Then, on the branch head over
+`main` `aa5cf6d`:
+
+- `uv run pytest tests -q` (Docker test containers, so `test_backup_drill.py` runs): **3,563 passed, 0 failed**.
+- `uv run pytest tests -q -m destructive`: **2 passed**. Ruff on every changed Python file: clean.
+- `pnpm typecheck`: clean. `pnpm lint`: 0 errors, the 2 warnings already on `main`.
+- Playwright (production build on :3100, API proxy at a closed port): **245 passed, 8 failed**: the same 8 that fail
+  on `main`; the new `approval-perp-debate` and `settings-perp-routing` specs pass.
+- No migration in Phase B.
+
+Items 1–4 of "not verified in the cloud" are post-deploy checks; item 5 is covered above except arm64.
