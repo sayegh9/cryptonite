@@ -15,7 +15,8 @@ from typing import Any, Literal
 
 import duckdb
 from cryptonite_schemas.identifiers import to_perp_instrument_id
-from cryptonite_schemas.mandate import canonical_instrument
+from cryptonite_schemas.mandate import DEFAULT_PROFIT_LOCK_PCT, canonical_instrument
+from cryptonite_schemas.session import session_verdict
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -791,13 +792,29 @@ def _clean(row: dict[str, Any], texts: tuple[str, ...] = ()) -> dict[str, Any]:
     return out
 
 
+def _dec_or_none(v: Any) -> Decimal | None:
+    return None if v is None else Decimal(str(v))
+
+
+def _session_verdict(r: dict[str, Any]) -> str:
+    """Today's daily-session verdict of a mandate row (ADR 0010): ACTIVE, TARGET_MET, LOCK_FIRED or LOSS_LATCHED."""
+    return session_verdict(
+        Decimal(str(r["capital_budget_usd"])), _dec_or_none(r.get("daily_loss_limit_pct")),
+        _dec_or_none(r.get("daily_profit_target_pct")),
+        _dec_or_none(r.get("profit_lock_pct")) if r.get("profit_lock_pct") is not None else DEFAULT_PROFIT_LOCK_PCT,
+        Decimal(str(r.get("session_pnl") or 0)), r.get("session_loss_latched_at"), r.get("session_target_hit_at"),
+        r.get("session_lock_fired_at")).value
+
+
 def _state_mandates() -> list[dict[str, Any]]:
     rows = _readonly_rows(
         "SELECT id, name, status, autonomy_level, level_since, instruments, capital_budget_usd, max_position_pct, "
-        "max_drawdown_pct, halted_reason, halted_at, equity, hwm, drawdown_pct, equity_ts "
+        "max_drawdown_pct, halted_reason, halted_at, equity, hwm, drawdown_pct, equity_ts, "
+        "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct, session_pnl, "
+        "session_loss_latched_at, session_target_hit_at, session_lock_fired_at "
         "FROM agent_safe_mandate_health ORDER BY name, id LIMIT 50"
     )
-    return [_clean(r, texts=("halted_reason",)) for r in rows]
+    return [{**_clean(r, texts=("halted_reason",)), "session_verdict": _session_verdict(r)} for r in rows]
 
 
 def _state_holdings() -> list[dict[str, Any]]:
@@ -916,6 +933,10 @@ def _mandate_line(m: dict[str, Any]) -> str:
     line = (f"{_one_line(m['name'], 80)}: {m['status']} L{m['autonomy_level']}, "
             f"budget ${m['capital_budget_usd']:,.2f}, max pos {_pct(m['max_position_pct'])}, "
             f"{drawdown} of {_pct(m['max_drawdown_pct'])} stop")
+    if m.get("session_verdict"):
+        line += f", session {m['session_verdict']}"
+        if m["session_verdict"] != "ACTIVE":
+            line += " (no new entries until 00:00 UTC)"
     if m["halted_reason_text"]:
         line += f"; halted: {_one_line(m['halted_reason_text'], HEADER_HALTED_REASON_CHARS)}"
     return line

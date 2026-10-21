@@ -10,6 +10,12 @@ Autonomous execution exists only inside a mandate, at the level it has earned:
 - risk reducing (a spot SELL of what the mandate holds, an exit debate's REDUCE/CLOSE) runs at once
   at L2/L3; at L1 it waits a short veto window that *proceeds* at timeout (D8).
 
+Entry filters (ADR 0010, refuse only): before anything is sent for approval or queued, an entry is dropped
+(NO_TRADE, logged) when its conviction is below the mandate's ``min_conviction``, its reward:risk is below
+``min_rr`` (only when the verdict carries a stop, a target and a reference price), or the mandate's daily session
+is not ACTIVE (loss latch, profit target or profit lock). The orchestrator's mandate gate refuses the session cases
+again at execution.
+
 The allocation is capped at the room the mandate has left under its own position limit and budget
 (what it already holds counts) before anything is queued or sent for approval, so a model never
 "breaches" by over-sizing; with less than ``MIN_MANDATE_ENTRY_PCT`` of room there is no trade. The
@@ -20,6 +26,7 @@ the execution package, only ``cryptonite_schemas``.)
 
 import datetime
 import json
+import logging
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -39,10 +46,20 @@ from cryptonite_schemas.mandate import (
 )
 from cryptonite_schemas.marks import LiveMark
 from cryptonite_schemas.marks import entry_room_pct as room_at_marks
+from cryptonite_schemas.session import (
+    SESSION_COLUMNS,
+    SessionVerdict,
+    entry_filter_refusal,
+    utc_session_date,
+    verdict_from_row,
+)
+
+logger = logging.getLogger("cryptonite.debate_worker.mandate_routing")
 
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
-                   "max_leverage, max_risk_per_trade_pct, strategies, autonomy_level, status, active_hours_utc, veto_window_s")
+                   "max_leverage, max_risk_per_trade_pct, strategies, autonomy_level, status, active_hours_utc, veto_window_s, "
+                   "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct")
 
 
 def side_of(recommendation: str) -> str | None:
@@ -93,6 +110,28 @@ async def position_owner(conn, instrument_id: str) -> tuple[Mandate | None, Deci
         return None, Decimal("0")
     row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mid)
     return (Mandate.from_row(row) if row else None), Decimal(str(rows[0]["qty"]))
+
+
+async def session_verdict_of(conn, mandate: Mandate, now: datetime.datetime) -> SessionVerdict:
+    """Today's (UTC) daily-session verdict of the mandate (ADR 0010), from the orchestrator's session row."""
+    row = await conn.fetchrow(
+        f"SELECT {SESSION_COLUMNS} FROM ai_mandate_daily_sessions WHERE mandate_id = $1 AND session_date = $2",
+        mandate.id, utc_session_date(now))
+    return verdict_from_row(mandate, row)
+
+
+async def entry_filter_reason(conn, mandate: Mandate, conviction: float, *, now: datetime.datetime,
+                              reference_price: float | None = None, stop_loss: float | None = None,
+                              take_profit: float | None = None) -> str | None:
+    """Why the mandate refuses this entry (ADR 0010: its daily session, conviction or R:R), else None."""
+    if mandate.min_rr is not None and stop_loss and take_profit and not (reference_price and reference_price > 0):
+        logger.info("R:R filter of mandate %s skipped: no reference price", mandate.name)
+    refusal = entry_filter_refusal(
+        mandate, await session_verdict_of(conn, mandate, now), conviction=conviction,
+        entry=Decimal(str(reference_price)) if reference_price and reference_price > 0 else None,
+        stop_loss=Decimal(str(stop_loss)) if stop_loss else None,
+        take_profit=Decimal(str(take_profit)) if take_profit else None)
+    return f"{refusal[0]}: {refusal[1]}" if refusal else None
 
 
 async def _approval(conn, mandate: Mandate, action: ActionClass, command_type: str, payload: dict[str, Any],
@@ -146,10 +185,12 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
                       decision_trace_id: str | None = None,
                       marks: dict[str, LiveMark] | None = None,
                       stop_loss: float | None = None,
-                      take_profit: float | None = None) -> tuple[str, Mandate | None]:
+                      take_profit: float | None = None,
+                      reference_price: float | None = None) -> tuple[str, Mandate | None]:
     """Returns (debate_runs status, mandate). ``decision_trace_id`` (R7.4) rides in the command and
     approval payloads so the order and its fill can be traced back to the scanner candidate. ``marks``
-    (``cryptonite_schemas.marks.read_marks``) values the mandate's positions for its room."""
+    (``cryptonite_schemas.marks.read_marks``) values the mandate's positions for its room. ``reference_price``
+    (the decision price) is the entry the R:R filter measures from."""
     now = now or datetime.datetime.now(datetime.UTC)
     side = side_of(recommendation)
     if side is None:
@@ -168,6 +209,10 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         base["proposed_take_profit"] = float(take_profit)
         base["take_profit"] = float(take_profit)
     if side == "BUY":
+        if reason := await entry_filter_reason(conn, mandate, conviction, now=now, reference_price=reference_price,
+                                               stop_loss=stop_loss, take_profit=take_profit):
+            logger.info("Debate %s entry on %s refused by mandate %s: %s", run_id, instrument_id, mandate.name, reason)
+            return "NO_TRADE", mandate
         room = await entry_room_pct(conn, mandate, instrument_id, marks)
         if room < MIN_MANDATE_ENTRY_PCT:
             return "NO_TRADE", mandate  # already at the position limit: nothing to ask the operator

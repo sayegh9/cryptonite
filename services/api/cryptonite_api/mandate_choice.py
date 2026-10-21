@@ -6,11 +6,17 @@ needs one named. ``choose_mandate_remedy`` lists the candidates with what the en
 orchestrator's mandate gate would, so a choice that cannot trade is refused before anything is queued.
 """
 
+import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from cryptonite_execution.mandate_store import MANDATE_COLUMNS, entry_room_pct, held_values
+from cryptonite_execution.mandate_store import (
+    MANDATE_COLUMNS,
+    entry_room_pct,
+    held_values,
+    session_verdict_for,
+)
 from cryptonite_execution.mandates import MandateOrder, check_mandate
 from cryptonite_orchestrator.mandate_gate import mandate_exposure
 from cryptonite_schemas.mandate import (
@@ -20,6 +26,7 @@ from cryptonite_schemas.mandate import (
     canonical_instrument,
     mandate_id_from_instance,
 )
+from cryptonite_schemas.session import entry_filter_refusal
 
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 
@@ -48,6 +55,21 @@ async def instrument_conflict(conn, mandate: Mandate, instrument_id: str, quanti
         who = await conn.fetchval("SELECT name FROM ai_mandates WHERE id = $1", held_by) or who
     return (f"MANDATE_INSTRUMENT_CONFLICT: {who} holds {instrument_id}; mandate {mandate.name} cannot add to "
             f"it, so nothing was queued; reject this {what}")
+
+
+async def entry_filter_detail(conn, mandate: Mandate, what: str, *, conviction: Decimal | float | None = None,
+                              entry: Decimal | None = None, stop_loss: Decimal | None = None,
+                              take_profit: Decimal | None = None) -> str | None:
+    """The refusal detail when the mandate's entry filters or its daily session refuse a new entry (ADR 0010), else
+    None. ``what`` names the thing to reject ("card", "debate"). The orchestrator's gate refuses the session cases
+    again at execution; read only."""
+    verdict = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
+    refusal = entry_filter_refusal(mandate, verdict, conviction=conviction, entry=entry, stop_loss=stop_loss,
+                                   take_profit=take_profit)
+    if refusal is None:
+        return None
+    code, text = refusal
+    return f"{code}: {text} (mandate {mandate.name}); nothing was queued; reject this {what}"
 
 
 async def choose_mandate_remedy(pool, instrument: str, requested: Decimal, marks) -> dict[str, Any] | None:

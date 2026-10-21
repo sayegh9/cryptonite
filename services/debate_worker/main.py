@@ -515,6 +515,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                     final_status, mandate = await route_entry(
                         conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
                         mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
+                        reference_price=decision_price,
                     )
                 await conn.execute(
                     """UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3

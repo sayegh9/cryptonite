@@ -74,6 +74,26 @@ async def perp_mark(redis, instrument_id: str) -> tuple[Decimal | None, Decimal 
         return None, None
 
 
+async def card_entry_price(redis, card: dict[str, Any]) -> Decimal | None:
+    """The price a card's entry is measured from for its R:R (ADR 0010): its limit price, else the perp's mark or the
+    spot's last price from the market cache. None when there is none (the R:R filter is then skipped)."""
+    limit = card.get("limit_price") if str(card.get("order_type", "MARKET")).upper() == "LIMIT" else None
+    if limit:
+        return Decimal(str(limit))
+    inst = canonical_instrument(card["instrument_id"])
+    if inst.split(".")[0].endswith("-PERP"):
+        return (await perp_mark(redis, inst))[0]
+    if redis is None:
+        return None
+    try:
+        raw = await redis.get(f"market:24h:{inst.split('.')[0]}")
+        price = Decimal(str(json.loads(raw.decode() if isinstance(raw, bytes) else raw).get("last_price") or 0)) if raw else None
+        return price if price and price > 0 else None
+    except Exception as e:
+        logger.warning("Could not read the last price of %s: %s", inst, e)
+        return None
+
+
 async def card_leverage_plan(pool, redis, mandate: Mandate, card: dict[str, Any], *,
                              requested_leverage: int | None = None) -> LeveragePlan:
     """The plan approve would queue for a perp entry card now (read only)."""

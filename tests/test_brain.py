@@ -1261,7 +1261,8 @@ def test_the_brain_prompt_tells_it_the_state_is_a_snapshot_and_names_the_readabl
     # ... and rule 5 opens with the order gates: the snapshot is checked before propose_order, and "Explain why
     # instead" follows the refusals only, so the SELL sentence that comes after it is not a refusal.
     orders = ("5. Orders: you cannot place orders. Call get_ai_state before propose_order. Do not propose a BUY for a "
-              "mandate that is PAUSED or HALTED. "
+              "mandate that is PAUSED or HALTED, nor an entry for a mandate whose session is not ACTIVE (its daily loss "
+              "limit, profit target or profit lock was reached: new entries resume 00:00 UTC). "
               "Do not propose any card when the kill switch or the daily-loss latch is on, or when the exit monitor is "
               "not running. Explain why instead. If the System state shows a gate as unknown, call get_ai_state; the "
               "card is checked again at approval.")

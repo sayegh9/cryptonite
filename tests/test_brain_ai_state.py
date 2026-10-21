@@ -330,6 +330,18 @@ async def test_the_header_lists_an_active_mandate(world):
     assert f"{world.mandate_names[0]}: ACTIVE L2, budget $1,000.00, max pos 10%, drawdown 2.5% of 20% stop" in header
 
 
+async def test_the_header_shows_each_mandates_daily_session(world):
+    """ADR 0010: the session verdict is derived from today's row and the mandate's limits (migration 049's view)."""
+    active = world.mandates[0]
+    assert f"{world.mandate_names[0]}: ACTIVE L2" in ai_state_header() and ", session ACTIVE" in ai_state_header()
+    await world.conn.execute("UPDATE ai_mandates SET daily_loss_limit_pct = 3 WHERE id = $1", active)
+    await world.conn.execute(
+        """INSERT INTO ai_mandate_daily_sessions (mandate_id, session_date, start_equity, start_budget, last_pnl,
+               loss_latched_at) VALUES ($1, (now() AT TIME ZONE 'UTC')::date, 1000, 1000, -30, now())""", active)
+    assert "drawdown 2.5% of 20% stop, session LOSS_LATCHED (no new entries until 00:00 UTC)" in ai_state_header()
+    assert _by(_state()["mandates"], "id", str(active))["session_verdict"] == "LOSS_LATCHED"
+
+
 async def test_the_header_lists_a_halted_mandate_with_its_reason(world):
     assert f"{world.mandate_names[1]}: HALTED L2, budget $1,000.00" in ai_state_header()
     assert "halted: Drawdown breach: halted by the system" in ai_state_header()
