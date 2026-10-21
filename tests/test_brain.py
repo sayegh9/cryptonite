@@ -1261,13 +1261,31 @@ def test_the_brain_prompt_tells_it_the_state_is_a_snapshot_and_names_the_readabl
     # ... and rule 5 opens with the order gates: the snapshot is checked before propose_order, and "Explain why
     # instead" follows the refusals only, so the SELL sentence that comes after it is not a refusal.
     orders = ("5. Orders: you cannot place orders. Call get_ai_state before propose_order. Do not propose a BUY for a "
-              "mandate that is PAUSED or HALTED (approval also refuses a BUY when the mandate has no room left). "
+              "mandate that is PAUSED or HALTED. "
               "Do not propose any card when the kill switch or the daily-loss latch is on, or when the exit monitor is "
               "not running. Explain why instead. If the System state shows a gate as unknown, call get_ai_state; the "
               "card is checked again at approval.")
     assert orders in prompt
     assert prompt.index("4. A full") < prompt.index(orders) < prompt.index('Do not propose a BUY for a symbol')
     assert "always allowed" not in prompt and "is allowed on a PAUSED" not in prompt
+
+
+def test_the_brain_prompt_proposes_a_buy_on_a_full_mandate_and_lets_the_card_offer_the_fix():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    prompt = " ".join(BRAIN_INSTRUCTIONS.split())  # the wording may wrap across lines
+    # 2026-10-21: the Brain declined a WLD BUY because one mandate was at its limit, though two other ACTIVE mandates
+    # allowed WLD and the card's dry run offers the mandate picker (#101) or the limit fix (#100)
+    rule = ("A full mandate is not a reason to decline a BUY: when the mandate has no room left under its limit, or "
+            "another ACTIVE mandate also allows the instrument, still call propose_order. The card's dry run offers the "
+            "operator the fix (the choice of mandate, or a higher limit or budget with TOTP), and approval refuses a "
+            "BUY that still has no room. Say what you saw: the mandate's room, and when it adds to an open position on "
+            "the same setup, that it is a second entry and whether you would take it.")
+    assert rule in prompt
+    assert prompt.index("the card is checked again at approval.") < prompt.index(rule)
+    assert prompt.index(rule) < prompt.index('Do not propose a BUY for a symbol')
+    # the no-room fact no longer sits among the refusals, where it read as one
+    assert "(approval also refuses a BUY when the mandate has no room left)" not in prompt
 
 
 def test_the_worker_gives_the_brain_the_system_state_reader():
