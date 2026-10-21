@@ -99,3 +99,24 @@ Branch head, test DB `cryptonite_ci_local` at 049, Redis flushed at start.
 6. Telegram and ntfy delivery of `MANDATE_DAILY_LOSS`, `MANDATE_PROFIT_LOCK` (Critical) and `MANDATE_DAILY_TARGET`
    (Info) through the outbox; only the `OUTBOX_KINDS` membership is unit-tested.
 7. The A4 ratchet reading `mandate:session:target_met` (built in the other session).
+
+## Local verification (2026-10-21, operator's machine, #114 at `ca6a44f` merged with #113 at `bd7d5d5`)
+
+Both PRs were reviewed adversarially (Opus) and every HIGH/MEDIUM finding was fixed (#114: `ca6a44f`; #113:
+`d545890`, `bd7d5d5`). Then, on a local merge of both branches over `main` `1d68466`:
+
+- `uv run pytest tests -q` (Docker test containers, so `test_backup_drill.py` runs): **3,473 passed, 1 failed**. The
+  failure, `test_debate_decision_price.py::test_boundary_age_is_accepted`, is a timing flake (a quote 1 s inside the
+  age bound); the file passes 19/19 three times in isolation, and neither PR touches that logic.
+- `uv run pytest tests -q -m destructive`: **2 passed**. Ruff on every changed Python file: clean.
+- `pnpm typecheck`: clean. `pnpm lint`: 0 errors, the 2 warnings already on `main`.
+- Playwright (production build on :3100, API proxy at a closed port): **238 passed, 8 failed**: the same 8 that fail
+  on `main` (`mandate-instance-controls`, `mode-banner` 1024px, `portfolio_console` ×5, `units-formatting`).
+- Migration 049 on a **fresh copy of the live DB** (streamed `pg_dump` into a throwaway Postgres): upgrade, downgrade
+  to 048, upgrade again, all clean in ~2 s. Only `Brain BTCUSDT-PERP.BINANCE` gets `daily_loss_limit_pct` 3.00 (the
+  other six mandates keep every filter NULL, profit lock 50). All six new CHECKs present, including
+  `chk_ai_mandates_daily_loss_ge_risk`. `cryptonite_agent_ro` reads `agent_safe_mandate_health` and is refused on
+  `ai_mandate_daily_sessions`.
+
+Items 4–7 above (the running stack, live Brain, Telegram/ntfy, the ratchet reading the target set) are post-deploy
+checks.
