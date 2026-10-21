@@ -388,3 +388,14 @@ async def test_the_notifier_role_can_deliver_but_never_decide(h, db_url):
             await pool.execute("UPDATE ai_mandates SET autonomy_level = 3")
     finally:
         await pool.close()
+
+
+async def test_a_liquidation_proximity_alert_reaches_telegram_and_ntfy():
+    """Leverage plan 4.6: the exit monitor's LIQUIDATION_PROXIMITY alert is CRITICAL, with its own message."""
+    n, tg, _, ntfy = make_notifier()
+    alert = {"type": "EXIT_MONITOR", "severity": "CRITICAL", "instrument_id": "BTCUSDT-PERP.BINANCE", "action": "CLOSE",
+             "reason": "LIQUIDATION_PROXIMITY", "leverage": 7, "liquidation_price": 52000.0,
+             "message": "BTCUSDT-PERP.BINANCE LONG 7x: the mark 55100 has used 76% of the distance to liquidation (52000)."}
+    assert await n.on_system_alert(json.dumps(alert)) is True
+    assert "Liquidation Proximity" in tg.sent()[-1]["text"] and "76% of the distance" in tg.sent()[-1]["text"]
+    assert ntfy.posts[-1]["topic"] == "cryptonite-critical" and ntfy.posts[-1]["priority"] == 5

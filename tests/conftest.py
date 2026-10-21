@@ -94,6 +94,28 @@ def no_paid_model_calls(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_live_leverage_brackets():
+    """Live bracket tables are process-wide (``margin._LIVE_BRACKETS``): none leak from one test to the next."""
+    from cryptonite_execution.margin import clear_live_brackets
+
+    clear_live_brackets()
+    yield
+    clear_live_brackets()
+
+
+@pytest.fixture(autouse=True)
+def no_usdm_exchange_info_call(monkeypatch):
+    """Ingest start-up lists USD-M perpetuals from Binance (leverage plan 1.3); tests never reach Binance, so the
+    list is unknown unless a test stubs it."""
+    from cryptonite_ingest.recorder import IngestRecorder
+
+    async def _unknown(self):
+        return None
+
+    monkeypatch.setattr(IngestRecorder, "_fetch_usdm_perpetuals", _unknown)
+
+
 @pytest.fixture
 def temp_nautilus_dir():
     with tempfile.TemporaryDirectory() as tmp:

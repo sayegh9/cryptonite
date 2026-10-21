@@ -18,6 +18,9 @@ import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { createMandate, editMandate, pauseMandate, resumeMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
+import { HIGH_LEVERAGE_CONFIRM, usd } from "@/lib/leverage";
+import { PerpPlanPanel } from "@/components/brain/PerpPlanPanel";
+import { isPerpInstrument } from "@/lib/brain/types";
 import type {
   BrainWidget,
   CardEvidence,
@@ -68,12 +71,25 @@ function canonicalInstrument(raw: string): string {
   return s.includes(".") ? s : `${s}.BINANCE`;
 }
 
-function fixLabel(fix: "create" | "add" | "edit" | "resume" | "choose" | null, field?: string): string {
+type CardFix = "create" | "add" | "edit" | "resume" | "choose" | "allow" | "raise";
+
+function fixLabel(fix: CardFix | null, field?: string): string {
   if (fix === "create") return "Create mandate and confirm";
   if (fix === "add") return "Add to mandate and confirm";
   if (fix === "edit") return field === "capital_budget_usd" ? "Raise budget and confirm" : "Raise limit and confirm";
   if (fix === "resume") return "Resume mandate and confirm";
+  if (fix === "allow") return "Allow perps";
+  if (fix === "raise") return "Raise max leverage";
   return "Confirm paper order";
+}
+
+/** A perp fix spends the TOTP code on the mandate change alone (approve then takes the next code) */
+function perpFixLabel(fix: CardFix, field?: string): string {
+  if (fix === "create") return "Create mandate";
+  if (fix === "add") return "Add to mandate";
+  if (fix === "edit") return field === "capital_budget_usd" ? "Raise budget" : "Raise limit";
+  if (fix === "resume") return "Resume mandate";
+  return fixLabel(fix, field);
 }
 
 const cardInput = "rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 focus:border-amber-600 focus:outline-none";
@@ -710,7 +726,7 @@ const PREFLIGHT_FOCUS_MS = 5_000;
  * opens the confirm step, and on window focus (at most every 5 s). It fails quiet: an unavailable dry run shows nothing
  * and never blocks Approve, the server stays the authority.
  */
-function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, live: boolean) {
+function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, live: boolean, leverage: number | null = null) {
   const [preflight, setPreflight] = useState<CardPreflight | null>(null);
   const inflight = useRef<AbortController | null>(null);
   const lastRead = useRef(0);
@@ -721,7 +737,7 @@ function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, liv
     const ctrl = new AbortController();
     inflight.current = ctrl;
     lastRead.current = Date.now();
-    fetchCardPreflight(sessionId, widget.id, ctrl.signal)
+    fetchCardPreflight(sessionId, widget.id, ctrl.signal, leverage)
       .then((p) => {
         // Decided elsewhere: the local card may be stale, so there is no refusal to show and the normal label stays
         const decided = !p.ok && p.code === "NOT_PENDING";
@@ -730,7 +746,7 @@ function useCardPreflight(widget: OrderCardWidget, sessionId: string | null, liv
       .catch(() => {
         if (!ctrl.signal.aborted) setPreflight(null);
       });
-  }, [sessionId, widget.id]);
+  }, [sessionId, widget.id, leverage]);
 
   useEffect(() => {
     if (!live) return;
@@ -759,6 +775,7 @@ function remedyWords(remedy: CardRemedy): string {
   }
   if (remedy.kind === "RESUME_MANDATE") return `to resume ${remedy.mandate_name}`;
   if (remedy.kind === "CHOOSE_MANDATE") return "a choice of mandate";
+  if (remedy.kind === "ALLOW_PERPS") return `to allow perps in ${remedy.mandate_name} (at ${remedy.max_leverage_after}x)`;
   return "a mandate for it";
 }
 
@@ -785,6 +802,20 @@ function PreflightLine({ preflight, instrumentId }: { preflight: CardPreflight; 
             </span>
           )}
         </span>
+      </p>
+    );
+  }
+  if (preflight.leverage_plan) {
+    const lp = preflight.leverage_plan;
+    return (
+      <p role="note" data-testid="brain-card-preflight" className="mt-2 text-zinc-300">
+        Would open {lp.side === "BUY" ? "a long" : "a short"} at {lp.leverage}x ISOLATED in {preflight.mandate.name}: {usd(lp.margin_usd)} margin
+        {preflight.clipped_from_pct != null && <> (cut from {preflight.clipped_from_pct}% of the budget)</>}
+        {preflight.leverage_remedy && (
+          <span className="text-amber-300">
+            {" "}· {preflight.leverage_remedy.mandate_name} allows at most {preflight.leverage_remedy.from}x
+          </span>
+        )}
       </p>
     );
   }
@@ -932,24 +963,38 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [chosenId, setChosenId] = useState("");
   const [tidyOthers, setTidyOthers] = useState(false);
   const [totp, setTotp] = useState("");
+  // A perp card: the leverage pill the operator picked (null: the card's own), the 8x second confirmation, and
+  // whether the confirm step also raises the mandate's maximum leverage (RAISE_MAX_LEVERAGE)
+  const [pickedLeverage, setPickedLeverage] = useState<number | null>(null);
+  const [confirmHigh, setConfirmHigh] = useState(false);
+  const [raiseLeverage, setRaiseLeverage] = useState(false);
   const pending = widget.status === "PENDING_APPROVAL";
   const buy = widget.side === "BUY";
+  const perp = isPerpInstrument(widget.instrument_id);
+  // A perp card adds risk either way (a SELL opens or adds to a short) unless it reduces a held position
+  const perpEntry = perp && !widget.reduce_pct;
+  const addsRisk = buy || perpEntry;
   // An instrument the live feed does not allow cannot be approved: no mandate form, no TOTP, Approve disabled until it streams
   const [fed, setFed] = useState(false);
   const unlockFeed = useCallback(() => setFed(true), []);
-  // Only a BUY adds risk; a SELL closes a holding and is never blocked by the feed
-  const feedRefusal = pending && widget.side === "BUY" ? widget.feed_refusal ?? null : null;
+  // Only an entry adds risk; a spot SELL closes a holding and is never blocked by the feed
+  const feedRefusal = pending && addsRisk ? widget.feed_refusal ?? null : null;
   const feedLocked = !!feedRefusal && !fed;
   const sessionId = useBrainStore((s) => s.sessionId);
   useCardOutcome(widget, sessionId);
   // Only a card that can still be approved is checked: not decided, and not locked by the feed
-  const { preflight, check: checkPreflight } = useCardPreflight(widget, sessionId, pending && !feedLocked);
-  // The mandate change the dry run says would let this BUY queue (create, add to, raise, resume), or none
-  const remedy = buy && preflight && !preflight.ok ? preflight.remedy ?? null : null;
+  const { preflight, check: checkPreflight } = useCardPreflight(widget, sessionId, pending && !feedLocked, pickedLeverage);
+  // The mandate change the dry run says would let this entry queue (create, add to, raise, resume, allow perps), or none
+  const remedy = addsRisk && preflight && !preflight.ok ? preflight.remedy ?? null : null;
   const createRemedy = remedy?.kind === "CREATE_MANDATE" ? remedy : null;
   const editRemedy = remedy?.kind === "EDIT_MANDATE" ? remedy : null;
   const resumeRemedy = remedy?.kind === "RESUME_MANDATE" ? remedy : null;
   const chooseRemedy = remedy?.kind === "CHOOSE_MANDATE" ? remedy : null;
+  const allowRemedy = remedy?.kind === "ALLOW_PERPS" ? remedy : null;
+  // A perp entry's plan (also on a refusal, to show which ceiling refused it) and the optional leverage raise
+  const leveragePlan = perpEntry && preflight ? preflight.leverage_plan ?? null : null;
+  const leverageRemedy = perpEntry && preflight?.ok ? preflight.leverage_remedy ?? null : null;
+  const highLeverage = (leveragePlan?.leverage ?? 0) >= HIGH_LEVERAGE_CONFIRM;
   // The first mandate that can take the whole order, else the first that can take any of it
   const firstChoice = chooseRemedy
     ? (chooseRemedy.candidates.find((c) => !c.blocked && c.allocation_pct >= widget.allocation_pct)
@@ -962,8 +1007,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate && !remedy;
   // A dry run that finds no ACTIVE mandate for a BUY readies the create form, so the first Approve already shows it
   useEffect(() => {
-    if (buy && preflight) setNeedsMandate(!preflight.ok && preflight.needs_mandate);
-  }, [buy, preflight]);
+    if (addsRisk && preflight) setNeedsMandate(!preflight.ok && preflight.needs_mandate);
+  }, [addsRisk, preflight]);
+  // A new leverage is a new decision: its second confirmation is asked again
+  useEffect(() => setConfirmHigh(false), [leveragePlan?.leverage]);
   // A perp cannot get a new (spot-only) mandate: the first mandate it can join is preselected
   const firstTarget = createRemedy && !createRemedy.can_create ? createRemedy.add_to[0]?.id ?? "new" : "new";
   useEffect(() => setMandateTarget(firstTarget), [firstTarget]);
@@ -976,9 +1023,13 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const canCreate = createRemedy?.can_create ?? true; // without a remedy (an older read), the create form as before
   const fix = needsMandate
     ? (addTo ? "add" : canCreate ? "create" : null)
-    : editRemedy ? "edit" : resumeRemedy ? "resume" : chooseRemedy ? "choose" : null;
-  // Choosing a mandate changes none (and tidying the others only takes room away): only the other fixes need TOTP
-  const needsTotp = fix !== null && fix !== "choose";
+    : editRemedy ? "edit" : resumeRemedy ? "resume" : chooseRemedy ? "choose" : allowRemedy ? "allow"
+    : leverageRemedy && raiseLeverage ? "raise" : null;
+  // Choosing a mandate changes none (and tidying the others only takes room away): only the other fixes need TOTP.
+  // A perp entry needs it to approve too (ADR 0009 D3); a code works once, so a perp fix is its own step: the mandate
+  // change takes this code, and approve takes the next one
+  const needsTotp = (fix !== null && fix !== "choose") || perpEntry;
+  const perpFixStep = perpEntry && fix !== null && fix !== "choose";
   const symbol = widget.instrument_id.split(".")[0];
 
   const fixReady = (() => {
@@ -992,8 +1043,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       const v = Number(editValue);
       return v > editRemedy.from && (editRemedy.field !== "max_position_pct" || v <= MAX_POSITION_PCT);
     }
-    return fix === "add" || fix === "resume";
+    return fix === "add" || fix === "resume" || fix === "allow" || fix === "raise";
   })();
+  // A perp approval without a fix: the code, a plan the server accepts, and the second confirmation at 8x and above
+  const perpReady = totp.length === 6 && (!highLeverage || confirmHigh);
 
   const approve = async () => {
     setBusy(true);
@@ -1013,7 +1066,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           max_position_pct: Number(mandatePct),
           max_drawdown_pct: 20,
           veto_window_s: 600,
-          allow_perps: false,
+          // A perp needs a mandate that allows perps: it starts at L1 with the 3x default (ADR 0009)
+          allow_perps: createRemedy?.allow_perps ?? false,
           totp_code: totp,
           source,
         })).id;
@@ -1050,14 +1104,31 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       } else if (fix === "resume" && resumeRemedy) {
         mandateId = (await resumeMandate(resumeRemedy.mandate_id, totp, `resumed from Brain order card ${widget.id}`)).id;
         setFixed(`Resumed mandate ${resumeRemedy.mandate_name}.`);
+      } else if (fix === "allow" && allowRemedy) {
+        mandateId = (await editMandate(allowRemedy.mandate_id, { allow_perps: true, totp_code: totp, source })).id;
+        setFixed(`Mandate ${allowRemedy.mandate_name}: perps allowed (at most ${allowRemedy.max_leverage_after}x, ISOLATED).`);
+      } else if (fix === "raise" && leverageRemedy) {
+        mandateId = (await editMandate(leverageRemedy.mandate_id, { max_leverage: leverageRemedy.to, totp_code: totp, source })).id;
+        setRaiseLeverage(false);
+        setFixed(`Mandate ${leverageRemedy.mandate_name}: max leverage raised ${leverageRemedy.from}x → ${leverageRemedy.to}x.`);
       }
-      await approveOrderCard(widget, mandateId);
+      if (perpFixStep) {
+        // The code is spent on the mandate change: the dry run is read again and approve waits for the next code
+        checkPreflight();
+        setFixed((f) => `${f ?? "Mandate changed."} Enter the next TOTP code to approve the order.`);
+        return;
+      }
+      await approveOrderCard(
+        widget,
+        mandateId,
+        perpEntry ? { totp_code: totp, leverage: pickedLeverage, confirm_high_leverage: highLeverage && confirmHigh } : undefined,
+      );
       setConfirming(false);
     } catch (e: any) {
       // The server refused: the dry run is read again so an "ok" line never sits next to that refusal
       checkPreflight();
       const msg: string = e?.message || "Order rejected";
-      if (buy && msg.startsWith("NO_MANDATE")) {
+      if (addsRisk && msg.startsWith("NO_MANDATE")) {
         setNeedsMandate(true);
       } else if (msg.startsWith("MANDATE_PAUSED") || msg.startsWith("MANDATE_HALTED")) {
         // Nothing was queued. Resuming the mandate is the fix, so no mandate form; Approve stays for a retry after resuming
@@ -1077,16 +1148,18 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   return (
     <section
       data-testid="brain-widget-order-card"
-      aria-label={buy
-        ? `Order proposal: BUY ${widget.allocation_pct}% of mandate ${widget.instrument_id}`
-        : `Order proposal: SELL the whole holding of ${widget.instrument_id}`}
+      aria-label={perpEntry
+        ? `Order proposal: ${buy ? "LONG" : "SHORT"} ${widget.instrument_id}, ${widget.allocation_pct}% of mandate as margin`
+        : buy
+          ? `Order proposal: BUY ${widget.allocation_pct}% of mandate ${widget.instrument_id}`
+          : `Order proposal: SELL the whole holding of ${widget.instrument_id}`}
       className="mt-2 rounded-lg border border-amber-700/60 bg-amber-950/10 p-3 font-mono text-2xs text-zinc-300"
     >
       <header className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <AlertTriangle className="h-3 w-3 text-amber-400" aria-hidden />
           <span className="rounded border border-amber-600 bg-amber-500/10 px-1.5 py-0.5 text-2xs font-black tracking-wider text-amber-300">
-            {buy ? "ADDS RISK · PAPER" : "CLOSES HOLDING · PAPER"}
+            {addsRisk ? "ADDS RISK · PAPER" : perp ? "REDUCES POSITION · PAPER" : "CLOSES HOLDING · PAPER"}
           </span>
           <span className="text-2xs font-bold uppercase text-zinc-400">Order proposal</span>
         </div>
@@ -1105,7 +1178,9 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       </header>
 
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className={`text-sm font-black ${buy ? "text-emerald-400" : "text-rose-400"}`}>{widget.side}</span>
+        <span className={`text-sm font-black ${buy ? "text-emerald-400" : "text-rose-400"}`}>
+          {perpEntry ? (buy ? "LONG" : "SHORT") : widget.side}
+        </span>
         {!buy && widget.reduce_pct && widget.reduce_pct < 100 ? (
           <span
             data-testid="order-card-reduce-pct"
@@ -1122,8 +1197,12 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       </div>
       <dl className="mt-1 grid grid-cols-3 gap-2 text-2xs">
         <div>
-          <dt className="text-zinc-500">Size</dt>
-          {buy ? (
+          <dt className="text-zinc-500">{perpEntry ? "Margin" : "Size"}</dt>
+          {perpEntry ? (
+            <dd className="text-zinc-100" title="The margin posted, a share of the mandate budget; the leverage sets the notional">
+              {widget.allocation_pct}% of mandate
+            </dd>
+          ) : buy ? (
             <dd className="text-zinc-100" title="Sized at approval from the live price; capped at the room left under the mandate's position limit">
               {widget.allocation_pct}% of mandate
             </dd>
@@ -1185,6 +1264,18 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
       {/* The paused-mandate notice already says this refusal: the dry-run line does not repeat it */}
       {preflight && !(mandateBlock && !preflight.ok && /^MANDATE_(PAUSED|HALTED)/.test(preflight.code)) && (
         <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />
+      )}
+      {perpEntry && (pending ? leveragePlan !== null : widget.leverage != null) && (
+        <PerpPlanPanel
+          plan={pending ? leveragePlan : null}
+          grade={widget.setup_grade}
+          gradeReasons={widget.grade_reasons ?? []}
+          picked={pickedLeverage}
+          onPick={setPickedLeverage}
+          locked={!pending}
+          lockedLeverage={widget.leverage}
+          target={widget.take_profit}
+        />
       )}
       {widget.rationale && <p className="mt-2 text-zinc-400">{widget.rationale}</p>}
       <StructuredRationale widget={widget} />
@@ -1285,7 +1376,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
                 </>
               ) : (
                 <p className="mb-2 text-zinc-300">
-                  A new mandate is spot only, so {symbol} needs an ACTIVE mandate that allows perps (Mission Control → Mandates).
+                  No mandate can take {symbol} from here: it needs an ACTIVE L1 mandate that allows perps (Mission Control → Mandates).
                 </p>
               )}
             </div>
@@ -1360,6 +1451,50 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
               Mandate {resumeRemedy.mandate_name} covers {symbol} and is PAUSED. Confirming resumes it (it can take new risk again;
               its high-water mark restarts from now), then queues this order.
             </p>
+          ) : allowRemedy ? (
+            <div data-testid="card-fix-allow-perps">
+              <p className="mb-2 text-zinc-300">
+                Mandate {allowRemedy.mandate_name} does not allow perps. Confirming turns perps on in it: ISOLATED margin, at most{" "}
+                {allowRemedy.max_leverage_after}x, and every order that adds risk still needs your approval with TOTP (L1 only).
+              </p>
+              <p className="mb-2 flex items-start gap-1 text-amber-300">
+                <AlertTriangle className="mt-px h-3 w-3 flex-none" aria-hidden />
+                <span>This changes the mandate for all its future AI orders. Approving this order then takes the next TOTP code.</span>
+              </p>
+            </div>
+          ) : perpEntry ? (
+            <div data-testid="card-confirm-perp">
+              {leveragePlan && leveragePlan.ok ? (
+                <p className="mb-2 text-zinc-300">
+                  Send a PAPER {buy ? "LONG" : "SHORT"} {widget.instrument_id} {widget.order_type} at {leveragePlan.leverage}x ISOLATED:{" "}
+                  {usd(leveragePlan.margin_usd)} margin, {usd(leveragePlan.notional_usd)} notional. If the stop at{" "}
+                  {widget.stop_loss != null ? fmtPrice(widget.stop_loss) : "—"} fills you lose about{" "}
+                  <strong className="text-rose-300" data-testid="card-confirm-loss-stop">{usd(leveragePlan.loss_at_stop_usd)}</strong>; if the
+                  position is liquidated at {leveragePlan.liquidation_price ? fmtPrice(Number(leveragePlan.liquidation_price)) : "—"} you lose{" "}
+                  <strong className="text-leverage-liquidation" data-testid="card-confirm-loss-liq">{usd(leveragePlan.loss_if_liquidated_usd)}</strong>, the
+                  whole margin. The stop rests on the mark price; the dispatcher sizes the order again and may lower the leverage, never raise it.
+                </p>
+              ) : (
+                <p className="mb-2 text-amber-300">The dry run has no plan for this order yet: approve asks the server, which may refuse it.</p>
+              )}
+              {leverageRemedy && (
+                <label className="mb-2 flex items-start gap-1.5 text-zinc-300" data-testid="card-fix-raise-leverage">
+                  <input type="checkbox" className="mt-0.5" checked={raiseLeverage} onChange={(e) => setRaiseLeverage(e.target.checked)} />
+                  <span>
+                    First raise {leverageRemedy.mandate_name}&apos;s max leverage {leverageRemedy.from}x → {leverageRemedy.to}x (TOTP; this
+                    applies to all its future orders, and approving then takes the next code)
+                  </span>
+                </label>
+              )}
+              {highLeverage && !perpFixStep && (
+                <label className="mb-2 flex items-start gap-1.5 text-leverage-high" data-testid="card-confirm-high-leverage">
+                  <input type="checkbox" className="mt-0.5" checked={confirmHigh} onChange={(e) => setConfirmHigh(e.target.checked)} />
+                  <span>
+                    I confirm {leveragePlan?.leverage}x: liquidation is {leveragePlan?.liquidation_distance_pct ? `${Number(leveragePlan.liquidation_distance_pct).toFixed(1)}%` : "a short way"} away.
+                  </span>
+                </label>
+              )}
+            </div>
           ) : !buy ? (
             <p className="mb-2 text-zinc-300">
               Send a PAPER SELL {widget.instrument_id} {widget.order_type} order for the whole holding the mandate has in it? It only
@@ -1390,11 +1525,17 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={busy || (needsMandate && !fix) || (!!fix && !fixReady)}
+              disabled={busy || (needsMandate && !fix) || (!!fix && !fixReady) || (perpEntry && !fix && !perpReady)}
               onClick={approve}
               className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-zinc-950 hover:bg-amber-500 disabled:opacity-50"
             >
-              {busy ? "Sending…" : fix === "choose" && chosen ? `Confirm in ${chosen.name}` : fixLabel(fix, editRemedy?.field)}
+              {busy
+                ? "Sending…"
+                : fix === "choose" && chosen
+                  ? `Confirm in ${chosen.name}`
+                  : perpFixStep && fix
+                    ? perpFixLabel(fix, editRemedy?.field)
+                    : fixLabel(fix, editRemedy?.field)}
             </button>
             <button
               type="button"
@@ -1442,7 +1583,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           {error?.startsWith("TOTP_REUSED") ? error : `Order not queued${error ? `: ${error}` : ""}`}
         </p>
       )}
-      {!buy && error?.startsWith("NO_MANDATE") && (
+      {!buy && !perp && error?.startsWith("NO_MANDATE") && (
         <p className="mt-1 text-zinc-500">A spot sell can only sell what a mandate already holds; spot shorts are refused. Reject this card.</p>
       )}
     </section>

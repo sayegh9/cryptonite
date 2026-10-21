@@ -513,7 +513,9 @@ class EventBridgeWorker:
         gross = evt.get("realized_pnl")
         # Liquidation shortfall credit: the loss stops at the margin/zero equity (insurance fund pays the rest)
         shortfall = Decimal(str(evt.get("shortfall_covered", "0")))
-        closed_realized = (Decimal(str(gross)) - commission + shortfall) if gross is not None else Decimal("0")
+        # An opening fill's fee is realized on the row it opens (leverage plan 2.6): a mandate's equity counts its perp
+        # rows' realized PnL, so a fee only taken from account cash would leave the mandate's equity too high
+        closed_realized = (Decimal(str(gross)) - commission + shortfall) if gross is not None else -commission
         cash_delta = (Decimal(str(gross)) if gross is not None else Decimal("0")) - commission + shortfall
 
         snap = evt.get("position")

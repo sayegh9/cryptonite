@@ -195,25 +195,51 @@ async function postCard(path: string, body?: unknown): Promise<any> {
  * refuses while the exit monitor (the position's stop) is down. Repeating it never queues a second order.
  * `mandateId` names the mandate the order trades in; omitted, the API uses the single ACTIVE mandate that allows the instrument.
  */
-export async function approveOrderCard(card: OrderCardWidget, mandateId?: string): Promise<string> {
+export async function approveOrderCard(card: OrderCardWidget, mandateId?: string, perp?: PerpApproval): Promise<string> {
   const sessionId = useBrainStore.getState().sessionId;
   if (!sessionId) throw new Error("No Brain session");
+  const body: Record<string, unknown> = {};
+  if (mandateId) body.mandate_id = mandateId;
+  if (perp) {
+    body.totp_code = perp.totp_code;
+    if (perp.leverage != null) body.leverage = perp.leverage;
+    if (perp.confirm_high_leverage) body.confirm_high_leverage = true;
+  }
   const res = await postCard(
     `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(card.id)}/approve`,
-    mandateId ? { mandate_id: mandateId } : undefined,
+    Object.keys(body).length ? body : undefined,
   );
   const commandId = String(res.command_id);
-  useBrainStore.getState().updateOrderCard(card.id, { status: "APPROVED", command_id: commandId });
+  // A perp card keeps the leverage it was approved at: the pills lock from here on
+  const approvedLeverage = typeof res.leverage === "number" ? res.leverage : perp?.leverage ?? card.leverage ?? null;
+  useBrainStore.getState().updateOrderCard(card.id, {
+    status: "APPROVED", command_id: commandId, ...(perp ? { leverage: approvedLeverage } : {}),
+  });
   return commandId;
+}
+
+/**
+ * What approving a perp entry sends besides the mandate: the operator's TOTP code (every risk-adding perp order,
+ * ADR 0009 D3), the leverage pill picked (the server plans it again and may lower it, never raise it) and the second
+ * confirmation the server asks for at 8x and above.
+ */
+export interface PerpApproval {
+  totp_code: string;
+  leverage?: number | null;
+  confirm_high_leverage?: boolean;
 }
 
 /**
  * Dry run of Approve: what the order would size to, or why the server would refuse it. Read-only; it claims, queues and
  * writes nothing, so it can be asked as often as the operator looks at the card. Throws on failure (the card then shows nothing).
  */
-export async function fetchCardPreflight(sessionId: string, widgetId: string, signal?: AbortSignal): Promise<CardPreflight> {
+export async function fetchCardPreflight(
+  sessionId: string, widgetId: string, signal?: AbortSignal, leverage?: number | null,
+): Promise<CardPreflight> {
+  // A perp card's leverage pill: the dry run plans that leverage instead of the card's
+  const query = leverage != null ? `?leverage=${encodeURIComponent(String(leverage))}` : "";
   const res = await fetch(
-    `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(widgetId)}/preflight`,
+    `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(widgetId)}/preflight${query}`,
     { credentials: "include", cache: "no-store", signal },
   );
   const body = await res.json().catch(() => ({}));

@@ -26,7 +26,7 @@ def position(dispatcher):
 def test_open_short_moves_reservation_into_locked_margin():
     dispatcher = make_perp_dispatcher()
     ok, _ = dispatcher.dispatch(perp_intent("SELL", "0.04", "S-1", leverage=10), MagicMock(), MagicMock())
-    assert ok and dispatcher.reserved_cash == D("202")  # IM 200 + fee estimate 2
+    assert ok and dispatcher.reserved_cash == D("201")  # IM 200 + USD-M fee estimate 1
 
     dispatcher.handle_fill("S-1", D("0.04"), D("50000"), D("2"))
 

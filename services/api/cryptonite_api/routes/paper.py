@@ -3,15 +3,18 @@
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
+from cryptonite_api.leverage_card import manual_ticket_preview
+from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import require_csrf, require_operator
 from cryptonite_api.universe import require_fed
 from cryptonite_schemas.mandate import MANDATE_INSTANCE_PREFIX
 from cryptonite_schemas.marks import read_marks, resolve_mark, unrealized_pnl
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("cryptonite.api.paper")
@@ -54,10 +57,14 @@ class ManualOrderRequest(BaseModel):
     order_type: str = "MARKET"
     quantity: float = Field(..., gt=0)
     price: float | None = None  # Required if LIMIT
-    # Perpetual-only; the dispatcher rejects them on spot and defaults leverage 1 / CROSS
-    leverage: int | None = Field(None, ge=1, le=20)
+    # Perpetual-only; the dispatcher rejects them on spot and defaults leverage 1 / ISOLATED. 10x account maximum
+    # (ADR 0009 D2; was 20)
+    leverage: int | None = Field(None, ge=1, le=10)
     margin_mode: Literal["ISOLATED", "CROSS"] | None = None
     reduce_only: bool = False
+    # A perp entry's stop (leverage plan 4.5): the dispatcher checks it (liquidation buffer, loss within 2% of
+    # equity) and places a resting reduce-only STOP_MARKET on the mark once the entry fills
+    stop_loss: float | None = Field(None, gt=0)
 
 
 # Helper to insert into execution_commands
@@ -172,7 +179,7 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
         except Exception:
             pass
 
-    now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(UTC)
     # B3 (F-H3): an open position shows its live mark and PnL, else its stored mark flagged stale
     marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
     out = []
@@ -192,14 +199,14 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
         opened_at = row.get("opened_at")
         opened_at_dt = None
         if isinstance(opened_at, datetime):
-            opened_at_dt = opened_at if opened_at.tzinfo else opened_at.replace(tzinfo=timezone.utc)
+            opened_at_dt = opened_at if opened_at.tzinfo else opened_at.replace(tzinfo=UTC)
             row["opened_at"] = opened_at_dt.isoformat()
         elif isinstance(opened_at, str):
             row["opened_at"] = opened_at
             try:
                 opened_at_dt = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
                 if opened_at_dt.tzinfo is None:
-                    opened_at_dt = opened_at_dt.replace(tzinfo=timezone.utc)
+                    opened_at_dt = opened_at_dt.replace(tzinfo=UTC)
             except Exception:
                 opened_at_dt = None
         else:
@@ -433,6 +440,38 @@ async def close_position(instance_id: str, req: ClosePositionRequest, request: R
     )
 
 
+class FlattenPerpsRequest(BaseModel):
+    totp_code: str | None = None
+    reason: str = Field(default="Flatten perps from the header", max_length=300)
+
+
+@router.post("/perps/flatten")
+async def flatten_perps(req: FlattenPerpsRequest, request: Request, auth: dict = Depends(require_operator),
+                        csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
+    """Close every open perp position with a reduce-only market close and leave spot alone (leverage plan 4.7).
+    It needs the operator's TOTP, like the other one-click account actions; one CLOSE_POSITION per perp, sent to the
+    instance that holds it (the orchestrator closes at the live quote, reduce-only, and releases its resting stop)."""
+    await require_totp(request, auth, req.totp_code)
+    pool = request.app.state.pool
+    rows = await pool.fetch(
+        """SELECT DISTINCT instance_id, instrument_id FROM paper_positions
+           WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0 AND split_part(instrument_id, '.', 1) LIKE '%-PERP'
+           ORDER BY instrument_id""", PAPER_ACCOUNT_ID)
+    batch = uuid.uuid4().hex[:12]
+    commands = []
+    for r in rows:
+        res = await _enqueue_command(
+            pool=pool, command_type="CLOSE_POSITION", target_instance_id=r["instance_id"],
+            payload={"instance_id": r["instance_id"], "instrument_id": r["instrument_id"], "price": None,
+                     "reason": "FLATTEN_PERPS", "operator_reason": req.reason},
+            requester_id=f"web-ui:{auth.get('username', 'operator')}",
+            idempotency_key=f"flatten-perps:{batch}:{r['instance_id']}:{r['instrument_id']}")
+        commands.append({"instrument_id": r["instrument_id"], "instance_id": r["instance_id"],
+                         "command_id": str(res.get("command_id"))})
+    logger.warning("Flatten perps by %s: %d close command(s) (%s)", auth.get("username"), len(commands), req.reason)
+    return {"closed": len(commands), "commands": commands}
+
+
 @router.post("/orders/{client_order_id}/cancel")
 async def cancel_order(client_order_id: str, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
@@ -472,6 +511,24 @@ async def reset_kill_switch(req: ResetKillSwitchRequest, request: Request, auth:
     )
 
 
+@router.get("/perp/plan")
+async def perp_ticket_plan(request: Request, instrument_id: str, side: Literal["BUY", "SELL"],
+                           quantity: float = Query(..., gt=0), leverage: int = Query(..., ge=1, le=10),
+                           price: float | None = None, stop_loss: float | None = None,
+                           auth: dict = Depends(require_operator)) -> dict[str, Any]:
+    """The manual perp ticket's preview (leverage plan 4.5): which leverage pills the dispatcher would accept for this
+    quantity, and the margin, liquidation price, buffer and losses at the chosen one. Read only; the dispatcher
+    checks the order again when it is sent."""
+    if not instrument_id.split(".")[0].upper().endswith("-PERP"):
+        raise HTTPException(status_code=422, detail="NOT_A_PERP: the preview is for perp instruments")
+    if (price is not None and price <= 0) or (stop_loss is not None and stop_loss <= 0):
+        raise HTTPException(status_code=422, detail="INVALID_ORDER: quantity, price and stop must be positive")
+    return await manual_ticket_preview(
+        request.app.state.pool, getattr(getattr(request.app.state, "stream_hub", None), "redis", None), instrument_id, side,
+        Decimal(str(quantity)), leverage, price=Decimal(str(price)) if price else None,
+        stop_loss=Decimal(str(stop_loss)) if stop_loss else None)
+
+
 @router.post("/orders")
 async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     client_order_id = f"MANUAL-{uuid.uuid4().hex[:8].upper()}"
@@ -488,6 +545,10 @@ async def submit_manual_order(req: ManualOrderRequest, request: Request, auth: d
         "margin_mode": req.margin_mode,
         "reduce_only": req.reduce_only,
     }
+    if req.stop_loss is not None:
+        if not req.instrument_id.split(".")[0].upper().endswith("-PERP") or req.reduce_only:
+            raise HTTPException(status_code=422, detail="STOP_ONLY_ON_PERP_ENTRY: an attached stop is for a perp entry")
+        payload["stop_loss"] = str(req.stop_loss)
     # A machine token (agent/research workers) is not the operator's hand: its orders are AI orders,
     # so the orchestrator holds them to a mandate (A5.1) instead of treating them as manual trades.
     machine = auth.get("type") == "machine_token"

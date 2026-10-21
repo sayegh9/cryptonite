@@ -165,11 +165,11 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
       setDraft("");
       return;
     }
-    const swingMatch = t.match(/^\/swing(?:\s+([A-Za-z0-9._\/-]+))?\s*$/i);
+    const swingMatch = t.match(/^\/swing(?:\s+([A-Za-z0-9._/-]+))?\s*$/i);
     if (swingMatch) {
       setDraft("");
       if (swingMatch[1]) {
-        let sym = swingMatch[1].trim().toUpperCase().replace(/[\/\-_]/g, ".");
+        let sym = swingMatch[1].trim().toUpperCase().replace(/[/\-_]/g, ".");
         if (sym.endsWith(".BINANCE")) {
           sym = sym.slice(0, -".BINANCE".length);
         }

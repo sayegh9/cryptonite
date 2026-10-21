@@ -60,9 +60,11 @@ test.describe("Perpetuals cockpit: order ticket and margin HUD", () => {
     const slider = ticket.locator("#perp-leverage");
     await expect(slider).toBeVisible();
     const presets = ticket.getByRole("group", { name: "Leverage presets" });
-    for (const chip of ["1x", "5x", "10x", "20x"]) {
+    // The account maximum is 10x (ADR 0009 D2): the 20x chip is gone
+    for (const chip of ["1x", "2x", "3x", "5x", "7x", "10x"]) {
       await expect(presets.getByRole("button", { name: chip, exact: true })).toBeVisible();
     }
+    await expect(presets.getByRole("button", { name: "20x", exact: true })).toHaveCount(0);
 
     // 10x chip drives the slider
     await presets.getByRole("button", { name: "10x", exact: true }).click();
@@ -104,6 +106,94 @@ test.describe("Perpetuals cockpit: order ticket and margin HUD", () => {
       margin_mode: "ISOLATED",
       reduce_only: false,
     });
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("perp ticket: the dispatcher's preview disables refused pills, and an attached stop is sent", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    let orderBody: Record<string, unknown> | null = null;
+    const previews: URLSearchParams[] = [];
+    await page.route("**/api/v1/paper/orders", async (route) => {
+      if (route.request().method() !== "POST") return route.fulfill({ status: 200, json: [] });
+      orderBody = route.request().postDataJSON();
+      await route.fulfill({ status: 200, json: { command_id: "cmd-87654321", command_type: "MANUAL_ORDER", status: "PENDING" } });
+    });
+    await page.route("**/api/v1/paper/perp/plan*", (route) => {
+      const q = new URL(route.request().url()).searchParams;
+      previews.push(q);
+      const lev = Number(q.get("leverage"));
+      const pills: Record<string, string | null> = {};
+      for (let l = 1; l <= 10; l++) pills[String(l)] = q.get("stop_loss") && l > 6 ? "LIQUIDATION_BUFFER_TOO_THIN" : null;
+      return route.fulfill({
+        json: {
+          ok: pills[String(lev)] === null, reject: pills[String(lev)], leverage: lev, pills,
+          recommended_leverage: q.get("stop_loss") ? 6 : 10, margin_usd: String(2500 / lev), notional_usd: "2500",
+          liquidation_price: "45180.72", liquidation_distance_pct: "9.6", buffer_used_pct: q.get("stop_loss") ? "43" : null,
+          loss_at_stop_usd: q.get("stop_loss") ? "107.5" : null, loss_at_stop_pct: q.get("stop_loss") ? "1.08" : null,
+          loss_if_liquidated_usd: String(2500 / lev), funding_8h_usd: "-0.25",
+        },
+      });
+    });
+    await mockOperatorSession(page);
+    const { ticket } = await openTradeSidebar(page);
+    await ticket.getByRole("button", { name: "PERP", exact: true }).click();
+    const presets = ticket.getByRole("group", { name: "Leverage presets" });
+    await presets.getByRole("button", { name: "5x", exact: true }).click();
+    await ticket.getByRole("group", { name: "Order type" }).getByRole("button", { name: "LIMIT" }).click();
+    await ticket.getByLabel("Quantity").fill("0.05");
+    await ticket.getByLabel("Limit Price").fill("50000");
+
+    // Attach a stop: the preview reads the stop, 7x and 10x would be refused, 6x is recommended
+    await ticket.getByRole("checkbox", { name: "Attach stop" }).check();
+    await expect(ticket.getByRole("button", { name: "SUBMIT BUY 5x" })).toBeDisabled(); // no stop price yet
+    await ticket.getByLabel("Stop price").fill("48000");
+    const plan = ticket.getByRole("group", { name: "Leverage plan" });
+    await expect(plan).toContainText("5x ISOLATED");
+    await expect(plan).toContainText("$107.50 (1.08% of equity)");
+    await expect(presets.getByRole("button", { name: "6x ★", exact: true })).toBeVisible();
+    await expect(presets.getByRole("button", { name: "10x", exact: true })).toBeDisabled();
+    await expect(presets.getByRole("button", { name: "10x", exact: true })).toHaveAttribute("title", "Refused at 10x: LIQUIDATION_BUFFER_TOO_THIN");
+    expect(previews.at(-1)?.get("stop_loss")).toBe("48000");
+
+    await ticket.getByRole("button", { name: "SUBMIT BUY 5x" }).click();
+    await expect(ticket.getByRole("status")).toContainText("Order queued (cmd-8765)");
+    expect(orderBody).toEqual({
+      instrument_id: PERP, side: "BUY", order_type: "LIMIT", quantity: 0.05, price: 50000, leverage: 5,
+      margin_mode: "ISOLATED", reduce_only: false, stop_loss: 48000,
+    });
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("header: Flatten perps shows while a perp is open and needs a TOTP code", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const bodies: unknown[] = [];
+    await page.route("**/api/v1/paper/positions*", (route) =>
+      route.fulfill({
+        status: 200,
+        json: [
+          { instrument_id: PERP, side: "LONG", quantity: "0.04", status: "OPEN" },
+          { instrument_id: "BTCUSDT.BINANCE", side: "LONG", quantity: "0.1", status: "OPEN" },
+        ],
+      }));
+    await page.route("**/api/v1/paper/perps/flatten", (route) => {
+      bodies.push(route.request().postDataJSON());
+      return route.fulfill({ status: 200, json: { closed: 1, commands: [] } });
+    });
+    await mockOperatorSession(page);
+    await page.addInitScript(() => localStorage.setItem("csrf_token", "csrf-test"));
+    await page.goto("/?ws=terminal");
+
+    const button = page.getByRole("button", { name: "Flatten perps (1)" });
+    await expect(button).toBeVisible();
+    await button.click();
+    const form = page.getByRole("form", { name: "Flatten perps" });
+    await expect(form).toContainText("Closes BTCUSDT-PERP with reduce-only market orders");
+    const submit = form.getByRole("button", { name: "Flatten 1 perp" });
+    await expect(submit).toBeDisabled();
+    await form.getByLabel("TOTP code").fill("123456");
+    await submit.click();
+    await expect(form).toHaveCount(0);
+    expect(bodies).toEqual([{ totp_code: "123456" }]);
     expect(reactErrors).toEqual([]);
   });
 

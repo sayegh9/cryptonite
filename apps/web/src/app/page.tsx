@@ -8,6 +8,7 @@ import { MultiChartGrid } from "@/components/MultiChartGrid";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 import { ScannerStudio } from "@/components/ScannerStudio";
 import { KillSwitchPanel } from "@/components/operator/KillSwitchPanel";
+import { FlattenPerpsButton } from "@/components/FlattenPerpsButton";
 import { EnforcedLimitsCard } from "@/components/operator/EnforcedLimitsCard";
 import { StrategyInstancesPanel } from "@/components/operator/StrategyInstancesPanel";
 import { ReconciliationLedger } from "@/components/operator/ReconciliationLedger";
@@ -311,6 +312,9 @@ function Workstation() {
           className="order-last w-full mb-2 md:order-none md:w-auto md:mb-0 md:ml-4 md:flex-none"
           summaryClassName="md:max-w-40 lg:max-w-56 xl:max-w-xs 2xl:max-w-md"
         />
+
+        {/* Leverage plan 4.7: shown only while a perp position is open */}
+        <FlattenPerpsButton />
 
         {/* Header Utility Bar: Compact search & command palette trigger (⌘K) */}
         <button

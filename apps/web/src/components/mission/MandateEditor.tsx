@@ -14,9 +14,15 @@ interface Form {
   max_drawdown_pct: string;
   allow_perps: boolean;
   max_leverage: string;
+  max_risk_per_trade_pct: string;
   active_hours_utc: string;
   veto_window_s: string;
 }
+
+/** ADR 0009: perps only at L1 Copilot, ISOLATED, at most 10x; a mandate that turns perps on starts at 3x */
+const MAX_PERP_LEVERAGE = 10;
+const DEFAULT_PERP_LEVERAGE = "3";
+const MAX_RISK_PER_TRADE_PCT = 2;
 
 const EMPTY: Form = {
   name: "",
@@ -26,6 +32,7 @@ const EMPTY: Form = {
   max_drawdown_pct: "20",
   allow_perps: false,
   max_leverage: "1",
+  max_risk_per_trade_pct: "1",
   active_hours_utc: "",
   veto_window_s: "600",
 };
@@ -45,6 +52,7 @@ function toForm(m: Mandate): Form {
     max_drawdown_pct: m.max_drawdown_pct,
     allow_perps: m.allow_perps,
     max_leverage: String(m.max_leverage),
+    max_risk_per_trade_pct: String(m.max_risk_per_trade_pct ?? "1"),
     active_hours_utc: m.active_hours_utc ?? "",
     veto_window_s: String(m.veto_window_s),
   };
@@ -59,6 +67,7 @@ export function addsRisk(old: Mandate | null, f: Form): string[] {
   if (Number(f.max_drawdown_pct) > Number(old.max_drawdown_pct)) why.push("a looser hard stop");
   if (f.allow_perps && !old.allow_perps) why.push("perps");
   if (Number(f.max_leverage) > old.max_leverage) why.push("more leverage");
+  if (Number(f.max_risk_per_trade_pct) > Number(old.max_risk_per_trade_pct ?? 1)) why.push("a larger risk per trade");
   if (instrumentsOf(f.instruments).some((i) => !old.instruments.includes(i))) why.push("new instruments");
   if ((f.active_hours_utc || "") !== (old.active_hours_utc || "")) why.push("different active hours");
   if (Number(f.veto_window_s) < old.veto_window_s) why.push("a shorter veto window");
@@ -88,6 +97,13 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
   const needsTotp = reasons.length > 0;
   const set = (k: keyof Form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
+  // Turning perps on from 1x starts at the 3x default (the server does the same when no leverage is sent)
+  const setPerps = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const on = e.target.checked;
+    setForm((f) => ({ ...f, allow_perps: on, max_leverage: on && f.max_leverage === "1" ? DEFAULT_PERP_LEVERAGE : f.max_leverage }));
+  };
+  // Perps are an L1 Copilot feature (ADR 0009 D3): a new mandate starts at L1; one at L2/L3 cannot turn them on
+  const perpsLocked = !!current && current.autonomy_level !== 1;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -100,9 +116,10 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
       max_position_pct: form.max_position_pct,
       max_drawdown_pct: form.max_drawdown_pct,
       max_leverage: Number(form.max_leverage),
+      max_risk_per_trade_pct: form.max_risk_per_trade_pct,
       veto_window_s: Number(form.veto_window_s),
       ...(form.active_hours_utc ? { active_hours_utc: form.active_hours_utc } : current?.active_hours_utc ? { clear_active_hours: true } : {}),
-      ...(current ? { allow_perps: form.allow_perps } : {}),
+      allow_perps: form.allow_perps,
       ...(needsTotp ? { totp_code: totp } : {}),
     };
     try {
@@ -151,7 +168,7 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
           <input className={input} type="number" min="1" step="any" value={form.capital_budget_usd} onChange={set("capital_budget_usd")} required />
         </label>
         <label className="space-y-1 md:col-span-2">
-          <span className="text-zinc-400">Instruments (comma separated; spot until L3)</span>
+          <span className="text-zinc-400">Instruments (comma separated; a perp is SYMBOL-PERP and needs perps allowed)</span>
           <input className={input} value={form.instruments} onChange={set("instruments")} required />
         </label>
         <label className="space-y-1">
@@ -170,13 +187,21 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
           <span className="text-zinc-400">Veto window, seconds (L2): an order goes ahead if you do not veto it within this time</span>
           <input className={input} type="number" min="60" max="3600" value={form.veto_window_s} onChange={set("veto_window_s")} />
         </label>
-        <fieldset className="space-y-1 md:col-span-2" disabled={!current || current.autonomy_level < 3}>
-          <legend className="text-zinc-400">Perpetual futures: only once the mandate reaches L3, with up to 5× leverage</legend>
+        <fieldset className="space-y-1 md:col-span-2" disabled={perpsLocked} data-testid="mandate-perps">
+          <legend className="text-zinc-400">
+            Perpetual futures (paper): L1 Copilot only, so every order that adds risk needs your approval with TOTP; ISOLATED
+            margin, up to {MAX_PERP_LEVERAGE}× (new perps mandates start at 3×). Leaving L1 turns perps off.
+            {perpsLocked ? " This mandate is above L1." : ""}
+          </legend>
           <label className="mr-4 inline-flex items-center gap-1.5">
-            <input type="checkbox" checked={form.allow_perps} onChange={set("allow_perps")} /> allow perps
+            <input type="checkbox" checked={form.allow_perps} onChange={setPerps} /> allow perps
+          </label>
+          <label className="mr-4 inline-flex items-center gap-1.5">
+            max leverage <input aria-label="Max leverage" className="w-14 rounded border border-zinc-700 bg-zinc-900 px-1" type="number" min="1" max={MAX_PERP_LEVERAGE} value={form.max_leverage} onChange={set("max_leverage")} />
           </label>
           <label className="inline-flex items-center gap-1.5">
-            leverage <input className="w-14 rounded border border-zinc-700 bg-zinc-900 px-1" type="number" min="1" max="5" value={form.max_leverage} onChange={set("max_leverage")} />
+            risk per trade (% of budget, ≤ {MAX_RISK_PER_TRADE_PCT}){" "}
+            <input aria-label="Risk per trade" className="w-16 rounded border border-zinc-700 bg-zinc-900 px-1" type="number" min="0.1" max={MAX_RISK_PER_TRADE_PCT} step="0.1" value={form.max_risk_per_trade_pct} onChange={set("max_risk_per_trade_pct")} />
           </label>
         </fieldset>
 

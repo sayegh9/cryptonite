@@ -62,6 +62,59 @@ export interface OrderCardWidget {
   horizon?: CardHorizon | null;
   /** 0 to 1; shown as a percentage */
   confidence?: number | null;
+  /** A perp card's requested leverage (1–10); the approved plan may be lower. Null on spot */
+  leverage?: number | null;
+  /** The system's setup grade (never the model's), its reasons and the grader version; null when ungraded */
+  setup_grade?: SetupGrade | null;
+  grade_reasons?: string[];
+  grade_version?: string | null;
+}
+
+export type SetupGrade = "A" | "B" | "C" | "NO_TRADE";
+
+/** A perp instrument id ("BTCUSDT-PERP.BINANCE") */
+export function isPerpInstrument(instrumentId: string): boolean {
+  return instrumentId.split(".")[0].toUpperCase().endsWith("-PERP");
+}
+
+/**
+ * The leverage plan of a perp entry, from the server (``plan_leveraged_order``): the leverage is the highest the six
+ * ceilings allow, at most what was asked. Decimals arrive as strings; null when not known.
+ */
+export interface LeveragePlan {
+  instrument_id: string;
+  side: "BUY" | "SELL";
+  reject: string | null;
+  ok: boolean;
+  /** 0 when refused */
+  leverage: number;
+  /** "7x (risk at stop)" when a ceiling cut the request, else "7x" */
+  leverage_label: string;
+  margin_mode: "ISOLATED";
+  requested_leverage: number | null;
+  /** The lowest ceiling: the recommended leverage */
+  allowed_max_leverage: number;
+  binding_ceiling: string | null;
+  capped: boolean;
+  /** Each ceiling's own maximum leverage, by label ("risk at stop", "liquidation buffer", "exposure", ...) */
+  ceilings: Record<string, number>;
+  margin_usd: string | null;
+  notional_usd: string | null;
+  quantity: string | null;
+  entry_price: string | null;
+  stop_price: string | null;
+  stop_distance_pct: string | null;
+  liquidation_price: string | null;
+  liquidation_distance_pct: string | null;
+  /** (stop distance + slippage) / liquidation distance, % */
+  buffer_used_pct: string | null;
+  loss_at_stop_usd: string | null;
+  /** % of the mandate budget */
+  loss_at_stop_pct: string | null;
+  loss_if_liquidated_usd: string | null;
+  /** Funding cash flow per 8 h at the current rate: negative = the position pays */
+  funding_8h_usd: string | null;
+  margin_cut: boolean;
 }
 
 export type CardHorizon = "1h" | "4h" | "24h" | "3d" | "7d";
@@ -111,10 +164,12 @@ export interface RemedyMandate {
 export type CardRemedy =
   | {
       kind: "CREATE_MANDATE";
-      /** False for a perp: a new mandate is spot only, so it can only join an existing mandate that allows perps */
+      /** Whether a new mandate can be created for the instrument (a perp gets one with perps allowed, at L1) */
       can_create: boolean;
       /** The position limit a new single-instrument mandate starts with */
       position_pct: number;
+      /** True for a perp: the new mandate is created with perps allowed (L1, 3x) */
+      allow_perps?: boolean;
       add_to: RemedyMandate[];
     }
   | {
@@ -133,6 +188,8 @@ export type CardRemedy =
       allocation_after_pct: number;
     }
   | { kind: "RESUME_MANDATE"; mandate_id: string; mandate_name: string }
+  /** A perp entry in a mandate without perps: perps are L1 only, and turning them on starts at max_leverage_after */
+  | { kind: "ALLOW_PERPS"; mandate_id: string; mandate_name: string; autonomy_level: number; max_leverage_after: number }
   | { kind: "CHOOSE_MANDATE"; candidates: MandateChoice[] };
 
 /** One of several ACTIVE mandates that allow a BUY's instrument (AMBIGUOUS_MANDATE): approve needs one named */
@@ -170,8 +227,30 @@ export type CardPreflight =
       clipped_from_pct: number | null;
       sell_quantity: string | null;
       summary: string;
+      /** A perp entry: the plan approve would queue, whether approve needs TOTP, and the 8x second confirmation */
+      leverage_plan?: LeveragePlan | null;
+      needs_totp?: boolean;
+      high_leverage_confirm?: boolean;
+      /** The mandate's own maximum cut the request: raising it (TOTP) would allow what was asked */
+      leverage_remedy?: LeverageRemedy | null;
     }
-  | { ok: false; code: string; detail: string; needs_mandate: boolean; remedy?: CardRemedy | null };
+  | {
+      ok: false;
+      code: string;
+      detail: string;
+      needs_mandate: boolean;
+      remedy?: CardRemedy | null;
+      leverage_plan?: LeveragePlan | null;
+      needs_totp?: boolean;
+    };
+
+export interface LeverageRemedy {
+  kind: "RAISE_MAX_LEVERAGE";
+  mandate_id: string;
+  mandate_name: string;
+  from: number;
+  to: number;
+}
 
 /**
  * Where a Brain debate stands, from its debate run (QUEUED until the run exists). UNTRACKED: a card queued before Wave 3

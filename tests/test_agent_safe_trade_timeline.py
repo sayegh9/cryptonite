@@ -27,6 +27,7 @@ COLUMNS = [
     "entry_summary_text", "debate_run_id", "debate_recommendation", "debate_conviction", "close_reason",
     "close_command_id", "partial_exits", "outcome_24h_pct", "outcome_72h_pct",
     "reflection_text",
+    "entry_setup_grade", "entry_confidence", "entry_leverage",  # migration 048 (leverage plan 3.3)
 ]
 
 # Every base table the view reads that the agent role was never granted (ai_decision_outcomes already has a SELECT

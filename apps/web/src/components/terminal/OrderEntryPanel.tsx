@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, Info } from "lucide-react";
 import { fetchApi } from "@/lib/api";
 import { useSessionStore, type SessionStatus } from "@/lib/stores/useSessionStore";
@@ -14,10 +14,34 @@ import {
   toPerpInstrumentId,
   type PerpSide,
 } from "@/lib/perp/margin";
+import { leverageTier, pct, pillsWith, TIER_CLASSES, usd } from "@/lib/leverage";
 
 type Market = "SPOT" | "PERP";
 type Side = "BUY" | "SELL";
-const LEVERAGE_CHIPS = [1, 5, 10, 20];
+
+/**
+ * The server's preview of a manual perp entry (GET /paper/perp/plan, leverage plan 4.5): each pill judged by the
+ * dispatcher's own check for this quantity (null = accepted, else the refusal code), and the margin, ISOLATED
+ * liquidation price, buffer and losses at the chosen leverage. Decimals arrive as strings.
+ */
+interface TicketPreview {
+  ok: boolean;
+  reject: string | null;
+  leverage: number;
+  pills: Record<string, string | null>;
+  recommended_leverage: number | null;
+  margin_usd?: string | null;
+  notional_usd?: string | null;
+  liquidation_price?: string | null;
+  liquidation_distance_pct?: string | null;
+  buffer_used_pct?: string | null;
+  loss_at_stop_usd?: string | null;
+  loss_at_stop_pct?: string | null;
+  loss_if_liquidated_usd?: string | null;
+  funding_8h_usd?: string | null;
+}
+
+const PREVIEW_DEBOUNCE_MS = 300;
 
 const fmt = (v: number | null, digits = 2) =>
   v !== null && Number.isFinite(v)
@@ -75,6 +99,10 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
   const position = usePerpetualStore((s) => s.positions[perpInstrument]);
   const mark = usePerpetualStore((s) => s.marks[perpInstrument]);
   const crossBalance = usePerpetualStore((s) => s.crossMarginBalance);
+  // "Attach stop": a reduce-only STOP_MARKET on the mark, placed by the dispatcher once the entry fills
+  const [attachStop, setAttachStop] = useState(false);
+  const [stopPrice, setStopPrice] = useState("");
+  const [preview, setPreview] = useState<TicketPreview | null>(null);
 
   const isPerp = market === "PERP" && perpAvailable;
   const instrumentId = isPerp ? perpInstrument : `${symbol.toUpperCase().replace(".BINANCE", "")}.BINANCE`;
@@ -91,6 +119,41 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
     else if (side !== closeSide) reduceOnlyError = `Reduce-only must ${closeSide} to reduce the ${position.side} position.`;
     else if (qty > position.size) reduceOnlyError = `Quantity exceeds the open size (${position.size}).`;
   }
+
+  const stopPx = parseFloat(stopPrice);
+  const stopValue = isPerp && attachStop && !reduceOnly && stopPx > 0 ? stopPx : null;
+  const stopMissing = isPerp && attachStop && !reduceOnly && !(stopPx > 0);
+
+  // The dispatcher's view of this entry, read again (debounced) whenever the ticket changes. It fails quiet: no
+  // preview shows nothing and never blocks the ticket on its own; the dispatcher checks the order again anyway
+  const previewKey = isPerp && !reduceOnly && qty > 0
+    ? [instrumentId, side, qty, leverage, orderType === "LIMIT" && limitPx > 0 ? limitPx : "", stopValue ?? ""].join("|")
+    : "";
+  useEffect(() => {
+    if (!previewKey) {
+      setPreview(null);
+      return;
+    }
+    const [inst, s, q, lev, px, stop] = previewKey.split("|");
+    const params = new URLSearchParams({ instrument_id: inst, side: s, quantity: q, leverage: lev });
+    if (px) params.set("price", px);
+    if (stop) params.set("stop_loss", stop);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => {
+      fetchApi(`/paper/perp/plan?${params.toString()}`, { signal: ctrl.signal })
+        .then((p: TicketPreview) => {
+          if (!ctrl.signal.aborted) setPreview(p && typeof p.ok === "boolean" ? p : null);
+        })
+        .catch(() => {
+          if (!ctrl.signal.aborted) setPreview(null);
+        });
+    }, PREVIEW_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [previewKey]);
+  const previewRefused = !!preview && !preview.ok && isPerp && !reduceOnly;
 
   // Pre-flight summary (estimates; the dispatcher is authoritative)
   const notional = Number.isFinite(qty) && Number.isFinite(refPrice) ? qty * refPrice : null;
@@ -109,7 +172,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (reduceOnlyError || gateReason) return;
+    if (reduceOnlyError || gateReason || stopMissing) return;
     setLoading(true);
     setError("");
     setNotice("");
@@ -125,6 +188,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
         body.leverage = leverage;
         body.margin_mode = effectiveMode;
         body.reduce_only = reduceOnly;
+        if (stopValue !== null) body.stop_loss = stopValue;
       }
       const res = await fetchApi("/paper/orders", {
         method: "POST",
@@ -224,16 +288,23 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
               aria-valuetext={`${leverage}x`}
             />
             <div className="flex gap-1 mt-1" role="group" aria-label="Leverage presets">
-              {LEVERAGE_CHIPS.map((l) => (
-                <button
-                  key={l} type="button" onClick={() => setLeverage(l)} aria-pressed={leverage === l}
-                  className={`flex-1 py-0.5 text-2xs font-mono rounded border ${
-                    leverage === l ? "border-cyan-500 text-cyan-300 bg-cyan-950/40" : "border-white/5 text-zinc-500 hover:text-zinc-300"
-                  }`}
-                >
-                  {l}x
-                </button>
-              ))}
+              {pillsWith(preview?.recommended_leverage).map((l) => {
+                // A pill the dispatcher would refuse for this quantity is disabled, with its reason
+                const refusal = preview && !reduceOnly ? preview.pills[String(l)] ?? null : null;
+                const recommended = !reduceOnly && preview?.recommended_leverage === l;
+                return (
+                  <button
+                    key={l} type="button" onClick={() => setLeverage(l)} aria-pressed={leverage === l}
+                    disabled={!!refusal && leverage !== l}
+                    title={refusal ? `Refused at ${l}x: ${refusal}` : recommended ? "The highest leverage the checks allow" : undefined}
+                    className={`flex-1 py-0.5 text-2xs font-mono rounded border disabled:opacity-40 disabled:cursor-not-allowed ${
+                      leverage === l ? TIER_CLASSES[leverageTier(l)] : "border-white/5 text-zinc-500 hover:text-zinc-300"
+                    }`}
+                  >
+                    {l}x{recommended ? " ★" : ""}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -266,6 +337,68 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
             </p>
           </div>
 
+          {!reduceOnly && (
+            <div>
+              <label className="flex items-center gap-2 text-2xs font-mono text-zinc-300">
+                <input type="checkbox" checked={attachStop} onChange={(e) => setAttachStop(e.target.checked)} className="accent-cyan-500" />
+                Attach stop
+              </label>
+              {attachStop && (
+                <label className="mt-1 block">
+                  <span className="block text-2xs font-bold font-mono text-zinc-400 mb-1 uppercase tracking-wider">Stop price</span>
+                  <input
+                    type="number" step="0.01" min="0.01" value={stopPrice} required
+                    onChange={(e) => setStopPrice(e.target.value)}
+                    className="w-full bg-zinc-900 border border-white/5 rounded px-3 py-2 text-sm font-mono text-zinc-200 focus:border-cyan-500 focus:outline-none"
+                  />
+                </label>
+              )}
+              <p className="text-2xs mt-1 text-zinc-500">
+                {attachStop
+                  ? "Rests as a reduce-only stop on the mark once the entry fills; its loss must stay within 2% of equity."
+                  : "No stop: the position is only closed by you, the kill switch or liquidation."}
+              </p>
+            </div>
+          )}
+
+          {preview && !reduceOnly && (
+            <div className="rounded border border-white/5 bg-zinc-900/60 p-2 text-2xs font-mono" aria-label="Leverage plan" role="group">
+              {preview.ok ? (
+                <>
+                  <span className={`rounded border px-1.5 py-0.5 font-black tracking-wider ${TIER_CLASSES[leverageTier(preview.leverage)]}`}>
+                    {preview.leverage}x ISOLATED
+                  </span>
+                  <dl className="mt-1.5 grid grid-cols-2 gap-y-1">
+                    <dt className="text-zinc-500">Loss at stop</dt>
+                    <dd className="text-right text-rose-300">
+                      {preview.loss_at_stop_usd ? `${usd(preview.loss_at_stop_usd)} (${pct(preview.loss_at_stop_pct, 2)} of equity)` : "no stop"}
+                    </dd>
+                    <dt className="text-zinc-500">Loss if liquidated</dt>
+                    <dd className="text-right text-leverage-liquidation">{usd(preview.loss_if_liquidated_usd)}</dd>
+                    <dt className="text-zinc-500">Liquidation (ISOLATED)</dt>
+                    <dd className="text-right text-leverage-liquidation">
+                      {preview.liquidation_price ? fmt(Number(preview.liquidation_price)) : "none"}
+                      {preview.liquidation_distance_pct ? ` (${pct(preview.liquidation_distance_pct)})` : ""}
+                    </dd>
+                    {preview.buffer_used_pct && (
+                      <>
+                        <dt className="text-zinc-500">Stop uses</dt>
+                        <dd className="text-right text-zinc-200">{pct(preview.buffer_used_pct, 0)} of the distance (limit 50%)</dd>
+                      </>
+                    )}
+                    <dt className="text-zinc-500">Funding / 8h</dt>
+                    <dd className="text-right text-zinc-200">{preview.funding_8h_usd ? usd(preview.funding_8h_usd, 3) : "unknown"}</dd>
+                  </dl>
+                  {effectiveMode === "CROSS" && (
+                    <p className="mt-1 text-zinc-500">CROSS: the liquidation price depends on the whole wallet; the ISOLATED one is shown.</p>
+                  )}
+                </>
+              ) : (
+                <p role="alert" className="text-rose-300">Would be refused: {preview.reject}</p>
+              )}
+            </div>
+          )}
+
           <dl className="grid grid-cols-2 gap-y-1 text-2xs font-mono bg-zinc-900/60 rounded p-2" aria-label="Pre-trade estimate">
             <dt className="text-zinc-500">Order notional</dt>
             <dd className="text-right text-zinc-200">{fmt(notional)} USDT</dd>
@@ -283,7 +416,7 @@ export function OrderEntryPanel({ symbol = "BTCUSDT", onOrderSubmitted }: { symb
 
       <button
         type="submit"
-        disabled={loading || !!reduceOnlyError || !!gateReason || !(qty > 0)}
+        disabled={loading || !!reduceOnlyError || !!gateReason || !(qty > 0) || stopMissing || previewRefused}
         className={`w-full py-2.5 font-black text-sm tracking-widest uppercase transition-colors rounded disabled:opacity-50 disabled:cursor-not-allowed ${
           // emerald-700 keeps the white label above 4.5:1 (emerald-600 was 3.8:1)
           side === "BUY" ? "bg-emerald-700 hover:bg-emerald-600 text-white" : "bg-rose-600 hover:bg-rose-500 text-white"

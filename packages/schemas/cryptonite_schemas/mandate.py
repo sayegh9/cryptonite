@@ -20,7 +20,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 MAX_POSITION_PCT_CAP = Decimal("25")  # same ceiling as the dispatcher's 25% concentration clamp
 MAX_DRAWDOWN_PCT_CAP = Decimal("20")  # D10/O2: the hard stop is at most 20% of the mandate budget
 ACCOUNT_BACKSTOP_DRAWDOWN_PCT = Decimal("20")  # O2: account-wide backstop that latches everything
-MAX_PERP_LEVERAGE_CAP = 5  # O1: perps only after L3, capped at 5x
+MAX_PERP_LEVERAGE_CAP = 10  # ADR 0009 D2 (was 5x under O1)
+DEFAULT_PERP_LEVERAGE = 3  # a mandate that enables perps without naming a maximum gets 3x (D2)
+DEFAULT_RISK_PER_TRADE_PCT = Decimal("1")  # loss at the stop one trade may risk, % of the budget (D6)
+MAX_RISK_PER_TRADE_PCT_CAP = Decimal("2")
 DEFAULT_VETO_WINDOW_S = 600  # §4.5: L2 veto window, 10 minutes
 DEFAULT_APPROVAL_TTL_S = 900  # L1 approvals expire after 15 minutes (timeout = no for new risk)
 DEFAULT_REDUCE_VETO_S = 300  # a model-proposed exit at L1 waits 5 minutes for a veto, then proceeds
@@ -41,6 +44,9 @@ class AutonomyLevel(IntEnum):
 
 
 LEVEL_NAMES = {AutonomyLevel.L1: "L1 Copilot", AutonomyLevel.L2: "L2 Supervised", AutonomyLevel.L3: "L3 Autonomous"}
+# ADR 0009 D3: perps only at L1, where every risk-adding order waits for the operator's TOTP approval (was L3 only,
+# O1). L2/L3 autonomous perps are out of scope, so leaving L1 withdraws the opt-in.
+PERPS_AUTONOMY_LEVEL = AutonomyLevel.L1
 
 
 class MandateStatus(StrEnum):
@@ -86,6 +92,7 @@ class MandateReject(StrEnum):
     APPROVAL_REQUIRED = "MANDATE_APPROVAL_REQUIRED"  # ADD_RISK below L3 without a valid approval
     NO_REFERENCE_PRICE = "MANDATE_NO_REFERENCE_PRICE"
     INSTANCE_UNAVAILABLE = "MANDATE_INSTANCE_UNAVAILABLE"
+    MARGIN_MODE_NOT_ALLOWED = "MANDATE_MARGIN_MODE_NOT_ALLOWED"  # ADR 0009 D5: mandate perps are ISOLATED only
     # The orchestrator sized the entry itself and the check still found it over a limit: a system fault (sizing
     # and the check disagreeing), not the AI overstepping. Refused, logged as an error, never a breach.
     SIZING_CONFLICT = "MANDATE_SIZING_CONFLICT"
@@ -183,6 +190,7 @@ class Mandate(BaseModel):
     max_drawdown_pct: Decimal = Field(default=MAX_DRAWDOWN_PCT_CAP, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
     allow_perps: bool = False
     max_leverage: int = Field(default=1, ge=1, le=MAX_PERP_LEVERAGE_CAP)
+    max_risk_per_trade_pct: Decimal = Field(default=DEFAULT_RISK_PER_TRADE_PCT, gt=0, le=MAX_RISK_PER_TRADE_PCT_CAP)
     strategies: list[str] = Field(default_factory=list)
     autonomy_level: AutonomyLevel = AutonomyLevel.L1
     status: MandateStatus = MandateStatus.ACTIVE
@@ -202,10 +210,13 @@ class Mandate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _perps_only_at_l3(self) -> "Mandate":
-        # O1: spot-only until the mandate has earned L3
-        if self.allow_perps and self.autonomy_level < AutonomyLevel.L3:
-            raise ValueError("allow_perps requires autonomy level L3 (O1)")
+    def _perps_only_at_l1(self) -> "Mandate":
+        # ADR 0009 D3: perps only at L1 (every risk-adding order approved with TOTP)
+        if self.allow_perps and self.autonomy_level != PERPS_AUTONOMY_LEVEL:
+            raise ValueError("allow_perps requires autonomy level L1 (ADR 0009 D3)")
+        # D2: enabling perps without naming a maximum gives 3x, not the spot 1x
+        if self.allow_perps and "max_leverage" not in self.model_fields_set:
+            self.max_leverage = DEFAULT_PERP_LEVERAGE
         return self
 
     @property
@@ -222,6 +233,7 @@ class Mandate(BaseModel):
             id=r["id"], name=r["name"], capital_budget_usd=r["capital_budget_usd"],
             instruments=list(r["instruments"] or []), max_position_pct=r["max_position_pct"],
             max_drawdown_pct=r["max_drawdown_pct"], allow_perps=r["allow_perps"], max_leverage=r["max_leverage"],
+            max_risk_per_trade_pct=r.get("max_risk_per_trade_pct") or DEFAULT_RISK_PER_TRADE_PCT,
             strategies=list(r.get("strategies") or []), autonomy_level=AutonomyLevel(int(r["autonomy_level"])),
             status=MandateStatus(r["status"]), active_hours_utc=r.get("active_hours_utc"),
             veto_window_s=r.get("veto_window_s") or DEFAULT_VETO_WINDOW_S,
@@ -290,6 +302,7 @@ def risk_adding_change(old: Mandate | None, new: Mandate) -> bool:
         or new.max_drawdown_pct > old.max_drawdown_pct
         or (new.allow_perps and not old.allow_perps)
         or new.max_leverage > old.max_leverage
+        or new.max_risk_per_trade_pct > old.max_risk_per_trade_pct
         or bool(set(new.instruments) - set(old.instruments))
         or bool(set(new.strategies) - set(old.strategies))
         or (new.active_hours_utc or "") != (old.active_hours_utc or "")

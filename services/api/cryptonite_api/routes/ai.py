@@ -57,9 +57,11 @@ from cryptonite_execution.mandate_store import (
 )
 from cryptonite_schemas import notifier as notifier_contract
 from cryptonite_schemas.mandate import (
+    DEFAULT_RISK_PER_TRADE_PCT,
     MAX_DRAWDOWN_PCT_CAP,
     MAX_PERP_LEVERAGE_CAP,
     MAX_POSITION_PCT_CAP,
+    MAX_RISK_PER_TRADE_PCT_CAP,
     ActionClass,
     Mandate,
     MandateStatus,
@@ -90,7 +92,9 @@ class MandateIn(BaseModel):
     max_position_pct: Decimal = Field(ge=1, le=MAX_POSITION_PCT_CAP)
     max_drawdown_pct: Decimal = Field(default=MAX_DRAWDOWN_PCT_CAP, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
     allow_perps: bool = False
-    max_leverage: int = Field(default=1, ge=1, le=MAX_PERP_LEVERAGE_CAP)
+    # unset: 1x for spot, 3x when perps are enabled (ADR 0009 D2)
+    max_leverage: int | None = Field(default=None, ge=1, le=MAX_PERP_LEVERAGE_CAP)
+    max_risk_per_trade_pct: Decimal = Field(default=DEFAULT_RISK_PER_TRADE_PCT, gt=0, le=MAX_RISK_PER_TRADE_PCT_CAP)
     strategies: list[str] = Field(default_factory=list, max_length=20)
     active_hours_utc: str | None = None
     veto_window_s: int = Field(default=600, ge=60, le=3600)
@@ -107,6 +111,7 @@ class MandatePatch(BaseModel):
     max_drawdown_pct: Decimal | None = Field(default=None, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
     allow_perps: bool | None = None
     max_leverage: int | None = Field(default=None, ge=1, le=MAX_PERP_LEVERAGE_CAP)
+    max_risk_per_trade_pct: Decimal | None = Field(default=None, gt=0, le=MAX_RISK_PER_TRADE_PCT_CAP)
     strategies: list[str] | None = Field(default=None, max_length=20)
     active_hours_utc: str | None = None
     clear_active_hours: bool = False
@@ -263,6 +268,26 @@ def _dec(v: Any) -> str | None:
     return format(d, "f")
 
 
+def _is_perp(instrument_id: str) -> bool:
+    return instrument_id.split(".")[0].upper().endswith("-PERP")
+
+
+def _perp_fields(p: Any, mark: Decimal) -> dict[str, Any]:
+    """A perp position's leverage, margin, notional and how far the mark is from its liquidation price (leverage plan
+    4.6): ``liquidation_distance_pct`` is |mark - liquidation| / mark, 0 once the mark has crossed it; None without a
+    liquidation price (a position no positive price liquidates)."""
+    if not _is_perp(p["instrument_id"]):
+        return {}
+    liq = Decimal(str(p["liquidation_price"])) if p["liquidation_price"] is not None else None
+    distance = None
+    if liq is not None and liq > 0 and mark > 0:
+        gap = (mark - liq) if p["side"] == "LONG" else (liq - mark)
+        distance = max(Decimal("0"), gap) / mark * 100
+    return {"leverage": p["leverage"], "margin_mode": p["margin_mode"], "isolated_margin": _dec(p["isolated_margin"]),
+            "notional_usd": _dec(Decimal(str(p["quantity"])) * mark), "liquidation_price": _dec(liq),
+            "liquidation_distance_pct": str(round(distance, 2)) if distance is not None else None}
+
+
 async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None) -> dict[str, Any]:
     """``marks`` (``read_marks``): positions and exposure at the live mark, else the stored mark flagged
     stale (B3, F-H3); ``marks_stale`` / ``marks_age_s`` say which."""
@@ -270,10 +295,14 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
     eq = await conn.fetchrow(
         "SELECT equity, hwm, drawdown_pct, ts FROM ai_mandate_equity WHERE mandate_id = $1 ORDER BY ts DESC, id DESC LIMIT 1", m.id)
     positions = await conn.fetch(
-        """SELECT instrument_id, side, quantity, entry_price, current_price FROM paper_positions
+        """SELECT instrument_id, side, quantity, entry_price, current_price, leverage, margin_mode, isolated_margin,
+                  liquidation_price
+           FROM paper_positions
            WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0 ORDER BY instrument_id""", m.instance_id)
     views = [resolve_mark(p["instrument_id"], p["current_price"], marks) for p in positions]
     exposure = sum((Decimal(str(p["quantity"])) * v.price for p, v in zip(positions, views)), Decimal("0"))
+    perp_exposure = sum((Decimal(str(p["quantity"])) * v.price for p, v in zip(positions, views)
+                         if _is_perp(p["instrument_id"])), Decimal("0"))
     pending = await conn.fetchval("SELECT count(*) FROM ai_approvals WHERE mandate_id = $1 AND status = 'PENDING'", m.id)
     proposal = await conn.fetchrow(
         """SELECT id, to_level, detail, created_at FROM ai_autonomy_events
@@ -283,7 +312,8 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
     return {
         "id": str(m.id), "name": m.name, "capital_budget_usd": _dec(m.capital_budget_usd), "instruments": m.instruments,
         "max_position_pct": _dec(m.max_position_pct), "max_drawdown_pct": _dec(m.max_drawdown_pct),
-        "allow_perps": m.allow_perps, "max_leverage": m.max_leverage, "strategies": m.strategies,
+        "allow_perps": m.allow_perps, "max_leverage": m.max_leverage,
+        "max_risk_per_trade_pct": _dec(m.max_risk_per_trade_pct), "strategies": m.strategies,
         "autonomy_level": int(m.autonomy_level), "level_name": level_name(int(m.autonomy_level)), "status": m.status.value,
         "active_hours_utc": m.active_hours_utc, "veto_window_s": m.veto_window_s, "instance_id": m.instance_id,
         "halted_reason": extra["halted_reason"], "halted_at": extra["halted_at"].isoformat() if extra["halted_at"] else None,
@@ -291,10 +321,11 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
         "equity": _dec(eq["equity"]) if eq else _dec(m.capital_budget_usd), "hwm": _dec(eq["hwm"]) if eq else _dec(m.capital_budget_usd),
         "drawdown_pct": _dec(eq["drawdown_pct"]) if eq else "0", "equity_ts": eq["ts"].isoformat() if eq else None,
         "exposure_usd": _dec(exposure), "budget_used_pct": str(round(Decimal(_dec(exposure)) / m.capital_budget_usd * 100, 2)),
+        "perp_exposure_usd": _dec(perp_exposure),
         "positions": [{"instrument_id": p["instrument_id"], "side": p["side"], "quantity": _dec(p["quantity"]),
                        "entry_price": _dec(p["entry_price"]), "current_price": _dec(v.price),
                        "unrealized_pnl": _dec(unrealized_pnl(p["side"], p["quantity"], p["entry_price"], v.price)),
-                       **v.fields()} for p, v in zip(positions, views)],
+                       **v.fields(), **_perp_fields(p, v.price)} for p, v in zip(positions, views)],
         **summarize(views),
         "pending_approvals": pending,
         "pending_proposal": {"id": proposal["id"], "to_level": proposal["to_level"],
@@ -349,9 +380,9 @@ async def _stopped_mandate_on(conn, instruments: list[str], *, except_id: uuid.U
 
 @router.post("/mandates", dependencies=OPERATOR_WRITE, status_code=201)
 async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(require_human_operator)):
-    """A new mandate always starts at L1 Copilot; creating one gives the AI room, so it needs TOTP."""
-    if req.allow_perps:
-        raise HTTPException(status_code=422, detail="MANDATE_PERPS_NOT_ALLOWED: perps can be enabled only after L3 (O1)")
+    """A new mandate always starts at L1 Copilot; creating one gives the AI room, so it needs TOTP. Perps may be
+    enabled at L1 (ADR 0009 D3: every risk-adding order is then approved with TOTP); the perp instruments must be
+    fed like any other."""
     await require_fed(request, req.instruments)  # D4: no mandate on an instrument ingest does not feed
     # A stopped mandate on one of these instruments refuses the request whatever the code: refuse first, so the
     # operator's code is not spent on it (the same check runs again inside the transaction below, against a race)
@@ -360,7 +391,7 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
             raise HTTPException(status_code=409, detail=stopped)
     await require_totp(request, auth, req.totp_code)
     try:
-        m = Mandate(id=uuid.uuid4(), **req.model_dump(exclude={"totp_code", "source"}))
+        m = Mandate(id=uuid.uuid4(), **req.model_dump(exclude={"totp_code", "source"}, exclude_none=True))
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
     async with request.app.state.pool.acquire() as conn:
@@ -370,10 +401,12 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
             try:
                 await conn.execute(
                     """INSERT INTO ai_mandates (id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct,
-                           allow_perps, max_leverage, strategies, active_hours_utc, veto_window_s, created_by)
-                       VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8, $9, $10, $11)""",
+                           allow_perps, max_leverage, strategies, active_hours_utc, veto_window_s, created_by,
+                           max_risk_per_trade_pct)
+                       VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, $13)""",
                     m.id, m.name, m.capital_budget_usd, m.instruments, m.max_position_pct, m.max_drawdown_pct,
-                    m.max_leverage, m.strategies, m.active_hours_utc, m.veto_window_s, actor(auth))
+                    m.max_leverage, m.strategies, m.active_hours_utc, m.veto_window_s, actor(auth), m.allow_perps,
+                    m.max_risk_per_trade_pct)
             except Exception as e:
                 if "uq" in str(e).lower() or "unique" in str(e).lower():
                     raise HTTPException(status_code=409, detail="A mandate with this name exists")
@@ -400,7 +433,10 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
             if req.clear_active_hours:
                 patch["active_hours_utc"] = None
             try:
-                new = Mandate(**{**old.model_dump(), **patch})
+                base = old.model_dump()
+                if patch.get("allow_perps") and not old.allow_perps and "max_leverage" not in patch:
+                    base.pop("max_leverage")  # enabling perps without a maximum: the 3x default (ADR 0009 D2)
+                new = Mandate(**{**base, **patch})
             except ValidationError as e:
                 raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
             if added := sorted(set(new.instruments) - set(old.instruments)):
@@ -412,13 +448,14 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
             await conn.execute(
                 """UPDATE ai_mandates SET name = $2, capital_budget_usd = $3, instruments = $4, max_position_pct = $5,
                        max_drawdown_pct = $6, allow_perps = $7, max_leverage = $8, strategies = $9, active_hours_utc = $10,
-                       veto_window_s = $11, updated_at = now(),
+                       veto_window_s = $11, max_risk_per_trade_pct = $12, updated_at = now(),
                        -- a new budget is a new baseline: without a rebase a smaller budget reads as a drawdown
                        hwm_rebased_at = CASE WHEN capital_budget_usd <> $3 THEN now() ELSE hwm_rebased_at END,
                        last_dd_demotion_hwm = CASE WHEN capital_budget_usd <> $3 THEN NULL ELSE last_dd_demotion_hwm END
                    WHERE id = $1""",
                 mandate_id, new.name, new.capital_budget_usd, new.instruments, new.max_position_pct, new.max_drawdown_pct,
-                new.allow_perps, new.max_leverage, new.strategies, new.active_hours_utc, new.veto_window_s)
+                new.allow_perps, new.max_leverage, new.strategies, new.active_hours_utc, new.veto_window_s,
+                new.max_risk_per_trade_pct)
             changed = {k: [str(getattr(old, k)), str(getattr(new, k))] for k in patch if getattr(old, k) != getattr(new, k)}
             await record_event(conn, mandate_id, "EDITED", reason=", ".join(changed) or "no change", actor=actor(auth),
                                detail={"changes": changed, "risk_adding": risk_adding_change(old, new),

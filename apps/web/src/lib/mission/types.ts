@@ -18,6 +18,14 @@ export interface MandatePosition {
   mark_stale?: boolean;
   /** Seconds since the quote (live) or since the mark was last confirmed (stored); null = never marked. */
   mark_age_s?: number | null;
+  /** Perp positions only (leverage plan 4.6) */
+  leverage?: number;
+  margin_mode?: "ISOLATED" | "CROSS" | null;
+  isolated_margin?: string | null;
+  notional_usd?: string;
+  liquidation_price?: string | null;
+  /** |mark − liquidation| / mark, %; "0" once the mark has crossed it; null when no positive price liquidates */
+  liquidation_distance_pct?: string | null;
 }
 
 export interface Mandate {
@@ -29,6 +37,8 @@ export interface Mandate {
   max_drawdown_pct: string;
   allow_perps: boolean;
   max_leverage: number;
+  /** The loss at the stop one perp trade may take, % of the budget (1 by default, at most 2) */
+  max_risk_per_trade_pct?: string;
   strategies: string[];
   autonomy_level: 1 | 2 | 3;
   level_name: string;
@@ -42,6 +52,8 @@ export interface Mandate {
   hwm: string;
   drawdown_pct: string;
   exposure_usd: string;
+  /** The notional of the mandate's perp positions at the mark */
+  perp_exposure_usd?: string;
   budget_used_pct: string;
   positions: MandatePosition[];
   /** B3: true when any position is valued at a stored (not live) mark; exposure is then approximate. */
@@ -95,7 +107,7 @@ export interface StopCoverage {
   /** Unix seconds of the exit monitor's last check */
   checked_at: number | null;
   /** STREAM = live quote, REST = backup price (the stream was stale), null = blind: stops not checked */
-  positions: { instrument_id: string; source: "STREAM" | "REST" | null; blind_since: number | null }[];
+  positions: { instrument_id: string; source: "STREAM" | "MARK" | "REST" | null; blind_since: number | null }[]; // MARK: a perp at its mark
   /** Seconds each instrument had no price at all over the last 24 hours */
   blind_s_24h: Record<string, number>;
 }

@@ -26,6 +26,7 @@ from cryptonite_agents.tools import (
     COMPARE_LIVE_VS_BACKTEST,
     DERIVATIVES_CONTEXT,
     GET_KLINES,
+    GRADE_SETUP,
     LIVE_MARKET_DATA,
     MARKET_REGIME,
     NEWS_SENTIMENT,
@@ -101,6 +102,7 @@ def propose_order(
     stop_loss: Annotated[float | None, Field(gt=0)] = None,
     take_profit: Annotated[float | None, Field(gt=0)] = None,
     reduce_pct: Literal[25, 50, 100] | None = None,
+    leverage: Annotated[int | None, Field(ge=1, le=10)] = None,
     rationale: Annotated[str, Field(max_length=2000)] = "",
     thesis: Annotated[str | None, Field(max_length=300)] = None,
     evidence: Annotated[list[EvidenceArg], Field(max_length=5)] = [],
@@ -114,12 +116,15 @@ def propose_order(
     the live price and capped at the room left under the mandate's position limit; order_type MARKET or LIMIT
     (LIMIT needs limit_price); for SELL, reduce_pct (25, 50, or 100) scales out a portion of the mandate's holding
     (e.g., 50 for taking half profit at TP1); give a short rationale.
+    Perps (instrument like 'BTCUSDT-PERP.BINANCE', only in a mandate that allows perps): BUY opens a long, SELL opens
+    a short; allocation_pct is the margin posted; stop_loss (a structural level) and take_profit are required; leverage
+    (1-10) is optional: the card's dry run caps it at the lowest ceiling and fills in the highest allowed when omitted.
     Give thesis, evidence (each item: the tool it came from, the field, the value, and its as_of time),
     invalidation (what would prove the idea wrong), horizon and confidence (0-1)."""
     proposal = OrderProposal(
         instrument_id=instrument_id, side=side, allocation_pct=allocation_pct,
         order_type=order_type, limit_price=limit_price, stop_loss=stop_loss, take_profit=take_profit,
-        reduce_pct=reduce_pct,
+        reduce_pct=reduce_pct, leverage=leverage,
         rationale=rationale, thesis=thesis, evidence=evidence, invalidation=invalidation, horizon=horizon,
         confidence=confidence,
     )
@@ -132,6 +137,7 @@ BRAIN_TOOLS = (
     NEWS_SENTIMENT,
     DERIVATIVES_CONTEXT,
     MARKET_REGIME,
+    GRADE_SETUP,
     SCANNER_CONTEXT,
     AI_STATE,
     TRADE_TIMELINE,

@@ -81,6 +81,11 @@
 }
 
 @theme inline {
+  /* Leverage tiers (leverage plan 4.9): text-leverage-low, bg-leverage-high/15, border-leverage-liquidation... */
+  --color-leverage-low: var(--leverage-low);
+  --color-leverage-mid: var(--leverage-mid);
+  --color-leverage-high: var(--leverage-high);
+  --color-leverage-liquidation: var(--leverage-liquidation);
   --font-heading: var(--font-sans);
   --font-sans: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
@@ -181,6 +186,12 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Leverage tiers, dark: 1-3x low, 4-7x mid, 8-10x high; the liquidation price and its distance */
+  --leverage-low: oklch(0.78 0.14 160);
+  --leverage-mid: oklch(0.82 0.15 85);
+  --leverage-high: oklch(0.72 0.18 45);
+  --leverage-liquidation: oklch(0.70 0.21 20);
 }
 
 .dark {
@@ -215,6 +226,12 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Leverage tiers, dark: 1-3x low, 4-7x mid, 8-10x high; the liquidation price and its distance */
+  --leverage-low: oklch(0.78 0.14 160);
+  --leverage-mid: oklch(0.82 0.15 85);
+  --leverage-high: oklch(0.72 0.18 45);
+  --leverage-liquidation: oklch(0.70 0.21 20);
 }
 
 /* Desk Preferences Theme Foundation */
@@ -258,6 +275,12 @@
   --color-surface-raised: oklch(0.90 0 0);
   --color-surface-hover: oklch(0.87 0 0);
   --color-surface-border: oklch(0 0 0 / 10%);
+
+  /* Leverage tiers, light: darker for contrast on light surfaces */
+  --leverage-low: oklch(0.50 0.13 160);
+  --leverage-mid: oklch(0.55 0.14 75);
+  --leverage-high: oklch(0.55 0.18 45);
+  --leverage-liquidation: oklch(0.52 0.21 25);
 }
 
 [data-theme="light"] body {
@@ -272,6 +295,12 @@
   --color-surface-raised: oklch(0.24 0 0);
   --color-surface-hover: oklch(0.28 0 0);
   --color-surface-border: oklch(1 0 0 / 7%);
+
+  /* Leverage tiers, dark: 1-3x low, 4-7x mid, 8-10x high; the liquidation price and its distance */
+  --leverage-low: oklch(0.78 0.14 160);
+  --leverage-mid: oklch(0.82 0.15 85);
+  --leverage-high: oklch(0.72 0.18 45);
+  --leverage-liquidation: oklch(0.70 0.21 20);
 }
 
 /* Desk Density Variables */

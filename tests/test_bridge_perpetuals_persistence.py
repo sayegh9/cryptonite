@@ -130,7 +130,9 @@ async def test_closing_fill_transitions_row_to_flat_with_realized_pnl(ctx):
     (row,) = await positions(ctx)
     assert (row["side"], row["quantity"], row["status"]) == ("FLAT", 0, "CLOSED")
     assert row["closed_at"] is not None and row["liquidation_price"] is None
-    assert row["realized_pnl"] == D("38.04")  # 0.04 * (50,000 - 49,000) - 1.96 closing fee
+    # 0.04 * (50,000 - 49,000) - 2 opening fee - 1.96 closing fee: the row carries both fees (leverage plan 2.6),
+    # so it matches the account's cash change
+    assert row["realized_pnl"] == D("36.04")
 
     acct = await account(ctx)
     assert acct["cash_balance"] == ctx["dispatcher"].cash_balance == D("10036.04")
@@ -161,7 +163,7 @@ async def test_adding_to_short_updates_average_entry_and_liquidation_price(ctx):
 
 
 async def test_cross_position_stores_cross_mode_without_isolated_margin(ctx):
-    await fill(ctx, "S-1", "SELL", "0.04", "50000", leverage=10)  # margin mode defaults to CROSS
+    await fill(ctx, "S-1", "SELL", "0.04", "50000", leverage=10, margin_mode="CROSS")  # the default is ISOLATED now
     row = await open_position(ctx)
     assert (row["margin_mode"], row["isolated_margin"]) == ("CROSS", 0)
     # Cross wallet 10,000 backs the short, so liquidation sits far above entry
@@ -210,3 +212,31 @@ async def test_mark_to_market_projector_values_shorts_with_correct_sign(ctx):
     await projector.project_once()
     row = await open_position(ctx)
     assert row["unrealized_pnl"] == D("-40")  # short loses when price rises
+
+
+async def test_mandate_equity_counts_perp_fees_and_funding_paid(ctx):
+    """Leverage plan 2.6: a mandate's equity (and so its drawdown and hard stop) includes the perp fees it paid and
+    the funding it paid or received, not only the price move."""
+    from types import SimpleNamespace
+
+    from cryptonite_orchestrator.mandate_monitor import mandate_equity
+
+    d = ctx["dispatcher"]
+    await fill(ctx, "S-1", "SELL", "0.04", "50000", fee="1", leverage=5, margin_mode="ISOLATED")
+    # a negative rate: shorts pay -(-0.04) * 50,000 * -0.0001 = -0.2
+    (p,) = d.apply_funding_settlement(PERP, D("50000"), D("-0.0001"), 1_700_000_000_000_000_000)
+    key = f"FUND-{p.instrument_id}-{p.funding_time_ns}"
+    ctx["bridge"].enqueue_event({
+        "event_type": "FUNDING_SETTLED", "event_version": 1, "client_order_id": key, "native_event_id": key,
+        "idempotency_key": f"FUNDING:{ACCOUNT}:{PERP}:{p.funding_time_ns}", "account_id": ACCOUNT,
+        "instance_id": INSTANCE, "instrument_id": PERP, "cash_flow": str(p.cash_flow),
+        "occurred_at_ns": p.funding_time_ns, "payload": p.model_dump(mode="json"),
+        "position": d.perp_position_snapshot(PERP, D("50000")),
+    })
+    assert await ctx["worker"].drain_and_commit_batch() == 1
+    m = SimpleNamespace(instance_id=INSTANCE, capital_budget_usd=D("10000"))
+    async with ctx["pool"].acquire() as conn:
+        equity = await mandate_equity(conn, m)
+    assert p.cash_flow == D("-0.2")
+    assert equity == D("10000") - D("1") - D("0.2")  # entry fee and funding paid; no price move yet
+    assert (await account(ctx))["cash_balance"] == D("10000") - D("1.2")

@@ -13,6 +13,7 @@ Formulas follow Binance's published USD-M definitions:
 each tier's floor and MMR rather than hard-coded.
 """
 
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -55,7 +56,8 @@ def _build_brackets(tiers: list[tuple[str, str | None, int, str]]) -> tuple[Main
 
 
 # Reference snapshot of Binance's published USD-M leverage/margin tables. Binance revises
-# these without notice; the live source is GET /fapi/v1/leverageBracket (roadmap C11).
+# these without notice; the live source is GET /fapi/v1/leverageBracket (``brackets.py``). The snapshot is
+# only a fallback, and only for these two symbols (leverage plan 1.2).
 REFERENCE_BRACKETS: dict[str, tuple[MaintenanceBracket, ...]] = {
     "BTCUSDT": _build_brackets([
         ("0", "50000", 125, "0.004"),
@@ -89,14 +91,69 @@ def _side_mult(side: OrderSide) -> Decimal:
     return ONE if OrderSide(side) is OrderSide.BUY else -ONE
 
 
+# Live tables from Binance (``brackets.load_brackets`` installs them from the Redis cache): symbol ->
+# (brackets, fetch time ns). They win over REFERENCE_BRACKETS whatever their age, so open positions are always
+# valued with the newest table; ``bracket_source`` tells entries whether the table is fresh enough to open on.
+_LIVE_BRACKETS: dict[str, tuple[tuple[MaintenanceBracket, ...], int]] = {}
+# A table is refreshed daily; older than this, new perp entries are refused (STALE_LEVERAGE_BRACKETS)
+BRACKETS_MAX_AGE_S = 36 * 3600
+
+
+def set_live_brackets(symbol: str, brackets: tuple[MaintenanceBracket, ...], fetched_at_ns: int) -> None:
+    if not brackets:
+        raise ValueError(f"empty bracket table for {symbol}")
+    _LIVE_BRACKETS[symbol.upper()] = (tuple(brackets), int(fetched_at_ns))
+
+
+def clear_live_brackets() -> None:
+    _LIVE_BRACKETS.clear()
+
+
+@dataclass(frozen=True)
+class BracketSource:
+    kind: str  # LIVE | REFERENCE | MISSING
+    fetched_at_ns: int | None = None
+    stale: bool = False
+
+    @property
+    def entry_reject(self) -> str | None:
+        """Why a new perp entry may not open on this table, or None."""
+        if self.kind == "MISSING":
+            return "NO_LEVERAGE_BRACKETS"
+        if self.stale:
+            return "STALE_LEVERAGE_BRACKETS"
+        return None
+
+
+def bracket_source(instrument_id: str, now_ns: int | None = None, max_age_s: float = BRACKETS_MAX_AGE_S) -> BracketSource:
+    """Where this instrument's brackets come from: a live table (stale after ``max_age_s``), the reference
+    snapshot (BTCUSDT/ETHUSDT only), or nowhere."""
+    symbol = parse_instrument_id(instrument_id)[0].upper()
+    live = _LIVE_BRACKETS.get(symbol)
+    if live is not None:
+        now_ns = time.time_ns() if now_ns is None else now_ns
+        return BracketSource("LIVE", live[1], now_ns - live[1] > max_age_s * 1_000_000_000)
+    if symbol in REFERENCE_BRACKETS:
+        return BracketSource("REFERENCE")
+    return BracketSource("MISSING")
+
+
 def get_brackets(instrument_id: str) -> tuple[MaintenanceBracket, ...]:
     symbol, _venue, is_perp = parse_instrument_id(instrument_id)
     if not is_perp:
         raise ValueError(f"not a perpetual instrument: {instrument_id}")
+    live = _LIVE_BRACKETS.get(symbol.upper())
+    if live is not None:
+        return live[0]
     try:
         return REFERENCE_BRACKETS[symbol]
     except KeyError:
         raise ValueError(f"no maintenance brackets for {symbol}") from None
+
+
+def max_leverage_for_notional(instrument_id: str, notional: Decimal) -> int:
+    """The exchange's maximum leverage for a position of ``notional`` (the bracket that contains it)."""
+    return get_bracket(instrument_id, notional).max_leverage
 
 
 def get_bracket(instrument_id: str, notional: Decimal) -> MaintenanceBracket:

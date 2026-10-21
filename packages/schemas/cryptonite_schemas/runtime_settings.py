@@ -30,7 +30,16 @@ RUNTIME_BOUNDS: dict[str, Bound] = {
     "auth.idle_timeout_s": Bound(1800, 300, 1800),
     "auth.lockout_s": Bound(300, 60, 3600),
     "auth.max_login_attempts": Bound(5, 3, 10),
+    # Leverage (ADR 0009, leverage plan §2.1, §2.3): each setup grade's leverage ceiling, at most the 10x account
+    # maximum (lower is tighter), and the slippage allowance in % (higher is tighter: the stop is priced further away)
+    "leverage.grade_ceiling_a": Bound(10, 1, 10),
+    "leverage.grade_ceiling_b": Bound(5, 1, 10),
+    "leverage.grade_ceiling_c": Bound(2, 1, 10),
+    "leverage.slippage_allowance_pct": Bound(0.3, 0.05, 2.0),
 }
+GRADE_CEILING_KEYS = {"A": "leverage.grade_ceiling_a", "B": "leverage.grade_ceiling_b", "C": "leverage.grade_ceiling_c"}
+SLIPPAGE_KEY = "leverage.slippage_allowance_pct"
+LEVERAGE_KEYS = (*GRADE_CEILING_KEYS.values(), SLIPPAGE_KEY)
 
 
 def _parse(raw: Any) -> float:
@@ -51,3 +60,29 @@ def read_number(raw: Any, bound: Bound, last_good: float) -> tuple[float, str | 
     if not math.isfinite(value) or not bound.low <= value <= bound.high:
         return last_good, f"stored value {raw!r} is outside {bound.low:g}..{bound.high:g}"
     return value, None
+
+
+@dataclass(frozen=True)
+class LeverageSettings:
+    grade_ceilings: dict[str, int]  # A/B/C -> leverage; NO_TRADE is always 0
+    slippage_pct: float  # in %, e.g. 0.3
+
+
+def default_leverage_settings() -> LeverageSettings:
+    return LeverageSettings({g: int(RUNTIME_BOUNDS[k].default) for g, k in GRADE_CEILING_KEYS.items()} | {"NO_TRADE": 0},
+                            RUNTIME_BOUNDS[SLIPPAGE_KEY].default)
+
+
+def read_leverage_settings(stored: dict[str, Any], last_good: LeverageSettings) -> tuple[LeverageSettings, list[str]]:
+    """The grade ceilings and slippage allowance to apply (same rule as every runtime value), and the problems."""
+    problems: list[str] = []
+    ceilings: dict[str, int] = {"NO_TRADE": 0}
+    for grade, key in GRADE_CEILING_KEYS.items():
+        value, problem = read_number(stored.get(key), RUNTIME_BOUNDS[key], last_good.grade_ceilings.get(grade, 0))
+        if problem:
+            problems.append(f"{key}: {problem}")
+        ceilings[grade] = int(value)
+    slip, problem = read_number(stored.get(SLIPPAGE_KEY), RUNTIME_BOUNDS[SLIPPAGE_KEY], last_good.slippage_pct)
+    if problem:
+        problems.append(f"{SLIPPAGE_KEY}: {problem}")
+    return LeverageSettings(ceilings, slip), problems

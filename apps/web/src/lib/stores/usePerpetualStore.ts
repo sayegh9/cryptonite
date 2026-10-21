@@ -136,7 +136,7 @@ function parseMark(d: Record<string, unknown>): MarkTick | null {
 
 export const usePerpetualStore = create<PerpetualState>()(persist((set, get) => ({
   leverage: 1,
-  marginMode: 'CROSS',
+  marginMode: 'ISOLATED', // ADR 0009 D5: the manual ticket defaults to ISOLATED
   reduceOnly: false,
   marks: {},
   positions: {},
@@ -247,6 +247,11 @@ export const usePerpetualStore = create<PerpetualState>()(persist((set, get) => 
   // Only ticket preferences persist; live marks/positions must never rehydrate as if current,
   // and a remembered reduce-only flag would silently turn the next entry order into a rejected close.
   partialize: (state) => ({ leverage: state.leverage, marginMode: state.marginMode }),
+  // A leverage remembered from before the 10x account maximum (ADR 0009 D2; it was 20x) comes back clamped
+  merge: (persisted, current) => {
+    const p = isRecord(persisted) ? persisted : {};
+    return { ...current, ...p, leverage: clampLeverage(num(p.leverage ?? current.leverage)) };
+  },
 }));
 
 /**

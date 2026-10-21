@@ -78,6 +78,14 @@ The System state block is a snapshot from the start of this turn. Call get_ai_st
    for the same idea. Before proposing a SELL, check what the mandate holds (query_postgres_readonly on
    agent_safe_ai_holdings). Spot cannot be shorted: propose a SELL only to close a position the mandate already holds.
    An approved SELL sells that whole holding, not allocation_pct of the budget.
+   Perpetuals (USD-M, instrument like 'BTCUSDT-PERP.BINANCE'): propose one only in a mandate whose allow_perps is on
+   (get_ai_state; perps live at L1, so the operator approves every perp card with TOTP). On a perp, BUY opens a long and
+   SELL opens a short: shorting is possible on perps only, never on spot. Every perp entry needs a structural
+   stop_loss from the setup (a level, not a fixed percent) and a take_profit (TP1). Call grade_setup first and state
+   the grade and its reasons; do not propose a perp on a NO_TRADE grade. allocation_pct on a perp is the margin, and
+   leverage is optional: the system caps it at the lowest ceiling (risk at the stop, the liquidation buffer, the
+   mandate's room and maximum, the setup grade, the exchange) and the card's dry run shows the leverage it allows and
+   which ceiling binds. Say that; never claim a leverage the dry run did not allow.
 6. Missing data is neutral: when a tool reports no perpetual, no headlines or a symbol it does not cover, say so once
    and do not count it against a trade. CHOP is not an automatic no. In a range, look for a defined setup: entry near
    range support, stop below the range, target at the range middle or top. Measure the risk from the wider of your stop
@@ -120,6 +128,7 @@ _FIELD_REASONS = {
     "take_profit": "the take profit must be a positive number",
     "quantity": "the quantity must be a positive number",
     "rationale": "the rationale is too long",
+    "leverage": "the leverage must be a whole number from 1 to 10",
 }
 
 
@@ -138,6 +147,10 @@ def no_card_note(args: dict[str, Any]) -> str:
                 reason = f"the {field.replace('_', ' ')} is missing"
         elif "LIMIT" in str(first.get("msg", "")):  # the model validator: a LIMIT order without its price
             reason = "a LIMIT order needs a limit price"
+        elif "perp entry needs a stop_loss" in str(first.get("msg", "")):
+            reason = "a perp entry needs a structural stop_loss"
+        elif "perps only" in str(first.get("msg", "")):
+            reason = "leverage is for perp instruments only"
         else:
             reason = "the proposal is not valid"
     else:
@@ -148,6 +161,7 @@ def no_card_note(args: dict[str, Any]) -> str:
 CANCELLED_NOTE = "\n\n_[stopped by the operator]_"
 STATE_TIMEOUT_S = 3.0  # a slow system-state read never delays a turn by more than this
 LESSONS_TIMEOUT_S = 2.0  # a slow lessons read never delays an order card by more than this
+GRADE_TIMEOUT_S = 8.0  # the setup grade reads klines and futures data; an ungraded card is held to grade C
 
 
 def _assert_read_only(tools) -> None:
@@ -184,6 +198,7 @@ class Brain:
                  feed: Callable[[str], Awaitable[str | None]] | None = None,
                  state: Callable[[], Awaitable[str | None]] | None = None,
                  lessons: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
+                 grader: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None,
                  redis: Any | None = None) -> None:
         self.gateway = gateway
         self.store = store
@@ -196,6 +211,8 @@ class Brain:
         self._state = state
         # The past lessons on an instrument, shown on its order card (None: no lessons).
         self._lessons = lessons
+        # The system's setup grade for an entry card (leverage plan 3.3; None: cards are ungraded).
+        self._grader = grader
         # Redis client (system Redis DB 0) to cache staged active cards during streaming turns
         self._redis = redis
 
@@ -231,6 +248,17 @@ class Brain:
         except Exception as e:
             logger.warning("Could not read the past lessons for %s; the card shows none: %s", instrument_id, e)
             return []
+
+    async def _card_grade(self, card: dict[str, Any]) -> dict[str, Any] | None:
+        """The setup grade of an entry card with a stop and a target. Bounded by GRADE_TIMEOUT_S: a failed or slow read
+        leaves the card ungraded (sizing then holds a perp entry to grade C) and never blocks or breaks the card."""
+        if self._grader is None or not card.get("stop_loss") or not card.get("take_profit"):
+            return None
+        try:
+            return await asyncio.wait_for(self._grader(card), timeout=GRADE_TIMEOUT_S)
+        except Exception as e:
+            logger.warning("Could not grade the setup of card %s; it stays ungraded: %s", card.get("id"), e)
+            return None
 
     async def _feed_refusal(self, instrument_id: str) -> str | None:
         """Why the live feed does not cover ``instrument_id``, or None. Display only, so a failed read shows nothing."""
@@ -332,7 +360,9 @@ class Brain:
                                     held = str(ev.data.get("content") or "").startswith(HELD_FOR_APPROVAL_PREFIX)
                                     if not held or order_cards:
                                         continue
-                                    if args.get("side") == "SELL":
+                                    # A spot SELL closes a holding; a perp SELL opens or adds to a short (leverage
+                                    # plan 4.1), so only spot needs a holding to make a card
+                                    if args.get("side") == "SELL" and "-PERP" not in str(args.get("instrument_id", "")).upper():
                                         instrument = str(args.get("instrument_id", ""))
                                         if not await self._holds(instrument):
                                             # Spot cannot be shorted: no card. The reply says why, so the operator knows
@@ -356,7 +386,8 @@ class Brain:
                                         # The reader alone sets the field: a value the model passed in its arguments
                                         # never survives
                                         instrument = str(widget.get("instrument_id", ""))
-                                        entry = widget.get("side") == "BUY"
+                                        perp_entry = "-PERP." in instrument and not widget.get("reduce_pct")
+                                        entry = widget.get("side") == "BUY" or perp_entry
                                         widget["feed_refusal"] = await self._feed_refusal(instrument) if entry else None
                                         if widget["feed_refusal"]:
                                             symbol = instrument.split(".")[0]
@@ -365,6 +396,14 @@ class Brain:
                                                          "or the Watchlist first.")
                                         # The past lessons come from the reader alone, for a BUY or a SELL card
                                         widget["lessons"] = await self._card_lessons(instrument)
+                                        # The setup grade comes from the grader alone, for an entry (a BUY, or a perp
+                                        # order that is not a reduction)
+                                        if entry:
+                                            if graded := await self._card_grade(widget):
+                                                widget["setup_grade"] = graded.get("grade")
+                                                widget["grade_reasons"] = list(graded.get("reasons") or [])[:12]
+                                                widget["grade_inputs"] = graded.get("inputs")
+                                                widget["grade_version"] = graded.get("version")
                                         if self._redis is not None and widget.get("id"):
                                             try:
                                                 await self._redis.set(f"brain:active_card:{widget['id']}", json.dumps(widget), ex=1800)

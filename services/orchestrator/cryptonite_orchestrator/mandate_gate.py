@@ -16,6 +16,16 @@ from decimal import Decimal
 from typing import Any
 
 from cryptonite_execution.autonomy import AutonomyState, AutonomyTrigger, transition
+from cryptonite_execution.leverage import (
+    ACCOUNT_EXPOSURE_CAP,
+    DEFAULT_FEE_ROUND_TRIP,
+    DEFAULT_GRADE_CEILINGS,
+    DEFAULT_SLIPPAGE_ALLOWANCE,
+    LeverageLimits,
+    LeveragePlan,
+    check_leveraged_order,
+    plan_leveraged_order,
+)
 from cryptonite_execution.mandate_store import (
     apply_transition,
     instance_spot_holdings,
@@ -154,6 +164,83 @@ async def mandate_entry_room(conn, engine, mandate: Mandate, instrument_id: str,
     return max_entry_quantity(mandate, exposure, ref, order_type=order_type), ref, exposure
 
 
+# Sizing keeps a margin to the check, so a mark tick between sizing and the dispatcher cannot flip a boundary: 1% of
+# the risk budget and of the room, and 0.1% more slippage than the dispatcher allows
+PERP_SIZING_MARGIN = Decimal("0.99")
+PERP_SIZING_EXTRA_SLIPPAGE = Decimal("0.001")
+# An AI perp entry without a system grade is held to grade C's ceiling (the safer reading of §2.3)
+UNGRADED_PERP_GRADE = "C"
+
+
+def mandate_risk_budget(mandate: Mandate) -> Decimal:
+    """The loss at the stop one trade may take: the budget x ``max_risk_per_trade_pct`` (ADR 0009 D6)."""
+    return mandate.capital_budget_usd * mandate.max_risk_per_trade_pct / Decimal("100")
+
+
+def perp_entry_price(engine, instrument_id: str, limit_price: Decimal | None) -> Decimal | None:
+    """The price a perp entry is valued at by the dispatcher, so sizing values it alike: its limit, else the mark."""
+    if limit_price is not None and limit_price > 0:
+        return limit_price
+    mark = getattr(engine.dispatcher, "mark_prices", {}).get(instrument_id)
+    return Decimal(str(mark)) if mark else None
+
+
+def grade_ceiling(payload: dict, ceilings: dict[str, int] | None = None) -> int:
+    grade = str(payload.get("setup_grade") or UNGRADED_PERP_GRADE).upper()
+    table = ceilings or DEFAULT_GRADE_CEILINGS
+    return table.get(grade, table[UNGRADED_PERP_GRADE])
+
+
+async def plan_perp_entry(conn, engine, mandate: Mandate, instrument_id: str, side: str, payload: dict,
+                          quote) -> LeveragePlan:
+    """Size a mandate's perp entry, long or short (leverage plan 2.4): the margin is the allocation's share of the
+    budget, the leverage the highest the ceilings allow (at most what the card asked for), and the notional fits the
+    mandate's room (valued as the mandate check values it) and 25% of account equity."""
+    d = engine.dispatcher
+    order_type = str(payload.get("order_type", "MARKET")).upper()
+    limit_px = Decimal(str(payload["price"])) if payload.get("price") else None
+    entry = perp_entry_price(engine, instrument_id, limit_px)
+    stop = Decimal(str(payload["stop_loss"])) if payload.get("stop_loss") else None
+    margin = mandate.capital_budget_usd * Decimal(str(payload.get("allocation_pct", 5.0))) / Decimal("100")
+    if entry is None:
+        return LeveragePlan(instrument_id, side, "NO_MARK_PRICE", 0, payload.get("leverage"), 0, None, False)
+    room_qty, _, _ = await mandate_entry_room(conn, engine, mandate, instrument_id, side, limit_px, quote, order_type)
+    held = abs(d.get_perp_position_qty(instrument_id)) * entry if hasattr(d, "get_perp_position_qty") else Decimal("0")
+    equity = d.portfolio_equity()
+    account_room = ACCOUNT_EXPOSURE_CAP * equity - held
+    max_notional = max(Decimal("0"), min(room_qty * entry, account_room)) * PERP_SIZING_MARGIN
+    limits = LeverageLimits(
+        risk_budget_usd=mandate_risk_budget(mandate) * PERP_SIZING_MARGIN,
+        max_notional_usd=max_notional,
+        max_leverage=mandate.max_leverage,
+        grade_ceiling=grade_ceiling(payload, getattr(engine, "grade_ceilings", None)),
+        slippage_pct=getattr(d, "slippage_allowance_pct", DEFAULT_SLIPPAGE_ALLOWANCE) + PERP_SIZING_EXTRA_SLIPPAGE,
+        fee_pct=2 * getattr(d, "perp_taker_fee", DEFAULT_FEE_ROUND_TRIP / 2),
+        # the dispatcher's 1% minimum, with the same margin the other way
+        min_notional_usd=getattr(d, "min_order_equity_pct", Decimal("0")) * equity / PERP_SIZING_MARGIN,
+    )
+    requested = int(payload["leverage"]) if payload.get("leverage") else None
+    return plan_leveraged_order(instrument_id, side, entry, stop, margin, limits, requested_leverage=requested,
+                                budget_usd=mandate.capital_budget_usd, shrink_margin_to_fit=True)
+
+
+def perp_entry_reject(engine, mandate: Mandate, intent) -> str | None:
+    """The mandate gate's check of a perp entry, with the dispatcher's own valuation: a stop is required, and it must
+    sit inside half the liquidation distance with its loss within the mandate's risk budget."""
+    if intent.stop_loss is None:
+        return "STOP_REQUIRED"
+    d = engine.dispatcher
+    entry = perp_entry_price(engine, intent.instrument_id, intent.price)
+    if entry is None:
+        return None  # no mark: the dispatcher refuses it (NO_MARK_PRICE)
+    return check_leveraged_order(
+        intent.instrument_id, intent.side, intent.quantity, entry, intent.stop_loss, intent.leverage or 1,
+        risk_budget_usd=mandate_risk_budget(mandate),
+        slippage_pct=getattr(d, "slippage_allowance_pct", DEFAULT_SLIPPAGE_ALLOWANCE),
+        fee_pct=2 * getattr(d, "perp_taker_fee", DEFAULT_FEE_ROUND_TRIP / 2),
+    )
+
+
 async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate) -> bool:
     """ADD_RISK below L3 needs an operator approval bound to exactly this command: an ``ai_approvals``
     row for this mandate, ADD_RISK, APPROVED (or, at L2, a veto window that ran out with policy
@@ -192,11 +279,16 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
     order = MandateOrder(
         instrument_id=intent.instrument_id, side=side, quantity=intent.quantity, ref_price=ref,
         order_type=intent.order_type, reduce_only=intent.reduce_only, leverage=intent.leverage,
-        conviction_level=intent.conviction_level,
+        conviction_level=intent.conviction_level, margin_mode=intent.margin_mode,
     )
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     ok = await approval_granted(conn, row, payload, mandate)
     reject = check_mandate(mandate, order, exposure, approval_ok=ok)
+    if reject is None and order.is_perp and action_class(order) is ActionClass.ADD_RISK:
+        # Leverage plan 2.4: the same valuation the sizing used; a refusal, never a breach
+        if (perp_reject := perp_entry_reject(engine, mandate, intent)) is not None:
+            logger.warning("AI perp entry %s refused by mandate %s: %s", _row_get(row, "command_id"), mandate.name, perp_reject)
+            return perp_reject
     if reject is None and action_class(order) is ActionClass.ADD_RISK:
         # F4: an extra refusal on top of the mandate check (never a breach); exits are never refused
         from cryptonite_orchestrator.cross_mandate import cross_mandate_reject

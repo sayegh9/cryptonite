@@ -32,9 +32,12 @@ from pydantic import ValidationError
 from cryptonite_orchestrator.mandate_gate import (
     command_mandate_id,
     gate_ai_order,
+    grade_ceiling,
     instance_spot_holdings,
     is_ai_command,
     mandate_entry_room,
+    mandate_risk_budget,
+    plan_perp_entry,
 )
 from cryptonite_orchestrator.mandate_monitor import (
     alert,
@@ -111,6 +114,7 @@ class SimpleQuoteCache:
 
 
 DEFAULT_FEE_RATE = Decimal("0.001")
+DEFAULT_PERP_FEE_RATE = Decimal("0.0005")  # Binance USD-M taker (leverage plan 1.6)
 MAX_MATCH_QUOTE_AGE_NS = 5_000_000_000  # a backlog of older quotes never fills working orders
 # An entry sized to the mandate's room keeps 1% back, so a quote tick between sizing and the mandate
 # check cannot push it over the limit
@@ -171,8 +175,12 @@ async def apply_paper_fill(
     also creates the paper_orders row if missing), then a best-effort paper_orders upsert for
     immediate UI consistency. A failed upsert therefore never leaves memory ahead of the database.
     """
-    fee_rate = getattr(engine.dispatcher, "taker_fee", None) or DEFAULT_FEE_RATE  # maker fills pay it too
+    fee_rate = fee_rate_for(engine.dispatcher, fill.instrument_id)  # maker fills pay it too
     comm = fill.quantity * fill.price * fee_rate
+    # A perp entry that carries its stop (``stop_loss``) gets a resting stop once it fills (leverage plan 1.4)
+    attach_stop = (engine.dispatcher.open_orders.get(fill.client_order_id) or {}).get("attach_stop")
+    stops_before = set(engine.dispatcher.resting_stops(fill.instrument_id)) if hasattr(
+        engine.dispatcher, "resting_stops") else set()
     realized = engine.dispatcher.handle_fill(
         client_order_id=fill.client_order_id,
         fill_qty=fill.quantity,
@@ -213,6 +221,80 @@ async def apply_paper_fill(
     except Exception as e:  # the bridge event above still records the fill
         logger.error("paper_orders upsert failed for %s (bridge will record it): %s", fill.client_order_id, e)
     logger.info("Order %s filled %s %s @ %s (%s)", fill.client_order_id, fill.side, fill.quantity, fill.price, fill.liquidity)
+    stops_before.discard(fill.client_order_id)  # a stop that just fired is filled, not dropped
+    if stops_before and (released_stops := stops_before - set(engine.dispatcher.resting_stops(fill.instrument_id))):
+        # the fill closed or flipped the position, so its resting stops were dropped: mark their rows cancelled
+        logger.info("Resting stops %s dropped with the position on %s", sorted(released_stops), fill.instrument_id)
+        try:
+            async with _savepoint(conn):
+                await reconcile_working_orders(conn, engine)
+        except Exception as e:
+            logger.error("Could not cancel the rows of dropped stops %s: %s", sorted(released_stops), e)
+    if attach_stop is not None:
+        await attach_resting_stop(conn, engine, fill.instrument_id, Decimal(str(attach_stop)), instance_id)
+
+
+def fee_rate_for(dispatcher, instrument_id: str) -> Decimal:
+    """Taker fee for a paper fill: the USD-M rate on perps (leverage plan 1.6), the spot rate otherwise."""
+    if instrument_id.split(".", 1)[0].upper().endswith("-PERP"):
+        return getattr(dispatcher, "perp_taker_fee", None) or DEFAULT_PERP_FEE_RATE
+    return getattr(dispatcher, "taker_fee", None) or DEFAULT_FEE_RATE
+
+
+async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Decimal, instance_id: str) -> bool:
+    """Protect the filled perp position with a resting reduce-only stop (it replaces the owner's earlier one).
+
+    A stop the dispatcher refuses (the mark already went through it, say) leaves the position without a resting
+    stop: that is logged CRITICAL; the exit monitor's structural stop and the liquidation-proximity close stay as
+    the backup."""
+    client_oid = f"STOP-{uuid.uuid4().hex[:12].upper()}"
+    ok, reason = engine.dispatcher.place_resting_stop(client_oid, instrument_id, stop_price, instance_id)
+    if not ok:
+        logger.critical("Resting stop for %s (%s) at %s refused: %s; the position has no resting stop",
+                        instrument_id, instance_id, stop_price, reason)
+        return False
+    info = engine.dispatcher.open_orders[client_oid]
+    try:
+        async with _savepoint(conn):
+            await conn.execute(
+                """
+                INSERT INTO paper_orders (
+                    client_order_id, instance_id, account_id, instrument_id, side,
+                    order_type, quantity, price, filled_qty, status,
+                    last_event_version, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, 'STOP_MARKET', $6, $7, 0, 'ACCEPTED', 0, now(), now())
+                ON CONFLICT (client_order_id) DO NOTHING
+                """,
+                client_oid, info["instance_id"], getattr(engine, "account_id", ACCOUNT_ID), instrument_id,
+                info["side"], info["quantity"], stop_price,
+            )
+        # the replaced stops are no longer working
+        await reconcile_working_orders(conn, engine)
+    except Exception as e:  # the stop rests in memory either way
+        logger.error("paper_orders row for resting stop %s failed: %s", client_oid, e)
+    logger.info("Resting stop %s: %s %s %s @ %s", client_oid, info["side"], info["quantity"], instrument_id, stop_price)
+    return True
+
+
+async def fire_resting_stops(pool, engine, mark_prices: dict[str, Decimal]) -> int:
+    """Fill the resting stops the mark reached (leverage plan 1.4). Runs on every mark pass before the
+    liquidation check, so it works when the exit monitor is blind. Returns the number of stops filled."""
+    d = engine.dispatcher
+    fills, cancelled = d.triggered_stops(mark_prices)
+    if not fills and not cancelled:
+        return 0
+    async with pool.acquire() as conn:
+        for fill in fills:
+            info = d.open_orders.get(fill.client_order_id)
+            if info is None:
+                continue
+            intent = info["intent"]
+            await apply_paper_fill(conn, engine, fill, intent.instance_id, "STOP_MARKET", intent.stop_price)
+            logger.warning("Resting stop %s fired: %s %s %s @ %s (stop %s)", fill.client_order_id, fill.side,
+                           fill.quantity, fill.instrument_id, fill.price, intent.stop_price)
+        if cancelled:
+            await reconcile_working_orders(conn, engine)
+    return len(fills)
 
 
 async def reconcile_working_orders(conn, engine) -> None:
@@ -538,6 +620,7 @@ async def consume_perp_marks(
     channel: str = PERP_MARK_CHANNEL,
     key_pattern: str = PERP_MARK_KEY_PATTERN,
     liquidation_interval_s: float = 1.0,
+    pool=None,
 ):
     """Keep dispatcher mark prices current and run liquidation checks on fresh marks.
 
@@ -564,6 +647,10 @@ async def consume_perp_marks(
                 if now - last_check >= liquidation_interval_s:
                     last_check = now
                     fresh = engine.dispatcher.fresh_mark_prices()
+                    # Resting stops first: a stop the mark reached fires before the liquidation check
+                    if fresh and pool is not None and any(engine.dispatcher.is_stop_order(o)
+                                                          for o in engine.dispatcher.open_orders.values()):
+                        await fire_resting_stops(pool, engine, fresh)
                     if fresh and engine.dispatcher.perp_positions:
                         for liq in await engine.process_liquidations(fresh):
                             logger.critical(
@@ -579,6 +666,25 @@ async def consume_perp_marks(
         finally:
             with contextlib.suppress(Exception):
                 await pubsub.aclose()
+
+
+BRACKET_RELOAD_INTERVAL_S = 300.0
+
+
+async def reload_leverage_brackets(redis, interval_s: float = BRACKET_RELOAD_INTERVAL_S) -> None:
+    """Install the leverage bracket tables the derivatives feed caches daily (leverage plan 1.2), so the
+    dispatcher values margin and liquidation with them and refuses entries on missing or stale tables."""
+    from cryptonite_execution.brackets import load_brackets
+
+    while True:
+        try:
+            loaded = await load_brackets(redis)
+            logger.debug("Loaded %d leverage bracket tables", loaded)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Could not load leverage brackets: %s", e)
+        await asyncio.sleep(interval_s)
 
 
 SYSTEM_ALERTS_CHANNEL = "channel:system_alerts"
@@ -1059,11 +1165,16 @@ async def command_poller(pool, engine, quote_cache=None):
                             # another owner shares): only the target's working orders go with it
                             owner_scoped = bool(payload.get("quantity")) and target is not None
 
-                            def release_instrument_orders():
-                                # Working orders on the instrument would outlive the position being closed
-                                for cid in [c for c, o in engine.dispatcher.open_orders.items()
-                                            if o.get("instrument_id") == canonical_inst
-                                            and (not owner_scoped or o.get("instance_id") == target)]:
+                            def release_instrument_orders(keep_stops: bool = False):
+                                # Working orders on the instrument would outlive the position being closed; a partial
+                                # perp close keeps the resting stop (it shrinks to what is left)
+                                for cid, o in list(engine.dispatcher.open_orders.items()):
+                                    if o.get("instrument_id") != canonical_inst:
+                                        continue
+                                    if owner_scoped and o.get("instance_id") != target:
+                                        continue
+                                    if keep_stops and engine.dispatcher.is_stop_order(o):
+                                        continue
                                     engine.dispatcher.release_reservation(cid)
 
                             pos_qty = engine.dispatcher.get_position_qty(canonical_inst)
@@ -1079,6 +1190,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                 if perp_qty == 0 and payload.get("quantity"):
                                     # a mandate stop closes only the mandate's own quantity (A5.2)
                                     close_qty = min(pos_qty, Decimal(str(payload["quantity"])))
+                                elif perp_qty != 0 and payload.get("quantity"):
+                                    # a partial perp close (the TP1 scale-out): a reduce-only fill of that quantity
+                                    close_qty = min(abs(perp_qty), Decimal(str(payload["quantity"])))
                                 if mandate_id_from_instance(target) is not None:
                                     # A mandate's close never sells what it does not own, whatever the
                                     # (possibly stale) payload says: cap at its own filled holding, and
@@ -1108,15 +1222,16 @@ async def command_poller(pool, engine, quote_cache=None):
                                     )
                                     continue
                                 effects_applied = True
-                                release_instrument_orders()
-                                comm = close_qty * fill_px * (getattr(engine.dispatcher, "taker_fee", None) or DEFAULT_FEE_RATE)
+                                partial_perp = perp_qty != 0 and close_qty < abs(perp_qty)
+                                release_instrument_orders(keep_stops=partial_perp)
+                                comm = close_qty * fill_px * fee_rate_for(engine.dispatcher, canonical_inst)
                                 client_oid = f"CLOSE-{uuid.uuid4().hex[:8].upper()}"
                                 instance_id = target or "MANUAL_TRADE"
 
                                 realized = None
                                 if perp_qty != 0:
                                     _, _, realized = engine.dispatcher.flatten_perp_position(
-                                        canonical_inst, fill_px, comm, client_oid
+                                        canonical_inst, fill_px, comm, client_oid, quantity=close_qty
                                     )
                                 else:
                                     engine.dispatcher.handle_fill(
@@ -1244,7 +1359,39 @@ async def command_poller(pool, engine, quote_cache=None):
                                 mandate = await load_mandate(conn, mandate_ref)
 
                             # Determine quantity
+                            is_perp_order = canonical_inst.split(".")[0].endswith("-PERP")
+                            perp_entry = is_perp_order and not payload.get("reduce_only")
+                            planned_leverage = None
                             qty_val = Decimal(str(payload["quantity"])) if payload.get("quantity") else None
+                            if qty_val and mandate is not None and perp_entry:
+                                # A mandate perp entry with its own quantity is not re-sized, but it is still held to
+                                # its setup grade's ceiling (ungraded: grade C), as a plan-sized entry is
+                                ceiling = grade_ceiling(payload, getattr(engine, "grade_ceilings", None))
+                                if int(payload.get("leverage") or 1) > ceiling:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                        f"LEVERAGE_ABOVE_GRADE_CEILING: {payload.get('leverage')}x > {ceiling}x for grade "
+                                        f"{payload.get('setup_grade') or 'ungraded'}",
+                                    )
+                                    continue
+                            if not qty_val and mandate is not None and perp_entry:
+                                # Leverage plan 2.4: a mandate's perp entry, long or short, is sized by
+                                # plan_leveraged_order to the mandate's room and risk budget (the allocation is the
+                                # margin); the mandate gate and the dispatcher check it with the same valuation
+                                plan = await plan_perp_entry(conn, engine, mandate, canonical_inst, side, payload,
+                                                             quote_cache.quote(canonical_inst))
+                                if not plan.ok:
+                                    logger.info("AI perp entry %s not placed: %s", row["command_id"], plan.reject)
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"], f"{plan.reject}: perp sizing ({plan.binding_ceiling or 'no plan'})",
+                                    )
+                                    continue
+                                qty_val, planned_leverage = plan.quantity, plan.leverage
+                                logger.info("AI perp entry %s sized: %s %s %s at %sx (%s), margin %s, loss at stop %s",
+                                            row["command_id"], side, qty_val, canonical_inst, plan.leverage,
+                                            plan.binding_ceiling, plan.margin_usd, plan.loss_at_stop_usd)
                             if not qty_val:
                                 alloc_pct = Decimal(str(payload.get("allocation_pct", 5.0)))
                                 quote = quote_cache.quote(canonical_inst)
@@ -1259,7 +1406,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                 base = mandate.capital_budget_usd if mandate is not None else engine.dispatcher.cash_balance
                                 notional = base * (alloc_pct / Decimal("100.0"))
                                 qty_val = max(Decimal("0.0001"), notional / mark_px)
-                                if mandate is not None and side == "BUY" and not payload.get("reduce_only"):
+                                if mandate is not None and not is_perp_order and side == "BUY" and not payload.get("reduce_only"):
                                     # An entry adds to what the mandate already holds: size it down to the
                                     # room left under its position limit and budget (an approval is an upper
                                     # bound), so it passes the mandate check instead of being refused as a breach
@@ -1306,9 +1453,17 @@ async def command_poller(pool, engine, quote_cache=None):
                                     price=price_dec,
                                     # Perp attributes; the dispatcher defaults leverage to 1 and CROSS,
                                     # and rejects them on spot instruments
-                                    leverage=payload.get("leverage"),
-                                    margin_mode=payload.get("margin_mode"),
+                                    leverage=planned_leverage or payload.get("leverage"),
+                                    # mandate perps are ISOLATED (ADR 0009 D5): the default is explicit, a CROSS
+                                    # request is refused by the mandate check
+                                    margin_mode=payload.get("margin_mode") or (
+                                        "ISOLATED" if mandate is not None and is_perp_order else None),
                                     reduce_only=payload.get("reduce_only") or False,
+                                    stop_price=Decimal(str(payload["stop_price"])) if payload.get("stop_price") else None,
+                                    # a perp entry carries its stop; an AI one must (leverage plan 2.3)
+                                    stop_loss=Decimal(str(payload["stop_loss"])) if perp_entry and payload.get("stop_loss") else None,
+                                    require_stop=bool(ai_order and perp_entry),
+                                    risk_budget_usd=mandate_risk_budget(mandate) if mandate is not None and perp_entry else None,
                                 )
                             except ValidationError as e:
                                 await conn.execute(
@@ -1399,6 +1554,8 @@ async def command_poller(pool, engine, quote_cache=None):
                                 try:
                                     quote = quote_cache.quote(canonical_inst)
                                     order_info = engine.dispatcher.open_orders.get(client_oid)
+                                    if order_info is not None and order_info.get("is_perp") and intent.stop_loss is not None:
+                                        order_info["attach_stop"] = intent.stop_loss
                                     fill = None
                                     if quote and order_info is not None:
                                         fill = match_order(
@@ -1424,7 +1581,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                             ON CONFLICT (client_order_id) DO NOTHING;
                                             """,
                                             client_oid, instance_id, acc_id, canonical_inst,
-                                            side, order_type, qty_dec, price_dec,
+                                            side, order_type, qty_dec, intent.stop_price or price_dec,
                                         )
                                         logger.info("Order %s accepted and working: %s %s %s @ %s (decision_trace_id=%s)",
                                                     client_oid, order_type, side, qty_dec, price_dec, trace_id)
@@ -1699,7 +1856,8 @@ async def main():
     asyncio.create_task(sync_strategies())
     asyncio.create_task(command_poller(pool, engine, quote_cache))
     asyncio.create_task(consume_market_data(redis, engine, quote_cache, pool))
-    asyncio.create_task(consume_perp_marks(redis, engine))
+    asyncio.create_task(consume_perp_marks(redis, engine, pool=pool))
+    asyncio.create_task(reload_leverage_brackets(redis))
     asyncio.create_task(risk_monitor(engine, pool, redis))
     asyncio.create_task(publish_positions())
     mark_projector = await start_mark_to_market(pool, redis, engine, quote_cache)  # noqa: F841 (B3; kept referenced)

@@ -181,6 +181,28 @@ async function openMissionControl(page: Page) {
 }
 
 test.describe("Mission Control", () => {
+  test("a mandate card lists its perps with leverage and distance to liquidation", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    await mockBackend(page, {
+      mandates: [mandate({
+        allow_perps: true, max_leverage: 7, perp_exposure_usd: "1800",
+        positions: [{
+          instrument_id: "BTCUSDT-PERP.BINANCE", side: "LONG", quantity: "0.03", entry_price: "60000", current_price: "54000",
+          leverage: 7, margin_mode: "ISOLATED", isolated_margin: "257.14", notional_usd: "1620", liquidation_price: "52000",
+          liquidation_distance_pct: "3.7",
+        }],
+      })],
+    });
+    await openMissionControl(page);
+    const perps = page.getByTestId("mandate-perps").first();
+    await expect(perps).toContainText("Perps · exposure $1,800");
+    const row = perps.getByTestId("mandate-perp-position");
+    await expect(row).toContainText("BTCUSDT-PERP LONG 7x ISOLATED · $1,620");
+    await expect(row).toContainText("liq 52,000 · 3.7% away");
+    await expect(row.getByText("liq 52,000 · 3.7% away")).toHaveClass(/text-leverage-liquidation/);
+    expect(reactErrors).toEqual([]);
+  });
+
   test("approve and veto pending approvals with countdowns", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     const calls = await mockBackend(page, {
@@ -386,20 +408,28 @@ test.describe("Mission Control", () => {
     await expect(editor.getByTestId("mandate-totp")).toHaveCount(0);
     await editor.getByLabel("Budget (USD)").fill("12000");
     await expect(editor.getByTestId("mandate-totp")).toContainText("a larger budget");
-    // Perps stay locked below L3 (O1)
-    await expect(editor.getByRole("checkbox", { name: "allow perps" })).toBeDisabled();
+    // Perps are an L1 Copilot feature (ADR 0009 D3): open at L1; turning them on from 1x starts at the 3x default and
+    // needs TOTP
+    await editor.getByLabel("Budget (USD)").fill("10000");
+    const perps = editor.getByRole("checkbox", { name: "allow perps" });
+    await expect(perps).toBeEnabled();
+    await perps.check();
+    await expect(editor.getByLabel("Max leverage")).toHaveValue("3");
+    await expect(editor.getByTestId("mandate-totp")).toContainText("perps");
+    await perps.uncheck();
 
     // A new mandate always needs TOTP and starts at L1
     await editor.getByLabel("Mandate", { exact: true }).selectOption("");
     await editor.getByLabel("Name").fill("Majors");
-    await editor.getByLabel("Instruments (comma separated; spot until L3)").fill("btcusdt, ETHUSDT");
+    await editor.getByLabel("Instruments (comma separated; a perp is SYMBOL-PERP and needs perps allowed)").fill("btcusdt, ETHUSDT");
     await expect(editor.getByRole("button", { name: "Create mandate (starts at L1)" })).toBeDisabled();
     await editor.getByLabel("TOTP code").fill("654321");
     await editor.getByRole("button", { name: "Create mandate (starts at L1)" }).click();
     await expect.poll(() => calls.creates.length).toBe(1);
     expect(calls.creates[0].csrf).toBe("csrf-test");
     expect(calls.creates[0].body).toMatchObject({ name: "Majors", instruments: ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"], totp_code: "654321" });
-    expect(calls.creates[0].body).not.toHaveProperty("allow_perps");
+    // A new mandate may start with perps (it starts at L1, ADR 0009 D3); left unticked it is spot only
+    expect(calls.creates[0].body).toMatchObject({ allow_perps: false, max_leverage: 1, max_risk_per_trade_pct: "1" });
     expect(reactErrors).toEqual([]);
   });
 

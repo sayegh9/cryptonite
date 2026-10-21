@@ -51,7 +51,8 @@ def test_effective_limits_come_from_the_dispatcher():
     res = ops_monitor.effective_limits(engine.dispatcher, now)
     assert res["as_of"] == "2026-10-05T01:00:00Z"
     assert res["paper"] == {"max_daily_loss_pct": "5", "min_order_equity_pct": "1", "max_order_equity_pct": "25",
-                  "taker_fee_bps": "10", "account_backstop_drawdown_pct": "20", "cross_mandate_exposure_pct": "25"}
+                  "taker_fee_bps": "10", "perp_taker_fee_bps": "5", "account_backstop_drawdown_pct": "20",
+                  "cross_mandate_exposure_pct": "25"}
     d = SimpleNamespace(max_daily_loss_pct=Decimal("0.035"), min_order_equity_pct=Decimal("0.01"),
                         max_position_concentration_pct=Decimal("0.2"), taker_fee=Decimal("0.00075"))
     paper = ops_monitor.effective_limits(d, now)["paper"]

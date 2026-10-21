@@ -3,19 +3,17 @@
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 from cryptonite_schemas.identifiers import parse_instrument_id
 from nautilus_trader.model import (
-    ClientOrderId,
     InstrumentId,
-    LimitOrder,
-    MarketOrder,
     QuoteTick,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from cryptonite_execution.derivatives import (
     FundingPaymentEvent,
@@ -26,13 +24,23 @@ from cryptonite_execution.derivatives import (
 )
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch, send_alert
+from cryptonite_execution.leverage import (
+    ACCOUNT_MAX_LEVERAGE,
+    DEFAULT_SLIPPAGE_ALLOWANCE,
+    MANUAL_RISK_PER_TRADE_PCT,
+    check_leveraged_order,
+)
 from cryptonite_execution.margin import (
+    bracket_source,
     calculate_funding_payment,
     calculate_liquidation_price,
     calculate_maintenance_margin,
 )
+from cryptonite_execution.matching import TAKER, PaperFill
 
 logger = logging.getLogger("cryptonite.execution.risk")
+
+STOP_MARKET = "STOP_MARKET"
 
 
 class OrderIntent(BaseModel):
@@ -49,7 +57,15 @@ class OrderIntent(BaseModel):
     # Perpetual-only flags; spot intents must leave them at their defaults
     reduce_only: bool = False
     leverage: int | None = None  # perps: 1..max_perp_leverage, defaults to 1
-    margin_mode: str | None = None  # perps: ISOLATED or CROSS, defaults to CROSS
+    # perps: ISOLATED or CROSS; defaults to the open position's mode, else ISOLATED (ADR 0009 D5)
+    margin_mode: str | None = None
+    stop_price: Decimal | None = None  # perps, order_type STOP_MARKET: a resting reduce-only stop (triggers on mark)
+    # Perp entries (leverage plan 2.3): the protective stop the entry carries (it becomes a resting stop once filled),
+    # whether one is required (AI entries), and the loss at the stop it may risk (a mandate's budget x its
+    # max_risk_per_trade_pct; None: 2% of account equity when a stop is given)
+    stop_loss: Decimal | None = None
+    require_stop: bool = False
+    risk_budget_usd: Decimal | None = None
 
 
 @dataclass
@@ -57,7 +73,7 @@ class PerpPositionState:
     signed_qty: Decimal  # >0 long, <0 short
     entry_price: Decimal
     leverage: int = 1
-    margin_mode: str = MarginMode.CROSS
+    margin_mode: str = MarginMode.ISOLATED
     initial_margin: Decimal = Decimal("0")  # locked from available cash while the position is open
     instance_id: str = ""  # strategy instance that owns it (paper_positions key); "" = unowned (seeded)
     cumulative_funding: Decimal = Decimal("0")  # Σ funding cash flows while open
@@ -91,7 +107,9 @@ class GuardedOrderDispatcher:
         max_daily_loss_pct: Decimal = Decimal("0.05"),
         max_position_concentration_pct: Decimal = Decimal("0.25"),
         min_order_equity_pct: Decimal = Decimal("0.01"),
-        max_perp_leverage: int = 20,
+        max_perp_leverage: int = ACCOUNT_MAX_LEVERAGE,  # ADR 0009 D2: 10x (was 20)
+        perp_taker_fee: Decimal = Decimal("0.0005"),  # Binance USD-M taker; spot keeps ``taker_fee``
+        slippage_allowance_pct: Decimal = DEFAULT_SLIPPAGE_ALLOWANCE,  # leverage plan §2.1, an operator setting
         perp_trading_enabled: bool = True,
         liquidation_clearance_pct: Decimal = Decimal("0.005"),
         max_mark_age_s: float = 10.0,
@@ -121,6 +139,8 @@ class GuardedOrderDispatcher:
         # they lock initial margin and settle realized PnL and fees into cash.
         self.min_order_equity_pct = min_order_equity_pct
         self.max_perp_leverage = max_perp_leverage
+        self.perp_taker_fee = perp_taker_fee
+        self.slippage_allowance_pct = slippage_allowance_pct
         self.perp_trading_enabled = perp_trading_enabled
         self.locked_margin: Decimal = Decimal("0")  # Σ initial margin of open perp positions
         self.liquidation_clearance_pct = liquidation_clearance_pct
@@ -212,17 +232,19 @@ class GuardedOrderDispatcher:
             self.locked_margin += im
 
     def flatten_perp_position(
-        self, instrument_id: str, fill_price: Decimal, commission: Decimal, client_order_id: str
+        self, instrument_id: str, fill_price: Decimal, commission: Decimal, client_order_id: str,
+        quantity: Decimal | None = None,
     ) -> tuple[str, Decimal, Decimal] | None:
-        """Close a perp position with an opposing reduce-only order filled at ``fill_price``.
+        """Close a perp position, or ``quantity`` of it (a partial close, e.g. the TP1 scale-out), with an
+        opposing reduce-only order filled at ``fill_price``. The quantity is capped at the position.
 
         Returns (side, quantity, gross realized PnL) of the closing order, or None when flat.
         """
         signed_qty = self.get_perp_position_qty(instrument_id)
-        if signed_qty == 0:
+        if signed_qty == 0 or (quantity is not None and quantity <= 0):
             return None
         side = "BUY" if signed_qty < 0 else "SELL"
-        qty = abs(signed_qty)
+        qty = abs(signed_qty) if quantity is None else min(abs(signed_qty), quantity)
         self.open_orders[client_order_id] = {
             "intent": None,
             "reserved_notional": Decimal("0"),
@@ -392,7 +414,7 @@ class GuardedOrderDispatcher:
             self.release_reservation(cid)
 
         notional = qty * fill_price
-        trading_fee = notional * self.taker_fee
+        trading_fee = notional * self.perp_taker_fee
         clearance_fee = notional * self.liquidation_clearance_pct
         client_order_id = f"LIQ-{uuid.uuid4().hex[:12].upper()}"
         cash_before = self.cash_balance
@@ -440,11 +462,89 @@ class GuardedOrderDispatcher:
         return pos.signed_qty if pos else Decimal("0")
 
     def _resting_reduce_only_qty(self, instrument_id: str) -> Decimal:
+        """Reduce-only quantity already working on the instrument. Resting stops are contingent (they fire only if
+        the mark reaches them, capped at what is left then), so they do not use up the closable quantity."""
         return sum(
             (o["quantity"] for o in self.open_orders.values()
-             if o["instrument_id"] == instrument_id and o.get("reduce_only")),
+             if o["instrument_id"] == instrument_id and o.get("reduce_only") and not self.is_stop_order(o)),
             Decimal("0"),
         )
+
+    @staticmethod
+    def is_stop_order(order_info: dict[str, Any]) -> bool:
+        intent = order_info.get("intent")
+        return intent is not None and str(intent.order_type).upper() == STOP_MARKET
+
+    def resting_stops(self, instrument_id: str, instance_id: str | None = None) -> dict[str, dict[str, Any]]:
+        return {
+            cid: o for cid, o in self.open_orders.items()
+            if o["instrument_id"] == instrument_id and self.is_stop_order(o)
+            and (instance_id is None or o.get("instance_id") == instance_id)
+        }
+
+    def place_resting_stop(self, client_order_id: str, instrument_id: str, stop_price: Decimal,
+                           instance_id: str | None = None) -> tuple[bool, str]:
+        """Protect the whole open perp position with one resting reduce-only STOP_MARKET at ``stop_price``.
+
+        Any resting stop the position's owner already has on the instrument is replaced (a position that grew
+        is covered in full). Goes through ``dispatch`` like every order, so all reduce-only checks apply.
+        """
+        pos = self.perp_positions.get(instrument_id)
+        if pos is None or pos.signed_qty == 0:
+            return False, "REDUCE_ONLY_NO_POSITION"
+        owner = instance_id or pos.instance_id
+        replaced = self.resting_stops(instrument_id, owner)
+        for cid in replaced:
+            self.release_reservation(cid)
+        intent = OrderIntent(
+            client_order_id=client_order_id, instance_id=owner, instrument_id=instrument_id,
+            side="SELL" if pos.signed_qty > 0 else "BUY", order_type=STOP_MARKET,
+            quantity=abs(pos.signed_qty), reduce_only=True, stop_price=stop_price,
+        )
+        ok, reason = self.dispatch(intent, lambda o: None, nautilus_order=None)
+        if not ok:  # put the replaced stops back rather than leave the position unprotected
+            for cid, info in replaced.items():
+                self.open_orders[cid] = info
+        return ok, reason
+
+    def triggered_stops(self, mark_prices: dict[str, Decimal]) -> tuple[list[PaperFill], list[str]]:
+        """Resting stops the mark reached: (fills, client ids cancelled because their position is gone).
+
+        Trigger on mark: a SELL stop (protecting a long) at mark <= stop, a BUY stop at mark >= stop. The fill is
+        at the worse of the stop and the mark (a gap through the stop fills at the gap price), for what is left of
+        the position. An ISOLATED position whose mark already crossed its liquidation price is left to
+        ``check_liquidations``, which caps its loss at the margin; a CROSS one is stopped. Run it before the
+        liquidation check on every mark pass, so a stop that the mark reached first always fires first.
+        """
+        fills: list[PaperFill] = []
+        cancelled: list[str] = []
+        for cid, info in list(self.open_orders.items()):
+            if not self.is_stop_order(info):
+                continue
+            inst = info["instrument_id"]
+            mark = mark_prices.get(inst)
+            stop = info["intent"].stop_price
+            if mark is None or stop is None:
+                continue
+            side = info["side"]
+            if not (mark <= stop if side == "SELL" else mark >= stop):
+                continue
+            qty = self.fillable_quantity(info)
+            pos = self.perp_positions.get(inst)
+            if qty <= 0 or pos is None:
+                self.release_reservation(cid)
+                cancelled.append(cid)
+                continue
+            # An ISOLATED position whose mark already crossed its liquidation price is left to the liquidation
+            # engine, which caps the loss at the margin. A CROSS one is stopped at the mark: a liquidation would lose
+            # the same move plus the clearance fee, from the whole cross wallet
+            _, liq = self._perp_risk_levels(inst)
+            if (liq is not None and pos.margin_mode == MarginMode.ISOLATED
+                    and (mark <= liq if pos.signed_qty > 0 else mark >= liq)):
+                continue
+            price = min(stop, mark) if side == "SELL" else max(stop, mark)
+            fills.append(PaperFill(cid, inst, side, qty, price, TAKER))
+        return fills, cancelled
 
     def _portfolio_equity(self) -> Decimal:
         """Cash + spot longs at bid + perpetual unrealized PnL at mark."""
@@ -466,6 +566,8 @@ class GuardedOrderDispatcher:
     def _derivative_flag_reject(self, intent: OrderIntent, is_perp: bool) -> str | None:
         """Validate (and default) leverage / margin mode / reduce-only against the instrument type."""
         if not is_perp:
+            if intent.stop_price is not None or intent.order_type.upper() == STOP_MARKET:
+                return "SPOT_DERIVATIVE_FLAG_NOT_ALLOWED: resting stops are perpetual-only"
             if intent.leverage not in (None, 1):
                 return f"SPOT_LEVERAGE_NOT_ALLOWED: leverage {intent.leverage} on spot instrument"
             if intent.margin_mode is not None or intent.reduce_only:
@@ -475,9 +577,13 @@ class GuardedOrderDispatcher:
         leverage = 1 if intent.leverage is None else intent.leverage
         if not 1 <= leverage <= self.max_perp_leverage:
             return f"LEVERAGE_OUT_OF_RANGE: {leverage} not in 1..{self.max_perp_leverage}"
-        mode = (intent.margin_mode or MarginMode.CROSS).upper()
+        held = self.perp_positions.get(intent.instrument_id)
+        mode = (intent.margin_mode or (held.margin_mode if held else MarginMode.ISOLATED)).upper()
         if mode not in MarginMode.__members__:
             return f"INVALID_MARGIN_MODE: {intent.margin_mode}"
+        # As on Binance, the margin mode cannot change while a position is open
+        if held is not None and held.signed_qty != 0 and not intent.reduce_only and mode != held.margin_mode:
+            return f"MARGIN_MODE_LOCKED: {intent.instrument_id} is held {held.margin_mode}"
         intent.leverage, intent.margin_mode = leverage, mode
         return None
 
@@ -511,13 +617,28 @@ class GuardedOrderDispatcher:
         pos_qty = self.get_perp_position_qty(intent.instrument_id)
         order_is_long = side == "BUY"
 
+        # A resting stop is an exit only: reduce-only, on the protective side of the mark (Binance refuses a stop
+        # that would trigger at once, -2021)
+        if intent.order_type.upper() == STOP_MARKET:
+            if not intent.reduce_only:
+                return False, "STOP_MUST_BE_REDUCE_ONLY", Decimal("0")
+            if intent.stop_price is None or intent.stop_price <= 0:
+                return False, "STOP_PRICE_REQUIRED", Decimal("0")
+            if (side == "SELL" and intent.stop_price >= mark) or (side == "BUY" and intent.stop_price <= mark):
+                return False, f"STOP_WOULD_TRIGGER_IMMEDIATELY: stop {intent.stop_price} vs mark {mark}", Decimal("0")
+        elif intent.stop_price is not None:
+            return False, "STOP_PRICE_ONLY_ON_STOP_MARKET", Decimal("0")
+
         # Reduce-only: may only shrink an existing position; no floor, concentration, or margin checks
         if intent.reduce_only:
             if pos_qty == 0:
                 return False, "REDUCE_ONLY_NO_POSITION", Decimal("0")
             if (pos_qty > 0) == order_is_long:
                 return False, "REDUCE_ONLY_INVALID_DIRECTION", Decimal("0")
-            closable = abs(pos_qty) - self._resting_reduce_only_qty(intent.instrument_id)
+            # a resting stop covers the whole position whatever else works on it: it is capped when it fires
+            closable = abs(pos_qty) - (
+                Decimal("0") if intent.order_type.upper() == STOP_MARKET else self._resting_reduce_only_qty(intent.instrument_id)
+            )
             if intent.quantity > closable:
                 return (
                     False,
@@ -526,6 +647,10 @@ class GuardedOrderDispatcher:
                     Decimal("0"),
                 )
             return True, "APPROVED", Decimal("0")
+
+        # No entry without a bracket table (margin and liquidation cannot be valued), nor on a stale live one
+        if (bracket_reject := bracket_source(intent.instrument_id, self._clock_ns()).entry_reject) is not None:
+            return False, f"{bracket_reject}: {intent.instrument_id}", Decimal("0")
 
         equity = self._portfolio_equity()
         if equity <= 0:
@@ -550,13 +675,28 @@ class GuardedOrderDispatcher:
                 Decimal("0"),
             )
 
+        # Leverage plan 2.3: an AI entry carries its stop; a stop must sit inside half the liquidation distance and
+        # its loss within the risk budget; the leverage within the exchange bracket for the notional
+        if intent.require_stop and intent.stop_loss is None:
+            return False, "STOP_REQUIRED: a leveraged AI entry needs a stop", Decimal("0")
+        risk_budget = intent.risk_budget_usd
+        if risk_budget is None and intent.stop_loss is not None:
+            risk_budget = equity * MANUAL_RISK_PER_TRADE_PCT / Decimal("100")
+        leverage_reject = check_leveraged_order(
+            intent.instrument_id, side, intent.quantity, price_estimate, intent.stop_loss, intent.leverage,
+            risk_budget_usd=risk_budget, slippage_pct=self.slippage_allowance_pct, fee_pct=2 * self.perp_taker_fee,
+        )
+        if leverage_reject is not None:
+            stop = f" (stop {intent.stop_loss})" if intent.stop_loss is not None else ""
+            return False, f"{leverage_reject}: {intent.leverage}x on {order_notional:.2f}{stop}", Decimal("0")
+
         # Initial margin only on the exposure this order opens; closing part of an opposite position frees margin
         if pos_qty == 0 or (pos_qty > 0) == order_is_long:
             opening_qty = intent.quantity
         else:
             opening_qty = max(Decimal("0"), intent.quantity - abs(pos_qty))
         required_margin = (
-            opening_qty * price_estimate / Decimal(intent.leverage) + order_notional * self.taker_fee
+            opening_qty * price_estimate / Decimal(intent.leverage) + order_notional * self.perp_taker_fee
         )
         if required_margin > self.available_cash:
             return (
@@ -806,7 +946,7 @@ class GuardedOrderDispatcher:
         pos = self.perp_positions.get(instrument_id)
         leverage = (intent.leverage if intent and intent.leverage else None) or (pos.leverage if pos else 1)
         margin_mode = (intent.margin_mode if intent and intent.margin_mode else None) or (
-            pos.margin_mode if pos else MarginMode.CROSS
+            pos.margin_mode if pos else MarginMode.ISOLATED
         )
         fill_sign = Decimal("1") if side == "BUY" else Decimal("-1")
         realized = Decimal("0")
@@ -853,7 +993,19 @@ class GuardedOrderDispatcher:
 
         self.cash_balance += realized - commission
         self.daily_realized_pnl += realized - commission
+        self._fit_resting_stops(instrument_id)
         return realized if closed_any else None
+
+    def _fit_resting_stops(self, instrument_id: str) -> None:
+        """Keep resting stops matched to the position after a fill: shrink them to what is left, and drop them
+        when the position is gone or flipped (a stop protecting the old side would add exposure)."""
+        pos = self.perp_positions.get(instrument_id)
+        for cid, info in list(self.resting_stops(instrument_id).items()):
+            protects_long = info["side"] == "SELL"
+            if pos is None or (pos.signed_qty > 0) != protects_long:
+                self.release_reservation(cid)
+            elif info["quantity"] > abs(pos.signed_qty):
+                info["quantity"] = abs(pos.signed_qty)
 
     def portfolio_equity(self) -> Decimal:
         """Cash + spot longs at bid + perpetual unrealized PnL at mark."""

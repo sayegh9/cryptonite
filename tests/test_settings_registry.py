@@ -513,7 +513,9 @@ async def test_funding_spike_takes_four_decimals_and_no_more():
 def test_runtime_bounds_are_the_registry_bounds_and_are_whole_numbers():
     for key, bound in RUNTIME_BOUNDS.items():
         entry = by_key(key)
-        assert entry.store == "system_settings" and entry.apply is Apply.HOT and entry.decimals == 0, key
+        # the slippage allowance (ADR 0009) is the one runtime value in % with two decimals
+        whole = 2 if key == "leverage.slippage_allowance_pct" else 0
+        assert entry.store == "system_settings" and entry.apply is Apply.HOT and entry.decimals == whole, key
         assert (float(entry.minimum), float(entry.maximum)) == (bound.low, bound.high), key
 
 

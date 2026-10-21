@@ -17,6 +17,7 @@ from decimal import ROUND_DOWN, Decimal
 
 from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
+    PERPS_AUTONOMY_LEVEL,
     ActionClass,
     AutonomyLevel,
     Mandate,
@@ -43,6 +44,7 @@ class MandateOrder:
     reduce_only: bool = False
     leverage: int | None = None
     conviction_level: str | None = None
+    margin_mode: str | None = None  # perps: None means the ISOLATED default
 
     @property
     def is_perp(self) -> bool:
@@ -131,10 +133,12 @@ def check_mandate(
     if not mandate.allows_instrument(order.instrument_id):
         return MandateReject.INSTRUMENT_NOT_ALLOWED
     if order.is_perp:
-        if not mandate.allow_perps or mandate.autonomy_level < AutonomyLevel.L3:
+        if not mandate.allow_perps or mandate.autonomy_level != PERPS_AUTONOMY_LEVEL:
             return MandateReject.PERPS_NOT_ALLOWED
         if (order.leverage or 1) > min(mandate.max_leverage, MAX_PERP_LEVERAGE_CAP):
             return MandateReject.LEVERAGE_EXCEEDED
+        if (order.margin_mode or "ISOLATED").upper() != "ISOLATED":
+            return MandateReject.MARGIN_MODE_NOT_ALLOWED
     if exposure.other_owner:
         return MandateReject.INSTRUMENT_CONFLICT
     notional = order_notional(order)
