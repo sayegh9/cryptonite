@@ -187,6 +187,9 @@ REGISTRY: tuple[Setting, ...] = (
             Decimal("2.00"), Apply.HOT, Tier.T_L, "0009", SYSTEM_STORE,
             "priced into the risk at the stop and the liquidation buffer; a higher allowance is the tighter one",
             decimals=2, tighter=Tighter.HIGHER),
+    _runtime_setting("debate.perp_mandate_daily_cap", "Scanner debates per perp mandate per day", Tier.T_L, "0010",
+                     "read by the debate gate on every scanner candidate that would route to a perp mandate (1h bars "
+                     "only); 0 stops them; lowering is free, raising needs TOTP"),
     Setting("guard.mandate_max_leverage", "Mandate leverage ceiling (x)", 10, None, None, Apply.DEPLOY, Tier.FIXED,
             "0009", "migration 048: chk_ai_mandates_leverage", "each mandate's own maximum (default 3x) sits under it"),
     Setting("guard.account_max_leverage", "Account leverage maximum (x)", 10, None, None, Apply.DEPLOY, Tier.FIXED,

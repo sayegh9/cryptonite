@@ -36,7 +36,11 @@ RUNTIME_BOUNDS: dict[str, Bound] = {
     "leverage.grade_ceiling_b": Bound(5, 1, 10),
     "leverage.grade_ceiling_c": Bound(2, 1, 10),
     "leverage.slippage_allowance_pct": Bound(0.3, 0.05, 2.0),
+    # Auto-trade Phase B (ADR 0010 amendment): scanner debates routed to one perp mandate per UTC day (lower is
+    # tighter; 0 stops them; 24 is one per closed 1h bar)
+    "debate.perp_mandate_daily_cap": Bound(6, 0, 24),
 }
+PERP_DEBATE_CAP_KEY = "debate.perp_mandate_daily_cap"
 GRADE_CEILING_KEYS = {"A": "leverage.grade_ceiling_a", "B": "leverage.grade_ceiling_b", "C": "leverage.grade_ceiling_c"}
 SLIPPAGE_KEY = "leverage.slippage_allowance_pct"
 LEVERAGE_KEYS = (*GRADE_CEILING_KEYS.values(), SLIPPAGE_KEY)
