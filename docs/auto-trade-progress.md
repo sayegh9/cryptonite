@@ -125,7 +125,7 @@ checks.
 
 Branch `feat/auto-trade-phase-b`, cut from `main` at `aa5cf6d`. Decisions: the Phase B amendment of
 [ADR 0010](adr/0010-mandate-sessions-and-entry-filters.md#amendment-auto-trade-phase-b-debates-propose-perp-trades-2026-10-21)
-(P-1 to P-9). No migration. Built in a cloud session (same environment as above: local Postgres 16 + pgvector on
+(P-1 to P-10). No migration. Built in a cloud session (same environment as above: local Postgres 16 + pgvector on
 :15432, Redis 7 on :16379, no Docker, no Binance, no paid models). **Not deployed.**
 
 | # | Item | Status | Commit | Tests |
@@ -136,6 +136,12 @@ Branch `feat/auto-trade-phase-b`, cut from `main` at `aa5cf6d`. Decisions: the P
 | B3 | Gate: perps-mandate candidates only from closed 1h bars; per-mandate daily cap `debate.perp_mandate_daily_cap` (runtime setting, default 6, 0..24, T/L) shown in Settings → Risk & Guardrails | done | `79247e9` | `tests/test_debate_perp_gate.py` (8) |
 | B4 | Approval rendering: web `PerpApprovalDetails` in the approval queue, Telegram `render.perp_lines`; TOTP to approve a perp entry in the web; the Inbox points perp approvals to the queue (`PERP_APPROVAL_IN_QUEUE`) | done | `79272af` | `tests/test_notifier_perp_approval_render.py` (6), `apps/web/e2e/approval-perp-debate.spec.ts` (5), web/Inbox API tests in `test_debate_perp_routing.py` |
 | B5 | Tests | done | with each item | see the final run below |
+| R1 | Review fix: `debate.perp_routing` (SPOT_FIRST / PERP_FIRST), a registry setting stored as 0/1 with `choices` labels, TOTP only to set PERP_FIRST; `resolve_route` honours it (explicit mandate wins, 30 s cache, unreadable → SPOT_FIRST); Settings → Risk & Guardrails control | done | `51d4c17` | `test_debate_perp_routing.py` (routing matrix 2 modes × 0/1/2 spot × 0/1/2 perps, explicit mandate, cache and unreadable), `test_settings_registry.py` (TOTP for PERP_FIRST only), `test_debate_perp_gate.py`, `apps/web/e2e/settings-perp-routing.spec.ts` |
+| R2 | Review fix (MEDIUM): a perp reduction is a `CLOSE_POSITION` with a quantity (`mandate_routing._route_perp` / `route_entry`); the orchestrator caps it to the live position and checks ownership | done | `0c4d0f4` | `test_debate_perp_routing.py`: shrunk long, shrunk short, closed position (no-op), other owner (`CLOSE_NOT_OWNED`), veto semantics |
+| R3 | Review fix: `route_entry` enqueues directly only when `timeout_policy_for` is None; a conflict on `ai_approvals (source, source_ref)` returns the existing status and queues nothing (WARNING) | done | `0c4d0f4` | `test_debate_perp_routing.py`: routed twice (pending, vetoed), L3 still queues |
+| R4 | Review fix: the routed payload carries the dry run's `leverage`; `plan_leveraged_order` clamps a requested leverage (no change needed there) | done | `0c4d0f4` | `test_debate_perp_routing.py`: price toward the stop → executed leverage = approved, uncapped would be higher; price away → clamped, not refused |
+| R5 | Review fix: `instrument_conflict` on the perp route → `NO_TRADE` `INSTRUMENT_CONFLICT` | done | `0c4d0f4` | `test_debate_perp_routing.py` |
+| R6 | Review fix: Telegram decision path requires TOTP for a debate perp entry (rendered card, bot asks for the code, signed endpoint refuses no/wrong code) | done | `8f4fcc9` | `test_notifier.py` |
 
 Notes and choices made (the safer or simpler option where the plan was open):
 
