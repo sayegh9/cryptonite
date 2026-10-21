@@ -57,7 +57,7 @@ export const SystemAuditSection: React.FC<SystemAuditSectionProps> = ({
   };
 
   return (
-    <div className="space-y-8 max-w-5xl">
+    <div className="space-y-8">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
         <div>
@@ -133,7 +133,7 @@ export const SystemAuditSection: React.FC<SystemAuditSectionProps> = ({
           Container Environment & Execution Keys
         </h3>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 @2xl:grid-cols-2 @5xl:grid-cols-4 gap-4">
           {/* Card 1: Gemini API Key */}
           <div className="rounded-xl border border-white/10 bg-zinc-950/60 p-4 space-y-2.5 flex flex-col justify-between">
             <div className="flex items-center justify-between">

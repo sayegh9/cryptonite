@@ -2,7 +2,8 @@
 
 import React from "react";
 import { ShieldCheck, Lock, CheckCircle2, AlertTriangle, Fingerprint } from "lucide-react";
-import { SettingCard, type RegistryEntry } from "../controls/SettingCard";
+import type { RegistryEntry } from "../controls/SettingCard";
+import { SettingList } from "../controls/SettingList";
 import type { EnvHealth } from "../types";
 
 export interface SecurityPostureSectionProps {
@@ -30,7 +31,7 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
     .filter((e): e is RegistryEntry => Boolean(e));
 
   return (
-    <div className="space-y-8 max-w-5xl">
+    <div className="space-y-8">
       {/* Header */}
       <div className="border-b border-white/10 pb-4">
         <h2 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
@@ -54,17 +55,12 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {authEntries.map((entry) => (
-            <SettingCard
-              key={entry.key}
-              entry={entry}
-              allEntries={entries}
-              onSaved={() => void onReload()}
-              highlight={highlightedKey === entry.key}
-            />
-          ))}
-        </div>
+        <SettingList
+          entries={authEntries}
+          allEntries={entries}
+          onSaved={() => void onReload()}
+          highlightedKey={highlightedKey}
+        />
       </section>
 
       {/* Security Posture & 2FA Flags */}
@@ -79,7 +75,7 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 @3xl:grid-cols-3 gap-4">
           {/* Card 1: Dev TOTP Login */}
           <div className="rounded-xl border border-white/10 bg-zinc-950/60 p-4 space-y-3 flex flex-col justify-between">
             <div>

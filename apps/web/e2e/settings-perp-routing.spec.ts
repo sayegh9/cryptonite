@@ -55,6 +55,7 @@ test.describe("Settings: debate.perp_routing", () => {
     await expect(card.getByText("SPOT_FIRST").first()).toBeVisible(); // the default, shown by label
     await expect(card.getByPlaceholder("6-digit code")).toHaveCount(0);
 
+    await card.getByRole("button", { name: /^Edit / }).click();
     await card.getByRole("radio", { name: "PERP_FIRST" }).click();
     await expect(card.getByRole("radio", { name: "PERP_FIRST" })).toHaveAttribute("aria-checked", "true");
     await expect(card.getByPlaceholder("6-digit code")).toBeVisible();
@@ -81,6 +82,7 @@ test.describe("Settings: debate.perp_routing", () => {
   test("going back to SPOT_FIRST is free", async ({ page }) => {
     const card = await openRiskSection(page, "1");
     await expect(card.getByText("PERP_FIRST").first()).toBeVisible();
+    await card.getByRole("button", { name: /^Edit / }).click();
     await card.getByRole("radio", { name: "SPOT_FIRST" }).click();
     await expect(card.getByPlaceholder("6-digit code")).toHaveCount(0);
     await expect(card.getByText(/Your TOTP code/i)).toHaveCount(0);

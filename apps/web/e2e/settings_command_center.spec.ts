@@ -385,6 +385,7 @@ test.describe("Settings Command Center & Header", () => {
     // Enter an invalid exit.trail_pct > exit.trail_activate_pct
     // trail_activate_pct is 3, so setting trail_pct to 5 triggers the violation
     const trailCard = page.getByTestId("setting-card-exit.trail_pct");
+    await trailCard.getByRole("button", { name: /^Edit / }).click();
     const trailInput = trailCard.locator('input[type="number"]');
     await trailInput.fill("5");
 
@@ -398,6 +399,7 @@ test.describe("Settings Command Center & Header", () => {
 
     // Find auth.lockout_s card
     const lockoutCard = page.getByTestId("setting-card-auth.lockout_s");
+    await lockoutCard.getByRole("button", { name: /^Edit / }).click();
     const lockoutInput = lockoutCard.locator('input[type="number"]');
 
     // Initially 300: no TOTP input

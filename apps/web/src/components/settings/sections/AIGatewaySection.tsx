@@ -12,7 +12,8 @@ import { toast } from "sonner";
 import { fetchApi } from "@/lib/api";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { Button } from "@/components/ui/button";
-import { SettingCard, type RegistryEntry } from "../controls/SettingCard";
+import type { RegistryEntry } from "../controls/SettingCard";
+import { SettingList } from "../controls/SettingList";
 import type { RouteView, AgentConfig } from "../types";
 
 const MIN_REASON_CHARS = 5;
@@ -88,7 +89,7 @@ const RouteEditor: React.FC<RouteEditorProps> = ({ route, onSaved, onClose }) =>
         <span className="text-[10px] text-zinc-400">TOTP Required (ADR 0007 §2)</span>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 @2xl:grid-cols-2 gap-3">
         <label className="text-[11px] text-zinc-400">
           Primary Model ({hint(route.default.primary_model)})
           <input
@@ -341,7 +342,7 @@ export const AIGatewaySection: React.FC<AIGatewaySectionProps> = ({
   });
 
   return (
-    <div className="space-y-8 max-w-5xl">
+    <div className="space-y-8">
       {/* Area 1: Daily Spend & Shadow Mode */}
       <section className="space-y-4">
         <div className="border-b border-white/10 pb-3">
@@ -354,13 +355,13 @@ export const AIGatewaySection: React.FC<AIGatewaySectionProps> = ({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @4xl:items-start">
           {dailyBudgetEntry && (
-            <SettingCard
-              entry={dailyBudgetEntry}
+            <SettingList
+              entries={[dailyBudgetEntry]}
               allEntries={entries}
               onSaved={() => void onReloadRegistry()}
-              highlight={highlightedKey === "LLM_DAILY_BUDGET_USD"}
+              highlightedKey={highlightedKey}
             />
           )}
 
@@ -481,7 +482,7 @@ export const AIGatewaySection: React.FC<AIGatewaySectionProps> = ({
             ))}
           </div>
 
-          <div className="w-full sm:w-64">
+          <div className="w-full @2xl:w-64">
             <input
               type="text"
               aria-label="Filter routes by role or model"
@@ -647,12 +648,12 @@ export const AIGatewaySection: React.FC<AIGatewaySectionProps> = ({
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 rounded-xl border border-white/10 bg-zinc-950/60 p-5">
+          <div className="grid grid-cols-1 @3xl:grid-cols-4 gap-6 rounded-xl border border-white/10 bg-zinc-950/60 p-5">
             {/* Agent Selector Sidebar */}
             <div
               role="tablist"
               aria-label="Specialized agents"
-              className="md:col-span-1 space-y-1.5 border-b md:border-b-0 md:border-r border-white/10 pb-4 md:pb-0 md:pr-4"
+              className="@3xl:col-span-1 space-y-1.5 border-b @3xl:border-b-0 @3xl:border-r border-white/10 pb-4 @3xl:pb-0 @3xl:pr-4"
             >
               <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 block mb-2" aria-hidden="true">
                 Specialized Agents
@@ -679,7 +680,7 @@ export const AIGatewaySection: React.FC<AIGatewaySectionProps> = ({
             </div>
 
             {/* Agent Editor Form */}
-            <div className="md:col-span-3 space-y-5">
+            <div className="@3xl:col-span-3 space-y-5">
               <div>
                 <h4 className="text-base font-bold capitalize text-white flex items-center gap-2">
                   {selectedAgent} Agent
@@ -689,7 +690,7 @@ export const AIGatewaySection: React.FC<AIGatewaySectionProps> = ({
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 @2xl:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
                     Model

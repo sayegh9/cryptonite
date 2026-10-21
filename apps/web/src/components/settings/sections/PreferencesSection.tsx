@@ -50,7 +50,7 @@ export const PreferencesSection: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="space-y-6">
       {/* Header Banner */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
         <div>
@@ -74,7 +74,7 @@ export const PreferencesSection: React.FC = () => {
       </div>
 
       {/* Grid of Preference Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-6">
         {/* Card 1: Theme & Visual Appearance */}
         <div className="rounded-xl border border-white/10 bg-zinc-950/60 p-5 space-y-4">
           <div className="flex items-center justify-between">
@@ -256,7 +256,7 @@ export const PreferencesSection: React.FC = () => {
         </div>
 
         {/* Card 3: Audio Alerts & Synthesizer Chimes */}
-        <div className="rounded-xl border border-white/10 bg-zinc-950/60 p-5 space-y-4 md:col-span-2">
+        <div className="rounded-xl border border-white/10 bg-zinc-950/60 p-5 space-y-4 @3xl:col-span-2">
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-3">
             <div>
               <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
@@ -305,7 +305,7 @@ export const PreferencesSection: React.FC = () => {
           </div>
 
           {/* Individual Event Chimes */}
-          <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 ${!prefs.audioAlerts ? "opacity-40 pointer-events-none" : ""}`}>
+          <div className={`grid grid-cols-1 @2xl:grid-cols-2 @5xl:grid-cols-4 gap-3 pt-2 ${!prefs.audioAlerts ? "opacity-40 pointer-events-none" : ""}`}>
             {[
               {
                 id: "tradeFill" as const,
@@ -370,7 +370,7 @@ export const PreferencesSection: React.FC = () => {
         </div>
 
         {/* Card 4: Workstation Defaults & Timezone */}
-        <div className="rounded-xl border border-white/10 bg-zinc-950/60 p-5 space-y-4 md:col-span-2">
+        <div className="rounded-xl border border-white/10 bg-zinc-950/60 p-5 space-y-4 @3xl:col-span-2">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
@@ -383,12 +383,12 @@ export const PreferencesSection: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-4">
             <div>
               <label id="landing-workspace-label" className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider block mb-2">
                 Default Landing Workspace
               </label>
-              <div role="radiogroup" aria-labelledby="landing-workspace-label" className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <div role="radiogroup" aria-labelledby="landing-workspace-label" className="grid grid-cols-2 @2xl:grid-cols-3 gap-2">
                 {WORKSPACE_OPTIONS.map(({ id, label }) => {
                   const active = prefs.defaultWorkspace === id;
                   return (

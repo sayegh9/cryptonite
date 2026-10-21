@@ -11,7 +11,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { SettingCard, type RegistryEntry } from "../controls/SettingCard";
+import type { RegistryEntry } from "../controls/SettingCard";
+import { SettingList } from "../controls/SettingList";
 import type { RouteView, AgentConfig, SettingsSection } from "../types";
 
 export interface SettingsGlobalSearchProps {
@@ -85,7 +86,7 @@ export const SettingsGlobalSearch: React.FC<SettingsGlobalSearchProps> = ({
     matchingPrefs.length;
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6">
       {/* Search Header Banner */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
         <div>
@@ -164,17 +165,12 @@ export const SettingsGlobalSearch: React.FC<SettingsGlobalSearchProps> = ({
             <ShieldAlert className="w-3.5 h-3.5" aria-hidden="true" />
             Matching Registry Settings ({matchingEntries.length})
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {matchingEntries.map((entry) => (
-              <SettingCard
-                key={entry.key}
-                entry={entry}
-                allEntries={entries}
-                onSaved={() => void onReloadRegistry()}
-                highlight={true}
-              />
-            ))}
-          </div>
+          <SettingList
+            entries={matchingEntries}
+            allEntries={entries}
+            onSaved={() => void onReloadRegistry()}
+            highlightAll
+          />
         </section>
       )}
 
