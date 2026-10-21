@@ -4,7 +4,9 @@ import React from "react";
 import { ShieldCheck, ShieldAlert, Lock, ExternalLink, Scale, CheckCircle2, AlertTriangle } from "lucide-react";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { Button } from "@/components/ui/button";
-import { SettingCard, type RegistryEntry } from "../controls/SettingCard";
+import type { RegistryEntry } from "../controls/SettingCard";
+import { SettingList } from "../controls/SettingList";
+import { FixedGuardrails } from "../controls/FixedGuardrails";
 
 export interface RiskGuardrailsSectionProps {
   entries: RegistryEntry[];
@@ -66,7 +68,7 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
     .filter((e): e is RegistryEntry => Boolean(e));
 
   return (
-    <div className="space-y-8 max-w-5xl">
+    <div className="space-y-8">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
         <div>
@@ -100,17 +102,12 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {dynamicEntries.map((entry) => (
-            <SettingCard
-              key={entry.key}
-              entry={entry}
-              allEntries={entries}
-              onSaved={() => void onReload()}
-              highlight={highlightedKey === entry.key}
-            />
-          ))}
-        </div>
+        <SettingList
+          entries={dynamicEntries}
+          allEntries={entries}
+          onSaved={() => void onReload()}
+          highlightedKey={highlightedKey}
+        />
       </section>
 
       {/* Part 2: Fixed Invariant Guardrails */}
@@ -125,17 +122,7 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {fixedEntries.map((entry) => (
-            <SettingCard
-              key={entry.key}
-              entry={entry}
-              allEntries={entries}
-              onSaved={() => void onReload()}
-              highlight={highlightedKey === entry.key}
-            />
-          ))}
-        </div>
+        <FixedGuardrails entries={fixedEntries} highlightedKey={highlightedKey} label="Fixed invariant guardrails" />
       </section>
 
       {/* Part 3: Leverage (ADR 0009) */}
@@ -151,28 +138,13 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
             each with its source.
           </p>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          {leverageEntries.map((entry) => (
-            <SettingCard
-              key={entry.key}
-              entry={entry}
-              allEntries={entries}
-              onSaved={() => void onReload()}
-              highlight={highlightedKey === entry.key}
-            />
-          ))}
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {leverageGuardEntries.map((entry) => (
-            <SettingCard
-              key={entry.key}
-              entry={entry}
-              allEntries={entries}
-              onSaved={() => void onReload()}
-              highlight={highlightedKey === entry.key}
-            />
-          ))}
-        </div>
+        <SettingList
+          entries={leverageEntries}
+          allEntries={entries}
+          onSaved={() => void onReload()}
+          highlightedKey={highlightedKey}
+        />
+        <FixedGuardrails entries={leverageGuardEntries} highlightedKey={highlightedKey} label="Fixed leverage guardrails" />
       </section>
 
       {/* Part 4: Mandate & Execution Safety Invariants Reference Card */}
@@ -184,7 +156,7 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
           </h3>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+        <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-4 pt-1">
           <div className="rounded-lg border border-white/5 bg-zinc-900/40 p-3.5 space-y-2">
             <div className="flex items-center gap-2 text-xs font-semibold text-emerald-300">
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />

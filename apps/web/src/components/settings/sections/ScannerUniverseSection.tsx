@@ -4,7 +4,8 @@ import React from "react";
 import { Search, ExternalLink, Globe, Cpu } from "lucide-react";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { Button } from "@/components/ui/button";
-import { SettingCard, type RegistryEntry } from "../controls/SettingCard";
+import type { RegistryEntry } from "../controls/SettingCard";
+import { SettingList } from "../controls/SettingList";
 
 const CORE_SYMBOLS = [
   { symbol: "BTCUSDT", name: "Bitcoin", status: "Active Primary", tier: "L1" },
@@ -30,7 +31,7 @@ export const ScannerUniverseSection: React.FC<ScannerUniverseSectionProps> = ({
   const universeEntry = entries.find((e) => e.key === "universe.symbols");
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6">
       {/* Header */}
       <div className="border-b border-white/10 pb-4">
         <h2 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
@@ -43,13 +44,13 @@ export const ScannerUniverseSection: React.FC<ScannerUniverseSectionProps> = ({
       </div>
 
       {/* Grid: Scanner Spec Concurrency & Scanner Studio Card */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @4xl:items-start">
         {scannerEntry && (
-          <SettingCard
-            entry={scannerEntry}
+          <SettingList
+            entries={[scannerEntry]}
             allEntries={entries}
             onSaved={() => void onReload()}
-            highlight={highlightedKey === "scanner.max_active_specs"}
+            highlightedKey={highlightedKey}
           />
         )}
 
@@ -102,11 +103,11 @@ export const ScannerUniverseSection: React.FC<ScannerUniverseSectionProps> = ({
         </div>
 
         {universeEntry && (
-          <SettingCard
-            entry={universeEntry}
+          <SettingList
+            entries={[universeEntry]}
             allEntries={entries}
             onSaved={() => void onReload()}
-            highlight={highlightedKey === "universe.symbols"}
+            highlightedKey={highlightedKey}
           />
         )}
 
@@ -115,7 +116,7 @@ export const ScannerUniverseSection: React.FC<ScannerUniverseSectionProps> = ({
           <span className="text-[11px] font-semibold text-zinc-300 uppercase tracking-wider block">
             Certified Core Instrument Portfolio
           </span>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+          <div className="grid grid-cols-2 @xl:grid-cols-3 @4xl:grid-cols-6 gap-2.5">
             {CORE_SYMBOLS.map((s) => (
               <div
                 key={s.symbol}

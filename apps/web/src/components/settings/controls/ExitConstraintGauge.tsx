@@ -300,7 +300,7 @@ export const ExitConstraintGauge: React.FC<ExitConstraintGaugeProps> = ({
       </div>
 
       {/* Parameter Cards Grid / Quick Select Chips */}
-      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-2.5 pt-3 border-t border-white/5">
+      <div className="mt-4 grid grid-cols-2 @2xl:grid-cols-4 @5xl:grid-cols-5 gap-2.5 pt-3 border-t border-white/5">
         {/* Hard Stop Card */}
         <button
           type="button"
@@ -405,7 +405,7 @@ export const ExitConstraintGauge: React.FC<ExitConstraintGaugeProps> = ({
             type="button"
             onClick={() => onQuickSelect?.("exit.funding_spike")}
             aria-label={`Funding Spike: ${values.funding_spike}, parameter exit.funding_spike`}
-            className="flex flex-col rounded-lg border border-purple-500/30 bg-purple-950/20 p-2.5 text-left transition-all hover:bg-purple-950/40 hover:border-purple-500/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 cursor-pointer col-span-2 sm:col-span-4 lg:col-span-1"
+            className="flex flex-col rounded-lg border border-purple-500/30 bg-purple-950/20 p-2.5 text-left transition-all hover:bg-purple-950/40 hover:border-purple-500/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 cursor-pointer col-span-2 @2xl:col-span-4 @5xl:col-span-1"
           >
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-medium text-purple-300">Funding Spike</span>

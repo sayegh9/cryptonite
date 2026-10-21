@@ -5,7 +5,8 @@ import { fetchApi } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
-import { SettingCard, type RegistryEntry } from "./settings/controls/SettingCard";
+import type { RegistryEntry } from "./settings/controls/SettingCard";
+import { SettingList } from "./settings/controls/SettingList";
 import type { RouteView, Warning, EnvHealth } from "./settings/types";
 
 const TIMEOUT_MS = 10_000;
@@ -284,11 +285,7 @@ export const SettingsRegistry: React.FC = () => {
                 Open Operator
               </Button>
             )}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {rows.map((entry) => (
-                <SettingCard key={entry.key} entry={entry} allEntries={entries} onSaved={() => void load()} />
-              ))}
-            </div>
+            <SettingList entries={rows} allEntries={entries} onSaved={() => void load()} />
           </section>
         );
       })}

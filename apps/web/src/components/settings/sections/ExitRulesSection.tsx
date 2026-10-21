@@ -3,7 +3,8 @@
 import React, { useState } from "react";
 import { ShieldAlert, Zap } from "lucide-react";
 import { ExitConstraintGauge, type ExitValuesSet } from "../controls/ExitConstraintGauge";
-import { SettingCard, type RegistryEntry } from "../controls/SettingCard";
+import type { RegistryEntry } from "../controls/SettingCard";
+import { SettingList } from "../controls/SettingList";
 
 export interface ExitRulesSectionProps {
   entries: RegistryEntry[];
@@ -77,7 +78,7 @@ export const ExitRulesSection: React.FC<ExitRulesSectionProps> = ({
     .filter((e): e is RegistryEntry => Boolean(e));
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6">
       {/* Section Header */}
       <div className="border-b border-white/10 pb-4">
         <h2 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
@@ -111,18 +112,13 @@ export const ExitRulesSection: React.FC<ExitRulesSectionProps> = ({
         </div>
       </div>
 
-      {/* Setting Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {exitEntries.map((entry) => (
-          <SettingCard
-            key={entry.key}
-            entry={entry}
-            allEntries={entries}
-            onSaved={() => void onReload()}
-            highlight={activeHighlight === entry.key}
-          />
-        ))}
-      </div>
+      {/* Exit settings, one row each */}
+      <SettingList
+        entries={exitEntries}
+        allEntries={entries}
+        onSaved={() => void onReload()}
+        highlightedKey={activeHighlight}
+      />
     </div>
   );
 };

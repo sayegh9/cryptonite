@@ -243,7 +243,7 @@ export const SettingsPanel: React.FC = () => {
                 System Settings
               </h1>
             </div>
-            <p className="text-xs text-zinc-400 mt-1">
+            <p className="hidden text-xs text-zinc-400 mt-1 sm:block">
               Platform governance, AI routing, risk thresholds & operator desk preferences
             </p>
           </div>
@@ -430,7 +430,9 @@ export const SettingsPanel: React.FC = () => {
         </aside>
 
         {/* Content Pane */}
-        <main className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8">
+        <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:px-8 lg:py-7">
+          {/* The content column is the container the sections' grids and setting rows respond to */}
+          <div className="@container mx-auto w-full max-w-[1400px]">
           {/* Global Search Results View */}
           {searchQuery.trim() ? (
             <SettingsGlobalSearch
@@ -567,6 +569,7 @@ export const SettingsPanel: React.FC = () => {
               )}
             </>
           )}
+          </div>
         </main>
       </div>
 

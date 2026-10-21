@@ -438,7 +438,7 @@ function Workstation() {
         </div>
       )}
       {workspaceMode === "settings" && (
-        <div className="flex-1 min-h-0 min-w-0 max-w-5xl mx-auto w-full py-4">
+        <div className="flex-1 min-h-0 min-w-0 w-full px-2 py-3 sm:px-4">
           <SettingsPanel />
         </div>
       )}
