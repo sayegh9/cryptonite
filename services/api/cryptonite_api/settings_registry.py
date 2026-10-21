@@ -22,7 +22,7 @@ from cryptonite_schemas.exit_thresholds import (
     ExitThresholds,
     violations,
 )
-from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS
+from cryptonite_schemas.runtime_settings import ROUTING_MODES, RUNTIME_BOUNDS
 
 
 class Tier(StrEnum):
@@ -106,6 +106,9 @@ class Setting:
     note: str = ""
     decimals: int = 2  # decimal places a value may have
     tighter: Tighter = Tighter.LOWER  # which direction is the tighter one (T/L keys)
+    # An enum stored as a number: (stored value, label) in order. The registry stays numeric (bounds, TOTP direction);
+    # the UI shows the labels
+    choices: tuple[tuple[str, str], ...] = ()
 
     @property
     def writable(self) -> bool:
@@ -113,11 +116,11 @@ class Setting:
 
 
 def _runtime_setting(key: str, label: str, tier: Tier, adr: str, note: str,
-                     tighter: Tighter = Tighter.LOWER) -> Setting:
+                     tighter: Tighter = Tighter.LOWER, choices: tuple[tuple[str, str], ...] = ()) -> Setting:
     """A value the services read every cycle (ADR 0007): stored in system_settings, whole numbers, hot."""
     bound = RUNTIME_BOUNDS[key]
     return Setting(key, label, int(bound.default), int(bound.low), int(bound.high), Apply.HOT, tier, adr,
-                   SYSTEM_STORE, note, decimals=0, tighter=tighter)
+                   SYSTEM_STORE, note, decimals=0, tighter=tighter, choices=choices)
 
 
 def _exit_setting(key: str, label: str, default: Decimal | int | float, field: str, note: str) -> Setting:
@@ -187,6 +190,15 @@ REGISTRY: tuple[Setting, ...] = (
             Decimal("2.00"), Apply.HOT, Tier.T_L, "0009", SYSTEM_STORE,
             "priced into the risk at the stop and the liquidation buffer; a higher allowance is the tighter one",
             decimals=2, tighter=Tighter.HIGHER),
+    _runtime_setting("debate.perp_mandate_daily_cap", "Scanner debates per perp mandate per day", Tier.T_L, "0010",
+                     "read by the debate gate on every scanner candidate that would route to a perp mandate (1h bars "
+                     "only); 0 stops them; lowering is free, raising needs TOTP"),
+    _runtime_setting("debate.perp_routing", "Spot candidates: spot or perps first", Tier.T_L, "0010",
+                     "read by the debate worker (cached up to 60 s) when a spot and a perps mandate both match a "
+                     "candidate: SPOT_FIRST takes the spot mandate, PERP_FIRST the single perps mandate; an explicit "
+                     "mandate always wins. PERP_FIRST sends more trades to leveraged perps, so it needs TOTP; "
+                     "SPOT_FIRST is free",
+                     choices=tuple((str(i), mode) for i, mode in enumerate(ROUTING_MODES))),
     Setting("guard.mandate_max_leverage", "Mandate leverage ceiling (x)", 10, None, None, Apply.DEPLOY, Tier.FIXED,
             "0009", "migration 048: chk_ai_mandates_leverage", "each mandate's own maximum (default 3x) sits under it"),
     Setting("guard.account_max_leverage", "Account leverage maximum (x)", 10, None, None, Apply.DEPLOY, Tier.FIXED,
@@ -298,6 +310,7 @@ def entry_view(setting: Setting, value: Any, effective_value: Any = None) -> dic
         "value_source": source,
         "effective": effective_value,
         "tighter": setting.tighter.value,
+        "choices": [{"value": v, "label": label} for v, label in setting.choices],
     }
 
 

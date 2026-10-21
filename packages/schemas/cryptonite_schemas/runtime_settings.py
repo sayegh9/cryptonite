@@ -36,7 +36,18 @@ RUNTIME_BOUNDS: dict[str, Bound] = {
     "leverage.grade_ceiling_b": Bound(5, 1, 10),
     "leverage.grade_ceiling_c": Bound(2, 1, 10),
     "leverage.slippage_allowance_pct": Bound(0.3, 0.05, 2.0),
+    # Auto-trade Phase B (ADR 0010 amendment): scanner debates routed to one perp mandate per UTC day (lower is
+    # tighter; 0 stops them; 24 is one per closed 1h bar)
+    "debate.perp_mandate_daily_cap": Bound(6, 0, 24),
+    # Where a spot candidate goes when both a spot and a perps mandate match (ADR 0010 P-10): 0 = SPOT_FIRST (the
+    # default), 1 = PERP_FIRST. Lower is tighter: PERP_FIRST sends more trades to leveraged perps
+    "debate.perp_routing": Bound(0, 0, 1),
 }
+PERP_DEBATE_CAP_KEY = "debate.perp_mandate_daily_cap"
+PERP_ROUTING_KEY = "debate.perp_routing"
+SPOT_FIRST = "SPOT_FIRST"
+PERP_FIRST = "PERP_FIRST"
+ROUTING_MODES = (SPOT_FIRST, PERP_FIRST)  # the stored number is the index
 GRADE_CEILING_KEYS = {"A": "leverage.grade_ceiling_a", "B": "leverage.grade_ceiling_b", "C": "leverage.grade_ceiling_c"}
 SLIPPAGE_KEY = "leverage.slippage_allowance_pct"
 LEVERAGE_KEYS = (*GRADE_CEILING_KEYS.values(), SLIPPAGE_KEY)
@@ -60,6 +71,13 @@ def read_number(raw: Any, bound: Bound, last_good: float) -> tuple[float, str | 
     if not math.isfinite(value) or not bound.low <= value <= bound.high:
         return last_good, f"stored value {raw!r} is outside {bound.low:g}..{bound.high:g}"
     return value, None
+
+
+def read_routing_mode(raw: Any) -> tuple[str, str | None]:
+    """``debate.perp_routing`` as stored -> (SPOT_FIRST | PERP_FIRST, a problem to report). Missing: SPOT_FIRST. A value
+    that does not parse or is outside 0..1 is SPOT_FIRST too (the safe mode), reported."""
+    value, problem = read_number(raw, RUNTIME_BOUNDS[PERP_ROUTING_KEY], 0)
+    return ROUTING_MODES[int(value)] if value in (0, 1) else SPOT_FIRST, problem
 
 
 @dataclass(frozen=True)

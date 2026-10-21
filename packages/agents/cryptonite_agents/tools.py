@@ -1557,29 +1557,9 @@ class DuckDBLakeRepository:
 
 
 def _classify_tf_trend(df: Any) -> str:
-    if df is None:
-        return "FLAT"
-    try:
-        if hasattr(df, "is_empty") and df.is_empty():
-            return "FLAT"
-        if len(df) == 0:
-            return "FLAT"
-        row = df.slice(-1, 1).to_dicts()[0]
-        close = row.get("close")
-        ema_20 = row.get("ema_20")
-        ema_50 = row.get("ema_50")
-        if close is None or ema_20 is None or ema_50 is None:
-            return "FLAT"
-        close_f = float(close)
-        ema_20_f = float(ema_20)
-        ema_50_f = float(ema_50)
-        if close_f > ema_50_f and ema_20_f > ema_50_f:
-            return "BULL"
-        elif close_f < ema_50_f and ema_20_f < ema_50_f:
-            return "BEAR"
-        return "FLAT"
-    except Exception:
-        return "FLAT"
+    from cryptonite_scanner.setup_grade import trend_of
+
+    return trend_of(df)
 
 
 def _spot_candles_to_enriched_df(candles: list[dict[str, Any]], ScannerEngine: Any) -> Any:

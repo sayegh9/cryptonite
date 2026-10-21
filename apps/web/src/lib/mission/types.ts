@@ -114,6 +114,8 @@ export interface Approval {
   payload?: Record<string, unknown> | null;
   /** Up to 3 past decisions on the same instrument and side (read-only; omitted when unavailable) */
   similar_decisions?: SimilarDecision[] | null;
+  /** A perp entry (ADR 0009 D3): approving it needs the operator's current TOTP code */
+  needs_totp?: boolean;
 }
 
 export interface AiStatus {

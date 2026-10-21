@@ -32,7 +32,12 @@ from cryptonite_execution.approvals import (
 )
 from cryptonite_execution.mandate_store import entry_room_pct, resolve_mandate_for
 from cryptonite_schemas.debate import verdict_direction
-from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, ActionClass, Mandate
+from cryptonite_schemas.mandate import (
+    MIN_MANDATE_ENTRY_PCT,
+    ActionClass,
+    Mandate,
+    is_perp_instrument,
+)
 from cryptonite_schemas.marks import read_marks
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -364,6 +369,21 @@ async def _plan_debate(request: Request, run, decision, mandate_id: uuid.UUID | 
                       allocation=min(requested, room.quantize(Decimal("0.01"))), room=room, held=Decimal("0"))
 
 
+PERP_APPROVAL_IN_QUEUE = ("PERP_APPROVAL_IN_QUEUE: the debate worker routed this verdict to a perps mandate; its "
+                          "approval waits in Mission Control's approval queue, where approving a perp entry needs "
+                          "your TOTP")
+
+
+async def _pending_perp_approval(pool, run_uuid: uuid.UUID) -> uuid.UUID | None:
+    """The PENDING approval the debate worker opened for this run on a perpetual (Phase B), or None. The Inbox does
+    not decide it: its sizing reads the spot instrument, and the perp entry's TOTP is asked in the approval queue."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT id, payload->>'instrument_id' AS instrument_id FROM ai_approvals
+               WHERE source = 'debate' AND source_ref = $1 AND status = 'PENDING'""", str(run_uuid))
+    return row["id"] if row and row["instrument_id"] and is_perp_instrument(row["instrument_id"]) else None
+
+
 def _mandate_view(m: Mandate) -> dict:
     return {"id": str(m.id), "name": m.name, "autonomy_level": int(m.autonomy_level),
             "capital_budget_usd": float(m.capital_budget_usd), "max_position_pct": float(m.max_position_pct)}
@@ -379,6 +399,8 @@ async def debate_sizing(run_id: str, request: Request, mandate_id: uuid.UUID | N
     run, decision = await _load_debate(request.app.state.pool, run_uuid)
     if run["status"] != "PENDING_APPROVAL":
         return {"ok": False, "code": "NOT_PENDING", "detail": f"The debate is {run['status']}", "remedy": None}
+    if await _pending_perp_approval(request.app.state.pool, run_uuid) is not None:
+        return {"ok": False, "code": "PERP_APPROVAL_IN_QUEUE", "detail": PERP_APPROVAL_IN_QUEUE, "remedy": None}
     try:
         plan = await _plan_debate(request, run, decision, mandate_id, allocation_pct)
     except HTTPException as e:
@@ -415,6 +437,8 @@ async def approve_debate(
     run, decision = await _load_debate(pool, run_uuid)
     if run['status'] != 'PENDING_APPROVAL':
         raise HTTPException(status_code=409, detail=f"Debate run has invalid status for approval: {run['status']}")
+    if await _pending_perp_approval(pool, run_uuid) is not None:
+        raise HTTPException(status_code=409, detail=PERP_APPROVAL_IN_QUEUE)
 
     plan = await _plan_debate(request, run, decision, overrides.mandate_id if overrides else None,
                               overrides.allocation_pct if overrides else None)

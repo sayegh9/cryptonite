@@ -10,6 +10,10 @@ Automatic (scanner) triggers pass, in order, before any model is called:
   4. cooldown per instrument+timeframe -> one debate per setup window. The key holds the candidate's own
      token: a crash or cancellation after this point leaves a window the same candidate's redelivery
      still passes (no durable row yet), while other candidates wait it out
+  4b. a candidate that would route to a perps mandate (Phase B: no ACTIVE spot mandate allows the instrument, one
+     perps mandate allows its perpetual) -> only from a closed 1h bar (``PERP_MANDATE_NOT_1H``), and at most
+     ``debate.perp_mandate_daily_cap`` such debates per perps mandate per UTC day (``PERP_MANDATE_DAILY_CAP``; a slot
+     is taken when the gate lets the debate run, and not given back if the debate fails)
   5. hard triage rules in code (R3.1, ``cryptonite_scanner.brief.hard_rejects`` on the scanner's
      structured brief): reward-to-risk < 1.5, the two highest timeframes both trending down, chop
      -> ``TRIAGE_RULE_<NAME>`` with no model call. Missing data never rejects: it falls through to 6.
@@ -32,6 +36,9 @@ from cryptonite_agents.debate_fleet import TRIAGE
 from cryptonite_agents.gateway import Gateway
 from cryptonite_scanner.brief import hard_rejects
 from cryptonite_schemas.debate import TriageDecision
+from cryptonite_schemas.mandate import is_perp_instrument
+from cryptonite_schemas.runtime_settings import PERP_DEBATE_CAP_KEY, RUNTIME_BOUNDS, read_number
+from mandate_routing import resolve_route
 
 logger = logging.getLogger("debate_worker.gate")
 
@@ -47,6 +54,8 @@ MIN_STALE_S = 15 * 60
 # 039), not a key set before any work: a failure before the run leaves nothing behind, so a PEL retry
 # (F-H6) of the same message passes the gate again, while a delivery whose run exists is dropped.
 TIMEFRAME_S = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
+PERP_DEBATE_TIMEFRAME = "1h"  # scanner debates routed to a perps mandate come only from closed 1h bars
+PERP_CAP_TTL_S = 2 * 86400
 
 
 @dataclass
@@ -151,6 +160,37 @@ async def _account_refusal(conn, instrument_id: str) -> str | None:
     return None
 
 
+def perp_cap_key(mandate_id: Any, now_s: float) -> str:
+    day = datetime.datetime.fromtimestamp(now_s, datetime.UTC).date().isoformat()
+    return f"debate:perp_cap:{mandate_id}:{day}"
+
+
+async def perp_debate_cap(conn) -> int:
+    """``debate.perp_mandate_daily_cap`` as stored (a value that does not parse or is out of bounds: the default)."""
+    raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = $1", PERP_DEBATE_CAP_KEY)
+    bound = RUNTIME_BOUNDS[PERP_DEBATE_CAP_KEY]
+    value, problem = read_number(raw, bound, bound.default)
+    if problem:
+        logger.warning("%s: %s; the default %g applies", PERP_DEBATE_CAP_KEY, problem, bound.default)
+    return int(value)
+
+
+async def _perp_route(conn, instrument_id: str):
+    """The perps mandate a scanner debate on ``instrument_id`` would be routed to, or None (spot, or no mandate)."""
+    mandate, routed = await resolve_route(conn, instrument_id)
+    return mandate if mandate is not None and is_perp_instrument(routed) else None
+
+
+async def _reserve_perp_slot(redis, key: str, cap: int) -> bool:
+    """Take one of the day's slots atomically (several workers): INCR, and give it back when it went over the cap."""
+    used = await redis.incr(key)
+    await redis.expire(key, PERP_CAP_TTL_S)
+    if used > cap:
+        await redis.decr(key)
+        return False
+    return True
+
+
 async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=None) -> GateDecision:
     source = payload.get("trigger_source", "scanner")
     if source in BRAIN_SOURCES:
@@ -189,6 +229,18 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     if not brief:  # no market data: a debate would argue from nothing
         return GateDecision(False, "NO_BRIEF")
 
+    # Phase B cadence and cost: a debate for a perps mandate only from a closed 1h bar, and a daily cap per mandate
+    async with pg_pool.acquire() as conn:
+        perp_mandate = await _perp_route(conn, instrument_id)
+        cap = await perp_debate_cap(conn) if perp_mandate is not None else None
+    slot_key = None
+    if perp_mandate is not None:
+        if timeframe != PERP_DEBATE_TIMEFRAME:
+            return GateDecision(False, "PERP_MANDATE_NOT_1H")
+        slot_key = perp_cap_key(perp_mandate.id, now_s)
+        if int(await redis.get(slot_key) or 0) >= cap:
+            return GateDecision(False, "PERP_MANDATE_DAILY_CAP")
+
     cooldown_key = f"debate:cooldown:{instrument_id}:{timeframe}"
     # Candidate-aware: the value is the candidate's token, so a crash or cancellation after this point
     # leaves a window that its OWN redelivery still passes (no durable row exists yet), while every other
@@ -206,6 +258,9 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, rule)
 
     if gateway is None:
+        if slot_key is not None and not await _reserve_perp_slot(redis, slot_key, cap):
+            await release_cooldown(redis, cooldown_key, cooldown_token)
+            return GateDecision(False, "PERP_MANDATE_DAILY_CAP")
         return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key, cooldown_token=cooldown_token)
     try:
         # The setup's decision_trace_id as the trace parent links triage (and its F2 shadow) to outcomes
@@ -216,4 +271,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, "TRIAGE_UNAVAILABLE")
     if not result.output.worth_debate:
         return GateDecision(False, "TRIAGE_REJECTED", result.output, result.trace_id)
+    if slot_key is not None and not await _reserve_perp_slot(redis, slot_key, cap):
+        await release_cooldown(redis, cooldown_key, cooldown_token)
+        return GateDecision(False, "PERP_MANDATE_DAILY_CAP", result.output, result.trace_id)
     return GateDecision(True, "TRIAGE_ACCEPTED", result.output, result.trace_id, cooldown_key, cooldown_token)

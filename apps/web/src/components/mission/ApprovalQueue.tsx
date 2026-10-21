@@ -12,6 +12,7 @@ import { useMandateStore } from "@/lib/stores/useMandateStore";
 import { useAutonomyStore } from "@/lib/stores/useAutonomyStore";
 import { calibratedConviction } from "@/lib/mission/calibration";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
+import { PerpApprovalDetails } from "@/components/mission/PerpApprovalDetails";
 
 /** Risk context inputs from an approval's command payload and its mandate (unknown -> null). */
 function contextOf(a: Approval, mandates: Mandate[]): ApprovalRiskInput {
@@ -59,6 +60,8 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
   // A tab older than the server approves nothing until it reloads; vetoing (taking risk away) stays open
   const staleBuild = useStaleBuild();
   const [confirm, setConfirm] = useState<{ id: string; decision: "APPROVE" | "VETO" } | null>(null);
+  // Approving a perp entry needs the current TOTP code (ADR 0009 D3); kept only while its confirm step is open
+  const [totp, setTotp] = useState("");
   const [announcement, setAnnouncement] = useState("");
   // decisions made here stay visible after the refresh drops them from the pending list
   const [decided, setDecided] = useState<Record<string, Approval>>({});
@@ -89,7 +92,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
     if (decision === "APPROVE" && isStaleBuild()) return;
     setBusy(a.id);
     try {
-      const res = await decideApproval(a.id, decision);
+      const res = await decideApproval(a.id, decision, decision === "APPROVE" && a.needs_totp ? totp : undefined);
       markDecided(a.id, res.status);
       setDecided((d) => ({ ...d, [a.id]: { ...a, status: res.status, command_id: res.command_id } }));
       toast.success(`${decision === "APPROVE" ? "Approved" : "Vetoed"}: ${a.summary}`);
@@ -100,6 +103,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
       onDecided();
     } finally {
       setBusy(null);
+      setTotp("");
     }
   };
 
@@ -140,6 +144,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                 )}
               </div>
               <p className="mt-1 text-zinc-100">{a.summary}</p>
+              <PerpApprovalDetails payload={a.payload} />
               {(() => {
                 const raw = metricOrNull((a.payload ?? {}).conviction_score);
                 const cal = raw === null ? null : calibratedConviction(isotonic, raw);
@@ -172,10 +177,30 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                     if (e.key === "Escape") setConfirm(null);
                   }}
                 >
+                  {confirm.decision === "APPROVE" && a.needs_totp && (
+                    <input
+                      key="totp"
+                      aria-label={`TOTP code to approve: ${a.summary}`}
+                      data-testid="approval-totp"
+                      autoFocus
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      pattern="\d{6}"
+                      maxLength={6}
+                      placeholder="TOTP"
+                      value={totp}
+                      onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
+                      className="w-20 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-zinc-100"
+                    />
+                  )}
                   <button
+                    // keyed: the confirm step mounts its own controls, so autoFocus lands on the input or this button
+                    key="confirm"
                     type="button"
-                    autoFocus
-                    disabled={busy === a.id || s === 0 || (confirm.decision === "APPROVE" && staleBuild)}
+                    autoFocus={!(confirm.decision === "APPROVE" && a.needs_totp)}
+                    disabled={
+                      busy === a.id || s === 0 || (confirm.decision === "APPROVE" && (staleBuild || (!!a.needs_totp && totp.length !== 6)))
+                    }
                     title={confirm.decision === "APPROVE" && staleBuild ? STALE_BUILD_TITLE : undefined}
                     onClick={() => {
                       setConfirm(null);
@@ -192,7 +217,10 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                   </button>
                   <button
                     type="button"
-                    onClick={() => setConfirm(null)}
+                    onClick={() => {
+                      setConfirm(null);
+                      setTotp("");
+                    }}
                     className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-2xs font-bold text-zinc-300"
                   >
                     Cancel

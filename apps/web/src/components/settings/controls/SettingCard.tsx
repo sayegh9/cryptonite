@@ -25,6 +25,8 @@ export interface RegistryEntry {
   value: string | null;
   value_source: "api" | "service" | "code" | "default";
   effective: string | null;
+  /** An enum stored as a number: the stored value and the label to show (the registry stays numeric) */
+  choices?: { value: string; label: string }[];
 }
 
 export interface SettingCardProps {
@@ -98,6 +100,9 @@ export const SettingCard: React.FC<SettingCardProps> = ({
   const totpId = useId();
   const errorId = useId();
 
+  const choices = entry.choices ?? [];
+  const isChoice = choices.length > 0;
+  const choiceLabel = (v: string | null): string => (v === null ? "not set" : (choices.find((c) => c.value === v)?.label ?? v));
   const current = entry.value ?? entry.default;
   const [amount, setAmount] = useState<string>(current);
   const [reason, setReason] = useState<string>("");
@@ -193,7 +198,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
   const boundsParts: string[] = [];
   if (entry.minimum !== null) boundsParts.push(`min ${entry.minimum}`);
   if (entry.maximum !== null) boundsParts.push(`max ${entry.maximum}`);
-  const boundsStr = boundsParts.join(" · ");
+  const boundsStr = isChoice ? "" : boundsParts.join(" · ");
 
   // Presets generation
   const presets: { label: string; value: string }[] = [];
@@ -271,10 +276,10 @@ export const SettingCard: React.FC<SettingCardProps> = ({
         {/* Current & Effective Values Preview */}
         <div className="text-right">
           <div className="font-mono text-base font-bold text-cyan-300">
-            {formatValueDisplay(entry.key, entry.value ?? entry.default)}
+            {isChoice ? choiceLabel(entry.value ?? entry.default) : formatValueDisplay(entry.key, entry.value ?? entry.default)}
           </div>
           <div className="text-xs text-zinc-400">
-            default {entry.default}
+            default {isChoice ? choiceLabel(entry.default) : entry.default}
             {boundsStr ? ` · ${boundsStr}` : ""}
           </div>
           {entry.effective !== null && (
@@ -294,7 +299,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
               {effectiveDiffers && (
                 <AlertTriangle className="size-3 text-amber-400 shrink-0" aria-hidden="true" />
               )}
-              <span>applied now {formatValueDisplay(entry.key, entry.effective)}</span>
+              <span>applied now {isChoice ? choiceLabel(entry.effective) : formatValueDisplay(entry.key, entry.effective)}</span>
             </div>
           )}
         </div>
@@ -310,8 +315,35 @@ export const SettingCard: React.FC<SettingCardProps> = ({
       {/* Interactive Editor (When Writable) */}
       {entry.writable && (
         <div className="mt-4 rounded-lg border border-white/10 bg-zinc-900/40 p-3 sm:p-4 space-y-3.5">
+          {isChoice && (
+            <div className="space-y-2">
+              <span id={`${inputId}-choices`} className="text-xs font-medium text-zinc-300">
+                New value
+              </span>
+              <div role="radiogroup" aria-labelledby={`${inputId}-choices`} className="flex flex-wrap gap-2">
+                {choices.map((choice) => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={amount === choice.value}
+                    onClick={() => setAmount(choice.value)}
+                    className={cn(
+                      "rounded border px-3 py-1.5 font-mono text-xs min-h-[32px] inline-flex items-center transition-colors cursor-pointer",
+                      amount === choice.value
+                        ? "border-cyan-500/60 bg-cyan-950/60 text-cyan-200"
+                        : "border-white/10 bg-zinc-950/60 text-zinc-400 hover:border-white/20 hover:text-zinc-200"
+                    )}
+                  >
+                    {choice.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Top row: Number Input + Range Slider (if bounds exist) */}
-          <div className="space-y-3">
+          <div className={cn("space-y-3", isChoice && "hidden")}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label htmlFor={inputId} className="text-xs font-medium text-zinc-300 flex items-center gap-1.5">
                 <Sliders className="size-3.5 text-cyan-400" aria-hidden="true" />
@@ -419,7 +451,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
           )}
 
           {/* Validation Error if out of bounds or bad format */}
-          {amount.trim() !== "" && !inBounds && (
+          {!isChoice && amount.trim() !== "" && !inBounds && (
             <p id={errorId} role="alert" className="text-xs text-red-300">
               Enter a valid number{boundsStr ? ` (${boundsStr})` : ""} with at most {entry.decimals} decimal places.
             </p>

@@ -39,6 +39,10 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
     "leverage.grade_ceiling_b",
     "leverage.grade_ceiling_c",
     "leverage.slippage_allowance_pct",
+    // ADR 0010 amendment (auto-trade Phase B): scanner debates routed to a perp mandate per UTC day
+    "debate.perp_mandate_daily_cap",
+    // ADR 0010 P-10: which mandate takes a candidate a spot and a perps mandate both match (PERP_FIRST needs TOTP)
+    "debate.perp_routing",
   ];
   const leverageGuardKeys = [
     "guard.mandate_max_leverage",

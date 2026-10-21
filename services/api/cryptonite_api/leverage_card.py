@@ -95,8 +95,11 @@ async def card_entry_price(redis, card: dict[str, Any]) -> Decimal | None:
 
 
 async def card_leverage_plan(pool, redis, mandate: Mandate, card: dict[str, Any], *,
-                             requested_leverage: int | None = None) -> LeveragePlan:
-    """The plan approve would queue for a perp entry card now (read only)."""
+                             requested_leverage: int | None = None,
+                             shrink_margin_to_fit: bool = False) -> LeveragePlan:
+    """The plan approve would queue for a perp entry card now (read only). ``shrink_margin_to_fit``: cut a margin that
+    not even 1x fits down to what does, as the orchestrator sizes an entry (a debate's perp entry, whose allocation is
+    the model's, not the operator's); a Brain card keeps it off, so its own allocation is refused rather than cut."""
     inst = canonical_instrument(card["instrument_id"])
     side = str(card["side"]).upper()
     if redis is not None:
@@ -133,7 +136,7 @@ async def card_leverage_plan(pool, redis, mandate: Mandate, card: dict[str, Any]
     stop = Decimal(str(card["stop_loss"])) if card.get("stop_loss") else None
     requested = requested_leverage if requested_leverage is not None else card.get("leverage")
     return plan_leveraged_order(inst, side, entry, stop, margin, limits, requested_leverage=requested,
-                                budget_usd=budget, funding_rate=funding)
+                                budget_usd=budget, funding_rate=funding, shrink_margin_to_fit=shrink_margin_to_fit)
 
 
 async def _equity_and_slippage(pool) -> tuple[Decimal | None, Decimal]:

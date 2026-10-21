@@ -399,3 +399,37 @@ async def test_a_liquidation_proximity_alert_reaches_telegram_and_ntfy():
     assert await n.on_system_alert(json.dumps(alert)) is True
     assert "Liquidation Proximity" in tg.sent()[-1]["text"] and "76% of the distance" in tg.sent()[-1]["text"]
     assert ntfy.posts[-1]["topic"] == "cryptonite-critical" and ntfy.posts[-1]["priority"] == 5
+
+
+async def test_a_debate_perp_entry_approval_renders_its_perp_lines_and_telegram_decides_it_only_with_totp(h):
+    """Auto-trade Phase B (ADR 0010 P-7/P-8): the card shows the perp fields and asks for the TOTP, and the signed
+    decision endpoint refuses the approval without a valid code (every perp entry is approved with TOTP)."""
+    from test_notifier_perp_approval_render import _long_payload
+
+    m = await h.mandate(level=1)
+    payload = {**_long_payload(), "source": "debate", "run_id": uuid.uuid4().hex}
+    async with h.pool.acquire() as conn:
+        a = await create_approval(conn, m, ActionClass.ADD_RISK, "SUBMIT_ORDER", payload,
+                                  summary="LONG BTCUSDT-PERP.BINANCE MARKET ISOLATED, dry run 3x", source="debate",
+                                  source_ref=payload["run_id"])
+    n, tg, api, _ = make_notifier(h.pool)
+    await n.dispatch_outbox_once()
+    card = next(b for b in tg.sent() if "LONG BTCUSDT-PERP.BINANCE MARKET ISOLATED" in b["text"])
+    for line in ("Perp LONG · ISOLATED · stop 57000.0 · target 66000.0", "Grade B: ",
+                 "Leverage the dry run allows: 3x (binding: mandate maximum)", "Liquidation 40,312.50",
+                 "Approving new risk needs your TOTP code."):
+        assert line in card["text"], line
+    approve = card["reply_markup"]["inline_keyboard"][0][0]
+    assert approve["text"] == "Approve 🔐" and contract.parse_callback_data(SECRET, approve["callback_data"]) == ("APPROVE", a["id"])
+    # the bot asks for the code instead of deciding on the tap
+    assert await n.handle_update(press(OPERATOR_CHAT, approve["callback_data"])) == "totp_requested"
+    assert api.requests == []
+    # the API's signed endpoint: no code, a wrong code, then the right one
+    await h.redis.delete(f"ai:totp_failures:telegram:{h.username}")
+    decide = {"decision": "APPROVE", "chat_id": str(OPERATOR_CHAT)}
+    assert (await signed_post(h, a["id"], decide)).status_code == 401
+    wrong = f"{(int(h.totp.now()) + 1) % 1_000_000:06d}"
+    assert (await signed_post(h, a["id"], {**decide, "totp_code": wrong})).status_code == 401
+    assert await h.pool.fetchval("SELECT status FROM ai_approvals WHERE id = $1", a["id"]) == "PENDING"
+    ok = await signed_post(h, a["id"], {**decide, "totp_code": h.totp.now()})
+    assert ok.status_code == 200 and ok.json()["status"] == "APPROVED"

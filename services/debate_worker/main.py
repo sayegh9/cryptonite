@@ -90,6 +90,30 @@ async def load_brief_data(redis_client, payload: dict) -> dict | None:
         return None
 
 
+def candidate_levels(payload: dict) -> tuple[float | None, float | None]:
+    """(stop, target) of the scanner candidate this debate was queued for (``suggested_stop`` / ``suggested_target``),
+    or (None, None): a Brain- or Inbox-started debate has no candidate, and a level that is not a positive number is
+    not used."""
+    if payload.get("trigger_source", "scanner") not in AUTOMATIC_SOURCES:
+        return None, None
+    try:
+        candidate = json.loads(payload.get("candidate_payload") or "{}")
+    except (TypeError, ValueError):
+        return None, None
+    if not isinstance(candidate, dict):
+        return None, None
+
+    def level(key: str) -> float | None:
+        try:
+            v = float(candidate.get(key))
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 and v != float("inf") else None
+
+    stop, target = level("suggested_stop"), level("suggested_target")
+    return (stop, target) if stop is not None and target is not None else (None, None)
+
+
 async def publish_sentiment_ok(redis_client) -> None:
     """Record the last time the local sentiment service tagged headlines for this process."""
     if (ts := news.last_tag_ok()) is None:
@@ -297,8 +321,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     decision_price = float(quoted.price)
 
     brief = await load_brief(redis_client, payload)
-    gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
-                                 brief_data=await load_brief_data(redis_client, payload))
+    brief_data = await load_brief_data(redis_client, payload)
+    gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief, brief_data=brief_data)
     if not gate.allowed:
         if trigger_source in BRAIN_SOURCES:  # the Brain already said "staged": the refusal is recorded, not silent
             await record_gate_refusal(pg_pool, redis_client, instrument_id, trigger_source, gate.reason, trace_id,
@@ -512,10 +536,14 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                 if recommendation == "HOLD":
                     final_status, mandate = 'NO_TRADE', None  # nothing to approve or execute
                 else:
+                    # A scanner debate carries its candidate's structural stop and TP1 (Phase B, B0): the mandate's
+                    # R:R and side checks measure them, and a perp entry needs them. Other debates carry none
+                    stop_loss, take_profit = candidate_levels(payload)
                     final_status, mandate = await route_entry(
                         conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
                         mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
-                        reference_price=decision_price,
+                        reference_price=decision_price, stop_loss=stop_loss, take_profit=take_profit,
+                        redis=redis_client, grade_context=(brief_data or {}).get("grade_context"),
                     )
                 await conn.execute(
                     """UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3
