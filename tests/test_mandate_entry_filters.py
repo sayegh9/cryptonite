@@ -15,6 +15,7 @@ import pytest
 from ai_api_harness import close_harness, make_harness
 from migrated_db import migrated_database
 from test_brain_card_preflight import (  # noqa: F401
+    approve,
     ask,
     assert_refused_like_approve,
     hold_position,
@@ -95,6 +96,37 @@ async def test_route_entry_refuses_a_reward_risk_below_the_minimum(h, routing):
     assert [low[0], ok[0], unpriced[0]] == ["NO_TRADE", "PENDING_APPROVAL", "PENDING_APPROVAL"]
 
 
+async def test_route_entry_records_that_min_rr_was_skipped_without_a_stop_and_target(h, routing, caplog):
+    m = await h.mandate(level=1)
+    await limits(h, m, min_rr="2.0")
+    with caplog.at_level("INFO"):
+        async with h.pool.acquire() as conn:
+            res = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.8, 5.0, reference_price=100.0)
+    assert res[0] == "PENDING_APPROVAL"
+    row = await h.pool.fetchrow("SELECT payload, summary FROM ai_approvals")
+    payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+    assert payload["filters_skipped"] == ["min_rr skipped: no stop/target"]
+    assert "min_rr skipped: no stop/target" in row["summary"]
+    assert any("min_rr skipped: no stop/target" in r.message and r.levelname == "INFO" for r in caplog.records)
+
+
+async def test_route_entry_still_applies_min_conviction_to_a_debate_without_a_stop(h, routing):
+    m = await h.mandate(level=1)
+    await limits(h, m, min_conviction="0.70", min_rr="2.0")
+    async with h.pool.acquire() as conn:
+        low = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.6, 5.0)
+    assert low[0] == "NO_TRADE"
+
+
+async def test_route_entry_refuses_a_stop_on_the_wrong_side(h, routing):
+    m = await h.mandate(level=1)
+    await limits(h, m, min_rr="2.0")
+    async with h.pool.acquire() as conn:
+        res = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.8, 5.0, stop_loss=105.0, take_profit=115.0,
+                                        reference_price=100.0)
+    assert res[0] == "NO_TRADE"
+
+
 @pytest.mark.parametrize("column", ["loss_latched_at", "target_hit_at", "lock_fired_at"])
 async def test_route_entry_refuses_entries_while_the_session_is_not_active(h, routing, column):
     m = await h.mandate(level=1)
@@ -132,11 +164,34 @@ async def test_a_card_below_the_conviction_minimum_is_refused(h, worker):  # noq
     assert "conviction 0.62 below the mandate minimum 0.70" in body["detail"]
 
 
-async def test_a_card_without_a_confidence_skips_the_conviction_filter(h, worker):  # noqa: F811
+async def test_a_card_without_a_confidence_is_refused_when_the_mandate_sets_a_minimum(h, worker):  # noqa: F811
     m = await h.mandate(instruments=(BTC,))
     await limits(h, m, min_conviction="0.70")
-    res = await ask(h, uuid.uuid4())
-    assert res.json()["ok"] is True, res.text
+    body = await assert_refused_like_approve(h, worker, code="MANDATE_MIN_CONVICTION")
+    assert "the card has no confidence" in body["detail"]
+    worker.card["confidence"] = 0.8
+    assert (await ask(h, uuid.uuid4())).json()["ok"] is True
+    await limits(h, m, min_conviction=None)
+    del worker.card["confidence"]
+    assert (await ask(h, uuid.uuid4())).json()["ok"] is True  # no minimum: nothing required
+
+
+async def test_a_card_without_a_stop_and_a_target_is_refused_when_the_mandate_sets_min_rr(h, worker):  # noqa: F811
+    m = await h.mandate(instruments=(BTC,))
+    await limits(h, m, min_rr="2.0")
+    worker.card.update(stop_loss=58000.0, take_profit=None)
+    body = await assert_refused_like_approve(h, worker, code="MANDATE_MIN_RR")
+    assert "the mandate requires R:R \u2265 2.0: add a stop and a target" in body["detail"]
+    worker.card.update(stop_loss=None, take_profit=64000.0)
+    await assert_refused_like_approve(h, worker, code="MANDATE_MIN_RR")
+
+
+async def test_a_card_with_the_stop_on_the_wrong_side_is_refused(h, worker):  # noqa: F811
+    m = await h.mandate(instruments=(BTC,))
+    await limits(h, m, min_rr="2.0")
+    worker.card.update(order_type="LIMIT", limit_price=60000.0, stop_loss=62000.0, take_profit=66000.0)  # a BUY
+    body = await assert_refused_like_approve(h, worker, code="MANDATE_MIN_RR")
+    assert "stop/target on the wrong side" in body["detail"]
 
 
 async def test_a_card_below_the_reward_risk_minimum_is_refused(h, worker):  # noqa: F811
@@ -159,6 +214,59 @@ async def test_a_market_card_measures_reward_risk_from_the_last_price(h, worker)
     assert body["code"] == "MANDATE_MIN_RR" and "R:R 1.5 below the mandate minimum 2.0" in body["detail"]
     await h.redis.delete("market:24h:BTCUSDT")
     assert (await ask(h, uuid.uuid4())).json()["ok"] is True  # no price: skipped
+
+
+# --- a perp card that closes a short is an exit: never refused ---------------------------------------------------
+
+PERP = "BTCUSDT-PERP.BINANCE"
+
+
+async def short_perp_mandate(h):
+    m = await h.mandate(instruments=(PERP,))
+    await h.pool.execute("UPDATE ai_mandates SET allow_perps = true, max_leverage = 5 WHERE id = $1", m.id)
+    await h.pool.execute(
+        """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side, entry_price,
+               quantity, current_price, status)
+           VALUES ($1, 'PAPER-ACCOUNT-001', $2, $3, 'SHORT', 60000, 0.01, 60000, 'OPEN')""",
+        uuid.uuid4().hex, m.instance_id, PERP)
+    return m
+
+
+@pytest.mark.parametrize("case", ["loss_latched", "target_met", "low_confidence", "no_stop_or_target"])
+async def test_a_card_closing_a_short_is_allowed_whatever_the_filters_and_the_session(h, worker, case):  # noqa: F811
+    m = await short_perp_mandate(h)
+    # BUY + reduce_pct on a perp is a reduction of a short: not an entry
+    worker.card.update(instrument_id=PERP, side="BUY", reduce_pct=100, quantity=None, stop_loss=None, take_profit=None)
+    if case == "loss_latched":
+        await limits(h, m, daily_loss_limit_pct="3")
+        await latch(h, m, "loss_latched_at")
+    elif case == "target_met":
+        await limits(h, m, daily_profit_target_pct="2")
+        await latch(h, m, "target_hit_at")
+    elif case == "low_confidence":
+        await limits(h, m, min_conviction="0.90")
+        worker.card["confidence"] = 0.1
+    else:
+        await limits(h, m, min_rr="3.0", min_conviction="0.90")
+    body = (await ask(h, uuid.uuid4())).json()
+    assert body["ok"] is True, body
+
+
+    done = await approve(h, uuid.uuid4())
+    assert done.status_code == 200, done.text
+
+
+async def test_the_picker_does_not_offer_a_latched_mandate(h):
+    from cryptonite_api.mandate_choice import choose_mandate_remedy  # noqa: PLC0415
+
+    a = await h.mandate(instruments=(BTC,))
+    b = await h.mandate(instruments=(BTC,))
+    await limits(h, a, daily_loss_limit_pct="3")
+    await latch(h, a, "loss_latched_at")
+    remedy = await choose_mandate_remedy(h.pool, BTC, D("5"), {})
+    blocked = {c["id"]: c["blocked"] for c in remedy["candidates"]}
+    assert "daily loss limit reached" in blocked[str(a.id)]
+    assert blocked[str(b.id)] is None
 
 
 # --- the Inbox debate approval -------------------------------------------------------------------------------------

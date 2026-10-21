@@ -62,6 +62,11 @@ MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct,
                    "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct")
 
 
+# Recorded in the payload and the summary of a debate entry the R:R filter could not measure (a debate carries no
+# stop or target today), so the skipped filter is visible to the operator
+MIN_RR_SKIPPED = "min_rr skipped: no stop/target"
+
+
 def side_of(recommendation: str) -> str | None:
     """The order side of a verdict (``normalize_verdict``'s mapping; "strong buy" with a space is
     STRONG_BUY); None for HOLD or an unknown verdict."""
@@ -124,7 +129,9 @@ async def entry_filter_reason(conn, mandate: Mandate, conviction: float, *, now:
                               reference_price: float | None = None, stop_loss: float | None = None,
                               take_profit: float | None = None) -> str | None:
     """Why the mandate refuses this entry (ADR 0010: its daily session, conviction or R:R), else None."""
-    if mandate.min_rr is not None and stop_loss and take_profit and not (reference_price and reference_price > 0):
+    if mandate.min_rr is not None and not (stop_loss and take_profit):
+        logger.info("R:R filter of mandate %s skipped: %s", mandate.name, MIN_RR_SKIPPED)
+    elif mandate.min_rr is not None and not (reference_price and reference_price > 0):
         logger.info("R:R filter of mandate %s skipped: no reference price", mandate.name)
     refusal = entry_filter_refusal(
         mandate, await session_verdict_of(conn, mandate, now), conviction=conviction,
@@ -220,6 +227,9 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         payload = {**base, "allocation_pct": alloc}
         summary = (f"BUY {base['instrument_id']} {alloc:g}% of mandate "
                    f"(${float(mandate.capital_budget_usd) * alloc / 100:,.0f}) · conviction {conviction:.2f}")
+        if mandate.min_rr is not None and not (stop_loss and take_profit):
+            payload["filters_skipped"] = [MIN_RR_SKIPPED]
+            summary += f" · {MIN_RR_SKIPPED}"
         action = ActionClass.ADD_RISK
     else:
         held = await mandate_holding(conn, mandate, instrument_id)

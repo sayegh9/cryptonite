@@ -350,6 +350,9 @@ async def _plan_debate(request: Request, run, decision, mandate_id: uuid.UUID | 
         refused = await entry_filter_detail(conn, mandate, "debate", conviction=decision["conviction_score"])
     if refused is not None:
         raise HTTPException(status_code=409, detail=refused)
+    if mandate.min_rr is not None:  # a debate carries no stop or target: the R:R filter cannot measure it
+        logger.info("Debate approval on %s: R:R filter of mandate %s skipped: min_rr skipped: no stop/target",
+                    instrument, mandate.name)
     marks = await read_marks(_get_redis(request))
     async with pool.acquire() as conn:
         room = await entry_room_pct(conn, mandate, instrument, marks)

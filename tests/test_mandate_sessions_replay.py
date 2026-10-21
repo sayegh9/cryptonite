@@ -13,6 +13,7 @@ import datetime
 import json
 import uuid
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import asyncpg
@@ -31,8 +32,22 @@ from test_mandate_hard_stop import drain, engine_holding, hold, queue, quotes_at
 
 D = Decimal
 ACCOUNT = "PAPER-ACCOUNT-001"
-# The gate reads today's session with the real clock, so the replay runs on today's UTC date
+# The replay's day is fixed once; the gate's clock (which reads today's session) is frozen inside it, so a run that
+# crosses 00:00 UTC cannot move the gate onto another day
 DAY_START = session_start(utc_session_date(datetime.datetime.now(datetime.UTC)))
+FROZEN_NOW = DAY_START + datetime.timedelta(hours=12)
+
+
+class _FrozenDateTime(datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return FROZEN_NOW
+
+
+@pytest.fixture(autouse=True)
+def frozen_gate_clock(monkeypatch):
+    monkeypatch.setattr("cryptonite_orchestrator.mandate_gate.datetime",
+                        SimpleNamespace(datetime=_FrozenDateTime, UTC=datetime.UTC))
 
 
 def test_session_pnl_ignores_a_budget_edit():
@@ -62,13 +77,13 @@ async def db(db_url):
 
 async def make_mandate(pool, **limits):
     cols = ", ".join(limits)
-    params = ", ".join(f"${i + 2}" for i in range(len(limits)))
+    params = ", ".join(f"${i + 3}" for i in range(len(limits)))
     async with pool.acquire() as conn:
         mid = await conn.fetchval(
             f"""INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct,
-                    autonomy_level{', ' + cols if cols else ''})
-                VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 25, 10, 1{', ' + params if params else ''}) RETURNING id""",
-            f"s-{uuid.uuid4().hex[:6]}", *(D(v) for v in limits.values()))
+                    autonomy_level, hwm_rebased_at{', ' + cols if cols else ''})
+                VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 25, 10, 1, $2{', ' + params if params else ''}) RETURNING id""",
+            f"s-{uuid.uuid4().hex[:6]}", DAY_START - datetime.timedelta(days=2), *(D(v) for v in limits.values()))
         m = await load_mandate(conn, mid)
         assert await ensure_mandate_instance(conn, m, ACCOUNT)
     return m
@@ -112,7 +127,7 @@ async def test_replay_target_then_profit_lock_flattens_once(db):
     row = await session_row(pool, m)
     assert (row["start_equity"], row["start_budget"], row["last_pnl"]) == (D("9995.00"), D("10000.00"), D("0.00"))
     async with pool.acquire() as conn:
-        assert await session_verdict_for(conn, m, datetime.datetime.now(datetime.UTC)) is SessionVerdict.ACTIVE
+        assert await session_verdict_for(conn, m, FROZEN_NOW) is SessionVerdict.ACTIVE
 
     await tick(52000, 1)  # equity 10,195: P&L +200 = 2% of the budget -> target met
     row = await session_row(pool, m)
@@ -125,7 +140,7 @@ async def test_replay_target_then_profit_lock_flattens_once(db):
                                               int((DAY_START + datetime.timedelta(days=1)).timestamp()))
     assert await closes(pool, m) == 0  # positions kept
     async with pool.acquire() as conn:
-        assert await session_verdict_for(conn, m, datetime.datetime.now(datetime.UTC)) is SessionVerdict.TARGET_MET
+        assert await session_verdict_for(conn, m, FROZEN_NOW) is SessionVerdict.TARGET_MET
 
     await tick(52100, 2)  # still above: no second alert
     assert len(alerts(redis, "MANDATE_DAILY_TARGET")) == 1
@@ -147,7 +162,7 @@ async def test_replay_target_then_profit_lock_flattens_once(db):
     assert len(alerts(redis, "MANDATE_PROFIT_LOCK")) == 1
     assert await pool.fetchval("SELECT count(*) FROM notifications_outbox WHERE kind = 'MANDATE_PROFIT_LOCK'") == 1
     async with pool.acquire() as conn:
-        assert await session_verdict_for(conn, m, datetime.datetime.now(datetime.UTC)) is SessionVerdict.LOCK_FIRED
+        assert await session_verdict_for(conn, m, FROZEN_NOW) is SessionVerdict.LOCK_FIRED
         after = await load_mandate(conn, m.id)
     # a session latch is not a halt, a demotion or a breach
     assert (after.status, after.autonomy_level) == (MandateStatus.ACTIVE, AutonomyLevel.L1)
@@ -244,6 +259,59 @@ async def test_a_budget_edit_during_the_day_is_not_a_loss(db):
     assert await closes(pool, m) == 0
 
 
+async def test_a_budget_cut_before_the_limits_are_set_is_not_a_loss(db):
+    pool = db
+    m = await make_mandate(pool)  # no limits yet
+    await hold(pool, m.instance_id, "0.1", "50000")
+    engine = engine_holding("0.1")
+    redis = AsyncMock()
+    # last night's snapshot is valued at the old 10,000 budget
+    await pool.execute("""INSERT INTO ai_mandate_equity (mandate_id, ts, equity, hwm, drawdown_pct)
+                          VALUES ($1, $2, 9995, 9995, 0)""", m.id, DAY_START - datetime.timedelta(minutes=1))
+    # 14:00: the budget is cut to 6,000 (re-bases the high-water mark); 14:30: the operator sets the loss limit
+    await pool.execute("UPDATE ai_mandates SET capital_budget_usd = 6000, hwm_rebased_at = $2 WHERE id = $1",
+                       m.id, DAY_START + datetime.timedelta(hours=14))
+    await pool.execute("UPDATE ai_mandates SET daily_loss_limit_pct = 3 WHERE id = $1", m.id)
+    await mandate_monitor_once(engine, pool, redis, quotes_at(50000),
+                               now=DAY_START + datetime.timedelta(hours=14, minutes=31))
+    row = await session_row(pool, m)
+    assert row["loss_latched_at"] is None and abs(row["last_pnl"]) <= D("1")
+    assert row["start_budget"] == D("6000.00") and row["start_equity"] == D("5995.00")
+    assert await closes(pool, m) == 0
+    assert alerts(redis, "MANDATE_DAILY_LOSS") == []
+
+
+async def test_a_mandate_that_does_not_load_is_skipped_not_fatal(db, monkeypatch, caplog):
+    import cryptonite_orchestrator.mandate_monitor as monitor  # noqa: PLC0415
+
+    pool = db
+    bad = await make_mandate(pool)
+    good = await make_mandate(pool, daily_loss_limit_pct="3")
+    await hold(pool, good.instance_id, "0.1", "50000")
+    real_load = monitor.load_mandate
+
+    async def flaky_load(conn, mandate_id, **kw):
+        if str(mandate_id) == str(bad.id):
+            raise ValueError("daily_loss_limit_pct must be at least max_risk_per_trade_pct")
+        return await real_load(conn, mandate_id, **kw)
+
+    monkeypatch.setattr(monitor, "load_mandate", flaky_load)
+    engine = engine_holding("0.1")
+    redis = AsyncMock()
+    t = DAY_START + datetime.timedelta(hours=1)
+    with caplog.at_level("ERROR"):
+        await mandate_monitor_once(engine, pool, redis, quotes_at(50000), now=t)  # does not raise
+        assert (await session_row(pool, good)) is not None  # the other mandate is still tracked
+        assert any(str(bad.id) in r.message and r.levelname == "ERROR" for r in caplog.records)
+
+        # the account backstop still halts the mandates that load
+        engine.dispatcher.cash_balance = D("75000")
+        await mandate_monitor_once(engine, pool, redis, quotes_at(50000), now=t + datetime.timedelta(seconds=5))
+    assert engine.kill_switch.is_latched
+    async with pool.acquire() as conn:
+        assert (await real_load(conn, good.id)).status is MandateStatus.HALTED
+
+
 async def test_a_mandate_without_limits_has_no_session_row(db):
     pool = db
     m = await make_mandate(pool)
@@ -251,7 +319,7 @@ async def test_a_mandate_without_limits_has_no_session_row(db):
                                now=DAY_START + datetime.timedelta(minutes=1))
     assert await session_row(pool, m) is None
     async with pool.acquire() as conn:
-        assert await session_verdict_for(conn, m, datetime.datetime.now(datetime.UTC)) is SessionVerdict.ACTIVE
+        assert await session_verdict_for(conn, m, FROZEN_NOW) is SessionVerdict.ACTIVE
 
 
 @pytest.mark.parametrize(("column", "value"), [
@@ -259,6 +327,7 @@ async def test_a_mandate_without_limits_has_no_session_row(db):
     ("daily_loss_limit_pct", "0"), ("daily_loss_limit_pct", "10.01"),  # above the mandate's 10% hard stop
     ("daily_profit_target_pct", "0"), ("daily_profit_target_pct", "100.01"),
     ("profit_lock_pct", "-1"), ("profit_lock_pct", "100.01"),
+    ("daily_loss_limit_pct", "0.99"),  # below the mandate's risk per trade (default 1%): one stopped trade must fit
 ])
 async def test_the_database_checks_the_limits(db, column, value):
     with pytest.raises(asyncpg.CheckViolationError, match="chk_ai_mandates_"):

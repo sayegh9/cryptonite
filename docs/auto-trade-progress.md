@@ -43,20 +43,23 @@ Notes and choices made (the safer or simpler option where the plan was open):
 - **Migration 049 backfills** the perps default (3 × risk, capped at the hard stop) on mandates that already have perps
   on, as S-2 applies to new ones. Spot mandates stay off. A perps mandate whose hard stop is below one trade's risk
   gets no default (its hard stop is tighter than any daily limit).
-- **`daily_loss_limit_pct ≥ max_risk_per_trade_pct`** is a model validator only (as the plan says); the DB checks
-  only `> 0 AND ≤ max_drawdown_pct`.
+- **`daily_loss_limit_pct ≥ max_risk_per_trade_pct`** is a model validator and, after review, also the DB CHECK
+  `chk_ai_mandates_daily_loss_ge_risk` (049), so a row that breaks it cannot reach `load_mandate`; the monitor and the
+  account backstop also log (ERROR) and skip a mandate that fails to load instead of aborting the pass.
 - **Gate order**: the session check runs right after the status check, before the instrument, perps, budget and
   approval checks, so a latched day refuses with the session code and never records a breach.
 - **R:R reference price**: the debate worker passes the decision price (`reference_price`) to `route_entry`; the card
   uses its limit price, else the perp mark, else the spot `market:24h` last price. With none, the filter is skipped
-  and logged. The worker's debates carry no stop or target today, so R:R applies to Brain cards in practice.
+  and logged. Brain cards must carry a stop and a target (and a confidence) when the mandate sets the filter, else
+  they are refused; the worker's debates carry no stop or target today, so there `min_rr` is skipped, logged and
+  recorded as "min_rr skipped: no stop/target" (S-9).
 - **Refusal codes outside the gate**: `MANDATE_MIN_CONVICTION` and `MANDATE_MIN_RR` (API details and logs only; the
   gate does not check them, because it has no conviction or target for an order).
 - **Notifier**: `MANDATE_DAILY_LOSS`, `MANDATE_PROFIT_LOCK` and `MANDATE_DAILY_TARGET` added to `OUTBOX_KINDS`, so a
   Critical session alert is not sent twice (once from the channel, once from the outbox).
 - **Brain view**: `agent_safe_mandate_health` was trivially extendable (CREATE OR REPLACE appends the limits and
   today's session row); the downgrade restores 046's view.
-- **Editor**: an emptied field that was set is sent as `clear_limits` (needs TOTP); the profit lock is always sent. The
+- **Editor**: an emptied field that was set is sent as `clear_limits` (needs TOTP); an emptied profit lock is not sent (the server keeps the value or applies the default) and is not a loosening. The
   stale-build guard from #111 is kept.
 
 ## Final cloud run

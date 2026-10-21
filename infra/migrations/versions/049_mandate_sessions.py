@@ -68,6 +68,9 @@ def upgrade() -> None:
     op.execute("""UPDATE ai_mandates SET daily_loss_limit_pct = LEAST(3 * max_risk_per_trade_pct, max_drawdown_pct)
                   WHERE allow_perps AND daily_loss_limit_pct IS NULL
                     AND LEAST(3 * max_risk_per_trade_pct, max_drawdown_pct) >= max_risk_per_trade_pct""")
+    # One stopped trade must fit in the day: also in the DB, so a row that breaks it cannot reach load_mandate
+    op.execute("""ALTER TABLE ai_mandates ADD CONSTRAINT chk_ai_mandates_daily_loss_ge_risk
+                  CHECK (daily_loss_limit_pct IS NULL OR daily_loss_limit_pct >= max_risk_per_trade_pct)""")
 
     op.execute("""
         CREATE TABLE ai_mandate_daily_sessions (
@@ -126,7 +129,7 @@ def downgrade() -> None:
     op.execute(f"CREATE VIEW {HEALTH_VIEW} WITH (security_barrier) AS {HEALTH_046}")
     op.execute(f"GRANT SELECT ON {HEALTH_VIEW} TO cryptonite_agent_ro")
     op.execute("DROP TABLE IF EXISTS ai_mandate_daily_sessions")
-    for name in ("profit_lock", "daily_profit_target", "daily_loss_limit", "min_rr", "min_conviction"):
+    for name in ("daily_loss_ge_risk", "profit_lock", "daily_profit_target", "daily_loss_limit", "min_rr", "min_conviction"):
         op.execute(f"ALTER TABLE ai_mandates DROP CONSTRAINT IF EXISTS chk_ai_mandates_{name}")
     op.execute("""
         ALTER TABLE ai_mandates

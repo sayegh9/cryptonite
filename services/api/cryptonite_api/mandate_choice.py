@@ -26,7 +26,7 @@ from cryptonite_schemas.mandate import (
     canonical_instrument,
     mandate_id_from_instance,
 )
-from cryptonite_schemas.session import entry_filter_refusal
+from cryptonite_schemas.session import SESSION_REFUSALS, SessionVerdict, entry_filter_refusal
 
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 
@@ -59,13 +59,16 @@ async def instrument_conflict(conn, mandate: Mandate, instrument_id: str, quanti
 
 async def entry_filter_detail(conn, mandate: Mandate, what: str, *, conviction: Decimal | float | None = None,
                               entry: Decimal | None = None, stop_loss: Decimal | None = None,
-                              take_profit: Decimal | None = None) -> str | None:
+                              take_profit: Decimal | None = None, side: str = "BUY",
+                              require_inputs: bool = False) -> str | None:
     """The refusal detail when the mandate's entry filters or its daily session refuse a new entry (ADR 0010), else
-    None. ``what`` names the thing to reject ("card", "debate"). The orchestrator's gate refuses the session cases
-    again at execution; read only."""
+    None. ``what`` names the thing to reject ("card", "debate"). ``require_inputs``: a filter the mandate sets is not
+    skipped for a missing input (a Brain card). The orchestrator's gate refuses the session cases again at execution;
+    read only."""
     verdict = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
     refusal = entry_filter_refusal(mandate, verdict, conviction=conviction, entry=entry, stop_loss=stop_loss,
-                                   take_profit=take_profit)
+                                   take_profit=take_profit, side=side,
+                                   require_inputs=require_inputs)
     if refusal is None:
         return None
     code, text = refusal
@@ -99,11 +102,14 @@ async def choose_mandate_remedy(pool, instrument: str, requested: Decimal, marks
         for m in mandates:
             inst, _ = await held_values(conn, m, instrument, marks)
             room = await entry_room_pct(conn, m, instrument, marks)
-            candidates.append((m, inst > 0, room))
-    holder = next((m for m, holds, _ in candidates if holds), None)
+            verdict = await session_verdict_for(conn, m, datetime.datetime.now(datetime.UTC))
+            candidates.append((m, inst > 0, room, verdict))
+    holder = next((m for m, holds, _, _ in candidates if holds), None)
     out = []
-    for m, holds, room in candidates:
-        if holds:
+    for m, holds, room, verdict in candidates:
+        if verdict is not SessionVerdict.ACTIVE:  # ADR 0010: a latched day refuses the entry, so it is not offered
+            blocked = f"{SESSION_REFUSALS[verdict]} (mandate {m.name})"
+        elif holds:
             blocked = None
         elif holder is not None:
             blocked = f"{holder.name} holds {instrument}, so only it can add to it"

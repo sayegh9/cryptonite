@@ -155,6 +155,24 @@ def test_entry_filter_wording():
     # no confidence, no entry price, no stop or no target: that filter is skipped
     assert entry_filter_refusal(m, active) is None
     assert entry_filter_refusal(m, active, stop_loss=D("95"), take_profit=D("108")) is None
+    # a Brain card must carry what the mandate's filters measure: a missing input is a refusal there
+    strict = {"require_inputs": True}
+    assert entry_filter_refusal(m, active, conviction=0.9, **strict) == (
+        "MANDATE_MIN_RR", "the mandate requires R:R \u2265 2.0: add a stop and a target")
+    assert entry_filter_refusal(m, active, conviction=0.9, stop_loss=D("95"), **strict)[0] == "MANDATE_MIN_RR"
+    assert entry_filter_refusal(m, active, entry=D("100"), stop_loss=D("95"), take_profit=D("110"), **strict) == (
+        "MANDATE_MIN_CONVICTION", "the mandate requires conviction \u2265 0.70: the card has no confidence")
+    assert entry_filter_refusal(m, active, conviction=0.9, entry=D("100"), stop_loss=D("95"), take_profit=D("110"),
+                                **strict) is None
+    assert entry_filter_refusal(mandate(), active, **strict) is None  # filters off: nothing required
+    # the stop on the loss side and the target on the profit side, for the order's side
+    wrong = ("MANDATE_MIN_RR", "stop/target on the wrong side of the entry")
+    assert entry_filter_refusal(m, active, entry=D("100"), stop_loss=D("105"), take_profit=D("115")) == wrong  # long
+    assert entry_filter_refusal(m, active, entry=D("100"), stop_loss=D("95"), take_profit=D("90")) == wrong
+    assert entry_filter_refusal(m, active, entry=D("100"), stop_loss=D("95"), take_profit=D("95")) == wrong
+    assert entry_filter_refusal(m, active, entry=D("100"), stop_loss=D("105"), take_profit=D("90"), side="SELL") is None
+    assert entry_filter_refusal(m, active, entry=D("100"), stop_loss=D("95"), take_profit=D("90"),
+                                side="SELL") == wrong
     # the session comes first
     assert entry_filter_refusal(m, SessionVerdict.LOSS_LATCHED, conviction=0.62) == (
         "MANDATE_DAILY_LOSS_LATCHED", "daily loss limit reached — new entries resume 00:00 UTC")

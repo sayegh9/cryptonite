@@ -252,9 +252,16 @@ def has_session_limits(mandate: Mandate) -> bool:
 
 
 async def _start_equity(conn, mandate: Mandate, day_start: datetime.datetime, equity: Decimal) -> Decimal:
-    """The equity the day starts from: the last snapshot before 00:00 UTC, else the equity now (first tick)."""
+    """The equity the day starts from: the last snapshot before 00:00 UTC, else the equity now (first tick).
+
+    Only a snapshot taken since the mandate's equity was last re-based (``hwm_rebased_at``: a budget edit or a resume)
+    counts: an older one is valued at the old budget, while ``start_budget`` is today's, so it would read the edit as
+    P&L. When none remains, the equity now is the start (the edit moved both together)."""
     last = await conn.fetchval(
-        "SELECT equity FROM ai_mandate_equity WHERE mandate_id = $1 AND ts < $2 ORDER BY ts DESC, id DESC LIMIT 1",
+        """SELECT equity FROM ai_mandate_equity
+           WHERE mandate_id = $1 AND ts < $2
+             AND ts >= COALESCE((SELECT hwm_rebased_at FROM ai_mandates WHERE id = $1), '-infinity'::timestamptz)
+           ORDER BY ts DESC, id DESC LIMIT 1""",
         mandate.id, day_start)
     return Decimal(str(last)) if last is not None else equity
 
@@ -365,8 +372,12 @@ async def account_backstop(conn, engine, redis, now: datetime.datetime, benchmar
     if not (ks and ks["is_latched"]):
         await conn.fetchval("SELECT trip_execution_kill_switch($1, $2, $3, $4)", "PAPER", account_id, reason, "risk:account_backstop")
     for row in await conn.fetch("SELECT id FROM ai_mandates WHERE status <> 'ARCHIVED'"):
-        m = await load_mandate(conn, row["id"])
-        if m.status is not MandateStatus.HALTED:
+        try:
+            m = await load_mandate(conn, row["id"])
+        except Exception as e:  # a row that does not load must not stop the backstop for the others
+            logger.error("Account backstop: mandate %s does not load, skipped: %s", row["id"], e)
+            continue
+        if m is not None and m.status is not MandateStatus.HALTED:
             t = transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps), AutonomyTrigger.BACKSTOP, reason=reason)
             async with conn.transaction():
                 await apply_transition(conn, m.id, t, actor="risk:account_backstop", detail={"equity": str(equity), "hwm": str(v["hwm"])})
@@ -394,7 +405,11 @@ async def mandate_monitor_once(engine, pool, redis, quotes=None, now: datetime.d
     async with pool.acquire() as conn:
         await account_backstop(conn, engine, redis, now, benchmark)
         for row in await conn.fetch("SELECT id FROM ai_mandates WHERE status <> 'ARCHIVED' ORDER BY created_at"):
-            m = await load_mandate(conn, row["id"])
+            try:
+                m = await load_mandate(conn, row["id"])
+            except Exception as e:  # a row that does not load must not abort the others' stops
+                logger.error("Mandate %s does not load, skipped this pass: %s", row["id"], e)
+                continue
             if m is None:
                 continue
             try:

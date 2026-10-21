@@ -146,21 +146,37 @@ SESSION_REFUSAL_CODES = {
 
 def entry_filter_refusal(mandate, verdict: SessionVerdict, *, conviction: Decimal | float | None = None,
                          entry: Decimal | None = None, stop_loss: Decimal | None = None,
-                         take_profit: Decimal | None = None) -> tuple[str, str] | None:
+                         take_profit: Decimal | None = None, side: str = "BUY",
+                         require_inputs: bool = False) -> tuple[str, str] | None:
     """(code, text) when ``mandate`` refuses a new entry (ADR 0010), else None. Refuse only: nothing is resized.
 
-    The daily session first, then the conviction (only when there is one), then R:R (only with an entry price, a stop
-    and a target)."""
+    The daily session first, then the conviction, then R:R. ``side`` is the order's side (BUY is a long, SELL a short):
+    the stop must sit on the loss side of the entry and the target on the profit side, else the entry is refused.
+    ``require_inputs`` (a Brain card, which can carry all of them): a filter the mandate sets is not skipped when its
+    input is missing, the entry is refused. Without it a missing confidence, or a missing stop, target or entry price,
+    skips that filter (a debate carries a conviction but no stop or target)."""
     if verdict is not SessionVerdict.ACTIVE:
         return SESSION_REFUSAL_CODES[verdict], SESSION_REFUSALS[verdict]
-    if mandate.min_conviction is not None and conviction is not None:
-        c = Decimal(str(conviction))
-        if c < mandate.min_conviction:
-            return MIN_CONVICTION_REFUSAL, f"conviction {c:.2f} below the mandate minimum {mandate.min_conviction:.2f}"
-    if mandate.min_rr is not None and entry and stop_loss and take_profit:
-        rr = reward_risk(Decimal(str(entry)), Decimal(str(stop_loss)), Decimal(str(take_profit)))
-        if rr is not None and rr < mandate.min_rr:
-            return MIN_RR_REFUSAL, f"R:R {_ratio(rr)} below the mandate minimum {_ratio(mandate.min_rr)}"
+    if mandate.min_conviction is not None:
+        if conviction is None:
+            if require_inputs:
+                return MIN_CONVICTION_REFUSAL, (f"the mandate requires conviction \u2265 {mandate.min_conviction:.2f}: "
+                                                "the card has no confidence")
+        else:
+            c = Decimal(str(conviction))
+            if c < mandate.min_conviction:
+                return MIN_CONVICTION_REFUSAL, f"conviction {c:.2f} below the mandate minimum {mandate.min_conviction:.2f}"
+    if mandate.min_rr is not None:
+        if require_inputs and not (stop_loss and take_profit):
+            return MIN_RR_REFUSAL, (f"the mandate requires R:R \u2265 {_ratio(mandate.min_rr)}: add a stop and a target")
+        if entry and stop_loss and take_profit:
+            e, sl, tp = Decimal(str(entry)), Decimal(str(stop_loss)), Decimal(str(take_profit))
+            long = side.upper() != "SELL"
+            if not (sl < e < tp if long else tp < e < sl):
+                return MIN_RR_REFUSAL, "stop/target on the wrong side of the entry"
+            rr = reward_risk(e, sl, tp)
+            if rr is not None and rr < mandate.min_rr:
+                return MIN_RR_REFUSAL, f"R:R {_ratio(rr)} below the mandate minimum {_ratio(mandate.min_rr)}"
     return None
 
 

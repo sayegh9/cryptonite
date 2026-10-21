@@ -50,6 +50,7 @@ from cryptonite_schemas.mandate import (
     MandateReject,
     is_ai_instance,
 )
+from cryptonite_schemas.session import SessionVerdict
 
 logger = logging.getLogger("cryptonite.orchestrator.mandates")
 
@@ -286,8 +287,10 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     ok = await approval_granted(conn, row, payload, mandate)
     # ADR 0010: today's session (loss latch, profit target, profit lock), read at execution, so an entry approved
-    # before the latch is refused too
-    session = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
+    # before the latch is refused too. Only an ADD_RISK order reads it: a failed read can never fail an exit
+    session = SessionVerdict.ACTIVE
+    if action_class(order) is ActionClass.ADD_RISK:
+        session = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
     reject = check_mandate(mandate, order, exposure, approval_ok=ok, session=session)
     if reject is None and order.is_perp and action_class(order) is ActionClass.ADD_RISK:
         # Leverage plan 2.4: the same valuation the sizing used; a refusal, never a breach

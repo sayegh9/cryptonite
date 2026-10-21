@@ -534,7 +534,9 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
             raise HTTPException(status_code=409, detail=(
                 f"{MandateReject.PERPS_NOT_ALLOWED.value}: mandate {mandate.name} does not allow perps "
                 f"(it needs the perps opt-in at L1); nothing was queued"))
-    if card["side"] == "BUY" or perp_entry:  # an entry only gets the room the mandate has left under its position limit
+    # An entry only gets the room the mandate has left under its position limit. An exit never does: a perp reduce
+    # card closing a short is a BUY, but it is not an entry
+    if (card["side"] == "BUY" and not perp_reduce) or perp_entry:
         # Another owner holding the instrument refuses the entry in the orchestrator's gate: refused here too, before
         # sizing and before the card is claimed, so the dry run and approve give the same answer
         async with pool.acquire() as conn:
@@ -542,15 +544,16 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
                                                  Decimal(str(card.get("quantity") or 0)), "card")
         if conflict is not None:
             raise HTTPException(status_code=409, detail=conflict)
-        # ADR 0010: the mandate's daily session, its conviction filter (when the card has a confidence) and its R:R
-        # filter (when the card has a stop, a target and an entry price)
+        # ADR 0010: the mandate's daily session, its conviction filter and its R:R filter. A card must carry what a
+        # filter the mandate sets measures (a confidence; a stop and a target): without it the entry is refused
         redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
         take_profit = Decimal(str(card["take_profit"])) if card.get("take_profit") else None
         stop_loss = Decimal(str(card["stop_loss"])) if card.get("stop_loss") else None
         entry = await card_entry_price(redis, card) if (mandate.min_rr is not None and stop_loss and take_profit) else None
         async with pool.acquire() as conn:
             refused = await entry_filter_detail(conn, mandate, "card", conviction=card.get("confidence"), entry=entry,
-                                                stop_loss=stop_loss, take_profit=take_profit)
+                                                stop_loss=stop_loss, take_profit=take_profit, side=card["side"],
+                                                require_inputs=True)
         if refused is not None:
             raise HTTPException(status_code=409, detail=refused)
         marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))

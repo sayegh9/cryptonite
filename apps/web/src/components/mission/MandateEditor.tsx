@@ -103,7 +103,8 @@ export function addsRisk(old: Mandate | null, f: Form): string[] {
   if (floorLoosened(old.min_rr, f.min_rr)) why.push("a lower minimum R:R");
   if (ceilingLoosened(old.daily_loss_limit_pct, f.daily_loss_limit_pct)) why.push("a looser daily loss limit");
   if (ceilingLoosened(old.daily_profit_target_pct, f.daily_profit_target_pct)) why.push("a higher or no daily profit target");
-  if (Number(f.profit_lock_pct) < Number(old.profit_lock_pct ?? 50)) why.push("a lower profit lock");
+  // An emptied profit lock is not sent (the server keeps the current value or applies the default): not a loosening
+  if (f.profit_lock_pct.trim() !== "" && Number(f.profit_lock_pct) < Number(old.profit_lock_pct ?? 50)) why.push("a lower profit lock");
   return why;
 }
 
@@ -156,7 +157,7 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
       veto_window_s: Number(form.veto_window_s),
       ...(form.active_hours_utc ? { active_hours_utc: form.active_hours_utc } : current?.active_hours_utc ? { clear_active_hours: true } : {}),
       allow_perps: form.allow_perps,
-      profit_lock_pct: form.profit_lock_pct,
+      ...(form.profit_lock_pct.trim() !== "" ? { profit_lock_pct: form.profit_lock_pct.trim() } : {}),
       ...(needsTotp ? { totp_code: totp } : {}),
     };
     // ADR 0010: a filled field is sent; an emptied one that was set is switched off (clear_limits, TOTP)
@@ -276,7 +277,7 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
             </label>
             <label className="space-y-1">
               <span className="text-zinc-400">Profit lock (% of the target, 0–100): after the target, the mandate is flattened if the day&apos;s P&amp;L falls back to this</span>
-              <input aria-label="Profit lock" className={input} type="number" min="0" max="100" step="1" value={form.profit_lock_pct} onChange={set("profit_lock_pct")} required />
+              <input aria-label="Profit lock" className={input} type="number" min="0" max="100" step="1" placeholder="50" value={form.profit_lock_pct} onChange={set("profit_lock_pct")} />
             </label>
           </div>
         </fieldset>

@@ -27,7 +27,7 @@ at the mandate's current level; nothing here adds an approval bypass, changes a 
 | S-6 | Profit lock: once the target was hit, `pnl ≤ target_usd × profit_lock_pct / 100` flattens the mandate, Critical alert (`MANDATE_PROFIT_LOCK`) | Default 50%: give back at most half the target |
 | S-7 | The verdict is derived, never stored: `session_verdict` (pure, `cryptonite_schemas.session`) from today's `ai_mandate_daily_sessions` row and the current limits. Precedence LOSS_LATCHED > LOCK_FIRED > TARGET_MET > ACTIVE. A recorded latch time is sticky for the day: neither the P&L nor an edit of the limits clears it; the next UTC day starts a new row | No `session_state` column anywhere |
 | S-8 | The orchestrator's mandate gate refuses ADD_RISK with `MANDATE_DAILY_LOSS_LATCHED` or `MANDATE_DAILY_TARGET_MET` (also for LOCK_FIRED) while the verdict is not ACTIVE, **including an approved command executed later**. REDUCE_RISK always passes. Neither code is in `BREACH_CODES` | The check still only rejects and never edits the intent; `GuardedOrderDispatcher` is untouched |
-| S-9 | Entry filters are refuse only. Conviction below `min_conviction` and R:R = \|target − entry\| / \|entry − stop\| below `min_rr` refuse the entry; a filter whose input is missing (no confidence on a card; no stop, target or entry price) is skipped and logged, never guessed | The debate worker ends the run `NO_TRADE` (no new status strings); the Brain card's dry run and approve, and the Inbox debate approval, refuse with the same text |
+| S-9 | Entry filters are refuse only. Conviction below `min_conviction` and R:R = (target − entry) / (entry − stop) below `min_rr` refuse the entry. The stop must sit on the loss side of the entry and the target on the profit side for the order's side (long: stop < entry < target; short: target < entry < stop), else "stop/target on the wrong side". **Brain cards** must carry what a filter the mandate sets measures: with `min_rr` set an entry card without both a stop and a target is refused ("add a stop and a target"), with `min_conviction` set one without a confidence is refused. **Debates** carry a conviction but no stop or target today: `min_conviction` always applies, `min_rr` is skipped, logged at INFO and recorded as "min_rr skipped: no stop/target" in the approval payload (`filters_skipped`) and summary. A missing entry price (no limit price, mark or last price) still skips R:R, logged. An exit is never refused by any filter or by the session, including a perp reduce card that closes a short (side BUY) | The debate worker ends the run `NO_TRADE` (no new status strings); the Brain card's dry run and approve, and the Inbox debate approval, refuse with the same text |
 | S-10 | Setting or tightening a filter or limit is free. Lowering or removing a minimum, raising or removing a daily limit, and lowering the profit lock are risk-adding edits and need TOTP (`risk_adding_change`) | As every other loosening (ADR 0004 §7.1) |
 
 ## Difference from the account daily-loss latch
@@ -55,7 +55,12 @@ mandate. Both apply; whichever trips first refuses the entry.
   and flatten at once. That is what the limit means; the editor says the limit is measured from 00:00 UTC.
 - The Brain sees each mandate's session verdict in its System state (`agent_safe_mandate_health` gains the limits and
   today's session, migration 049) and is told not to propose entries for a mandate whose session is not ACTIVE.
-- Known limits: start equity comes from the last snapshot before midnight, so a budget edit between that snapshot and
-  the first tick of the day (normally under a minute; longer if the orchestrator was down) is read as P&L. The R:R
-  filter needs the debate or card to carry both a stop and a target; debates routed by the worker carry neither today,
-  so in practice it applies to Brain cards.
+- Known limits: start equity is the last `ai_mandate_equity` snapshot before 00:00 UTC taken since the mandate's
+  equity was last re-based (`hwm_rebased_at`: a budget edit or a resume); an older snapshot is valued at the old budget
+  and is not used, so a budget edit never reads as P&L. With no such snapshot (the edit was today, or the mandate is
+  new) the day starts from the equity at the first tick that opens the session row. A budget edit between that first
+  tick's snapshot and the tick itself is still absorbed by `start_budget`. If the monitor is down, no session is
+  tracked, so a limit is not enforced during the outage and the row catches up on the first tick after it (the gate
+  still reads whatever latch was recorded). The R:R filter needs a stop and a target: Brain cards must carry them when
+  the mandate sets `min_rr` (S-9); debates routed by the worker carry neither today, so there it is skipped and
+  recorded.
