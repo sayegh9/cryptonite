@@ -146,3 +146,23 @@ def test_the_cap_key_is_per_utc_day():
     assert gate.perp_cap_key(mid, 0) == f"debate:perp_cap:{mid}:1970-01-01"
     assert gate.perp_cap_key(mid, 86399) == gate.perp_cap_key(mid, 0)
     assert gate.perp_cap_key(mid, 86400).endswith("1970-01-02")
+
+
+async def test_perp_first_puts_a_spot_covered_candidate_under_the_perp_cadence(gate, pool, admin):
+    """ADR 0010 P-10: under PERP_FIRST a BTC candidate a spot mandate also takes routes to the perps mandate, so the 1h
+    and daily-cap rules apply to it; under the default SPOT_FIRST it stays a spot candidate."""
+    import mandate_routing  # the module the gate imported
+
+    await add_mandate(admin, INSTRUMENT, perps=False)
+    await add_mandate(admin, PERP, perps=True)
+    key = "debate.perp_routing"
+    try:
+        mandate_routing.reset_routing_cache()
+        assert (await ask(gate, pool, CapRedis(), "15m")).reason == "NO_TRIAGE_GATEWAY"  # SPOT_FIRST
+        await admin.execute("INSERT INTO system_settings (key, value) VALUES ($1, $2)", key, json.dumps("1"))
+        mandate_routing.reset_routing_cache()
+        assert (await ask(gate, pool, CapRedis(), "15m")).reason == "PERP_MANDATE_NOT_1H"
+        assert (await ask(gate, pool, CapRedis(), "1h")).allowed is True
+    finally:
+        await admin.execute("DELETE FROM system_settings WHERE key = $1", key)
+        mandate_routing.reset_routing_cache()

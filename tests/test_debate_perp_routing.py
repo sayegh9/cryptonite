@@ -50,11 +50,19 @@ def db_url():
         yield url
 
 
+@pytest.fixture(autouse=True)
+def fresh_routing_cache(routing):
+    routing.reset_routing_cache()
+    yield
+    routing.reset_routing_cache()
+
+
 @pytest.fixture
 async def h(db_url, monkeypatch):
     monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "false")
     monkeypatch.setenv("ALLOW_DEV_TOTP", "false")
     harness = await make_harness(db_url)
+    await harness.pool.execute("DELETE FROM system_settings WHERE key = 'debate.perp_routing'")
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_orders, "
                                "paper_positions, ai_mandate_daily_sessions, debate_runs CASCADE")
@@ -478,3 +486,88 @@ async def test_the_orchestrator_refuses_a_debate_perp_entry_above_its_ceilings(h
         assert engine.dispatcher.open_orders == {} and engine.dispatcher.perp_positions == {}
     conn, engine = await run_debate_command({k: v for k, v in payload.items() if k != "stop_loss"}, m, "ai:debate_worker")
     assert conn.outcome()[0] == "REJECTED" and conn.outcome()[1].startswith("STOP_REQUIRED")
+
+
+# --- review fix 1: the routing preference debate.perp_routing (ADR 0010 P-10) --------------------------------------------
+
+SPOT_FIRST, PERP_FIRST = "SPOT_FIRST", "PERP_FIRST"
+
+
+async def set_routing(h, routing, mode: str) -> None:
+    await h.pool.execute(
+        """INSERT INTO system_settings (key, value, updated_at) VALUES ('debate.perp_routing', $1::jsonb, now())
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
+        json.dumps({SPOT_FIRST: "0", PERP_FIRST: "1"}.get(mode, mode)))
+    routing.reset_routing_cache()
+
+
+@pytest.mark.parametrize("mode", [SPOT_FIRST, PERP_FIRST])
+@pytest.mark.parametrize("spots", [0, 1, 2])
+@pytest.mark.parametrize("perps", [0, 1, 2])
+async def test_the_routing_matrix_of_the_preference(h, routing, mode, spots, perps):
+    spot_mandates = [await h.mandate(level=1, instruments=(SPOT,), name=f"spot-{i}-{uuid.uuid4().hex[:4]}")
+                     for i in range(spots)]
+    perp_mandates = [await perp_mandate(h) for _ in range(perps)]
+    await set_routing(h, routing, mode)
+    async with h.pool.acquire() as conn:
+        mandate, instrument = await routing.resolve_route(conn, SPOT)
+    if mode == PERP_FIRST and perps == 1:
+        expected = (perp_mandates[0].id, PERP)  # the single perps mandate, although spot mandates match
+    elif spots == 1:
+        expected = (spot_mandates[0].id, SPOT)
+    elif spots == 0 and perps == 1:
+        expected = (perp_mandates[0].id, PERP)
+    else:
+        expected = (None, SPOT)  # none, or several of a kind: the operator decides
+    assert (mandate.id if mandate else None, instrument) == expected
+
+
+async def test_perp_first_routes_a_btc_candidate_to_the_perps_mandate_and_logs_it(h, routing, caplog):
+    await h.mandate(level=1, instruments=(SPOT,))
+    await h.mandate(level=1, instruments=(SPOT,), name=f"second-{uuid.uuid4().hex[:4]}")  # two spot mandates: ambiguous
+    m = await perp_mandate(h)
+    status, mandate, _ = await route(h, routing)
+    assert (status, mandate) == ("PENDING_APPROVAL", None)  # SPOT_FIRST: the operator decides
+    await set_routing(h, routing, PERP_FIRST)
+    with caplog.at_level("INFO"):
+        status, mandate, run_id = await route(h, routing)
+    assert (status, mandate.id) == ("PENDING_APPROVAL", m.id)
+    assert (await approval_of(h, run_id))["payload"]["instrument_id"] == PERP
+    assert any("PERP_FIRST routing; routed to perps mandate" in r.message for r in caplog.records)
+
+
+async def test_an_explicit_mandate_wins_under_perp_first(h, routing):
+    spot = await h.mandate(level=1, instruments=(SPOT,))
+    perp = await perp_mandate(h)
+    await set_routing(h, routing, PERP_FIRST)
+    async with h.pool.acquire() as conn:
+        assert (await routing.resolve_route(conn, SPOT, str(spot.id)))[1] == SPOT
+        assert (await routing.resolve_route(conn, SPOT, str(spot.id)))[0].id == spot.id
+        assert (await routing.resolve_route(conn, SPOT, str(perp.id)))[0].id == perp.id
+        assert (await routing.resolve_route(conn, SPOT))[0].id == perp.id  # and without a name, the perps mandate
+
+
+async def test_the_routing_setting_is_cached_and_an_unreadable_one_is_spot_first(h, routing, monkeypatch, caplog):
+    await set_routing(h, routing, PERP_FIRST)
+    async with h.pool.acquire() as conn:
+        assert await routing.routing_mode(conn) == PERP_FIRST
+        await h.pool.execute("UPDATE system_settings SET value = '\"0\"' WHERE key = 'debate.perp_routing'")
+        assert await routing.routing_mode(conn) == PERP_FIRST  # cached
+        clock = routing.time.monotonic() + routing.ROUTING_CACHE_S + 1
+        monkeypatch.setattr(routing.time, "monotonic", lambda: clock)
+        assert await routing.routing_mode(conn) == SPOT_FIRST  # read again after the cache window
+    assert routing.ROUTING_CACHE_S <= 60
+
+    class Broken:
+        def transaction(self):
+            raise RuntimeError("database unavailable")
+
+    routing.reset_routing_cache()
+    with caplog.at_level("WARNING"):
+        assert await routing.routing_mode(Broken()) == SPOT_FIRST
+    assert "Could not read debate.perp_routing" in caplog.text
+    # a stored value that is not 0 or 1 is not trusted either
+    await set_routing(h, routing, "7")
+    async with h.pool.acquire() as conn:
+        assert await routing.routing_mode(conn) == SPOT_FIRST
+    assert routing.read_routing_mode(None) == (SPOT_FIRST, None)

@@ -36,6 +36,7 @@ package).
 import datetime
 import json
 import logging
+import time
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -57,6 +58,12 @@ from cryptonite_schemas.mandate import (
 )
 from cryptonite_schemas.marks import LiveMark
 from cryptonite_schemas.marks import entry_room_pct as room_at_marks
+from cryptonite_schemas.runtime_settings import (
+    PERP_FIRST,
+    PERP_ROUTING_KEY,
+    SPOT_FIRST,
+    read_routing_mode,
+)
 from cryptonite_schemas.session import (
     SESSION_COLUMNS,
     SessionVerdict,
@@ -79,6 +86,36 @@ MIN_RR_SKIPPED = "min_rr skipped: no stop/target"
 # A debate perp entry the routing refuses (NO_TRADE, logged with the reason)
 STOP_REQUIRED = "STOP_REQUIRED"
 NO_SHORT_STRUCTURE = "NO_SHORT_STRUCTURE"
+
+
+# ``debate.perp_routing`` is read at routing time and cached for a short while (the gate and the router both ask)
+ROUTING_CACHE_S = 30.0
+_routing_cache: tuple[float, str] | None = None
+
+
+def reset_routing_cache() -> None:
+    global _routing_cache
+    _routing_cache = None
+
+
+async def routing_mode(conn) -> str:
+    """``debate.perp_routing`` (SPOT_FIRST | PERP_FIRST): the stored setting, cached ``ROUTING_CACHE_S``. SPOT_FIRST when
+    it is missing, invalid or cannot be read (the safe mode: never more perp trades than the operator chose)."""
+    global _routing_cache
+    now = time.monotonic()
+    if _routing_cache is not None and _routing_cache[0] > now:
+        return _routing_cache[1]
+    try:
+        async with conn.transaction():  # a savepoint: a failed read must not abort the routing transaction
+            raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = $1", PERP_ROUTING_KEY)
+    except Exception as e:
+        logger.warning("Could not read %s: %s; %s applies", PERP_ROUTING_KEY, e, SPOT_FIRST)
+        return SPOT_FIRST
+    mode, problem = read_routing_mode(raw)
+    if problem:
+        logger.warning("%s: %s; %s applies", PERP_ROUTING_KEY, problem, mode)
+    _routing_cache = (now + ROUTING_CACHE_S, mode)
+    return mode
 
 
 def side_of(recommendation: str) -> str | None:
@@ -107,12 +144,16 @@ async def _perp_mandates(conn, perp_instrument: str) -> list[Mandate]:
     return [Mandate.from_row(r) for r in rows]
 
 
-async def resolve_route(conn, instrument_id: str, mandate_id: str | None = None) -> tuple[Mandate | None, str]:
+async def resolve_route(conn, instrument_id: str, mandate_id: str | None = None, *,
+                        mode: str | None = None) -> tuple[Mandate | None, str]:
     """(mandate, the instrument its order trades). The spot mandate as ``resolve_mandate`` finds it; else, for a spot
     instrument no ACTIVE mandate allows, the single ACTIVE perps mandate that allows its perpetual, on the perpetual.
     A named mandate wins: it trades the instrument when it allows it, else its perpetual when it has perps on and
-    allows that. When a spot and a perps mandate both match, the spot one is taken (logged); the operator can pick
-    another in the Inbox. (None, instrument) when nothing matches or more than one mandate of a kind does."""
+    allows that. When a spot and a perps mandate both match, the spot one is taken (logged) under SPOT_FIRST, the
+    default; under PERP_FIRST (``debate.perp_routing``, ``mode`` overrides the stored setting) the single ACTIVE
+    perps mandate that allows the perpetual is taken instead (logged), and with none or several the spot rule
+    applies. The operator can pick another in the Inbox. (None, instrument) when nothing matches or more than one
+    mandate of a kind does."""
     inst = canonical_instrument(instrument_id)
     perp = None if is_perp_instrument(inst) else to_perp_instrument_id(inst.split(".")[0])
     if mandate_id:
@@ -124,6 +165,11 @@ async def resolve_route(conn, instrument_id: str, mandate_id: str | None = None)
         if m and m.status.value == "ACTIVE" and m.allow_perps and m.allows_instrument(perp):
             return m, perp
         return None, inst
+    if perp is not None and (mode or await routing_mode(conn)) == PERP_FIRST:
+        perps = await _perp_mandates(conn, perp)
+        if len(perps) == 1:
+            logger.info("%s: %s routing; routed to perps mandate %s on %s", inst, PERP_FIRST, perps[0].name, perp)
+            return perps[0], perp
     spot_count = await conn.fetchval(
         "SELECT count(*) FROM ai_mandates WHERE status = 'ACTIVE' AND $1 = ANY(instruments)", inst)
     if spot_count or perp is None:
