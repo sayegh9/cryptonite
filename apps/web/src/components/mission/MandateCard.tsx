@@ -4,7 +4,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { pauseMandate, resumeMandate } from "@/lib/mission/client";
 import { dispatchMandateUpdated } from "@/lib/mission/events";
-import type { Mandate } from "@/lib/mission/types";
+import type { Mandate, SessionVerdict } from "@/lib/mission/types";
 import { staleMarkText } from "@/lib/mission/marks";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 
@@ -69,6 +69,69 @@ function PerpPositions({ mandate: m }: { mandate: Mandate }) {
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+const signedUsd = (v: number) => `${v < 0 ? "−" : "+"}$${Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+
+const VERDICT_TEXT: Record<SessionVerdict, string> = {
+  ACTIVE: "Session active",
+  TARGET_MET: "Target met · no new entries",
+  LOCK_FIRED: "Profit lock fired · flattened",
+  LOSS_LATCHED: "Daily loss limit · flattened",
+};
+const VERDICT_STYLE: Record<SessionVerdict, string> = {
+  ACTIVE: "border-emerald-800 text-emerald-300",
+  TARGET_MET: "border-cyan-700 text-cyan-300",
+  LOCK_FIRED: "border-amber-700 bg-amber-950/40 text-amber-200",
+  LOSS_LATCHED: "border-red-700 bg-red-950/50 text-red-300",
+};
+
+/**
+ * ADR 0010: today's session P&L between the daily loss limit (left) and the profit target (right), with the
+ * verdict. Shown only for a mandate with a daily loss limit or profit target.
+ */
+function SessionMeter({ mandate: m }: { mandate: Mandate }) {
+  const s = m.session;
+  if (!s || (s.loss_limit_usd == null && s.target_usd == null)) return null;
+  const pnl = Number(s.pnl);
+  const loss = s.loss_limit_usd != null ? Number(s.loss_limit_usd) : null;
+  const target = s.target_usd != null ? Number(s.target_usd) : null;
+  const min = -(loss ?? target ?? 1);
+  const max = target ?? loss ?? 1;
+  const pos = Math.min(100, Math.max(0, ((pnl - min) / (max - min)) * 100));
+  const zero = ((0 - min) / (max - min)) * 100;
+  const limits = [
+    loss != null ? `loss limit ${signedUsd(-loss)}` : null,
+    target != null ? `target ${signedUsd(target)}` : null,
+    s.lock_usd != null ? `lock ${signedUsd(Number(s.lock_usd))}` : null,
+  ].filter(Boolean).join(" · ");
+  const text = `${signedUsd(pnl)} today · ${limits}`;
+  return (
+    <div data-testid="mandate-session">
+      <div className="flex items-center justify-between gap-2 text-2xs text-zinc-500">
+        <span>Daily session — resets 00:00 UTC</span>
+        <span className={`rounded border px-1.5 py-0.5 font-bold ${VERDICT_STYLE[s.verdict]}`} data-testid="mandate-session-verdict">
+          {VERDICT_TEXT[s.verdict]}
+        </span>
+      </div>
+      <div
+        role="meter"
+        aria-label={`Session P&L — ${m.name}`}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        aria-valuenow={Number(Math.min(max, Math.max(min, pnl)).toFixed(2))}
+        aria-valuetext={text}
+        className="relative mt-0.5 h-1.5 w-full overflow-hidden rounded bg-zinc-800"
+      >
+        <div className="absolute inset-y-0 w-px bg-zinc-500" style={{ left: `${zero}%` }} />
+        <div
+          className={`absolute inset-y-0 ${pnl < 0 ? "bg-red-500" : "bg-emerald-500"}`}
+          style={pnl < 0 ? { left: `${pos}%`, width: `${zero - pos}%` } : { left: `${zero}%`, width: `${pos - zero}%` }}
+        />
+      </div>
+      <p className="mt-0.5 text-2xs text-zinc-300">{text}</p>
     </div>
   );
 }
@@ -155,6 +218,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
           text={`${dd.toFixed(2)}% of the ${hardStop}% hard stop`}
           tone={dd >= hardStop / 2 ? "bg-red-500" : dd >= hardStop / 4 ? "bg-amber-500" : "bg-emerald-500"}
         />
+        <SessionMeter mandate={m} />
       </div>
 
       <dl className="mt-2 grid grid-cols-3 gap-2 text-2xs">

@@ -18,7 +18,17 @@ interface Form {
   max_risk_per_trade_pct: string;
   active_hours_utc: string;
   veto_window_s: string;
+  /** ADR 0010: entry filters and daily session limits; "" is off */
+  min_conviction: string;
+  min_rr: string;
+  daily_loss_limit_pct: string;
+  daily_profit_target_pct: string;
+  profit_lock_pct: string;
 }
+
+/** The filters and limits that may be off (NULL): emptying one that was set sends it in clear_limits */
+const CLEARABLE = ["min_conviction", "min_rr", "daily_loss_limit_pct", "daily_profit_target_pct"] as const;
+type Clearable = (typeof CLEARABLE)[number];
 
 /** ADR 0009: perps only at L1 Copilot, ISOLATED, at most 10x; a mandate that turns perps on starts at 3x */
 const MAX_PERP_LEVERAGE = 10;
@@ -36,6 +46,11 @@ const EMPTY: Form = {
   max_risk_per_trade_pct: "1",
   active_hours_utc: "",
   veto_window_s: "600",
+  min_conviction: "",
+  min_rr: "",
+  daily_loss_limit_pct: "",
+  daily_profit_target_pct: "",
+  profit_lock_pct: "50",
 };
 
 const canon = (s: string) => {
@@ -56,8 +71,20 @@ function toForm(m: Mandate): Form {
     max_risk_per_trade_pct: String(m.max_risk_per_trade_pct ?? "1"),
     active_hours_utc: m.active_hours_utc ?? "",
     veto_window_s: String(m.veto_window_s),
+    min_conviction: m.min_conviction ?? "",
+    min_rr: m.min_rr ?? "",
+    daily_loss_limit_pct: m.daily_loss_limit_pct ?? "",
+    daily_profit_target_pct: m.daily_profit_target_pct ?? "",
+    profit_lock_pct: m.profit_lock_pct ?? "50",
   };
 }
+
+/** A minimum the AI must meet (conviction, R:R) is loosened when lowered or removed */
+const floorLoosened = (old: string | null | undefined, now: string) =>
+  old != null && (now.trim() === "" || Number(now) < Number(old));
+/** A daily limit (loss, profit target) is loosened when raised or removed: the AI keeps trading longer */
+const ceilingLoosened = (old: string | null | undefined, now: string) =>
+  old != null && (now.trim() === "" || Number(now) > Number(old));
 
 /** Mirrors the server's risk_adding_change: any edit that gives the AI more room needs TOTP. */
 export function addsRisk(old: Mandate | null, f: Form): string[] {
@@ -72,6 +99,11 @@ export function addsRisk(old: Mandate | null, f: Form): string[] {
   if (instrumentsOf(f.instruments).some((i) => !old.instruments.includes(i))) why.push("new instruments");
   if ((f.active_hours_utc || "") !== (old.active_hours_utc || "")) why.push("different active hours");
   if (Number(f.veto_window_s) < old.veto_window_s) why.push("a shorter veto window");
+  if (floorLoosened(old.min_conviction, f.min_conviction)) why.push("a lower minimum conviction");
+  if (floorLoosened(old.min_rr, f.min_rr)) why.push("a lower minimum R:R");
+  if (ceilingLoosened(old.daily_loss_limit_pct, f.daily_loss_limit_pct)) why.push("a looser daily loss limit");
+  if (ceilingLoosened(old.daily_profit_target_pct, f.daily_profit_target_pct)) why.push("a higher or no daily profit target");
+  if (Number(f.profit_lock_pct) < Number(old.profit_lock_pct ?? 50)) why.push("a lower profit lock");
   return why;
 }
 
@@ -124,8 +156,16 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
       veto_window_s: Number(form.veto_window_s),
       ...(form.active_hours_utc ? { active_hours_utc: form.active_hours_utc } : current?.active_hours_utc ? { clear_active_hours: true } : {}),
       allow_perps: form.allow_perps,
+      profit_lock_pct: form.profit_lock_pct,
       ...(needsTotp ? { totp_code: totp } : {}),
     };
+    // ADR 0010: a filled field is sent; an emptied one that was set is switched off (clear_limits, TOTP)
+    const clear: Clearable[] = [];
+    for (const k of CLEARABLE) {
+      if (form[k].trim() !== "") body[k] = form[k].trim();
+      else if (current?.[k] != null) clear.push(k);
+    }
+    if (clear.length > 0) body.clear_limits = clear;
     try {
       const saved = current ? await editMandate(current.id, body) : await createMandate(body);
       toast.success(current ? `Saved ${saved.name}` : `Created ${saved.name} at L1 Copilot`);
@@ -207,6 +247,38 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
             risk per trade (% of budget, ≤ {MAX_RISK_PER_TRADE_PCT}){" "}
             <input aria-label="Risk per trade" className="w-16 rounded border border-zinc-700 bg-zinc-900 px-1" type="number" min="0.1" max={MAX_RISK_PER_TRADE_PCT} step="0.1" value={form.max_risk_per_trade_pct} onChange={set("max_risk_per_trade_pct")} />
           </label>
+        </fieldset>
+
+        <fieldset className="space-y-2 md:col-span-2" data-testid="mandate-session-limits">
+          <legend className="text-zinc-400">
+            Entry filters and daily session (refuse only: they never resize or place an order). Empty is off. The day runs
+            00:00–00:00 UTC; limits are % of the budget, measured from the equity at 00:00 UTC.
+          </legend>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <label className="space-y-1">
+              <span className="text-zinc-400">Min conviction (0.50–0.95): entries below it are refused</span>
+              <input aria-label="Min conviction" className={input} type="number" min="0.5" max="0.95" step="0.01" placeholder="off" value={form.min_conviction} onChange={set("min_conviction")} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-zinc-400">Min R:R (≥ 1.0): |target − entry| / |entry − stop|, when the order has both</span>
+              <input aria-label="Min R:R" className={input} type="number" min="1" max="99.99" step="0.1" placeholder="off" value={form.min_rr} onChange={set("min_rr")} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-zinc-400">
+                Daily loss limit (% of budget, ≤ hard stop): no new entries and the mandate is flattened until 00:00 UTC.
+                {form.allow_perps ? " A perps mandate left empty gets 3 × its risk per trade." : ""}
+              </span>
+              <input aria-label="Daily loss limit" className={input} type="number" min="0.1" max={form.max_drawdown_pct || 20} step="0.1" placeholder={form.allow_perps ? "3 × risk per trade" : "off"} value={form.daily_loss_limit_pct} onChange={set("daily_loss_limit_pct")} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-zinc-400">Daily profit target (% of budget): no new entries until 00:00 UTC; positions are kept and perp stops may tighten</span>
+              <input aria-label="Daily profit target" className={input} type="number" min="0.1" max="100" step="0.1" placeholder="off" value={form.daily_profit_target_pct} onChange={set("daily_profit_target_pct")} />
+            </label>
+            <label className="space-y-1">
+              <span className="text-zinc-400">Profit lock (% of the target, 0–100): after the target, the mandate is flattened if the day&apos;s P&amp;L falls back to this</span>
+              <input aria-label="Profit lock" className={input} type="number" min="0" max="100" step="1" value={form.profit_lock_pct} onChange={set("profit_lock_pct")} required />
+            </label>
+          </div>
         </fieldset>
 
         {needsTotp && (
