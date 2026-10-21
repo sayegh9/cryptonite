@@ -668,6 +668,22 @@ async def consume_perp_marks(
                 await pubsub.aclose()
 
 
+async def mark_deploy_failed(pool, redis, instance_id: str, instrument_id: str, error: str) -> None:
+    """A strategy instance the engine could not start: FAILED, never left RUNNING on no strategy, with an alert
+    saying why (an instance on a venue-less id such as XRPUSDT sat RUNNING with no orders, 2026-10-21)."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE paper_strategy_instances SET status = 'FAILED', updated_at = now() "
+                "WHERE instance_id = $1 AND status = 'RUNNING'", instance_id)
+            await alert(conn, redis, "STRATEGY_DEPLOY_FAILED",
+                        f"Strategy instance {instance_id} on {instrument_id} could not start and was marked FAILED: {error}",
+                        {"instance_id": instance_id, "instrument_id": instrument_id, "error": error[:300]},
+                        dedupe_key=f"deploy-failed:{instance_id}")
+    except Exception as e:
+        logger.error("Could not mark instance %s FAILED: %s", instance_id, e)
+
+
 BRACKET_RELOAD_INTERVAL_S = 300.0
 
 
@@ -1772,6 +1788,7 @@ async def main():
                             except Exception as e:
                                 logger.error("Failed to deploy strategy instance %s: %s", iid, e)
                                 active_instances[iid] = None
+                                await mark_deploy_failed(pool, redis, iid, row["instrument_id"], str(e))
                         else:
                             logger.warning("Strategy '%s' not registered in STRATEGY_REGISTRY for instance %s", row["strategy_name"], iid)
                             active_instances[iid] = None

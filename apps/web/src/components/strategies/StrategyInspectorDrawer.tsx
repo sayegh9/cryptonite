@@ -708,8 +708,8 @@ export function StrategyInspectorDrawer({
                   >
                     {instruments.length > 0 ? (
                       instruments.map((inst) => (
-                        <option key={inst.id} value={inst.id}>
-                          {inst.symbol || inst.id}
+                        <option key={inst.instrument_id ?? inst.id} value={inst.instrument_id ?? inst.id}>
+                          {inst.symbol || inst.instrument_id || inst.id}
                         </option>
                       ))
                     ) : (
@@ -951,8 +951,8 @@ export function StrategyInspectorDrawer({
                     >
                       {instruments.length > 0 ? (
                         instruments.map((inst) => (
-                          <option key={inst.id} value={inst.id}>
-                            {inst.symbol || inst.id}
+                          <option key={inst.instrument_id ?? inst.id} value={inst.instrument_id ?? inst.id}>
+                            {inst.symbol || inst.instrument_id || inst.id}
                           </option>
                         ))
                       ) : (
