@@ -8,6 +8,8 @@ view of the market). Target size: well under 2k tokens.
 applies the TRIAGE persona's hard rules to it in code, so the gate can reject the obvious cases without
 a model call (remediation R3.1). The rules are the eval labels' rules
 (``scripts/build_triage_eval_set.py``); stale data is the gate's own ``STALE_CANDIDATE`` check.
+``brief_data`` also carries the setup grade's frame inputs (``grade_context``: trends, the 1h regime and
+volatility), so a debate routed to a perp mandate is graded in code from the frames the scanner saw (Phase B).
 """
 
 import math
@@ -16,6 +18,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
+
+from cryptonite_scanner.setup_grade import grade_context
 
 LEVEL_LOOKBACK_BARS = 50
 MIN_REWARD_TO_RISK = 1.5
@@ -176,6 +180,7 @@ def brief_data(
         "timeframes": [s for tf, df in frames.items() if (s := timeframe_state(tf, df)) is not None],
         "candidate": None,
         "derivatives": None,
+        "grade_context": None,
     }
     if candidate:
         entry, stop, target = (candidate.get(k) for k in ("suggested_entry", "suggested_stop", "suggested_target"))
@@ -189,6 +194,10 @@ def brief_data(
         }
     if derivatives:
         data["derivatives"] = {k: _num(derivatives.get(k)) for k in ("mark_price", "funding_rate", "open_interest")}
+    try:  # missing grade inputs only make the grade weaker; they never fail the brief
+        data["grade_context"] = grade_context(frames)
+    except Exception:
+        data["grade_context"] = None
     return data
 
 

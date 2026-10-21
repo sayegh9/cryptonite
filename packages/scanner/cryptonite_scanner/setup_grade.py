@@ -169,6 +169,57 @@ def grade_setup(inputs: GradeInputs) -> SetupGrade:
     return SetupGrade(grade, tuple(reasons), rr, kept)
 
 
+def trend_of(df) -> str:
+    """A timeframe's trend at its last bar: BULL when the close and EMA20 are above EMA50, BEAR when both are below,
+    else FLAT (also for an empty or unreadable frame). ``scan_swing_setups`` and the grade read trends this way."""
+    if df is None:
+        return "FLAT"
+    try:
+        if (hasattr(df, "is_empty") and df.is_empty()) or len(df) == 0:
+            return "FLAT"
+        row = df.slice(-1, 1).to_dicts()[0]
+        close, ema_20, ema_50 = row.get("close"), row.get("ema_20"), row.get("ema_50")
+        if close is None or ema_20 is None or ema_50 is None:
+            return "FLAT"
+        close_f, ema_20_f, ema_50_f = float(close), float(ema_20), float(ema_50)
+        if close_f > ema_50_f and ema_20_f > ema_50_f:
+            return "BULL"
+        if close_f < ema_50_f and ema_20_f < ema_50_f:
+            return "BEAR"
+        return "FLAT"
+    except Exception:
+        return "FLAT"
+
+
+def frame_trend(df) -> str | None:
+    """``trend_of`` for the grade: None (unknown, a weak input) when there is no frame, not FLAT."""
+    return None if df is None or (hasattr(df, "is_empty") and df.is_empty()) else trend_of(df)
+
+
+GRADE_CONTEXT_KEYS = ("trend_4h", "trend_1h", "trend_15m", "atr_pct", "atr_pct_q90", "adx", "plus_di", "minus_di")
+
+
+def grade_context(frames: dict) -> dict[str, Any]:
+    """The grade inputs a scan's own frames give (4h/1h/15m trends, the 1h regime and volatility), JSON-serialisable.
+    Funding, open interest and liquidity are not in the frames: the caller adds what it can read, the rest stays
+    unknown (a weak input). A frame that cannot be read gives None for its inputs."""
+    try:
+        reg = regime_trend_inputs(frames.get("1h"))
+    except Exception:  # too few or unreadable bars: the regime and volatility are unknown
+        reg = dict.fromkeys(("atr_pct", "atr_pct_q90", "adx", "plus_di", "minus_di"))
+    return {"trend_4h": frame_trend(frames.get("4h")), "trend_1h": frame_trend(frames.get("1h")),
+            "trend_15m": frame_trend(frames.get("15m")), **reg}
+
+
+def funding_rate_8h(rate: float | None, interval_hours: float | None) -> float | None:
+    """A funding rate per settlement interval, scaled to 8 h (the grade's crowding threshold is per 8 h). An interval
+    that is not 1, 2, 4 or 8 h is read as 8 h, as ``grade_setup``'s card inputs do."""
+    if rate is None:
+        return None
+    hours = interval_hours if interval_hours in (1.0, 2.0, 4.0, 8.0) else 8.0
+    return float(rate) * 8.0 / hours
+
+
 def regime_trend_inputs(bars_1h) -> dict[str, float | None]:
     """ADX, +DI, -DI, ATR% and its trailing 90th percentile at the last 1h bar (``regime.regime_inputs``), the grade's
     regime and volatility inputs; all None with too few bars."""

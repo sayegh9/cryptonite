@@ -70,6 +70,7 @@ from cryptonite_schemas.mandate import (
     Mandate,
     MandateStatus,
     canonical_instrument,
+    is_perp_instrument,
     risk_adding_change,
 )
 from cryptonite_schemas.marks import LiveMark, read_marks, resolve_mark, summarize, unrealized_pnl
@@ -155,6 +156,7 @@ class TotpIn(BaseModel):
 
 class DecisionIn(BaseModel):
     decision: Literal["APPROVE", "VETO"]
+    totp_code: str | None = None  # approving a perp entry (ADR 0009 D3)
 
 
 class NotifierDecisionIn(BaseModel):
@@ -573,8 +575,17 @@ async def demote_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, a
     return await _transition(request, auth, mandate_id, AutonomyTrigger.OPERATOR_DEMOTE, reason=req.reason)
 
 
+def approval_needs_totp(a: dict[str, Any]) -> bool:
+    """A perp entry (ADR 0009 D3: every perp entry is approved with TOTP), e.g. a debate's (Phase B). A reduce-only
+    perp order and every spot approval are decided without it in the web, as before."""
+    p = a.get("payload") if isinstance(a.get("payload"), dict) else {}
+    return (a.get("action_class") == ActionClass.ADD_RISK and bool(p.get("instrument_id"))
+            and is_perp_instrument(str(p["instrument_id"])) and not p.get("reduce_only"))
+
+
 def approval_view(a: dict[str, Any], now: datetime.datetime, mandate_name: str | None = None) -> dict[str, Any]:
     return {
+        "needs_totp": approval_needs_totp(a),
         "id": str(a["id"]), "mandate_id": str(a["mandate_id"]), "mandate": mandate_name, "action_class": a["action_class"],
         "command_type": a["command_type"], "summary": a["summary"], "source": a["source"],
         "level": a["level_at_creation"], "timeout_policy": a["timeout_policy"], "status": a["status"],
@@ -621,7 +632,13 @@ async def _decide(request: Request, approval_id: uuid.UUID, approve: bool, via: 
 
 @router.post("/approvals/{approval_id}/decision", dependencies=OPERATOR_WRITE)
 async def decide_from_web(approval_id: uuid.UUID, req: DecisionIn, request: Request, auth: dict = Depends(require_human_operator)):
-    """The logged-in operator (password + TOTP at login, CSRF here) approves or vetoes."""
+    """The logged-in operator (password + TOTP at login, CSRF here) approves or vetoes. Approving a perp entry needs
+    the current TOTP code as well (ADR 0009 D3); a veto never does."""
+    if req.decision == "APPROVE":
+        async with request.app.state.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT action_class, payload FROM ai_approvals WHERE id = $1", approval_id)
+        if row is not None and approval_needs_totp(as_dict(row)):
+            await require_totp(request, auth, req.totp_code)
     return await _decide(request, approval_id, req.decision == "APPROVE", "web", actor(auth))
 
 
