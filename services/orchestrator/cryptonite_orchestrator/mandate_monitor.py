@@ -11,6 +11,14 @@ Runs inside the orchestrator's risk monitor. Per mandate:
 - drawdown >= half of it: demoted one level, once per drawdown episode;
 - a halted mandate with positions left keeps getting close commands until it is flat.
 
+Daily sessions (ADR 0010), for a mandate with a daily loss limit or profit target: today's row in
+``ai_mandate_daily_sessions`` (start equity, P&L, latch times). The daily loss limit cancels pending ADD_RISK
+approvals and flattens the mandate (reduce-only) with a Critical alert; the profit target cancels pending ADD_RISK
+approvals, alerts (Info) and puts the mandate's instance in the Redis set ``mandate:session:target_met`` until the
+next 00:00 UTC; the profit lock flattens with a Critical alert. Each transition is recorded once (the latch column is
+set only while NULL) and acted on only by the tick that recorded it. A session latch never changes the mandate's
+status or level and is never a breach; the gate refuses new entries while it holds.
+
 Account-wide backstop (O2): account equity 20% below its high-water mark (since the last kill-switch
 reset) trips the PAPER kill switch (the latch: no new risk anywhere until the operator resets it
 while flat), halts every mandate at L1 and closes every AI-owned position.
@@ -27,7 +35,7 @@ from typing import Any
 from cryptonite_execution.approvals import sweep_expired
 from cryptonite_execution.autonomy import AutonomyState, AutonomyTrigger, transition
 from cryptonite_execution.autonomy_metrics import propose_if_ready
-from cryptonite_execution.mandate_store import apply_transition, load_mandate
+from cryptonite_execution.mandate_store import apply_transition, load_mandate, load_session
 from cryptonite_schemas.mandate import (
     ACCOUNT_BACKSTOP_DRAWDOWN_PCT,
     AutonomyLevel,
@@ -35,6 +43,13 @@ from cryptonite_schemas.mandate import (
     MandateStatus,
     is_ai_instance,
     mandate_instance_id,
+)
+from cryptonite_schemas.session import (
+    SessionVerdict,
+    next_session_start,
+    session_start,
+    session_verdict,
+    utc_session_date,
 )
 
 logger = logging.getLogger("cryptonite.orchestrator.mandate_monitor")
@@ -45,6 +60,11 @@ BENCHMARK_INSTRUMENT = "BTCUSDT.BINANCE"
 EQUITY_SNAPSHOT_EVERY_S = 60
 CLOSE_RETRY_AFTER_S = 30
 D0 = Decimal("0")
+CENT = Decimal("0.01")
+# The contract with the perp resting-stop ratchet (A4): instances whose mandate met today's profit target; the set
+# expires at the next 00:00 UTC
+SESSION_TARGET_MET_KEY = "mandate:session:target_met"
+SESSION_TRACKED_STATUSES = (MandateStatus.ACTIVE, MandateStatus.PAUSED, MandateStatus.HALTED)
 
 
 def evaluate_drawdown(equity: Decimal, prev_hwm: Decimal | None, max_drawdown_pct: Decimal) -> dict[str, Any]:
@@ -227,6 +247,105 @@ async def track_mandate(conn, redis, mandate: Mandate, quotes, now: datetime.dat
     return v
 
 
+def has_session_limits(mandate: Mandate) -> bool:
+    return mandate.daily_loss_limit_pct is not None or mandate.daily_profit_target_pct is not None
+
+
+async def _start_equity(conn, mandate: Mandate, day_start: datetime.datetime, equity: Decimal) -> Decimal:
+    """The equity the day starts from: the last snapshot before 00:00 UTC, else the equity now (first tick)."""
+    last = await conn.fetchval(
+        "SELECT equity FROM ai_mandate_equity WHERE mandate_id = $1 AND ts < $2 ORDER BY ts DESC, id DESC LIMIT 1",
+        mandate.id, day_start)
+    return Decimal(str(last)) if last is not None else equity
+
+
+def session_pnl(equity: Decimal, budget: Decimal, start_equity: Decimal, start_budget: Decimal) -> Decimal:
+    """Equity change since the start of the day; a budget edit during the day is not P&L (equity counts the budget)."""
+    return ((equity - budget) - (start_equity - start_budget)).quantize(CENT)
+
+
+async def _record_latch(conn, mandate_id: uuid.UUID, day: datetime.date, column: str, now: datetime.datetime) -> bool:
+    """Set today's ``column`` once: True only for the call that set it."""
+    extra = ", target_hit_at = COALESCE(target_hit_at, $3)" if column == "lock_fired_at" else ""
+    return await conn.fetchval(
+        f"""UPDATE ai_mandate_daily_sessions SET {column} = $3{extra}, updated_at = $3
+            WHERE mandate_id = $1 AND session_date = $2 AND {column} IS NULL RETURNING TRUE""",
+        mandate_id, day, now) is not None
+
+
+async def track_session(conn, redis, mandate: Mandate, equity: Decimal, now: datetime.datetime,
+                        account_id: str) -> SessionVerdict | None:
+    """ADR 0010: update today's session of the mandate and act on a new latch. None when it has no session limit."""
+    if mandate.status not in SESSION_TRACKED_STATUSES or not has_session_limits(mandate):
+        return None
+    day = utc_session_date(now)
+    row = await load_session(conn, mandate.id, now)
+    if row is None:
+        start = (await _start_equity(conn, mandate, session_start(day), equity)).quantize(CENT)
+        await conn.execute(
+            """INSERT INTO ai_mandate_daily_sessions (mandate_id, session_date, start_equity, start_budget, updated_at)
+               VALUES ($1, $2, $3, $4, $5) ON CONFLICT (mandate_id, session_date) DO NOTHING""",
+            mandate.id, day, start, mandate.capital_budget_usd, now)
+        row = await load_session(conn, mandate.id, now)
+    pnl = session_pnl(equity, mandate.capital_budget_usd, Decimal(str(row["start_equity"])),
+                      Decimal(str(row["start_budget"])))
+    await conn.execute(
+        """UPDATE ai_mandate_daily_sessions SET last_pnl = $3, peak_pnl = GREATEST(peak_pnl, $3), updated_at = $4
+           WHERE mandate_id = $1 AND session_date = $2""", mandate.id, day, pnl, now)
+    verdict = session_verdict(mandate.capital_budget_usd, mandate.daily_loss_limit_pct,
+                              mandate.daily_profit_target_pct, mandate.profit_lock_pct, pnl,
+                              row["loss_latched_at"], row["target_hit_at"], row["lock_fired_at"])
+    detail = {"mandate_id": str(mandate.id), "mandate": mandate.name, "session_date": str(day), "episode": str(day),
+              "start_equity": str(row["start_equity"]), "equity": str(equity.quantize(CENT)), "pnl": str(pnl),
+              "daily_loss_limit_pct": str(mandate.daily_loss_limit_pct), "budget": str(mandate.capital_budget_usd),
+              "daily_profit_target_pct": str(mandate.daily_profit_target_pct),
+              "profit_lock_pct": str(mandate.profit_lock_pct)}
+    if verdict in (SessionVerdict.LOSS_LATCHED, SessionVerdict.LOCK_FIRED):
+        loss = verdict is SessionVerdict.LOSS_LATCHED
+        async with conn.transaction():
+            new = await _record_latch(conn, mandate.id, day, "loss_latched_at" if loss else "lock_fired_at", now)
+            if new:
+                await _cancel_pending_add_risk(conn, mandate.id)
+            # Latched for the day: keep closing until flat (a pending or just-completed close is not repeated)
+            closes = await flatten_instance(conn, mandate.instance_id, "DAILY_LOSS_LIMIT" if loss else "PROFIT_LOCK",
+                                            mandate.id, account_id)
+        if new:
+            detail["closes"] = closes
+            if loss:
+                msg = (f"Daily loss limit hit — {mandate.name}: session P&L ${pnl:,.2f} (limit "
+                       f"{mandate.daily_loss_limit_pct}% of the ${mandate.capital_budget_usd:,.0f} budget). Closing "
+                       f"{closes} position(s); new entries resume 00:00 UTC.")
+            else:
+                msg = (f"Profit lock fired — {mandate.name}: session P&L fell back to ${pnl:,.2f} after the "
+                       f"{mandate.daily_profit_target_pct}% target. Closing {closes} position(s); new entries resume "
+                       f"00:00 UTC.")
+            await alert(conn, redis, "MANDATE_DAILY_LOSS" if loss else "MANDATE_PROFIT_LOCK", msg, detail)
+            logger.critical("MANDATE %s session %s: pnl %s, %d close(s) queued", mandate.name, verdict, pnl, closes)
+    elif verdict is SessionVerdict.TARGET_MET:
+        async with conn.transaction():
+            new = await _record_latch(conn, mandate.id, day, "target_hit_at", now)
+            if new:
+                await _cancel_pending_add_risk(conn, mandate.id)
+        await _mark_target_met(redis, mandate, now)  # every tick: a flushed Redis gets the member back
+        if new:
+            await alert(conn, redis, "MANDATE_DAILY_TARGET",
+                        f"Daily profit target met — {mandate.name}: session P&L ${pnl:,.2f} (target "
+                        f"{mandate.daily_profit_target_pct}% of the budget). No new entries until 00:00 UTC; "
+                        f"positions kept, stops may tighten.", detail, tier="INFO")
+            logger.info("Mandate %s met its daily profit target: pnl %s", mandate.name, pnl)
+    return verdict
+
+
+async def _mark_target_met(redis, mandate: Mandate, now: datetime.datetime) -> None:
+    if redis is None:
+        return
+    try:
+        await redis.sadd(SESSION_TARGET_MET_KEY, mandate.instance_id)
+        await redis.expireat(SESSION_TARGET_MET_KEY, int(next_session_start(now).timestamp()))
+    except Exception as e:
+        logger.error("Could not mark %s in %s: %s", mandate.instance_id, SESSION_TARGET_MET_KEY, e)
+
+
 async def account_backstop(conn, engine, redis, now: datetime.datetime, benchmark: Decimal | None) -> dict[str, Any]:
     d = engine.dispatcher
     account_id = getattr(engine, "account_id", "PAPER-ACCOUNT-001")
@@ -279,9 +398,14 @@ async def mandate_monitor_once(engine, pool, redis, quotes=None, now: datetime.d
             if m is None:
                 continue
             try:
-                await track_mandate(conn, redis, m, quotes, now, account_id, benchmark)
+                v = await track_mandate(conn, redis, m, quotes, now, account_id, benchmark)
             except Exception as e:  # one broken mandate must not stop the others' stops
                 logger.error("Mandate tracker failed for %s: %s", m.name, e)
+                continue
+            try:
+                await track_session(conn, redis, m, v["equity"], now, account_id)
+            except Exception as e:  # nor a session fault the drawdown stops above
+                logger.error("Mandate session tracker failed for %s: %s", m.name, e)
         if time.monotonic() - _last_proposal_check[0] >= PROPOSAL_CHECK_EVERY_S:
             _last_proposal_check[0] = time.monotonic()
             await propose_promotions(conn, now)
@@ -315,4 +439,5 @@ async def sweep_approvals_once(pool, now: datetime.datetime | None = None) -> li
     return done
 
 
-__all__ = ["evaluate_drawdown", "mandate_equity", "mandate_instance_id", "mandate_monitor_once", "sweep_approvals_once"]
+__all__ = ["evaluate_drawdown", "mandate_equity", "mandate_instance_id", "mandate_monitor_once", "session_pnl",
+           "sweep_approvals_once", "track_session"]

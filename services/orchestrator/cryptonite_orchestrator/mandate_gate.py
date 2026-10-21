@@ -9,6 +9,7 @@ instance, or was requested by an ``ai:`` service. Such an order without a mandat
 (``MANDATE_REQUIRED``): no AI order escapes its mandate.
 """
 
+import datetime
 import json
 import logging
 import uuid
@@ -30,6 +31,7 @@ from cryptonite_execution.mandate_store import (
     apply_transition,
     instance_spot_holdings,
     record_event,
+    session_verdict_for,
 )
 from cryptonite_execution.mandates import (
     MandateExposure,
@@ -283,7 +285,10 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
     )
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     ok = await approval_granted(conn, row, payload, mandate)
-    reject = check_mandate(mandate, order, exposure, approval_ok=ok)
+    # ADR 0010: today's session (loss latch, profit target, profit lock), read at execution, so an entry approved
+    # before the latch is refused too
+    session = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
+    reject = check_mandate(mandate, order, exposure, approval_ok=ok, session=session)
     if reject is None and order.is_perp and action_class(order) is ActionClass.ADD_RISK:
         # Leverage plan 2.4: the same valuation the sizing used; a refusal, never a breach
         if (perp_reject := perp_entry_reject(engine, mandate, intent)) is not None:
