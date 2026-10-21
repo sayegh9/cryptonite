@@ -28,8 +28,9 @@ The allocation is capped at the room the mandate has left under its own position
 (what it already holds counts) before anything is queued or sent for approval, so a model never
 "breaches" by over-sizing; with less than ``MIN_MANDATE_ENTRY_PCT`` of room there is no trade. The
 orchestrator sizes the order to the exact room again at execution. This module writes the same rows ``cryptonite_execution.approvals``
-writes; the orchestrator's sweeper and the API decide them. (The debate worker image does not carry
-the execution package, only ``cryptonite_schemas``.)
+writes; the orchestrator's sweeper and the API decide them. The spot path needs only ``cryptonite_schemas``; the
+perp path imports the scanner's grade and the API's card dry run lazily (the worker image installs every workspace
+package).
 """
 
 import datetime
