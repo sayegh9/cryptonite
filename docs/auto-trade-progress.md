@@ -176,7 +176,22 @@ Follow-ups (not built):
 
 ### Phase B final cloud run
 
-FINAL_RUN_PLACEHOLDER
+Branch head, test DB `cryptonite_ci_local` at 049 (no new migration), Redis flushed at start.
+
+- `uv run pytest tests -q`: **3,507 passed, 0 failed, 19 errors, 14 deselected**. Baseline on `aa5cf6d` in this
+  environment (without `test_backup_drill.py`): 3,460 passed; +47 = the new tests (`test_debate_perp_routing.py` 33,
+  `test_debate_perp_gate.py` 8, `test_notifier_perp_approval_render.py` 6). The 19 errors are all
+  `tests/test_backup_drill.py` (needs a Docker Postgres container by name). The timing flake
+  `test_debate_decision_price.py::test_boundary_age_is_accepted` did not appear.
+- `uv run pytest tests -q -m destructive`: **2 passed**.
+- `uv run ruff check` on every Python file changed on the branch: clean.
+- `pnpm typecheck`: clean. `pnpm lint`: 0 errors, the 2 warnings already on `main`.
+- Playwright (production build, API proxy at a closed port, served on `:3100`, the preinstalled Chromium): **242
+  passed, 9 failed**: the 8 that fail on `main` (`mandate-instance-controls:107`, `mode-banner:216`,
+  `portfolio_console` ×5, `units-formatting:77`) and `alpha_lifecycle:22` (hard-coded `localhost:3000`, see Phase A).
+  The new `approval-perp-debate.spec.ts` (5) and `mission-control.spec.ts` pass. `mission-control.spec.ts:206`
+  ("approve and veto pending approvals") is timing-flaky in this environment on a build of `main` too (1 of 2 runs
+  failed at line 246, a race between the decided row and the queue refresh); it passed in the final run.
 
 ### Phase B: not verified in the cloud (the operator must run these)
 
