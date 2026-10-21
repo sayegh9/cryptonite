@@ -1007,7 +1007,7 @@ async def consume_perp_marks(
                         try:
                             await asyncio.wait_for(ratchet_resting_stops(pool, engine, redis, fresh),
                                                    STOP_RATCHET_TIMEOUT_S)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             logger.error("Stop ratchet pass timed out after %ss; skipped", STOP_RATCHET_TIMEOUT_S)
                         except Exception as e:
                             logger.error("Stop ratchet pass failed: %s", e)
