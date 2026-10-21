@@ -73,6 +73,8 @@ The `paper_orders` history is the audit trail. Each move is logged at INFO as ol
 
 The restart restore (#110, `load_stop_restores`) takes the newest ACCEPTED STOP_MARKET row. That row carries the
 ratcheted price.
+`restore_pending_stops` places it only while the ingress is fresh (a stale restart pass keeps it pending, CRITICAL
+and an alert after `STOP_RESTORE_STALE_ALERT_S`); it closes the position only when the refusal is `STOP_WOULD_TRIGGER_IMMEDIATELY`.
 
 If the row write fails, it is logged at CRITICAL (the ratchet progress would be lost on a restart). The stop still rests
 in memory and the old row stays ACCEPTED. A restart in that window
