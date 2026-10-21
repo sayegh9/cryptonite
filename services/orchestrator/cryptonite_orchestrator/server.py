@@ -276,6 +276,81 @@ async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Deci
     return True
 
 
+async def load_stop_restores(pool, engine) -> int:
+    """After a restart, the resting stops of open perp positions to place again (they live in memory only).
+
+    Per open perp position: its newest ACCEPTED ``STOP_MARKET`` row (kept, same client id), else the ``stop_loss`` its
+    entry order carried (a new row). They are placed on the first mark pass (``restore_pending_stops``): the
+    dispatcher needs a mark. Until then ``reconcile_working_orders`` leaves their rows ACCEPTED."""
+    d = engine.dispatcher
+    pending: dict[str, tuple[str, Decimal, str, bool]] = {}
+    account = getattr(engine, "account_id", ACCOUNT_ID)
+    async with pool.acquire() as conn:
+        for inst, pos in d.perp_positions.items():
+            if pos.signed_qty == 0:
+                continue
+            row = await conn.fetchrow(
+                """SELECT client_order_id, price FROM paper_orders
+                   WHERE account_id = $1 AND instrument_id = $2 AND instance_id = $3 AND order_type = 'STOP_MARKET'
+                     AND status = 'ACCEPTED' ORDER BY created_at DESC LIMIT 1""", account, inst, pos.instance_id)
+            if row is not None and row["price"]:
+                pending[row["client_order_id"]] = (inst, Decimal(str(row["price"])), pos.instance_id, False)
+                continue
+            stop = await conn.fetchval(
+                """SELECT payload->>'stop_loss' FROM execution_commands
+                   WHERE target_instance_id = $1 AND command_type = 'SUBMIT_ORDER' AND status = 'COMPLETED'
+                     AND payload->>'instrument_id' = $2 AND payload->>'stop_loss' IS NOT NULL
+                   ORDER BY created_at DESC LIMIT 1""", pos.instance_id, inst)
+            if stop:
+                pending[f"STOP-{uuid.uuid4().hex[:12].upper()}"] = (inst, Decimal(str(stop)), pos.instance_id, True)
+            else:
+                logger.warning("Open perp %s (%s) has no stop to restore; the exit monitor's stops remain", inst,
+                               pos.instance_id)
+    engine.pending_stop_restores = pending
+    if pending:
+        logger.info("Resting stops to restore on the first mark pass: %s", sorted(pending))
+    return len(pending)
+
+
+async def restore_pending_stops(pool, engine) -> int:
+    """Place the stops ``load_stop_restores`` found once their mark is known. A stop the mark has already gone
+    through cannot rest any more: the position is closed at once (CLOSE_POSITION, risk reducing), with a CRITICAL
+    log, never left without a stop. Returns the number of stops placed."""
+    d = engine.dispatcher
+    pending = getattr(engine, "pending_stop_restores", None) or {}
+    placed = 0
+    for cid, (inst, stop, owner, new_row) in list(pending.items()):
+        if d.mark_prices.get(inst) is None:
+            continue  # no mark yet: next pass
+        pending.pop(cid)
+        pos = d.perp_positions.get(inst)
+        if pos is None or pos.signed_qty == 0:
+            continue
+        async with pool.acquire() as conn:
+            if new_row:
+                ok = await attach_resting_stop(conn, engine, inst, stop, owner)
+                reason = "refused" if not ok else "APPROVED"
+            else:
+                ok, reason = d.place_resting_stop(cid, inst, stop, owner)
+            if ok:
+                placed += 1
+                logger.info("Restored resting stop for %s (%s) at %s", inst, owner, stop)
+                continue
+            logger.critical("Resting stop for %s (%s) at %s could not be restored (%s): closing the position",
+                            inst, owner, stop, reason)
+            await conn.execute(
+                """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
+                       requester_id, payload, status, environment, account_id)
+                   VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:orchestrator', $4::jsonb, 'PENDING', 'PAPER', $5)
+                   ON CONFLICT (idempotency_key) DO NOTHING""",
+                uuid.uuid4(), f"restore-stop:{cid}", owner,
+                json.dumps({"instrument_id": inst, "reason": "STOP_NOT_RESTORED", "stop_price": str(stop)}),
+                getattr(engine, "account_id", ACCOUNT_ID),
+            )
+            await reconcile_working_orders(conn, engine)
+    return placed
+
+
 async def fire_resting_stops(pool, engine, mark_prices: dict[str, Decimal]) -> int:
     """Fill the resting stops the mark reached (leverage plan 1.4). Runs on every mark pass before the
     liquidation check, so it works when the exit monitor is blind. Returns the number of stops filled."""
@@ -308,7 +383,8 @@ async def reconcile_working_orders(conn, engine) -> None:
         UPDATE paper_orders SET status = 'CANCELED', updated_at = now()
         WHERE account_id = $1 AND status = 'ACCEPTED' AND NOT (client_order_id = ANY($2::text[]))
         """,
-        getattr(engine, "account_id", ACCOUNT_ID), list(engine.dispatcher.open_orders),
+        getattr(engine, "account_id", ACCOUNT_ID),
+        list(engine.dispatcher.open_orders) + list(getattr(engine, "pending_stop_restores", None) or {}),
     )
 
 
@@ -647,6 +723,9 @@ async def consume_perp_marks(
                 if now - last_check >= liquidation_interval_s:
                     last_check = now
                     fresh = engine.dispatcher.fresh_mark_prices()
+                    # Stops lost with a restart are placed again first, once their mark is known
+                    if fresh and pool is not None and getattr(engine, "pending_stop_restores", None):
+                        await restore_pending_stops(pool, engine)
                     # Resting stops first: a stop the mark reached fires before the liquidation check
                     if fresh and pool is not None and any(engine.dispatcher.is_stop_order(o)
                                                           for o in engine.dispatcher.open_orders.values()):
@@ -1734,6 +1813,11 @@ async def main():
         logger.warning("Error running startup sweep: %s", e)
 
     await rehydrate_dispatcher_state(pool, engine)
+    # Resting stops of open perps are placed again on the first mark pass; their rows stay ACCEPTED until then
+    try:
+        await load_stop_restores(pool, engine)
+    except Exception as e:
+        logger.error("Could not load the resting stops to restore: %s", e)
     # Working orders live in memory only; the ones from before this restart are gone.
     async with pool.acquire() as conn:
         await reconcile_working_orders(conn, engine)
