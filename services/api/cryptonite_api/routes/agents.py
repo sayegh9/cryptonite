@@ -7,9 +7,12 @@ import os
 import secrets
 import time
 import uuid
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal
 
 import httpx
+from cryptonite_api.mandate_choice import choose_mandate_remedy, instrument_conflict
 from cryptonite_api.routes.auth import (
     OPERATOR_WRITE,
     require_auth,
@@ -23,10 +26,11 @@ from cryptonite_execution.approvals import (
     decide_approval,
     record_operator_approval,
 )
-from cryptonite_execution.mandate_store import resolve_mandate_for
+from cryptonite_execution.mandate_store import entry_room_pct, resolve_mandate_for
 from cryptonite_schemas.debate import verdict_direction
-from cryptonite_schemas.mandate import ActionClass
-from fastapi import APIRouter, Depends, HTTPException, Request
+from cryptonite_schemas.mandate import MIN_MANDATE_ENTRY_PCT, ActionClass, Mandate
+from cryptonite_schemas.marks import read_marks
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -64,7 +68,9 @@ class DebateTriggerRequest(BaseModel):
     origin: Literal["operator", "brain"] = "operator"
 
 class ApproveRequestOverrides(BaseModel):
-    allocation_pct: float | None = Field(default=None, ge=1.0, le=25.0)
+    allocation_pct: float | None = Field(default=None, ge=1.0, le=25.0)  # % of the mandate's budget
+    # AMBIGUOUS_MANDATE: the ACTIVE mandate (allowing the instrument) the operator chose in the Inbox
+    mandate_id: uuid.UUID | None = None
     order_type: str | None = None
     limit_offset_pct: float | None = None
     stop_loss_pct: float | None = None
@@ -245,6 +251,145 @@ async def _fetch_decision_price(redis_client, sym: str) -> float | None:
     return None
 
 
+# The operator's allocation of a debate BUY, as % of the mandate's budget: the Inbox slider's bounds
+MIN_DEBATE_ALLOCATION_PCT = Decimal("1")
+MAX_DEBATE_ALLOCATION_PCT = Decimal("25")
+
+
+@dataclass(frozen=True)
+class DebatePlan:
+    """A debate's order as approve sizes it now. Built only by ``_plan_debate``, which reads and never writes."""
+    mandate: Mandate
+    side: str
+    requested: Decimal  # % of the mandate budget asked for: the operator's, else the decision's, within 1-25%
+    allocation: Decimal  # the requested %, cut to the room a BUY has left under the mandate's position limit
+    room: Decimal | None  # % of the mandate budget a BUY has left (None for a SELL)
+    held: Decimal  # the mandate's holding a SELL sells (0 for a BUY)
+
+    @property
+    def budget(self) -> Decimal:
+        return self.mandate.capital_budget_usd * self.allocation / 100
+
+
+def _run_uuid(run_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run_id format")
+
+
+async def _load_debate(pool, run_uuid: uuid.UUID):
+    async with pool.acquire() as conn:
+        run = await conn.fetchrow("SELECT status, decision_trace_id, mandate_id FROM debate_runs WHERE id = $1", run_uuid)
+        if not run:
+            raise HTTPException(status_code=404, detail="Debate run not found")
+        decision = await conn.fetchrow(
+            "SELECT instrument_id, recommendation, conviction_score, allocation_pct FROM portfolio_decisions WHERE run_id = $1",
+            run_uuid)
+        if not decision:
+            raise HTTPException(status_code=404, detail="No portfolio decision found for this debate run")
+    return run, decision
+
+
+def _requested_pct(decision, allocation_pct: float | None) -> Decimal:
+    raw = Decimal(str(allocation_pct if allocation_pct is not None else decision["allocation_pct"] or 0))
+    return min(max(raw, MIN_DEBATE_ALLOCATION_PCT), MAX_DEBATE_ALLOCATION_PCT)
+
+
+async def _plan_debate(request: Request, run, decision, mandate_id: uuid.UUID | None,
+                       allocation_pct: float | None) -> DebatePlan:
+    """Every mandate check approve makes before it records the approval, in the same order, with the same refusals.
+    Reads only, so the Inbox's sizing read cannot disagree with approve.
+
+    Every AI order trades inside a mandate (A5.1): the one the debate named, else the one the operator chose
+    (``mandate_id``), else the single ACTIVE mandate that allows the instrument. A BUY is sized as a share of that
+    mandate's budget, as Brain cards and the orchestrator size a mandate order, cut to the room it has left."""
+    side = order_side(decision["recommendation"])
+    if side is None:
+        raise HTTPException(status_code=409, detail=f"Recommendation '{decision['recommendation']}' has no order to "
+                            "execute; reject the debate instead")
+    instrument = decision["instrument_id"]
+    named = run["mandate_id"]
+    if named is not None and mandate_id is not None and mandate_id != named:
+        # The debate worker routed the run into its mandate and opened its approval there: that binds the order
+        raise HTTPException(status_code=409, detail="MANDATE_MISMATCH: this debate was routed into another mandate; "
+                            "approve it without choosing one")
+    pool = request.app.state.pool
+    async with pool.acquire() as conn:
+        mandate, why = await resolve_mandate_for(conn, instrument, named or mandate_id)
+    if mandate is None and why == "AMBIGUOUS_MANDATE" and side == "BUY":
+        # The Inbox offers the choice itself: the detail says so, not "go to Mission Control"
+        raise HTTPException(status_code=409, detail=f"AMBIGUOUS_MANDATE: more than one ACTIVE mandate allows "
+                            f"{instrument}; nothing was queued; choose the mandate in the Inbox")
+    if mandate is None:
+        raise HTTPException(status_code=409, detail=f"{why}: approve this debate inside an ACTIVE mandate that allows "
+                            f"{instrument} (Mission Control → Mandates)")
+    requested = _requested_pct(decision, allocation_pct)
+    if side == "SELL":
+        # spot is long-only: a debate SELL sells the mandate's own holding, never a budget-sized amount
+        async with pool.acquire() as conn:
+            held = await conn.fetchval(
+                """SELECT COALESCE(SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE -filled_qty END), 0) FROM paper_orders
+                   WHERE instance_id = $1 AND instrument_id = $2 AND filled_qty > 0""",
+                mandate.instance_id, instrument)
+        if not held or held <= 0:
+            raise HTTPException(status_code=409, detail="The mandate holds nothing to sell; reject the debate instead")
+        return DebatePlan(mandate=mandate, side=side, requested=requested, allocation=requested, room=None,
+                          held=Decimal(str(held)).normalize())
+    # Another owner holding the instrument refuses the entry in the orchestrator's gate: refused here first
+    async with pool.acquire() as conn:
+        conflict = await instrument_conflict(conn, mandate, instrument, Decimal("0"), "debate")
+    if conflict is not None:
+        raise HTTPException(status_code=409, detail=conflict)
+    marks = await read_marks(_get_redis(request))
+    async with pool.acquire() as conn:
+        room = await entry_room_pct(conn, mandate, instrument, marks)
+    if room < MIN_MANDATE_ENTRY_PCT:
+        raise HTTPException(status_code=409, detail=(
+            f"MANDATE_POSITION_LIMIT_REACHED: mandate {mandate.name} already holds its limit of "
+            f"{mandate.max_position_pct}% in {instrument}; nothing was queued"))
+    return DebatePlan(mandate=mandate, side=side, requested=requested,
+                      allocation=min(requested, room.quantize(Decimal("0.01"))), room=room, held=Decimal("0"))
+
+
+def _mandate_view(m: Mandate) -> dict:
+    return {"id": str(m.id), "name": m.name, "autonomy_level": int(m.autonomy_level),
+            "capital_budget_usd": float(m.capital_budget_usd), "max_position_pct": float(m.max_position_pct)}
+
+
+@router.get("/debates/{run_id}/sizing")
+async def debate_sizing(run_id: str, request: Request, mandate_id: uuid.UUID | None = Query(default=None),
+                        allocation_pct: float | None = Query(default=None, ge=1.0, le=25.0), _auth=Depends(require_auth)):
+    """What approving the debate would do now (the Inbox's dry run): the mandate it trades in, the room a BUY has
+    left there and the size it would get, as % of that mandate's budget; or the code and detail of the refusal approve
+    would give, with the mandates to choose from when more than one ACTIVE mandate allows the instrument. Read only."""
+    run_uuid = _run_uuid(run_id)
+    run, decision = await _load_debate(request.app.state.pool, run_uuid)
+    if run["status"] != "PENDING_APPROVAL":
+        return {"ok": False, "code": "NOT_PENDING", "detail": f"The debate is {run['status']}", "remedy": None}
+    try:
+        plan = await _plan_debate(request, run, decision, mandate_id, allocation_pct)
+    except HTTPException as e:
+        detail = str(e.detail)
+        code, sep, _ = detail.partition(":")
+        code = code if sep and code.isupper() else "REFUSED"
+        remedy = None
+        if code == "AMBIGUOUS_MANDATE":
+            marks = await read_marks(_get_redis(request))
+            remedy = await choose_mandate_remedy(request.app.state.pool, decision["instrument_id"],
+                                                 _requested_pct(decision, allocation_pct), marks)
+        return {"ok": False, "code": code, "detail": detail, "remedy": remedy}
+    m = plan.mandate
+    return {
+        "ok": True, "side": plan.side, "mandate": _mandate_view(m),
+        "room_pct": float(plan.room.quantize(Decimal("0.01"))) if plan.room is not None else None,
+        "room_usd": float((m.capital_budget_usd * plan.room / 100).quantize(Decimal("0.01"))) if plan.room is not None else None,
+        "requested_pct": float(plan.requested), "allocation_pct": float(plan.allocation),
+        "budget_usd": float(plan.budget.quantize(Decimal("0.01"))),
+        "sell_quantity": format(plan.held, "f") if plan.side == "SELL" else None,
+    }
+
+
 @router.post("/debates/{run_id}/approve")
 async def approve_debate(
     run_id: str,
@@ -254,31 +399,14 @@ async def approve_debate(
     _csrf=Depends(require_csrf)
 ):
     pool = request.app.state.pool
-    try:
-        run_uuid = uuid.UUID(run_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid run_id format")
+    run_uuid = _run_uuid(run_id)
+    run, decision = await _load_debate(pool, run_uuid)
+    if run['status'] != 'PENDING_APPROVAL':
+        raise HTTPException(status_code=409, detail=f"Debate run has invalid status for approval: {run['status']}")
 
-    async with pool.acquire() as conn:
-        run = await conn.fetchrow("SELECT status, decision_trace_id FROM debate_runs WHERE id = $1", run_uuid)
-        if not run:
-            raise HTTPException(status_code=404, detail="Debate run not found")
-        if run['status'] != 'PENDING_APPROVAL':
-            raise HTTPException(status_code=409, detail=f"Debate run has invalid status for approval: {run['status']}")
-
-        decision = await conn.fetchrow("SELECT instrument_id, recommendation, conviction_score, allocation_pct FROM portfolio_decisions WHERE run_id = $1", run_uuid)
-        if not decision:
-            raise HTTPException(status_code=404, detail="No portfolio decision found for this debate run")
-
-        account = await conn.fetchrow("SELECT total_equity FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID)
-
-    side = order_side(decision['recommendation'])
-    if side is None:
-        raise HTTPException(status_code=409, detail=f"Recommendation '{decision['recommendation']}' has no order to execute; reject the debate instead")
-
-    if not account:
-        raise HTTPException(status_code=503, detail=f"Paper account {PAPER_ACCOUNT_ID} not found")
-    equity = float(account['total_equity'])
+    plan = await _plan_debate(request, run, decision, overrides.mandate_id if overrides else None,
+                              overrides.allocation_pct if overrides else None)
+    mandate, side = plan.mandate, plan.side
 
     sym = decision['instrument_id'].split(".")[0].upper()
     redis_client = _get_redis(request)
@@ -286,23 +414,20 @@ async def approve_debate(
     if not decision_price:
         raise HTTPException(status_code=503, detail="Could not fetch live price for sizing.")
 
-    alloc_pct = float(decision['allocation_pct'])
-    if overrides and overrides.allocation_pct is not None:
-        alloc_pct = float(overrides.allocation_pct)
-
-    quantity = (equity * alloc_pct / 100.0) / decision_price
-
+    # A BUY carries its allocation, as % of the mandate's budget, and no quantity: the orchestrator sizes it from the
+    # budget and cuts it to the mandate's room at execution, as it does a Brain card's (the dispatcher's 1-25% equity
+    # clamp still applies)
     payload = {
         "instrument_id": decision['instrument_id'],
         "symbol": sym,
         "side": side,
-        "quantity": float(round(quantity, 4)),
         "price": float(decision_price),
         "order_type": overrides.order_type if overrides and overrides.order_type else "LIMIT",
         "recommendation": decision['recommendation'],
         "conviction_score": float(decision['conviction_score']),
-        "allocation_pct": alloc_pct,
+        "allocation_pct": float(plan.allocation),
         "account_id": PAPER_ACCOUNT_ID,
+        "mandate_id": str(mandate.id),
     }
     if run['decision_trace_id']:  # R7.4: candidate -> debate -> approval -> command -> fill
         payload["decision_trace_id"] = str(run['decision_trace_id'])
@@ -313,26 +438,14 @@ async def approve_debate(
         if overrides.stop_loss_pct is not None:
             payload["stop_loss_pct"] = overrides.stop_loss_pct
 
-    # Every AI order trades inside a mandate (A5.1): the one the debate named, else the single ACTIVE
-    # mandate that allows the instrument. The approval is recorded and bound to its order (A5.3).
-    async with pool.acquire() as conn:
-        mandate_ref = await conn.fetchval("SELECT mandate_id FROM debate_runs WHERE id = $1", run_uuid)
-        mandate, why = await resolve_mandate_for(conn, decision['instrument_id'], mandate_ref)
-    if mandate is None:
-        raise HTTPException(status_code=409, detail=f"{why}: approve this debate inside an ACTIVE mandate that allows "
-                            f"{decision['instrument_id']} (Mission Control → Mandates)")
-    payload["mandate_id"] = str(mandate.id)
     if side == "SELL":
-        # spot is long-only: a debate SELL sells the mandate's own holding, never a budget-sized amount
-        async with pool.acquire() as conn:
-            held = await conn.fetchval(
-                """SELECT COALESCE(SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE -filled_qty END), 0) FROM paper_orders
-                   WHERE instance_id = $1 AND instrument_id = $2 AND filled_qty > 0""",
-                mandate.instance_id, decision['instrument_id'])
-        if not held or float(held) <= 0:
-            raise HTTPException(status_code=409, detail="The mandate holds nothing to sell; reject the debate instead")
-        payload.update(quantity=float(held), order_type="MARKET")
+        payload.update(quantity=float(plan.held), order_type="MARKET")
         payload.pop("price", None)
+        payload.pop("allocation_pct", None)
+        summary = f"Debate verdict: SELL {decision['instrument_id']} the whole holding of {plan.held:g} in mandate {mandate.name}"
+    else:
+        summary = (f"Debate verdict: BUY {decision['instrument_id']} at {float(plan.allocation):g}% of mandate "
+                   f"{mandate.name} (${plan.budget:,.0f})")
 
     # The debate worker may already have opened an approval for this run (mandate L1/L2, A5.7):
     # approving it here decides that approval, so the run never gets a second order.
@@ -359,7 +472,7 @@ async def approve_debate(
                 raise HTTPException(status_code=409, detail="Debate run was already decided")
             await record_operator_approval(
                 conn, mandate, "SUBMIT_ORDER", payload,
-                summary=f"Debate verdict: {side} {decision['instrument_id']} at {alloc_pct}% of equity",
+                summary=summary,
                 source="debate", source_ref=str(run_uuid), decided_by="operator:debate_approval",
                 idempotency_key=f"debate_approve:{run_id}",
                 action=ActionClass.ADD_RISK if side == "BUY" else ActionClass.REDUCE_RISK,
@@ -372,7 +485,8 @@ async def approve_debate(
         }))
 
     logger.info("Debate %s approved (decision_trace_id=%s)", run_id, payload.get("decision_trace_id"))
-    return {"status": "approved", "run_id": str(run_id), **payload}
+    return {"status": "approved", "run_id": str(run_id), **payload, "mandate_name": mandate.name,
+            "budget_usd": float(plan.budget.quantize(Decimal("0.01"))) if side == "BUY" else None}
 
 @router.post("/debates/{run_id}/reject")
 async def reject_debate(run_id: str, request: Request, _op=Depends(require_operator), _csrf=Depends(require_csrf)):

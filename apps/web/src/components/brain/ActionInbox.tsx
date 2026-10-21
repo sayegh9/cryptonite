@@ -1,13 +1,13 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { useDebateStore, DebateRun, type DebateActionError } from "@/lib/stores/useDebateStore";
+import { useDebateStore, DebateRun, type DebateActionError, type DebateSizing } from "@/lib/stores/useDebateStore";
 import { useSessionStore, type SessionStatus } from "@/lib/stores/useSessionStore";
 import { fetchApi } from "@/lib/api";
 import { OperatorLoginModal } from "@/components/operator/OperatorLoginModal";
-import { usePaperEquity, EQUITY_MAX_AGE_MS } from "@/lib/portfolio/usePaperEquity";
-import { Fresh } from "@/components/Fresh";
 import { ApprovalRiskContext, sideOf, type SimilarDecision } from "@/components/ApprovalRiskContext";
+import { firstMandateChoice, MandateChoicePicker, overlapping, stopOverlap } from "@/components/brain/MandateChoice";
+import type { MandateChoice } from "@/lib/brain/types";
 import { metricOrNull } from "@/lib/freshness";
 import {
   ShieldCheck,
@@ -61,6 +61,18 @@ const clampPct = (v: number) => Math.min(25, Math.max(1, Math.round(v)));
 
 const fmtUsd = (v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
+/** The mandate a debate's order is sized in: the one the dry run found, or the one chosen among several */
+interface SizingBase {
+  name: string;
+  budget: number;
+  /** % of the budget a BUY has left under the mandate's position limit (null for a SELL) */
+  roomPct: number | null;
+}
+
+/** A dry run that offers a choice of mandate (AMBIGUOUS_MANDATE): its candidates, else null */
+const choicesOf = (s: DebateSizing | null | undefined): MandateChoice[] | null =>
+  s && !s.ok && s.code === "AMBIGUOUS_MANDATE" && s.remedy?.kind === "CHOOSE_MANDATE" ? s.remedy.candidates : null;
+
 export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
   const activeDebates = useDebateStore((state) => state.activeDebates);
   const approveDebate = useDebateStore((state) => state.approveDebate);
@@ -73,7 +85,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
   const [activeTab, setActiveTab] = useState<FilterTab>("pending");
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
-  // Operator-chosen allocation per run, in % of equity (1–25)
+  // Operator-chosen allocation per run, in % of the mandate's budget (1–25)
   const [sizingMap, setSizingMap] = useState<Record<string, number>>({});
   // The AI's proposed allocation_pct per run, from /debates/{id}/decision (null = not available)
   const [proposedPct, setProposedPct] = useState<Record<string, number | null>>({});
@@ -88,7 +100,10 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
   const session = useSessionStore((s) => s.status);
   // Bumped by Retry to run the sync again
   const [syncNonce, setSyncNonce] = useState(0);
-  const equity = usePaperEquity();
+  // The approve dry run per run (null: it could not be read), and the mandate chosen when several allow the coin
+  const [sizings, setSizings] = useState<Record<string, DebateSizing | null>>({});
+  const [chosenMandate, setChosenMandate] = useState<Record<string, string>>({});
+  const [tidyOverlap, setTidyOverlap] = useState<Record<string, boolean>>({});
 
   // Sync real debate runs from API and remove local-only leftovers. Not while the session is known to be signed out.
   useEffect(() => {
@@ -252,8 +267,35 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
     };
   }, [awaitingIds, fetchDecisionData, proposedPct]);
 
+  // What approve would do now, per run awaiting approval: the mandate, its room and the size, or the refusal
+  const fetchDebateSizing = useDebateStore((state) => state.fetchDebateSizing);
+  const loadSizing = (runId: string) =>
+    void fetchDebateSizing(runId).then((s) => {
+      setSizings((prev) => ({ ...prev, [runId]: s }));
+      const candidates = choicesOf(s);
+      // Several mandates allow the coin: start on the first that can take the whole order (as the Brain card does)
+      if (candidates) setChosenMandate((prev) => ({ ...prev, [runId]: prev[runId] ?? firstMandateChoice(candidates, pctFor(runId)) }));
+    });
+  useEffect(() => {
+    if (!awaitingIds) return;
+    for (const runId of awaitingIds.split(",")) if (!(runId in sizings)) loadSizing(runId);
+    // Loads each run once; a failed approve reloads it
+  }, [awaitingIds]);
+
   const DEFAULT_PCT = 5;
   const pctFor = (runId: string) => sizingMap[runId] ?? proposedPct[runId] ?? DEFAULT_PCT;
+
+  /** The chosen mandate when the dry run offers a choice (null when none is chosen or it cannot take the order) */
+  const chosenFor = (runId: string): MandateChoice | null =>
+    choicesOf(sizings[runId])?.find((c) => c.id === chosenMandate[runId] && !c.blocked) ?? null;
+
+  /** The mandate the order is sized in, or null while it is unknown */
+  const baseFor = (runId: string): SizingBase | null => {
+    const s = sizings[runId];
+    if (s?.ok) return { name: s.mandate.name, budget: s.mandate.capital_budget_usd, roomPct: s.room_pct };
+    const c = chosenFor(runId);
+    return c ? { name: c.name, budget: c.capital_budget_usd, roomPct: c.room_pct } : null;
+  };
 
   const reportError = (runId: string, err: unknown, what: string) => {
     const e = err as DebateActionError;
@@ -267,22 +309,36 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
   };
 
   const handleApprove = async (runId: string) => {
-    // Size only from known, non-stale equity: the slider is a % of the server's sizing base
-    if (!equity.usable || equity.equity === null) {
-      setActionError((prev) => ({ ...prev, [runId]: "Equity unavailable: cannot size this order" }));
+    const choices = choicesOf(sizings[runId]);
+    const chosen = chosenFor(runId);
+    if (choices && !chosen) {
+      setActionError((prev) => ({ ...prev, [runId]: "Choose the mandate this order trades in" }));
       return;
     }
     setProcessingId(runId);
     setActionError((prev) => ({ ...prev, [runId]: "" }));
     const pct = clampPct(pctFor(runId));
     try {
-      const res = await approveDebate(runId, { allocation_pct: pct });
+      let done: string[] = [];
+      if (choices && chosen && tidyOverlap[runId]) {
+        // The others first, so the coin has one ACTIVE owner again; a refusal here stops before any order is sent
+        const instrumentId = activeDebates[runId]?.instrumentId ?? "";
+        done = await stopOverlap(overlapping(choices, chosen), chosen, instrumentId, {
+          pauseReason: `paused from the Inbox, debate ${runId}: ${chosen.name} trades ${instrumentId.split(".")[0]}`,
+          source: `debate:${runId}`,
+        });
+      }
+      const res = await approveDebate(runId, chosen ? { allocation_pct: pct, mandate_id: chosen.id } : { allocation_pct: pct });
       const serverPct = typeof res.allocation_pct === "number" ? res.allocation_pct : pct;
+      const where = typeof res.mandate_name === "string" ? `mandate ${res.mandate_name}` : "the mandate";
+      const usd = typeof res.budget_usd === "number" ? ` (≈ ${fmtUsd(res.budget_usd)})` : "";
       toast.success("Approved by server", {
-        description: `Order requested at ${serverPct}% of equity. The final size may be reduced to the mandate's room.`,
+        description: `Order requested at ${serverPct}% of ${where}${usd}${done.length ? `; ${done.join(", ")}` : ""}. ` +
+          "The final size may be reduced to the mandate's room.",
       });
     } catch (err) {
       reportError(runId, err, "Approval");
+      loadSizing(runId); // the state changed since the dry run (e.g. a second mandate now allows the coin): show it
     } finally {
       setProcessingId(null);
     }
@@ -508,6 +564,13 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
             // Only a run the server holds in PENDING_APPROVAL can be approved
             const isActionable = run.status === "PENDING_APPROVAL";
             const symbolDisplay = resolveInstrument(run);
+            const sizing = sizings[run.runId];
+            const choices = choicesOf(sizing);
+            const base = baseFor(run.runId);
+            // A dry run refused for a reason no choice here fixes: say so; Approve stays enabled (the server decides)
+            const refusal = sizing && !sizing.ok && !choices ? sizing.detail : null;
+            // Approve needs a known size: the mandate is read, and chosen when several allow the coin
+            const sizeUnknown = sizing === undefined || sizing === null || (choices !== null && !chosenFor(run.runId));
 
             return (
               <div
@@ -612,56 +675,87 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                   )}
                 </div>
 
-                {/* Sizing: a % of the paper account's equity, sent as allocation_pct */}
+                {/* Sizing: a % of the mandate's budget, sent as allocation_pct (as a Brain card's) */}
                 {isActionable && (
                   <div className="p-2 bg-zinc-950/50 border border-zinc-800/60 rounded space-y-1.5 mb-2 font-mono text-2xs" data-testid="inbox-sizing">
-                    <div className="flex items-center justify-between text-zinc-400">
-                      <label htmlFor={`size-${run.runId}`} className="flex items-center space-x-1">
-                        <Sliders className="w-3 h-3 text-cyan-400" aria-hidden="true" />
-                        <span>Allocation: {currentPct}% of equity</span>
-                      </label>
-                      <span className="text-cyan-300 font-bold tabular-nums">
-                        <Fresh
-                          value={equity.usable ? equity.equity : null}
-                          asOf={equity.asOf}
-                          maxAgeMs={EQUITY_MAX_AGE_MS}
-                          format={(e) => `≈ ${fmtUsd((e * currentPct) / 100)}`}
-                          unknownText="equity unavailable"
-                          testId="inbox-size-usd"
+                    {choices && (
+                      <div className="text-2xs" data-testid="inbox-choose-mandate">
+                        <MandateChoicePicker
+                          candidates={choices}
+                          symbol={symbolDisplay}
+                          name={`choose-${run.runId}`}
+                          chosenId={chosenMandate[run.runId] ?? ""}
+                          onChoose={(id) => setChosenMandate((prev) => ({ ...prev, [run.runId]: id }))}
+                          tidyOthers={!!tidyOverlap[run.runId]}
+                          onTidy={(t) => setTidyOverlap((prev) => ({ ...prev, [run.runId]: t }))}
+                          sizedPct={(c) => Math.min(currentPct, c.room_pct)}
                         />
-                      </span>
-                    </div>
-                    <input
-                      id={`size-${run.runId}`}
-                      type="range"
-                      min={1}
-                      max={25}
-                      step={1}
-                      value={currentPct}
-                      disabled={!equity.usable}
-                      onChange={(e) => setSize(run.runId, Number(e.target.value))}
-                      aria-valuetext={`${currentPct}% of equity`}
-                      className="w-full accent-cyan-400 h-1 bg-zinc-800 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
-                    />
-                    <div className="flex items-center justify-between text-2xs text-zinc-500">
-                      <span>1%</span>
-                      <span>
-                        {proposedPct[run.runId] != null
-                          ? `AI proposed ${proposedPct[run.runId]}%`
-                          : run.runId in proposedPct
-                          ? `AI proposal unavailable · default ${DEFAULT_PCT}%`
-                          : "loading AI proposal…"}
-                      </span>
-                      <span>25% max</span>
-                    </div>
-                    <p className="text-2xs text-zinc-500">Final size may be reduced to the mandate's room.</p>
+                      </div>
+                    )}
+                    {sizing?.ok && sizing.side === "SELL" ? (
+                      <p className="text-zinc-300" data-testid="inbox-sell">
+                        Sells mandate {sizing.mandate.name}&apos;s whole holding: {sizing.sell_quantity} {symbolDisplay.replace(/USDT$/, "")}
+                      </p>
+                    ) : (
+                      <>
+                      <div className="flex items-center justify-between text-zinc-400">
+                        <label htmlFor={`size-${run.runId}`} className="flex items-center space-x-1">
+                          <Sliders className="w-3 h-3 text-cyan-400" aria-hidden="true" />
+                          <span>Allocation: {currentPct}% of mandate budget</span>
+                        </label>
+                        <span className="text-cyan-300 font-bold tabular-nums" data-testid="inbox-size-usd">
+                          {base
+                            ? `≈ ${fmtUsd((base.budget * currentPct) / 100)}`
+                            : choices
+                            ? "choose a mandate"
+                            : sizing === undefined
+                            ? "loading…"
+                            : "mandate size unavailable"}
+                        </span>
+                      </div>
+                      {base && (
+                        <p className="text-2xs text-zinc-500" data-testid="inbox-size-mandate">
+                          in mandate {base.name} ({fmtUsd(base.budget)} budget)
+                        </p>
+                      )}
+                      <input
+                        id={`size-${run.runId}`}
+                        type="range"
+                        min={1}
+                        max={25}
+                        step={1}
+                        value={currentPct}
+                        disabled={!base}
+                        onChange={(e) => setSize(run.runId, Number(e.target.value))}
+                        aria-valuetext={`${currentPct}% of mandate budget`}
+                        className="w-full accent-cyan-400 h-1 bg-zinc-800 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                      />
+                      <div className="flex items-center justify-between text-2xs text-zinc-500">
+                        <span>1%</span>
+                        <span>
+                          {proposedPct[run.runId] != null
+                            ? `AI proposed ${proposedPct[run.runId]}%`
+                            : run.runId in proposedPct
+                            ? `AI proposal unavailable · default ${DEFAULT_PCT}%`
+                            : "loading AI proposal…"}
+                        </span>
+                        <span>25% max</span>
+                      </div>
+                      <p className="text-2xs text-zinc-500">Final size may be reduced to the mandate&apos;s room.</p>
+                      </>
+                    )}
+                    {refusal && (
+                      <p className="text-2xs text-amber-300" data-testid="inbox-sizing-refusal">
+                        Would be refused: {refusal}
+                      </p>
+                    )}
                     <ApprovalRiskContext
                       symbol={symbolDisplay === "UNKNOWN" ? null : symbolDisplay}
                       side={sideOf(decisions[run.runId]?.recommendation ?? run.decision)}
                       decisionPrice={metricOrNull(decisions[run.runId]?.decision_price)}
-                      notionalUsd={equity.usable && equity.equity !== null ? (equity.equity * currentPct) / 100 : null}
+                      notionalUsd={base && !(sizing?.ok && sizing.side === "SELL") ? (base.budget * currentPct) / 100 : null}
                       stopPct={null}
-                      roomUsd={null}
+                      roomUsd={base && base.roomPct !== null ? (base.budget * base.roomPct) / 100 : null}
                       requestedPct={currentPct}
                       similar={Array.isArray(decisions[run.runId]?.similar_decisions) ? (decisions[run.runId]!.similar_decisions as SimilarDecision[]) : null}
                     />
@@ -699,7 +793,7 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                           type="button"
                           autoFocus
                           data-testid="confirm-debate-btn"
-                          disabled={processingId === run.runId || (confirming.action === "approve" && !equity.usable)}
+                          disabled={processingId === run.runId || (confirming.action === "approve" && sizeUnknown)}
                           onClick={() => {
                             const action = confirming.action;
                             setConfirming(null);
@@ -709,7 +803,9 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                             confirming.action === "approve" ? "bg-emerald-500 text-zinc-950" : "bg-zinc-600 text-zinc-50"
                           }`}
                         >
-                          {confirming.action === "approve" ? `Confirm approve at ${currentPct}%` : "Confirm reject"}
+                          {confirming.action === "approve"
+                            ? `Confirm approve at ${currentPct}%${chosenFor(run.runId) ? ` in ${chosenFor(run.runId)!.name}` : ""}`
+                            : "Confirm reject"}
                         </button>
                         <button
                           type="button"
@@ -725,8 +821,16 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
                         type="button"
                         data-testid="approve-debate-btn"
                         onClick={() => setConfirming({ runId: run.runId, action: "approve" })}
-                        disabled={processingId === run.runId || !equity.usable}
-                        title={equity.usable ? undefined : "Equity unavailable: cannot size this order"}
+                        disabled={processingId === run.runId || sizeUnknown}
+                        title={
+                          !sizeUnknown
+                            ? undefined
+                            : choices
+                            ? "Choose the mandate this order trades in"
+                            : sizing === undefined
+                            ? "Reading the mandate's size…"
+                            : "Mandate sizing unavailable: cannot size this order"
+                        }
                         className="py-1.5 bg-emerald-600 hover:bg-emerald-500 text-zinc-950 font-bold rounded flex items-center justify-center space-x-1 transition-colors disabled:opacity-50"
                       >
                         <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />

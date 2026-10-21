@@ -24,7 +24,6 @@ import re
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -39,7 +38,8 @@ from cryptonite_api.brain_outcomes import (
     followed_debates,
 )
 from cryptonite_api.leverage_card import HIGH_LEVERAGE_CONFIRM, card_leverage_plan, is_perp_entry
-from cryptonite_api.routes.agents import PAPER_ACCOUNT_ID, sign_request
+from cryptonite_api.mandate_choice import choose_mandate_remedy, instrument_conflict
+from cryptonite_api.routes.agents import sign_request
 from cryptonite_api.routes.ai import _stopped_mandate_on, require_totp
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.universe import require_fed
@@ -52,8 +52,6 @@ from cryptonite_execution.mandate_store import (
     load_mandate,
     resolve_mandate_for,
 )
-from cryptonite_execution.mandates import MandateOrder, check_mandate
-from cryptonite_orchestrator.mandate_gate import mandate_exposure
 from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
     MAX_POSITION_PCT_CAP,
@@ -64,7 +62,6 @@ from cryptonite_schemas.mandate import (
     MandateReject,
     canonical_instrument,
     is_perp_instrument,
-    mandate_id_from_instance,
     room_remedy,
 )
 from cryptonite_schemas.marks import read_marks
@@ -390,31 +387,6 @@ async def _holding_mandate_for_sell(conn, instrument_id: str) -> tuple[Mandate |
     return holders[0], ""
 
 
-async def _instrument_conflict(conn, mandate: Mandate, card: dict[str, Any]) -> str | None:
-    """The MANDATE_INSTRUMENT_CONFLICT detail when another owner holds the card's instrument, else None.
-
-    The orchestrator's mandate gate refuses an entry this way: ``mandate_gate.mandate_exposure`` finds who else holds
-    the instrument and ``mandates.check_mandate`` returns the verdict. Both run here unchanged and read-only, and only
-    the verdict is read, so the dry run cannot disagree with the gate. The API has no engine, so the dispatcher's
-    in-memory orders are not visible here; the gate still refuses those at execution. Nothing is written."""
-    instrument = canonical_instrument(card["instrument_id"])
-    engine = SimpleNamespace(dispatcher=SimpleNamespace(), account_id=PAPER_ACCOUNT_ID)
-    exposure = await mandate_exposure(conn, engine, mandate, instrument, {})
-    order = MandateOrder(instrument_id=instrument, side="BUY", quantity=Decimal(str(card.get("quantity") or 0)),
-                         ref_price=None)  # the conflict is decided before the notional, so no price is needed
-    if check_mandate(mandate, order, exposure, approval_ok=True) is not MandateReject.INSTRUMENT_CONFLICT:
-        return None
-    holder = await conn.fetchval(
-        """SELECT instance_id FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
-           AND instrument_id = $2 AND instance_id <> $3 LIMIT 1""", PAPER_ACCOUNT_ID, instrument, mandate.instance_id)
-    who = holder or "another owner"
-    held_by = mandate_id_from_instance(holder)
-    if held_by is not None:  # a mandate's instance: name the mandate, not its instance id
-        who = await conn.fetchval("SELECT name FROM ai_mandates WHERE id = $1", held_by) or who
-    return (f"MANDATE_INSTRUMENT_CONFLICT: {who} holds {card['instrument_id']}; mandate {mandate.name} cannot add to "
-            "it, so nothing was queued; reject this card")
-
-
 class CardApproveRequest(BaseModel):
     mandate_id: uuid.UUID | None = None  # default: the single ACTIVE mandate that allows the instrument
     # Perp entries (ADR 0009 D3: every risk-adding perp order is approved with TOTP). ``leverage`` is the operator's
@@ -557,7 +529,8 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
         # Another owner holding the instrument refuses the entry in the orchestrator's gate: refused here too, before
         # sizing and before the card is claimed, so the dry run and approve give the same answer
         async with pool.acquire() as conn:
-            conflict = await _instrument_conflict(conn, mandate, card)
+            conflict = await instrument_conflict(conn, mandate, card["instrument_id"],
+                                                 Decimal(str(card.get("quantity") or 0)), "card")
         if conflict is not None:
             raise HTTPException(status_code=409, detail=conflict)
         marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
@@ -772,7 +745,7 @@ async def _card_remedy(request: Request, card: dict[str, Any], code: str, mandat
                 "requested_pct": float(requested),
                 "allocation_after_pct": float(min(requested, fix.room_after_pct).quantize(Decimal("0.01")))}
     if code == "AMBIGUOUS_MANDATE":
-        return await _choose_mandate_remedy(conn_pool=pool, instrument=instrument, card=card, marks=marks)
+        return await choose_mandate_remedy(pool, instrument, Decimal(str(card["allocation_pct"])), marks)
     if code == "MANDATE_PAUSED":
         async with pool.acquire() as conn:  # the stopped mandate approve named: the first, by creation
             row = await conn.fetchrow(
@@ -782,55 +755,6 @@ async def _card_remedy(request: Request, card: dict[str, Any], code: str, mandat
             return None
         return {"kind": "RESUME_MANDATE", "mandate_id": str(row["id"]), "mandate_name": row["name"]}
     return None
-
-
-async def _choose_mandate_remedy(*, conn_pool, instrument: str, card: dict[str, Any], marks) -> dict[str, Any] | None:
-    """AMBIGUOUS_MANDATE: several ACTIVE mandates allow the instrument, so approve needs one named. Each candidate says
-    what approve would size to in it. When one of them holds the instrument it is the only one that can add to it (the
-    others would be refused as MANDATE_INSTRUMENT_CONFLICT); when an owner outside them holds it, no choice helps.
-
-    Each other candidate may also be tidied, so the overlap does not come back: the instrument removed from it, or the
-    mandate paused when the instrument is all it covers. Both take room away, so neither needs TOTP. A candidate that
-    holds the instrument is never tidied: its position stays in the mandate that owns it."""
-    requested = Decimal(str(card["allocation_pct"]))
-    candidates = []
-    async with conn_pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE status = 'ACTIVE' AND $1 = ANY(instruments) ORDER BY created_at",
-            instrument)
-        mandates = [Mandate.from_row(r) for r in rows]
-        if len(mandates) < 2:
-            return None
-        outside = await conn.fetchval(
-            """SELECT 1 FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
-               AND instrument_id = $2 AND NOT (instance_id = ANY($3::text[])) LIMIT 1""",
-            PAPER_ACCOUNT_ID, instrument, [m.instance_id for m in mandates])
-        if outside:
-            return None
-        for m in mandates:
-            inst, _ = await held_values(conn, m, instrument, marks)
-            room = await entry_room_pct(conn, m, instrument, marks)
-            candidates.append((m, inst > 0, room))
-    holder = next((m for m, holds, _ in candidates if holds), None)
-    out = []
-    for m, holds, room in candidates:
-        if holds:
-            blocked = None
-        elif holder is not None:
-            blocked = f"{holder.name} holds {instrument}, so only it can add to it"
-        elif room < MIN_MANDATE_ENTRY_PCT:
-            blocked = f"no room left under its {m.max_position_pct:g}% limit"
-        else:
-            blocked = None
-        tidy = None if holds else ("PAUSE" if m.instruments == [instrument] else "REMOVE_INSTRUMENT")
-        out.append({"id": str(m.id), "name": m.name, "autonomy_level": int(m.autonomy_level),
-                    "instruments": m.instruments, "max_position_pct": float(m.max_position_pct),
-                    "capital_budget_usd": float(m.capital_budget_usd), "room_pct": float(room.quantize(Decimal("0.01"))),
-                    "allocation_pct": float(min(requested, room).quantize(Decimal("0.01"))), "holds": holds,
-                    "blocked": blocked, "tidy": tidy})
-    if all(c["blocked"] for c in out):
-        return None
-    return {"kind": "CHOOSE_MANDATE", "candidates": out}
 
 
 @router.get("/sessions/{sid}/cards/{widget_id}/preflight")

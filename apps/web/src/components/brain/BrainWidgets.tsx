@@ -17,7 +17,8 @@ import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
-import { createMandate, editMandate, pauseMandate, resumeMandate } from "@/lib/mission/client";
+import { firstMandateChoice, MandateChoicePicker, overlapping, stopOverlap } from "@/components/brain/MandateChoice";
+import { createMandate, editMandate, resumeMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import { HIGH_LEVERAGE_CONFIRM, usd } from "@/lib/leverage";
 import { PerpPlanPanel } from "@/components/brain/PerpPlanPanel";
@@ -64,12 +65,6 @@ function levelNote(level: number): string {
   if (level <= 1) return "At L1 Copilot every order still needs your approval.";
   if (level === 2) return "At L2 Supervised the AI can use the extra room after a veto window, without asking first.";
   return `At L${level} Autonomous the AI can use the extra room without asking.`;
-}
-
-/** BTCUSDT / btcusdt.binance -> BTCUSDT.BINANCE, as the API stores a mandate's instruments */
-function canonicalInstrument(raw: string): string {
-  const s = raw.trim().toUpperCase();
-  return s.includes(".") ? s : `${s}.BINANCE`;
 }
 
 type CardFix = "create" | "add" | "edit" | "resume" | "choose" | "allow" | "raise";
@@ -999,13 +994,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const leverageRemedy = perpEntry && preflight?.ok ? preflight.leverage_remedy ?? null : null;
   const highLeverage = (leveragePlan?.leverage ?? 0) >= HIGH_LEVERAGE_CONFIRM;
   // The first mandate that can take the whole order, else the first that can take any of it
-  const firstChoice = chooseRemedy
-    ? (chooseRemedy.candidates.find((c) => !c.blocked && c.allocation_pct >= widget.allocation_pct)
-      ?? chooseRemedy.candidates.find((c) => !c.blocked))?.id ?? ""
-    : "";
+  const firstChoice = chooseRemedy ? firstMandateChoice(chooseRemedy.candidates, widget.allocation_pct) : "";
   useEffect(() => setChosenId(firstChoice), [firstChoice]);
   const chosen = chooseRemedy?.candidates.find((c) => c.id === chosenId && !c.blocked) ?? null;
-  const others = chooseRemedy?.candidates.filter((c) => c.id !== chosen?.id && c.tidy) ?? [];
+  const others = chooseRemedy ? overlapping(chooseRemedy.candidates, chosen) : [];
   // Approve stays enabled when the dry run says it would be refused (the server decides); the label says so
   const refused = preflight !== null && !preflight.ok && !preflight.needs_mandate && !remedy;
   // A dry run that finds no ACTIVE mandate for a BUY readies the create form, so the first Approve already shows it
@@ -1090,19 +1082,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
         );
       } else if (fix === "choose" && chosen) {
         // The others first, so the instrument has one ACTIVE owner again; a refusal here stops before any order is sent
-        const done: string[] = [];
-        if (tidyOthers) {
-          for (const c of others) {
-            if (c.tidy === "PAUSE") {
-              await pauseMandate(c.id, `paused from Brain order card ${widget.id}: ${chosen.name} trades ${symbol}`);
-              done.push(`paused ${c.name}`);
-            } else {
-              const instrument = canonicalInstrument(widget.instrument_id);
-              await editMandate(c.id, { instruments: c.instruments.filter((i) => i !== instrument), source });
-              done.push(`removed ${symbol} from ${c.name}`);
-            }
-          }
-        }
+        const done = tidyOthers
+          ? await stopOverlap(others, chosen, widget.instrument_id, {
+            pauseReason: `paused from Brain order card ${widget.id}: ${chosen.name} trades ${symbol}`, source,
+          })
+          : [];
         mandateId = chosen.id;
         setFixed(`Trading in mandate ${chosen.name}${done.length ? `; ${done.join(", ")}` : ""}.`);
       } else if (fix === "resume" && resumeRemedy) {
@@ -1417,39 +1401,15 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
             </div>
           ) : chooseRemedy ? (
             <div data-testid="card-fix-choose">
-              <fieldset className="mb-2 flex flex-col gap-1 text-zinc-300">
-                <legend className="mb-1 text-zinc-400">
-                  {chooseRemedy.candidates.length} ACTIVE mandates allow {symbol}. Trade this order in:
-                </legend>
-                {chooseRemedy.candidates.map((c) => (
-                  <label key={c.id} className={`flex items-start gap-1.5 ${c.blocked ? "text-zinc-500" : ""}`}>
-                    <input
-                      type="radio"
-                      className="mt-0.5"
-                      name={`choose-${widget.id}`}
-                      disabled={!!c.blocked}
-                      checked={chosenId === c.id}
-                      onChange={() => setChosenId(c.id)}
-                    />
-                    <span>
-                      {c.name} (L{c.autonomy_level}, {c.max_position_pct}% limit of ${fmt(c.capital_budget_usd, 0)})
-                      {c.blocked
-                        ? ` · ${c.blocked}`
-                        : ` · sized to ${c.allocation_pct}% ($${fmt(c.capital_budget_usd * c.allocation_pct / 100, 0)})${c.holds ? `, adds to its ${symbol}` : ""}`}
-                    </span>
-                  </label>
-                ))}
-              </fieldset>
-              {chosen && others.length > 0 && (
-                <label className="mb-2 flex items-start gap-1.5 text-zinc-300">
-                  <input type="checkbox" className="mt-0.5" checked={tidyOthers} onChange={(e) => setTidyOthers(e.target.checked)} />
-                  <span>
-                    Also stop the overlap, so {chosen.name} is the only ACTIVE mandate on {symbol}:{" "}
-                    {others.map((c) => (c.tidy === "PAUSE" ? `pause ${c.name} (${symbol} is all it covers)` : `remove ${symbol} from ${c.name}`)).join("; ")}.
-                    This takes room away, so it needs no TOTP.
-                  </span>
-                </label>
-              )}
+              <MandateChoicePicker
+                candidates={chooseRemedy.candidates}
+                symbol={symbol}
+                name={`choose-${widget.id}`}
+                chosenId={chosenId}
+                onChoose={setChosenId}
+                tidyOthers={tidyOthers}
+                onTidy={setTidyOthers}
+              />
             </div>
           ) : resumeRemedy ? (
             <p className="mb-2 text-zinc-300" data-testid="card-fix-resume">
