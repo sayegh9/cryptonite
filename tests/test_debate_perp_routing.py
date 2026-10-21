@@ -191,13 +191,16 @@ async def test_the_routing_matrix(h, routing, recommendation, held, expected):
     a = await approval_of(h, run_id)
     p = a["payload"]
     assert (a["action_class"], p["side"], p.get("perp_side")) == expected
-    assert p["instrument_id"] == PERP and "leverage" not in p and "stop_price" not in p
+    assert p["instrument_id"] == PERP and "stop_price" not in p
+    command_type = await h.pool.fetchval("SELECT command_type FROM ai_approvals WHERE source_ref = $1", str(run_id))
     if a["action_class"] == "REDUCE_RISK":
+        assert command_type == "CLOSE_POSITION" and "leverage" not in p  # capped to the live position at execution
         assert p["reduce_only"] is True and p["quantity"] == "0.01"
         assert a["timeout_policy"] == "PROCEED"  # L1 reduction: a short veto window that proceeds
         assert "allocation_pct" not in p
     else:
         assert a["timeout_policy"] == "DENY"  # an L1 entry: no answer means no
+        assert command_type == "SUBMIT_ORDER" and p["leverage"] == p["perp_plan"]["leverage"]  # the approved ceiling
         assert p["margin_mode"] == "ISOLATED" and p["stop_loss"] == (63000.0 if entry_short else 57000.0)
         assert p["setup_grade"] in ("A", "B", "C") and p["grade"]["grade"] == p["setup_grade"]
         assert p["perp_plan"]["ok"] is True and p["perp_plan"]["side"] == expected[1]
@@ -414,7 +417,9 @@ async def test_the_inbox_sends_a_perp_approval_to_the_queue(h, routing):
 
 # --- B2: the orchestrator sizes a debate's perp command with plan_leveraged_order ---------------------------------
 
-async def run_debate_command(payload: dict, m, requester: str):
+async def run_debate_command(payload: dict, m, requester: str, *, command_type: str = "SUBMIT_ORDER",
+                             mark: str = "60000", held: str | None = None,
+                             owner: str | None = None):
     """The orchestrator's command poller on one approved SUBMIT_ORDER carrying ``payload`` (a fake connection, the real
     gate and dispatcher, mark and quote at 60,000), as test_leverage_orchestrator_sizing runs a Brain card's."""
     import asyncio
@@ -425,12 +430,16 @@ async def run_debate_command(payload: dict, m, requester: str):
     from test_orchestrator_perp_wiring import make_engine
     from test_paper_risk_guardrails import make_perp_dispatcher
 
-    engine = make_engine(make_perp_dispatcher(mark="60000"))
+    dispatcher = make_perp_dispatcher(mark=mark)
+    if held is not None:  # the mandate's live perp position (signed quantity) when the command runs
+        dispatcher.set_perp_position(PERP, D(held), D("60000"), leverage=3, margin_mode="ISOLATED",
+                                     instance_id=owner or m.instance_id)
+    engine = make_engine(dispatcher)
     engine.bridge = MagicMock()
     quotes = SimpleQuoteCache()
-    quotes.set_quote(PERP, 60000.0, 60010.0)
+    quotes.set_quote(PERP, float(mark), float(mark) + 10.0)
     cid = uuid.uuid4()
-    row = {"command_id": cid, "command_type": "SUBMIT_ORDER", "target_instance_id": m.instance_id,
+    row = {"command_id": cid, "command_type": command_type, "target_instance_id": m.instance_id,
            "requester_id": requester, "mandate_id": str(m.id),
            "payload": json.dumps({**payload, "approval_id": str(uuid.uuid4())})}
     approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED", "command_id": cid}
@@ -447,7 +456,7 @@ async def test_the_orchestrator_sizes_a_debate_perp_entry_and_rests_its_stop(h, 
     m = await perp_mandate(h)
     _, _, run_id = await route(h, routing)
     payload = (await approval_of(h, run_id))["payload"]
-    assert "leverage" not in payload and "quantity" not in payload  # sized at execution, not by the debate
+    assert "quantity" not in payload and payload["leverage"] == payload["perp_plan"]["leverage"]  # sized at execution
     conn, engine = await run_debate_command(payload, m, requester)
     assert conn.outcome() == ("COMPLETED", None)
     d = engine.dispatcher
@@ -488,7 +497,10 @@ async def test_the_orchestrator_refuses_a_debate_perp_entry_above_its_ceilings(h
     assert conn.outcome()[0] == "REJECTED" and conn.outcome()[1].startswith("STOP_REQUIRED")
 
 
-# --- review fix 1: the routing preference debate.perp_routing (ADR 0010 P-10) --------------------------------------------
+# --- review fixes -----------------------------------------------------------------------------------------------------
+# Item 1: the routing preference (ADR 0010 P-10). Item 2: a perp reduction is a CLOSE_POSITION the orchestrator caps.
+# Item 3: a routed run never turns into an unapproved order. Item 4: the approved leverage is a ceiling. Item 5: an
+# entry another owner blocks is refused before the operator spends a TOTP.
 
 SPOT_FIRST, PERP_FIRST = "SPOT_FIRST", "PERP_FIRST"
 
@@ -571,3 +583,134 @@ async def test_the_routing_setting_is_cached_and_an_unreadable_one_is_spot_first
     async with h.pool.acquire() as conn:
         assert await routing.routing_mode(conn) == SPOT_FIRST
     assert routing.read_routing_mode(None) == (SPOT_FIRST, None)
+
+
+# --- item 2: the reduction is a CLOSE_POSITION the orchestrator caps ------------------------------------------------------
+
+async def routed_reduction(h, routing, held_side: str = "LONG", rec: str = "Sell"):
+    m = await perp_mandate(h)
+    await hold_perp(h, m, held_side, "0.01")
+    _, _, run_id = await route(h, routing, rec)
+    return m, (await approval_of(h, run_id))["payload"], run_id
+
+
+async def test_a_reduction_is_a_close_position_with_the_veto_semantics_unchanged(h, routing):
+    m, payload, run_id = await routed_reduction(h, routing)
+    row = await h.pool.fetchrow("SELECT command_type, action_class, timeout_policy, expires_at, created_at "
+                                "FROM ai_approvals WHERE source_ref = $1", str(run_id))
+    assert (row["command_type"], row["action_class"], row["timeout_policy"]) == ("CLOSE_POSITION", "REDUCE_RISK", "PROCEED")
+    assert (row["expires_at"] - row["created_at"]).total_seconds() == pytest.approx(300, abs=5)  # the 5-minute veto window
+    assert payload["instrument_id"] == PERP and payload["quantity"] == "0.01" and payload["reduce_only"] is True
+    async with h.client() as c:  # no TOTP for a reduction, as before
+        approval_id = await h.pool.fetchval("SELECT id FROM ai_approvals WHERE source_ref = $1", str(run_id))
+        res = await c.post(f"/api/v1/ai/approvals/{approval_id}/decision", headers=h.headers, json={"decision": "APPROVE"})
+    assert res.status_code == 200, res.text
+    cmd = await h.pool.fetchrow("SELECT command_type, payload FROM execution_commands WHERE command_id = $1",
+                                uuid.UUID(res.json()["command_id"]))
+    assert cmd["command_type"] == "CLOSE_POSITION"
+
+
+async def test_a_position_that_shrank_during_the_veto_window_is_still_reduced_capped(h, routing):
+    m, payload, _ = await routed_reduction(h, routing)  # routed against 0.01 held
+    conn, engine = await run_debate_command(payload, m, "approval:web:operator:u1", command_type="CLOSE_POSITION",
+                                            held="0.004")  # a TP1 half close left 0.004
+    assert conn.outcome() == ("COMPLETED", None)
+    assert PERP not in engine.dispatcher.perp_positions  # closed, capped at the live 0.004: no oversize, no flip
+    evt = engine.bridge.enqueue_event.call_args.args[0]
+    assert (evt["side"], evt["quantity"]) == ("SELL", "0.004")
+
+
+async def test_a_short_that_shrank_is_covered_capped_and_never_flipped(h, routing):
+    m, payload, _ = await routed_reduction(h, routing, "SHORT", "Buy")
+    conn, engine = await run_debate_command(payload, m, "ai:debate_worker", command_type="CLOSE_POSITION", held="-0.003")
+    assert conn.outcome() == ("COMPLETED", None)
+    assert engine.dispatcher.get_perp_position_qty(PERP) == 0  # a reduce-only BUY of 0.003, not 0.01
+    assert engine.bridge.enqueue_event.call_args.args[0]["side"] == "BUY"
+
+
+async def test_a_position_closed_meanwhile_is_a_no_op_not_a_refusal(h, routing):
+    m, payload, _ = await routed_reduction(h, routing)
+    conn, engine = await run_debate_command(payload, m, "approval:web:operator:u1", command_type="CLOSE_POSITION")
+    assert conn.outcome() == ("COMPLETED", None)  # not REDUCE_ONLY_OVERSIZE
+    assert engine.dispatcher.perp_positions == {} and engine.dispatcher.open_orders == {}
+    engine.bridge.enqueue_event.assert_not_called()  # nothing was filled: no new position, no alert
+
+
+async def test_the_close_never_touches_a_perp_another_owner_holds(h, routing):
+    m, payload, _ = await routed_reduction(h, routing)
+    other = await perp_mandate(h)
+    conn, engine = await run_debate_command(payload, m, "ai:debate_worker", command_type="CLOSE_POSITION", held="0.01",
+                                            owner=other.instance_id)
+    assert conn.outcome() == ("REJECTED", "CLOSE_NOT_OWNED")
+    assert engine.dispatcher.get_perp_position_qty(PERP) == D("0.01")
+
+
+# --- item 3: a routed-twice run is never "no approval needed" ------------------------------------------------------------
+
+async def test_a_run_routed_twice_returns_the_existing_status_and_queues_nothing(h, routing, caplog):
+    await h.mandate(level=1, instruments=(SPOT,))
+    run_id = uuid.uuid4()
+
+    async def once():
+        async with h.pool.acquire() as conn:
+            return await routing.route_entry(conn, run_id, SPOT, "Buy", 0.8, 2.5, reference_price=60000.0)
+
+    first = await once()
+    assert first[0] == "PENDING_APPROVAL"
+    with caplog.at_level("WARNING"):
+        second = await once()
+    assert second[0] == "PENDING_APPROVAL" and second[1].id == first[1].id
+    assert "already routed" in caplog.text
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0  # the order waits for the approval
+    approval_id = await h.pool.fetchval("SELECT id FROM ai_approvals WHERE source_ref = $1", str(run_id))
+    async with h.client() as c:
+        await c.post(f"/api/v1/ai/approvals/{approval_id}/decision", headers=h.headers, json={"decision": "VETO"})
+    assert (await once())[0] == "NO_TRADE"  # a vetoed run stays vetoed
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+async def test_l3_still_queues_an_entry_without_an_approval(h, routing):
+    m = await h.mandate(level=3, instruments=(SPOT,))
+    run_id = uuid.uuid4()
+    async with h.pool.acquire() as conn:
+        status, mandate = await routing.route_entry(conn, run_id, SPOT, "Buy", 0.8, 2.5, reference_price=60000.0)
+    assert (status, mandate.id) == ("COMPLETED", m.id)
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key = $1",
+                                 f"debate:{run_id}") == 1
+
+
+# --- item 4: the approved leverage is a ceiling ------------------------------------------------------------------------
+
+async def test_executed_leverage_is_at_most_the_approved_one_when_the_price_moves_toward_the_stop(h, routing):
+    m = await perp_mandate(h, max_leverage=10)
+    _, _, run_id = await route(h, routing, allocation=8.0)  # a large margin: the risk at the stop binds the dry run
+    payload = (await approval_of(h, run_id))["payload"]
+    approved = payload["leverage"]
+    assert approved == payload["perp_plan"]["leverage"] and payload["perp_plan"]["binding_ceiling"] == "risk at stop"
+    # at 58,500 the stop (57,000) is closer: the risk ceiling the orchestrator computes now is higher
+    uncapped, engine_u = await run_debate_command({k: v for k, v in payload.items() if k != "leverage"}, m,
+                                                  "approval:web:operator:u1", mark="58500")
+    assert uncapped.outcome() == ("COMPLETED", None) and engine_u.dispatcher.perp_positions[PERP].leverage > approved
+    capped, engine_c = await run_debate_command(payload, m, "approval:web:operator:u1", mark="58500")
+    assert capped.outcome() == ("COMPLETED", None)
+    assert engine_c.dispatcher.perp_positions[PERP].leverage == approved  # a ceiling, clamped not refused
+    # the other way (price away from the stop): the ceilings now allow less and the plan clamps, never refuses
+    away, engine_a = await run_debate_command(payload, m, "approval:web:operator:u1", mark="63000")
+    assert away.outcome() == ("COMPLETED", None) and engine_a.dispatcher.perp_positions[PERP].leverage <= approved
+
+
+# --- item 5: another owner holds the perpetual ------------------------------------------------------------------------
+
+async def test_a_perp_entry_is_refused_when_another_owner_holds_the_perpetual(h, routing, caplog):
+    await perp_mandate(h)
+    await h.pool.execute(
+        """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side, entry_price,
+               quantity, current_price, leverage, margin_mode, status)
+           VALUES ($1, 'PAPER-ACCOUNT-001', 'MANUAL_TRADE', $2, 'LONG', 60000, 0.01, 60000, 3, 'ISOLATED', 'OPEN')""",
+        uuid.uuid4().hex, PERP)
+    with caplog.at_level("INFO"):
+        status, mandate, run_id = await route(h, routing)
+    assert status == "NO_TRADE" and mandate is not None
+    assert "INSTRUMENT_CONFLICT: MANDATE_INSTRUMENT_CONFLICT: MANUAL_TRADE holds BTCUSDT-PERP.BINANCE" in caplog.text
+    assert await approval_of(h, run_id) is None

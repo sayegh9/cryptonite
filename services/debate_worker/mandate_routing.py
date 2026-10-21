@@ -21,8 +21,11 @@ ACTIVE perps mandate that allows the instrument's USD-M perpetual (``resolve_rou
 long and a SELL to a short; a verdict against the mandate's position closes it reduce-only. An entry needs a
 structural stop and a target on the correct side (the scanner candidate's own levels: long levels never become a
 short), a setup grade from code (``setup_grade.py``) other than NO_TRADE, and a leverage plan the API's card dry run
-(``leverage_card.card_leverage_plan``) accepts; it is always an L1 approval (TOTP to approve) and carries no leverage:
-the orchestrator sizes it with ``plan_leveraged_order``.
+(``leverage_card.card_leverage_plan``) accepts; it is always an L1 approval (TOTP to approve). It carries the dry run's
+leverage as a ceiling and no quantity: the orchestrator sizes it with ``plan_leveraged_order``, at most that leverage.
+A perp entry another owner's position blocks is refused ``INSTRUMENT_CONFLICT``. A reduction is a ``CLOSE_POSITION`` with
+a quantity, which the orchestrator caps to the live position. Which mandate takes a candidate both a spot and a perps
+mandate match is the ``debate.perp_routing`` setting (SPOT_FIRST by default).
 
 The allocation is capped at the room the mandate has left under its own position limit and budget
 (what it already holds counts) before anything is queued or sent for approval, so a model never
@@ -277,6 +280,11 @@ async def _approval(conn, mandate: Mandate, action: ActionClass, command_type: s
     return approval_id
 
 
+# debate_runs status for a run routed twice, from its existing approval's status
+_EXISTING_APPROVAL_STATUS = {"PENDING": "PENDING_APPROVAL", "APPROVED": "COMPLETED", "EXPIRED_PROCEEDED": "COMPLETED",
+                             "VETOED": "NO_TRADE", "EXPIRED": "NO_TRADE", "CANCELLED": "NO_TRADE"}
+
+
 def _trace_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
     try:
         return uuid.UUID(str(payload["decision_trace_id"])) if payload.get("decision_trace_id") else None
@@ -377,12 +385,21 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
     held_side, held = await perp_position(conn, mandate, instrument)
     held = held.normalize()
     if held > 0 and held_side != ("LONG" if side == "BUY" else "SHORT"):
-        # Against the mandate's position: close it, reduce-only. Never refused by a filter or the session
-        payload = {**base, "quantity": format(held, "f"), "reduce_only": True}
+        # Against the mandate's position: close it, reduce-only. Never refused by a filter or the session. Sent as
+        # CLOSE_POSITION with a quantity (as route_exit does): the orchestrator caps it to the live perp position and
+        # checks ownership at execution, so a position that shrank during the veto window (TP1 half close, a partial
+        # stop fill) is still reduced, and one that closed is a no-op, instead of a REDUCE_ONLY_OVERSIZE refusal
+        payload = {**base, "quantity": format(held, "f"), "reduce_only": True, "reason": "DEBATE_REDUCE"}
         return (ActionClass.REDUCE_RISK, payload,
                 f"{side} {instrument} reduce-only {held:g} (closes the mandate's {held_side}) · conviction {conviction:.2f}")
     if not mandate.allow_perps or mandate.autonomy_level != AutonomyLevel.L1:
         return _no_trade(run_id, instrument, mandate, "MANDATE_PERPS_NOT_ALLOWED: perps need the opt-in at L1")
+    from cryptonite_api.mandate_choice import instrument_conflict
+
+    # Another owner holding the perpetual: the orchestrator's mandate gate would refuse the entry after the operator
+    # spent a TOTP on it (the same read-only check the Brain card and the Inbox run)
+    if conflict := await instrument_conflict(conn, mandate, instrument, Decimal("0"), "debate"):
+        return _no_trade(run_id, instrument, mandate, f"INSTRUMENT_CONFLICT: {conflict}")
     long = side == "BUY"
     if not (stop_loss and take_profit):
         return _no_trade(run_id, instrument, mandate,
@@ -421,7 +438,10 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
         return _no_trade(run_id, instrument, mandate,
                          f"{plan.reject}: the {plan.binding_ceiling or 'leverage plan'} allows no order")
     alloc = float((plan.margin_usd / mandate.capital_budget_usd * 100).quantize(Decimal("0.01")))
-    payload = {**base, "allocation_pct": alloc, "stop_loss": stop, "margin_mode": "ISOLATED",
+    # ``leverage``: the dry run's (code, never the model's), the ceiling the operator approved. The orchestrator sizes
+    # again at execution with plan_leveraged_order, which clamps a requested leverage to what its ceilings allow now,
+    # so the executed leverage is at most this one even when the price moved toward the stop meanwhile
+    payload = {**base, "allocation_pct": alloc, "stop_loss": stop, "margin_mode": "ISOLATED", "leverage": plan.leverage,
                "setup_grade": grade["grade"], "grade_reasons": grade["reasons"][:12], "grade": grade,
                "perp_side": "LONG" if long else "SHORT", "perp_plan": plan.as_dict()}
     loss_pct = f" ({float(plan.loss_at_stop_pct):.2f}% of budget)" if plan.loss_at_stop_pct is not None else ""
@@ -496,13 +516,24 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         payload = {**base, "quantity": str(held)}
         summary = f"SELL {held} {base['instrument_id']} (the mandate's position) · conviction {conviction:.2f}"
         action = ActionClass.REDUCE_RISK
+    # A perp reduction closes the mandate's own position (capped to what is live at execution); every other order is a
+    # SUBMIT_ORDER
+    command_type = "CLOSE_POSITION" if action is ActionClass.REDUCE_RISK and is_perp_instrument(instrument) else "SUBMIT_ORDER"
     if action is ActionClass.REDUCE_RISK and mandate.autonomy_level >= AutonomyLevel.L2:
-        await _enqueue(conn, mandate, "SUBMIT_ORDER", payload, f"debate:{run_id}")
+        await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")
         return "COMPLETED", mandate
-    approval = await _approval(conn, mandate, action, "SUBMIT_ORDER", payload, summary, "debate", run_id, now)
-    if approval is None:  # ADD_RISK at L3: no approval
-        await _enqueue(conn, mandate, "SUBMIT_ORDER", payload, f"debate:{run_id}")
+    if timeout_policy_for(action, mandate.autonomy_level, in_active_hours(mandate.active_hours_utc, now)) is None:
+        await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")  # ADD_RISK at L3: no approval needed
         return "COMPLETED", mandate
+    approval = await _approval(conn, mandate, action, command_type, payload, summary, "debate", run_id, now)
+    if approval is None:
+        # The insert hit ON CONFLICT (source, source_ref): this run was routed before. Report that approval's state and
+        # queue nothing (it was never "no approval needed")
+        existing = await conn.fetchval(
+            "SELECT status FROM ai_approvals WHERE source = 'debate' AND source_ref = $1", str(run_id))
+        status = _EXISTING_APPROVAL_STATUS.get(str(existing), "PENDING_APPROVAL")
+        logger.warning("Debate %s was already routed (approval %s): returning %s, nothing queued", run_id, existing, status)
+        return status, mandate
     return "PENDING_APPROVAL", mandate
 
 
