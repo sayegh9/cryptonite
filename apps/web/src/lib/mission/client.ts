@@ -27,7 +27,8 @@ export const fetchOutcomesByRegime = async (mandateId: string | null, horizon = 
 export const fetchShadow = async (role: string | null, days: number): Promise<ShadowReport> =>
   fetchApi(`/ai/shadow?days=${days}${role ? `&role=${encodeURIComponent(role)}` : ""}`);
 
-export const decideApproval = (id: string, decision: "APPROVE" | "VETO") => write(`/ai/approvals/${id}/decision`, { decision });
+export const decideApproval = (id: string, decision: "APPROVE" | "VETO", totp_code?: string) =>
+  write(`/ai/approvals/${id}/decision`, totp_code ? { decision, totp_code } : { decision });
 export const createMandate = (body: Record<string, unknown>): Promise<Mandate> => write("/ai/mandates", body);
 export const editMandate = (id: string, body: Record<string, unknown>): Promise<Mandate> => write(`/ai/mandates/${id}`, body, "PATCH");
 export const pauseMandate = (id: string, reason?: string): Promise<Mandate> =>

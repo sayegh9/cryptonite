@@ -16,6 +16,42 @@ def countdown(expires_at: datetime.datetime, now: datetime.datetime) -> str:
     return f"{left // 60:02d}:{left % 60:02d}"
 
 
+def _money(v: Any) -> str:
+    try:
+        return f"${float(v):,.2f}"
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def _price(v: Any) -> str:
+    try:
+        return f"{float(v):,.2f}"
+    except (TypeError, ValueError):
+        return "none"
+
+
+def perp_lines(payload: dict[str, Any]) -> list[str]:
+    """The perp fields a Brain perp card shows, for a perp entry approval (a debate's, auto-trade Phase B): side, the
+    setup grade and its reasons, the leverage the dry run allows and its binding ceiling, the liquidation price and
+    the loss at the stop. Empty for any other approval."""
+    plan = payload.get("perp_plan") if isinstance(payload, dict) else None
+    if not isinstance(plan, dict):
+        return []
+    grade = payload.get("grade") if isinstance(payload.get("grade"), dict) else {}
+    reasons = grade.get("reasons") or payload.get("grade_reasons") or []
+    loss_pct = plan.get("loss_at_stop_pct")
+    pct = f" ({float(loss_pct):.2f}% of budget)" if loss_pct is not None else ""
+    return [
+        f"Perp {payload.get('perp_side') or ('LONG' if plan.get('side') == 'BUY' else 'SHORT')} · ISOLATED · "
+        f"stop {payload.get('stop_loss')} · target {payload.get('take_profit')}",
+        f"Grade {payload.get('setup_grade') or grade.get('grade') or 'ungraded'}"
+        + (f": {'; '.join(str(r) for r in reasons[:6])}" if reasons else ""),
+        f"Leverage the dry run allows: {plan.get('leverage')}x (binding: {plan.get('binding_ceiling')})",
+        f"Liquidation {_price(plan.get('liquidation_price'))} · loss at stop {_money(plan.get('loss_at_stop_usd'))}{pct}",
+        "The orchestrator sizes it again at execution (plan_leveraged_order).",
+    ]
+
+
 def approval_text(row: dict[str, Any], approval: dict[str, Any], now: datetime.datetime) -> str:
     add = approval["action_class"] == "ADD_RISK"
     label = "🟡 ADD RISK" if add else "🟢 REDUCE RISK"
@@ -23,6 +59,7 @@ def approval_text(row: dict[str, Any], approval: dict[str, Any], now: datetime.d
     lines = [
         f"{label} · {row['title']}          ⏱ {countdown(approval['expires_at'], now)}",
         approval["summary"] or row.get("body") or "",
+        *perp_lines(approval.get("payload") or {}),
         ("Approving new risk needs your TOTP code." if add else "Risk reducing: one tap."),
         f"At {approval['expires_at'].astimezone(datetime.UTC):%H:%M} UTC the answer is {timeout}.",
     ]
