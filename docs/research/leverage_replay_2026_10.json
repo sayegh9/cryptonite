@@ -1,0 +1,3705 @@
+{
+ "generated_at": "2026-10-20T19:04:22.700280+00:00",
+ "equity": 10000.0,
+ "perp_taker": 0.0005,
+ "assumed_brackets": {
+  "XRPUSDT": [
+   [
+    "0",
+    "10000",
+    75,
+    "0.005"
+   ],
+   [
+    "10000",
+    "50000",
+    50,
+    "0.0065"
+   ],
+   [
+    "50000",
+    "500000",
+    25,
+    "0.01"
+   ],
+   [
+    "500000",
+    null,
+    10,
+    "0.025"
+   ]
+  ],
+  "WLDUSDT": [
+   [
+    "0",
+    "5000",
+    50,
+    "0.01"
+   ],
+   [
+    "5000",
+    "25000",
+    25,
+    "0.015"
+   ],
+   [
+    "25000",
+    "100000",
+    20,
+    "0.02"
+   ],
+   [
+    "100000",
+    null,
+    10,
+    "0.025"
+   ]
+  ]
+ },
+ "trades": [
+  {
+   "position_id": "d073023c-4257-452d-9604-c58b0dc9397a",
+   "instance": "AI_MANDATE_a96365877ab0435a84c86e3479f207a7",
+   "symbol": "BTCUSDT",
+   "entries": [
+    [
+     "2026-10-04T08:46:50.022021+00:00",
+     85108.0,
+     0.009399821403393335
+    ],
+    [
+     "2026-10-05T22:17:55.007750+00:00",
+     85971.61,
+     0.0021557052
+    ]
+   ],
+   "entry": 85269.10806817106,
+   "spot_cost": 985.329446729372,
+   "exit_t": "2026-10-13T08:58:20.703163+00:00",
+   "exit_cmd_t": null,
+   "exit_price": 83632.78,
+   "exit_reason": "AI_SELL_CARD",
+   "move_pct": -1.919016282969499,
+   "spot_realized": -19.87505333783566,
+   "spot_fees": 1.951750260935114,
+   "struct_stop": null,
+   "take_profit": null,
+   "stop_dist_pct": 5.0,
+   "stop_src": "hard 5%",
+   "bars": 12743,
+   "mark_bars": 12973,
+   "expected_bars": 12972,
+   "mae_pct": -5.71783636375457,
+   "mfe_pct": 2.028873024502431,
+   "mae_mark_pct": -5.748867531547286,
+   "funding_events": 27,
+   "funding_rate_sum": 0.00040668999999999997,
+   "slippage": null,
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 985.329446729372,
+      "margin": 985.329446729372,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.3668087257505056,
+      "pnl": -20.251316379847975,
+      "pnl_on_margin_pct": -2.055283788287122,
+      "pnl_on_equity_pct": -0.20251316379847972
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333333,
+      "liq": 57074.36952354152,
+      "liq_first_leg": 56966.532797858104,
+      "liq_dist_pct": 33.06559571619814,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.9306753364777199,
+      "pnl": -51.38209470717762,
+      "pnl_on_margin_pct": -6.165851364861315,
+      "pnl_on_equity_pct": -0.5138209470717762
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 68489.24342824983,
+      "liq_first_leg": 68359.83935742972,
+      "liq_dist_pct": 19.67871485943776,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.9306753364777199,
+      "pnl": -51.38209470717762,
+      "pnl_on_margin_pct": -10.276418941435525,
+      "pnl_on_equity_pct": -0.5138209470717762
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 77050.39885678106,
+      "liq_first_leg": 76904.81927710843,
+      "liq_dist_pct": 9.63855421686748,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.9306753364777199,
+      "pnl": -51.38209470717762,
+      "pnl_on_margin_pct": -20.55283788287105,
+      "pnl_on_equity_pct": -0.5138209470717762
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 985.329446729372,
+      "margin": 985.329446729372,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.3668087257505056,
+      "pnl": -20.251316379847975,
+      "pnl_on_margin_pct": -2.055283788287122,
+      "pnl_on_equity_pct": -0.20251316379847972
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2955.988340188116,
+      "margin": 985.3294467293722,
+      "liq": 57074.36952354154,
+      "liq_first_leg": 56966.53279785811,
+      "liq_dist_pct": 33.06559571619814,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.1004261772515167,
+      "pnl": -60.753949139544424,
+      "pnl_on_margin_pct": -6.165851364861415,
+      "pnl_on_equity_pct": -0.6075394913954442
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4926.64723364686,
+      "margin": 985.329446729372,
+      "liq": 68489.24342824984,
+      "liq_first_leg": 68359.83935742972,
+      "liq_dist_pct": 19.67871485943775,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.8340436287525281,
+      "pnl": -101.25658189923986,
+      "pnl_on_margin_pct": -10.276418941435608,
+      "pnl_on_equity_pct": -1.0125658189923985
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9853.29446729372,
+      "margin": 985.329446729372,
+      "liq": 77050.39885678107,
+      "liq_first_leg": 76904.81927710843,
+      "liq_dist_pct": 9.63855421686748,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -3.6680872575050563,
+      "pnl": -202.51316379847972,
+      "pnl_on_margin_pct": -20.552837882871216,
+      "pnl_on_equity_pct": -2.025131637984797
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 1000.0,
+      "margin": 1000.0,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.37227013459108804,
+      "pnl": -20.552837882871216,
+      "pnl_on_margin_pct": -2.055283788287122,
+      "pnl_on_equity_pct": -0.20552837882871217
+     },
+     "3": {
+      "lev": 3,
+      "notional": 1000.0,
+      "margin": 333.3333333333333,
+      "liq": 57074.36952354154,
+      "liq_first_leg": 56966.5327978581,
+      "liq_dist_pct": 33.06559571619812,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.37227013459108804,
+      "pnl": -20.552837882871216,
+      "pnl_on_margin_pct": -6.165851364861365,
+      "pnl_on_equity_pct": -0.20552837882871217
+     },
+     "5": {
+      "lev": 5,
+      "notional": 1000.0,
+      "margin": 200.0,
+      "liq": 68489.24342824984,
+      "liq_first_leg": 68359.83935742972,
+      "liq_dist_pct": 19.67871485943775,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.37227013459108804,
+      "pnl": -20.552837882871216,
+      "pnl_on_margin_pct": -10.276418941435608,
+      "pnl_on_equity_pct": -0.20552837882871217
+     },
+     "10": {
+      "lev": 10,
+      "notional": 1000.0,
+      "margin": 100.0,
+      "liq": 77050.39885678107,
+      "liq_first_leg": 76904.81927710843,
+      "liq_dist_pct": 9.63855421686748,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.37227013459108804,
+      "pnl": -20.552837882871216,
+      "pnl_on_margin_pct": -20.552837882871216,
+      "pnl_on_equity_pct": -0.20552837882871217
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 2000.0,
+      "margin": 2000.0,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.7445402691821761,
+      "pnl": -41.10567576574243,
+      "pnl_on_margin_pct": -2.055283788287122,
+      "pnl_on_equity_pct": -0.41105675765742433
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2000.0,
+      "margin": 666.6666666666666,
+      "liq": 57074.36952354154,
+      "liq_first_leg": 56966.532797858104,
+      "liq_dist_pct": 33.06559571619812,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.7445402691821761,
+      "pnl": -41.10567576574243,
+      "pnl_on_margin_pct": -6.165851364861365,
+      "pnl_on_equity_pct": -0.41105675765742433
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2000.0,
+      "margin": 400.0,
+      "liq": 68489.24342824984,
+      "liq_first_leg": 68359.83935742972,
+      "liq_dist_pct": 19.67871485943775,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.7445402691821761,
+      "pnl": -41.10567576574243,
+      "pnl_on_margin_pct": -10.276418941435608,
+      "pnl_on_equity_pct": -0.41105675765742433
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2000.0,
+      "margin": 200.0,
+      "liq": 77050.39885678107,
+      "liq_first_leg": 76904.81927710843,
+      "liq_dist_pct": 9.63855421686748,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.7445402691821761,
+      "pnl": -41.10567576574243,
+      "pnl_on_margin_pct": -20.552837882871216,
+      "pnl_on_equity_pct": -0.41105675765742433
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "a969882b-c075-4a35-8d7f-fcfbf40e9f7b",
+   "instance": "AI_MANDATE_a96365877ab0435a84c86e3479f207a7",
+   "symbol": "ETHUSDT",
+   "entries": [
+    [
+     "2026-10-05T02:47:38.593456+00:00",
+     2734.03,
+     0.18288021711539376
+    ],
+    [
+     "2026-10-06T15:03:25.903617+00:00",
+     2720.89,
+     0.17834157
+    ]
+   ],
+   "entry": 2727.5425501467844,
+   "spot_cost": 985.2477943973,
+   "exit_t": "2026-10-07T10:07:36.948288+00:00",
+   "exit_cmd_t": "2026-10-07T10:07:36.870224+00:00",
+   "exit_price": 2590.54,
+   "exit_reason": "HARD_STOP",
+   "move_pct": -5.022929894875938,
+   "spot_realized": -50.42406549178176,
+   "spot_fees": 1.9210072827912121,
+   "struct_stop": null,
+   "take_profit": null,
+   "stop_dist_pct": 5.0,
+   "stop_src": "hard 5%",
+   "bars": 3318,
+   "mark_bars": 3321,
+   "expected_bars": 3320,
+   "mae_pct": -5.9589372909338305,
+   "mfe_pct": 0.26058071405095085,
+   "mae_mark_pct": -5.866931819933385,
+   "funding_events": 7,
+   "funding_rate_sum": 0.00021078,
+   "slippage": {
+    "trigger": 2591.165422639445,
+    "px_at_command": 2595.23,
+    "fill": 2590.54,
+    "delay_s": 0.078064,
+    "slip_vs_trigger_pct": -0.02292989487592853,
+    "slip_vs_command_px_pct": -0.17194965481831473,
+    "move_pct": -5.022929894875938
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 985.2477943973,
+      "margin": 985.2477943973,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16137386906322793,
+      "pnl": -50.61018351384665,
+      "pnl_on_margin_pct": -5.136797443409262,
+      "pnl_on_equity_pct": -0.5061018351384665
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333333,
+      "liq": 1827.4991960782481,
+      "liq_first_leg": 1831.8458961474043,
+      "liq_dist_pct": 32.99832495812394,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.40947533701900907,
+      "pnl": -128.419936085232,
+      "pnl_on_margin_pct": -15.41039233022784,
+      "pnl_on_equity_pct": -1.2841993608523201
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 2192.9990352938976,
+      "liq_first_leg": 2198.215075376885,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.40947533701900907,
+      "pnl": -128.419936085232,
+      "pnl_on_margin_pct": -25.6839872170464,
+      "pnl_on_equity_pct": -1.2841993608523201
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 2467.123914705635,
+      "liq_first_leg": 2472.9919597989956,
+      "liq_dist_pct": 9.547738693467323,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.40947533701900907,
+      "pnl": -128.419936085232,
+      "pnl_on_margin_pct": -51.3679744340928,
+      "pnl_on_equity_pct": -1.2841993608523201
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 985.2477943973,
+      "margin": 985.2477943973,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16137386906322793,
+      "pnl": -50.61018351384665,
+      "pnl_on_margin_pct": -5.136797443409262,
+      "pnl_on_equity_pct": -0.5061018351384665
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2955.7433831919,
+      "margin": 985.2477943973001,
+      "liq": 1827.499196078248,
+      "liq_first_leg": 1831.8458961474037,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.4841216071896838,
+      "pnl": -151.83055054154045,
+      "pnl_on_margin_pct": -15.410392330227834,
+      "pnl_on_equity_pct": -1.5183055054154044
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4926.2389719865005,
+      "margin": 985.2477943973001,
+      "liq": 2192.9990352938976,
+      "liq_first_leg": 2198.215075376884,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.8068693453161396,
+      "pnl": -253.05091756923406,
+      "pnl_on_margin_pct": -25.68398721704639,
+      "pnl_on_equity_pct": -2.5305091756923406
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9852.477943973001,
+      "margin": 985.2477943973001,
+      "liq": 2467.123914705635,
+      "liq_first_leg": 2472.991959798995,
+      "liq_dist_pct": 9.547738693467323,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.6137386906322793,
+      "pnl": -506.1018351384681,
+      "pnl_on_margin_pct": -51.36797443409278,
+      "pnl_on_equity_pct": -5.061018351384681
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 1000.0,
+      "margin": 1000.0,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16379013480760363,
+      "pnl": -51.36797443409263,
+      "pnl_on_margin_pct": -5.136797443409264,
+      "pnl_on_equity_pct": -0.5136797443409262
+     },
+     "3": {
+      "lev": 3,
+      "notional": 1000.0,
+      "margin": 333.33333333333337,
+      "liq": 1827.4991960782475,
+      "liq_first_leg": 1831.8458961474037,
+      "liq_dist_pct": 32.99832495812396,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16379013480760363,
+      "pnl": -51.36797443409263,
+      "pnl_on_margin_pct": -15.410392330227788,
+      "pnl_on_equity_pct": -0.5136797443409262
+     },
+     "5": {
+      "lev": 5,
+      "notional": 1000.0,
+      "margin": 200.0,
+      "liq": 2192.999035293897,
+      "liq_first_leg": 2198.215075376884,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16379013480760363,
+      "pnl": -51.36797443409263,
+      "pnl_on_margin_pct": -25.683987217046315,
+      "pnl_on_equity_pct": -0.5136797443409262
+     },
+     "10": {
+      "lev": 10,
+      "notional": 1000.0,
+      "margin": 100.0,
+      "liq": 2467.123914705634,
+      "liq_first_leg": 2472.991959798995,
+      "liq_dist_pct": 9.547738693467345,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16379013480760363,
+      "pnl": -51.36797443409263,
+      "pnl_on_margin_pct": -51.36797443409263,
+      "pnl_on_equity_pct": -0.5136797443409262
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 2000.0,
+      "margin": 2000.0,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.32758026961520725,
+      "pnl": -102.73594886818526,
+      "pnl_on_margin_pct": -5.136797443409264,
+      "pnl_on_equity_pct": -1.0273594886818525
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2000.0,
+      "margin": 666.6666666666667,
+      "liq": 1827.4991960782475,
+      "liq_first_leg": 1831.8458961474037,
+      "liq_dist_pct": 32.99832495812396,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.32758026961520725,
+      "pnl": -102.73594886818526,
+      "pnl_on_margin_pct": -15.410392330227788,
+      "pnl_on_equity_pct": -1.0273594886818525
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2000.0,
+      "margin": 400.0,
+      "liq": 2192.999035293897,
+      "liq_first_leg": 2198.215075376884,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.32758026961520725,
+      "pnl": -102.73594886818526,
+      "pnl_on_margin_pct": -25.683987217046315,
+      "pnl_on_equity_pct": -1.0273594886818525
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2000.0,
+      "margin": 200.0,
+      "liq": 2467.123914705634,
+      "liq_first_leg": 2472.991959798995,
+      "liq_dist_pct": 9.547738693467345,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.32758026961520725,
+      "pnl": -102.73594886818526,
+      "pnl_on_margin_pct": -51.36797443409263,
+      "pnl_on_equity_pct": -1.0273594886818525
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "44e1ebfd-dcf6-4f2f-9c53-8ef602b23411",
+   "instance": "AI_MANDATE_3ccead54b61c4337a349db28b017b099",
+   "symbol": "XRPUSDT",
+   "entries": [
+    [
+     "2026-10-13T16:06:37.452344+00:00",
+     1.3757,
+     363.4513338663953
+    ]
+   ],
+   "entry": 1.3757,
+   "spot_cost": 500.0,
+   "exit_t": "2026-10-15T02:22:38.317038+00:00",
+   "exit_cmd_t": "2026-10-15T02:22:38.182314+00:00",
+   "exit_price": 1.3032,
+   "exit_reason": "HARD_STOP",
+   "move_pct": -5.27004434106273,
+   "spot_realized": -26.823871483608343,
+   "spot_fees": 0.9736497782946864,
+   "struct_stop": 1.34,
+   "take_profit": null,
+   "stop_dist_pct": 2.595042523806046,
+   "stop_src": "structural",
+   "bars": 2017,
+   "mark_bars": 2057,
+   "expected_bars": 2057,
+   "mae_pct": -5.3354655811586715,
+   "mfe_pct": 0.8068619611834027,
+   "mae_mark_pct": -5.35727266119066,
+   "funding_events": 4,
+   "funding_rate_sum": -7.135e-05,
+   "slippage": {
+    "trigger": 1.3069149999999998,
+    "px_at_command": 1.3165,
+    "fill": 1.3032,
+    "delay_s": 0.134724,
+    "slip_vs_trigger_pct": -0.2700443410627254,
+    "slip_vs_command_px_pct": -0.966780548084618,
+    "move_pct": -5.27004434106273,
+    "intended_stop": 1.34,
+    "gap_vs_intended_stop_pct": -2.6750018172566814,
+    "note": "structural stop 1.34 was on the entry command, but STRUCTURAL_STOP shipped on 2026-10-17 (906c550)"
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 500.0,
+      "margin": 500.0,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.034934258417096756,
+      "pnl": -26.802112336043912,
+      "pnl_on_margin_pct": -5.360422467208783,
+      "pnl_on_equity_pct": -0.2680211233604391
+     },
+     "3": {
+      "lev": 3,
+      "notional": 1500.0,
+      "margin": 500.0,
+      "liq": 0.9217420435510888,
+      "liq_first_leg": 0.9217420435510888,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.10480277525129027,
+      "pnl": -80.40633700813173,
+      "pnl_on_margin_pct": -16.081267401626345,
+      "pnl_on_equity_pct": -0.8040633700813173
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 1.1060904522613066,
+      "liq_first_leg": 1.1060904522613066,
+      "liq_dist_pct": 19.59798994974873,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.17467129208548376,
+      "pnl": -134.01056168021955,
+      "pnl_on_margin_pct": -26.80211233604391,
+      "pnl_on_equity_pct": -1.3401056168021956
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 1.2443517587939699,
+      "liq_first_leg": 1.2443517587939699,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.17467129208548376,
+      "pnl": -134.01056168021955,
+      "pnl_on_margin_pct": -53.60422467208782,
+      "pnl_on_equity_pct": -1.3401056168021956
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 500.0,
+      "margin": 500.0,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.034934258417096756,
+      "pnl": -26.802112336043912,
+      "pnl_on_margin_pct": -5.360422467208783,
+      "pnl_on_equity_pct": -0.2680211233604391
+     },
+     "3": {
+      "lev": 3,
+      "notional": 1500.0,
+      "margin": 500.0,
+      "liq": 0.9217420435510888,
+      "liq_first_leg": 0.9217420435510888,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.10480277525129027,
+      "pnl": -80.40633700813173,
+      "pnl_on_margin_pct": -16.081267401626345,
+      "pnl_on_equity_pct": -0.8040633700813173
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 1.1060904522613066,
+      "liq_first_leg": 1.1060904522613066,
+      "liq_dist_pct": 19.59798994974873,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.17467129208548376,
+      "pnl": -134.01056168021955,
+      "pnl_on_margin_pct": -26.80211233604391,
+      "pnl_on_equity_pct": -1.3401056168021956
+     },
+     "10": {
+      "lev": 10,
+      "notional": 5000.0,
+      "margin": 500.0,
+      "liq": 1.2443517587939699,
+      "liq_first_leg": 1.2443517587939699,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.34934258417096753,
+      "pnl": -268.0211233604391,
+      "pnl_on_margin_pct": -53.60422467208782,
+      "pnl_on_equity_pct": -2.6802112336043913
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 1926.7507002801242,
+      "margin": 1926.7507002801244,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.134619213737816,
+      "pnl": -103.28197742491832,
+      "pnl_on_margin_pct": -5.360422467208782,
+      "pnl_on_equity_pct": -1.0328197742491834
+     },
+     "3": {
+      "lev": 3,
+      "notional": 1926.7507002801242,
+      "margin": 642.2502334267082,
+      "liq": 0.9217420435510888,
+      "liq_first_leg": 0.9217420435510888,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.134619213737816,
+      "pnl": -103.28197742491832,
+      "pnl_on_margin_pct": -16.081267401626345,
+      "pnl_on_equity_pct": -1.0328197742491834
+     },
+     "5": {
+      "lev": 5,
+      "notional": 1926.7507002801242,
+      "margin": 385.3501400560249,
+      "liq": 1.1060904522613064,
+      "liq_first_leg": 1.1060904522613064,
+      "liq_dist_pct": 19.59798994974875,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.134619213737816,
+      "pnl": -103.28197742491832,
+      "pnl_on_margin_pct": -26.80211233604391,
+      "pnl_on_equity_pct": -1.0328197742491834
+     },
+     "10": {
+      "lev": 10,
+      "notional": 1926.7507002801242,
+      "margin": 192.67507002801244,
+      "liq": 1.2443517587939699,
+      "liq_first_leg": 1.2443517587939699,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.134619213737816,
+      "pnl": -103.28197742491832,
+      "pnl_on_margin_pct": -53.60422467208782,
+      "pnl_on_equity_pct": -1.0328197742491834
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 3853.5014005602484,
+      "margin": 3853.501400560249,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.269238427475632,
+      "pnl": -206.56395484983665,
+      "pnl_on_margin_pct": -5.360422467208782,
+      "pnl_on_equity_pct": -2.0656395484983667
+     },
+     "3": {
+      "lev": 3,
+      "notional": 3853.5014005602484,
+      "margin": 1284.5004668534164,
+      "liq": 0.9217420435510887,
+      "liq_first_leg": 0.9217420435510887,
+      "liq_dist_pct": 32.99832495812396,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.269238427475632,
+      "pnl": -206.56395484983665,
+      "pnl_on_margin_pct": -16.081267401626345,
+      "pnl_on_equity_pct": -2.0656395484983667
+     },
+     "5": {
+      "lev": 5,
+      "notional": 3853.5014005602484,
+      "margin": 770.7002801120498,
+      "liq": 1.1060904522613064,
+      "liq_first_leg": 1.1060904522613064,
+      "liq_dist_pct": 19.59798994974875,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.269238427475632,
+      "pnl": -206.56395484983665,
+      "pnl_on_margin_pct": -26.80211233604391,
+      "pnl_on_equity_pct": -2.0656395484983667
+     },
+     "10": {
+      "lev": 10,
+      "notional": 3853.5014005602484,
+      "margin": 385.3501400560249,
+      "liq": 1.2443517587939699,
+      "liq_first_leg": 1.2443517587939699,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.269238427475632,
+      "pnl": -206.56395484983665,
+      "pnl_on_margin_pct": -53.60422467208782,
+      "pnl_on_equity_pct": -2.0656395484983667
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "dfea16a9-d08d-4f15-9d8c-a592ad42f2ec",
+   "instance": "AI_MANDATE_587a0dda940146cf98c9b3bb0b85bf34",
+   "symbol": "WLDUSDT",
+   "entries": [
+    [
+     "2026-10-16T15:28:41.912973+00:00",
+     0.5161,
+     1871.4467322837
+    ]
+   ],
+   "entry": 0.5161,
+   "spot_cost": 965.8536585316175,
+   "exit_t": "2026-10-17T12:04:58.111843+00:00",
+   "exit_cmd_t": "2026-10-17T06:55:06.056570+00:00",
+   "exit_price": 0.5131,
+   "exit_reason": "TRAILING_STOP",
+   "move_pct": -0.5812826971517193,
+   "spot_realized": -6.574579515185866,
+   "spot_fees": 1.926092976866384,
+   "struct_stop": 0.495,
+   "take_profit": null,
+   "stop_dist_pct": 4.088354969967067,
+   "stop_src": "structural",
+   "bars": 1224,
+   "mark_bars": 1237,
+   "expected_bars": 1237,
+   "mae_pct": -4.495252857973265,
+   "mfe_pct": 4.592133307498525,
+   "mae_mark_pct": -4.55221856229413,
+   "funding_events": 3,
+   "funding_rate_sum": 0.00016703,
+   "slippage": {
+    "trigger": null,
+    "px_at_command": 0.528,
+    "fill": 0.5131,
+    "delay_s": 18592.055273,
+    "slip_vs_trigger_pct": null,
+    "slip_vs_command_px_pct": -2.8870373958535214,
+    "move_pct": -0.5812826971517193
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585316175,
+      "margin": 965.8536585316175,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16173685876637622,
+      "pnl": -6.739123544050673,
+      "pnl_on_margin_pct": -0.6977375386552999,
+      "pnl_on_equity_pct": -0.06739123544050672
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333334,
+      "liq": 0.34754208754208754,
+      "liq_first_leg": 0.34754208754208754,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.4186370713040109,
+      "pnl": -17.4434384663825,
+      "pnl_on_margin_pct": -2.0932126159658995,
+      "pnl_on_equity_pct": -0.174434384663825
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 0.41705050505050506,
+      "liq_first_leg": 0.41705050505050506,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.4186370713040109,
+      "pnl": -17.4434384663825,
+      "pnl_on_margin_pct": -3.4886876932765003,
+      "pnl_on_equity_pct": -0.174434384663825
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 0.4691818181818182,
+      "liq_first_leg": 0.4691818181818182,
+      "liq_dist_pct": 9.090909090909083,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.4186370713040109,
+      "pnl": -17.4434384663825,
+      "pnl_on_margin_pct": -6.977375386553001,
+      "pnl_on_equity_pct": -0.174434384663825
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585316175,
+      "margin": 965.8536585316175,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16173685876637622,
+      "pnl": -6.739123544050673,
+      "pnl_on_margin_pct": -0.6977375386552999,
+      "pnl_on_equity_pct": -0.06739123544050672
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2897.5609755948526,
+      "margin": 965.8536585316175,
+      "liq": 0.34754208754208754,
+      "liq_first_leg": 0.34754208754208754,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.48521057629912867,
+      "pnl": -20.21737063215202,
+      "pnl_on_margin_pct": -2.0932126159658995,
+      "pnl_on_equity_pct": -0.20217370632152018
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4829.268292658087,
+      "margin": 965.8536585316176,
+      "liq": 0.41705050505050506,
+      "liq_first_leg": 0.41705050505050506,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.8086842938318812,
+      "pnl": -33.69561772025337,
+      "pnl_on_margin_pct": -3.4886876932764994,
+      "pnl_on_equity_pct": -0.3369561772025337
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9658.536585316175,
+      "margin": 965.8536585316176,
+      "liq": 0.47020724375736367,
+      "liq_first_leg": 0.47020724375736367,
+      "liq_dist_pct": 8.892221709481952,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.6173685876637625,
+      "pnl": -67.39123544050673,
+      "pnl_on_margin_pct": -6.977375386552999,
+      "pnl_on_equity_pct": -0.6739123544050674
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 1222.9857819905194,
+      "margin": 1222.9857819905194,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.20479487440758262,
+      "pnl": -8.533230893364921,
+      "pnl_on_margin_pct": -0.6977375386552997,
+      "pnl_on_equity_pct": -0.08533230893364921
+     },
+     "3": {
+      "lev": 3,
+      "notional": 1222.9857819905194,
+      "margin": 407.6619273301731,
+      "liq": 0.34754208754208754,
+      "liq_first_leg": 0.34754208754208754,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.20479487440758262,
+      "pnl": -8.533230893364921,
+      "pnl_on_margin_pct": -2.0932126159658995,
+      "pnl_on_equity_pct": -0.08533230893364921
+     },
+     "5": {
+      "lev": 5,
+      "notional": 1222.9857819905194,
+      "margin": 244.5971563981039,
+      "liq": 0.41705050505050506,
+      "liq_first_leg": 0.41705050505050506,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.20479487440758262,
+      "pnl": -8.533230893364921,
+      "pnl_on_margin_pct": -3.488687693276499,
+      "pnl_on_equity_pct": -0.08533230893364921
+     },
+     "10": {
+      "lev": 10,
+      "notional": 1222.9857819905194,
+      "margin": 122.29857819905195,
+      "liq": 0.4691818181818182,
+      "liq_first_leg": 0.4691818181818182,
+      "liq_dist_pct": 9.090909090909083,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.20479487440758262,
+      "pnl": -8.533230893364921,
+      "pnl_on_margin_pct": -6.977375386552998,
+      "pnl_on_equity_pct": -0.08533230893364921
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 2445.971563981039,
+      "margin": 2445.971563981039,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.40958974881516524,
+      "pnl": -17.066461786729842,
+      "pnl_on_margin_pct": -0.6977375386552997,
+      "pnl_on_equity_pct": -0.17066461786729842
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2445.971563981039,
+      "margin": 815.3238546603462,
+      "liq": 0.34754208754208754,
+      "liq_first_leg": 0.34754208754208754,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.40958974881516524,
+      "pnl": -17.066461786729842,
+      "pnl_on_margin_pct": -2.0932126159658995,
+      "pnl_on_equity_pct": -0.17066461786729842
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2445.971563981039,
+      "margin": 489.1943127962078,
+      "liq": 0.41705050505050506,
+      "liq_first_leg": 0.41705050505050506,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.40958974881516524,
+      "pnl": -17.066461786729842,
+      "pnl_on_margin_pct": -3.488687693276499,
+      "pnl_on_equity_pct": -0.17066461786729842
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2445.971563981039,
+      "margin": 244.5971563981039,
+      "liq": 0.4691818181818182,
+      "liq_first_leg": 0.4691818181818182,
+      "liq_dist_pct": 9.090909090909083,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.40958974881516524,
+      "pnl": -17.066461786729842,
+      "pnl_on_margin_pct": -6.977375386552998,
+      "pnl_on_equity_pct": -0.17066461786729842
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "afe3724a-bc39-4a0e-bd49-661f7cf2b580",
+   "instance": "AI_MANDATE_a96365877ab0435a84c86e3479f207a7",
+   "symbol": "BTCUSDT",
+   "entries": [
+    [
+     "2026-10-17T12:20:41.213455+00:00",
+     81550.01,
+     0.0118436967
+    ]
+   ],
+   "entry": 81550.01,
+   "spot_cost": 965.8535843219669,
+   "exit_t": "2026-10-20T13:56:46.045809+00:00",
+   "exit_cmd_t": "2026-10-20T13:56:45.968366+00:00",
+   "exit_price": 81892.0,
+   "exit_reason": "MANUAL_CLOSE",
+   "move_pct": 0.4193623029598692,
+   "spot_realized": 3.0805218242766,
+   "spot_fees": 1.9357575944783671,
+   "struct_stop": 80700.0,
+   "take_profit": 83000.0,
+   "stop_dist_pct": 1.0423174687532177,
+   "stop_src": "structural",
+   "bars": 3607,
+   "mark_bars": 4417,
+   "expected_bars": 4417,
+   "mae_pct": -1.0614958845498568,
+   "mfe_pct": 1.971783939695415,
+   "mae_mark_pct": -1.0921028703736568,
+   "funding_events": 9,
+   "funding_rate_sum": 0.00061241,
+   "slippage": null,
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8535843219669,
+      "margin": 965.8535843219669,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.5934925104863926,
+      "pnl": 2.489054526707486,
+      "pnl_on_margin_pct": 0.2577051601930755,
+      "pnl_on_equity_pct": 0.02489054526707486
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333335,
+      "liq": 54585.013386880855,
+      "liq_first_leg": 54585.013386880855,
+      "liq_dist_pct": 33.065595716198125,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.5361865403828956,
+      "pnl": 6.442629004826887,
+      "pnl_on_margin_pct": 0.7731154805792262,
+      "pnl_on_equity_pct": 0.06442629004826887
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0000000000001,
+      "liq": 65502.016064257026,
+      "liq_first_leg": 65502.016064257026,
+      "liq_dist_pct": 19.67871485943775,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.5361865403828956,
+      "pnl": 6.442629004826887,
+      "pnl_on_margin_pct": 1.288525800965377,
+      "pnl_on_equity_pct": 0.06442629004826887
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.00000000000006,
+      "liq": 73689.76807228915,
+      "liq_first_leg": 73689.76807228915,
+      "liq_dist_pct": 9.638554216867467,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.5361865403828956,
+      "pnl": 6.442629004826887,
+      "pnl_on_margin_pct": 2.577051601930754,
+      "pnl_on_equity_pct": 0.06442629004826887
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8535843219669,
+      "margin": 965.8535843219669,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.5934925104863926,
+      "pnl": 2.489054526707486,
+      "pnl_on_margin_pct": 0.2577051601930755,
+      "pnl_on_equity_pct": 0.02489054526707486
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2897.5607529659005,
+      "margin": 965.8535843219669,
+      "liq": 54585.013386880855,
+      "liq_first_leg": 54585.013386880855,
+      "liq_dist_pct": 33.065595716198125,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.7804775314591779,
+      "pnl": 7.467163580122454,
+      "pnl_on_margin_pct": 0.7731154805792261,
+      "pnl_on_equity_pct": 0.07467163580122455
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4829.267921609834,
+      "margin": 965.853584321967,
+      "liq": 65502.016064257026,
+      "liq_first_leg": 65502.016064257026,
+      "liq_dist_pct": 19.67871485943775,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -2.967462552431963,
+      "pnl": 12.445272633537432,
+      "pnl_on_margin_pct": 1.2885258009653773,
+      "pnl_on_equity_pct": 0.12445272633537431
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9658.535843219668,
+      "margin": 965.853584321967,
+      "liq": 73689.76807228915,
+      "liq_first_leg": 73689.76807228915,
+      "liq_dist_pct": 9.638554216867467,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -5.934925104863926,
+      "pnl": 24.890545267074863,
+      "pnl_on_margin_pct": 2.5770516019307546,
+      "pnl_on_equity_pct": 0.24890545267074862
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 4797.002976435594,
+      "margin": 4797.002976435594,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -2.9476365626308194,
+      "pnl": 12.362124204889946,
+      "pnl_on_margin_pct": 0.2577051601930755,
+      "pnl_on_equity_pct": 0.12362124204889947
+     },
+     "3": {
+      "lev": 3,
+      "notional": 4797.002976435594,
+      "margin": 1599.000992145198,
+      "liq": 54585.01338688086,
+      "liq_first_leg": 54585.01338688086,
+      "liq_dist_pct": 33.06559571619812,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -2.9476365626308194,
+      "pnl": 12.362124204889946,
+      "pnl_on_margin_pct": 0.7731154805792264,
+      "pnl_on_equity_pct": 0.12362124204889947
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4797.002976435594,
+      "margin": 959.4005952871188,
+      "liq": 65502.01606425703,
+      "liq_first_leg": 65502.01606425703,
+      "liq_dist_pct": 19.67871485943774,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -2.9476365626308194,
+      "pnl": 12.362124204889946,
+      "pnl_on_margin_pct": 1.2885258009653775,
+      "pnl_on_equity_pct": 0.12362124204889947
+     },
+     "10": {
+      "lev": 10,
+      "notional": 4797.002976435594,
+      "margin": 479.7002976435594,
+      "liq": 73689.76807228915,
+      "liq_first_leg": 73689.76807228915,
+      "liq_dist_pct": 9.638554216867467,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -2.9476365626308194,
+      "pnl": 12.362124204889946,
+      "pnl_on_margin_pct": 2.577051601930755,
+      "pnl_on_equity_pct": 0.12362124204889947
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 9594.005952871188,
+      "margin": 9594.005952871188,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -5.895273125261639,
+      "pnl": 24.724248409779893,
+      "pnl_on_margin_pct": 0.2577051601930755,
+      "pnl_on_equity_pct": 0.24724248409779895
+     },
+     "3": {
+      "lev": 3,
+      "notional": 9594.005952871188,
+      "margin": 3198.001984290396,
+      "liq": 54585.01338688086,
+      "liq_first_leg": 54585.01338688086,
+      "liq_dist_pct": 33.06559571619812,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -5.895273125261639,
+      "pnl": 24.724248409779893,
+      "pnl_on_margin_pct": 0.7731154805792264,
+      "pnl_on_equity_pct": 0.24724248409779895
+     },
+     "5": {
+      "lev": 5,
+      "notional": 9594.005952871188,
+      "margin": 1918.8011905742376,
+      "liq": 65502.01606425703,
+      "liq_first_leg": 65502.01606425703,
+      "liq_dist_pct": 19.67871485943774,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -5.895273125261639,
+      "pnl": 24.724248409779893,
+      "pnl_on_margin_pct": 1.2885258009653775,
+      "pnl_on_equity_pct": 0.24724248409779895
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9594.005952871188,
+      "margin": 959.4005952871188,
+      "liq": 73689.76807228915,
+      "liq_first_leg": 73689.76807228915,
+      "liq_dist_pct": 9.638554216867467,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -5.895273125261639,
+      "pnl": 24.724248409779893,
+      "pnl_on_margin_pct": 2.577051601930755,
+      "pnl_on_equity_pct": 0.24724248409779895
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "a9059a28-937c-4745-8ac7-b989a48de4f0",
+   "instance": "AI_MANDATE_587a0dda940146cf98c9b3bb0b85bf34",
+   "symbol": "WLDUSDT",
+   "entries": [
+    [
+     "2026-10-17T18:07:04.055871+00:00",
+     0.4964,
+     1945.7164756953
+    ]
+   ],
+   "entry": 0.4964,
+   "spot_cost": 965.8536585351469,
+   "exit_t": "2026-10-18T18:15:54.715903+00:00",
+   "exit_cmd_t": "2026-10-18T18:15:54.583030+00:00",
+   "exit_price": 0.46950000001211106,
+   "exit_reason": "HARD_STOP",
+   "move_pct": -5.419016919397446,
+   "spot_realized": -53.253287058001405,
+   "spot_fees": 1.879367543897655,
+   "struct_stop": 0.485,
+   "take_profit": 0.53,
+   "stop_dist_pct": 2.2965350523771244,
+   "stop_src": "structural",
+   "bars": 1432,
+   "mark_bars": 1449,
+   "expected_bars": 1449,
+   "mae_pct": -5.5398871877518125,
+   "mfe_pct": 3.263497179693786,
+   "mae_mark_pct": -5.540217566478645,
+   "funding_events": 3,
+   "funding_rate_sum": -0.00026707,
+   "slippage": {
+    "trigger": 0.47158,
+    "px_at_command": 0.4724,
+    "fill": 0.46950000001211106,
+    "delay_s": 0.132873,
+    "slip_vs_trigger_pct": -0.4190169193974489,
+    "slip_vs_command_px_pct": -0.5842062828140459,
+    "move_pct": -5.419016919397446,
+    "intended_stop": 0.485,
+    "gap_vs_intended_stop_pct": -3.122481867020331,
+    "note": "STRUCTURAL_STOP fired 2026-10-17 21:37 but sold only 0.000002 WLD; the position ran to the hard stop"
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585351469,
+      "margin": 965.8536585351469,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.2534942145605352,
+      "pnl": -53.02596273002719,
+      "pnl_on_margin_pct": -5.490061797814022,
+      "pnl_on_equity_pct": -0.5302596273002719
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333334,
+      "liq": 0.3342760942760943,
+      "liq_first_leg": 0.3342760942760943,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.6561403280932715,
+      "pnl": -137.25154494535053,
+      "pnl_on_margin_pct": -16.470185393442062,
+      "pnl_on_equity_pct": -1.3725154494535052
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 0.4011313131313131,
+      "liq_first_leg": 0.4011313131313131,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.6561403280932715,
+      "pnl": -137.25154494535053,
+      "pnl_on_margin_pct": -27.450308989070106,
+      "pnl_on_equity_pct": -1.3725154494535052
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 0.45127272727272727,
+      "liq_first_leg": 0.45127272727272727,
+      "liq_dist_pct": 9.090909090909093,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.6561403280932715,
+      "pnl": -137.25154494535053,
+      "pnl_on_margin_pct": -54.90061797814021,
+      "pnl_on_equity_pct": -1.3725154494535052
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585351469,
+      "margin": 965.8536585351469,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.2534942145605352,
+      "pnl": -53.02596273002719,
+      "pnl_on_margin_pct": -5.490061797814022,
+      "pnl_on_equity_pct": -0.5302596273002719
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2897.560975605441,
+      "margin": 965.8536585351471,
+      "liq": 0.3342760942760943,
+      "liq_first_leg": 0.3342760942760943,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.7604826436816057,
+      "pnl": -159.07788819008158,
+      "pnl_on_margin_pct": -16.470185393442062,
+      "pnl_on_equity_pct": -1.590778881900816
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4829.268292675734,
+      "margin": 965.8536585351469,
+      "liq": 0.40113131313131306,
+      "liq_first_leg": 0.40113131313131306,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 1.2674710728026757,
+      "pnl": -265.12981365013536,
+      "pnl_on_margin_pct": -27.45030898907005,
+      "pnl_on_equity_pct": -2.6512981365013535
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9658.536585351469,
+      "margin": 965.8536585351469,
+      "liq": 0.4522590114341363,
+      "liq_first_leg": 0.4522590114341363,
+      "liq_dist_pct": 8.892221709480985,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 2.5349421456053514,
+      "pnl": -530.2596273002707,
+      "pnl_on_margin_pct": -54.9006179781401,
+      "pnl_on_equity_pct": -5.302596273002707
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 2177.1929824561316,
+      "margin": 2177.1929824561316,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.5714176471324538,
+      "pnl": -119.5292401945118,
+      "pnl_on_margin_pct": -5.490061797814021,
+      "pnl_on_equity_pct": -1.195292401945118
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2177.1929824561316,
+      "margin": 725.7309941520439,
+      "liq": 0.3342760942760943,
+      "liq_first_leg": 0.3342760942760943,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.5714176471324538,
+      "pnl": -119.5292401945118,
+      "pnl_on_margin_pct": -16.470185393442062,
+      "pnl_on_equity_pct": -1.195292401945118
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2177.1929824561316,
+      "margin": 435.43859649122635,
+      "liq": 0.4011313131313131,
+      "liq_first_leg": 0.4011313131313131,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.5714176471324538,
+      "pnl": -119.5292401945118,
+      "pnl_on_margin_pct": -27.450308989070106,
+      "pnl_on_equity_pct": -1.195292401945118
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2177.1929824561316,
+      "margin": 217.71929824561317,
+      "liq": 0.45127272727272727,
+      "liq_first_leg": 0.45127272727272727,
+      "liq_dist_pct": 9.090909090909093,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.5714176471324538,
+      "pnl": -119.5292401945118,
+      "pnl_on_margin_pct": -54.90061797814021,
+      "pnl_on_equity_pct": -1.195292401945118
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 4354.385964912263,
+      "margin": 4354.385964912263,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 1.1428352942649076,
+      "pnl": -239.0584803890236,
+      "pnl_on_margin_pct": -5.490061797814021,
+      "pnl_on_equity_pct": -2.390584803890236
+     },
+     "3": {
+      "lev": 3,
+      "notional": 4354.385964912263,
+      "margin": 1451.4619883040878,
+      "liq": 0.3342760942760943,
+      "liq_first_leg": 0.3342760942760943,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 1.1428352942649076,
+      "pnl": -239.0584803890236,
+      "pnl_on_margin_pct": -16.470185393442062,
+      "pnl_on_equity_pct": -2.390584803890236
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4354.385964912263,
+      "margin": 870.8771929824527,
+      "liq": 0.4011313131313131,
+      "liq_first_leg": 0.4011313131313131,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 1.1428352942649076,
+      "pnl": -239.0584803890236,
+      "pnl_on_margin_pct": -27.450308989070106,
+      "pnl_on_equity_pct": -2.390584803890236
+     },
+     "10": {
+      "lev": 10,
+      "notional": 4354.385964912263,
+      "margin": 435.43859649122635,
+      "liq": 0.45127272727272727,
+      "liq_first_leg": 0.45127272727272727,
+      "liq_dist_pct": 9.090909090909093,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 1.1428352942649076,
+      "pnl": -239.0584803890236,
+      "pnl_on_margin_pct": -54.90061797814021,
+      "pnl_on_equity_pct": -2.390584803890236
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "e7794711-6013-4c17-9c41-e16ade80f92f",
+   "instance": "AI_MANDATE_3ccead54b61c4337a349db28b017b099",
+   "symbol": "XRPUSDT",
+   "entries": [
+    [
+     "2026-10-18T11:23:16.197733+00:00",
+     1.3009,
+     742.450348629
+    ]
+   ],
+   "entry": 1.3009,
+   "spot_cost": 965.8536585314661,
+   "exit_t": "2026-10-18T13:28:57.737454+00:00",
+   "exit_cmd_t": "2026-10-18T13:28:57.673929+00:00",
+   "exit_price": 1.2826,
+   "exit_reason": "STRUCTURAL_STOP",
+   "move_pct": -1.4067184257052778,
+   "spot_realized": -14.539108197062255,
+   "spot_fees": 1.9181204756830215,
+   "struct_stop": 1.287,
+   "take_profit": 1.3255,
+   "stop_dist_pct": 1.0684910446613904,
+   "stop_src": "structural",
+   "bars": 125,
+   "mark_bars": 126,
+   "expected_bars": 126,
+   "mae_pct": -1.4759012991006126,
+   "mfe_pct": 0.06149588746253709,
+   "mae_mark_pct": -1.4912752709662414,
+   "funding_events": 0,
+   "funding_rate_sum": 0,
+   "slippage": {
+    "trigger": 1.287,
+    "px_at_command": 1.2888,
+    "fill": 1.2826,
+    "delay_s": 0.063525,
+    "slip_vs_trigger_pct": -0.3382273810438896,
+    "slip_vs_command_px_pct": -0.47659312783457475,
+    "move_pct": -1.4067184257052778
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585314661,
+      "margin": 965.8536585314661,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -14.545901617752198,
+      "pnl_on_margin_pct": -1.5060150664924272,
+      "pnl_on_equity_pct": -0.145459016177522
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333334,
+      "liq": 0.8716247906197655,
+      "liq_first_leg": 0.8716247906197655,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -37.65037666231068,
+      "pnl_on_margin_pct": -4.518045199477281,
+      "pnl_on_equity_pct": -0.3765037666231068
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 1.0459497487437186,
+      "liq_first_leg": 1.0459497487437186,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -37.65037666231068,
+      "pnl_on_margin_pct": -7.530075332462135,
+      "pnl_on_equity_pct": -0.3765037666231068
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 1.1766934673366833,
+      "liq_first_leg": 1.1766934673366833,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -37.65037666231068,
+      "pnl_on_margin_pct": -15.06015066492427,
+      "pnl_on_equity_pct": -0.3765037666231068
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585314661,
+      "margin": 965.8536585314661,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -14.545901617752198,
+      "pnl_on_margin_pct": -1.5060150664924272,
+      "pnl_on_equity_pct": -0.145459016177522
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2897.5609755943983,
+      "margin": 965.8536585314661,
+      "liq": 0.8716247906197655,
+      "liq_first_leg": 0.8716247906197655,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -43.637704853256594,
+      "pnl_on_margin_pct": -4.518045199477281,
+      "pnl_on_equity_pct": -0.4363770485325659
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4829.268292657331,
+      "margin": 965.8536585314662,
+      "liq": 1.0459497487437186,
+      "liq_first_leg": 1.0459497487437186,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -72.729508088761,
+      "pnl_on_margin_pct": -7.530075332462134,
+      "pnl_on_equity_pct": -0.72729508088761
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9658.536585314661,
+      "margin": 965.8536585314662,
+      "liq": 1.1766934673366833,
+      "liq_first_leg": 1.1766934673366833,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -145.459016177522,
+      "pnl_on_margin_pct": -15.060150664924269,
+      "pnl_on_equity_pct": -1.45459016177522
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 4679.4964028776885,
+      "margin": 4679.4964028776885,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -70.47392086330916,
+      "pnl_on_margin_pct": -1.5060150664924272,
+      "pnl_on_equity_pct": -0.7047392086330916
+     },
+     "3": {
+      "lev": 3,
+      "notional": 4679.4964028776885,
+      "margin": 1559.8321342925628,
+      "liq": 0.8716247906197655,
+      "liq_first_leg": 0.8716247906197655,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -70.47392086330916,
+      "pnl_on_margin_pct": -4.518045199477282,
+      "pnl_on_equity_pct": -0.7047392086330916
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4679.4964028776885,
+      "margin": 935.8992805755377,
+      "liq": 1.0459497487437186,
+      "liq_first_leg": 1.0459497487437186,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -70.47392086330916,
+      "pnl_on_margin_pct": -7.530075332462137,
+      "pnl_on_equity_pct": -0.7047392086330916
+     },
+     "10": {
+      "lev": 10,
+      "notional": 4679.4964028776885,
+      "margin": 467.94964028776883,
+      "liq": 1.1766934673366833,
+      "liq_first_leg": 1.1766934673366833,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -70.47392086330916,
+      "pnl_on_margin_pct": -15.060150664924274,
+      "pnl_on_equity_pct": -0.7047392086330916
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 9358.992805755377,
+      "margin": 9358.992805755377,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -140.94784172661832,
+      "pnl_on_margin_pct": -1.5060150664924272,
+      "pnl_on_equity_pct": -1.4094784172661832
+     },
+     "3": {
+      "lev": 3,
+      "notional": 9358.992805755377,
+      "margin": 3119.6642685851257,
+      "liq": 0.8716247906197655,
+      "liq_first_leg": 0.8716247906197655,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -140.94784172661832,
+      "pnl_on_margin_pct": -4.518045199477282,
+      "pnl_on_equity_pct": -1.4094784172661832
+     },
+     "5": {
+      "lev": 5,
+      "notional": 9358.992805755377,
+      "margin": 1871.7985611510753,
+      "liq": 1.0459497487437186,
+      "liq_first_leg": 1.0459497487437186,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -140.94784172661832,
+      "pnl_on_margin_pct": -7.530075332462137,
+      "pnl_on_equity_pct": -1.4094784172661832
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9358.992805755377,
+      "margin": 935.8992805755377,
+      "liq": 1.1766934673366833,
+      "liq_first_leg": 1.1766934673366833,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -140.94784172661832,
+      "pnl_on_margin_pct": -15.060150664924274,
+      "pnl_on_equity_pct": -1.4094784172661832
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "be8833d2-c2b5-499b-b877-34c77b456724",
+   "instance": "AI_MANDATE_587a0dda940146cf98c9b3bb0b85bf34",
+   "symbol": "WLDUSDT",
+   "entries": [
+    [
+     "2026-10-18T18:40:35.449938+00:00",
+     0.473355,
+     2050.644710268
+    ]
+   ],
+   "entry": 0.473355,
+   "spot_cost": 970.6829268289091,
+   "exit_t": "2026-10-18T19:41:28.090826+00:00",
+   "exit_cmd_t": "2026-10-18T19:41:28.026483+00:00",
+   "exit_price": 0.4613,
+   "exit_reason": "STRUCTURAL_STOP",
+   "move_pct": -2.5467144109600715,
+   "spot_realized": -25.66648438712737,
+   "spot_fees": 1.9166453316755376,
+   "struct_stop": 0.4616,
+   "take_profit": 0.5085,
+   "stop_dist_pct": 2.48333703034721,
+   "stop_src": "structural",
+   "bars": 62,
+   "mark_bars": 62,
+   "expected_bars": 61,
+   "mae_pct": -2.673469172185783,
+   "mfe_pct": -0.3285060895099945,
+   "mae_mark_pct": -2.6860453570787257,
+   "funding_events": 0,
+   "funding_rate_sum": 0,
+   "slippage": {
+    "trigger": 0.4616,
+    "px_at_command": 0.4628,
+    "fill": 0.4613,
+    "delay_s": 0.064343,
+    "slip_vs_trigger_pct": -0.063377380612864,
+    "slip_vs_command_px_pct": -0.3168869030642966,
+    "move_pct": -2.5467144109600715
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 970.6829268289091,
+      "margin": 970.6829268289091,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -25.678844648118584,
+      "pnl_on_margin_pct": -2.6454410537545896,
+      "pnl_on_equity_pct": -0.2567884464811859
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333334,
+      "liq": 0.31875757575757574,
+      "liq_first_leg": 0.31875757575757574,
+      "liq_dist_pct": 32.659932659932664,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -66.13602634386474,
+      "pnl_on_margin_pct": -7.936323161263768,
+      "pnl_on_equity_pct": -0.6613602634386474
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 0.3825090909090909,
+      "liq_first_leg": 0.3825090909090909,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -66.13602634386474,
+      "pnl_on_margin_pct": -13.227205268772948,
+      "pnl_on_equity_pct": -0.6613602634386474
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 0.43032272727272725,
+      "liq_first_leg": 0.43032272727272725,
+      "liq_dist_pct": 9.090909090909104,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -66.13602634386474,
+      "pnl_on_margin_pct": -26.454410537545897,
+      "pnl_on_equity_pct": -0.6613602634386474
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 970.6829268289091,
+      "margin": 970.6829268289091,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -25.678844648118584,
+      "pnl_on_margin_pct": -2.6454410537545896,
+      "pnl_on_equity_pct": -0.2567884464811859
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2912.048780486727,
+      "margin": 970.6829268289089,
+      "liq": 0.31875757575757574,
+      "liq_first_leg": 0.31875757575757574,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -77.03653394435538,
+      "pnl_on_margin_pct": -7.936323161263732,
+      "pnl_on_equity_pct": -0.7703653394435539
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4853.414634144546,
+      "margin": 970.6829268289091,
+      "liq": 0.3825090909090909,
+      "liq_first_leg": 0.3825090909090909,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -128.3942232405929,
+      "pnl_on_margin_pct": -13.227205268772945,
+      "pnl_on_equity_pct": -1.283942232405929
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9706.829268289091,
+      "margin": 970.6829268289091,
+      "liq": 0.43126941239809213,
+      "liq_first_leg": 0.43126941239809213,
+      "liq_dist_pct": 8.890914345873158,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -256.7884464811858,
+      "pnl_on_margin_pct": -26.45441053754589,
+      "pnl_on_equity_pct": -2.567884464811858
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 2013.4198213526097,
+      "margin": 2013.41982135261,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -53.26383453849426,
+      "pnl_on_margin_pct": -2.6454410537545896,
+      "pnl_on_equity_pct": -0.5326383453849426
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2013.4198213526097,
+      "margin": 671.13994045087,
+      "liq": 0.31875757575757574,
+      "liq_first_leg": 0.31875757575757574,
+      "liq_dist_pct": 32.659932659932664,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -53.26383453849426,
+      "pnl_on_margin_pct": -7.936323161263768,
+      "pnl_on_equity_pct": -0.5326383453849426
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2013.4198213526097,
+      "margin": 402.683964270522,
+      "liq": 0.3825090909090909,
+      "liq_first_leg": 0.3825090909090909,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -53.26383453849426,
+      "pnl_on_margin_pct": -13.227205268772948,
+      "pnl_on_equity_pct": -0.5326383453849426
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2013.4198213526097,
+      "margin": 201.341982135261,
+      "liq": 0.43032272727272725,
+      "liq_first_leg": 0.43032272727272725,
+      "liq_dist_pct": 9.090909090909104,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -53.26383453849426,
+      "pnl_on_margin_pct": -26.454410537545897,
+      "pnl_on_equity_pct": -0.5326383453849426
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 4026.8396427052194,
+      "margin": 4026.83964270522,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -106.52766907698852,
+      "pnl_on_margin_pct": -2.6454410537545896,
+      "pnl_on_equity_pct": -1.0652766907698852
+     },
+     "3": {
+      "lev": 3,
+      "notional": 4026.8396427052194,
+      "margin": 1342.27988090174,
+      "liq": 0.31875757575757574,
+      "liq_first_leg": 0.31875757575757574,
+      "liq_dist_pct": 32.659932659932664,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -106.52766907698852,
+      "pnl_on_margin_pct": -7.936323161263768,
+      "pnl_on_equity_pct": -1.0652766907698852
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4026.8396427052194,
+      "margin": 805.367928541044,
+      "liq": 0.3825090909090909,
+      "liq_first_leg": 0.3825090909090909,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -106.52766907698852,
+      "pnl_on_margin_pct": -13.227205268772948,
+      "pnl_on_equity_pct": -1.0652766907698852
+     },
+     "10": {
+      "lev": 10,
+      "notional": 4026.8396427052194,
+      "margin": 402.683964270522,
+      "liq": 0.43032272727272725,
+      "liq_first_leg": 0.43032272727272725,
+      "liq_dist_pct": 9.090909090909104,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -106.52766907698852,
+      "pnl_on_margin_pct": -26.454410537545897,
+      "pnl_on_equity_pct": -1.0652766907698852
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "7ad29625-37e5-4079-a9f2-73873d055e97",
+   "instance": "AI_MANDATE_3ccead54b61c4337a349db28b017b099",
+   "symbol": "XRPUSDT",
+   "entries": [
+    [
+     "2026-10-18T18:42:11.924535+00:00",
+     1.2728,
+     758.8416550374
+    ]
+   ],
+   "entry": 1.2728,
+   "spot_cost": 965.8536585316026,
+   "exit_t": "2026-10-19T14:03:45.581230+00:00",
+   "exit_cmd_t": "2026-10-19T14:03:45.448181+00:00",
+   "exit_price": 1.2943,
+   "exit_reason": "TRAILING_STOP",
+   "move_pct": 1.6891891891891886,
+   "spot_realized": 15.332926829189192,
+   "spot_fees": 1.9480224126465095,
+   "struct_stop": 1.2571,
+   "take_profit": 1.3004,
+   "stop_dist_pct": 1.2335009428032562,
+   "stop_src": "structural",
+   "bars": 1160,
+   "mark_bars": 1162,
+   "expected_bars": 1162,
+   "mae_pct": -1.3042111879321139,
+   "mfe_pct": 3.86549340037714,
+   "mae_mark_pct": -1.3512193588937627,
+   "funding_events": 2,
+   "funding_rate_sum": 5.351000000000001e-05,
+   "slippage": {
+    "trigger": null,
+    "px_at_command": 1.297,
+    "fill": 1.2943,
+    "delay_s": 0.133049,
+    "slip_vs_trigger_pct": null,
+    "slip_vs_command_px_pct": -0.21213073538654342,
+    "move_pct": 1.6891891891891886
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585316026,
+      "margin": 965.8536585316026,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.05344099516561168,
+      "pnl": 15.28764338181529,
+      "pnl_on_margin_pct": 1.582811562266819,
+      "pnl_on_equity_pct": 0.15287643381815288
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333334,
+      "liq": 0.8527973199329983,
+      "liq_first_leg": 0.8527973199329983,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.13832580819453177,
+      "pnl": 39.57028905667048,
+      "pnl_on_margin_pct": 4.748434686800458,
+      "pnl_on_equity_pct": 0.39570289056670477
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 1.023356783919598,
+      "liq_first_leg": 1.023356783919598,
+      "liq_dist_pct": 19.59798994974873,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.13832580819453177,
+      "pnl": 39.57028905667048,
+      "pnl_on_margin_pct": 7.9140578113340965,
+      "pnl_on_equity_pct": 0.39570289056670477
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 1.1512763819095477,
+      "liq_first_leg": 1.1512763819095477,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.13832580819453177,
+      "pnl": 39.57028905667048,
+      "pnl_on_margin_pct": 15.828115622668193,
+      "pnl_on_equity_pct": 0.39570289056670477
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585316026,
+      "margin": 965.8536585316026,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.05344099516561168,
+      "pnl": 15.28764338181529,
+      "pnl_on_margin_pct": 1.582811562266819,
+      "pnl_on_equity_pct": 0.15287643381815288
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2897.560975594808,
+      "margin": 965.8536585316028,
+      "liq": 0.8527973199329983,
+      "liq_first_leg": 0.8527973199329983,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.16032298549683507,
+      "pnl": 45.86293014544587,
+      "pnl_on_margin_pct": 4.748434686800458,
+      "pnl_on_equity_pct": 0.4586293014544587
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4829.268292658013,
+      "margin": 965.8536585316026,
+      "liq": 1.023356783919598,
+      "liq_first_leg": 1.023356783919598,
+      "liq_dist_pct": 19.59798994974873,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.26720497582805847,
+      "pnl": 76.43821690907644,
+      "pnl_on_margin_pct": 7.9140578113340965,
+      "pnl_on_equity_pct": 0.7643821690907645
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9658.536585316026,
+      "margin": 965.8536585316026,
+      "liq": 1.1512763819095477,
+      "liq_first_leg": 1.1512763819095477,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.5344099516561169,
+      "pnl": 152.8764338181529,
+      "pnl_on_margin_pct": 15.828115622668193,
+      "pnl_on_equity_pct": 1.528764338181529
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 4053.503184713416,
+      "margin": 4053.5031847134164,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.22428164161783662,
+      "pnl": 64.1593170844977,
+      "pnl_on_margin_pct": 1.582811562266819,
+      "pnl_on_equity_pct": 0.641593170844977
+     },
+     "3": {
+      "lev": 3,
+      "notional": 4053.503184713416,
+      "margin": 1351.1677282378055,
+      "liq": 0.8527973199329983,
+      "liq_first_leg": 0.8527973199329983,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.22428164161783662,
+      "pnl": 64.1593170844977,
+      "pnl_on_margin_pct": 4.748434686800458,
+      "pnl_on_equity_pct": 0.641593170844977
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4053.503184713416,
+      "margin": 810.7006369426833,
+      "liq": 1.023356783919598,
+      "liq_first_leg": 1.023356783919598,
+      "liq_dist_pct": 19.59798994974873,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.22428164161783662,
+      "pnl": 64.1593170844977,
+      "pnl_on_margin_pct": 7.9140578113340965,
+      "pnl_on_equity_pct": 0.641593170844977
+     },
+     "10": {
+      "lev": 10,
+      "notional": 4053.503184713416,
+      "margin": 405.35031847134167,
+      "liq": 1.1512763819095477,
+      "liq_first_leg": 1.1512763819095477,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.22428164161783662,
+      "pnl": 64.1593170844977,
+      "pnl_on_margin_pct": 15.828115622668193,
+      "pnl_on_equity_pct": 0.641593170844977
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 8107.006369426832,
+      "margin": 8107.006369426833,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.44856328323567324,
+      "pnl": 128.3186341689954,
+      "pnl_on_margin_pct": 1.582811562266819,
+      "pnl_on_equity_pct": 1.283186341689954
+     },
+     "3": {
+      "lev": 3,
+      "notional": 8107.006369426832,
+      "margin": 2702.335456475611,
+      "liq": 0.8527973199329983,
+      "liq_first_leg": 0.8527973199329983,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.44856328323567324,
+      "pnl": 128.3186341689954,
+      "pnl_on_margin_pct": 4.748434686800458,
+      "pnl_on_equity_pct": 1.283186341689954
+     },
+     "5": {
+      "lev": 5,
+      "notional": 8107.006369426832,
+      "margin": 1621.4012738853667,
+      "liq": 1.023356783919598,
+      "liq_first_leg": 1.023356783919598,
+      "liq_dist_pct": 19.59798994974873,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.44856328323567324,
+      "pnl": 128.3186341689954,
+      "pnl_on_margin_pct": 7.9140578113340965,
+      "pnl_on_equity_pct": 1.283186341689954
+     },
+     "10": {
+      "lev": 10,
+      "notional": 8107.006369426832,
+      "margin": 810.7006369426833,
+      "liq": 1.1512763819095477,
+      "liq_first_leg": 1.1512763819095477,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.44856328323567324,
+      "pnl": 128.3186341689954,
+      "pnl_on_margin_pct": 15.828115622668193,
+      "pnl_on_equity_pct": 1.283186341689954
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "a7499e87-af49-4650-a191-ee5e0525e452",
+   "instance": "AI_MANDATE_a96365877ab0435a84c86e3479f207a7",
+   "symbol": "ETHUSDT",
+   "entries": [
+    [
+     "2026-10-18T18:47:23.989291+00:00",
+     2365.57,
+     0.4082963742
+    ]
+   ],
+   "entry": 2365.57,
+   "spot_cost": 965.853653916294,
+   "exit_t": "2026-10-18T19:39:28.063438+00:00",
+   "exit_cmd_t": "2026-10-18T19:39:27.944001+00:00",
+   "exit_price": 2338.22,
+   "exit_reason": "STRUCTURAL_STOP",
+   "move_pct": -1.1561695489882062,
+   "spot_realized": -12.121592582451925,
+   "spot_fees": 1.920540401998218,
+   "struct_stop": 2341.98,
+   "take_profit": 2414.53,
+   "stop_dist_pct": 0.9972226566958509,
+   "stop_src": "structural",
+   "bars": 53,
+   "mark_bars": 53,
+   "expected_bars": 53,
+   "mae_pct": -1.2077427427639065,
+   "mfe_pct": 0.18219710260105604,
+   "mae_mark_pct": -1.220697320730324,
+   "funding_events": 0,
+   "funding_rate_sum": 0,
+   "slippage": {
+    "trigger": 2341.98,
+    "px_at_command": 2344.88,
+    "fill": 2338.22,
+    "delay_s": 0.119437,
+    "slip_vs_trigger_pct": -0.15894689229235315,
+    "slip_vs_command_px_pct": -0.28153891028379247,
+    "move_pct": -1.1561695489882062
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 965.853653916294,
+      "margin": 965.853653916294,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -12.127176035369256,
+      "pnl_on_margin_pct": -1.2555914642137143,
+      "pnl_on_equity_pct": -0.12127176035369255
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333335,
+      "liq": 1584.971524288107,
+      "liq_first_leg": 1584.971524288107,
+      "liq_dist_pct": 32.99832495812396,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -31.389786605342863,
+      "pnl_on_margin_pct": -3.766774392641143,
+      "pnl_on_equity_pct": -0.3138978660534286
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0000000000001,
+      "liq": 1901.9658291457285,
+      "liq_first_leg": 1901.9658291457285,
+      "liq_dist_pct": 19.59798994974875,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -31.389786605342863,
+      "pnl_on_margin_pct": -6.277957321068571,
+      "pnl_on_equity_pct": -0.3138978660534286
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.00000000000006,
+      "liq": 2139.711557788945,
+      "liq_first_leg": 2139.711557788945,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -31.389786605342863,
+      "pnl_on_margin_pct": -12.555914642137141,
+      "pnl_on_equity_pct": -0.3138978660534286
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 965.853653916294,
+      "margin": 965.853653916294,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -12.127176035369256,
+      "pnl_on_margin_pct": -1.2555914642137143,
+      "pnl_on_equity_pct": -0.12127176035369255
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2897.5609617488817,
+      "margin": 965.8536539162939,
+      "liq": 1584.971524288107,
+      "liq_first_leg": 1584.971524288107,
+      "liq_dist_pct": 32.99832495812396,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -36.38152810610777,
+      "pnl_on_margin_pct": -3.766774392641144,
+      "pnl_on_equity_pct": -0.36381528106107774
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4829.26826958147,
+      "margin": 965.853653916294,
+      "liq": 1901.9658291457285,
+      "liq_first_leg": 1901.9658291457285,
+      "liq_dist_pct": 19.59798994974875,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -60.635880176846285,
+      "pnl_on_margin_pct": -6.277957321068572,
+      "pnl_on_equity_pct": -0.6063588017684629
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9658.53653916294,
+      "margin": 965.853653916294,
+      "liq": 2139.711557788945,
+      "liq_first_leg": 2139.711557788945,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -121.27176035369257,
+      "pnl_on_margin_pct": -12.555914642137145,
+      "pnl_on_equity_pct": -1.2127176035369258
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 5013.925392115295,
+      "margin": 5013.925392115296,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -62.95441924544366,
+      "pnl_on_margin_pct": -1.2555914642137143,
+      "pnl_on_equity_pct": -0.6295441924544366
+     },
+     "3": {
+      "lev": 3,
+      "notional": 5013.925392115295,
+      "margin": 1671.308464038432,
+      "liq": 1584.971524288107,
+      "liq_first_leg": 1584.971524288107,
+      "liq_dist_pct": 32.99832495812396,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -62.95441924544366,
+      "pnl_on_margin_pct": -3.766774392641143,
+      "pnl_on_equity_pct": -0.6295441924544366
+     },
+     "5": {
+      "lev": 5,
+      "notional": 5013.925392115295,
+      "margin": 1002.7850784230592,
+      "liq": 1901.9658291457285,
+      "liq_first_leg": 1901.9658291457285,
+      "liq_dist_pct": 19.59798994974875,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -62.95441924544366,
+      "pnl_on_margin_pct": -6.277957321068571,
+      "pnl_on_equity_pct": -0.6295441924544366
+     },
+     "10": {
+      "lev": 10,
+      "notional": 5013.925392115295,
+      "margin": 501.3925392115296,
+      "liq": 2139.711557788945,
+      "liq_first_leg": 2139.711557788945,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -62.95441924544366,
+      "pnl_on_margin_pct": -12.555914642137141,
+      "pnl_on_equity_pct": -0.6295441924544366
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 10027.85078423059,
+      "margin": 10027.850784230592,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -125.90883849088732,
+      "pnl_on_margin_pct": -1.2555914642137143,
+      "pnl_on_equity_pct": -1.2590883849088732
+     },
+     "3": {
+      "lev": 3,
+      "notional": 10027.85078423059,
+      "margin": 3342.616928076864,
+      "liq": 1584.971524288107,
+      "liq_first_leg": 1584.971524288107,
+      "liq_dist_pct": 32.99832495812396,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -125.90883849088732,
+      "pnl_on_margin_pct": -3.766774392641143,
+      "pnl_on_equity_pct": -1.2590883849088732
+     },
+     "5": {
+      "lev": 5,
+      "notional": 10027.85078423059,
+      "margin": 2005.5701568461184,
+      "liq": 1901.9658291457285,
+      "liq_first_leg": 1901.9658291457285,
+      "liq_dist_pct": 19.59798994974875,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -125.90883849088732,
+      "pnl_on_margin_pct": -6.277957321068571,
+      "pnl_on_equity_pct": -1.2590883849088732
+     },
+     "10": {
+      "lev": 10,
+      "notional": 10027.85078423059,
+      "margin": 1002.7850784230592,
+      "liq": 2139.711557788945,
+      "liq_first_leg": 2139.711557788945,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": 0.0,
+      "pnl": -125.90883849088732,
+      "pnl_on_margin_pct": -12.555914642137141,
+      "pnl_on_equity_pct": -1.2590883849088732
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "cdd10b35-e327-466d-a48d-98009d5ebc2a",
+   "instance": "AI_MANDATE_3ccead54b61c4337a349db28b017b099",
+   "symbol": "XRPUSDT",
+   "entries": [
+    [
+     "2026-10-19T16:51:44.064400+00:00",
+     1.3028,
+     741.3675610473
+    ]
+   ],
+   "entry": 1.3028,
+   "spot_cost": 965.8536585324224,
+   "exit_t": "2026-10-20T15:13:06.905169+00:00",
+   "exit_cmd_t": "2026-10-20T15:13:06.828942+00:00",
+   "exit_price": 1.3266,
+   "exit_reason": "TRAILING_STOP",
+   "move_pct": 1.8268345102855355,
+   "spot_realized": 16.66104974644039,
+   "spot_fees": 1.9493518650177706,
+   "struct_stop": 1.2817,
+   "take_profit": 1.3322,
+   "stop_dist_pct": 1.6195885784464181,
+   "stop_src": "structural",
+   "bars": 557,
+   "mark_bars": 1343,
+   "expected_bars": 1342,
+   "mae_pct": -0.8903899293828732,
+   "mfe_pct": 3.3543137856923533,
+   "mae_mark_pct": -1.3048817930610968,
+   "funding_events": 2,
+   "funding_rate_sum": 0.00012359,
+   "slippage": {
+    "trigger": null,
+    "px_at_command": 1.3193,
+    "fill": 1.3266,
+    "delay_s": 0.076227,
+    "slip_vs_trigger_pct": null,
+    "slip_vs_command_px_pct": 0.5603315934909491,
+    "move_pct": 1.8268345102855355
+   },
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585324224,
+      "margin": 965.8536585324224,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.11908971207167643,
+      "pnl": 16.55078230834521,
+      "pnl_on_margin_pct": 1.7135910975885817,
+      "pnl_on_equity_pct": 0.1655078230834521
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333334,
+      "liq": 0.8728978224455611,
+      "liq_first_leg": 0.8728978224455611,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.30824988604544057,
+      "pnl": 42.839777439714545,
+      "pnl_on_margin_pct": 5.140773292765745,
+      "pnl_on_equity_pct": 0.42839777439714544
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 500.0,
+      "liq": 1.0474773869346734,
+      "liq_first_leg": 1.0474773869346734,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.30824988604544057,
+      "pnl": 42.839777439714545,
+      "pnl_on_margin_pct": 8.567955487942909,
+      "pnl_on_equity_pct": 0.42839777439714544
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 250.0,
+      "liq": 1.1784120603015076,
+      "liq_first_leg": 1.1784120603015076,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.30824988604544057,
+      "pnl": 42.839777439714545,
+      "pnl_on_margin_pct": 17.135910975885817,
+      "pnl_on_equity_pct": 0.42839777439714544
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 965.8536585324224,
+      "margin": 965.8536585324224,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.11908971207167643,
+      "pnl": 16.55078230834521,
+      "pnl_on_margin_pct": 1.7135910975885817,
+      "pnl_on_equity_pct": 0.1655078230834521
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2897.5609755972673,
+      "margin": 965.8536585324223,
+      "liq": 0.8728978224455612,
+      "liq_first_leg": 0.8728978224455612,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.3572691362150293,
+      "pnl": 49.65234692503563,
+      "pnl_on_margin_pct": 5.140773292765746,
+      "pnl_on_equity_pct": 0.4965234692503563
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4829.268292662112,
+      "margin": 965.8536585324224,
+      "liq": 1.0474773869346734,
+      "liq_first_leg": 1.0474773869346734,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.5954485603583821,
+      "pnl": 82.75391154172607,
+      "pnl_on_margin_pct": 8.56795548794291,
+      "pnl_on_equity_pct": 0.8275391154172607
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9658.536585324224,
+      "margin": 965.8536585324224,
+      "liq": 1.1784120603015076,
+      "liq_first_leg": 1.1784120603015076,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.1908971207167642,
+      "pnl": 165.50782308345214,
+      "pnl_on_margin_pct": 17.13591097588582,
+      "pnl_on_equity_pct": 1.6550782308345213
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 3087.2037914692037,
+      "margin": 3087.203791469204,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.38065208676777373,
+      "pnl": 52.902049335033446,
+      "pnl_on_margin_pct": 1.7135910975885817,
+      "pnl_on_equity_pct": 0.5290204933503345
+     },
+     "3": {
+      "lev": 3,
+      "notional": 3087.2037914692037,
+      "margin": 1029.0679304897346,
+      "liq": 0.8728978224455612,
+      "liq_first_leg": 0.8728978224455612,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.38065208676777373,
+      "pnl": 52.902049335033446,
+      "pnl_on_margin_pct": 5.140773292765745,
+      "pnl_on_equity_pct": 0.5290204933503345
+     },
+     "5": {
+      "lev": 5,
+      "notional": 3087.2037914692037,
+      "margin": 617.4407582938409,
+      "liq": 1.0474773869346734,
+      "liq_first_leg": 1.0474773869346734,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.38065208676777373,
+      "pnl": 52.902049335033446,
+      "pnl_on_margin_pct": 8.567955487942907,
+      "pnl_on_equity_pct": 0.5290204933503345
+     },
+     "10": {
+      "lev": 10,
+      "notional": 3087.2037914692037,
+      "margin": 308.72037914692044,
+      "liq": 1.1784120603015076,
+      "liq_first_leg": 1.1784120603015076,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.38065208676777373,
+      "pnl": 52.902049335033446,
+      "pnl_on_margin_pct": 17.135910975885814,
+      "pnl_on_equity_pct": 0.5290204933503345
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 6174.407582938407,
+      "margin": 6174.407582938408,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.7613041735355475,
+      "pnl": 105.80409867006689,
+      "pnl_on_margin_pct": 1.7135910975885817,
+      "pnl_on_equity_pct": 1.058040986700669
+     },
+     "3": {
+      "lev": 3,
+      "notional": 6174.407582938407,
+      "margin": 2058.1358609794693,
+      "liq": 0.8728978224455611,
+      "liq_first_leg": 0.8728978224455611,
+      "liq_dist_pct": 32.998324958123945,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.7613041735355475,
+      "pnl": 105.80409867006689,
+      "pnl_on_margin_pct": 5.140773292765745,
+      "pnl_on_equity_pct": 1.058040986700669
+     },
+     "5": {
+      "lev": 5,
+      "notional": 6174.407582938407,
+      "margin": 1234.8815165876817,
+      "liq": 1.0474773869346734,
+      "liq_first_leg": 1.0474773869346734,
+      "liq_dist_pct": 19.59798994974874,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.7613041735355475,
+      "pnl": 105.80409867006689,
+      "pnl_on_margin_pct": 8.567955487942907,
+      "pnl_on_equity_pct": 1.058040986700669
+     },
+     "10": {
+      "lev": 10,
+      "notional": 6174.407582938407,
+      "margin": 617.4407582938409,
+      "liq": 1.1784120603015076,
+      "liq_first_leg": 1.1784120603015076,
+      "liq_dist_pct": 9.547738693467334,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.7613041735355475,
+      "pnl": 105.80409867006689,
+      "pnl_on_margin_pct": 17.135910975885814,
+      "pnl_on_equity_pct": 1.058040986700669
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  },
+  {
+   "position_id": "bca14f50-eb30-40e7-98d3-288a347bf195",
+   "instance": "AI_MANDATE_587a0dda940146cf98c9b3bb0b85bf34",
+   "symbol": "WLDUSDT",
+   "entries": [
+    [
+     "2026-10-19T18:25:24.764103+00:00",
+     0.5067,
+     1949.6977968414897
+    ]
+   ],
+   "entry": 0.5067,
+   "spot_cost": 987.9118736595829,
+   "exit_t": "2026-10-20T13:56:45.109030+00:00",
+   "exit_cmd_t": "2026-10-20T13:56:44.981771+00:00",
+   "exit_price": 0.5522,
+   "exit_reason": "MANUAL_CLOSE",
+   "move_pct": 8.979672389974347,
+   "spot_realized": 87.6346266328719,
+   "spot_fees": 2.0645349970754534,
+   "struct_stop": null,
+   "take_profit": null,
+   "stop_dist_pct": 5.0,
+   "stop_src": "hard 5%",
+   "bars": 387,
+   "mark_bars": 1172,
+   "expected_bars": 1172,
+   "mae_pct": -1.0657193605683957,
+   "mfe_pct": 10.262482731399247,
+   "mae_mark_pct": -1.045983816854168,
+   "funding_events": 2,
+   "funding_rate_sum": 0.0002,
+   "slippage": null,
+   "sizing": {
+    "A_cap25_mandate": {
+     "1": {
+      "lev": 1,
+      "notional": 987.9118736595829,
+      "margin": 987.9118736595829,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.20918955936829794,
+      "pnl": 87.46979269838174,
+      "pnl_on_margin_pct": 8.85400763272153,
+      "pnl_on_equity_pct": 0.8746979269838174
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2500.0,
+      "margin": 833.3333333333331,
+      "liq": 0.34121212121212124,
+      "liq_first_leg": 0.34121212121212124,
+      "liq_dist_pct": 32.65993265993266,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.5293730264456284,
+      "pnl": 221.3501908180382,
+      "pnl_on_margin_pct": 26.56202289816459,
+      "pnl_on_equity_pct": 2.213501908180382
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2500.0,
+      "margin": 499.9999999999999,
+      "liq": 0.40945454545454546,
+      "liq_first_leg": 0.40945454545454546,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.5293730264456284,
+      "pnl": 221.3501908180382,
+      "pnl_on_margin_pct": 44.270038163607644,
+      "pnl_on_equity_pct": 2.213501908180382
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2500.0,
+      "margin": 249.99999999999994,
+      "liq": 0.4606363636363636,
+      "liq_first_leg": 0.4606363636363636,
+      "liq_dist_pct": 9.090909090909104,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.5293730264456284,
+      "pnl": 221.3501908180382,
+      "pnl_on_margin_pct": 88.54007632721529,
+      "pnl_on_equity_pct": 2.213501908180382
+     }
+    },
+    "A_cap25_mandate_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "A_same_margin_uncapped": {
+     "1": {
+      "lev": 1,
+      "notional": 987.9118736595829,
+      "margin": 987.9118736595829,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.20918955936829794,
+      "pnl": 87.46979269838174,
+      "pnl_on_margin_pct": 8.85400763272153,
+      "pnl_on_equity_pct": 0.8746979269838174
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2963.7356209787486,
+      "margin": 987.9118736595829,
+      "liq": 0.3412121212121212,
+      "liq_first_leg": 0.3412121212121212,
+      "liq_dist_pct": 32.659932659932664,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.6275686781048937,
+      "pnl": 262.4093780951452,
+      "pnl_on_margin_pct": 26.56202289816459,
+      "pnl_on_equity_pct": 2.624093780951452
+     },
+     "5": {
+      "lev": 5,
+      "notional": 4939.559368297914,
+      "margin": 987.9118736595829,
+      "liq": 0.40945454545454546,
+      "liq_first_leg": 0.40945454545454546,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -1.0459477968414896,
+      "pnl": 437.3489634919086,
+      "pnl_on_margin_pct": 44.27003816360764,
+      "pnl_on_equity_pct": 4.3734896349190855
+     },
+     "10": {
+      "lev": 10,
+      "notional": 9879.118736595829,
+      "margin": 987.9118736595829,
+      "liq": 0.4616728426395939,
+      "liq_first_leg": 0.4616728426395939,
+      "liq_dist_pct": 8.88635432413778,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -2.0918955936829793,
+      "pnl": 874.6979269838172,
+      "pnl_on_margin_pct": 88.54007632721527,
+      "pnl_on_equity_pct": 8.746979269838171
+     }
+    },
+    "A_same_margin_uncapped_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_0.5pct": {
+     "1": {
+      "lev": 1,
+      "notional": 1000.0,
+      "margin": 1000.0,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.2117492105782514,
+      "pnl": 88.54007632721527,
+      "pnl_on_margin_pct": 8.854007632721528,
+      "pnl_on_equity_pct": 0.8854007632721527
+     },
+     "3": {
+      "lev": 3,
+      "notional": 1000.0,
+      "margin": 333.3333333333333,
+      "liq": 0.3412121212121212,
+      "liq_first_leg": 0.3412121212121212,
+      "liq_dist_pct": 32.659932659932664,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.2117492105782514,
+      "pnl": 88.54007632721527,
+      "pnl_on_margin_pct": 26.562022898164585,
+      "pnl_on_equity_pct": 0.8854007632721527
+     },
+     "5": {
+      "lev": 5,
+      "notional": 1000.0,
+      "margin": 200.0,
+      "liq": 0.40945454545454546,
+      "liq_first_leg": 0.40945454545454546,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.2117492105782514,
+      "pnl": 88.54007632721527,
+      "pnl_on_margin_pct": 44.27003816360764,
+      "pnl_on_equity_pct": 0.8854007632721527
+     },
+     "10": {
+      "lev": 10,
+      "notional": 1000.0,
+      "margin": 100.0,
+      "liq": 0.4606363636363636,
+      "liq_first_leg": 0.4606363636363636,
+      "liq_dist_pct": 9.090909090909104,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.2117492105782514,
+      "pnl": 88.54007632721527,
+      "pnl_on_margin_pct": 88.54007632721527,
+      "pnl_on_equity_pct": 0.8854007632721527
+     }
+    },
+    "B_risk_0.5pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    },
+    "B_risk_1pct": {
+     "1": {
+      "lev": 1,
+      "notional": 2000.0,
+      "margin": 2000.0,
+      "liq": null,
+      "liq_first_leg": null,
+      "liq_dist_pct": null,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.4234984211565028,
+      "pnl": 177.08015265443055,
+      "pnl_on_margin_pct": 8.854007632721528,
+      "pnl_on_equity_pct": 1.7708015265443053
+     },
+     "3": {
+      "lev": 3,
+      "notional": 2000.0,
+      "margin": 666.6666666666666,
+      "liq": 0.3412121212121212,
+      "liq_first_leg": 0.3412121212121212,
+      "liq_dist_pct": 32.659932659932664,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.4234984211565028,
+      "pnl": 177.08015265443055,
+      "pnl_on_margin_pct": 26.562022898164585,
+      "pnl_on_equity_pct": 1.7708015265443053
+     },
+     "5": {
+      "lev": 5,
+      "notional": 2000.0,
+      "margin": 400.0,
+      "liq": 0.40945454545454546,
+      "liq_first_leg": 0.40945454545454546,
+      "liq_dist_pct": 19.191919191919194,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.4234984211565028,
+      "pnl": 177.08015265443055,
+      "pnl_on_margin_pct": 44.27003816360764,
+      "pnl_on_equity_pct": 1.7708015265443053
+     },
+     "10": {
+      "lev": 10,
+      "notional": 2000.0,
+      "margin": 200.0,
+      "liq": 0.4606363636363636,
+      "liq_first_leg": 0.4606363636363636,
+      "liq_dist_pct": 9.090909090909104,
+      "liquidated": false,
+      "liq_time": null,
+      "funding": -0.4234984211565028,
+      "pnl": 177.08015265443055,
+      "pnl_on_margin_pct": 88.54007632721527,
+      "pnl_on_equity_pct": 1.7708015265443053
+     }
+    },
+    "B_risk_1pct_markcheck": {
+     "1": false,
+     "3": false,
+     "5": false,
+     "10": false
+    }
+   }
+  }
+ ],
+ "mmr_x2_sensitivity_10x": {
+  "44e1ebfd-dcf6-4f2f-9c53-8ef602b23411": {
+   "liq": 1.2506363636363635,
+   "liquidated": false
+  },
+  "dfea16a9-d08d-4f15-9d8c-a592ad42f2ec": {
+   "liq": 0.47396938775510206,
+   "liquidated": false
+  },
+  "a9059a28-937c-4745-8ac7-b989a48de4f0": {
+   "liq": 0.45587755102040817,
+   "liquidated": false
+  },
+  "e7794711-6013-4c17-9c41-e16ade80f92f": {
+   "liq": 1.1826363636363637,
+   "liquidated": false
+  },
+  "be8833d2-c2b5-499b-b877-34c77b456724": {
+   "liq": 0.43471377551020407,
+   "liquidated": false
+  },
+  "7ad29625-37e5-4079-a9f2-73873d055e97": {
+   "liq": 1.1570909090909092,
+   "liquidated": false
+  },
+  "cdd10b35-e327-466d-a48d-98009d5ebc2a": {
+   "liq": 1.1843636363636363,
+   "liquidated": false
+  },
+  "bca14f50-eb30-40e7-98d3-288a347bf195": {
+   "liq": 0.46533673469387754,
+   "liquidated": false
+  }
+ },
+ "funding_db_xcheck": {
+  "d073023c-4257-452d-9604-c58b0dc9397a": {
+   "api_n": 27,
+   "db_match": 17
+  },
+  "a969882b-c075-4a35-8d7f-fcfbf40e9f7b": {
+   "api_n": 7,
+   "db_match": 5
+  },
+  "afe3724a-bc39-4a0e-bd49-661f7cf2b580": {
+   "api_n": 9,
+   "db_match": 6
+  },
+  "a7499e87-af49-4650-a191-ee5e0525e452": {
+   "api_n": 0,
+   "db_match": 0
+  }
+ }
+}
