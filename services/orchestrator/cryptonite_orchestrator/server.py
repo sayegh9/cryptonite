@@ -133,6 +133,7 @@ STOP_RATCHET_DEFAULTS = ExitThresholds(
 STOP_RATCHET_MIN_INTERVAL_S = 10.0  # one move per position at most this often (each move is a new paper_orders row)
 STOP_RATCHET_SETTINGS_TTL_S = 30.0  # the trail settings are re-read this often
 STOP_RATCHET_TICK_RETRY_S = 300.0  # an instrument with no known tick is looked up again after this
+STOP_RATCHET_TIMEOUT_S = 1.0  # one ratchet pass may take at most this long on the mark loop (it runs after the liquidations)
 # Best mark since entry per position (hash: instance_id, side, entry, best), so a restart keeps trailing from it
 STOP_RATCHET_STATE_KEY = "perp:stop_ratchet:{account}:{instrument}"
 STOP_RATCHET_STATE_TTL_S = 14 * 24 * 3600
@@ -267,25 +268,53 @@ def fee_rate_for(dispatcher, instrument_id: str) -> Decimal:
 async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Decimal, instance_id: str) -> bool:
     """Protect the filled perp position with a resting reduce-only stop (it replaces the owner's earlier one).
 
+    Never loosens a stop that already rests: when the owner already has a stop on the instrument (the position grew,
+    or the ratchet trailed it), the stop placed is the tighter of the two, ``max`` for a long and ``min`` for a short.
+    A tighter new stop wins; if the resting one is tighter it stays. It is kept as it is when it already covers the
+    whole position (no churn), else it is placed again at its own price for the full size. A first entry has no
+    resting stop and places ``stop_price`` as given.
+
     A stop the dispatcher refuses (the mark already went through it, say) leaves the position without a resting
     stop: that is logged CRITICAL; the exit monitor's structural stop and the liquidation-proximity close stay as
     the backup."""
+    d = engine.dispatcher
+    pos = d.perp_positions.get(instrument_id)
+    if pos is not None and pos.signed_qty != 0:
+        long = pos.signed_qty > 0
+        resting = {cid: o for cid, o in d.resting_stops(instrument_id, instance_id).items()
+                   if o["intent"].stop_price is not None and o["side"] == ("SELL" if long else "BUY")}
+        if resting:
+            prices = [o["intent"].stop_price for o in resting.values()]
+            tightest = max(prices) if long else min(prices)
+            if (tightest > stop_price) if long else (tightest < stop_price):
+                if len(resting) == 1 and next(iter(resting.values()))["quantity"] >= abs(pos.signed_qty):
+                    logger.info("Resting stop for %s (%s): the resting %s is tighter than the new %s and covers the "
+                                "position; kept", instrument_id, instance_id, tightest, stop_price)
+                    return True
+                logger.info("Resting stop for %s (%s): the new %s is looser than the resting %s; placed at %s for the "
+                            "full position", instrument_id, instance_id, stop_price, tightest, tightest)
+                stop_price = tightest
     client_oid = f"STOP-{uuid.uuid4().hex[:12].upper()}"
-    ok, reason = engine.dispatcher.place_resting_stop(client_oid, instrument_id, stop_price, instance_id)
+    ok, reason = d.place_resting_stop(client_oid, instrument_id, stop_price, instance_id)
     if not ok:
         logger.critical("Resting stop for %s (%s) at %s refused: %s; the position has no resting stop",
                         instrument_id, instance_id, stop_price, reason)
         return False
-    info = engine.dispatcher.open_orders[client_oid]
+    info = d.open_orders[client_oid]  # no await since the placement
     await record_resting_stop(conn, engine, client_oid, instrument_id, stop_price)
     logger.info("Resting stop %s: %s %s %s @ %s", client_oid, info["side"], info["quantity"], instrument_id, stop_price)
     return True
 
 
-async def record_resting_stop(conn, engine, client_oid: str, instrument_id: str, stop_price: Decimal) -> None:
+async def record_resting_stop(conn, engine, client_oid: str, instrument_id: str, stop_price: Decimal) -> bool:
     """The paper_orders row of a resting stop the dispatcher just placed (ACCEPTED: the row a restart restores
-    from), then the rows of the stops it replaced are cancelled."""
-    info = engine.dispatcher.open_orders[client_oid]
+    from), then the rows of the stops it replaced are cancelled. False when the row was not written: the stop is
+    gone already (a close or fill removed it while the caller awaited) or the INSERT failed; it rests in memory
+    either way."""
+    info = engine.dispatcher.open_orders.get(client_oid)
+    if info is None:
+        logger.warning("Resting stop %s on %s is gone already; no paper_orders row written", client_oid, instrument_id)
+        return False
     try:
         async with _savepoint(conn):
             await conn.execute(
@@ -300,10 +329,15 @@ async def record_resting_stop(conn, engine, client_oid: str, instrument_id: str,
                 client_oid, info["instance_id"], getattr(engine, "account_id", ACCOUNT_ID), instrument_id,
                 info["side"], info["quantity"], stop_price,
             )
-        # the replaced stops are no longer working
-        await reconcile_working_orders(conn, engine)
     except Exception as e:  # the stop rests in memory either way
         logger.error("paper_orders row for resting stop %s failed: %s", client_oid, e)
+        return False
+    try:
+        # the replaced stops are no longer working
+        await reconcile_working_orders(conn, engine)
+    except Exception as e:
+        logger.error("Rows of the stops replaced by %s not cancelled: %s", client_oid, e)
+    return True
 
 
 async def load_stop_restores(pool, engine) -> int:
@@ -510,6 +544,31 @@ async def target_met(redis, owner: str) -> bool:
         return False
 
 
+async def drop_closed_ratchet_states(redis, engine) -> int:
+    """Forget the trail (memory and Redis hash) of every position that is closed or has no resting stop of its owner
+    any more, so a position reopened at the same entry starts fresh instead of inheriting best mark and last move.
+    A hash whose position closed while the orchestrator was down is not found here (no in-memory record); it is
+    replaced when a position with another owner, side or entry shows up. Returns the number dropped."""
+    states = getattr(engine, "stop_ratchet", None)
+    if not states:
+        return 0
+    d = engine.dispatcher
+    dropped = 0
+    for inst, st in list(states.items()):
+        pos = d.perp_positions.get(inst)
+        if (pos is not None and pos.signed_qty != 0 and pos.instance_id == st.instance_id
+                and d.resting_stops(inst, st.instance_id)):
+            continue
+        states.pop(inst, None)
+        dropped += 1
+        key = STOP_RATCHET_STATE_KEY.format(account=getattr(engine, "account_id", ACCOUNT_ID), instrument=inst)
+        try:
+            await redis.delete(key)
+        except Exception as e:
+            logger.warning("Stop ratchet: trail record of %s not deleted from Redis: %s", inst, e)
+    return dropped
+
+
 async def ratchet_resting_stops(pool, engine, redis, mark_prices: dict[str, Decimal],
                                 now: float | None = None) -> int:
     """Trail the resting stops of AI-owned perp positions behind the best mark since entry (auto-trade plan A4).
@@ -523,6 +582,7 @@ async def ratchet_resting_stops(pool, engine, redis, mark_prices: dict[str, Deci
     not touched. Run after ``fire_resting_stops`` on the same mark pass. Returns the number of stops moved."""
     d = engine.dispatcher
     now = time.monotonic() if now is None else now
+    await drop_closed_ratchet_states(redis, engine)
     stops = [(cid, info["instrument_id"], info.get("instance_id")) for cid, info in d.open_orders.items()
              if d.is_stop_order(info) and is_ai_instance(info.get("instance_id"))
              and info["instrument_id"] in mark_prices]
@@ -554,16 +614,23 @@ async def ratchet_resting_stops(pool, engine, redis, mark_prices: dict[str, Deci
             continue
         new_cid = f"STOP-{uuid.uuid4().hex[:12].upper()}"
         ok, reason = d.place_resting_stop(new_cid, inst, new, owner)
+        st.last_move = now  # a refused move backs off for the minimum interval too
         if not ok:
-            logger.warning("Stop ratchet on %s (%s) %s -> %s refused (%s); the stop stays at %s", inst, owner, old,
-                           new, reason, old)
+            logger.warning("Stop ratchet on %s (%s) %s -> %s refused (%s); the stop stays at %s, retry in %ss", inst,
+                           owner, old, new, reason, old, STOP_RATCHET_MIN_INTERVAL_S)
             continue
-        st.last_move = now
         moved += 1
         logger.info("Stop ratchet on %s (%s): %s -> %s (best mark %s, mark %s%s); %s replaces %s", inst, owner, old,
                     new, st.best, mark, ", daily target met" if met else "", new_cid, cid)
-        async with pool.acquire() as conn:
-            await record_resting_stop(conn, engine, new_cid, inst, new)
+
+        async def record(new_cid=new_cid, inst=inst, new=new) -> bool:
+            async with pool.acquire() as conn:
+                return await record_resting_stop(conn, engine, new_cid, inst, new)
+
+        # shielded: the pass timing out must not cancel the row write of a stop that already moved in memory
+        if not await asyncio.shield(record()):
+            logger.critical("Stop ratchet on %s (%s): the move %s -> %s has no paper_orders row; a restart before the "
+                            "next move restores the older stop %s", inst, owner, old, new, old)
     return moved
 
 
@@ -925,11 +992,6 @@ async def consume_perp_marks(
                     if fresh and pool is not None and any(engine.dispatcher.is_stop_order(o)
                                                           for o in engine.dispatcher.open_orders.values()):
                         await fire_resting_stops(pool, engine, fresh)
-                        # then the AI perps' stops trail the best mark (plan A4); a failure never skips liquidations
-                        try:
-                            await ratchet_resting_stops(pool, engine, redis, fresh)
-                        except Exception as e:
-                            logger.error("Stop ratchet pass failed: %s", e)
                     if fresh and engine.dispatcher.perp_positions:
                         for liq in await engine.process_liquidations(fresh):
                             logger.critical(
@@ -937,6 +999,18 @@ async def consume_perp_marks(
                                 liq.client_order_id, liq.instrument_id, liq.side, liq.quantity,
                                 liq.fill_price, liq.mark_price,
                             )
+                    # Last: the AI perps' stops trail the best mark (plan A4). It touches Postgres and Redis without
+                    # their own timeouts, so it has a budget and a failure or a stall never delays the liquidations
+                    if fresh and pool is not None and (
+                            getattr(engine, "stop_ratchet", None)
+                            or any(engine.dispatcher.is_stop_order(o) for o in engine.dispatcher.open_orders.values())):
+                        try:
+                            await asyncio.wait_for(ratchet_resting_stops(pool, engine, redis, fresh),
+                                                   STOP_RATCHET_TIMEOUT_S)
+                        except asyncio.TimeoutError:
+                            logger.error("Stop ratchet pass timed out after %ss; skipped", STOP_RATCHET_TIMEOUT_S)
+                        except Exception as e:
+                            logger.error("Stop ratchet pass failed: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:

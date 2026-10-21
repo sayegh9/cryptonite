@@ -7,6 +7,7 @@ Redis under a private key prefix (best mark, the mandate:session:target_met set)
 import asyncio
 import itertools
 import json
+import logging
 import time
 import uuid
 from decimal import Decimal as D
@@ -24,6 +25,7 @@ from cryptonite_orchestrator.server import (
     load_stop_restores,
     ratchet_resting_stops,
     reconcile_working_orders,
+    record_resting_stop,
     restore_pending_stops,
 )
 from test_orchestrator_perp_wiring import (
@@ -389,3 +391,199 @@ async def test_mark_loop_ratchets_then_fires_at_the_ratcheted_stop(redis_bus, mo
             await redis_bus["redis"].delete(*keys)
     evt = engine.bridge.enqueue_event.call_args.args[0]
     assert (evt["side"], evt["price"], evt["limit_price"]) == ("SELL", "50400", "50470.00")
+
+
+# --- Review fixes: add to a position, refusals, close and reopen, races, the mark loop -----------------------------------
+
+def reopen_args(_qty=None):
+    return dict(leverage=2, margin_mode="ISOLATED", instance_id=OWNER)
+
+
+async def test_add_to_a_long_keeps_the_ratcheted_stop_and_covers_the_whole_position(rds):
+    db = PaperOrdersDB()
+    engine = await open_perp(db)
+    d = engine.dispatcher
+    await tick(engine, rds, db, "52000", now=0)
+    first, price = stop_of(engine)
+    assert price == D("50960.00")
+    # the position doubles; the entry carries the original stop_loss 48,000
+    d.set_perp_position(PERP, D("0.08"), D("50000"), **reopen_args(0))
+    assert await attach_resting_stop(db, engine, PERP, D("48000"), OWNER)
+    cid, price = stop_of(engine)
+    assert price == D("50960.00") and d.open_orders[cid]["quantity"] == D("0.08")
+    assert db.accepted() == {cid: D("50960.00")}
+    # already covering the whole position: kept as it is, no new stop
+    assert await attach_resting_stop(db, engine, PERP, D("48000"), OWNER)
+    assert stop_of(engine) == (cid, D("50960.00")) and len(db.rows) == 3
+
+
+async def test_add_to_a_long_with_a_tighter_stop_moves_it_up(rds):
+    db = PaperOrdersDB()
+    engine = await open_perp(db)
+    await tick(engine, rds, db, "52000", now=0)
+    engine.dispatcher.set_perp_position(PERP, D("0.08"), D("50000"), **reopen_args(0))
+    assert await attach_resting_stop(db, engine, PERP, D("51500"), OWNER)
+    cid, price = stop_of(engine)
+    assert price == D("51500")
+    assert db.accepted() == {cid: D("51500")}
+
+
+async def test_add_to_a_short_keeps_the_ratcheted_stop_and_a_tighter_one_wins(rds):
+    db = PaperOrdersDB()
+    engine = await open_perp(db, qty="-0.04", stop="52000")
+    d = engine.dispatcher
+    await tick(engine, rds, db, "48500", now=0)
+    assert stop_of(engine)[1] == D("49470.00")
+    d.set_perp_position(PERP, D("-0.08"), D("50000"), **reopen_args(0))
+    assert await attach_resting_stop(db, engine, PERP, D("52000"), OWNER)  # looser: the 49,470 stays
+    cid, price = stop_of(engine)
+    assert price == D("49470.00") and d.open_orders[cid]["quantity"] == D("0.08")
+    assert await attach_resting_stop(db, engine, PERP, D("49000"), OWNER)  # tighter: wins
+    cid, price = stop_of(engine)
+    assert price == D("49000") and db.accepted() == {cid: D("49000")}
+
+
+async def test_first_entry_places_the_stop_as_given(rds):
+    db = PaperOrdersDB()
+    engine = await open_perp(db, stop="48000")
+    assert stop_of(engine)[1] == D("48000") and len(db.rows) == 1
+
+
+async def test_a_refused_move_keeps_the_old_stop_and_backs_off(rds, monkeypatch):
+    db = PaperOrdersDB()
+    engine = await open_perp(db)
+    d = engine.dispatcher
+    first, _ = stop_of(engine)
+    calls = []
+
+    def refuse(cid, inst, price, owner=None):
+        calls.append(price)
+        return False, "REFUSED"
+
+    monkeypatch.setattr(d, "place_resting_stop", refuse)
+    assert await tick(engine, rds, db, "52000", now=0) == 0 and len(calls) == 1
+    assert await tick(engine, rds, db, "52000", now=1) == 0 and len(calls) == 1  # backing off
+    assert await tick(engine, rds, db, "52000", now=9) == 0 and len(calls) == 1
+    assert await tick(engine, rds, db, "52000", now=11) == 0 and len(calls) == 2  # retried after the interval
+    assert stop_of(engine) == (first, D("48000")) and db.accepted() == {first: D("48000")}
+
+
+async def test_close_then_reopen_at_the_same_entry_starts_fresh(rds):
+    db = PaperOrdersDB()
+    engine = await open_perp(db)
+    d = engine.dispatcher
+    await tick(engine, rds, db, "52000", now=0)
+    assert engine.stop_ratchet[PERP].best == D("52000")
+    key = server.STOP_RATCHET_STATE_KEY.format(account=engine.account_id, instrument=PERP)
+    assert await rds.exists(key)
+    # closed: the position and its stops are gone
+    d.perp_positions.pop(PERP)
+    for cid in list(d.resting_stops(PERP)):
+        d.release_reservation(cid)
+    assert await ratchet_resting_stops(pool_for(db), engine, rds, {PERP: D("52000")}, now=20) == 0
+    assert PERP not in engine.stop_ratchet and not await rds.exists(key)
+    # reopened at the same entry
+    d.set_perp_position(PERP, D("0.04"), D("50000"), **reopen_args(0))
+    assert await attach_resting_stop(db, engine, PERP, D("48000"), OWNER)
+    assert await tick(engine, rds, db, "50000", now=21) == 0
+    st = engine.stop_ratchet[PERP]
+    assert st.best == D("50000") and st.last_move is None
+    assert stop_of(engine)[1] == D("48000")
+
+
+async def test_a_stop_closed_during_the_row_write_does_not_raise(rds, monkeypatch):
+    db = PaperOrdersDB()
+    engine = await open_perp(db)
+    d = engine.dispatcher
+    # the record helper itself, for a stop that is not there
+    assert await record_resting_stop(db, engine, "STOP-GONE", PERP, D("50000")) is False
+    # and a close that lands while the ratchet awaits the connection for the row write
+    armed = []
+    real_place = d.place_resting_stop
+
+    def place(*a, **k):
+        res = real_place(*a, **k)
+        armed.append(True)
+        return res
+
+    monkeypatch.setattr(d, "place_resting_stop", place)
+    pool = MagicMock()
+
+    async def enter(*_):
+        if armed:
+            d.perp_positions.pop(PERP, None)
+            for cid in list(d.resting_stops(PERP)):
+                d.release_reservation(cid)
+        return db
+
+    pool.acquire.return_value.__aenter__.side_effect = enter
+    set_mark(engine, "52000")
+    assert await ratchet_resting_stops(pool, engine, rds, {PERP: D("52000")}, now=0) == 1
+    assert not d.resting_stops(PERP)
+
+
+async def test_a_failed_row_write_for_a_move_is_logged_critical(rds, caplog):
+    db = PaperOrdersDB()
+    engine = await open_perp(db)
+    real = db.execute
+
+    async def execute(sql, *args):
+        if "INSERT INTO paper_orders" in sql:
+            raise RuntimeError("db down")
+        return await real(sql, *args)
+
+    db.execute = execute
+    with caplog.at_level(logging.INFO, logger=server.logger.name):
+        assert await tick(engine, rds, db, "52000", now=0) == 1
+    assert stop_of(engine)[1] == D("50960.00")  # rests in memory
+    assert any(r.levelno == logging.CRITICAL and "no paper_orders row" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_partial_close_keeps_a_valid_stop_that_moves_at_the_new_size(rds):
+    db = PaperOrdersDB()
+    engine = await open_perp(db)
+    d = engine.dispatcher
+    await tick(engine, rds, db, "52000", now=0)
+    cid, price = stop_of(engine)
+    d.set_perp_position(PERP, D("0.02"), D("50000"), **reopen_args(0))  # half closed
+    assert stop_of(engine) == (cid, price) and d.fillable_quantity(d.open_orders[cid]) == D("0.02")
+    assert await tick(engine, rds, db, "53000", now=20) == 1
+    cid2, price2 = stop_of(engine)
+    assert cid2 != cid and price2 == D("51940.00") and d.open_orders[cid2]["quantity"] == D("0.02")
+    assert db.accepted() == {cid2: D("51940.00")}
+
+
+async def test_mark_loop_runs_the_ratchet_after_liquidations_and_a_hung_one_cannot_block_them(
+        redis_bus, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(server, "STOP_RATCHET_TIMEOUT_S", 0.1)
+    db = PaperOrdersDB()
+    engine = await open_perp(db)
+    order = []
+    real_liquidations = engine.process_liquidations
+
+    async def liquidations(fresh):
+        order.append("liquidations")
+        return await real_liquidations(fresh)
+
+    async def hung_ratchet(*_, **__):
+        order.append("ratchet")
+        await asyncio.sleep(30)
+
+    engine.process_liquidations = liquidations
+    monkeypatch.setattr(server, "ratchet_resting_stops", hung_ratchet)
+    task = asyncio.create_task(consume_perp_marks(
+        redis_bus["redis"], engine, channel=redis_bus["channel"], key_pattern=redis_bus["key_pattern"],
+        liquidation_interval_s=0.05, pool=pool_for(db),
+    ))
+    try:
+        await publish_until_seen(redis_bus, mark_tick("50000"), engine)
+        deadline = time.monotonic() + 5
+        # the liquidation check runs again after a ratchet pass that never returns on its own
+        while order.count("liquidations") < 3:
+            assert time.monotonic() < deadline, f"liquidations blocked: {order}"
+            await asyncio.sleep(0.02)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert order[:2] == ["liquidations", "ratchet"]
