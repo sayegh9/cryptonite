@@ -4,6 +4,7 @@ Autonomy transitions are computed by ``cryptonite_execution.autonomy`` and persi
 ``ai_mandates`` update and one ``ai_autonomy_events`` row, in the caller's transaction.
 """
 
+import datetime
 import json
 import uuid
 from decimal import Decimal
@@ -12,11 +13,18 @@ from typing import Any
 from cryptonite_schemas.mandate import Mandate, MandateStatus, canonical_instrument
 from cryptonite_schemas.marks import LiveMark, position_values
 from cryptonite_schemas.marks import entry_room_pct as room_at_marks
+from cryptonite_schemas.session import (
+    SESSION_COLUMNS,
+    SessionVerdict,
+    utc_session_date,
+    verdict_from_row,
+)
 
 from cryptonite_execution.autonomy import Transition
 
 MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
-                   "max_leverage, max_risk_per_trade_pct, strategies, autonomy_level, status, active_hours_utc, veto_window_s")
+                   "max_leverage, max_risk_per_trade_pct, strategies, autonomy_level, status, active_hours_utc, veto_window_s, "
+                   "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct")
 
 
 async def load_mandate(conn, mandate_id: str | uuid.UUID, *, for_update: bool = False) -> Mandate | None:
@@ -89,6 +97,18 @@ async def apply_transition(conn, mandate_id: uuid.UUID, t: Transition, *, actor:
         )
     return await record_event(conn, mandate_id, t.kind, from_level=int(t.before.level), to_level=int(t.after.level),
                               reason=t.reason, detail=detail, actor=actor)
+
+
+async def load_session(conn, mandate_id: uuid.UUID, now: datetime.datetime):
+    """Today's (UTC) ``ai_mandate_daily_sessions`` row of the mandate, or None before the monitor opened it."""
+    return await conn.fetchrow(
+        f"SELECT {SESSION_COLUMNS} FROM ai_mandate_daily_sessions WHERE mandate_id = $1 AND session_date = $2",
+        mandate_id, utc_session_date(now))
+
+
+async def session_verdict_for(conn, mandate: Mandate, now: datetime.datetime) -> SessionVerdict:
+    """Today's session verdict of the mandate (ADR 0010), from its row and its current limits."""
+    return verdict_from_row(mandate, await load_session(conn, mandate.id, now))
 
 
 def level_name(level: int) -> str:

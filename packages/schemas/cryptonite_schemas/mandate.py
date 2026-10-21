@@ -24,6 +24,13 @@ MAX_PERP_LEVERAGE_CAP = 10  # ADR 0009 D2 (was 5x under O1)
 DEFAULT_PERP_LEVERAGE = 3  # a mandate that enables perps without naming a maximum gets 3x (D2)
 DEFAULT_RISK_PER_TRADE_PCT = Decimal("1")  # loss at the stop one trade may risk, % of the budget (D6)
 MAX_RISK_PER_TRADE_PCT_CAP = Decimal("2")
+# ADR 0010: daily sessions and entry filters. A perps mandate without a named daily loss limit gets 3 x its risk per
+# trade (capped at its hard stop); every other mandate leaves the limits off (NULL).
+PERP_DAILY_LOSS_RISK_MULTIPLE = Decimal("3")
+DEFAULT_PROFIT_LOCK_PCT = Decimal("50")  # after the target, flatten if session P&L falls back to half of it
+MIN_CONVICTION_FLOOR = Decimal("0.50")
+MIN_CONVICTION_CEILING = Decimal("0.95")
+MIN_RR_FLOOR = Decimal("1.00")
 DEFAULT_VETO_WINDOW_S = 600  # §4.5: L2 veto window, 10 minutes
 DEFAULT_APPROVAL_TTL_S = 900  # L1 approvals expire after 15 minutes (timeout = no for new risk)
 DEFAULT_REDUCE_VETO_S = 300  # a model-proposed exit at L1 waits 5 minutes for a veto, then proceeds
@@ -93,6 +100,9 @@ class MandateReject(StrEnum):
     NO_REFERENCE_PRICE = "MANDATE_NO_REFERENCE_PRICE"
     INSTANCE_UNAVAILABLE = "MANDATE_INSTANCE_UNAVAILABLE"
     MARGIN_MODE_NOT_ALLOWED = "MANDATE_MARGIN_MODE_NOT_ALLOWED"  # ADR 0009 D5: mandate perps are ISOLATED only
+    # ADR 0010: the mandate's daily session refuses new entries until 00:00 UTC. Refusals, never breaches.
+    DAILY_LOSS_LATCHED = "MANDATE_DAILY_LOSS_LATCHED"
+    DAILY_TARGET_MET = "MANDATE_DAILY_TARGET_MET"  # also after the profit lock fired
     # The orchestrator sized the entry itself and the check still found it over a limit: a system fault (sizing
     # and the check disagreeing), not the AI overstepping. Refused, logged as an error, never a breach.
     SIZING_CONFLICT = "MANDATE_SIZING_CONFLICT"
@@ -196,6 +206,12 @@ class Mandate(BaseModel):
     status: MandateStatus = MandateStatus.ACTIVE
     active_hours_utc: str | None = None
     veto_window_s: int = Field(default=DEFAULT_VETO_WINDOW_S, ge=60, le=3600)
+    # ADR 0010 entry filters (refuse only) and daily session limits; None is off
+    min_conviction: Decimal | None = Field(default=None, ge=MIN_CONVICTION_FLOOR, le=MIN_CONVICTION_CEILING)
+    min_rr: Decimal | None = Field(default=None, ge=MIN_RR_FLOOR, le=Decimal("99.99"))
+    daily_loss_limit_pct: Decimal | None = Field(default=None, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
+    daily_profit_target_pct: Decimal | None = Field(default=None, gt=0, le=100)
+    profit_lock_pct: Decimal = Field(default=DEFAULT_PROFIT_LOCK_PCT, ge=0, le=100)
 
     @field_validator("instruments")
     @classmethod
@@ -219,6 +235,21 @@ class Mandate(BaseModel):
             self.max_leverage = DEFAULT_PERP_LEVERAGE
         return self
 
+    @model_validator(mode="after")
+    def _daily_loss_limit(self) -> "Mandate":
+        # ADR 0010: a perps mandate without a named daily loss limit gets 3 x its risk per trade, at most its hard stop
+        # (a hard stop below one trade's risk is tighter than any daily limit: no default then)
+        if self.allow_perps and "daily_loss_limit_pct" not in self.model_fields_set:
+            default = min(PERP_DAILY_LOSS_RISK_MULTIPLE * self.max_risk_per_trade_pct, self.max_drawdown_pct)
+            self.daily_loss_limit_pct = default if default >= self.max_risk_per_trade_pct else None
+        if self.daily_loss_limit_pct is not None:
+            if self.daily_loss_limit_pct > self.max_drawdown_pct:
+                raise ValueError("daily_loss_limit_pct must not exceed max_drawdown_pct (ADR 0010)")
+            if self.daily_loss_limit_pct < self.max_risk_per_trade_pct:
+                raise ValueError("daily_loss_limit_pct must be at least max_risk_per_trade_pct: one stopped trade "
+                                 "must fit in the day (ADR 0010)")
+        return self
+
     @property
     def instance_id(self) -> str:
         return mandate_instance_id(self.id)
@@ -237,6 +268,10 @@ class Mandate(BaseModel):
             strategies=list(r.get("strategies") or []), autonomy_level=AutonomyLevel(int(r["autonomy_level"])),
             status=MandateStatus(r["status"]), active_hours_utc=r.get("active_hours_utc"),
             veto_window_s=r.get("veto_window_s") or DEFAULT_VETO_WINDOW_S,
+            # ADR 0010: the stored value as it is (NULL stays off); a row read before migration 049 has no columns
+            min_conviction=r.get("min_conviction"), min_rr=r.get("min_rr"),
+            daily_loss_limit_pct=r.get("daily_loss_limit_pct"), daily_profit_target_pct=r.get("daily_profit_target_pct"),
+            profit_lock_pct=r.get("profit_lock_pct") if r.get("profit_lock_pct") is not None else DEFAULT_PROFIT_LOCK_PCT,
         )
 
 
@@ -309,4 +344,20 @@ def risk_adding_change(old: Mandate | None, new: Mandate) -> bool:
         or new.veto_window_s < old.veto_window_s
         or (new.status is MandateStatus.ACTIVE and old.status is not MandateStatus.ACTIVE)
         or new.autonomy_level > old.autonomy_level
+        # ADR 0010: a filter lowered or removed, a limit raised or removed, the profit lock lowered
+        or _floor_loosened(old.min_conviction, new.min_conviction)
+        or _floor_loosened(old.min_rr, new.min_rr)
+        or _ceiling_loosened(old.daily_loss_limit_pct, new.daily_loss_limit_pct)
+        or _ceiling_loosened(old.daily_profit_target_pct, new.daily_profit_target_pct)
+        or new.profit_lock_pct < old.profit_lock_pct
     )
+
+
+def _floor_loosened(old: Decimal | None, new: Decimal | None) -> bool:
+    """A minimum the AI must meet (conviction, R:R) is loosened when it is lowered or removed."""
+    return old is not None and (new is None or new < old)
+
+
+def _ceiling_loosened(old: Decimal | None, new: Decimal | None) -> bool:
+    """A daily limit (loss, profit target) is loosened when it is raised or removed: the AI keeps trading longer."""
+    return old is not None and (new is None or new > old)

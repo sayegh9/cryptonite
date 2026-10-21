@@ -53,6 +53,7 @@ from cryptonite_execution.mandate_store import (
     apply_transition,
     level_name,
     load_mandate,
+    load_session,
     record_event,
 )
 from cryptonite_schemas import notifier as notifier_contract
@@ -62,6 +63,9 @@ from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
     MAX_POSITION_PCT_CAP,
     MAX_RISK_PER_TRADE_PCT_CAP,
+    MIN_CONVICTION_CEILING,
+    MIN_CONVICTION_FLOOR,
+    MIN_RR_FLOOR,
     ActionClass,
     Mandate,
     MandateStatus,
@@ -69,6 +73,14 @@ from cryptonite_schemas.mandate import (
     risk_adding_change,
 )
 from cryptonite_schemas.marks import LiveMark, read_marks, resolve_mark, summarize, unrealized_pnl
+from cryptonite_schemas.session import (
+    lock_usd,
+    loss_limit_usd,
+    next_session_start,
+    target_usd,
+    utc_session_date,
+    verdict_from_row,
+)
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError
 
@@ -98,6 +110,13 @@ class MandateIn(BaseModel):
     strategies: list[str] = Field(default_factory=list, max_length=20)
     active_hours_utc: str | None = None
     veto_window_s: int = Field(default=600, ge=60, le=3600)
+    # ADR 0010: refuse-only entry filters and daily session limits; unset is off (a perps mandate gets a daily loss
+    # limit of 3 x its risk per trade)
+    min_conviction: Decimal | None = Field(default=None, ge=MIN_CONVICTION_FLOOR, le=MIN_CONVICTION_CEILING)
+    min_rr: Decimal | None = Field(default=None, ge=MIN_RR_FLOOR, le=Decimal("99.99"))
+    daily_loss_limit_pct: Decimal | None = Field(default=None, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
+    daily_profit_target_pct: Decimal | None = Field(default=None, gt=0, le=100)
+    profit_lock_pct: Decimal | None = Field(default=None, ge=0, le=100)
     totp_code: str | None = None
     # Where the request came from when it is not the Mandate editor ("brain_card:<session>:<card>"): kept in the audit event
     source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_:.-]{1,200}$")
@@ -116,6 +135,14 @@ class MandatePatch(BaseModel):
     active_hours_utc: str | None = None
     clear_active_hours: bool = False
     veto_window_s: int | None = Field(default=None, ge=60, le=3600)
+    min_conviction: Decimal | None = Field(default=None, ge=MIN_CONVICTION_FLOOR, le=MIN_CONVICTION_CEILING)
+    min_rr: Decimal | None = Field(default=None, ge=MIN_RR_FLOOR, le=Decimal("99.99"))
+    daily_loss_limit_pct: Decimal | None = Field(default=None, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
+    daily_profit_target_pct: Decimal | None = Field(default=None, gt=0, le=100)
+    profit_lock_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    # Switch filters or limits off (NULL). Removing one gives the AI more room, so it needs TOTP (ADR 0010)
+    clear_limits: list[Literal["min_conviction", "min_rr", "daily_loss_limit_pct", "daily_profit_target_pct"]] = Field(
+        default_factory=list, max_length=4)
     totp_code: str | None = None
     # Where the request came from when it is not the Mandate editor ("brain_card:<session>:<card>"): kept in the audit event
     source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_:.-]{1,200}$")
@@ -288,6 +315,33 @@ def _perp_fields(p: Any, mark: Decimal) -> dict[str, Any]:
             "liquidation_distance_pct": str(round(distance, 2)) if distance is not None else None}
 
 
+def _ts(v: Any) -> str | None:
+    return v.isoformat() if v is not None else None
+
+
+async def session_view(conn, m: Mandate) -> dict[str, Any]:
+    """Today's (UTC) daily session of the mandate (ADR 0010): the limits in USD, the P&L the orchestrator last
+    recorded, the derived verdict and the latch times. ``start_equity`` is None before the first tick of the day."""
+    now = datetime.datetime.now(datetime.UTC)
+    row = await load_session(conn, m.id, now)
+    budget = m.capital_budget_usd
+    return {
+        "session_date": utc_session_date(now).isoformat(), "resets_at": next_session_start(now).isoformat(),
+        "verdict": verdict_from_row(m, row).value,
+        "start_equity": _dec(row["start_equity"]) if row else None,
+        "pnl": _dec(row["last_pnl"]) if row else "0", "peak_pnl": _dec(row["peak_pnl"]) if row else "0",
+        "loss_latched_at": _ts(row["loss_latched_at"]) if row else None,
+        "target_hit_at": _ts(row["target_hit_at"]) if row else None,
+        "lock_fired_at": _ts(row["lock_fired_at"]) if row else None,
+        "updated_at": _ts(row["updated_at"]) if row else None,
+        "daily_loss_limit_pct": _dec(m.daily_loss_limit_pct), "daily_profit_target_pct": _dec(m.daily_profit_target_pct),
+        "profit_lock_pct": _dec(m.profit_lock_pct),
+        "loss_limit_usd": _dec(loss_limit_usd(budget, m.daily_loss_limit_pct)),
+        "target_usd": _dec(target_usd(budget, m.daily_profit_target_pct)),
+        "lock_usd": _dec(lock_usd(budget, m.daily_profit_target_pct, m.profit_lock_pct)),
+    }
+
+
 async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None) -> dict[str, Any]:
     """``marks`` (``read_marks``): positions and exposure at the live mark, else the stored mark flagged
     stale (B3, F-H3); ``marks_stale`` / ``marks_age_s`` say which."""
@@ -316,6 +370,9 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
         "max_risk_per_trade_pct": _dec(m.max_risk_per_trade_pct), "strategies": m.strategies,
         "autonomy_level": int(m.autonomy_level), "level_name": level_name(int(m.autonomy_level)), "status": m.status.value,
         "active_hours_utc": m.active_hours_utc, "veto_window_s": m.veto_window_s, "instance_id": m.instance_id,
+        "min_conviction": _dec(m.min_conviction), "min_rr": _dec(m.min_rr),
+        "daily_loss_limit_pct": _dec(m.daily_loss_limit_pct), "daily_profit_target_pct": _dec(m.daily_profit_target_pct),
+        "profit_lock_pct": _dec(m.profit_lock_pct), "session": await session_view(conn, m),
         "halted_reason": extra["halted_reason"], "halted_at": extra["halted_at"].isoformat() if extra["halted_at"] else None,
         "level_since": extra["level_since"].isoformat(),
         "equity": _dec(eq["equity"]) if eq else _dec(m.capital_budget_usd), "hwm": _dec(eq["hwm"]) if eq else _dec(m.capital_budget_usd),
@@ -402,11 +459,13 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
                 await conn.execute(
                     """INSERT INTO ai_mandates (id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct,
                            allow_perps, max_leverage, strategies, active_hours_utc, veto_window_s, created_by,
-                           max_risk_per_trade_pct)
-                       VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, $13)""",
+                           max_risk_per_trade_pct, min_conviction, min_rr, daily_loss_limit_pct,
+                           daily_profit_target_pct, profit_lock_pct)
+                       VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, $13, $14, $15, $16, $17, $18)""",
                     m.id, m.name, m.capital_budget_usd, m.instruments, m.max_position_pct, m.max_drawdown_pct,
                     m.max_leverage, m.strategies, m.active_hours_utc, m.veto_window_s, actor(auth), m.allow_perps,
-                    m.max_risk_per_trade_pct)
+                    m.max_risk_per_trade_pct, m.min_conviction, m.min_rr, m.daily_loss_limit_pct,
+                    m.daily_profit_target_pct, m.profit_lock_pct)
             except Exception as e:
                 if "uq" in str(e).lower() or "unique" in str(e).lower():
                     raise HTTPException(status_code=409, detail="A mandate with this name exists")
@@ -429,13 +488,18 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 raise HTTPException(status_code=404, detail="Mandate not found")
             if old.status is MandateStatus.ARCHIVED:
                 raise HTTPException(status_code=409, detail="The mandate is archived")
-            patch = req.model_dump(exclude_none=True, exclude={"totp_code", "clear_active_hours", "source"})
+            patch = req.model_dump(exclude_none=True, exclude={"totp_code", "clear_active_hours", "clear_limits", "source"})
             if req.clear_active_hours:
                 patch["active_hours_utc"] = None
+            for field in req.clear_limits:
+                patch[field] = None
             try:
                 base = old.model_dump()
                 if patch.get("allow_perps") and not old.allow_perps and "max_leverage" not in patch:
                     base.pop("max_leverage")  # enabling perps without a maximum: the 3x default (ADR 0009 D2)
+                if (patch.get("allow_perps") and not old.allow_perps and "daily_loss_limit_pct" not in patch
+                        and old.daily_loss_limit_pct is None):
+                    base.pop("daily_loss_limit_pct")  # enabling perps without a daily loss limit: 3 x risk (ADR 0010)
                 new = Mandate(**{**base, **patch})
             except ValidationError as e:
                 raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
@@ -448,14 +512,16 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
             await conn.execute(
                 """UPDATE ai_mandates SET name = $2, capital_budget_usd = $3, instruments = $4, max_position_pct = $5,
                        max_drawdown_pct = $6, allow_perps = $7, max_leverage = $8, strategies = $9, active_hours_utc = $10,
-                       veto_window_s = $11, max_risk_per_trade_pct = $12, updated_at = now(),
+                       veto_window_s = $11, max_risk_per_trade_pct = $12, min_conviction = $13, min_rr = $14,
+                       daily_loss_limit_pct = $15, daily_profit_target_pct = $16, profit_lock_pct = $17, updated_at = now(),
                        -- a new budget is a new baseline: without a rebase a smaller budget reads as a drawdown
                        hwm_rebased_at = CASE WHEN capital_budget_usd <> $3 THEN now() ELSE hwm_rebased_at END,
                        last_dd_demotion_hwm = CASE WHEN capital_budget_usd <> $3 THEN NULL ELSE last_dd_demotion_hwm END
                    WHERE id = $1""",
                 mandate_id, new.name, new.capital_budget_usd, new.instruments, new.max_position_pct, new.max_drawdown_pct,
                 new.allow_perps, new.max_leverage, new.strategies, new.active_hours_utc, new.veto_window_s,
-                new.max_risk_per_trade_pct)
+                new.max_risk_per_trade_pct, new.min_conviction, new.min_rr, new.daily_loss_limit_pct,
+                new.daily_profit_target_pct, new.profit_lock_pct)
             changed = {k: [str(getattr(old, k)), str(getattr(new, k))] for k in patch if getattr(old, k) != getattr(new, k)}
             await record_event(conn, mandate_id, "EDITED", reason=", ".join(changed) or "no change", actor=actor(auth),
                                detail={"changes": changed, "risk_adding": risk_adding_change(old, new),
