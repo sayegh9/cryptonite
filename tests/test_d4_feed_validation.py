@@ -168,6 +168,15 @@ async def test_strategy_instance_on_an_unfed_symbol_or_timeframe_is_422(h, instr
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE command_type = 'DEPLOY'") == 0
 
 
+async def test_a_venue_less_instrument_is_deployed_with_its_venue(h):
+    """2026-10-21: the Strategy drawer sent XRPUSDT (no venue); the engine refused it and the instance sat RUNNING."""
+    async with h.client() as c:
+        res = await c.post("/api/v1/paper/strategies/deploy", headers=h.headers, json=deploy_body("btcusdt", "1m"))
+    assert res.status_code == 200, res.text
+    payload = await h.pool.fetchval("SELECT payload FROM execution_commands WHERE command_type = 'DEPLOY'")
+    assert json.loads(payload)["instrument_id"] == BTC
+
+
 # ------------------------------------------------------------------------------------ source hash
 
 

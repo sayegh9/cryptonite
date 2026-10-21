@@ -12,7 +12,7 @@ from cryptonite_api.leverage_card import manual_ticket_preview
 from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import require_csrf, require_operator
 from cryptonite_api.universe import require_fed
-from cryptonite_schemas.mandate import MANDATE_INSTANCE_PREFIX
+from cryptonite_schemas.mandate import MANDATE_INSTANCE_PREFIX, canonical_instrument
 from cryptonite_schemas.marks import read_marks, resolve_mark, unrealized_pnl
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -372,6 +372,8 @@ def _refuse_mandate_instance(instance_id: str) -> None:
 @router.post("/strategies/deploy")
 async def deploy_strategy(req: DeployStrategyRequest, request: Request, auth: dict = Depends(require_operator), csrf: dict = Depends(require_csrf)) -> dict[str, Any]:
     pool = request.app.state.pool
+    # A venue-less id (XRPUSDT) cannot become a Nautilus InstrumentId: the instance would sit RUNNING, never deployed
+    req.instrument_id = canonical_instrument(req.instrument_id)
     # D4: an instance on a symbol or timeframe ingest does not feed would sit RUNNING on no bars
     await require_fed(request, [req.instrument_id], req.timeframe)
     instance_id = f"INST-{uuid.uuid4().hex[:8].upper()}"
