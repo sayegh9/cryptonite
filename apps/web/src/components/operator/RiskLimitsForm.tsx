@@ -12,6 +12,7 @@ import {
   type ConfigurableLimit,
   type RiskLimitsConfig,
 } from "@/lib/limits";
+import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 
 const LABELS: Record<ConfigurableLimit, string> = {
   max_daily_loss_pct: "Max daily loss",
@@ -50,6 +51,8 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
   const [reason, setReason] = useState("");
   const [totp, setTotp] = useState("");
   const [busy, setBusy] = useState(false);
+  // Loosening (TOTP) never runs from a tab older than the server; tightening stays open
+  const staleBuild = useStaleBuild();
   const [errors, setErrors] = useState<FieldErrors>({});
   const [saved, setSaved] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -90,6 +93,7 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (needsTotp && isStaleBuild()) return;
     setBusy(true);
     setErrors({});
     setSaved(null);
@@ -231,7 +235,8 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
         </p>
         <button
           type="submit"
-          disabled={busy || reason.trim().length < 5 || (needsTotp && totp.length !== 6)}
+          disabled={busy || reason.trim().length < 5 || (needsTotp && (totp.length !== 6 || staleBuild))}
+          title={needsTotp && staleBuild ? STALE_BUILD_TITLE : undefined}
           className="ml-3 shrink-0 rounded bg-amber-600 px-3 py-1 font-bold text-black disabled:opacity-40"
         >
           {busy ? "Saving…" : needsTotp ? "Loosen with TOTP" : "Save"}

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight, rejectOrderCard, sendBrainMessage } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
+import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { createMandate, editMandate, pauseMandate, resumeMandate } from "@/lib/mission/client";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
@@ -981,6 +982,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const feedRefusal = pending && addsRisk ? widget.feed_refusal ?? null : null;
   const feedLocked = !!feedRefusal && !fed;
   const sessionId = useBrainStore((s) => s.sessionId);
+  // A tab older than the server may hold an old card (2026-10-21: no allow_perps sent): nothing is approved until reload
+  const staleBuild = useStaleBuild();
   useCardOutcome(widget, sessionId);
   // Only a card that can still be approved is checked: not decided, and not locked by the feed
   const { preflight, check: checkPreflight } = useCardPreflight(widget, sessionId, pending && !feedLocked, pickedLeverage);
@@ -1049,6 +1052,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const perpReady = totp.length === 6 && (!highLeverage || confirmHigh);
 
   const approve = async () => {
+    if (isStaleBuild()) return;
     setBusy(true);
     setError(null);
     setMandateBlock(null);
@@ -1294,7 +1298,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
         <div className="mt-3 flex gap-2">
           <button
             type="button"
-            disabled={feedLocked}
+            disabled={feedLocked || staleBuild}
+            title={staleBuild ? STALE_BUILD_TITLE : undefined}
             onClick={() => {
               setConfirming(true);
               checkPreflight();
@@ -1525,7 +1530,8 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={busy || (needsMandate && !fix) || (!!fix && !fixReady) || (perpEntry && !fix && !perpReady)}
+              disabled={staleBuild || busy || (needsMandate && !fix) || (!!fix && !fixReady) || (perpEntry && !fix && !perpReady)}
+              title={staleBuild ? STALE_BUILD_TITLE : undefined}
               onClick={approve}
               className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-zinc-950 hover:bg-amber-500 disabled:opacity-50"
             >
