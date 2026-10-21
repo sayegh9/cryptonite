@@ -11,6 +11,7 @@ import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import OutcomesByRegime from "./OutcomesByRegime";
 import ReliabilityChart from "./ReliabilityChart";
 import { fmtGateActual } from "@/lib/format";
+import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 
 const CHECK_LABEL: Record<string, string> = {
   days_at_level: "Days at this level",
@@ -34,6 +35,8 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
   const { mandateId, setMandateId, view, evals, calibrationNote, calibration, byRegime, error, load, setView, showEvents, setShowEvents } = useAutonomyStore();
   const [totp, setTotp] = useState("");
   const [busy, setBusy] = useState(false);
+  // A promotion gives the AI more authority (TOTP): never from a tab older than the server
+  const staleBuild = useStaleBuild();
   const id = mandateId && mandates.some((m) => m.id === mandateId) ? mandateId : mandates[0]?.id ?? null;
 
   useEffect(() => {
@@ -178,6 +181,7 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
                 aria-label="Confirm promotion"
                 onSubmit={(e) => {
                   e.preventDefault();
+                  if (isStaleBuild()) return;
                   void act(() => confirmPromotion(id!, view.proposal!.id, totp), `Promoted to L${view.proposal!.to_level}`, true);
                 }}
               >
@@ -194,7 +198,12 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
                     onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
                     className="w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100"
                   />
-                  <button type="submit" disabled={busy || totp.length !== 6} className="rounded bg-cyan-600 px-2 py-1 text-2xs font-bold text-zinc-950 disabled:opacity-50">
+                  <button
+                    type="submit"
+                    disabled={staleBuild || busy || totp.length !== 6}
+                    title={staleBuild ? STALE_BUILD_TITLE : undefined}
+                    className="rounded bg-cyan-600 px-2 py-1 text-2xs font-bold text-zinc-950 disabled:opacity-50"
+                  >
                     Confirm promotion
                   </button>
                   <button

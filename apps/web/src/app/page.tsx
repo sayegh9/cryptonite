@@ -24,6 +24,7 @@ import { DecisionTraceDrawer } from "@/components/brain/DecisionTraceDrawer";
 import { GovernanceConsole } from "@/components/GovernanceConsole";
 import { MissionControl } from "@/components/mission/MissionControl";
 import { ModeBanner } from "@/components/mission/ModeBanner";
+import { StaleBuildBanner } from "@/components/StaleBuildBanner";
 import { WorkspaceNav } from "@/components/WorkspaceNav";
 import { dispatchBrainAsk } from "@/lib/brain/events";
 import { useBrainSetup } from "@/lib/brain/useBrainSetup";
@@ -290,6 +291,7 @@ function Workstation() {
 
   return (
     <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
+      <StaleBuildBanner />
       {/*
         Top Institutional Header. md+: one row; the nav shrinks and scrolls so the banner and the Brain
         button always fit. Below md the banner takes a full-width second row, clear of the logo.

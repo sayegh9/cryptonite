@@ -6,6 +6,7 @@ import { pauseMandate, resumeMandate } from "@/lib/mission/client";
 import { dispatchMandateUpdated } from "@/lib/mission/events";
 import type { Mandate } from "@/lib/mission/types";
 import { staleMarkText } from "@/lib/mission/marks";
+import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 
 const usd = (v: string | number) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
@@ -84,6 +85,8 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
   const [totp, setTotp] = useState("");
   const [resuming, setResuming] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Resuming gives the AI room again (TOTP): never from a tab older than the server; pausing stays open
+  const staleBuild = useStaleBuild();
   const dd = Number(m.drawdown_pct);
   const hardStop = Number(m.max_drawdown_pct);
   const used = Number(m.budget_used_pct);
@@ -201,6 +204,7 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
             aria-label={`Resume ${m.name}`}
             onSubmit={(e) => {
               e.preventDefault();
+              if (isStaleBuild()) return;
               void run(() => resumeMandate(m.id, totp), "resumed", `${m.name} resumed at ${m.level_name}`);
             }}
           >
@@ -217,7 +221,12 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
               onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
               className="w-20 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-zinc-100"
             />
-            <button type="submit" disabled={busy || totp.length !== 6} className="rounded bg-amber-600 px-2 py-0.5 text-2xs font-bold text-zinc-950 disabled:opacity-50">
+            <button
+              type="submit"
+              disabled={staleBuild || busy || totp.length !== 6}
+              title={staleBuild ? STALE_BUILD_TITLE : undefined}
+              className="rounded bg-amber-600 px-2 py-0.5 text-2xs font-bold text-zinc-950 disabled:opacity-50"
+            >
               Resume
             </button>
           </form>

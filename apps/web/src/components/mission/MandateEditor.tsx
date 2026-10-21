@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { createMandate, demoteMandate, editMandate } from "@/lib/mission/client";
 import { dispatchMandateUpdated } from "@/lib/mission/events";
 import type { Mandate } from "@/lib/mission/types";
+import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 
 interface Form {
   name: string;
@@ -86,6 +87,8 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
   const [totp, setTotp] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A tab older than the server may send an old form (2026-10-21: a perp mandate without allow_perps): no saves until reload
+  const staleBuild = useStaleBuild();
 
   useEffect(() => {
     setForm(current ? toForm(current) : EMPTY);
@@ -107,6 +110,7 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isStaleBuild()) return;
     setBusy(true);
     setError(null);
     const body: Record<string, unknown> = {
@@ -230,7 +234,8 @@ export function MandateEditor({ mandates, selectedId, onSelect, onSaved }: {
         <div className="flex flex-wrap gap-2 md:col-span-2">
           <button
             type="submit"
-            disabled={busy || (needsTotp && totp.length !== 6)}
+            disabled={staleBuild || busy || (needsTotp && totp.length !== 6)}
+            title={staleBuild ? STALE_BUILD_TITLE : undefined}
             className="rounded bg-cyan-600 px-4 py-2 text-xs font-bold text-zinc-950 disabled:opacity-50"
           >
             {current ? "Save mandate" : "Create mandate (starts at L1)"}

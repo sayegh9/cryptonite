@@ -11,6 +11,7 @@ import { metricOrNull } from "@/lib/freshness";
 import { useMandateStore } from "@/lib/stores/useMandateStore";
 import { useAutonomyStore } from "@/lib/stores/useAutonomyStore";
 import { calibratedConviction } from "@/lib/mission/calibration";
+import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 
 /** Risk context inputs from an approval's command payload and its mandate (unknown -> null). */
 function contextOf(a: Approval, mandates: Mandate[]): ApprovalRiskInput {
@@ -55,6 +56,8 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
   const approvalsOk = useMandateStore((s) => s.approvalsOk);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
+  // A tab older than the server approves nothing until it reloads; vetoing (taking risk away) stays open
+  const staleBuild = useStaleBuild();
   const [confirm, setConfirm] = useState<{ id: string; decision: "APPROVE" | "VETO" } | null>(null);
   const [announcement, setAnnouncement] = useState("");
   // decisions made here stay visible after the refresh drops them from the pending list
@@ -83,6 +86,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
   });
 
   const decide = async (a: Approval, decision: "APPROVE" | "VETO") => {
+    if (decision === "APPROVE" && isStaleBuild()) return;
     setBusy(a.id);
     try {
       const res = await decideApproval(a.id, decision);
@@ -171,7 +175,8 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                   <button
                     type="button"
                     autoFocus
-                    disabled={busy === a.id || s === 0}
+                    disabled={busy === a.id || s === 0 || (confirm.decision === "APPROVE" && staleBuild)}
+                    title={confirm.decision === "APPROVE" && staleBuild ? STALE_BUILD_TITLE : undefined}
                     onClick={() => {
                       setConfirm(null);
                       void decide(a, confirm.decision);
@@ -197,7 +202,8 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
-                    disabled={busy === a.id || s === 0}
+                    disabled={busy === a.id || s === 0 || staleBuild}
+                    title={staleBuild ? STALE_BUILD_TITLE : undefined}
                     onClick={() => setConfirm({ id: a.id, decision: "APPROVE" })}
                     aria-label={`Approve: ${a.summary}`}
                     className={`flex-1 rounded border px-2 py-1 text-2xs font-bold disabled:opacity-50 ${

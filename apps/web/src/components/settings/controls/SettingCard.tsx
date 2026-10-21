@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "../../ui/button";
 import { TierBadge } from "./TierBadge";
 import { ApplyModeBadge } from "./ApplyModeBadge";
+import { STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 
 export interface RegistryEntry {
   key: string;
@@ -103,6 +104,8 @@ export const SettingCard: React.FC<SettingCardProps> = ({
   const [totp, setTotp] = useState<string>("");
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  // A TOTP change never runs from a tab older than the server; tightening (no TOTP) stays open
+  const staleBuild = useStaleBuild();
 
   // Sync amount with current value when entry updates
   useEffect(() => {
@@ -158,6 +161,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
     !crossFieldWarning &&
     reason.trim().length >= MIN_REASON_CHARS &&
     (!needsTotp || /^\d{6}$/.test(totp.trim())) &&
+    !(needsTotp && staleBuild) &&
     !saving;
 
   const handleSave = async () => {
@@ -499,6 +503,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
             <Button
               onClick={() => void handleSave()}
               disabled={!canSave}
+              title={needsTotp && staleBuild ? STALE_BUILD_TITLE : undefined}
               className={cn(
                 "font-bold uppercase tracking-wider text-xs px-4 py-2 transition-all cursor-pointer",
                 needsTotp
