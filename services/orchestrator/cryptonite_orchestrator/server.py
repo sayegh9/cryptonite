@@ -135,6 +135,9 @@ STOP_RATCHET_SETTINGS_TTL_S = 30.0  # the trail settings are re-read this often
 STOP_RATCHET_TICK_RETRY_S = 300.0  # an instrument with no known tick is looked up again after this
 STOP_RATCHET_TIMEOUT_S = 1.0  # one ratchet pass may take at most this long on the mark loop (it runs after the liquidations)
 # Best mark since entry per position (hash: instance_id, side, entry, best), so a restart keeps trailing from it
+STOP_RESTORE_STALE_ALERT_S = 120.0  # a restored stop held back by stale data this long raises a CRITICAL alert
+STOP_RESTORE_RETRY_REASONS = ("DATA_STALE_OR_DISCONTINUOUS", "NO_LIVE_QUOTE_IN_CACHE", "NO_MARK_PRICE")  # transient
+
 STOP_RATCHET_STATE_KEY = "perp:stop_ratchet:{account}:{instrument}"
 STOP_RATCHET_STATE_TTL_S = 14 * 24 * 3600
 # Written by the mandate session code (feat/auto-trade-phase-a): AI_MANDATE_<hex> of mandates whose daily profit
@@ -265,7 +268,8 @@ def fee_rate_for(dispatcher, instrument_id: str) -> Decimal:
     return getattr(dispatcher, "taker_fee", None) or DEFAULT_FEE_RATE
 
 
-async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Decimal, instance_id: str) -> bool:
+async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Decimal, instance_id: str,
+                              refusal: dict | None = None) -> bool:
     """Protect the filled perp position with a resting reduce-only stop (it replaces the owner's earlier one).
 
     Never loosens a stop that already rests: when the owner already has a stop on the instrument (the position grew,
@@ -276,7 +280,7 @@ async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Deci
 
     A stop the dispatcher refuses (the mark already went through it, say) leaves the position without a resting
     stop: that is logged CRITICAL; the exit monitor's structural stop and the liquidation-proximity close stay as
-    the backup."""
+    the backup. ``refusal``, when given, receives the dispatcher's reason under ``"reason"``."""
     d = engine.dispatcher
     pos = d.perp_positions.get(instrument_id)
     if pos is not None and pos.signed_qty != 0:
@@ -299,6 +303,8 @@ async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Deci
     if not ok:
         logger.critical("Resting stop for %s (%s) at %s refused: %s; the position has no resting stop",
                         instrument_id, instance_id, stop_price, reason)
+        if refusal is not None:
+            refusal["reason"] = reason
         return False
     info = d.open_orders[client_oid]  # no await since the placement
     await record_resting_stop(conn, engine, client_oid, instrument_id, stop_price)
@@ -377,28 +383,60 @@ async def load_stop_restores(pool, engine) -> int:
 
 
 async def restore_pending_stops(pool, engine) -> int:
-    """Place the stops ``load_stop_restores`` found once their mark is known. A stop the mark has already gone
-    through cannot rest any more: the position is closed at once (CLOSE_POSITION, risk reducing), with a CRITICAL
-    log, never left without a stop. Returns the number of stops placed."""
+    """Place the stops ``load_stop_restores`` found once their mark is known. Returns the number of stops placed.
+
+    Right after a restart the dispatcher's freshness check can still fail, so a stop is placed only while the
+    ingress is fresh; otherwise it stays pending and is retried on the next pass (CRITICAL log and alert, once, when
+    that lasts over ``STOP_RESTORE_STALE_ALERT_S``; the exit monitor's own stops remain the backup). Only a refusal
+    that says the mark already went through the stop (``STOP_WOULD_TRIGGER_IMMEDIATELY``) closes the position
+    (CLOSE_POSITION, risk reducing), with a CRITICAL log, never left without a stop. Any other refusal is logged
+    CRITICAL and the stop dropped without a close (it cannot succeed); a transient one (no quote yet) is retried."""
     d = engine.dispatcher
     pending = getattr(engine, "pending_stop_restores", None) or {}
+    deferred = getattr(engine, "stop_restore_deferred", None)
+    if deferred is None:
+        deferred = engine.stop_restore_deferred = {}  # cid -> (first deferred at, alerted)
     placed = 0
-    for cid, (inst, stop, owner, new_row) in list(pending.items()):
+    for cid, entry in list(pending.items()):
+        inst, stop, owner, new_row = entry
         if d.mark_prices.get(inst) is None:
             continue  # no mark yet: next pass
         pending.pop(cid)
         pos = d.perp_positions.get(inst)
         if pos is None or pos.signed_qty == 0:
+            deferred.pop(cid, None)
             continue
         async with pool.acquire() as conn:
-            if new_row:
-                ok = await attach_resting_stop(conn, engine, inst, stop, owner)
-                reason = "refused" if not ok else "APPROVED"
+            refusal: dict = {}
+            if not d.ingress_health.is_fresh(inst, d.node_cache):  # no await until the placement below
+                ok, reason = False, "DATA_STALE_OR_DISCONTINUOUS"
+            elif new_row:
+                ok = await attach_resting_stop(conn, engine, inst, stop, owner, refusal)
+                reason = "APPROVED" if ok else refusal.get("reason", "refused")
             else:
                 ok, reason = d.place_resting_stop(cid, inst, stop, owner)
+            if not ok and reason.startswith(STOP_RESTORE_RETRY_REASONS):
+                pending[cid] = entry
+                since, alerted = deferred.get(cid, (time.monotonic(), False))
+                if not alerted and time.monotonic() - since > STOP_RESTORE_STALE_ALERT_S:
+                    alerted = True
+                    message = (f"Resting stop for {inst} ({owner}) at {stop} not restored for over "
+                               f"{STOP_RESTORE_STALE_ALERT_S:.0f}s ({reason})")
+                    logger.critical("%s: retrying, the position is NOT closed; the exit monitor's own stops "
+                                    "(REST fallback) remain the backup", message)
+                    await alert(conn, None, "STOP_RESTORE_STALE", message,
+                                {"instrument_id": inst, "instance_id": owner, "stop_price": str(stop)},
+                                dedupe_key=f"restore-stop-stale:{cid}")
+                deferred[cid] = (since, alerted)
+                continue
+            deferred.pop(cid, None)
             if ok:
                 placed += 1
                 logger.info("Restored resting stop for %s (%s) at %s", inst, owner, stop)
+                continue
+            if not reason.startswith("STOP_WOULD_TRIGGER_IMMEDIATELY"):
+                logger.critical("Resting stop for %s (%s) at %s could not be restored (%s): dropped, the position is "
+                                "NOT closed; the exit monitor's own stops remain", inst, owner, stop, reason)
                 continue
             logger.critical("Resting stop for %s (%s) at %s could not be restored (%s): closing the position",
                             inst, owner, stop, reason)
