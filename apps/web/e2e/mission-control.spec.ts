@@ -491,4 +491,129 @@ test.describe("Mission Control", () => {
     await expect(table).toContainText("60–80%");
     expect(reactErrors).toEqual([]);
   });
+
+  // --- ADR 0010: entry filters and the daily session ---------------------------------------------------------------
+
+  function session(over: Record<string, unknown> = {}) {
+    return {
+      session_date: "2026-10-21",
+      resets_at: "2026-10-22T00:00:00+00:00",
+      verdict: "ACTIVE",
+      start_equity: "10000",
+      pnl: "120",
+      peak_pnl: "150",
+      loss_latched_at: null,
+      target_hit_at: null,
+      lock_fired_at: null,
+      updated_at: "2026-10-21T10:00:00+00:00",
+      daily_loss_limit_pct: "3",
+      daily_profit_target_pct: "2",
+      profit_lock_pct: "50",
+      loss_limit_usd: "300",
+      target_usd: "200",
+      lock_usd: "100",
+      ...over,
+    };
+  }
+
+  test("mandate card: session meter with the verdict, and a banner when entries are refused", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const active = mandate({ daily_loss_limit_pct: "3", daily_profit_target_pct: "2", profit_lock_pct: "50", session: session() });
+    const latched = mandate({
+      id: M2,
+      name: "Perp-BTC",
+      daily_loss_limit_pct: "3",
+      session: session({ verdict: "LOSS_LATCHED", pnl: "-310", loss_latched_at: "2026-10-21T09:00:00+00:00", target_usd: null, lock_usd: null, daily_profit_target_pct: null }),
+    });
+    const plain = mandate({ id: "33333333-3333-4333-8333-333333333333", name: "No-limits", session: session({ loss_limit_usd: null, target_usd: null, lock_usd: null }) });
+    await mockBackend(page, { mandates: [active, latched, plain] });
+    await openMissionControl(page);
+
+    const first = page.getByRole("article", { name: "Mandate Alt-momentum" });
+    const meter = first.getByRole("meter", { name: "Session P&L — Alt-momentum" });
+    await expect(meter).toHaveAttribute("aria-valuetext", "+$120 today · loss limit −$300 · target +$200 · lock +$100");
+    await expect(meter).toHaveAttribute("aria-valuemin", "-300");
+    await expect(meter).toHaveAttribute("aria-valuemax", "200");
+    await expect(first.getByTestId("mandate-session-verdict")).toHaveText("Session active");
+    await expect(first.getByTestId("mandate-session")).toContainText("resets 00:00 UTC");
+
+    const second = page.getByRole("article", { name: "Mandate Perp-BTC" });
+    await expect(second.getByTestId("mandate-session-verdict")).toHaveText("Daily loss limit · flattened");
+    await expect(second.getByRole("meter", { name: "Session P&L — Perp-BTC" })).toHaveAttribute("aria-valuenow", "-300");
+    // a mandate with no daily limit shows no meter
+    await expect(page.getByRole("article", { name: "Mandate No-limits" }).getByTestId("mandate-session")).toHaveCount(0);
+
+    const banners = page.getByTestId("mission-session-banner");
+    await expect(banners).toHaveCount(1);
+    await expect(banners).toContainText("DAILY LOSS LIMIT · Perp-BTC: daily loss limit reached");
+    await expect(banners).toContainText("new entries resume 00:00 UTC");
+    expect(reactErrors).toEqual([]);
+  });
+
+  test("a target-met session says positions are kept", async ({ page }) => {
+    await mockBackend(page, {
+      mandates: [mandate({ daily_profit_target_pct: "2", session: session({ verdict: "TARGET_MET", pnl: "210", target_hit_at: "2026-10-21T11:00:00+00:00" }) })],
+    });
+    await openMissionControl(page);
+    await expect(page.getByTestId("mandate-session-verdict")).toHaveText("Target met · no new entries");
+    await expect(page.getByTestId("mission-session-banner")).toContainText("DAILY TARGET MET · Alt-momentum: daily profit target reached: positions are kept");
+  });
+
+  test("mandate editor: entry filters and session limits, loosening needs TOTP", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const current = mandate({ min_conviction: "0.7", min_rr: "2", daily_loss_limit_pct: "3", daily_profit_target_pct: null, profit_lock_pct: "50", session: session() });
+    await mockBackend(page, { mandates: [current] });
+    const edits: any[] = [];
+    await page.route(`**/api/v1/ai/mandates/${M1}`, (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      edits.push(route.request().postDataJSON());
+      return route.fulfill({ json: current });
+    });
+    await openMissionControl(page);
+    await page.getByRole("tab", { name: "Mandate editor" }).click();
+    const editor = page.getByRole("region", { name: "Mandate editor" });
+    await editor.getByLabel("Mandate", { exact: true }).selectOption(M1);
+    const limits = editor.getByTestId("mandate-session-limits");
+    await expect(limits.getByLabel("Min conviction")).toHaveValue("0.7");
+    await expect(limits.getByLabel("Min R:R")).toHaveValue("2");
+    await expect(limits.getByLabel("Daily loss limit")).toHaveValue("3");
+    await expect(limits.getByLabel("Daily profit target")).toHaveValue("");
+    await expect(limits.getByLabel("Profit lock")).toHaveValue("50");
+    await expect(limits).toContainText("measured from the equity at 00:00 UTC");
+
+    // Tightening (and setting a new target) needs no TOTP
+    await limits.getByLabel("Min conviction").fill("0.8");
+    await limits.getByLabel("Min R:R").fill("2.5");
+    await limits.getByLabel("Daily loss limit").fill("2");
+    await limits.getByLabel("Daily profit target").fill("4");
+    await limits.getByLabel("Profit lock").fill("60");
+    await expect(editor.getByTestId("mandate-totp")).toHaveCount(0);
+    await editor.getByRole("button", { name: "Save mandate" }).click();
+    await expect.poll(() => edits.length).toBe(1);
+    expect(edits[0]).toMatchObject({ min_conviction: "0.8", min_rr: "2.5", daily_loss_limit_pct: "2", daily_profit_target_pct: "4", profit_lock_pct: "60" });
+    expect(edits[0].totp_code).toBeUndefined();
+    expect(edits[0].clear_limits).toBeUndefined();
+
+    // Loosening: each one names itself in the TOTP box
+    await editor.getByLabel("Mandate", { exact: true }).selectOption("");
+    await editor.getByLabel("Mandate", { exact: true }).selectOption(M1);
+    await limits.getByLabel("Min conviction").fill("0.6");
+    await expect(editor.getByTestId("mandate-totp")).toContainText("a lower minimum conviction");
+    await limits.getByLabel("Min conviction").fill("0.7");
+    await limits.getByLabel("Profit lock").fill("40");
+    await expect(editor.getByTestId("mandate-totp")).toContainText("a lower profit lock");
+    await limits.getByLabel("Profit lock").fill("50");
+    await expect(editor.getByTestId("mandate-totp")).toHaveCount(0);
+    // Emptying a set limit switches it off: risk adding, sent as clear_limits with the code
+    await limits.getByLabel("Min R:R").fill("");
+    await limits.getByLabel("Daily loss limit").fill("");
+    await expect(editor.getByTestId("mandate-totp")).toContainText("a lower minimum R:R, a looser daily loss limit");
+    await expect(editor.getByRole("button", { name: "Save mandate" })).toBeDisabled();
+    await editor.getByLabel("TOTP code").fill("246810");
+    await editor.getByRole("button", { name: "Save mandate" }).click();
+    await expect.poll(() => edits.length).toBe(2);
+    expect(edits[1]).toMatchObject({ clear_limits: ["min_rr", "daily_loss_limit_pct"], totp_code: "246810", min_conviction: "0.7" });
+    expect(edits[1].min_rr).toBeUndefined();
+    expect(reactErrors).toEqual([]);
+  });
 });

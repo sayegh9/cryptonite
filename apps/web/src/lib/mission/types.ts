@@ -61,6 +61,37 @@ export interface Mandate {
   marks_age_s?: number | null;
   pending_approvals: number;
   pending_proposal: { id: number; to_level: number; created_at: string } | null;
+  /** ADR 0010 entry filters (refuse only) and daily session limits; null is off */
+  min_conviction?: string | null;
+  min_rr?: string | null;
+  daily_loss_limit_pct?: string | null;
+  daily_profit_target_pct?: string | null;
+  profit_lock_pct?: string;
+  session?: MandateSession;
+}
+
+/** ADR 0010: today's (UTC) daily session. The verdict is derived from the P&L and the latch times. */
+export type SessionVerdict = "ACTIVE" | "TARGET_MET" | "LOCK_FIRED" | "LOSS_LATCHED";
+
+export interface MandateSession {
+  session_date: string;
+  /** The next 00:00 UTC, when the latches clear */
+  resets_at: string;
+  verdict: SessionVerdict;
+  /** null before the orchestrator's first tick of the day */
+  start_equity: string | null;
+  pnl: string;
+  peak_pnl: string;
+  loss_latched_at: string | null;
+  target_hit_at: string | null;
+  lock_fired_at: string | null;
+  updated_at: string | null;
+  daily_loss_limit_pct: string | null;
+  daily_profit_target_pct: string | null;
+  profit_lock_pct: string;
+  loss_limit_usd: string | null;
+  target_usd: string | null;
+  lock_usd: string | null;
 }
 
 export interface Approval {

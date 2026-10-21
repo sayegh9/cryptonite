@@ -12,7 +12,11 @@ from decimal import Decimal
 from typing import Literal
 
 import httpx
-from cryptonite_api.mandate_choice import choose_mandate_remedy, instrument_conflict
+from cryptonite_api.mandate_choice import (
+    choose_mandate_remedy,
+    entry_filter_detail,
+    instrument_conflict,
+)
 from cryptonite_api.routes.auth import (
     OPERATOR_WRITE,
     require_auth,
@@ -341,6 +345,14 @@ async def _plan_debate(request: Request, run, decision, mandate_id: uuid.UUID | 
         conflict = await instrument_conflict(conn, mandate, instrument, Decimal("0"), "debate")
     if conflict is not None:
         raise HTTPException(status_code=409, detail=conflict)
+    # ADR 0010: the mandate's daily session and its conviction filter refuse the entry as the debate worker would
+    async with pool.acquire() as conn:
+        refused = await entry_filter_detail(conn, mandate, "debate", conviction=decision["conviction_score"])
+    if refused is not None:
+        raise HTTPException(status_code=409, detail=refused)
+    if mandate.min_rr is not None:  # a debate carries no stop or target: the R:R filter cannot measure it
+        logger.info("Debate approval on %s: R:R filter of mandate %s skipped: min_rr skipped: no stop/target",
+                    instrument, mandate.name)
     marks = await read_marks(_get_redis(request))
     async with pool.acquire() as conn:
         room = await entry_room_pct(conn, mandate, instrument, marks)

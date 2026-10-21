@@ -6,16 +6,19 @@ touches Binance with keys: it is paper only. Stage 6 (the futures testnet) is a 
 
 ## 1. Before the first trade
 
-1. Deploy check: `alembic current` is `048`; Settings shows the leverage guardrails (10x ceiling, perps at L1 only,
+1. Deploy check: `alembic current` is `048` (`049` once the auto-trade Phase A release is deployed); Settings shows the leverage guardrails (10x ceiling, perps at L1 only,
    1–2% risk per trade, grade ceilings A 10 / B 5 / C 2, slippage allowance 0.3%).
 2. Optional, for perps beyond BTC and ETH: a **read-only** Binance USD-M key for `derivatives_feed`
    (`BINANCE_FUTURES_READONLY_API_KEY`, `BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH`, the Ed25519 PEM mounted
    read-only). Check: `redis-cli KEYS 'perp:brackets:*'` lists the symbols, and new entries on other symbols stop
    being refused with `NO_LEVERAGE_BRACKETS`.
-3. Create the Stage 5 mandate in Mission Control (TOTP), separate from the spot mandates so the gate reads only it:
-   - name `Perps BTC-ETH`, instruments `BTCUSDT-PERP`, `ETHUSDT-PERP`, budget $10,000, position limit 25%,
-     hard stop 20%, level L1;
-   - `allow_perps` on, `max_leverage` **5** for the first two weeks, `max_risk_per_trade_pct` 1.
+3. The Stage 5 mandate is the existing **`Brain BTCUSDT-PERP.BINANCE`** (operator decision S1, 2026-10-21), separate
+   from the spot mandates so the gate reads only it. Check in Mission Control that it is L1 with `allow_perps` on,
+   `max_leverage` **5** for the first two weeks and `max_risk_per_trade_pct` 1.
+   - With the auto-trade Phase A release (ADR 0010, migration 049) set on it, in the Mandate editor: **daily loss
+     limit 3%** (3 × the 1% risk per trade; migration 049 sets this default on a perps mandate that has none) and
+     **min R:R 2.0**. Both tighten the mandate, so neither needs TOTP. A daily profit target is optional; leave it off
+     unless you want the mandate to stop for the day after a good run.
 4. Keep the exit monitor's Mission Control tile in view: blind time on the mark must stay near zero.
 
 ## 2. Running it
@@ -33,7 +36,7 @@ touches Binance with keys: it is paper only. Stage 6 (the futures testnet) is a 
 
 ```bash
 docker compose -f infra/docker-compose.yml run --rm --no-deps test \
-  uv run python scripts/perp_gate_status.py --mandate "Perps BTC-ETH"
+  uv run python scripts/perp_gate_status.py --mandate "Brain BTCUSDT-PERP.BINANCE"
 ```
 
 Required (all must pass): at least 30 closed AI perp trades over at least 30 days, 0 liquidations, 0 stop failures

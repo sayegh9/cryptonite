@@ -6,11 +6,17 @@ needs one named. ``choose_mandate_remedy`` lists the candidates with what the en
 orchestrator's mandate gate would, so a choice that cannot trade is refused before anything is queued.
 """
 
+import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from cryptonite_execution.mandate_store import MANDATE_COLUMNS, entry_room_pct, held_values
+from cryptonite_execution.mandate_store import (
+    MANDATE_COLUMNS,
+    entry_room_pct,
+    held_values,
+    session_verdict_for,
+)
 from cryptonite_execution.mandates import MandateOrder, check_mandate
 from cryptonite_orchestrator.mandate_gate import mandate_exposure
 from cryptonite_schemas.mandate import (
@@ -20,6 +26,7 @@ from cryptonite_schemas.mandate import (
     canonical_instrument,
     mandate_id_from_instance,
 )
+from cryptonite_schemas.session import SESSION_REFUSALS, SessionVerdict, entry_filter_refusal
 
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 
@@ -50,6 +57,24 @@ async def instrument_conflict(conn, mandate: Mandate, instrument_id: str, quanti
             f"it, so nothing was queued; reject this {what}")
 
 
+async def entry_filter_detail(conn, mandate: Mandate, what: str, *, conviction: Decimal | float | None = None,
+                              entry: Decimal | None = None, stop_loss: Decimal | None = None,
+                              take_profit: Decimal | None = None, side: str = "BUY",
+                              require_inputs: bool = False) -> str | None:
+    """The refusal detail when the mandate's entry filters or its daily session refuse a new entry (ADR 0010), else
+    None. ``what`` names the thing to reject ("card", "debate"). ``require_inputs``: a filter the mandate sets is not
+    skipped for a missing input (a Brain card). The orchestrator's gate refuses the session cases again at execution;
+    read only."""
+    verdict = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
+    refusal = entry_filter_refusal(mandate, verdict, conviction=conviction, entry=entry, stop_loss=stop_loss,
+                                   take_profit=take_profit, side=side,
+                                   require_inputs=require_inputs)
+    if refusal is None:
+        return None
+    code, text = refusal
+    return f"{code}: {text} (mandate {mandate.name}); nothing was queued; reject this {what}"
+
+
 async def choose_mandate_remedy(pool, instrument: str, requested: Decimal, marks) -> dict[str, Any] | None:
     """AMBIGUOUS_MANDATE: several ACTIVE mandates allow the instrument, so approve needs one named. Each candidate says
     what approve would size the entry to in it (``requested``, % of its budget, cut to its room). When one of them
@@ -77,11 +102,14 @@ async def choose_mandate_remedy(pool, instrument: str, requested: Decimal, marks
         for m in mandates:
             inst, _ = await held_values(conn, m, instrument, marks)
             room = await entry_room_pct(conn, m, instrument, marks)
-            candidates.append((m, inst > 0, room))
-    holder = next((m for m, holds, _ in candidates if holds), None)
+            verdict = await session_verdict_for(conn, m, datetime.datetime.now(datetime.UTC))
+            candidates.append((m, inst > 0, room, verdict))
+    holder = next((m for m, holds, _, _ in candidates if holds), None)
     out = []
-    for m, holds, room in candidates:
-        if holds:
+    for m, holds, room, verdict in candidates:
+        if verdict is not SessionVerdict.ACTIVE:  # ADR 0010: a latched day refuses the entry, so it is not offered
+            blocked = f"{SESSION_REFUSALS[verdict]} (mandate {m.name})"
+        elif holds:
             blocked = None
         elif holder is not None:
             blocked = f"{holder.name} holds {instrument}, so only it can add to it"

@@ -83,7 +83,7 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
         </div>
       </div>
 
-      <MissionBanners status={status} />
+      <MissionBanners status={status} mandates={mandates} />
       {error && (
         <p role="alert" className="mt-2 font-mono text-2xs text-zinc-400">
           {error}

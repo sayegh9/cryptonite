@@ -26,6 +26,7 @@ from cryptonite_schemas.mandate import (
     canonical_instrument,
     is_perp_instrument,
 )
+from cryptonite_schemas.session import SessionVerdict
 
 # Market buys are valued like the dispatcher reserves them: ask + 2% collar + 0.5% slippage
 MARKET_BUFFER = Decimal("0.025")
@@ -106,11 +107,14 @@ def check_mandate(
     exposure: MandateExposure,
     *,
     approval_ok: bool,
+    session: SessionVerdict = SessionVerdict.ACTIVE,
 ) -> MandateReject | None:
     """None when the order is inside the mandate, else the reject code.
 
     ``approval_ok``: the command carries a valid operator approval for this ADD_RISK action (or, at L2,
     a veto window that ran out with policy PROCEED). L3 needs none.
+    ``session``: today's daily-session verdict of the mandate (ADR 0010). Anything but ACTIVE refuses ADD_RISK,
+    approved or not; REDUCE_RISK is never refused by it.
     """
     if mandate is None:
         return MandateReject.REQUIRED
@@ -130,6 +134,10 @@ def check_mandate(
 
     if mandate.status is not MandateStatus.ACTIVE:
         return MandateReject.HALTED
+    if session is SessionVerdict.LOSS_LATCHED:
+        return MandateReject.DAILY_LOSS_LATCHED
+    if session in (SessionVerdict.TARGET_MET, SessionVerdict.LOCK_FIRED):
+        return MandateReject.DAILY_TARGET_MET
     if not mandate.allows_instrument(order.instrument_id):
         return MandateReject.INSTRUMENT_NOT_ALLOWED
     if order.is_perp:
