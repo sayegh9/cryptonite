@@ -741,3 +741,15 @@ async def test_a_perp_entry_is_refused_when_another_owner_holds_the_perpetual(h,
     assert status == "NO_TRADE" and mandate is not None
     assert "INSTRUMENT_CONFLICT: MANDATE_INSTRUMENT_CONFLICT: MANUAL_TRADE holds BTCUSDT-PERP.BINANCE" in caplog.text
     assert await approval_of(h, run_id) is None
+
+
+@pytest.fixture(autouse=True)
+def _autotrade_switch_on(monkeypatch):
+    """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
+    Ask me. These tests exercise the switch-on behaviour of those levels."""
+    from cryptonite_execution import profile_lifecycle
+
+    async def on(conn):
+        return True
+
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)

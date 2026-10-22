@@ -109,16 +109,20 @@ def check_mandate(
     approval_ok: bool,
     session: SessionVerdict = SessionVerdict.ACTIVE,
     coin_owner: uuid.UUID | None = None,
+    autotrade_on: bool = True,
 ) -> MandateReject | None:
     """None when the order is inside the mandate, else the reject code.
 
     ``approval_ok``: the command carries a valid operator approval for this ADD_RISK action (or, at L2,
-    a veto window that ran out with policy PROCEED). L3 needs none.
+    a veto window that ran out with policy PROCEED, only while the master switch is on). L3 needs none.
     ``session``: today's daily-session verdict of the mandate (ADR 0010). Anything but ACTIVE refuses ADD_RISK,
     approved or not; REDUCE_RISK is never refused by it.
     ``coin_owner``: the mandate that holds the coin lock on this order's base asset (ADR 0011 D6), or None when
     nobody does. An entry on a coin another mandate holds is refused ``COIN_LOCKED`` (a refusal, never a breach); the
     caller loads the lock once per check. An exit is never refused by it.
+    ``autotrade_on``: the master switch (ADR 0011 D10). While it is off a level 2 or 3 mandate behaves as level 1: its
+    ADD_RISK needs an approval (``approval_ok``), refused ``MANDATE_APPROVAL_REQUIRED`` without one, never a breach.
+    Exits are unaffected.
     """
     if mandate is None:
         return MandateReject.REQUIRED
@@ -162,7 +166,7 @@ def check_mandate(
         return MandateReject.BUDGET_EXCEEDED
     if exposure.instrument_usd + notional > mandate.capital_budget_usd * mandate.max_position_pct / Decimal("100"):
         return MandateReject.POSITION_PCT_EXCEEDED
-    if mandate.autonomy_level < AutonomyLevel.L3 and not approval_ok:
+    if (mandate.autonomy_level < AutonomyLevel.L3 or not autotrade_on) and not approval_ok:
         return MandateReject.APPROVAL_REQUIRED
     return None
 

@@ -173,3 +173,15 @@ async def test_debate_inside_an_l3_mandate_queues_its_order(debate_main, pool):
         assert (payload["side"], payload["allocation_pct"]) == ("BUY", 5.0)  # the CRO's 6% capped at the mandate's 5%
     finally:
         await pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED' WHERE id = $1", mid)
+
+
+@pytest.fixture(autouse=True)
+def _autotrade_switch_on(monkeypatch):
+    """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
+    Ask me. These tests exercise the switch-on behaviour of those levels."""
+    from cryptonite_execution import profile_lifecycle
+
+    async def on(conn):
+        return True
+
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)

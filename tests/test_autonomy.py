@@ -211,6 +211,8 @@ async def test_gate_metrics_are_measured_from_the_database(h):
 
 async def test_the_system_proposes_and_only_the_operator_promotes_with_totp(h):
     m = await h.mandate(level=1)
+    await h.pool.execute("INSERT INTO system_settings (key, value) VALUES ('autotrade.enabled', '1'::jsonb) "
+                         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")  # ADR 0011 D10: raising the mode needs the switch
     await earn_l2_record(h, m)
     async with h.client() as c:
         view = (await c.post(f"/api/v1/ai/mandates/{m.id}/autonomy/evaluate", headers=h.headers)).json()
@@ -234,6 +236,8 @@ async def test_the_system_proposes_and_only_the_operator_promotes_with_totp(h):
 
 async def test_a_failing_gate_no_longer_blocks_the_confirmation(h):
     m = await h.mandate(level=1)
+    await h.pool.execute("INSERT INTO system_settings (key, value) VALUES ('autotrade.enabled', '1'::jsonb) "
+                         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")  # ADR 0011 D10: raising the mode needs the switch
     await earn_l2_record(h, m)
     async with h.pool.acquire() as conn:
         pid = await propose_if_ready(conn, m)
