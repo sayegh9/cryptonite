@@ -578,3 +578,28 @@ async def test_the_coin_lock_helper_serves_the_debate_entry_too(h):
         detail = await pl.coin_lock_conflict(conn, other, BTC_PERP, "debate")
         assert detail.startswith("COIN_LOCKED:") and "debate-holder" in detail and detail.endswith("reject this debate")
         assert await pl.coin_lock_conflict(conn, holder, BTC, "debate") is None  # the holder itself is fine
+
+
+# ------------------------------------------------------------------------- the two settings
+
+
+def test_the_autotrade_settings_are_registered_and_raising_them_needs_totp():
+    from cryptonite_api.settings_registry import REGISTRY, validate_value, write_needs_totp
+
+    by_key = {x.key: x for x in REGISTRY}
+    enabled, cap = by_key["autotrade.enabled"], by_key["autotrade.max_allocated_pct"]
+    assert (enabled.default, enabled.minimum, enabled.maximum) == (0, 0, 1)
+    assert [c[1] for c in enabled.choices] == ["Off", "On"]
+    assert (cap.default, cap.minimum, cap.maximum) == (90, 10, 100)
+    assert write_needs_totp(enabled, D(0), D(1)) is True and write_needs_totp(enabled, D(1), D(0)) is False
+    assert write_needs_totp(cap, D(90), D(95)) is True and write_needs_totp(cap, D(90), D(50)) is False
+    for bad in (D(101), D(9)):
+        with pytest.raises(ValueError):
+            validate_value(cap, bad)
+    assert by_key["guard.perps_level"].default == "Any execution mode (ADR 0011)" and by_key["guard.perps_level"].adr == "0011"
+
+
+def test_stored_settings_fall_back_to_the_safe_side():
+    assert pl.parse_settings(None) == pl.AutotradeSettings(False, D(90))
+    assert pl.parse_settings({"autotrade.enabled": "1", "autotrade.max_allocated_pct": '"50"'}) == pl.AutotradeSettings(True, D(50))
+    assert pl.parse_settings({"autotrade.enabled": "7", "autotrade.max_allocated_pct": "junk"}) == pl.AutotradeSettings(False, D(90))
