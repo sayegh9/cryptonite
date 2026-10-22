@@ -641,13 +641,13 @@ def test_050_widens_the_event_kinds_and_refuses_a_downgrade_over_them():
     with migrated_database("cryptonite_ci_p04_kinds") as url:
         mid = asyncio.run(run(url, """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct)
                                       VALUES ('k', 100, ARRAY['BTCUSDT.BINANCE'], 10) RETURNING id"""))
-        for kind in ("STARTED", "STOPPING", "STOPPED", "MODE_SET"):
+        for kind in ("STARTED", "STOPPING", "STOPPED", "MODE_SET", "ARCHIVED"):
             asyncio.run(run(url, "INSERT INTO ai_autonomy_events (mandate_id, kind) VALUES ($1, $2) RETURNING 1", mid, kind))
         with pytest.raises(asyncpg.CheckViolationError):
             asyncio.run(run(url, "INSERT INTO ai_autonomy_events (mandate_id, kind) VALUES ($1, 'NOPE') RETURNING 1", mid))
         cmd = [sys.executable, "-m", "alembic", "-c", "infra/migrations/alembic.ini", "downgrade", "049"]
         env = {**os.environ, "DATABASE_URL": url}
         refused = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True)
-        assert refused.returncode != 0 and "STARTED/STOPPING/STOPPED/MODE_SET" in refused.stderr + refused.stdout
-        asyncio.run(run(url, "DELETE FROM ai_autonomy_events WHERE kind IN ('STARTED','STOPPING','STOPPED','MODE_SET') RETURNING 1"))
+        assert refused.returncode != 0 and "STARTED/STOPPING/STOPPED/MODE_SET/ARCHIVED" in refused.stderr + refused.stdout
+        asyncio.run(run(url, "DELETE FROM ai_autonomy_events WHERE kind IN ('STARTED','STOPPING','STOPPED','MODE_SET','ARCHIVED') RETURNING 1"))
         assert subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True).returncode == 0

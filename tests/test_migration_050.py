@@ -125,7 +125,9 @@ def test_overlap_raises_and_rolls_back(db049):
     assert "RuntimeError: migration 050: base assets owned by more than one mandate" in text
     assert "BTC: alpha (ACTIVE), beta (PAUSED)" in text
     assert "ETH" not in text.split("BTC:")[1].split("Fix:")[0]
-    assert "pause, stop or edit so each coin has one owner (reports/autotrade-profiles-plan.md O1)" in text
+    assert "edit instruments or archive with `scripts/profile_overlap_resolve.py` (runbook O1)" in text
+    assert "PAUSED and HALTED mandates still hold their coins" in text
+    assert "pause, stop or edit" not in text
     # full rollback: still 049
     assert _val(url, "SELECT version_num FROM alembic_version") == "049"
     assert _val(url, "SELECT count(*) FROM information_schema.columns "
@@ -185,6 +187,21 @@ def test_checks_reject_bad_rows(head, bad):
     cols = {"markets": ["SPOT"], "daily_loss_limit_pct": 3, **bad}
     with pytest.raises(asyncpg.CheckViolationError):
         _insert(head, **cols)
+
+
+def test_an_allow_perps_only_update_is_a_noop_not_a_check_failure(head):
+    """M2: markets is the truth. A pre-P0.4 writer (an old orchestrator's hard stop during the deploy window) that sets
+    only allow_perps=false on a perps mandate must succeed and leave allow_perps true."""
+    mid = _insert(head, markets=["PERP"], allow_perps=True, max_leverage=3, daily_loss_limit_pct=3)
+    _run(head, "UPDATE ai_mandates SET allow_perps = false, status = 'HALTED' WHERE id = $1", mid)
+    r = _run(head, "SELECT markets, allow_perps, status FROM ai_mandates WHERE id = $1", mid)[0]
+    assert list(r["markets"]) == ["PERP"] and r["allow_perps"] is True and r["status"] == "HALTED"
+    # a write that changes markets still moves allow_perps with it
+    _run(head, "UPDATE ai_mandates SET markets = ARRAY['SPOT'], allow_perps = false, max_leverage = 1 WHERE id = $1", mid)
+    assert _run(head, "SELECT allow_perps FROM ai_mandates WHERE id = $1", mid)[0]["allow_perps"] is False
+    # a contradicting explicit write that changes markets still fails the CHECK
+    with pytest.raises(asyncpg.CheckViolationError):
+        _run(head, "UPDATE ai_mandates SET markets = ARRAY['PERP'], allow_perps = false WHERE id = $1", mid)
 
 
 def test_checks_accept_good_rows(head):
