@@ -1,0 +1,219 @@
+# Staging override (Auto-Trade Profiles plan P0.7, gate V). Never merged into the production project.
+#
+#   docker compose -p cryptonite-staging -f infra/docker-compose.yml -f infra/docker-compose.staging.yml ...
+#
+# Use scripts/staging_up.sh / staging_down.sh; see docs/runbooks/staging.md.
+#
+# Isolation contract (checked by `config` in the runbook):
+#   * every container is named stg_<service>; none shares a name with cryptonite_* or infra-*
+#   * host ports are +100 on a free port (web 3200, api 8100, postgres 5532, redis 6479, ...)
+#   * own Postgres volume (stg_postgres_data), own Redis (stg_redis_data), own networks (stg_*)
+#   * the live lake is bound READ-ONLY (:ro) from ${STAGING_LAKE_DIR}; nothing in staging writes there.
+#     Writable /app/data is a staging-only host dir (${STAGING_DATA_DIR}); ingest writes its own copy
+#     of the catalog/lake under ${STAGING_DATA_DIR}/ingest, never to the live lake
+#   * lake_maintenance, executor and research_worker never start (profile "never")
+#   * notifier only starts when STAGING_TELEGRAM_CHAT_ID and STAGING_TELEGRAM_BOT_TOKEN are both set;
+#     the production Telegram chat, bot token and ntfy topic are blanked for every service
+#   * memory limits sum to 12.0 GiB for the default service set
+#
+# Merge note: `!override` replaces the base list instead of appending to it (ports, profiles).
+
+x-staging-env: &staging-env
+  CRYPTONITE_ENV: staging
+  # Production alert destinations are blanked; the staging chat/bot come from the operator's shell.
+  TELEGRAM_ALLOWED_CHAT_IDS: ${STAGING_TELEGRAM_CHAT_ID:-}
+  TELEGRAM_BOT_TOKEN: ${STAGING_TELEGRAM_BOT_TOKEN:-}
+  NTFY_TOPIC: ""
+
+# Staging-only writable /app/data with the live lake laid over it read-only.
+x-data-mounts: &data-mounts
+  - ${STAGING_DATA_DIR:-${HOME}/cryptonite-staging-data}/data:/app/data:rw
+  - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/analytics_lake:/app/data/analytics_lake:ro
+  - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/nautilus_catalog:/app/data/nautilus_catalog:ro
+
+x-restart: &restart
+  restart: "on-failure:5"   # no auto-resurrect after a host reboot; restarts stay countable
+
+services:
+  postgres:
+    <<: *restart
+    container_name: stg_postgres
+    mem_limit: 1g
+    ports: !override
+      - "127.0.0.1:5532:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    <<: *restart
+    container_name: stg_redis
+    mem_limit: 256m
+    ports: !override
+      - "127.0.0.1:6479:6379"
+
+  ingest:
+    <<: *restart
+    container_name: stg_ingest
+    mem_limit: 512m
+    environment: *staging-env
+    volumes:
+      # ingest writes bars; give it a private staging copy, never the live lake
+      - ${STAGING_DATA_DIR:-${HOME}/cryptonite-staging-data}/ingest:/app/data:rw
+    ports: !override
+      - "127.0.0.1:8180:8080"
+
+  outbox:
+    <<: *restart
+    container_name: stg_outbox
+    mem_limit: 256m
+    environment: *staging-env
+    ports: !override
+      - "127.0.0.1:8181:8081"
+
+  scanner:
+    <<: *restart
+    container_name: stg_scanner
+    mem_limit: 2g
+    environment: *staging-env
+    volumes: *data-mounts
+    ports: !override
+      - "127.0.0.1:8182:8082"
+
+  derivatives_feed:
+    <<: *restart
+    container_name: stg_derivatives_feed
+    mem_limit: 256m
+    environment: *staging-env
+
+  api:
+    <<: *restart
+    container_name: stg_api
+    mem_limit: 1536m
+    environment: *staging-env
+    volumes: *data-mounts
+    ports: !override
+      - "127.0.0.1:8100:8000"
+
+  web:
+    <<: *restart
+    container_name: stg_web
+    mem_limit: 512m
+    ports: !override
+      - "127.0.0.1:3200:3000"
+
+  backtester:
+    <<: *restart
+    container_name: stg_backtester
+    mem_limit: 512m
+    environment: *staging-env
+    volumes:
+      - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/nautilus_catalog:/app/data/nautilus_catalog:ro
+      - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/analytics_lake:/app/data/analytics_lake:ro
+      - ${STAGING_DATA_DIR:-${HOME}/cryptonite-staging-data}/backtest_artifacts:/app/data/backtest_artifacts
+      - sandbox_jobs:/app/data/sandbox_jobs
+    ports: !override
+      - "127.0.0.1:8183:8083"
+
+  strategy_sandbox:
+    <<: *restart
+    container_name: stg_strategy_sandbox
+    mem_limit: 512m
+    volumes:
+      - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/nautilus_catalog:/app/data/nautilus_catalog:ro
+      - sandbox_jobs:/app/data/sandbox_jobs
+
+  orchestrator:
+    <<: *restart
+    container_name: stg_orchestrator
+    mem_limit: 512m
+    environment: *staging-env
+    volumes:
+      - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/analytics_lake:/app/data/analytics_lake:ro
+
+  # Disabled in staging: a real-venue executor must never run here.
+  executor:
+    container_name: stg_executor
+    profiles: !override ["never"]
+    ports: !override []
+
+  agent_worker:
+    <<: *restart
+    container_name: stg_agent_worker
+    mem_limit: 768m
+    environment: *staging-env
+    volumes: *data-mounts
+    ports: !override
+      - "127.0.0.1:8185:8085"
+
+  debate_worker:
+    <<: *restart
+    container_name: stg_debate_worker
+    mem_limit: 512m
+    deploy:
+      replicas: 1   # prod runs 3; one is enough for a soak and container_name needs a single replica
+    environment: *staging-env
+    volumes: *data-mounts
+
+  # Not started by staging_up.sh; kept off even if someone passes --profile research.
+  research_worker:
+    container_name: stg_research_worker
+    profiles: !override ["never"]
+
+  exit_monitor:
+    <<: *restart
+    container_name: stg_exit_monitor
+    mem_limit: 256m
+    environment: *staging-env
+    volumes: *data-mounts
+
+  # Only started when both STAGING_TELEGRAM_* variables are set (staging_up.sh decides).
+  notifier:
+    <<: *restart
+    container_name: stg_notifier
+    mem_limit: 256m
+    environment: *staging-env
+
+  learner:
+    <<: *restart
+    container_name: stg_learner
+    mem_limit: 1536m
+    environment: *staging-env
+    volumes:
+      - ${STAGING_DATA_DIR:-${HOME}/cryptonite-staging-data}/data:/app/data:ro
+      - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/analytics_lake:/app/data/analytics_lake:ro
+      - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/nautilus_catalog:/app/data/nautilus_catalog:ro
+
+  # Disabled: it rewrites the lake (compaction/quarantine), which staging must only read.
+  lake_maintenance:
+    container_name: stg_lake_maintenance
+    profiles: !override ["never"]
+
+  sentiment:
+    <<: *restart
+    container_name: stg_sentiment
+    mem_limit: 1g
+
+  test_volumes_init:
+    container_name: stg_test_volumes_init
+  test:
+    container_name: stg_test
+
+volumes:
+  postgres_data:
+    name: stg_postgres_data
+  redis_data:
+    name: stg_redis_data
+  sandbox_jobs:
+    name: stg_sandbox_jobs
+  test_uv_cache:
+    name: stg_test_uv_cache
+  test_venv:
+    name: stg_test_venv
+
+networks:
+  default:
+    name: stg_default
+  agents_net:
+    name: stg_agents_net
+  isolated_backtester_net:
+    name: stg_isolated_backtester_net
