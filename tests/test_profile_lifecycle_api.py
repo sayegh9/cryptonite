@@ -457,31 +457,31 @@ def test_exits_are_never_refused_by_the_status_or_the_lock_but_entries_are():
     held = MandateExposure(instrument_qty=D("0.01"), instrument_usd=D("500"), gross_usd=D("500"))
     for status in ("PAUSED", "STOPPING", "STOPPED", "HALTED"):
         m = mandate_model(status=status, autonomy_level=3, daily_loss_limit_pct=None)
-        assert check_mandate(m, buy, MandateExposure(), approval_ok=True) is MandateReject.HALTED
-        assert check_mandate(m, sell, held, approval_ok=False, coin_owner=owner) is None
+        assert check_mandate(m, buy, MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.HALTED
+        assert check_mandate(m, sell, held, approval_ok=False, coin_owner=owner, autotrade_on=True) is None
     live = mandate_model(autonomy_level=3)
-    assert check_mandate(live, buy, MandateExposure(), approval_ok=False) is None
+    assert check_mandate(live, buy, MandateExposure(), approval_ok=False, autotrade_on=True) is None
 
 
 def test_an_entry_on_a_coin_another_mandate_holds_is_coin_locked_not_a_breach():
     other, live = uuid.uuid4(), mandate_model(autonomy_level=3)
     buy = MandateOrder(BTC, "BUY", D("0.01"), D("50000"))
-    reject = check_mandate(live, buy, MandateExposure(), approval_ok=True, coin_owner=other)
+    reject = check_mandate(live, buy, MandateExposure(), approval_ok=True, coin_owner=other, autotrade_on=True)
     assert reject is MandateReject.COIN_LOCKED
     from cryptonite_schemas.mandate import BREACH_CODES
     assert reject not in BREACH_CODES
-    assert check_mandate(live, buy, MandateExposure(), approval_ok=True, coin_owner=live.id) is None
-    assert check_mandate(live, buy, MandateExposure(), approval_ok=True, coin_owner=None) is None
+    assert check_mandate(live, buy, MandateExposure(), approval_ok=True, coin_owner=live.id, autotrade_on=True) is None
+    assert check_mandate(live, buy, MandateExposure(), approval_ok=True, coin_owner=None, autotrade_on=True) is None
     sell = MandateOrder(BTC, "SELL", D("0.01"), D("50000"))
-    assert check_mandate(live, sell, MandateExposure(instrument_qty=D("0.01")), approval_ok=True, coin_owner=other) is None
+    assert check_mandate(live, sell, MandateExposure(instrument_qty=D("0.01")), approval_ok=True, coin_owner=other, autotrade_on=True) is None
 
 
 def test_a_perp_order_needs_perp_in_markets_not_a_level():
     perp = MandateOrder(BTC_PERP, "BUY", D("0.01"), D("50000"), leverage=2)
     allowed = mandate_model(instruments=[BTC_PERP], markets=["PERP"], autonomy_level=3)
     spot_only = mandate_model(instruments=[BTC_PERP], markets=["SPOT"], autonomy_level=1)
-    assert check_mandate(allowed, perp, MandateExposure(), approval_ok=True) is None
-    assert check_mandate(spot_only, perp, MandateExposure(), approval_ok=True) is MandateReject.PERPS_NOT_ALLOWED
+    assert check_mandate(allowed, perp, MandateExposure(), approval_ok=True, autotrade_on=True) is None
+    assert check_mandate(spot_only, perp, MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.PERPS_NOT_ALLOWED
 
 
 # ------------------------------------------------------------------------- the editor and the create route

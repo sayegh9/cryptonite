@@ -3,6 +3,7 @@
 Every test here failed before its fix. Real migrated Postgres, the real API app, as test_profile_lifecycle_api does.
 """
 
+import ast
 import asyncio
 import importlib.util
 import json
@@ -165,18 +166,37 @@ async def test_start_accepts_a_stopping_profile(h):
     assert (await start(h, m, totp=True)).status is MandateStatus.ACTIVE
 
 
-def test_no_api_path_reaches_active_except_through_start():
-    """The proof for C1: the only code that writes ACTIVE is profile_lifecycle.start (via apply_transition), and no
-    route calls ``_transition`` with RESUME any more."""
+def _non_test_sources():
     root = Path(__file__).resolve().parents[1]
-    ai = (root / "services/api/cryptonite_api/routes/ai.py").read_text()
-    assert "AutonomyTrigger.RESUME" not in ai
-    assert "AutonomyTrigger.PROMOTION_CONFIRMED" in ai  # the mode change keeps the status (ACTIVE/PAUSED only)
-    for path in (root / "services").rglob("*.py"):
-        text = path.read_text()
-        for line in text.splitlines():
-            if "UPDATE ai_mandates SET status" in line and "ACTIVE" in line.split("SET status", 1)[1][:30]:
-                pytest.fail(f"{path}: {line.strip()}")
+    for top in ("services", "packages", "scripts"):
+        for path in (root / top).rglob("*.py"):
+            if ".venv" not in path.parts and "tests" not in path.parts:
+                yield path.relative_to(root).as_posix(), ast.parse(path.read_text())
+
+
+def test_resume_trigger_is_only_used_by_the_autonomy_table_and_the_lifecycle():
+    """C1: nothing outside the state machine and ``profile_lifecycle`` may name ``AutonomyTrigger.RESUME``."""
+    allowed = {"packages/execution/cryptonite_execution/autonomy.py",
+               "packages/execution/cryptonite_execution/profile_lifecycle.py"}
+    users = {rel for rel, tree in _non_test_sources() for n in ast.walk(tree)
+             if isinstance(n, ast.Attribute) and n.attr == "RESUME"
+             and isinstance(n.value, ast.Name) and n.value.id == "AutonomyTrigger"}
+    assert users <= allowed, f"{users - allowed} use AutonomyTrigger.RESUME: route the resume through profile_lifecycle"
+
+
+def test_only_known_modules_call_apply_transition():
+    """C1: a new caller of ``apply_transition`` can reach ACTIVE behind the Start checks."""
+    allowed = {
+        "services/orchestrator/cryptonite_orchestrator/mandate_monitor.py",  # HALT / account backstop
+        "services/orchestrator/cryptonite_orchestrator/mandate_gate.py",  # breach record
+        "packages/execution/cryptonite_execution/profile_lifecycle.py",
+        "services/api/cryptonite_api/routes/ai.py",  # pause / demote / mode set
+        "scripts/cleanup_test_pollution.py",  # PAUSE of test mandates
+    }
+    callers = {rel for rel, tree in _non_test_sources() for n in ast.walk(tree)
+               if isinstance(n, ast.Call) and (getattr(n.func, "id", None) == "apply_transition"
+                                               or getattr(n.func, "attr", None) == "apply_transition")}
+    assert callers <= allowed, f"{callers - allowed} call apply_transition: route it through profile_lifecycle"
 
 
 # ------------------------------------------------------------------------- C2: the switch applies at runtime

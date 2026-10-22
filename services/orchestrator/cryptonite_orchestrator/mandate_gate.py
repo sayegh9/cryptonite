@@ -244,7 +244,7 @@ def perp_entry_reject(engine, mandate: Mandate, intent) -> str | None:
     )
 
 
-async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate, *, autotrade_on: bool = True) -> bool:
+async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate, *, autotrade_on: bool = False) -> bool:
     """ADD_RISK below L3 needs an operator approval bound to exactly this command: an ``ai_approvals``
     row for this mandate, ADD_RISK, APPROVED (or, at L2, a veto window that ran out with policy
     PROCEED), whose command is this one. While the master switch is off (``autotrade_on`` False) a veto window that ran
