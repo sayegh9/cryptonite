@@ -18,6 +18,11 @@ Create Date: 2026-10-22 00:00:00.000000
 The base-asset rule is local (no app imports in a migration); a test proves it equals
 ``cryptonite_schemas.profile.base_asset``.
 
+``ai_mandates_profile_defaults()`` (BEFORE INSERT OR UPDATE trigger) keeps writers that predate profiles working: a row
+without ``markets`` gets them derived from ``instruments`` (plus PERP when ``allow_perps``), and an ACTIVE row without
+a daily loss limit gets 3 x its risk per trade capped at its hard stop (ADR 0011 D9). A supplied ``markets`` is never
+touched; ``chk_ai_mandates_perps_markets`` still enforces that ``allow_perps`` agrees with it.
+
 The downgrade refuses while a mandate is STOPPING or STOPPED, trades SPOT_MARGIN, or has perps away from level 1; it
 restores 049's view, the 4-value status CHECK and 048's ``chk_ai_mandates_perps_level``. Backfilled daily loss limits stay.
 """
@@ -79,6 +84,31 @@ HEALTH_050 = HEALTH_049.replace(
     "s.lock_fired_at AS session_lock_fired_at,\n"
     "           m.environment, m.markets, m.direction, m.style, m.max_open_positions, m.dry_run, m.paused_reason\n",
 )
+
+TRIGGER = "trg_ai_mandates_profile_defaults"
+TRIGGER_FN = """
+CREATE OR REPLACE FUNCTION ai_mandates_profile_defaults() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF NEW.markets IS NULL THEN
+        NEW.markets := (
+            SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+                SELECT CASE WHEN split_part(upper(i), '.', 1) LIKE '%-PERP' THEN 'PERP'
+                            WHEN split_part(upper(i), '.', 1) LIKE '%-MARGIN' THEN 'SPOT_MARGIN'
+                            ELSE 'SPOT' END AS x
+                FROM unnest(NEW.instruments) AS i
+                UNION
+                SELECT 'PERP' WHERE NEW.allow_perps
+            ) t
+        );
+        NEW.allow_perps := 'PERP' = ANY(NEW.markets);
+    END IF;
+    IF NEW.status = 'ACTIVE' AND NEW.daily_loss_limit_pct IS NULL THEN
+        NEW.daily_loss_limit_pct := LEAST(3 * NEW.max_risk_per_trade_pct, NEW.max_drawdown_pct);
+    END IF;
+    RETURN NEW;
+END
+$fn$
+"""
 
 
 def base_asset(instrument_id: str) -> str:
@@ -260,6 +290,11 @@ def upgrade() -> None:
     END $$;
     """)
 
+    # Writers that predate profiles (API create, Brain card remedy, fixtures) omit markets and the daily loss limit
+    op.execute(TRIGGER_FN)
+    op.execute(f"""CREATE TRIGGER {TRIGGER} BEFORE INSERT OR UPDATE ON ai_mandates
+                  FOR EACH ROW EXECUTE FUNCTION ai_mandates_profile_defaults()""")
+
     # The Brain's view: 049's columns, then the profile columns
     op.execute(f"CREATE OR REPLACE VIEW {HEALTH_VIEW} WITH (security_barrier) AS {HEALTH_050}")
     op.execute(f"GRANT SELECT ON {HEALTH_VIEW} TO cryptonite_agent_ro")
@@ -283,6 +318,8 @@ def downgrade() -> None:
             "market, or perps away from level 1). Archive, edit or delete them first:\n" + rows
         )
 
+    op.execute(f"DROP TRIGGER IF EXISTS {TRIGGER} ON ai_mandates")
+    op.execute("DROP FUNCTION IF EXISTS ai_mandates_profile_defaults()")
     op.execute(f"DROP VIEW IF EXISTS {HEALTH_VIEW}")
     op.execute(f"CREATE VIEW {HEALTH_VIEW} WITH (security_barrier) AS {HEALTH_049}")
     op.execute(f"GRANT SELECT ON {HEALTH_VIEW} TO cryptonite_agent_ro")

@@ -147,6 +147,24 @@ def head():
         yield url
 
 
+def test_trigger_defaults_for_old_writers(head):
+    def row(**cols):
+        mid = _insert(head, **cols)
+        r = _run(head, "SELECT markets, allow_perps, daily_loss_limit_pct FROM ai_mandates WHERE id = $1", mid)[0]
+        return list(r["markets"]), r["allow_perps"], r["daily_loss_limit_pct"]
+
+    assert row()[0:2] == (["SPOT"], False)
+    assert row(instruments=["SOLUSDT-PERP.BINANCE"], allow_perps=True)[0:2] == (["PERP"], True)
+    assert row(instruments=["SOLUSDT.BINANCE", "ETHUSDT-PERP.BINANCE"])[0:2] == (["PERP", "SPOT"], True)
+    assert row(instruments=["SOLUSDT.BINANCE"], allow_perps=True)[0:2] == (["PERP", "SPOT"], True)
+    assert float(row(max_risk_per_trade_pct=2)[2]) == 6  # ACTIVE without a limit: 3 x risk
+    assert float(row(max_risk_per_trade_pct=2, max_drawdown_pct=5)[2]) == 5  # capped at the hard stop
+    assert row(status="PAUSED")[2] is None
+    assert row(markets=["SPOT", "SPOT_MARGIN"], daily_loss_limit_pct=2)[0] == ["SPOT", "SPOT_MARGIN"]
+    with pytest.raises(asyncpg.CheckViolationError):  # an explicit markets that contradicts allow_perps still fails
+        _insert(head, markets=["PERP"], allow_perps=False)
+
+
 @pytest.mark.parametrize("bad", [
     {"environment": "LIVE"}, {"markets": []}, {"markets": ["FUTURES"]}, {"direction": "FLAT"}, {"style": "SCALP"},
     {"max_open_positions": 0}, {"max_open_positions": 21}, {"max_debates_per_day": -1}, {"max_debates_per_day": 49},
@@ -160,7 +178,6 @@ def head():
     {"max_leverage": 2},                                      # SPOT only
     {"markets": ["PERP"], "allow_perps": False},              # allow_perps must follow markets
     {"markets": ["SPOT"], "allow_perps": True},
-    {"daily_loss_limit_pct": None},                           # ACTIVE needs one
 ])
 def test_checks_reject_bad_rows(head, bad):
     cols = {"markets": ["SPOT"], "daily_loss_limit_pct": 3, **bad}
