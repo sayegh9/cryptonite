@@ -38,7 +38,6 @@ import { DebateTranscriptViewer } from "@/components/debate/DebateTranscriptView
 import { ResearchLab } from "@/components/ResearchLab/ResearchLab";
 import { StrategyStudio } from "@/components/StrategyStudio";
 import { useBacktestStore } from "@/lib/stores/useBacktestStore";
-import { PortfolioConsole } from "@/components/PortfolioConsole";
 import { TradesConsole } from "@/components/TradesConsole";
 import { getStreamClient } from "@/lib/ws";
 import { toast } from "sonner";
@@ -306,12 +305,12 @@ function Workstation() {
           </span>
         </div>
 
-        <WorkspaceNav workspaceMode={workspaceMode} urlView={urlView} navigate={navigate} className="h-12 flex-1" />
+        <WorkspaceNav workspaceMode={workspaceMode} urlView={urlView} navigate={navigate} className="h-12 flex-1 md:min-w-64" />
 
         <ModeBanner
           poll
           wrapBelowMd
-          className="order-last w-full mb-2 md:order-none md:w-auto md:mb-0 md:ml-4 md:flex-none"
+          className="order-last w-full mb-2 md:order-none md:w-auto md:mb-0 md:ml-4 md:min-w-0 md:shrink"
           summaryClassName="md:max-w-40 lg:max-w-56 xl:max-w-xs 2xl:max-w-md"
         />
 
