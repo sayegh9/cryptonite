@@ -103,8 +103,8 @@ def mode_of_level(level: int) -> ExecutionMode:
     raise ValueError(f"unknown autonomy level {level!r}")
 
 
-def level_of_mode(mode: ExecutionMode) -> int:
-    return MODE_LEVEL[mode]
+def level_of_mode(mode: ExecutionMode | str) -> int:
+    return MODE_LEVEL[ExecutionMode(mode)]
 
 
 def run_state_of(status: str) -> RunState:
@@ -170,8 +170,13 @@ def lock_keys(instruments: Iterable[str]) -> frozenset[str]:
     return frozenset(base_asset(i) for i in instruments)
 
 
-def select_market(side: TradeSide, leverage: int, markets: Collection[Market]) -> Market | None:
-    """ADR 0011 D8: LONG at 1x prefers SPOT; everything else PERP, then SPOT_MARGIN."""
+def select_market(side: TradeSide | str, leverage: int, markets: Collection[Market | str]) -> Market | None:
+    """ADR 0011 D8: LONG at 1x prefers SPOT; everything else PERP, then SPOT_MARGIN.
+
+    Inputs are coerced to the enums: callers pass strings read from the DB or JSON, and an identity check on a plain
+    string would silently skip SPOT for a 1x long (unknown values raise ValueError)."""
+    side = TradeSide(side)
+    markets = {Market(m) for m in markets}
     if leverage < 1:
         raise ValueError(f"leverage must be at least 1, got {leverage}")
     order = [Market.PERP, Market.SPOT_MARGIN]
@@ -180,7 +185,8 @@ def select_market(side: TradeSide, leverage: int, markets: Collection[Market]) -
     return next((m for m in order if m in markets), None)
 
 
-def allows_side(direction: Direction, side: TradeSide) -> bool:
+def allows_side(direction: Direction | str, side: TradeSide | str) -> bool:
+    direction, side = Direction(direction), TradeSide(side)
     return direction is Direction.BOTH or direction.value == side.value
 
 
@@ -197,7 +203,8 @@ PRESETS: Mapping[tuple[Style, TradeSide], tuple[str, ...]] = {
 }
 
 
-def preset_ids_for(style: Style, direction: Direction) -> tuple[str, ...]:
+def preset_ids_for(style: Style | str, direction: Direction | str) -> tuple[str, ...]:
+    style = Style(style)
     ids = [i for side in TradeSide if allows_side(direction, side) for i in PRESETS[(style, side)]]
     return tuple(dict.fromkeys(ids))
 

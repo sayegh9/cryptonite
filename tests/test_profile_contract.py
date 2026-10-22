@@ -457,3 +457,31 @@ def test_select_market_property(markets: set[Market], side: TradeSide, leverage:
         assert result in f.markets
         if side is TradeSide.SHORT:
             assert result is not Market.SPOT
+
+
+# Review fix: callers pass DB/JSON strings, never only enum members
+def test_string_inputs_are_coerced():
+    from cryptonite_schemas.profile import (
+        Market,
+        allows_side,
+        level_of_mode,
+        preset_ids_for,
+        select_market,
+    )
+    assert select_market("LONG", 1, {"SPOT", "PERP"}) is Market.SPOT
+    assert select_market("SHORT", 1, ["SPOT", "SPOT_MARGIN"]) is Market.SPOT_MARGIN
+    assert select_market("LONG", 3, ("SPOT",)) is None
+    assert allows_side("BOTH", "SHORT") and not allows_side("LONG", "SHORT")
+    assert preset_ids_for("SWING", "LONG")[0] == "swing-trend-pullback-1h"
+    assert level_of_mode("AUTO") == 3
+
+
+def test_unknown_string_inputs_raise():
+    import pytest
+    from cryptonite_schemas.profile import allows_side, select_market
+    with pytest.raises(ValueError):
+        select_market("UP", 1, {"SPOT"})
+    with pytest.raises(ValueError):
+        select_market("LONG", 1, {"FUTURES"})
+    with pytest.raises(ValueError):
+        allows_side("SIDEWAYS", "LONG")
