@@ -45,6 +45,7 @@ from cryptonite_execution.autonomy import (
     TransitionRefused,
     transition,
 )
+from cryptonite_execution.flatten import flatten_instance
 from cryptonite_execution.mandate_store import apply_transition, load_mandate, record_event
 from cryptonite_execution.profile_log import record_decision
 
@@ -249,10 +250,6 @@ async def stop(conn, mandate_id: uuid.UUID | str, *, actor: str, close: bool) ->
     """ACTIVE or PAUSED -> STOPPING: no new entries, the coin locks are kept until the profile is flat. With ``close``
     a reduce-only CLOSE_POSITION is queued for every open position of the profile; without it the positions run on
     their exits. A profile that is flat is finished at once (STOPPED, locks released)."""
-    from cryptonite_orchestrator.mandate_monitor import (
-        flatten_instance,  # the one place that queues the closes
-    )
-
     async with conn.transaction():
         m = await _load(conn, mandate_id)
         if m.status is MandateStatus.STOPPED:
