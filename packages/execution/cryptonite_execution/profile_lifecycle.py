@@ -118,7 +118,7 @@ async def coin_holder(conn, instrument_id: str) -> tuple[uuid.UUID, str] | None:
     """The (mandate id, name) that holds the coin lock on the instrument's base asset, or None."""
     row = await conn.fetchrow(
         """SELECT l.mandate_id, m.name FROM ai_profile_coin_locks l JOIN ai_mandates m ON m.id = l.mandate_id
-           WHERE l.base_asset = $1""", base_asset(instrument_id))
+           WHERE l.base_asset = $1 AND m.status = ANY($2)""", base_asset(instrument_id), list(ALLOCATING_STATUSES))
     return (row["mandate_id"], row["name"]) if row else None
 
 
@@ -141,6 +141,10 @@ async def acquire_locks(conn, mandate_id: uuid.UUID, instruments) -> None:
     two concurrent starts). A coin another mandate holds raises ``COIN_LOCKED`` with the holder. Call inside the
     transaction that sets the status."""
     for coin in sorted(lock_keys(instruments)):
+        # a lock whose holder was archived by hand (or stopped without finish_stop) holds nothing: clear it
+        await conn.execute(
+            """DELETE FROM ai_profile_coin_locks l USING ai_mandates m
+               WHERE m.id = l.mandate_id AND l.base_asset = $1 AND m.status IN ('ARCHIVED', 'STOPPED')""", coin)
         async with conn.transaction():  # a savepoint: the lookup below must not run in an aborted transaction
             inserted = await conn.fetchval(
                 """INSERT INTO ai_profile_coin_locks (base_asset, mandate_id) VALUES ($1, $2)

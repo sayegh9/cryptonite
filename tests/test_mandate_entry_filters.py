@@ -223,7 +223,7 @@ PERP = "BTCUSDT-PERP.BINANCE"
 
 async def short_perp_mandate(h):
     m = await h.mandate(instruments=(PERP,))
-    await h.pool.execute("UPDATE ai_mandates SET allow_perps = true, max_leverage = 5 WHERE id = $1", m.id)
+    await h.pool.execute("UPDATE ai_mandates SET allow_perps = true, markets = ARRAY['SPOT', 'PERP'], max_leverage = 5 WHERE id = $1", m.id)
     await h.pool.execute(
         """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side, entry_price,
                quantity, current_price, status)
@@ -330,11 +330,13 @@ async def test_tightening_is_free_and_loosening_needs_totp(h):
             "profit_lock_pct": "60"})
         assert tighten.status_code == 200, tighten.text
         for loosen in ({"min_conviction": "0.6"}, {"min_rr": "1.5"}, {"daily_loss_limit_pct": "4"},
-                       {"daily_profit_target_pct": "3"}, {"profit_lock_pct": "40"},
-                       {"clear_limits": ["daily_loss_limit_pct"]}):
+                       {"daily_profit_target_pct": "3"}, {"profit_lock_pct": "40"}):
             await h.redis.delete(f"ai:totp_failures:user:{h.operator_id}")  # 5 misses lock the code out
             res = await c.patch(url, headers=h.headers, json=loosen)
             assert res.status_code == 401 and "TOTP_REQUIRED" in res.text, (loosen, res.text)
+        # ADR 0011 D9: a running profile always has a daily loss limit; removing it is refused (was: a TOTP-gated edit)
+        removed = await c.patch(url, headers=h.headers, json={"clear_limits": ["daily_loss_limit_pct"]})
+        assert removed.status_code == 422 and "DAILY_LOSS_REQUIRED" in removed.text, removed.text
         cleared = await c.patch(url, headers=h.headers,
                                 json={"clear_limits": ["min_rr", "daily_profit_target_pct"], "totp_code": "000000"})
         assert cleared.status_code == 200, cleared.text

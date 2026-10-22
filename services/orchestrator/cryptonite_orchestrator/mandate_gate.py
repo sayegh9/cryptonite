@@ -270,8 +270,10 @@ async def coin_lock_owner(conn, instrument_id: str) -> uuid.UUID | None:
     """The mandate holding the coin lock on the instrument's base asset (ADR 0011 D6), loaded once per check. An
     instrument whose base asset cannot be read, or a database without the lock table, reads as no owner."""
     try:
-        return await conn.fetchval("SELECT mandate_id FROM ai_profile_coin_locks WHERE base_asset = $1",
-                                   base_asset(instrument_id))
+        return await conn.fetchval(
+            """SELECT l.mandate_id FROM ai_profile_coin_locks l JOIN ai_mandates m ON m.id = l.mandate_id
+               WHERE l.base_asset = $1 AND m.status IN ('ACTIVE', 'PAUSED', 'STOPPING', 'HALTED')""",
+            base_asset(instrument_id))
     except Exception as e:
         logger.debug("coin lock lookup unavailable for %s: %s", instrument_id, e)
         return None

@@ -248,11 +248,8 @@ async def track_mandate(conn, redis, mandate: Mandate, quotes, now: datetime.dat
             detail = {"mandate_id": str(mandate.id), "mandate": mandate.name, "equity": str(v["equity"]),
                       "hwm": str(v["hwm"]), "drawdown_pct": f"{v['drawdown_pct']:.2f}",
                       "limit_pct": str(mandate.max_drawdown_pct), "episode": str(v["hwm"])}
-            async with conn.transaction():
-                await record_event(conn, mandate.id, "EDITED", from_level=int(mandate.autonomy_level),
-                                   to_level=int(mandate.autonomy_level), reason="HALF_DRAWDOWN: " + t.reason,
-                                   actor="risk:mandate_monitor", detail={**detail, "no_level_change": True})
-                await conn.execute("UPDATE ai_mandates SET last_dd_demotion_hwm = $2 WHERE id = $1", mandate.id, v["hwm"])
+            # recorded as the alert (outbox row) and the episode marker; ai_autonomy_events has no kind for a warning
+            await conn.execute("UPDATE ai_mandates SET last_dd_demotion_hwm = $2 WHERE id = $1", mandate.id, v["hwm"])
             await alert(conn, redis, "MANDATE_HALF_DRAWDOWN",
                         f"Drawdown warning — {mandate.name}: {v['drawdown_pct']:.1f}% from HWM, at least half the "
                         f"{mandate.max_drawdown_pct}% hard stop. Mode unchanged.", detail, tier="ACTION")

@@ -188,7 +188,8 @@ def test_entry_filter_wording():
 
 def test_new_fields_default_off_and_the_lock_to_50():
     m = mandate()
-    assert (m.min_conviction, m.min_rr, m.daily_loss_limit_pct, m.daily_profit_target_pct) == (None, None, None, None)
+    # ADR 0011 D9: a running mandate gets the daily loss limit by default (3 x its risk per trade), was off (None)
+    assert (m.min_conviction, m.min_rr, m.daily_loss_limit_pct, m.daily_profit_target_pct) == (None, None, D("3"), None)
     assert m.profit_lock_pct == D("50")
 
 
@@ -202,16 +203,19 @@ def test_a_perps_mandate_gets_3x_its_risk_per_trade_as_daily_loss_limit():
     # named (or explicitly off) wins; spot stays off
     assert mandate(instruments=["BTCUSDT-PERP"], allow_perps=True,
                    daily_loss_limit_pct=D("2")).daily_loss_limit_pct == D("2")
-    assert mandate(instruments=["BTCUSDT-PERP"], allow_perps=True,
+    # ADR 0011 D9: a running mandate cannot switch it off (was: explicit None allowed); a paused one may have none
+    with pytest.raises(ValidationError, match="DAILY_LOSS_REQUIRED"):
+        mandate(instruments=["BTCUSDT-PERP"], allow_perps=True, daily_loss_limit_pct=None)
+    assert mandate(instruments=["BTCUSDT-PERP"], allow_perps=True, status="PAUSED",
                    daily_loss_limit_pct=None).daily_loss_limit_pct is None
-    assert mandate().daily_loss_limit_pct is None
+    assert mandate().daily_loss_limit_pct == D("3")  # was None for spot; every running profile has one now
 
 
 def test_from_row_keeps_null_and_reads_rows_from_before_049():
     row = {"id": uuid.uuid4(), "name": "P", "capital_budget_usd": BUDGET, "instruments": ["BTCUSDT-PERP.BINANCE"],
            "max_position_pct": D("10"), "max_drawdown_pct": D("20"), "allow_perps": True, "max_leverage": 3,
-           "max_risk_per_trade_pct": D("1"), "strategies": [], "autonomy_level": 1, "status": "ACTIVE",
-           "active_hours_utc": None, "veto_window_s": 600}
+           "max_risk_per_trade_pct": D("1"), "strategies": [], "autonomy_level": 1, "status": "PAUSED",
+           "active_hours_utc": None, "veto_window_s": 600}  # PAUSED: a running row always has a daily limit (ADR 0011 D9)
     old = Mandate.from_row(row)  # no 049 columns: NULL is passed, so the stored (absent) value is kept as off
     assert (old.daily_loss_limit_pct, old.profit_lock_pct) == (None, D("50"))
     m = Mandate.from_row({**row, "min_conviction": D("0.70"), "min_rr": D("2.00"), "daily_loss_limit_pct": D("3.00"),
@@ -254,7 +258,8 @@ def test_validators_refuse(kw):
     ("profit_lock_pct", "50", "60", False),
 ])
 def test_risk_adding_change_for_every_new_field(field, old, new, adds_risk):
-    before = mandate(**{field: D(old) if old is not None else None})
+    status = "PAUSED" if field == "daily_loss_limit_pct" and old is None else "ACTIVE"  # ACTIVE needs a daily limit (D9)
+    before = mandate(**{field: D(old) if old is not None else None}, status=status)
     after = before.model_copy(update={field: D(new) if new is not None else None})
     assert risk_adding_change(before, after) is adds_risk
     assert risk_adding_change(before, before) is False
