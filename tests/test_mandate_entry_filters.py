@@ -47,6 +47,8 @@ async def h(db_url, monkeypatch):
     monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "true")  # 000000 for the TOTP-gated edits below
     monkeypatch.setenv("ALLOW_DEV_TOTP", "true")
     harness = await make_harness(db_url)
+    # ADR 0011 D11: creating a mandate starts it under the capital cap; these tests create several 10k budgets
+    await harness.pool.execute("UPDATE paper_accounts SET total_equity = 1000000")
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_orders, "
                                "paper_positions, ai_mandate_daily_sessions CASCADE")

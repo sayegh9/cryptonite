@@ -167,6 +167,8 @@ async def h(db_url, monkeypatch):
     monkeypatch.setenv("ALLOW_DEV_TOTP", "true")  # 000000 in DEV; the real-TOTP path is in test_notifier.py
     monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "true")  # /api/v1/ai refuses 000000 unless explicitly allowed
     harness = await make_harness(db_url)
+    # ADR 0011 D11: creating a mandate starts it under the capital cap; these tests create several 10k budgets
+    await harness.pool.execute("UPDATE paper_accounts SET total_equity = 1000000")
     try:
         yield harness
     finally:

@@ -539,7 +539,19 @@ async def test_creating_a_mandate_on_a_held_coin_is_refused(h):
         res = await c.post(V1, json={"name": "newcomer", "capital_budget_usd": 500, "instruments": [BTC],
                                      "max_position_pct": 10, "totp_code": h.totp.now()}, headers=h.headers)
     assert res.status_code == 409 and res.json()["detail"].startswith("COIN_LOCKED:")
-    assert await h.pool.fetchval("SELECT count(*) FROM ai_mandates WHERE name = 'newcomer'") == 0
+    assert "STOPPED, not running" in res.json()["detail"]
+    assert await h.pool.fetchval("SELECT status FROM ai_mandates WHERE name = 'newcomer'") == "STOPPED"  # created, not running
+    assert await locks(h) == {"BTC"} and await locks(h, holder) == {"BTC"}
+
+
+async def test_creating_over_the_capital_cap_leaves_the_mandate_stopped(h):
+    equity = await h.pool.fetchval("SELECT total_equity FROM paper_accounts WHERE account_id = 'PAPER-ACCOUNT-001'")
+    async with h.client() as c:
+        res = await c.post(V1, json={"name": "too-big", "capital_budget_usd": str(equity), "instruments": [ETH],
+                                     "max_position_pct": 10, "totp_code": h.totp.now()}, headers=h.headers)
+    assert res.status_code == 409 and res.json()["detail"].startswith("CAPITAL_OVER_ALLOCATED:"), res.text
+    assert await h.pool.fetchval("SELECT status FROM ai_mandates WHERE name = 'too-big'") == "STOPPED"
+    assert await locks(h) == set()
 
 
 async def test_a_new_mandate_takes_its_locks_and_stores_the_profile_fields(h):

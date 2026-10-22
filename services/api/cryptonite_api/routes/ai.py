@@ -551,9 +551,9 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
                            daily_profit_target_pct, profit_lock_pct, markets, direction, style, environment,
                            max_open_positions, max_debates_per_day, exit_tp_r, exit_tp1_scale_pct,
                            exit_trail_activate_pct, exit_trail_pct, exit_max_hold_hours, dry_run, notify_level,
-                           breaker_max_loss_streak, breaker_max_reject_streak)
+                           breaker_max_loss_streak, breaker_max_reject_streak, status)
                        VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, $13, $14, $15, $16, $17, $18,
-                               $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)""",
+                               $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, 'STOPPED')""",
                     m.id, m.name, m.capital_budget_usd, m.instruments, m.max_position_pct, m.max_drawdown_pct,
                     m.max_leverage, m.strategies, m.active_hours_utc, m.veto_window_s, actor(auth), m.allow_perps,
                     m.max_risk_per_trade_pct, m.min_conviction, m.min_rr, m.daily_loss_limit_pct,
@@ -562,14 +562,21 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
                 if "uq" in str(e).lower() or "unique" in str(e).lower():
                     raise HTTPException(status_code=409, detail="A mandate with this name exists")
                 raise
-            try:  # ADR 0011 D6: a new mandate is ACTIVE, so it takes its coin locks in the same transaction
-                await profile_lifecycle.acquire_locks(conn, m.id, m.instruments)
-            except profile_lifecycle.LifecycleError as e:
-                raise lifecycle_http(e) from e
             await record_event(conn, m.id, "CREATED", to_level=1, reason="created", actor=actor(auth),
                                detail={**json.loads(m.model_dump_json()), **({"source": req.source} if req.source else {})})
-            row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
-            view = await mandate_view(conn, row, await read_marks(_redis(request)))
+    # ADR 0011: the row exists STOPPED; Start applies every guard (switch, profile rules, capital cap, coin locks). The
+    # TOTP above was checked for this request, so it covers a start above Ask too
+    async with request.app.state.pool.acquire() as conn:
+        try:
+            await profile_lifecycle.start(conn, m.id, actor=actor(auth), totp_ok=True,
+                                          settings=await profile_lifecycle.load_settings(conn))
+        except profile_lifecycle.LifecycleError as e:
+            refusal = lifecycle_http(e)
+            await _publish_updated(request, m.id, "created")
+            raise HTTPException(status_code=refusal.status_code, detail=(
+                f"{refusal.detail}; the mandate {m.name} (id {m.id}) was created and is STOPPED, not running")) from e
+        row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
+        view = await mandate_view(conn, row, await read_marks(_redis(request)))
     await _publish_updated(request, m.id, "created")
     return view
 
