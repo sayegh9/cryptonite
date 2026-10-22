@@ -109,7 +109,7 @@ def check_mandate(
     approval_ok: bool,
     session: SessionVerdict = SessionVerdict.ACTIVE,
     coin_owner: uuid.UUID | None = None,
-    autotrade_on: bool = True,
+    autotrade_on: bool = False,
 ) -> MandateReject | None:
     """None when the order is inside the mandate, else the reject code.
 

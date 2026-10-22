@@ -44,7 +44,7 @@ async def instrument_conflict(conn, mandate: Mandate, instrument_id: str, quanti
     exposure = await mandate_exposure(conn, engine, mandate, instrument, {})
     order = MandateOrder(instrument_id=instrument, side="BUY", quantity=quantity,
                          ref_price=None)  # the conflict is decided before the notional, so no price is needed
-    if check_mandate(mandate, order, exposure, approval_ok=True) is not MandateReject.INSTRUMENT_CONFLICT:
+    if check_mandate(mandate, order, exposure, approval_ok=True, autotrade_on=False) is not MandateReject.INSTRUMENT_CONFLICT:
         return None
     holder = await conn.fetchval(
         """SELECT instance_id FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0

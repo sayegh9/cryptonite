@@ -287,22 +287,22 @@ HELD = MandateExposure(gross_usd=D("500"), instrument_usd=D("500"), instrument_q
 ])
 def test_the_session_refuses_add_risk_even_approved_and_never_reduce_risk(session, code):
     m = mandate(autonomy_level=AutonomyLevel.L1, max_position_pct=D("25"))
-    assert check_mandate(m, BUY, HELD, approval_ok=True, session=session) is code
-    assert check_mandate(m, SELL, HELD, approval_ok=True, session=session) is None
-    assert check_mandate(m, SELL, HELD, approval_ok=False, session=session) is None
+    assert check_mandate(m, BUY, HELD, approval_ok=True, session=session, autotrade_on=True) is code
+    assert check_mandate(m, SELL, HELD, approval_ok=True, session=session, autotrade_on=True) is None
+    assert check_mandate(m, SELL, HELD, approval_ok=False, session=session, autotrade_on=True) is None
     # a perp reduce-only close passes too
     perp = mandate(instruments=["BTCUSDT-PERP"], allow_perps=True)
     close = MandateOrder("BTCUSDT-PERP.BINANCE", "SELL", D("0.01"), D("50000"), reduce_only=True)
     held_perp = MandateExposure(D("500"), D("500"), D("0.01"), "LONG")
-    assert check_mandate(perp, close, held_perp, approval_ok=False, session=session) is None
+    assert check_mandate(perp, close, held_perp, approval_ok=False, session=session, autotrade_on=True) is None
 
 
 def test_a_halted_mandate_keeps_its_halted_code():
     m = mandate(status=MandateStatus.HALTED)
-    assert check_mandate(m, BUY, HELD, approval_ok=True, session=SessionVerdict.LOSS_LATCHED) is MandateReject.HALTED
+    assert check_mandate(m, BUY, HELD, approval_ok=True, session=SessionVerdict.LOSS_LATCHED, autotrade_on=True) is MandateReject.HALTED
 
 
 def test_the_default_session_changes_nothing():
     m = mandate()
-    assert check_mandate(m, BUY, HELD, approval_ok=True) == check_mandate(m, BUY, HELD, approval_ok=True,
-                                                                          session=SessionVerdict.ACTIVE)
+    assert check_mandate(m, BUY, HELD, approval_ok=True, autotrade_on=True) == check_mandate(m, BUY, HELD, approval_ok=True,
+                                                                          session=SessionVerdict.ACTIVE, autotrade_on=True)
