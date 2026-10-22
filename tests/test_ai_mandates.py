@@ -71,10 +71,11 @@ def test_contract_repeats_the_hard_ceilings():
         mandate(max_drawdown_pct=D("21"))
     with pytest.raises(ValidationError):  # ADR 0009 D2: 10x ceiling (was 5x)
         mandate(max_leverage=11)
-    assert mandate(max_leverage=10).max_leverage == 10
-    for level in (AutonomyLevel.L2, AutonomyLevel.L3):  # D3: perps only at L1 (was only at L3)
-        with pytest.raises(ValidationError):
-            mandate(allow_perps=True, autonomy_level=level)
+    assert mandate(max_leverage=10, allow_perps=True).max_leverage == 10  # leverage above 1x needs perps (ADR 0011)
+    with pytest.raises(ValidationError, match="LEVERAGE_NEEDS_MARGIN_OR_PERP"):
+        mandate(max_leverage=2)
+    for level in (AutonomyLevel.L2, AutonomyLevel.L3):  # ADR 0011 D4: perps at any execution mode (was L1 only)
+        assert mandate(allow_perps=True, autonomy_level=level).allow_perps
     assert mandate(allow_perps=True).allow_perps
     assert mandate(allow_perps=True).max_leverage == 3  # D2: enabling perps without a maximum gives 3x
     assert mandate(allow_perps=True, max_leverage=7).max_leverage == 7
@@ -223,12 +224,12 @@ instruments = st.sampled_from([SPOT, "ETHUSDT.BINANCE", "SOLUSDT.BINANCE", PERP,
 @st.composite
 def mandates(draw):
     level = draw(st.sampled_from(list(AutonomyLevel)))
-    perps = draw(st.booleans()) and level == AutonomyLevel.L1
+    perps = draw(st.booleans())  # ADR 0011 D4: perps at any level
     return Mandate(
         id=uuid.uuid4(), name="m", capital_budget_usd=draw(st.decimals(min_value=D("100"), max_value=D("100000"), places=2)),
         instruments=draw(st.lists(instruments, min_size=1, max_size=4)),
         max_position_pct=draw(st.decimals(min_value=D("1"), max_value=D("25"), places=1)),
-        allow_perps=perps, max_leverage=draw(st.integers(1, 10)), autonomy_level=level,
+        allow_perps=perps, max_leverage=draw(st.integers(1, 10)) if perps else 1, autonomy_level=level,
         status=draw(st.sampled_from(list(MandateStatus))),
     )
 
@@ -466,7 +467,7 @@ async def test_l3_mandate_trades_without_approval_but_inside_its_budget():
     conn, engine = await run_ai_command({**payload, "quantity": "0.03"}, mandate_row=mandate_row(m))  # 1,538 > 1,000
     assert conn.outcome() == ("REJECTED", "MANDATE_BUDGET_EXCEEDED")
     assert engine.dispatcher.open_orders == {}
-    assert conn.events == ["BREACH", "DEMOTED"]  # §4.5: a breach demotes one level (A5.5)
+    assert conn.events == ["BREACH"]  # ADR 0011 D3: a breach is recorded and alerted, the mode stays
 
 
 async def test_approved_entry_on_top_of_a_position_is_sized_to_the_room_not_breached():
@@ -611,10 +612,12 @@ async def test_migration_025_enforces_the_ceilings(db_url):
                   "allow_perps, max_leverage, autonomy_level) VALUES ($1, 1000, $2, $3, $4, $5, $6, $7)")
         await conn.execute(insert, "ok", ["BTCUSDT.BINANCE"], 25, 20, False, 1, 1)
         for args in (("pos", ["BTCUSDT.BINANCE"], 26, 20, False, 1, 1), ("dd", ["BTCUSDT.BINANCE"], 10, 21, False, 1, 1),
-                     ("lev", ["BTCUSDT.BINANCE"], 10, 20, True, 6, 3), ("perps", ["BTCUSDT.BINANCE"], 10, 20, True, 2, 2),
+                     ("lev", ["BTCUSDT.BINANCE"], 10, 20, True, 11, 3),
                      ("none", [], 10, 20, False, 1, 1)):
             with pytest.raises(asyncpg.CheckViolationError):
                 await conn.execute(insert, *args)
+        # ADR 0011 D4: 050 dropped the perps-level CHECK, so perps are accepted at L2 as at L1
+        await conn.execute(insert, "perps-l2", ["BTCUSDT.BINANCE"], 10, 20, True, 2, 2)
         mid = await conn.fetchval("SELECT id FROM ai_mandates WHERE name = 'ok'")
         await conn.execute("INSERT INTO ai_autonomy_events (mandate_id, kind, proposal_status) VALUES ($1, 'PROPOSED', 'PENDING')", mid)
         with pytest.raises(asyncpg.UniqueViolationError):  # one open proposal per mandate

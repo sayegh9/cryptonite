@@ -199,12 +199,22 @@ REGISTRY: tuple[Setting, ...] = (
                      "mandate always wins. PERP_FIRST sends more trades to leveraged perps, so it needs TOTP; "
                      "SPOT_FIRST is free",
                      choices=tuple((str(i), mode) for i, mode in enumerate(ROUTING_MODES))),
+    # Auto-trade profiles (ADR 0011): enabling and raising are risk-adding (TOTP); switching off and lowering are free
+    _runtime_setting("autotrade.enabled", "Auto-trade master switch", Tier.T_L, "0011",
+                     "read at Start: while off, a profile in Veto window or Fully automatic cannot start and Ask "
+                     "profiles still run; enabling needs TOTP, switching off is free",
+                     choices=(("0", "Off"), ("1", "On"))),
+    _runtime_setting("autotrade.max_allocated_pct", "Max capital allocated to running profiles (% of equity)",
+                     Tier.T_L, "0011",
+                     "the budgets of the Active, Paused and Stopping profiles add up to at most this share of account "
+                     "equity (checked at Start); raising it needs TOTP"),
     Setting("guard.mandate_max_leverage", "Mandate leverage ceiling (x)", 10, None, None, Apply.DEPLOY, Tier.FIXED,
             "0009", "migration 048: chk_ai_mandates_leverage", "each mandate's own maximum (default 3x) sits under it"),
     Setting("guard.account_max_leverage", "Account leverage maximum (x)", 10, None, None, Apply.DEPLOY, Tier.FIXED,
             "0009", "code: leverage.py ACCOUNT_MAX_LEVERAGE", "the manual ticket and the dispatcher"),
-    Setting("guard.perps_level", "Perps allowed at", "L1, every entry approved with TOTP", None, None, Apply.DEPLOY,
-            Tier.FIXED, "0009", "migration 048: chk_ai_mandates_perps_level", "leaving L1 withdraws the opt-in"),
+    Setting("guard.perps_level", "Perps allowed at", "Any execution mode (ADR 0011)", None, None, Apply.DEPLOY,
+            Tier.FIXED, "0011", "migration 050: chk_ai_mandates_perps_level dropped",
+            "a profile trades perps when PERP is in its markets, in Ask, Veto window or Fully automatic"),
     Setting("guard.max_risk_per_trade_pct", "Risk per trade cap (% of the mandate budget)", 2, None, None,
             Apply.DEPLOY, Tier.FIXED, "0009", "migration 048: chk_ai_mandates_risk_per_trade",
             "default 1%; a mandate raises it with TOTP"),

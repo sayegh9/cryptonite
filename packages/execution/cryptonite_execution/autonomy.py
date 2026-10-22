@@ -1,14 +1,16 @@
-"""Autonomy ladder: the state machine and the promotion gate evaluator (AI-first blueprint §4.5, A5.5).
+"""Execution mode transitions and the advisory health score (ADR 0011 D2, D3; was the earned ladder of ADR 0004).
 
 Pure functions only; callers persist the result as an ``ai_autonomy_events`` row and update
 ``ai_mandates``. The rules:
 
-- promotion goes one level at a time, is proposed by the system from a passing gate report and is
-  applied only when the operator confirms it with TOTP (never silently, §10 invariant 6);
-- demotion is automatic: any breach, or a drawdown >= half the hard stop, drops one level;
-- the hard stop (and the account-wide backstop) halts the mandate and drops it to L1;
-- leaving L1 always withdraws the perps opt-in (ADR 0009 D3; was "leaving L3", O1);
-- a halted or paused mandate resumes only with operator TOTP, at the level it holds (L1 after a stop).
+- the operator sets the execution mode (level 1 Ask, 2 Veto window, 3 Fully automatic) directly: raising it needs
+  TOTP, lowering it is free. The promotion gate is no longer a condition; ``evaluate_gate`` is the health score that
+  is shown next to the mode and recorded in the transition detail;
+- nothing changes the level automatically: a breach and half the hard-stop drawdown are recorded and alerted
+  (kind NOOP here), the mode stays what the operator chose;
+- the hard stop (and the account-wide backstop) halts the mandate and keeps its level and its markets (the
+  database requires ``allow_perps`` to agree with ``markets``, so the halt must not reset it);
+- a halted, paused or stopping mandate resumes only with operator TOTP, at the level it holds.
 
 Informational checks (``GateCheck.informational``, remediation R4.2/R4.3/R4.7, ADR 0004 amendment)
 are reported with their interval but never decide ``GateReport.passed`` until the operator makes them
@@ -21,7 +23,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
-from cryptonite_schemas.mandate import PERPS_AUTONOMY_LEVEL, AutonomyLevel, MandateStatus
+from cryptonite_schemas.mandate import AutonomyLevel, MandateStatus
 
 from cryptonite_execution.stats import mean_interval, sortino_diff_interval
 
@@ -35,9 +37,9 @@ L3_MAX_VETO_RATE_PCT = Decimal("10")
 
 
 class AutonomyTrigger(StrEnum):
-    PROMOTION_CONFIRMED = "PROMOTION_CONFIRMED"  # operator confirmed a proposal with TOTP
-    BREACH = "BREACH"  # the AI tried to act outside its mandate
-    HALF_DRAWDOWN = "HALF_DRAWDOWN"  # drawdown >= half the hard stop
+    PROMOTION_CONFIRMED = "PROMOTION_CONFIRMED"  # operator sets the mode (TOTP); kept as the audit-trail value
+    BREACH = "BREACH"  # the AI tried to act outside its mandate: recorded, no level change
+    HALF_DRAWDOWN = "HALF_DRAWDOWN"  # drawdown >= half the hard stop: recorded, no level change
     HARD_STOP = "HARD_STOP"  # drawdown >= the hard stop
     BACKSTOP = "BACKSTOP"  # account-wide 20% backstop
     OPERATOR_DEMOTE = "OPERATOR_DEMOTE"
@@ -120,11 +122,9 @@ class GateMetrics:
     calibration_interval_pp: tuple[Decimal, Decimal] | None = None
 
 
-def _step_down(state: AutonomyState, reason: str) -> Transition:
-    """One level down (L1 stays L1: kind NOOP). Perps live only at L1 (ADR 0009 D3), so they survive only a NOOP."""
-    level = AutonomyLevel(max(int(state.level) - 1, int(AutonomyLevel.L1)))
-    after = AutonomyState(level, state.status, state.allow_perps and level == PERPS_AUTONOMY_LEVEL)
-    return Transition(state, after, "DEMOTED" if level != state.level else "NOOP", reason)
+def _noop(state: AutonomyState, reason: str) -> Transition:
+    """ADR 0011 D3: a breach or half the hard-stop drawdown is recorded and alerted by the caller; the mode stays."""
+    return Transition(state, state, "NOOP", reason)
 
 
 def transition(
@@ -134,34 +134,40 @@ def transition(
     totp_ok: bool = False,
     gate: GateReport | None = None,
     reason: str = "",
+    target_level: AutonomyLevel | int | None = None,
 ) -> Transition:
-    """The next state for ``trigger``, or ``TransitionRefused``."""
+    """The next state for ``trigger``, or ``TransitionRefused``.
+
+    ``PROMOTION_CONFIRMED`` is the operator setting the mode: any level 1 to 3 other than the current one, TOTP
+    required (the route asks for it only when raising; the transition insists because it is the audit rule).
+    ``gate`` is advisory and only recorded by the caller."""
     if trigger is AutonomyTrigger.PROMOTION_CONFIRMED:
         if not totp_ok:
             raise TransitionRefused("TOTP_REQUIRED")
-        if state.status is not MandateStatus.ACTIVE:
+        if state.status not in (MandateStatus.ACTIVE, MandateStatus.PAUSED):
             raise TransitionRefused("MANDATE_NOT_ACTIVE")
-        if state.level >= AutonomyLevel.L3:
-            raise TransitionRefused("ALREADY_AT_TOP")
-        target = AutonomyLevel(int(state.level) + 1)
-        if gate is None or gate.level != state.level or gate.target_level != target or not gate.passed:
-            raise TransitionRefused("GATE_NOT_PASSED")
-        # leaving L1 withdraws the perps opt-in (ADR 0009 D3)
-        return Transition(state, AutonomyState(target, state.status, state.allow_perps and target == PERPS_AUTONOMY_LEVEL),
-                          "PROMOTED",
-                          reason or f"operator confirmed promotion to L{int(target)}")
+        target = AutonomyLevel(int(target_level)) if target_level is not None else AutonomyLevel(
+            min(int(state.level) + 1, int(AutonomyLevel.L3)))
+        if target == state.level:
+            raise TransitionRefused("ALREADY_AT_LEVEL")
+        return Transition(state, AutonomyState(target, state.status, state.allow_perps), "PROMOTED",
+                          reason or f"operator set the execution mode to level {int(target)}")
 
     if trigger is AutonomyTrigger.BREACH:
-        return _step_down(state, reason or "mandate breach")
+        return _noop(state, reason or "mandate breach")
     if trigger is AutonomyTrigger.HALF_DRAWDOWN:
-        return _step_down(state, reason or "drawdown >= half the hard stop")
+        return _noop(state, reason or "drawdown >= half the hard stop")
     if trigger is AutonomyTrigger.OPERATOR_DEMOTE:
-        if state.level == AutonomyLevel.L1:
-            raise TransitionRefused("ALREADY_AT_BOTTOM")
-        return _step_down(state, reason or "operator demotion")
+        lower = AutonomyLevel(int(target_level)) if target_level is not None else AutonomyLevel(
+            max(int(state.level) - 1, int(AutonomyLevel.L1)))
+        if state.level == AutonomyLevel.L1 or lower >= state.level:
+            raise TransitionRefused("ALREADY_AT_BOTTOM" if state.level == AutonomyLevel.L1 else "NOT_LOWER")
+        return Transition(state, AutonomyState(lower, state.status, state.allow_perps), "DEMOTED",
+                          reason or "operator demotion")
 
     if trigger in (AutonomyTrigger.HARD_STOP, AutonomyTrigger.BACKSTOP):
-        after = AutonomyState(AutonomyLevel.L1, MandateStatus.HALTED, False)
+        # level and allow_perps stay: chk_ai_mandates_perps_markets ties allow_perps to markets
+        after = AutonomyState(state.level, MandateStatus.HALTED, state.allow_perps)
         kind = "HALTED" if trigger is AutonomyTrigger.HARD_STOP else "BACKSTOP"
         return Transition(state, after, kind, reason or trigger.value)
 
@@ -172,7 +178,7 @@ def transition(
                           reason or "operator pause")
 
     if trigger is AutonomyTrigger.RESUME:
-        if state.status not in (MandateStatus.HALTED, MandateStatus.PAUSED):
+        if state.status not in (MandateStatus.HALTED, MandateStatus.PAUSED, MandateStatus.STOPPING):
             raise TransitionRefused("MANDATE_NOT_STOPPED")
         if not totp_ok:
             raise TransitionRefused("TOTP_REQUIRED")
