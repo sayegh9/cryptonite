@@ -100,6 +100,23 @@ log "alembic upgrade head on staging (127.0.0.1:5532)"
 (cd "$WT" && DATABASE_URL="postgresql://cryptonite:cryptonite_dev_pass@127.0.0.1:5532/cryptonite" \
     uv run --frozen python -m alembic -c infra/migrations/alembic.ini upgrade head)
 
+# 7b. staging-only DB hardening: LLM cap and dry-run. Asserts the target is the staging Postgres first.
+STG_PG="stg_postgres"
+[ "$STG_PG" != "$PROD_PG" ] || die "target DB container equals the production one"
+docker port "$STG_PG" 5432/tcp 2>/dev/null | grep -q ':5532$' || die "$STG_PG is not published on 5532; refusing to write"
+[ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$STG_PG")" = "$PROJECT" ] \
+    || die "$STG_PG does not belong to project $PROJECT; refusing to write"
+spsql() { docker exec -i "$STG_PG" psql -U cryptonite -d cryptonite -Atq -v ON_ERROR_STOP=1 "$@"; }
+spsql -c "INSERT INTO system_settings (key, value) VALUES ('LLM_DAILY_BUDGET_USD', '2'::jsonb)
+          ON CONFLICT (key) DO UPDATE SET value = '2'::jsonb, updated_at = now()"
+if [ "$(spsql -c "select count(*) from information_schema.columns where table_name='ai_mandates' and column_name='dry_run'")" = 1 ]; then
+    n=$(spsql -c "WITH u AS (UPDATE ai_mandates SET dry_run = true WHERE status <> 'ARCHIVED' AND NOT dry_run RETURNING 1) SELECT count(*) FROM u")
+    total=$(spsql -c "select count(*) from ai_mandates where status <> 'ARCHIVED' and dry_run")
+    log "staging DB: LLM_DAILY_BUDGET_USD=2; dry_run=true set on $n mandates ($total non-archived mandates now dry-run)"
+else
+    log "staging DB: LLM_DAILY_BUDGET_USD=2; ai_mandates.dry_run absent (pre-050), no mandates changed"
+fi
+
 # 8. build and start everything ---------------------------------------------------------------
 log "building and starting the stack"
 dc up -d --build
@@ -112,7 +129,7 @@ Staging is up (project $PROJECT, ref ${SHA:0:12}).
   scanner    http://127.0.0.1:8182/health
   ingest     http://127.0.0.1:8180/health
   postgres   127.0.0.1:5532   redis 127.0.0.1:6479
-  NOTE: the web UI's live WebSocket is hard-coded to port 8000 (production API); use the REST views on 3200.
+  web WebSocket -> ws://127.0.0.1:8100/ws/stream (staging API)
 Soak report:  uv run python scripts/staging_soak_report.py --hours 24
 Tear down:    scripts/staging_down.sh
 OUT

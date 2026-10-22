@@ -24,6 +24,7 @@ x-staging-env: &staging-env
   TELEGRAM_ALLOWED_CHAT_IDS: ${STAGING_TELEGRAM_CHAT_ID:-}
   TELEGRAM_BOT_TOKEN: ${STAGING_TELEGRAM_BOT_TOKEN:-}
   NTFY_TOPIC: ""
+  LLM_DAILY_BUDGET_USD: "2"   # soak spends at most this much real LLM budget per day
 
 # Staging-only writable /app/data with the live lake laid over it read-only.
 x-data-mounts: &data-mounts
@@ -97,6 +98,9 @@ services:
   web:
     <<: *restart
     container_name: stg_web
+    build:
+      args:
+        NEXT_PUBLIC_WS_URL: ws://127.0.0.1:8100/ws/stream   # staging API, not production :8000
     mem_limit: 512m
     ports: !override
       - "127.0.0.1:3200:3000"

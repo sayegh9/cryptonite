@@ -80,7 +80,11 @@ The script refuses any project name other than `cryptonite-staging`.
 
 ## Known limits
 
-- The staging `.env` is a copy of production's, so the LLM keys (and daily budget) are shared; a soak spends real LLM budget.
-- The web UI hard-codes its WebSocket to port 8000 (`apps/web/src/lib/ws.ts`), so the live stream on
-  http://127.0.0.1:3200 connects to the production API. REST views use staging. Fix in the app before relying on the stream in staging.
-- Restored production mandates run in staging against staging Redis and the paper account.
+- The staging `.env` is a copy of production's, so the LLM keys are shared. Staging caps the LLM budget at
+  **2 USD/day** (`LLM_DAILY_BUDGET_USD=2` in the override env, and `system_settings` key set in the staging DB after
+  restore, which the gateway reads first). A soak still spends up to that cap of real budget per day.
+- `staging_up.sh` sets `dry_run = true` on every non-archived mandate in the **staging** DB after restore and
+  migration (only when the column exists, migration 050+), after asserting the target is `stg_postgres` on port 5532
+  in project `cryptonite-staging`. It prints a summary line.
+- The web build bakes `NEXT_PUBLIC_WS_URL=ws://127.0.0.1:8100/ws/stream` (staging API). Unset (production), the
+  WebSocket URL is unchanged (`<host>:8000`).

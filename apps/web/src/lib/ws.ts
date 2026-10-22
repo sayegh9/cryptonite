@@ -17,8 +17,12 @@ export class CryptoniteStreamClient {
   private extraSubscriptions: Map<string, { channels: string[]; instruments?: string[] }> = new Map();
 
   constructor(url?: string) {
+    // NEXT_PUBLIC_WS_URL is inlined at build time (staging sets it); unset/empty keeps the default below.
+    const configured = process.env.NEXT_PUBLIC_WS_URL;
     if (url) {
       this.url = url;
+    } else if (configured) {
+      this.url = configured;
     } else if (typeof window !== "undefined") {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const host = window.location.hostname || "127.0.0.1";
