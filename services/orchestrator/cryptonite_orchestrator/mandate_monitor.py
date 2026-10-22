@@ -39,7 +39,6 @@ from cryptonite_execution.mandate_store import (
     apply_transition,
     load_mandate,
     load_session,
-    record_event,
 )
 from cryptonite_execution.profile_lifecycle import finish_stop
 from cryptonite_schemas.mandate import (
