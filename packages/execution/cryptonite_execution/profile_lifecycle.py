@@ -9,12 +9,14 @@ changes ``ai_mandates.status`` between ACTIVE, PAUSED, STOPPING and STOPPED, and
   naming the holder.
 - A profile in ACTIVE, PAUSED, STOPPING or HALTED holds its coin locks. ``finish_stop`` (STOPPING and flat) and archiving
   release them; ``pause`` and a halt keep them.
+- ``archive`` retires a STOPPED profile (or a flat PAUSED/HALTED one) and releases its locks.
 - ``stop`` stops new entries; with ``close`` it also queues reduce-only closes. Exits never stop (D13).
 
-Audit: ``ai_autonomy_events`` kinds STARTED, STOPPING and STOPPED (migration 050), and ``ai_profile_decisions`` (LIFECYCLE).
+Audit: ``ai_autonomy_events`` kinds STARTED, STOPPING, STOPPED and ARCHIVED (migration 050), and ``ai_profile_decisions`` (LIFECYCLE).
 """
 
 import logging
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -53,6 +55,8 @@ logger = logging.getLogger(__name__)
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 # The statuses whose budgets count against the cap (D11); the same four hold coin locks (D6)
 ALLOCATING_STATUSES = ("ACTIVE", "PAUSED", "STOPPING", "HALTED")
+# Statuses a start takes back (the operator's resume); they need TOTP at every mode
+RESUMING_STATUSES = (MandateStatus.PAUSED, MandateStatus.HALTED, MandateStatus.STOPPING)
 # Entry orders still working; a protective STOP_MARKET belongs to a position, not to the entry side
 WORKING_ORDER_STATUSES = ("PENDING", "SUBMITTED", "ACCEPTED", "PARTIALLY_FILLED")
 
@@ -96,9 +100,45 @@ async def load_settings(conn) -> AutotradeSettings:
     return parse_settings({r["key"]: r["value"] for r in rows})
 
 
+# The master switch applies at runtime, not only at Start (ADR 0011 D10): while it is off a VETO or AUTO profile behaves
+# as ASK. The runtime paths (routing, the mandate gate) read it through this loader, cached for a short while.
+SWITCH_CACHE_S = 30.0
+_switch_cache: tuple[float, bool] | None = None
+
+
+def reset_switch_cache() -> None:
+    global _switch_cache
+    _switch_cache = None
+
+
+async def autotrade_switch_on(conn) -> bool:
+    """``autotrade.enabled`` as the runtime paths read it: cached ``SWITCH_CACHE_S``; OFF when it is missing, invalid or
+    cannot be read (fail safe: the switch is the thing that must never be on by accident)."""
+    global _switch_cache
+    now = time.monotonic()
+    if _switch_cache is not None and _switch_cache[0] > now:
+        return _switch_cache[1]
+    try:
+        async with conn.transaction():  # a savepoint: a failed read must not abort the caller's transaction
+            raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = $1", AUTOTRADE_ENABLED_KEY)
+    except Exception as e:
+        logger.warning("Could not read %s: %s; the switch counts as off", AUTOTRADE_ENABLED_KEY, e)
+        return False
+    on = parse_settings({AUTOTRADE_ENABLED_KEY: raw}).enabled
+    _switch_cache = (now + SWITCH_CACHE_S, on)
+    return on
+
+
 async def _equity(conn) -> Decimal:
     return Decimal(str(await conn.fetchval(
         "SELECT total_equity FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID) or 0))
+
+
+async def lock_capital(conn) -> None:
+    """Serialise the capital check across transactions (``start`` and a budget raise): two checks that each see room
+    cannot both commit past the cap. A transaction-scoped advisory lock, so it is released at commit or rollback;
+    call inside the transaction, before ``check_capital``."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('autotrade.capital'))")
 
 
 async def check_capital(conn, mandate_id: uuid.UUID, budget: Decimal, settings: AutotradeSettings) -> None:
@@ -136,6 +176,9 @@ async def coin_lock_conflict(conn, mandate: Mandate, instrument_id: str, what: s
             f"enter {instrument_id}, so nothing was queued; reject this {what}")
 
 
+LOCK_ATTEMPTS = 3
+
+
 async def acquire_locks(conn, mandate_id: uuid.UUID, instruments) -> None:
     """Insert the coin locks of ``instruments`` for the mandate, in a fixed order (no lock-order deadlock between
     two concurrent starts). A coin another mandate holds raises ``COIN_LOCKED`` with the holder. Call inside the
@@ -145,30 +188,57 @@ async def acquire_locks(conn, mandate_id: uuid.UUID, instruments) -> None:
         await conn.execute(
             """DELETE FROM ai_profile_coin_locks l USING ai_mandates m
                WHERE m.id = l.mandate_id AND l.base_asset = $1 AND m.status IN ('ARCHIVED', 'STOPPED')""", coin)
-        async with conn.transaction():  # a savepoint: the lookup below must not run in an aborted transaction
-            inserted = await conn.fetchval(
-                """INSERT INTO ai_profile_coin_locks (base_asset, mandate_id) VALUES ($1, $2)
-                   ON CONFLICT (base_asset) DO NOTHING RETURNING 1""", coin, mandate_id)
-        if inserted:
-            continue
-        row = await conn.fetchrow(
-            """SELECT l.mandate_id, m.name FROM ai_profile_coin_locks l JOIN ai_mandates m ON m.id = l.mandate_id
-               WHERE l.base_asset = $1""", coin)
-        if row is not None and row["mandate_id"] != mandate_id:
+        for _ in range(LOCK_ATTEMPTS):
+            async with conn.transaction():  # a savepoint: the lookup below must not run in an aborted transaction
+                inserted = await conn.fetchval(
+                    """INSERT INTO ai_profile_coin_locks (base_asset, mandate_id) VALUES ($1, $2)
+                       ON CONFLICT (base_asset) DO NOTHING RETURNING 1""", coin, mandate_id)
+            if inserted:
+                break
+            row = await conn.fetchrow(
+                """SELECT l.mandate_id, m.name FROM ai_profile_coin_locks l JOIN ai_mandates m ON m.id = l.mandate_id
+                   WHERE l.base_asset = $1""", coin)
+            if row is None:
+                continue  # the holder released it between the insert and the lookup: take it now
+            if row["mandate_id"] == mandate_id:
+                break  # already ours
             raise LifecycleError("COIN_LOCKED", {"coin": coin, "holder_id": str(row["mandate_id"]),
                                                  "holder_name": row["name"]})
+        else:  # never go on without the lock
+            raise LifecycleError("COIN_LOCKED", {"coin": coin, "holder_id": None, "holder_name": None})
 
 
-async def sync_locks(conn, mandate: Mandate) -> None:
+async def _coins_in_use(conn, instance_id: uuid.UUID | str) -> set[str]:
+    """Base assets the instance still has an open position or a working order on (the coins it cannot let go)."""
+    rows = await conn.fetch(
+        """SELECT instrument_id FROM paper_positions WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0
+           UNION SELECT instrument_id FROM paper_orders WHERE instance_id = $1 AND status = ANY($2)""",
+        instance_id, list(WORKING_ORDER_STATUSES))
+    coins = set()
+    for r in rows:
+        try:
+            coins.add(base_asset(r["instrument_id"]))
+        except ValueError:
+            continue
+    return coins
+
+
+async def sync_locks(conn, mandate: Mandate) -> list[str]:
     """Make the held locks match the instruments of a mandate that holds locks (an instrument edit): new coins are
-    locked (``COIN_LOCKED`` if another profile has one), coins no instrument covers any more are released. A
-    mandate that does not hold locks (STOPPED, ARCHIVED) is left alone."""
+    locked (``COIN_LOCKED`` if another profile has one), coins no instrument covers any more are released, except a
+    coin the mandate's instance still has an open position or a working order on: that one stays locked (its exits
+    keep running, D13) and is returned, sorted, as ``locks_retained``. A mandate that does not hold locks (STOPPED,
+    ARCHIVED) is left alone."""
     if not holds_coin_locks(mandate.status.value):
-        return
+        return []
     wanted = lock_keys(mandate.instruments)
     await acquire_locks(conn, mandate.id, mandate.instruments)
+    held = {r["base_asset"] for r in await conn.fetch(
+        "SELECT base_asset FROM ai_profile_coin_locks WHERE mandate_id = $1", mandate.id)}
+    retained = (held - wanted) & await _coins_in_use(conn, mandate.instance_id)
     await conn.execute("DELETE FROM ai_profile_coin_locks WHERE mandate_id = $1 AND NOT (base_asset = ANY($2))",
-                       mandate.id, sorted(wanted))
+                       mandate.id, sorted(wanted | retained))
+    return sorted(retained)
 
 
 async def release_locks(conn, mandate_id: uuid.UUID) -> int:
@@ -202,22 +272,23 @@ async def start(conn, mandate_id: uuid.UUID | str, *, actor: str, totp_ok: bool,
                 settings: Mapping[str, Any] | AutotradeSettings | None) -> Mandate:
     """Start (or restart) a profile. One transaction; every refusal is a ``LifecycleError`` and changes nothing.
 
-    Order: master switch (Ask is exempt), profile rules, TOTP (above Ask, and for a PAUSED or HALTED profile, as the
-    resume was), capital cap, coin locks, ACTIVE. Starting an ACTIVE profile is a no-op success."""
+    Order: master switch (Ask is exempt), profile rules, TOTP (above Ask, and for a PAUSED, HALTED or STOPPING profile,
+    as the resume was), capital cap, coin locks, ACTIVE. Starting an ACTIVE profile is a no-op success."""
     cfg = parse_settings(settings)
     async with conn.transaction():
         m = await _load(conn, mandate_id)
         if m.status is MandateStatus.ACTIVE:
             return m
-        if m.status in (MandateStatus.ARCHIVED, MandateStatus.STOPPING):
+        if m.status is MandateStatus.ARCHIVED:
             raise LifecycleError("NOT_STARTABLE", {"status": m.status.value})
         mode = m.execution_mode
         if mode is not ExecutionMode.ASK and not cfg.enabled:
             raise LifecycleError("AUTOTRADE_DISABLED", {"mode": mode.value})
         if errors := profile_errors(m.profile_fields(), running=True):
             raise LifecycleError("PROFILE_INVALID", {"codes": errors})
-        if (mode is not ExecutionMode.ASK or m.status in (MandateStatus.PAUSED, MandateStatus.HALTED)) and not totp_ok:
+        if (mode is not ExecutionMode.ASK or m.status in RESUMING_STATUSES) and not totp_ok:
             raise LifecycleError("TOTP_REQUIRED", {"mode": mode.value, "status": m.status.value})
+        await lock_capital(conn)
         await check_capital(conn, m.id, m.capital_budget_usd, cfg)
         await acquire_locks(conn, m.id, m.instruments)
         t = Transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps),
@@ -246,14 +317,14 @@ async def pause(conn, mandate_id: uuid.UUID | str, *, actor: str, reason: str = 
 
 
 async def stop(conn, mandate_id: uuid.UUID | str, *, actor: str, close: bool) -> Mandate:
-    """ACTIVE or PAUSED -> STOPPING: no new entries, the coin locks are kept until the profile is flat. With ``close``
+    """ACTIVE, PAUSED or HALTED -> STOPPING (a halted profile stops without TOTP: stopping only reduces risk): no new entries, the coin locks are kept until the profile is flat. With ``close``
     a reduce-only CLOSE_POSITION is queued for every open position of the profile; without it the positions run on
     their exits. A profile that is flat is finished at once (STOPPED, locks released)."""
     async with conn.transaction():
         m = await _load(conn, mandate_id)
         if m.status is MandateStatus.STOPPED:
             return m
-        if m.status not in (MandateStatus.ACTIVE, MandateStatus.PAUSED, MandateStatus.STOPPING):
+        if m.status not in (MandateStatus.ACTIVE, MandateStatus.PAUSED, MandateStatus.HALTED, MandateStatus.STOPPING):
             raise LifecycleError("NOT_STOPPABLE", {"status": m.status.value})
         if m.status is not MandateStatus.STOPPING:
             await _set_status(conn, m, MandateStatus.STOPPING, "stop", actor=actor,
@@ -293,3 +364,26 @@ async def finish_stop(conn, mandate_id: uuid.UUID | str) -> bool:
         await record_decision(conn, m.id, DecisionStage.LIFECYCLE, "STOPPED", "flat, locks released",
                               released=released)
         return True
+
+
+async def archive(conn, mandate_id: uuid.UUID | str, *, actor: str) -> Mandate:
+    """Retire a profile for good (no TOTP: it only removes risk). Allowed from STOPPED, or from PAUSED or HALTED when
+    the profile is flat; anything else (ACTIVE, STOPPING, or a position still open) is ``NOT_ARCHIVABLE``. The coin
+    locks are released in the same transaction and the audit event kind is ARCHIVED. Archiving an ARCHIVED profile is
+    a no-op."""
+    async with conn.transaction():
+        m = await _load(conn, mandate_id)
+        if m.status is MandateStatus.ARCHIVED:
+            return m
+        if m.status is not MandateStatus.STOPPED:
+            if m.status not in (MandateStatus.PAUSED, MandateStatus.HALTED):
+                raise LifecycleError("NOT_ARCHIVABLE", {"status": m.status.value})
+            if not await _is_flat(conn, m):
+                raise LifecycleError("NOT_ARCHIVABLE", {"status": m.status.value, "reason": "open position or working order"})
+        released = await release_locks(conn, m.id)
+        await _cancel_pending_add_risk(conn, m.id)
+        await _set_status(conn, m, MandateStatus.ARCHIVED, "archive", actor=actor,
+                          reason=f"{released} coin lock(s) released")
+        await record_decision(conn, m.id, DecisionStage.LIFECYCLE, "ARCHIVED", "archived, locks released",
+                              released=released, was=m.status.value, actor=actor)
+        return await _load(conn, m.id)

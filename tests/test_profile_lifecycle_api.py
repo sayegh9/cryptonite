@@ -344,7 +344,7 @@ async def machine(h, scopes=("operator",)) -> dict[str, str]:
 
 
 @pytest.mark.parametrize("path,body", [
-    ("start", {}), ("pause", {}), ("stop", {"close": True}), ("resume", {}), ("autonomy/confirm", {"level": 2}),
+    ("start", {}), ("pause", {}), ("stop", {"close": True}), ("resume", {}), ("archive", {}), ("autonomy/confirm", {"level": 2}),
 ])
 async def test_lifecycle_routes_refuse_a_machine_token(h, path, body):
     m = await profile(h, status="ACTIVE")
@@ -405,6 +405,7 @@ async def test_the_route_start_of_a_veto_profile_needs_totp(h):
 
 async def test_the_operator_sets_the_mode_directly(h):
     m = await profile(h, status="ACTIVE")
+    await h.pool.execute("INSERT INTO system_settings (key, value) VALUES ('autotrade.enabled', '1'::jsonb)")  # D10
     async with h.client() as c:
         no_code = await c.post(f"{V1}/{m.id}/autonomy/confirm", json={"level": 3}, headers=h.headers)
         assert no_code.status_code == 401  # raising needs TOTP, and no gate or proposal stands in the way
@@ -540,8 +541,11 @@ async def test_creating_a_mandate_on_a_held_coin_is_refused(h):
     async with h.client() as c:
         res = await c.post(V1, json={"name": "newcomer", "capital_budget_usd": 500, "instruments": [BTC],
                                      "max_position_pct": 10, "totp_code": h.totp.now()}, headers=h.headers)
-    assert res.status_code == 409 and res.json()["detail"].startswith("COIN_LOCKED:")
-    assert "STOPPED, not running" in res.json()["detail"]
+    # LOW: a refused Start is a 201 that says so (a 4xx invited a retry of the create: "name exists")
+    body = res.json()
+    assert res.status_code == 201 and body["started"] is False, res.text
+    assert body["start_error"]["code"] == "COIN_LOCKED" and "create-holder" in body["start_error"]["detail"]
+    assert body["mandate"]["status"] == "STOPPED" and body["mandate"]["name"] == "newcomer"
     assert await h.pool.fetchval("SELECT status FROM ai_mandates WHERE name = 'newcomer'") == "STOPPED"  # created, not running
     assert await locks(h) == {"BTC"} and await locks(h, holder) == {"BTC"}
 
@@ -551,7 +555,9 @@ async def test_creating_over_the_capital_cap_leaves_the_mandate_stopped(h):
     async with h.client() as c:
         res = await c.post(V1, json={"name": "too-big", "capital_budget_usd": str(equity), "instruments": [ETH],
                                      "max_position_pct": 10, "totp_code": h.totp.now()}, headers=h.headers)
-    assert res.status_code == 409 and res.json()["detail"].startswith("CAPITAL_OVER_ALLOCATED:"), res.text
+    body = res.json()
+    assert res.status_code == 201 and body["started"] is False, res.text
+    assert body["start_error"]["code"] == "CAPITAL_OVER_ALLOCATED" and body["mandate"]["status"] == "STOPPED"
     assert await h.pool.fetchval("SELECT status FROM ai_mandates WHERE name = 'too-big'") == "STOPPED"
     assert await locks(h) == set()
 
