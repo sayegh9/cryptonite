@@ -58,7 +58,7 @@ CREATE INDEX ix_ai_profile_coin_locks_mandate ON ai_profile_coin_locks (mandate_
 Backfill in Python inside `upgrade()`: read (id, name, status, instruments) of locking mandates, compute base assets
 with the local rule, build {base: [mandates]}. **If any base has more than one mandate, raise
 `RuntimeError` listing every conflicting coin with the mandate names and statuses, and the fix
-("pause, stop or edit so each coin has one owner — reports/autotrade-profiles-plan.md O1")** — the transaction rolls
+("edit instruments or archive with scripts/profile_overlap_resolve.py (runbook O1); PAUSED and HALTED mandates still hold their coins" — corrected after Gate R H3)** — the transaction rolls
 back, nothing changes. Otherwise insert one row per (base, mandate).
 
 ## 4. `ai_profile_decisions`

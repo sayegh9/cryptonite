@@ -545,7 +545,7 @@ async def test_creating_a_mandate_on_a_held_coin_is_refused(h):
     body = res.json()
     assert res.status_code == 201 and body["started"] is False, res.text
     assert body["start_error"]["code"] == "COIN_LOCKED" and "create-holder" in body["start_error"]["detail"]
-    assert body["mandate"]["status"] == "STOPPED" and body["mandate"]["name"] == "newcomer"
+    assert body["status"] == "STOPPED" and body["name"] == "newcomer"
     assert await h.pool.fetchval("SELECT status FROM ai_mandates WHERE name = 'newcomer'") == "STOPPED"  # created, not running
     assert await locks(h) == {"BTC"} and await locks(h, holder) == {"BTC"}
 
@@ -557,7 +557,7 @@ async def test_creating_over_the_capital_cap_leaves_the_mandate_stopped(h):
                                      "max_position_pct": 10, "totp_code": h.totp.now()}, headers=h.headers)
     body = res.json()
     assert res.status_code == 201 and body["started"] is False, res.text
-    assert body["start_error"]["code"] == "CAPITAL_OVER_ALLOCATED" and body["mandate"]["status"] == "STOPPED"
+    assert body["start_error"]["code"] == "CAPITAL_OVER_ALLOCATED" and body["status"] == "STOPPED"
     assert await h.pool.fetchval("SELECT status FROM ai_mandates WHERE name = 'too-big'") == "STOPPED"
     assert await locks(h) == set()
 

@@ -578,12 +578,14 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
             row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
             view = await mandate_view(conn, row, await read_marks(_redis(request)))
             await _publish_updated(request, m.id, "created")
-            return {"mandate": view, "started": False,
+            # one shape for every create: the mandate view's own fields plus started/start_error, so readers of the
+            # view (web editor, Brain remedies) keep working whether or not the start succeeded
+            return {**view, "started": False,
                     "start_error": {"code": e.code, "detail": str(refusal.detail).split(": ", 1)[-1]}}
         row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
         view = await mandate_view(conn, row, await read_marks(_redis(request)))
     await _publish_updated(request, m.id, "created")
-    return view
+    return {**view, "started": True, "start_error": None}
 
 
 @router.patch("/mandates/{mandate_id}", dependencies=OPERATOR_WRITE)

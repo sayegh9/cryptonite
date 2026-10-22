@@ -45,6 +45,13 @@ def _url() -> str:
 @pytest.fixture
 async def conn():
     c = await asyncpg.connect(_url())
+    # the script's change paths exist for a 049 schema only (from 050 on it reports); the full suite runs at head
+    if await c.fetchval(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'ai_mandates' AND column_name = 'markets'"
+    ):
+        await c.close()
+        pytest.skip("needs a schema at 049 (before ai_mandates.markets); covered at head by the report-only test")
+    await c.execute("DELETE FROM execution_reservations")
     for t in (
         "audit_events",
         "paper_positions",
@@ -293,3 +300,19 @@ async def test_after_resolving_the_report_exits_0(conn, capsys):
     assert code == 0
     code, out = await run([], capsys)
     assert code == 0 and "passes" in out
+
+
+async def test_from_050_on_the_script_only_reports(capsys):
+    """At head (050+) overlaps cannot exist (coin locks); the script reports and refuses changes, exit 0."""
+    c = await asyncpg.connect(_url())
+    try:
+        if not await c.fetchval(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'ai_mandates' AND column_name = 'markets'"
+        ):
+            pytest.skip("schema is before 050")
+    finally:
+        await c.close()
+    code, out = await run([], capsys)
+    assert code == 0, out
+    code, out = await run(["--archive", "nobody", "--confirm", "nobody"], capsys)
+    assert code != 0 or "050" in out or "report" in out.lower(), out
