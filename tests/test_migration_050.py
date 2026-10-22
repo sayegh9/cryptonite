@@ -155,7 +155,9 @@ def test_trigger_defaults_for_old_writers(head):
 
     assert row()[0:2] == (["SPOT"], False)
     assert row(instruments=["SOLUSDT-PERP.BINANCE"], allow_perps=True)[0:2] == (["PERP"], True)
-    assert row(instruments=["SOLUSDT.BINANCE", "ETHUSDT-PERP.BINANCE"])[0:2] == (["PERP", "SPOT"], True)
+    assert row(instruments=["SOLUSDT-PERP.BINANCE"])[0:2] == (["SPOT"], False)  # a listed perp never grants perps
+    assert row(instruments=["SOLUSDT.BINANCE", "ETHUSDT-PERP.BINANCE"])[0:2] == (["SPOT"], False)
+    assert row(instruments=["SOLUSDT-MARGIN.BINANCE"])[0:2] == (["SPOT"], False)  # SPOT_MARGIN is never derived
     assert row(instruments=["SOLUSDT.BINANCE"], allow_perps=True)[0:2] == (["PERP", "SPOT"], True)
     assert float(row(max_risk_per_trade_pct=2)[2]) == 6  # ACTIVE without a limit: 3 x risk
     assert float(row(max_risk_per_trade_pct=2, max_drawdown_pct=5)[2]) == 5  # capped at the hard stop

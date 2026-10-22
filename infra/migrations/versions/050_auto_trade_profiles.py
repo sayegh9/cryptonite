@@ -19,7 +19,8 @@ The base-asset rule is local (no app imports in a migration); a test proves it e
 ``cryptonite_schemas.profile.base_asset``.
 
 ``ai_mandates_profile_defaults()`` (BEFORE INSERT OR UPDATE trigger) keeps writers that predate profiles working: a row
-without ``markets`` gets them derived from ``instruments`` (plus PERP when ``allow_perps``), and an ACTIVE row without
+without ``markets`` gets SPOT derived from its non-perp ``instruments`` plus PERP only when ``allow_perps`` (a listed perp
+instrument never grants perps; SPOT_MARGIN is never derived; empty becomes SPOT), and an ACTIVE row without
 a daily loss limit gets 3 x its risk per trade capped at its hard stop (ADR 0011 D9). A supplied ``markets`` is never
 touched; ``chk_ai_mandates_perps_markets`` still enforces that ``allow_perps`` agrees with it.
 
@@ -90,16 +91,13 @@ TRIGGER_FN = """
 CREATE OR REPLACE FUNCTION ai_mandates_profile_defaults() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
     IF NEW.markets IS NULL THEN
-        NEW.markets := (
-            SELECT array_agg(DISTINCT x ORDER BY x) FROM (
-                SELECT CASE WHEN split_part(upper(i), '.', 1) LIKE '%-PERP' THEN 'PERP'
-                            WHEN split_part(upper(i), '.', 1) LIKE '%-MARGIN' THEN 'SPOT_MARGIN'
-                            ELSE 'SPOT' END AS x
-                FROM unnest(NEW.instruments) AS i
-                UNION
-                SELECT 'PERP' WHERE NEW.allow_perps
-            ) t
-        );
+        NEW.markets := COALESCE((
+                SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+                    SELECT 'SPOT' AS x FROM unnest(NEW.instruments) AS i WHERE split_part(upper(i), '.', 1) NOT LIKE '%-PERP'
+                    UNION
+                    SELECT 'PERP' WHERE NEW.allow_perps
+                ) t
+            ), ARRAY['SPOT']::text[]);
         NEW.allow_perps := 'PERP' = ANY(NEW.markets);
     END IF;
     IF NEW.status = 'ACTIVE' AND NEW.daily_loss_limit_pct IS NULL THEN
@@ -182,16 +180,13 @@ def upgrade() -> None:
 
     # Backfill 1: markets from the instruments (plus PERP when allow_perps), then allow_perps follows markets
     op.execute("""
-        UPDATE ai_mandates m SET markets = (
-            SELECT array_agg(DISTINCT x ORDER BY x) FROM (
-                SELECT CASE WHEN split_part(upper(i), '.', 1) LIKE '%-PERP' THEN 'PERP'
-                            WHEN split_part(upper(i), '.', 1) LIKE '%-MARGIN' THEN 'SPOT_MARGIN'
-                            ELSE 'SPOT' END AS x
-                FROM unnest(m.instruments) AS i
-                UNION
-                SELECT 'PERP' WHERE m.allow_perps
-            ) t
-        )
+        UPDATE ai_mandates m SET markets = COALESCE((
+                SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+                    SELECT 'SPOT' AS x FROM unnest(m.instruments) AS i WHERE split_part(upper(i), '.', 1) NOT LIKE '%-PERP'
+                    UNION
+                    SELECT 'PERP' WHERE m.allow_perps
+                ) t
+            ), ARRAY['SPOT']::text[])
     """)
     op.execute("UPDATE ai_mandates SET allow_perps = ('PERP' = ANY(markets))")
     # Leverage only exists on PERP and SPOT_MARGIN: a spot-only mandate with max_leverage > 1 could never use it
