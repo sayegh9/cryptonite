@@ -113,3 +113,46 @@ async def test_bad_mandate_id_returns_false_without_raising(caplog):
     assert ok is False
     assert conn.calls == []
     assert any("profile decision not recorded" in r.getMessage() for r in caplog.records)
+
+
+# Review fix: the INSERT runs in a savepoint so a failure cannot abort the caller's transaction
+class _SavepointConn:
+    def __init__(self, fail: bool):
+        self.fail = fail
+        self.savepoints = 0
+        self.calls = []
+
+    def transaction(self):
+        conn = self
+
+        class _Tx:
+            async def __aenter__(self):
+                conn.savepoints += 1
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Tx()
+
+    async def execute(self, *args):
+        self.calls.append(args)
+        if self.fail:
+            raise RuntimeError("insert failed")
+
+
+async def test_insert_runs_inside_a_savepoint():
+    import uuid as _uuid
+
+    from cryptonite_execution.profile_log import record_decision
+    conn = _SavepointConn(fail=False)
+    assert await record_decision(conn, _uuid.uuid4(), "GATE", "ACCEPTED") is True
+    assert conn.savepoints == 1 and len(conn.calls) == 1
+
+
+async def test_failed_insert_in_savepoint_returns_false():
+    import uuid as _uuid
+
+    from cryptonite_execution.profile_log import record_decision
+    conn = _SavepointConn(fail=True)
+    assert await record_decision(conn, _uuid.uuid4(), "GATE", "ACCEPTED") is False
+    assert conn.savepoints == 1

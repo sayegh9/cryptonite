@@ -29,7 +29,7 @@ async def record_decision(conn: Any, mandate_id, stage, outcome: str, reason: st
     """Insert one decision row. Return True on success, False on any failure (never raises)."""
     try:
         stage_value = DecisionStage(stage).value
-        await conn.execute(
+        args = (
             _INSERT_SQL,
             uuid.UUID(str(mandate_id)),
             instrument_id[:_INSTRUMENT_MAX] if instrument_id is not None else None,
@@ -40,6 +40,14 @@ async def record_decision(conn: Any, mandate_id, stage, outcome: str, reason: st
             uuid.UUID(str(run_id)) if run_id is not None else None,
             uuid.UUID(str(command_id)) if command_id is not None else None,
         )
+        # A savepoint: a failed INSERT inside the caller's transaction must not abort that transaction (Postgres
+        # rejects every later statement of an aborted transaction, which would block the trade being logged)
+        transaction = getattr(conn, "transaction", None)
+        if transaction is None:
+            await conn.execute(*args)
+        else:
+            async with transaction():
+                await conn.execute(*args)
     except Exception as e:
         logger.warning("profile decision not recorded: %s", e)
         return False
