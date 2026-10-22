@@ -572,10 +572,14 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
             await profile_lifecycle.start(conn, m.id, actor=actor(auth), totp_ok=True,
                                           settings=await profile_lifecycle.load_settings(conn))
         except profile_lifecycle.LifecycleError as e:
+            # The mandate exists, STOPPED. A 4xx would invite a retry of the create ("name exists"), so this is a 201
+            # that says plainly it was created and not started; the operator fixes the cause and presses Start.
             refusal = lifecycle_http(e)
+            row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
+            view = await mandate_view(conn, row, await read_marks(_redis(request)))
             await _publish_updated(request, m.id, "created")
-            raise HTTPException(status_code=refusal.status_code, detail=(
-                f"{refusal.detail}; the mandate {m.name} (id {m.id}) was created and is STOPPED, not running")) from e
+            return {"mandate": view, "started": False,
+                    "start_error": {"code": e.code, "detail": str(refusal.detail).split(": ", 1)[-1]}}
         row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
         view = await mandate_view(conn, row, await read_marks(_redis(request)))
     await _publish_updated(request, m.id, "created")
@@ -622,13 +626,16 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                     raise HTTPException(status_code=409, detail=stopped)
             if risk_adding_change(old, new):
                 await require_totp(request, auth, req.totp_code)
+            locks_retained: list[str] = []
             try:
                 if new.capital_budget_usd > old.capital_budget_usd and old.status.value in profile_lifecycle.ALLOCATING_STATUSES:
-                    # ADR 0011 D11: a budget raise is checked against the cap like a Start
+                    # ADR 0011 D11: a budget raise is checked against the cap like a Start, serialised with the Starts
+                    await profile_lifecycle.lock_capital(conn)
                     await profile_lifecycle.check_capital(conn, mandate_id, new.capital_budget_usd,
                                                           await profile_lifecycle.load_settings(conn))
                 if set(new.instruments) != set(old.instruments):
-                    await profile_lifecycle.sync_locks(conn, new)  # added coins are locked, dropped ones released
+                    # added coins are locked, dropped ones released unless a position or order still needs them
+                    locks_retained = await profile_lifecycle.sync_locks(conn, new)
             except profile_lifecycle.LifecycleError as e:
                 raise lifecycle_http(e) from e
             await conn.execute(
@@ -655,7 +662,7 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
             view = await mandate_view(conn, await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mandate_id),
                                      await read_marks(_redis(request)))
     await _publish_updated(request, mandate_id, "edited")
-    return view
+    return {**view, "locks_retained": locks_retained}
 
 
 async def _transition(request: Request, auth: dict, mandate_id: uuid.UUID, trigger: AutonomyTrigger, *,
@@ -725,9 +732,25 @@ async def stop_mandate(mandate_id: uuid.UUID, req: StopIn, request: Request, aut
 
 @router.post("/mandates/{mandate_id}/resume", dependencies=OPERATOR_WRITE)
 async def resume_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, auth: dict = Depends(require_human_operator)):
-    """Resuming a halted or paused mandate needs TOTP; its high-water mark restarts from here."""
+    """Resuming a halted, paused or stopping mandate needs TOTP and is a Start: the master switch (VETO/AUTO), the
+    profile rules, the capital cap and the coin locks all apply (ADR 0011). Its high-water mark restarts from here."""
     await require_totp(request, auth, req.totp_code)
-    return await _transition(request, auth, mandate_id, AutonomyTrigger.RESUME, totp_ok=True, reason=req.reason)
+
+    async def call(conn):
+        m = await load_mandate(conn, mandate_id)
+        if m is not None and m.status not in profile_lifecycle.RESUMING_STATUSES:
+            raise profile_lifecycle.LifecycleError("MANDATE_NOT_STOPPED", {"status": m.status.value})
+        return await profile_lifecycle.start(conn, mandate_id, actor=actor(auth), totp_ok=True,
+                                             settings=await profile_lifecycle.load_settings(conn))
+    return await _lifecycle_view(request, mandate_id, "resumed", call)
+
+
+@router.post("/mandates/{mandate_id}/archive", dependencies=OPERATOR_WRITE)
+async def archive_mandate(mandate_id: uuid.UUID, request: Request, auth: dict = Depends(require_human_operator)):
+    """Retire the profile (no TOTP, it only removes risk): from STOPPED, or from PAUSED or HALTED when flat. Its coin
+    locks are released."""
+    return await _lifecycle_view(request, mandate_id, "archived", lambda conn: profile_lifecycle.archive(
+        conn, mandate_id, actor=actor(auth)))
 
 
 @router.post("/mandates/{mandate_id}/demote", dependencies=OPERATOR_WRITE)
@@ -936,7 +959,7 @@ async def _autonomy_view(conn, m: Mandate) -> dict[str, Any]:
            WHERE mandate_id = $1 AND kind = 'PROPOSED' AND proposal_status = 'PENDING'""", m.id)
     events = await conn.fetch(
         """SELECT id, kind, from_level, to_level, reason, actor, proposal_status, created_at FROM ai_autonomy_events
-           WHERE mandate_id = $1 AND kind IN ('PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'BACKSTOP', 'RESUMED', 'PAUSED', 'BREACH', 'BREACH_VOIDED', 'CREATED', 'STARTED', 'STOPPING', 'STOPPED', 'MODE_SET')
+           WHERE mandate_id = $1 AND kind IN ('PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'BACKSTOP', 'RESUMED', 'PAUSED', 'BREACH', 'BREACH_VOIDED', 'CREATED', 'STARTED', 'STOPPING', 'STOPPED', 'ARCHIVED', 'MODE_SET')
            ORDER BY id DESC LIMIT 50""", m.id)
     since = await conn.fetchval("SELECT level_since FROM ai_mandates WHERE id = $1", m.id)
     return {
@@ -995,6 +1018,10 @@ async def confirm_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Req
         if target == int(current.autonomy_level):
             raise HTTPException(status_code=409, detail="ALREADY_AT_LEVEL")
         raising = target > int(current.autonomy_level)
+        if raising and target > 1 and not (await profile_lifecycle.load_settings(conn)).enabled:
+            # ADR 0011 D10: with the master switch off nothing may run above Ask; refused before a code is spent
+            raise HTTPException(status_code=409, detail=(
+                "AUTOTRADE_DISABLED: the auto-trade master switch is off; the mode cannot be raised above Ask me"))
     if raising:
         await require_totp(request, auth, req.totp_code)
     async with request.app.state.pool.acquire() as conn:

@@ -289,3 +289,15 @@ async def test_betas_are_refreshed_from_the_lake_hourly(db):
     calls = Lake.calls
     await risk_overrides.refresh_betas(db, state, query_engine=Lake(), now_s=1000.0 + 60)  # not due yet
     assert Lake.calls == calls
+
+
+@pytest.fixture(autouse=True)
+def _autotrade_switch_on(monkeypatch):
+    """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
+    Ask me. These tests exercise the switch-on behaviour of those levels."""
+    from cryptonite_execution import profile_lifecycle
+
+    async def on(conn):
+        return True
+
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)

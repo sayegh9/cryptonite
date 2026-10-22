@@ -44,6 +44,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from cryptonite_execution import profile_lifecycle
 from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.identifiers import to_perp_instrument_id
 from cryptonite_schemas.mandate import (
@@ -518,6 +519,16 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         payload = {**base, "quantity": str(held)}
         summary = f"SELL {held} {base['instrument_id']} (the mandate's position) · conviction {conviction:.2f}"
         action = ActionClass.REDUCE_RISK
+    if action is ActionClass.ADD_RISK:
+        # ADR 0011 D6: the base asset may belong to another running profile; refuse before any approval is written
+        if conflict := await profile_lifecycle.coin_lock_conflict(conn, mandate, instrument, "debate"):
+            return _no_trade(run_id, instrument, mandate, conflict)
+        # ADR 0011 D10 at runtime: with the master switch off, a Veto window or Fully automatic profile behaves as Ask
+        # me: a TOTP approval, never a veto window or a direct enqueue
+        if mandate.autonomy_level > AutonomyLevel.L1 and not await profile_lifecycle.autotrade_switch_on(conn):
+            logger.info("Debate %s: auto-trade switch off; mandate %s (level %d) asks for approval as at level 1",
+                        run_id, mandate.name, int(mandate.autonomy_level))
+            mandate = mandate.model_copy(update={"autonomy_level": AutonomyLevel.L1})
     # A perp reduction closes the mandate's own position (capped to what is live at execution); every other order is a
     # SUBMIT_ORDER
     command_type = "CLOSE_POSITION" if action is ActionClass.REDUCE_RISK and is_perp_instrument(instrument) else "SUBMIT_ORDER"

@@ -16,6 +16,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.leverage import (
     ACCOUNT_EXPOSURE_CAP,
     DEFAULT_FEE_ROUND_TRIP,
@@ -243,10 +244,11 @@ def perp_entry_reject(engine, mandate: Mandate, intent) -> str | None:
     )
 
 
-async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate) -> bool:
+async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate, *, autotrade_on: bool = True) -> bool:
     """ADD_RISK below L3 needs an operator approval bound to exactly this command: an ``ai_approvals``
     row for this mandate, ADD_RISK, APPROVED (or, at L2, a veto window that ran out with policy
-    PROCEED), whose command is this one."""
+    PROCEED), whose command is this one. While the master switch is off (``autotrade_on`` False) a veto window that ran
+    out proves nothing: only an operator's APPROVED counts (ADR 0011 D10)."""
     approval_id = payload.get("approval_id")
     if not approval_id:
         return False
@@ -263,7 +265,8 @@ async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate) -> b
         return False
     if a["status"] == ApprovalStatus.APPROVED:
         return True
-    return a["status"] == ApprovalStatus.EXPIRED_PROCEEDED and mandate.autonomy_level >= AutonomyLevel.L2
+    return (autotrade_on and a["status"] == ApprovalStatus.EXPIRED_PROCEEDED
+            and mandate.autonomy_level >= AutonomyLevel.L2)
 
 
 async def coin_lock_owner(conn, instrument_id: str) -> uuid.UUID | None:
@@ -298,13 +301,16 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
     )
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     coin_owner = await coin_lock_owner(conn, intent.instrument_id)
-    ok = await approval_granted(conn, row, payload, mandate)
+    # ADR 0011 D10 at runtime: with the master switch off, VETO and AUTO behave as ASK (read cached, off if unreadable)
+    switch_on = await profile_lifecycle.autotrade_switch_on(conn)
+    ok = await approval_granted(conn, row, payload, mandate, autotrade_on=switch_on)
     # ADR 0010: today's session (loss latch, profit target, profit lock), read at execution, so an entry approved
     # before the latch is refused too. Only an ADD_RISK order reads it: a failed read can never fail an exit
     session = SessionVerdict.ACTIVE
     if action_class(order) is ActionClass.ADD_RISK:
         session = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
-    reject = check_mandate(mandate, order, exposure, approval_ok=ok, session=session, coin_owner=coin_owner)
+    reject = check_mandate(mandate, order, exposure, approval_ok=ok, session=session, coin_owner=coin_owner,
+                         autotrade_on=switch_on)
     if reject is None and order.is_perp and action_class(order) is ActionClass.ADD_RISK:
         # Leverage plan 2.4: the same valuation the sizing used; a refusal, never a breach
         if (perp_reject := perp_entry_reject(engine, mandate, intent)) is not None:

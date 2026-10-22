@@ -636,3 +636,15 @@ async def test_agent_ro_cannot_read_mandates(db_url):
     finally:
         await conn.close()
     assert (has, api, api_eq) == (False, True, False)
+
+
+@pytest.fixture(autouse=True)
+def _autotrade_switch_on(monkeypatch):
+    """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
+    Ask me. These tests exercise the switch-on behaviour of those levels."""
+    from cryptonite_execution import profile_lifecycle
+
+    async def on(conn):
+        return True
+
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)

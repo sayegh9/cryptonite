@@ -344,7 +344,7 @@ async def machine(h, scopes=("operator",)) -> dict[str, str]:
 
 
 @pytest.mark.parametrize("path,body", [
-    ("start", {}), ("pause", {}), ("stop", {"close": True}), ("resume", {}), ("autonomy/confirm", {"level": 2}),
+    ("start", {}), ("pause", {}), ("stop", {"close": True}), ("resume", {}), ("archive", {}), ("autonomy/confirm", {"level": 2}),
 ])
 async def test_lifecycle_routes_refuse_a_machine_token(h, path, body):
     m = await profile(h, status="ACTIVE")
@@ -405,6 +405,7 @@ async def test_the_route_start_of_a_veto_profile_needs_totp(h):
 
 async def test_the_operator_sets_the_mode_directly(h):
     m = await profile(h, status="ACTIVE")
+    await h.pool.execute("INSERT INTO system_settings (key, value) VALUES ('autotrade.enabled', '1'::jsonb)")  # D10
     async with h.client() as c:
         no_code = await c.post(f"{V1}/{m.id}/autonomy/confirm", json={"level": 3}, headers=h.headers)
         assert no_code.status_code == 401  # raising needs TOTP, and no gate or proposal stands in the way
@@ -540,8 +541,11 @@ async def test_creating_a_mandate_on_a_held_coin_is_refused(h):
     async with h.client() as c:
         res = await c.post(V1, json={"name": "newcomer", "capital_budget_usd": 500, "instruments": [BTC],
                                      "max_position_pct": 10, "totp_code": h.totp.now()}, headers=h.headers)
-    assert res.status_code == 409 and res.json()["detail"].startswith("COIN_LOCKED:")
-    assert "STOPPED, not running" in res.json()["detail"]
+    # LOW: a refused Start is a 201 that says so (a 4xx invited a retry of the create: "name exists")
+    body = res.json()
+    assert res.status_code == 201 and body["started"] is False, res.text
+    assert body["start_error"]["code"] == "COIN_LOCKED" and "create-holder" in body["start_error"]["detail"]
+    assert body["mandate"]["status"] == "STOPPED" and body["mandate"]["name"] == "newcomer"
     assert await h.pool.fetchval("SELECT status FROM ai_mandates WHERE name = 'newcomer'") == "STOPPED"  # created, not running
     assert await locks(h) == {"BTC"} and await locks(h, holder) == {"BTC"}
 
@@ -551,7 +555,9 @@ async def test_creating_over_the_capital_cap_leaves_the_mandate_stopped(h):
     async with h.client() as c:
         res = await c.post(V1, json={"name": "too-big", "capital_budget_usd": str(equity), "instruments": [ETH],
                                      "max_position_pct": 10, "totp_code": h.totp.now()}, headers=h.headers)
-    assert res.status_code == 409 and res.json()["detail"].startswith("CAPITAL_OVER_ALLOCATED:"), res.text
+    body = res.json()
+    assert res.status_code == 201 and body["started"] is False, res.text
+    assert body["start_error"]["code"] == "CAPITAL_OVER_ALLOCATED" and body["mandate"]["status"] == "STOPPED"
     assert await h.pool.fetchval("SELECT status FROM ai_mandates WHERE name = 'too-big'") == "STOPPED"
     assert await locks(h) == set()
 
@@ -641,13 +647,13 @@ def test_050_widens_the_event_kinds_and_refuses_a_downgrade_over_them():
     with migrated_database("cryptonite_ci_p04_kinds") as url:
         mid = asyncio.run(run(url, """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct)
                                       VALUES ('k', 100, ARRAY['BTCUSDT.BINANCE'], 10) RETURNING id"""))
-        for kind in ("STARTED", "STOPPING", "STOPPED", "MODE_SET"):
+        for kind in ("STARTED", "STOPPING", "STOPPED", "MODE_SET", "ARCHIVED"):
             asyncio.run(run(url, "INSERT INTO ai_autonomy_events (mandate_id, kind) VALUES ($1, $2) RETURNING 1", mid, kind))
         with pytest.raises(asyncpg.CheckViolationError):
             asyncio.run(run(url, "INSERT INTO ai_autonomy_events (mandate_id, kind) VALUES ($1, 'NOPE') RETURNING 1", mid))
         cmd = [sys.executable, "-m", "alembic", "-c", "infra/migrations/alembic.ini", "downgrade", "049"]
         env = {**os.environ, "DATABASE_URL": url}
         refused = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True)
-        assert refused.returncode != 0 and "STARTED/STOPPING/STOPPED/MODE_SET" in refused.stderr + refused.stdout
-        asyncio.run(run(url, "DELETE FROM ai_autonomy_events WHERE kind IN ('STARTED','STOPPING','STOPPED','MODE_SET') RETURNING 1"))
+        assert refused.returncode != 0 and "STARTED/STOPPING/STOPPED/MODE_SET/ARCHIVED" in refused.stderr + refused.stdout
+        asyncio.run(run(url, "DELETE FROM ai_autonomy_events WHERE kind IN ('STARTED','STOPPING','STOPPED','MODE_SET','ARCHIVED') RETURNING 1"))
         assert subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True).returncode == 0

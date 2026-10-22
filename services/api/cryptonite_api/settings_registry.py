@@ -201,8 +201,10 @@ REGISTRY: tuple[Setting, ...] = (
                      choices=tuple((str(i), mode) for i, mode in enumerate(ROUTING_MODES))),
     # Auto-trade profiles (ADR 0011): enabling and raising are risk-adding (TOTP); switching off and lowering are free
     _runtime_setting("autotrade.enabled", "Auto-trade master switch", Tier.T_L, "0011",
-                     "read at Start: while off, a profile in Veto window or Fully automatic cannot start and Ask "
-                     "profiles still run; enabling needs TOTP, switching off is free",
+                     "applies at runtime (read every 30 s, off if unreadable): while off, a profile in Veto window or "
+                     "Fully automatic cannot start, and one already running behaves as Ask me (every entry needs your "
+                     "TOTP approval; exits are unaffected); Ask profiles run as usual; enabling needs TOTP, switching "
+                     "off is free",
                      choices=(("0", "Off"), ("1", "On"))),
     _runtime_setting("autotrade.max_allocated_pct", "Max capital allocated to running profiles (% of equity)",
                      Tier.T_L, "0011",

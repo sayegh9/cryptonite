@@ -25,6 +25,7 @@ from cryptonite_api.routes.auth import (
     require_operator,
 )
 from cryptonite_api.similar import similar_or_none
+from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.approvals import (
     ApprovalConflict,
     decide_approval,
@@ -350,6 +351,11 @@ async def _plan_debate(request: Request, run, decision, mandate_id: uuid.UUID | 
         conflict = await instrument_conflict(conn, mandate, instrument, Decimal("0"), "debate")
     if conflict is not None:
         raise HTTPException(status_code=409, detail=conflict)
+    # ADR 0011 D6: the base asset may belong to another running profile; refused before any approval is written
+    async with pool.acquire() as conn:
+        locked = await profile_lifecycle.coin_lock_conflict(conn, mandate, instrument, "debate")
+    if locked is not None:
+        raise HTTPException(status_code=409, detail=locked)
     # ADR 0010: the mandate's daily session and its conviction filter refuse the entry as the debate worker would
     async with pool.acquire() as conn:
         refused = await entry_filter_detail(conn, mandate, "debate", conviction=decision["conviction_score"])

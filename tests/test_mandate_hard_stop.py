@@ -267,3 +267,15 @@ async def test_a_mandate_close_never_sells_more_than_the_mandate_owns(db):
     again = await queue(db, m, {"_type": "CLOSE_POSITION", "instrument_id": SPOT, "quantity": "0.1", "reason": "retry"})
     assert (await drain(db, engine, quotes_at(50000), [again]))[again] == ("COMPLETED", None)
     assert engine.dispatcher.get_position_qty(SPOT) == D("0.5")  # nothing of its own left: a no-op
+
+
+@pytest.fixture(autouse=True)
+def _autotrade_switch_on(monkeypatch):
+    """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
+    Ask me. These tests exercise the switch-on behaviour of those levels."""
+    from cryptonite_execution import profile_lifecycle
+
+    async def on(conn):
+        return True
+
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)

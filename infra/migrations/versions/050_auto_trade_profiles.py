@@ -100,6 +100,12 @@ BEGIN
             ), ARRAY['SPOT']::text[]);
         NEW.allow_perps := 'PERP' = ANY(NEW.markets);
     END IF;
+    -- markets is the truth: a write that leaves markets alone cannot change allow_perps (an allow_perps-only UPDATE
+    -- from code that predates the profiles, e.g. an old orchestrator's hard stop during the deploy window, is a no-op
+    -- instead of a CHECK failure)
+    IF TG_OP = 'UPDATE' AND NEW.markets IS NOT DISTINCT FROM OLD.markets THEN
+        NEW.allow_perps := 'PERP' = ANY(NEW.markets);
+    END IF;
     IF NEW.status = 'ACTIVE' AND NEW.daily_loss_limit_pct IS NULL THEN
         NEW.daily_loss_limit_pct := LEAST(3 * NEW.max_risk_per_trade_pct, NEW.max_drawdown_pct);
     END IF;
@@ -109,10 +115,10 @@ $fn$
 """
 
 
-# ai_autonomy_events.kind as 045 left it, and the lifecycle kinds 050 adds (start, stop, finish stop, operator mode change)
+# ai_autonomy_events.kind as 045 left it, and the lifecycle kinds 050 adds (start, stop, finish stop, operator mode change, archive)
 EVENT_KINDS_045 = ("'CREATED', 'PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'RESUMED', 'PAUSED', 'BREACH', 'EDITED', "
                    "'BACKSTOP', 'BREACH_VOIDED'")
-EVENT_KINDS_NEW = ("'STARTED', 'STOPPING', 'STOPPED', 'MODE_SET'",)
+EVENT_KINDS_NEW = ("'STARTED', 'STOPPING', 'STOPPED', 'MODE_SET', 'ARCHIVED'",)
 
 
 def base_asset(instrument_id: str) -> str:
@@ -148,8 +154,8 @@ def _check_coin_overlap(owners: dict[str, list]) -> None:
     raise RuntimeError(
         "migration 050: base assets owned by more than one mandate in ACTIVE, PAUSED or HALTED:\n"
         + "\n".join(lines)
-        + "\nFix: pause, stop or edit so each coin has one owner "
-        "(reports/autotrade-profiles-plan.md O1), then run the migration again."
+        + "\nFix: edit instruments or archive with `scripts/profile_overlap_resolve.py` (runbook O1) so each coin has "
+        "one owner; PAUSED and HALTED mandates still hold their coins. Then run the migration again."
     )
 
 
@@ -325,8 +331,8 @@ def downgrade() -> None:
 
     # Dropping the kinds would delete audit history: refuse while any lifecycle event exists
     op.execute("""DO $$ BEGIN
-        IF EXISTS (SELECT 1 FROM ai_autonomy_events WHERE kind IN ('STARTED', 'STOPPING', 'STOPPED', 'MODE_SET')) THEN
-            RAISE EXCEPTION 'migration 050 downgrade refused: ai_autonomy_events has STARTED/STOPPING/STOPPED/MODE_SET rows';
+        IF EXISTS (SELECT 1 FROM ai_autonomy_events WHERE kind IN ('STARTED', 'STOPPING', 'STOPPED', 'MODE_SET', 'ARCHIVED')) THEN
+            RAISE EXCEPTION 'migration 050 downgrade refused: ai_autonomy_events has STARTED/STOPPING/STOPPED/MODE_SET/ARCHIVED rows';
         END IF; END $$""")
     op.execute("ALTER TABLE ai_autonomy_events DROP CONSTRAINT chk_ai_autonomy_events_kind")
     op.execute(f"ALTER TABLE ai_autonomy_events ADD CONSTRAINT chk_ai_autonomy_events_kind CHECK (kind IN ({EVENT_KINDS_045}))")

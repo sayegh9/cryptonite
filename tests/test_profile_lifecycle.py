@@ -123,11 +123,6 @@ async def test_full_lifecycle_start_pause_restart_stop_releases_the_locks(h):
     assert await lifecycle_outcomes(h, m) == ["STARTED", "PAUSED", "STARTED", "STOPPING", "STOPPED"]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "P0.5 found: no archive transition exists. Nothing in the code writes ARCHIVED and profile_lifecycle has no "
-    "archive(), so release_locks is never called on archive (spec G: release_locks is called by finish_stop and "
-    "archive; ADR 0011 D6: STOPPED/ARCHIVED delete the locks). An ARCHIVED profile keeps its coin locks until another "
-    "start on the same coin clears them."))
 async def test_archiving_a_halted_profile_releases_its_locks(h):
     """A profile that still holds its coins (halted, so it never reached STOPPED) is archived: the locks must go."""
     m = await profile(h, instruments=(BTC,))
@@ -139,9 +134,10 @@ async def test_archiving_a_halted_profile_releases_its_locks(h):
                            reason="hard stop before archive")
             await apply_transition(conn, m.id, t, actor="risk:test")
     assert await locks(h, m) == {"BTC"}
-    # the only status write an archive could make; no code path in the repo performs it
-    await h.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED' WHERE id = $1", m.id)
-    assert await locks(h, m) == set()
+    async with h.pool.acquire() as conn:
+        archived = await pl.archive(conn, m.id, actor="test")
+    assert archived.status is MandateStatus.ARCHIVED and await locks(h, m) == set()
+    assert (await event_kinds(h, m))[-1] == "ARCHIVED" and (await lifecycle_outcomes(h, m))[-1] == "ARCHIVED"
 
 
 async def test_an_archived_holder_does_not_block_its_coin(h):
