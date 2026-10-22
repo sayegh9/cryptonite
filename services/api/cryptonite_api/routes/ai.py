@@ -1,14 +1,17 @@
 """Mandates, approvals and system status for Mission Control (AI-first blueprint §4.4–§4.6, §7.1; A5.1–A5.6).
 
-- Mandates: create and loosen only with operator TOTP (they give the AI more room); tighten, pause and
-  demote without it. Autonomy level and status never change through an edit, only through the
-  autonomy endpoints (promotion needs a passing gate and TOTP) or the risk monitor (halts, demotions).
+- Mandates (auto-trade profiles, ADR 0011): create and loosen only with operator TOTP (they give the AI more room);
+  tighten and demote without it. Autonomy level and status never change through an edit: the operator sets the
+  execution mode at ``/autonomy/confirm`` (TOTP when raising) and runs the lifecycle at ``/start``, ``/pause``,
+  ``/stop`` and ``/resume`` (``cryptonite_execution.profile_lifecycle``). Every lifecycle and risk-adding route needs a
+  human operator session. The risk monitor halts a mandate but never changes its mode.
   A mandate covers only instruments ingest feeds (D4): an un-fed one is a 422, an unknown universe a 503.
 - Approvals: the operator approves or vetoes a PENDING approval from the web (session + CSRF) or from
   Telegram through the notifier (HMAC-signed, single-use nonce; approving new risk needs TOTP there).
   Decisions are server-side and idempotent (``cryptonite_execution.approvals``).
 """
 
+import dataclasses
 import datetime
 import json
 import logging
@@ -29,6 +32,7 @@ from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.similar import similar_or_none
 from cryptonite_api.universe import require_fed
+from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.approvals import (
     APPROVAL_COLUMNS,
     ApprovalConflict,
@@ -74,6 +78,13 @@ from cryptonite_schemas.mandate import (
     risk_adding_change,
 )
 from cryptonite_schemas.marks import LiveMark, read_marks, resolve_mark, summarize, unrealized_pnl
+from cryptonite_schemas.profile import (
+    Direction,
+    Environment,
+    Market,
+    NotifyLevel,
+    Style,
+)
 from cryptonite_schemas.session import (
     lock_usd,
     loss_limit_usd,
@@ -118,6 +129,22 @@ class MandateIn(BaseModel):
     daily_loss_limit_pct: Decimal | None = Field(default=None, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
     daily_profit_target_pct: Decimal | None = Field(default=None, gt=0, le=100)
     profit_lock_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    # ADR 0011 profile fields; unset takes the profile defaults (markets: derived from the instruments)
+    markets: list[Market] | None = Field(default=None, max_length=3)
+    direction: Direction | None = None
+    style: Style | None = None
+    environment: Environment | None = None
+    max_open_positions: int | None = Field(default=None, ge=1, le=20)
+    max_debates_per_day: int | None = Field(default=None, ge=0, le=48)
+    exit_tp_r: Decimal | None = Field(default=None, ge=Decimal("0.5"), le=20)
+    exit_tp1_scale_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    exit_trail_activate_pct: Decimal | None = Field(default=None, gt=0, le=50)
+    exit_trail_pct: Decimal | None = Field(default=None, gt=0, le=50)
+    exit_max_hold_hours: int | None = Field(default=None, ge=1, le=720)
+    dry_run: bool | None = None
+    notify_level: NotifyLevel | None = None
+    breaker_max_loss_streak: int | None = Field(default=None, ge=1, le=50)
+    breaker_max_reject_streak: int | None = Field(default=None, ge=1, le=50)
     totp_code: str | None = None
     # Where the request came from when it is not the Mandate editor ("brain_card:<session>:<card>"): kept in the audit event
     source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_:.-]{1,200}$")
@@ -141,9 +168,26 @@ class MandatePatch(BaseModel):
     daily_loss_limit_pct: Decimal | None = Field(default=None, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
     daily_profit_target_pct: Decimal | None = Field(default=None, gt=0, le=100)
     profit_lock_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    # ADR 0011 profile fields; unset takes the profile defaults (markets: derived from the instruments)
+    markets: list[Market] | None = Field(default=None, max_length=3)
+    direction: Direction | None = None
+    style: Style | None = None
+    environment: Environment | None = None
+    max_open_positions: int | None = Field(default=None, ge=1, le=20)
+    max_debates_per_day: int | None = Field(default=None, ge=0, le=48)
+    exit_tp_r: Decimal | None = Field(default=None, ge=Decimal("0.5"), le=20)
+    exit_tp1_scale_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    exit_trail_activate_pct: Decimal | None = Field(default=None, gt=0, le=50)
+    exit_trail_pct: Decimal | None = Field(default=None, gt=0, le=50)
+    exit_max_hold_hours: int | None = Field(default=None, ge=1, le=720)
+    dry_run: bool | None = None
+    notify_level: NotifyLevel | None = None
+    breaker_max_loss_streak: int | None = Field(default=None, ge=1, le=50)
+    breaker_max_reject_streak: int | None = Field(default=None, ge=1, le=50)
     # Switch filters or limits off (NULL). Removing one gives the AI more room, so it needs TOTP (ADR 0010)
-    clear_limits: list[Literal["min_conviction", "min_rr", "daily_loss_limit_pct", "daily_profit_target_pct"]] = Field(
-        default_factory=list, max_length=4)
+    clear_limits: list[Literal["min_conviction", "min_rr", "daily_loss_limit_pct", "daily_profit_target_pct",
+                               "exit_trail_activate_pct", "exit_trail_pct", "exit_max_hold_hours"]] = Field(
+        default_factory=list, max_length=7)
     totp_code: str | None = None
     # Where the request came from when it is not the Mandate editor ("brain_card:<session>:<card>"): kept in the audit event
     source: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_:.-]{1,200}$")
@@ -152,6 +196,10 @@ class MandatePatch(BaseModel):
 class TotpIn(BaseModel):
     totp_code: str | None = None
     reason: str | None = Field(default=None, max_length=300)
+
+
+class StopIn(BaseModel):
+    close: bool = False  # True: also queue reduce-only closes for the open positions
 
 
 class DecisionIn(BaseModel):
@@ -167,6 +215,28 @@ class NotifierDecisionIn(BaseModel):
 
 def actor(auth: dict) -> str:
     return str(auth.get("username") or auth.get("user_id") or f"machine:{auth.get('role', 'operator')}")
+
+
+_LIFECYCLE_STATUS = {"MANDATE_NOT_FOUND": 404, "PROFILE_INVALID": 422, "TOTP_REQUIRED": 401}
+
+
+def lifecycle_http(e: "profile_lifecycle.LifecycleError") -> HTTPException:
+    """A refused lifecycle request as the API's ``CODE: text`` detail (the Brain card reads the code before the colon)."""
+    d = e.detail
+    if e.code == "COIN_LOCKED":
+        text = f"{d.get('coin')} belongs to profile {d.get('holder_name')}; pause or stop it first"
+    elif e.code == "CAPITAL_OVER_ALLOCATED":
+        text = (f"budget {d.get('budget')} on top of {d.get('allocated')} already allocated exceeds {d.get('cap_pct')}% "
+                f"of the {d.get('equity')} equity")
+    elif e.code == "AUTOTRADE_DISABLED":
+        text = "the auto-trade master switch is off; only an Ask profile can start"
+    elif e.code == "PROFILE_INVALID":
+        text = ", ".join(d.get("codes", []))
+    elif e.code == "TOTP_REQUIRED":
+        text = "starting this profile needs your current TOTP code"
+    else:
+        text = json.dumps(d, default=str) if d else e.code.lower().replace("_", " ")
+    return HTTPException(status_code=_LIFECYCLE_STATUS.get(e.code, 409), detail=f"{e.code}: {text}")
 
 
 class TotpOutcome(Enum):
@@ -375,6 +445,14 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
         "min_conviction": _dec(m.min_conviction), "min_rr": _dec(m.min_rr),
         "daily_loss_limit_pct": _dec(m.daily_loss_limit_pct), "daily_profit_target_pct": _dec(m.daily_profit_target_pct),
         "profit_lock_pct": _dec(m.profit_lock_pct), "session": await session_view(conn, m),
+        "execution_mode": m.execution_mode.value, "markets": sorted(x.value for x in m.markets),
+        "direction": m.direction.value, "style": m.style.value, "environment": m.environment.value,
+        "max_open_positions": m.max_open_positions, "max_debates_per_day": m.max_debates_per_day,
+        "exit_tp_r": _dec(m.exit_tp_r), "exit_tp1_scale_pct": _dec(m.exit_tp1_scale_pct),
+        "exit_trail_activate_pct": _dec(m.exit_trail_activate_pct), "exit_trail_pct": _dec(m.exit_trail_pct),
+        "exit_max_hold_hours": m.exit_max_hold_hours, "dry_run": m.dry_run, "notify_level": m.notify_level.value,
+        "breaker_max_loss_streak": m.breaker_max_loss_streak, "breaker_max_reject_streak": m.breaker_max_reject_streak,
+        "paused_reason": m.paused_reason,
         "halted_reason": extra["halted_reason"], "halted_at": extra["halted_at"].isoformat() if extra["halted_at"] else None,
         "level_since": extra["level_since"].isoformat(),
         "equity": _dec(eq["equity"]) if eq else _dec(m.capital_budget_usd), "hwm": _dec(eq["hwm"]) if eq else _dec(m.capital_budget_usd),
@@ -437,6 +515,15 @@ async def _stopped_mandate_on(conn, instruments: list[str], *, except_id: uuid.U
     return f"MANDATE_{row['status']}: {row['name']} already covers {instrument}; resume or edit it instead"
 
 
+def _profile_values(m: Mandate) -> tuple[Any, ...]:
+    """The profile columns of a validated mandate, in the order the INSERT and UPDATE below list them
+    (``markets`` is the truth; ``allow_perps`` is written next to it from the same mandate)."""
+    return (sorted(x.value for x in m.markets), m.direction.value, m.style.value, m.environment.value,
+            m.max_open_positions, m.max_debates_per_day, m.exit_tp_r, m.exit_tp1_scale_pct,
+            m.exit_trail_activate_pct, m.exit_trail_pct, m.exit_max_hold_hours, m.dry_run, m.notify_level.value,
+            m.breaker_max_loss_streak, m.breaker_max_reject_streak)
+
+
 @router.post("/mandates", dependencies=OPERATOR_WRITE, status_code=201)
 async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(require_human_operator)):
     """A new mandate always starts at L1 Copilot; creating one gives the AI room, so it needs TOTP. Perps may be
@@ -462,20 +549,35 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
                     """INSERT INTO ai_mandates (id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct,
                            allow_perps, max_leverage, strategies, active_hours_utc, veto_window_s, created_by,
                            max_risk_per_trade_pct, min_conviction, min_rr, daily_loss_limit_pct,
-                           daily_profit_target_pct, profit_lock_pct)
-                       VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, $13, $14, $15, $16, $17, $18)""",
+                           daily_profit_target_pct, profit_lock_pct, markets, direction, style, environment,
+                           max_open_positions, max_debates_per_day, exit_tp_r, exit_tp1_scale_pct,
+                           exit_trail_activate_pct, exit_trail_pct, exit_max_hold_hours, dry_run, notify_level,
+                           breaker_max_loss_streak, breaker_max_reject_streak, status)
+                       VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, $13, $14, $15, $16, $17, $18,
+                               $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, 'STOPPED')""",
                     m.id, m.name, m.capital_budget_usd, m.instruments, m.max_position_pct, m.max_drawdown_pct,
                     m.max_leverage, m.strategies, m.active_hours_utc, m.veto_window_s, actor(auth), m.allow_perps,
                     m.max_risk_per_trade_pct, m.min_conviction, m.min_rr, m.daily_loss_limit_pct,
-                    m.daily_profit_target_pct, m.profit_lock_pct)
+                    m.daily_profit_target_pct, m.profit_lock_pct, *_profile_values(m))
             except Exception as e:
                 if "uq" in str(e).lower() or "unique" in str(e).lower():
                     raise HTTPException(status_code=409, detail="A mandate with this name exists")
                 raise
             await record_event(conn, m.id, "CREATED", to_level=1, reason="created", actor=actor(auth),
                                detail={**json.loads(m.model_dump_json()), **({"source": req.source} if req.source else {})})
-            row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
-            view = await mandate_view(conn, row, await read_marks(_redis(request)))
+    # ADR 0011: the row exists STOPPED; Start applies every guard (switch, profile rules, capital cap, coin locks). The
+    # TOTP above was checked for this request, so it covers a start above Ask too
+    async with request.app.state.pool.acquire() as conn:
+        try:
+            await profile_lifecycle.start(conn, m.id, actor=actor(auth), totp_ok=True,
+                                          settings=await profile_lifecycle.load_settings(conn))
+        except profile_lifecycle.LifecycleError as e:
+            refusal = lifecycle_http(e)
+            await _publish_updated(request, m.id, "created")
+            raise HTTPException(status_code=refusal.status_code, detail=(
+                f"{refusal.detail}; the mandate {m.name} (id {m.id}) was created and is STOPPED, not running")) from e
+        row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", m.id)
+        view = await mandate_view(conn, row, await read_marks(_redis(request)))
     await _publish_updated(request, m.id, "created")
     return view
 
@@ -495,11 +597,20 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 patch["active_hours_utc"] = None
             for field in req.clear_limits:
                 patch[field] = None
+            # markets is the truth (ADR 0011); allow_perps follows it. An allow_perps edit is an edit of markets
+            if "markets" in patch:
+                patch["allow_perps"] = Market.PERP in set(patch["markets"])
+            elif "allow_perps" in patch:
+                wanted = set(old.markets)
+                wanted.add(Market.PERP) if patch["allow_perps"] else wanted.discard(Market.PERP)
+                patch["markets"] = sorted(wanted or {Market.SPOT})
+                patch["allow_perps"] = Market.PERP in set(patch["markets"])
+            enabling_perps = bool(patch.get("allow_perps")) and not old.allow_perps
             try:
                 base = old.model_dump()
-                if patch.get("allow_perps") and not old.allow_perps and "max_leverage" not in patch:
+                if enabling_perps and "max_leverage" not in patch:
                     base.pop("max_leverage")  # enabling perps without a maximum: the 3x default (ADR 0009 D2)
-                if (patch.get("allow_perps") and not old.allow_perps and "daily_loss_limit_pct" not in patch
+                if (enabling_perps and "daily_loss_limit_pct" not in patch
                         and old.daily_loss_limit_pct is None):
                     base.pop("daily_loss_limit_pct")  # enabling perps without a daily loss limit: 3 x risk (ADR 0010)
                 new = Mandate(**{**base, **patch})
@@ -511,11 +622,24 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                     raise HTTPException(status_code=409, detail=stopped)
             if risk_adding_change(old, new):
                 await require_totp(request, auth, req.totp_code)
+            try:
+                if new.capital_budget_usd > old.capital_budget_usd and old.status.value in profile_lifecycle.ALLOCATING_STATUSES:
+                    # ADR 0011 D11: a budget raise is checked against the cap like a Start
+                    await profile_lifecycle.check_capital(conn, mandate_id, new.capital_budget_usd,
+                                                          await profile_lifecycle.load_settings(conn))
+                if set(new.instruments) != set(old.instruments):
+                    await profile_lifecycle.sync_locks(conn, new)  # added coins are locked, dropped ones released
+            except profile_lifecycle.LifecycleError as e:
+                raise lifecycle_http(e) from e
             await conn.execute(
                 """UPDATE ai_mandates SET name = $2, capital_budget_usd = $3, instruments = $4, max_position_pct = $5,
                        max_drawdown_pct = $6, allow_perps = $7, max_leverage = $8, strategies = $9, active_hours_utc = $10,
                        veto_window_s = $11, max_risk_per_trade_pct = $12, min_conviction = $13, min_rr = $14,
                        daily_loss_limit_pct = $15, daily_profit_target_pct = $16, profit_lock_pct = $17, updated_at = now(),
+                       markets = $18, direction = $19, style = $20, environment = $21, max_open_positions = $22,
+                       max_debates_per_day = $23, exit_tp_r = $24, exit_tp1_scale_pct = $25,
+                       exit_trail_activate_pct = $26, exit_trail_pct = $27, exit_max_hold_hours = $28, dry_run = $29,
+                       notify_level = $30, breaker_max_loss_streak = $31, breaker_max_reject_streak = $32,
                        -- a new budget is a new baseline: without a rebase a smaller budget reads as a drawdown
                        hwm_rebased_at = CASE WHEN capital_budget_usd <> $3 THEN now() ELSE hwm_rebased_at END,
                        last_dd_demotion_hwm = CASE WHEN capital_budget_usd <> $3 THEN NULL ELSE last_dd_demotion_hwm END
@@ -523,7 +647,7 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 mandate_id, new.name, new.capital_budget_usd, new.instruments, new.max_position_pct, new.max_drawdown_pct,
                 new.allow_perps, new.max_leverage, new.strategies, new.active_hours_utc, new.veto_window_s,
                 new.max_risk_per_trade_pct, new.min_conviction, new.min_rr, new.daily_loss_limit_pct,
-                new.daily_profit_target_pct, new.profit_lock_pct)
+                new.daily_profit_target_pct, new.profit_lock_pct, *_profile_values(new))
             changed = {k: [str(getattr(old, k)), str(getattr(new, k))] for k in patch if getattr(old, k) != getattr(new, k)}
             await record_event(conn, mandate_id, "EDITED", reason=", ".join(changed) or "no change", actor=actor(auth),
                                detail={"changes": changed, "risk_adding": risk_adding_change(old, new),
@@ -557,10 +681,46 @@ async def _transition(request: Request, auth: dict, mandate_id: uuid.UUID, trigg
     return view
 
 
+async def _lifecycle_view(request: Request, mandate_id: uuid.UUID, change: str, call) -> dict[str, Any]:
+    """Run a ``profile_lifecycle`` call and return the mandate view; a refusal is the API's ``CODE: text`` detail."""
+    async with request.app.state.pool.acquire() as conn:
+        try:
+            await call(conn)
+        except profile_lifecycle.LifecycleError as e:
+            raise lifecycle_http(e) from e
+        view = await mandate_view(conn, await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mandate_id),
+                                 await read_marks(_redis(request)))
+    await _publish_updated(request, mandate_id, change)
+    return view
+
+
+@router.post("/mandates/{mandate_id}/start", dependencies=OPERATOR_WRITE)
+async def start_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, auth: dict = Depends(require_human_operator)):
+    """Start (or restart) the profile: master switch, profile rules, TOTP above Ask, capital cap and coin locks, in one
+    transaction. A code that is sent is checked; whether one is needed is the lifecycle's rule."""
+    totp_ok = False
+    if req.totp_code:
+        await require_totp(request, auth, req.totp_code)
+        totp_ok = True
+
+    async def call(conn):
+        return await profile_lifecycle.start(conn, mandate_id, actor=actor(auth), totp_ok=totp_ok,
+                                             settings=await profile_lifecycle.load_settings(conn))
+    return await _lifecycle_view(request, mandate_id, "started", call)
+
+
 @router.post("/mandates/{mandate_id}/pause", dependencies=OPERATOR_WRITE)
-async def pause_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, auth: dict = Depends(require_operator)):
-    """Risk reducing: no TOTP. The mandate takes no new risk; exits and stops keep running."""
-    return await _transition(request, auth, mandate_id, AutonomyTrigger.PAUSE, reason=req.reason)
+async def pause_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, auth: dict = Depends(require_human_operator)):
+    """Risk reducing: no TOTP. The mandate takes no new risk; exits, stops and its coin locks stay."""
+    return await _lifecycle_view(request, mandate_id, "paused", lambda conn: profile_lifecycle.pause(
+        conn, mandate_id, actor=actor(auth), reason=req.reason or "operator pause"))
+
+
+@router.post("/mandates/{mandate_id}/stop", dependencies=OPERATOR_WRITE)
+async def stop_mandate(mandate_id: uuid.UUID, req: StopIn, request: Request, auth: dict = Depends(require_human_operator)):
+    """Stop the profile: no new entries; the coin locks stay until it is flat. ``close`` also queues reduce-only closes."""
+    return await _lifecycle_view(request, mandate_id, "stopped", lambda conn: profile_lifecycle.stop(
+        conn, mandate_id, actor=actor(auth), close=req.close))
 
 
 @router.post("/mandates/{mandate_id}/resume", dependencies=OPERATOR_WRITE)
@@ -762,7 +922,10 @@ async def ai_status(request: Request, auth: dict = Depends(require_operator)):
 
 
 class ProposalIn(BaseModel):
-    proposal_id: int
+    """``level``: the execution mode to set, 1 Ask, 2 Veto window, 3 Fully automatic (ADR 0011 D2). ``proposal_id`` is
+    the older way to name a system proposal (its target level); either one is enough."""
+    level: int | None = Field(default=None, ge=1, le=3)
+    proposal_id: int | None = None
     totp_code: str | None = None
 
 
@@ -773,7 +936,7 @@ async def _autonomy_view(conn, m: Mandate) -> dict[str, Any]:
            WHERE mandate_id = $1 AND kind = 'PROPOSED' AND proposal_status = 'PENDING'""", m.id)
     events = await conn.fetch(
         """SELECT id, kind, from_level, to_level, reason, actor, proposal_status, created_at FROM ai_autonomy_events
-           WHERE mandate_id = $1 AND kind IN ('PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'BACKSTOP', 'RESUMED', 'PAUSED', 'BREACH', 'BREACH_VOIDED', 'CREATED')
+           WHERE mandate_id = $1 AND kind IN ('PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'BACKSTOP', 'RESUMED', 'PAUSED', 'BREACH', 'BREACH_VOIDED', 'CREATED', 'STARTED', 'STOPPING', 'STOPPED', 'MODE_SET')
            ORDER BY id DESC LIMIT 50""", m.id)
     since = await conn.fetchval("SELECT level_since FROM ai_mandates WHERE id = $1", m.id)
     return {
@@ -815,31 +978,50 @@ async def evaluate_autonomy(mandate_id: uuid.UUID, request: Request, auth: dict 
 
 @router.post("/mandates/{mandate_id}/autonomy/confirm", dependencies=OPERATOR_WRITE)
 async def confirm_promotion(mandate_id: uuid.UUID, req: ProposalIn, request: Request, auth: dict = Depends(require_human_operator)):
-    """The operator confirms a system proposal with TOTP; the gate is re-checked at this moment."""
-    await require_totp(request, auth, req.totp_code)
+    """The operator sets the execution mode directly (ADR 0011 D2): raising it needs TOTP, lowering it is free. The gate
+    report is the advisory health score and is recorded with the change, never a condition."""
+    async with request.app.state.pool.acquire() as conn:
+        current = await _mandate_or_404(conn, mandate_id)
+        proposal = None
+        if req.proposal_id is not None:
+            proposal = await conn.fetchrow(
+                """SELECT id, to_level FROM ai_autonomy_events WHERE id = $1 AND mandate_id = $2
+                   AND kind = 'PROPOSED' AND proposal_status = 'PENDING'""", req.proposal_id, mandate_id)
+            if proposal is None:
+                raise HTTPException(status_code=409, detail="NO_OPEN_PROPOSAL")
+        target = req.level if req.level is not None else (proposal["to_level"] if proposal else None)
+        if target is None:
+            raise HTTPException(status_code=422, detail="level is required")
+        if target == int(current.autonomy_level):
+            raise HTTPException(status_code=409, detail="ALREADY_AT_LEVEL")
+        raising = target > int(current.autonomy_level)
+    if raising:
+        await require_totp(request, auth, req.totp_code)
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
             m = await _mandate_or_404(conn, mandate_id, for_update=True)
-            proposal = await conn.fetchrow(
-                """SELECT id, from_level, to_level FROM ai_autonomy_events WHERE id = $1 AND mandate_id = $2
-                   AND kind = 'PROPOSED' AND proposal_status = 'PENDING' FOR UPDATE""", req.proposal_id, m.id)
-            if proposal is None:
-                raise HTTPException(status_code=409, detail="NO_OPEN_PROPOSAL")
-            if proposal["from_level"] != int(m.autonomy_level):
-                raise HTTPException(status_code=409, detail="PROPOSAL_STALE")
             report, _ = await gate_report(conn, m)
             try:
-                t = transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps), AutonomyTrigger.PROMOTION_CONFIRMED,
-                               totp_ok=True, gate=report)
+                if target > int(m.autonomy_level):
+                    if not raising:
+                        raise HTTPException(status_code=409, detail="MODE_CHANGED: reload and try again")
+                    t = transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps),
+                                   AutonomyTrigger.PROMOTION_CONFIRMED, totp_ok=True, target_level=target)
+                else:
+                    t = transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps),
+                                   AutonomyTrigger.OPERATOR_DEMOTE, target_level=target)
             except TransitionRefused as e:
                 raise HTTPException(status_code=409, detail=e.code)
-            await conn.execute(
-                "UPDATE ai_autonomy_events SET proposal_status = 'CONFIRMED', resolved_at = now() WHERE id = $1", proposal["id"])
+            t = dataclasses.replace(t, kind="MODE_SET")  # the audit kind of an operator mode change (migration 050)
+            if proposal is not None:
+                await conn.execute(
+                    "UPDATE ai_autonomy_events SET proposal_status = 'CONFIRMED', resolved_at = now() WHERE id = $1", proposal["id"])
             await apply_transition(conn, m.id, t, actor=actor(auth),
-                                   detail={"proposal_id": proposal["id"], "gate": report.as_dict(), "totp": True})
+                                   detail={"health_score": report.as_dict(), "totp": raising,
+                                           **({"proposal_id": proposal["id"]} if proposal else {})})
             m = await _mandate_or_404(conn, mandate_id)
         view = await _autonomy_view(conn, m)
-    await _publish_updated(request, mandate_id, "promoted")
+    await _publish_updated(request, mandate_id, "mode")
     return view
 
 

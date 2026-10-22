@@ -12,20 +12,20 @@ same worst-case notional the check uses, so a correctly sized entry never fails 
 (§10 invariant 3).
 """
 
+import uuid
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 
 from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
-    PERPS_AUTONOMY_LEVEL,
     ActionClass,
     AutonomyLevel,
     Mandate,
     MandateReject,
-    MandateStatus,
     canonical_instrument,
     is_perp_instrument,
 )
+from cryptonite_schemas.profile import Market, accepts_entries
 from cryptonite_schemas.session import SessionVerdict
 
 # Market buys are valued like the dispatcher reserves them: ask + 2% collar + 0.5% slippage
@@ -108,6 +108,7 @@ def check_mandate(
     *,
     approval_ok: bool,
     session: SessionVerdict = SessionVerdict.ACTIVE,
+    coin_owner: uuid.UUID | None = None,
 ) -> MandateReject | None:
     """None when the order is inside the mandate, else the reject code.
 
@@ -115,6 +116,9 @@ def check_mandate(
     a veto window that ran out with policy PROCEED). L3 needs none.
     ``session``: today's daily-session verdict of the mandate (ADR 0010). Anything but ACTIVE refuses ADD_RISK,
     approved or not; REDUCE_RISK is never refused by it.
+    ``coin_owner``: the mandate that holds the coin lock on this order's base asset (ADR 0011 D6), or None when
+    nobody does. An entry on a coin another mandate holds is refused ``COIN_LOCKED`` (a refusal, never a breach); the
+    caller loads the lock once per check. An exit is never refused by it.
     """
     if mandate is None:
         return MandateReject.REQUIRED
@@ -132,7 +136,7 @@ def check_mandate(
                 return MandateReject.POSITION_NOT_OWNED
         return None
 
-    if mandate.status is not MandateStatus.ACTIVE:
+    if not accepts_entries(mandate.status.value):  # PAUSED, STOPPING, STOPPED, HALTED, ARCHIVED: exits only (D13)
         return MandateReject.HALTED
     if session is SessionVerdict.LOSS_LATCHED:
         return MandateReject.DAILY_LOSS_LATCHED
@@ -140,8 +144,10 @@ def check_mandate(
         return MandateReject.DAILY_TARGET_MET
     if not mandate.allows_instrument(order.instrument_id):
         return MandateReject.INSTRUMENT_NOT_ALLOWED
+    if coin_owner is not None and coin_owner != mandate.id:
+        return MandateReject.COIN_LOCKED
     if order.is_perp:
-        if not mandate.allow_perps or mandate.autonomy_level != PERPS_AUTONOMY_LEVEL:
+        if Market.PERP not in mandate.markets:  # ADR 0011 D4: perps at any execution mode
             return MandateReject.PERPS_NOT_ALLOWED
         if (order.leverage or 1) > min(mandate.max_leverage, MAX_PERP_LEVERAGE_CAP):
             return MandateReject.LEVERAGE_EXCEEDED

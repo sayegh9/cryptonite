@@ -42,7 +42,13 @@ RUNTIME_BOUNDS: dict[str, Bound] = {
     # Where a spot candidate goes when both a spot and a perps mandate match (ADR 0010 P-10): 0 = SPOT_FIRST (the
     # default), 1 = PERP_FIRST. Lower is tighter: PERP_FIRST sends more trades to leveraged perps
     "debate.perp_routing": Bound(0, 0, 1),
+    # Auto-trade profiles (ADR 0011 D10, D11): the master switch (0 off, 1 on; enabling is risk-adding) and the share of
+    # account equity the budgets of the running profiles may add up to (raising is risk-adding)
+    "autotrade.enabled": Bound(0, 0, 1),
+    "autotrade.max_allocated_pct": Bound(90, 10, 100),
 }
+AUTOTRADE_ENABLED_KEY = "autotrade.enabled"
+AUTOTRADE_MAX_ALLOCATED_KEY = "autotrade.max_allocated_pct"
 PERP_DEBATE_CAP_KEY = "debate.perp_mandate_daily_cap"
 PERP_ROUTING_KEY = "debate.perp_routing"
 SPOT_FIRST = "SPOT_FIRST"

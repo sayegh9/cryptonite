@@ -61,12 +61,15 @@ def quotes_at(bid: float) -> SimpleQuoteCache:
     return q
 
 
-async def make_mandate(pool, level: int, max_dd: str = "10", name: str | None = None):
+async def make_mandate(pool, level: int, max_dd: str = "10", name: str | None = None, daily: str | None = "same"):
+    """``daily``: the daily loss limit. Default: the hard stop itself, so the replay tests the drawdown stop (ADR 0011 D9
+    gives every running profile a daily limit of 3 x risk, which would fire first); None: the D9 default."""
     async with pool.acquire() as conn:
         mid = await conn.fetchval(
-            """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, autonomy_level)
-               VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 25, $2, $3) RETURNING id""",
-            name or f"m-{uuid.uuid4().hex[:6]}", D(max_dd), level)
+            """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, autonomy_level,
+                                        daily_loss_limit_pct)
+               VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 25, $2, $3, $4) RETURNING id""",
+            name or f"m-{uuid.uuid4().hex[:6]}", D(max_dd), level, D(max_dd) if daily == "same" else (D(daily) if daily else None))
         m = await load_mandate(conn, mid)
         assert await ensure_mandate_instance(conn, m, ACCOUNT)
     return m
@@ -129,19 +132,21 @@ async def test_replay_hard_stop_triggers_flattens_and_latches(db):
 
     assert (await step(50000, 1)).autonomy_level == AutonomyLevel.L3
     assert (await step(52000, 2)).autonomy_level == AutonomyLevel.L3  # new HWM 10,195
-    # 46,500: equity 9,645, drawdown 5.39% >= half of 10% -> one level down, once per episode
-    assert (await step(46500, 3)).autonomy_level == AutonomyLevel.L2
-    assert (await step(46400, 4)).autonomy_level == AutonomyLevel.L2
-    # 30,000: equity 7,995, drawdown 21.6% >= 10% -> HALTED, L1, close queued
+    # 46,500: equity 9,645, drawdown 5.39% >= half of 10% -> an alert once per episode, the mode stays (ADR 0011 D3)
+    assert (await step(46500, 3)).autonomy_level == AutonomyLevel.L3
+    assert (await step(46400, 4)).autonomy_level == AutonomyLevel.L3
+    half_alerts = [json.loads(c.args[1]) for c in redis.publish.call_args_list if json.loads(c.args[1]).get("kind") == "MANDATE_HALF_DRAWDOWN"]
+    assert len(half_alerts) == 1
+    # 30,000: equity 7,995, drawdown 21.6% >= 10% -> HALTED (mode kept), close queued
     halted = await step(30000, 5)
-    assert (halted.status, halted.autonomy_level) == (MandateStatus.HALTED, AutonomyLevel.L1)
+    assert (halted.status, halted.autonomy_level) == (MandateStatus.HALTED, AutonomyLevel.L3)
 
     cmd = await pool.fetchrow("SELECT * FROM execution_commands WHERE command_type = 'CLOSE_POSITION' AND mandate_id = $1", m.id)
     payload = json.loads(cmd["payload"])
     assert (cmd["target_instance_id"], cmd["requester_id"], cmd["status"]) == (m.instance_id, "risk:mandate_monitor", "PENDING")
     assert D(payload["quantity"]) == D("0.1") and payload["reason"] == "HARD_STOP"
     kinds = [r["kind"] for r in await pool.fetch("SELECT kind FROM ai_autonomy_events WHERE mandate_id = $1 ORDER BY id", m.id)]
-    assert kinds == ["DEMOTED", "HALTED"]
+    assert kinds == ["HALTED"]
     published = [json.loads(c.args[1]) for c in redis.publish.call_args_list]
     assert any(p["kind"] == "MANDATE_HARD_STOP" and p["severity"] == "CRITICAL" for p in published)
     assert await pool.fetchval("SELECT count(*) FROM ai_mandate_equity WHERE mandate_id = $1", m.id) >= 4
@@ -158,6 +163,25 @@ async def test_replay_hard_stop_triggers_flattens_and_latches(db):
     assert again.status is MandateStatus.HALTED
     buy = MandateOrder(instrument_id=SPOT, side="BUY", quantity=D("0.001"), ref_price=D("60000"))
     assert check_mandate(again, buy, MandateExposure(), approval_ok=True) is MandateReject.HALTED
+
+
+async def test_the_default_daily_limit_fires_before_the_hard_stop_when_it_is_not_raised(db):
+    """ADR 0011 D9: a running profile always has a daily loss limit (3 x risk by default), so a 5% fall flattens the
+    day long before the 10% hard stop; the profile stays ACTIVE and its mode is untouched."""
+    pool = db
+    m = await make_mandate(pool, level=3, daily=None)
+    assert m.daily_loss_limit_pct == D("3")
+    await hold(pool, m.instance_id, "0.1", "50000")
+    engine = engine_holding("0.1")
+    redis = AsyncMock()
+    t0 = datetime.datetime.now(datetime.UTC)
+    for i, bid in enumerate((50000, 46500), start=1):
+        await mandate_monitor_once(engine, pool, redis, quotes_at(bid), now=t0 + datetime.timedelta(seconds=61 * i))
+    cur = await load_mandate(pool, m.id)
+    assert (cur.status, cur.autonomy_level) == (MandateStatus.ACTIVE, AutonomyLevel.L3)
+    cmd = await pool.fetchrow("SELECT payload FROM execution_commands WHERE command_type = 'CLOSE_POSITION' AND mandate_id = $1", m.id)
+    assert json.loads(cmd["payload"])["reason"] == "DAILY_LOSS_LIMIT"
+    assert await pool.fetchval("SELECT count(*) FROM ai_mandate_daily_sessions WHERE mandate_id = $1 AND loss_latched_at IS NOT NULL", m.id) == 1
 
 
 async def test_account_backstop_latches_everything(db):
@@ -180,7 +204,7 @@ async def test_account_backstop_latches_everything(db):
     async with pool.acquire() as conn:
         for m in (a, b):
             cur = await load_mandate(conn, m.id)
-            assert (cur.status, cur.autonomy_level) == (MandateStatus.HALTED, AutonomyLevel.L1)
+            assert (cur.status, cur.autonomy_level) == (MandateStatus.HALTED, m.autonomy_level)  # the mode is kept
     assert await pool.fetchval("SELECT count(*) FROM ai_autonomy_events WHERE kind = 'BACKSTOP'") == 2
     assert await pool.fetchval(
         "SELECT count(*) FROM execution_commands WHERE command_type = 'CLOSE_POSITION' AND target_instance_id = $1", a.instance_id) == 1

@@ -59,12 +59,9 @@ def test_l2_to_l3():
 
 @pytest.mark.parametrize("state,kw,code", [
     (s(L1), {"totp_ok": False, "gate": evaluate_gate(L1, L2_READY)}, "TOTP_REQUIRED"),
-    (s(L1), {"totp_ok": True, "gate": evaluate_gate(L1, GateMetrics())}, "GATE_NOT_PASSED"),
-    (s(L1), {"totp_ok": True, "gate": None}, "GATE_NOT_PASSED"),
-    (s(L1), {"totp_ok": True, "gate": evaluate_gate(L2, L3_READY)}, "GATE_NOT_PASSED"),  # no skipping L1 -> L3
-    (s(L3), {"totp_ok": True, "gate": evaluate_gate(L3, L3_READY)}, "ALREADY_AT_TOP"),
+    # ADR 0011 D3: the gate is advisory, so a failing or missing gate refuses nothing (see test_autonomy_advisory.py)
+    (s(L3), {"totp_ok": True, "gate": evaluate_gate(L3, L3_READY)}, "ALREADY_AT_LEVEL"),  # was ALREADY_AT_TOP
     (s(L1, HALTED), {"totp_ok": True, "gate": evaluate_gate(L1, L2_READY)}, "MANDATE_NOT_ACTIVE"),
-    (s(L1, PAUSED), {"totp_ok": True, "gate": evaluate_gate(L1, L2_READY)}, "MANDATE_NOT_ACTIVE"),
 ])
 def test_promotion_is_refused(state, kw, code):
     with pytest.raises(TransitionRefused) as e:
@@ -78,22 +75,24 @@ def test_promotion_is_refused(state, kw, code):
 @pytest.mark.parametrize("trigger", [AutonomyTrigger.BREACH, AutonomyTrigger.HALF_DRAWDOWN])
 @pytest.mark.parametrize("before,after,kind", [(L3, L2, "DEMOTED"), (L2, L1, "DEMOTED"), (L1, L1, "NOOP")])
 def test_breach_or_half_drawdown_drops_one_level(trigger, before, after, kind):
-    t = transition(s(before, perps=before == L1), trigger)
-    assert (t.after.level, t.kind, t.after.status) == (after, kind, ACTIVE)
-    # ADR 0009 D3: perps live at L1 only; a NOOP at L1 keeps them, nothing else can carry them
-    assert t.after.allow_perps is (before == L1)
+    # ADR 0011 D3: no automatic level change; the caller records and alerts. (was: one level down)
+    t = transition(s(before, perps=True), trigger)
+    assert (t.after.level, t.kind, t.after.status) == (before, "NOOP", ACTIVE)
+    assert t.after.allow_perps is True
 
 
 def test_promotion_off_l1_withdraws_the_perps_opt_in():
+    # ADR 0011 D4: perps at any mode (was: leaving L1 withdrew the opt-in)
     t = transition(s(L1, perps=True), AutonomyTrigger.PROMOTION_CONFIRMED, totp_ok=True, gate=evaluate_gate(L1, L2_READY))
-    assert (t.after.level, t.after.allow_perps, t.kind) == (L2, False, "PROMOTED")
+    assert (t.after.level, t.after.allow_perps, t.kind) == (L2, True, "PROMOTED")
 
 
 @pytest.mark.parametrize("trigger,kind", [(AutonomyTrigger.HARD_STOP, "HALTED"), (AutonomyTrigger.BACKSTOP, "BACKSTOP")])
 @pytest.mark.parametrize("before", [L1, L2, L3])
 def test_hard_stop_and_backstop_halt_at_l1(trigger, kind, before):
     t = transition(s(before, perps=before == L1), trigger)
-    assert (t.after.level, t.after.status, t.after.allow_perps, t.kind) == (L1, HALTED, False, kind)
+    # ADR 0011: level and markets stay (was: reset to L1 without perps, which 050's CHECK would refuse)
+    assert (t.after.level, t.after.status, t.after.allow_perps, t.kind) == (before, HALTED, before == L1, kind)
 
 
 def test_operator_demotion_needs_no_totp_but_not_below_l1():
@@ -124,7 +123,7 @@ def test_no_trigger_but_a_confirmed_promotion_ever_raises_the_level(level, statu
     except TransitionRefused:
         return
     assert t.after.level <= t.before.level
-    assert not t.after.allow_perps or t.after.level == L1  # ADR 0009 D3
+    assert t.after.allow_perps == t.before.allow_perps  # ADR 0011 D4: no trigger touches the markets
 
 
 # ------------------------------------------------------------------------------ gate evaluator
@@ -168,6 +167,8 @@ async def h(db_url, monkeypatch):
     monkeypatch.setenv("ALLOW_DEV_TOTP", "true")  # 000000 in DEV; the real-TOTP path is in test_notifier.py
     monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "true")  # /api/v1/ai refuses 000000 unless explicitly allowed
     harness = await make_harness(db_url)
+    # ADR 0011 D11: creating a mandate starts it under the capital cap; these tests create several 10k budgets
+    await harness.pool.execute("UPDATE paper_accounts SET total_equity = 1000000")
     try:
         yield harness
     finally:
@@ -228,10 +229,10 @@ async def test_the_system_proposes_and_only_the_operator_promotes_with_totp(h):
         assert ok.json()["level"] == 2 and ok.json()["proposal"] is None
     events = [(r["kind"], r["proposal_status"]) for r in
               await h.pool.fetch("SELECT kind, proposal_status FROM ai_autonomy_events WHERE mandate_id = $1 ORDER BY id", m.id)]
-    assert ("PROPOSED", "CONFIRMED") in events and ("PROMOTED", None) in events
+    assert ("PROPOSED", "CONFIRMED") in events and ("MODE_SET", None) in events  # was PROMOTED: an operator mode change is MODE_SET (050)
 
 
-async def test_a_stale_gate_blocks_the_confirmation(h):
+async def test_a_failing_gate_no_longer_blocks_the_confirmation(h):
     m = await h.mandate(level=1)
     await earn_l2_record(h, m)
     async with h.pool.acquire() as conn:
@@ -240,7 +241,7 @@ async def test_a_stale_gate_blocks_the_confirmation(h):
     async with h.client() as c:
         res = await c.post(f"/api/v1/ai/mandates/{m.id}/autonomy/confirm", json={"proposal_id": pid, "totp_code": "000000"},
                            headers=h.headers)
-    assert res.status_code == 409 and res.json()["detail"] == "GATE_NOT_PASSED"
+    assert res.status_code == 200 and res.json()["level"] == 2  # ADR 0011 D3: the gate is advisory, never a condition
 
 
 async def test_a_voided_breach_stays_in_the_log_but_no_longer_counts(h):
@@ -273,7 +274,7 @@ async def test_a_voided_breach_stays_in_the_log_but_no_longer_counts(h):
                VALUES ($1, 'BREACH_VOIDED', 'x', jsonb_build_object('voids', $2::text))""", m.id, str(bid))
 
 
-async def test_a_breach_in_the_order_path_demotes_one_level(h):
+async def test_a_breach_in_the_order_path_records_but_keeps_the_mode(h):
     m = await h.mandate(level=2, instruments=("ETHUSDT.BINANCE",))
     cid = uuid.uuid4()
     await h.pool.execute(
@@ -298,9 +299,9 @@ async def test_a_breach_in_the_order_path_demotes_one_level(h):
         with pytest.raises(asyncio.CancelledError):
             await task
     assert row["error_message"] == "MANDATE_INSTRUMENT_NOT_ALLOWED"
-    assert (await load_mandate(h.pool, m.id)).autonomy_level == L1
+    assert (await load_mandate(h.pool, m.id)).autonomy_level == L2  # ADR 0011 D3: was demoted to L1
     kinds = [r["kind"] for r in await h.pool.fetch("SELECT kind FROM ai_autonomy_events WHERE mandate_id = $1 ORDER BY id", m.id)]
-    assert kinds == ["BREACH", "DEMOTED"]
+    assert kinds == ["BREACH"]
 
 
 async def test_mandate_editor_totp_rules(h):
@@ -309,9 +310,11 @@ async def test_mandate_editor_totp_rules(h):
         assert (await c.post("/api/v1/ai/mandates", json=body, headers=h.headers)).status_code == 401  # creating adds room
         perps = await c.post("/api/v1/ai/mandates", json={**body, "name": body["name"] + "-p", "allow_perps": True,
                                                          "totp_code": "000000"}, headers=h.headers)
-        assert perps.status_code == 201, perps.text  # ADR 0009 D3: perps at L1 (was refused, O1)
+        assert perps.status_code == 201, perps.text  # ADR 0011 D4: perps at any mode
         assert (perps.json()["allow_perps"], perps.json()["max_leverage"], perps.json()["max_risk_per_trade_pct"]) == \
             (True, 3, "1")  # D2 default 3x, D6 default 1%
+        # ADR 0011 D6: a coin has one owner; stop the perps profile so ETH is free for the next one
+        assert (await c.post(f"/api/v1/ai/mandates/{perps.json()['id']}/stop", json={}, headers=h.headers)).json()["status"] == "STOPPED"
         assert (await c.post("/api/v1/ai/mandates", json={**body, "name": body["name"] + "-x", "max_leverage": 11,
                                                           "totp_code": "000000"}, headers=h.headers)).status_code == 422
         created = await c.post("/api/v1/ai/mandates", json={**body, "totp_code": "000000"}, headers=h.headers)

@@ -16,7 +16,6 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
-from cryptonite_execution.autonomy import AutonomyState, AutonomyTrigger, transition
 from cryptonite_execution.leverage import (
     ACCOUNT_EXPOSURE_CAP,
     DEFAULT_FEE_ROUND_TRIP,
@@ -28,7 +27,6 @@ from cryptonite_execution.leverage import (
     plan_leveraged_order,
 )
 from cryptonite_execution.mandate_store import (
-    apply_transition,
     instance_spot_holdings,
     record_event,
     session_verdict_for,
@@ -50,6 +48,7 @@ from cryptonite_schemas.mandate import (
     MandateReject,
     is_ai_instance,
 )
+from cryptonite_schemas.profile import base_asset
 from cryptonite_schemas.session import SessionVerdict
 
 logger = logging.getLogger("cryptonite.orchestrator.mandates")
@@ -267,6 +266,19 @@ async def approval_granted(conn, row: Any, payload: dict, mandate: Mandate) -> b
     return a["status"] == ApprovalStatus.EXPIRED_PROCEEDED and mandate.autonomy_level >= AutonomyLevel.L2
 
 
+async def coin_lock_owner(conn, instrument_id: str) -> uuid.UUID | None:
+    """The mandate holding the coin lock on the instrument's base asset (ADR 0011 D6), loaded once per check. An
+    instrument whose base asset cannot be read, or a database without the lock table, reads as no owner."""
+    try:
+        return await conn.fetchval(
+            """SELECT l.mandate_id FROM ai_profile_coin_locks l JOIN ai_mandates m ON m.id = l.mandate_id
+               WHERE l.base_asset = $1 AND m.status IN ('ACTIVE', 'PAUSED', 'STOPPING', 'HALTED')""",
+            base_asset(instrument_id))
+    except Exception as e:
+        logger.debug("coin lock lookup unavailable for %s: %s", instrument_id, e)
+        return None
+
+
 async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: Mandate | None, quote, *,
                         system_sized: bool = False) -> str | None:
     """None when the AI order may go on to the dispatcher, else the reject reason for the command.
@@ -285,13 +297,14 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
         conviction_level=intent.conviction_level, margin_mode=intent.margin_mode,
     )
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
+    coin_owner = await coin_lock_owner(conn, intent.instrument_id)
     ok = await approval_granted(conn, row, payload, mandate)
     # ADR 0010: today's session (loss latch, profit target, profit lock), read at execution, so an entry approved
     # before the latch is refused too. Only an ADD_RISK order reads it: a failed read can never fail an exit
     session = SessionVerdict.ACTIVE
     if action_class(order) is ActionClass.ADD_RISK:
         session = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
-    reject = check_mandate(mandate, order, exposure, approval_ok=ok, session=session)
+    reject = check_mandate(mandate, order, exposure, approval_ok=ok, session=session, coin_owner=coin_owner)
     if reject is None and order.is_perp and action_class(order) is ActionClass.ADD_RISK:
         # Leverage plan 2.4: the same valuation the sizing used; a refusal, never a breach
         if (perp_reject := perp_entry_reject(engine, mandate, intent)) is not None:
@@ -319,14 +332,18 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
 
 
 async def record_breach(conn, mandate: Mandate, reject: MandateReject, row: Any, payload: dict) -> None:
-    """§4.5: any breach demotes one level (L1 stays L1). The BREACH event is what the gate counts."""
+    """ADR 0011 D3: a breach is recorded and alerted; it never changes the execution mode. The BREACH event is what the
+    health score counts."""
     detail = {"reject": reject.value, "command_id": str(_row_get(row, "command_id")),
               "instrument_id": payload.get("instrument_id"), "side": payload.get("side")}
-    async with conn.transaction():
-        await record_event(conn, mandate.id, "BREACH", from_level=int(mandate.autonomy_level),
-                           to_level=int(mandate.autonomy_level), reason=reject.value, detail=detail,
-                           actor="risk:mandate_check")
-        t = transition(AutonomyState(mandate.autonomy_level, mandate.status, mandate.allow_perps),
-                       AutonomyTrigger.BREACH, reason=f"breach: {reject.value}")
-        await apply_transition(conn, mandate.id, t, actor="risk:mandate_check", detail=detail)
+    await record_event(conn, mandate.id, "BREACH", from_level=int(mandate.autonomy_level),
+                       to_level=int(mandate.autonomy_level), reason=reject.value, detail=detail,
+                       actor="risk:mandate_check")
+    from cryptonite_orchestrator.mandate_monitor import (
+        alert,  # lazy: the monitor imports this package's siblings
+    )
+
+    await alert(conn, None, "MANDATE_BREACH", f"Mandate breach — {mandate.name}: {reject.value}. Mode unchanged.",
+                {"mandate_id": str(mandate.id), "mandate": mandate.name, **detail}, tier="ACTION",
+                dedupe_key=f"MANDATE_BREACH:{mandate.id}:{detail['command_id']}")
     logger.warning("Mandate breach on %s: %s (%s)", mandate.name, reject, json.dumps(detail, default=str)[:300])

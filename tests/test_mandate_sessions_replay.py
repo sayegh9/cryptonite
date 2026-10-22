@@ -313,13 +313,20 @@ async def test_a_mandate_that_does_not_load_is_skipped_not_fatal(db, monkeypatch
 
 
 async def test_a_mandate_without_limits_has_no_session_row(db):
+    """ADR 0011 D9: a running (ACTIVE) mandate always has a daily loss limit, so only a PAUSED one can have none and
+    then it has no session row; an ACTIVE one gets the default (3 x risk) and a row (was: no limits, no row)."""
     pool = db
-    m = await make_mandate(pool)
+    paused = await make_mandate(pool)
+    await pool.execute("UPDATE ai_mandates SET status = 'PAUSED', daily_loss_limit_pct = NULL WHERE id = $1", paused.id)
+    active = await make_mandate(pool)
+    assert active.daily_loss_limit_pct == D("3")
     await mandate_monitor_once(engine_holding("0"), pool, AsyncMock(), quotes_at(50000),
                                now=DAY_START + datetime.timedelta(minutes=1))
-    assert await session_row(pool, m) is None
+    assert await session_row(pool, paused) is None
+    assert await session_row(pool, active) is not None
     async with pool.acquire() as conn:
-        assert await session_verdict_for(conn, m, FROZEN_NOW) is SessionVerdict.ACTIVE
+        paused = await load_mandate(conn, paused.id)
+        assert await session_verdict_for(conn, paused, FROZEN_NOW) is SessionVerdict.ACTIVE
 
 
 @pytest.mark.parametrize(("column", "value"), [

@@ -5,10 +5,11 @@ Runs inside the orchestrator's risk monitor. Per mandate:
 - equity = budget + spot cash flow of its fills (fees included) + its open spot positions at the live
   bid + its perp realized PnL (fees and the funding it paid or received included) and unrealized PnL; tracked against the high-water mark since the mandate was
   created or last resumed (``hwm_rebased_at``) and written to ``ai_mandate_equity``;
-- drawdown >= ``max_drawdown_pct`` (at most 20% of its own budget): the mandate is HALTED and demoted
-  to L1, and each of its positions is closed with a PAPER ``CLOSE_POSITION`` (risk reducing, through
+- drawdown >= ``max_drawdown_pct`` (at most 20% of its own budget): the mandate is HALTED (its execution mode and
+  markets stay, ADR 0011 D3), and each of its positions is closed with a PAPER ``CLOSE_POSITION`` (risk reducing, through
   the normal command path) capped at the mandate's own quantity; a Critical alert goes out;
-- drawdown >= half of it: demoted one level, once per drawdown episode;
+- drawdown >= half of it: an ACTION-tier alert once per drawdown episode; the level never changes automatically (ADR 0011 D3);
+- a STOPPING mandate that is flat becomes STOPPED and releases its coin locks (``profile_lifecycle.finish_stop``);
 - a halted mandate with positions left keeps getting close commands until it is flat.
 
 Daily sessions (ADR 0010), for a mandate with a daily loss limit or profit target: today's row in
@@ -21,24 +22,31 @@ status or level and is never a breach; the gate refuses new entries while it hol
 
 Account-wide backstop (O2): account equity 20% below its high-water mark (since the last kill-switch
 reset) trips the PAPER kill switch (the latch: no new risk anywhere until the operator resets it
-while flat), halts every mandate at L1 and closes every AI-owned position.
+while flat), halts every mandate and closes every AI-owned position.
 """
 
 import datetime
 import json
 import logging
-import time
 import uuid
 from decimal import Decimal
 from typing import Any
 
 from cryptonite_execution.approvals import sweep_expired
 from cryptonite_execution.autonomy import AutonomyState, AutonomyTrigger, transition
-from cryptonite_execution.autonomy_metrics import propose_if_ready
-from cryptonite_execution.mandate_store import apply_transition, load_mandate, load_session
+from cryptonite_execution.flatten import (  # noqa: F401  (re-exported)
+    CLOSE_RETRY_AFTER_S,
+    enqueue_flatten,
+    flatten_instance,
+)
+from cryptonite_execution.mandate_store import (
+    apply_transition,
+    load_mandate,
+    load_session,
+)
+from cryptonite_execution.profile_lifecycle import finish_stop
 from cryptonite_schemas.mandate import (
     ACCOUNT_BACKSTOP_DRAWDOWN_PCT,
-    AutonomyLevel,
     Mandate,
     MandateStatus,
     is_ai_instance,
@@ -58,13 +66,12 @@ SYSTEM_ALERTS_CHANNEL = "channel:system_alerts"
 BACKSTOP_REASON = "ACCOUNT_BACKSTOP_DRAWDOWN"
 BENCHMARK_INSTRUMENT = "BTCUSDT.BINANCE"
 EQUITY_SNAPSHOT_EVERY_S = 60
-CLOSE_RETRY_AFTER_S = 30
 D0 = Decimal("0")
 CENT = Decimal("0.01")
 # The contract with the perp resting-stop ratchet (A4): instances whose mandate met today's profit target; the set
 # expires at the next 00:00 UTC
 SESSION_TARGET_MET_KEY = "mandate:session:target_met"
-SESSION_TRACKED_STATUSES = (MandateStatus.ACTIVE, MandateStatus.PAUSED, MandateStatus.HALTED)
+SESSION_TRACKED_STATUSES = (MandateStatus.ACTIVE, MandateStatus.PAUSED, MandateStatus.STOPPING, MandateStatus.HALTED)
 
 
 def evaluate_drawdown(equity: Decimal, prev_hwm: Decimal | None, max_drawdown_pct: Decimal) -> dict[str, Any]:
@@ -150,44 +157,6 @@ async def alert(conn, redis, kind: str, message: str, detail: dict[str, Any], *,
         logger.debug("notifications_outbox unavailable: %s", e)
 
 
-async def enqueue_flatten(conn, instance_id: str, instrument_id: str, quantity: Decimal, reason: str,
-                          mandate_id: uuid.UUID | None, account_id: str) -> bool:
-    """One risk-reducing CLOSE_POSITION per open position; a rejected close is retried after a pause."""
-    prefix = f"mandate_stop:{instance_id}:{instrument_id}"
-    last = await conn.fetchrow(
-        "SELECT status, created_at FROM execution_commands WHERE idempotency_key LIKE $1 || ':%' ORDER BY created_at DESC LIMIT 1",
-        prefix,
-    )
-    if last is not None:
-        if last["status"] not in ("REJECTED", "FAILED", "COMPLETED"):
-            return False  # still pending or running
-        if time.time() - last["created_at"].timestamp() < CLOSE_RETRY_AFTER_S:
-            return False  # a completed close needs a moment to reach paper_positions
-    attempt = await conn.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key LIKE $1 || ':%'", prefix)
-    await conn.execute(
-        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, requester_id,
-               payload, status, environment, account_id, mandate_id)
-           VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:mandate_monitor', $4::jsonb, 'PENDING', 'PAPER', $5, $6)
-           ON CONFLICT (idempotency_key) DO NOTHING""",
-        uuid.uuid4(), f"{prefix}:{attempt}", instance_id,
-        json.dumps({"instrument_id": instrument_id, "quantity": str(quantity), "reason": reason,
-                    "mandate_id": str(mandate_id) if mandate_id else None, "reduce_only": True}),
-        account_id, mandate_id,
-    )
-    return True
-
-
-async def flatten_instance(conn, instance_id: str, reason: str, mandate_id: uuid.UUID | None, account_id: str) -> int:
-    rows = await conn.fetch(
-        "SELECT instrument_id, quantity FROM paper_positions WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0",
-        instance_id,
-    )
-    n = 0
-    for r in rows:
-        n += await enqueue_flatten(conn, instance_id, r["instrument_id"], Decimal(str(r["quantity"])), reason, mandate_id, account_id)
-    return n
-
-
 async def _halt(conn, redis, mandate: Mandate, trigger: AutonomyTrigger, v: dict, account_id: str) -> None:
     t = transition(AutonomyState(mandate.autonomy_level, mandate.status, mandate.allow_perps), trigger,
                    reason=f"{trigger.value}: drawdown {v['drawdown_pct']:.2f}% from HWM {v['hwm']:.2f}")
@@ -201,7 +170,7 @@ async def _halt(conn, redis, mandate: Mandate, trigger: AutonomyTrigger, v: dict
     detail["closes"] = closes
     await alert(conn, redis, "MANDATE_HARD_STOP" if trigger is AutonomyTrigger.HARD_STOP else BACKSTOP_REASON,
                 f"Hard stop hit — {mandate.name}: drawdown {v['drawdown_pct']:.1f}% from HWM. "
-                f"Closing {closes} position(s). Mandate HALTED → L1.", detail)
+                f"Closing {closes} position(s). Mandate HALTED (execution mode unchanged).", detail)
     logger.critical("MANDATE %s %s: drawdown %.2f%% (limit %s%%), %d close(s) queued",
                     mandate.name, trigger.value, float(v["drawdown_pct"]), mandate.max_drawdown_pct, closes)
 
@@ -224,7 +193,7 @@ async def track_mandate(conn, redis, mandate: Mandate, quotes, now: datetime.dat
     last = await _last_equity_row(conn, mandate.id, since)
     v = evaluate_drawdown(equity, Decimal(str(last["hwm"])) if last else None, mandate.max_drawdown_pct)
 
-    if mandate.status in (MandateStatus.ACTIVE, MandateStatus.PAUSED) and v["hard_stop"]:
+    if mandate.status in (MandateStatus.ACTIVE, MandateStatus.PAUSED, MandateStatus.STOPPING) and v["hard_stop"]:
         await _snapshot(conn, mandate.id, v, last, now, benchmark, force=True)
         await _halt(conn, redis, mandate, AutonomyTrigger.HARD_STOP, v, account_id)
         return v
@@ -233,17 +202,22 @@ async def track_mandate(conn, redis, mandate: Mandate, quotes, now: datetime.dat
     if mandate.status is MandateStatus.HALTED:
         # latched: keep closing until flat, never un-halt here
         await flatten_instance(conn, mandate.instance_id, "HARD_STOP", mandate.id, account_id)
-    elif v["half_stop"] and mandate.autonomy_level > AutonomyLevel.L1:
-        demoted_at = await conn.fetchval("SELECT last_dd_demotion_hwm FROM ai_mandates WHERE id = $1", mandate.id)
-        if demoted_at is None or Decimal(str(demoted_at)) != v["hwm"]:  # once per drawdown episode
+    elif v["half_stop"] and mandate.status is MandateStatus.ACTIVE:
+        # ADR 0011 D3: recorded and alerted once per drawdown episode; the operator's mode is never changed
+        seen = await conn.fetchval("SELECT last_dd_demotion_hwm FROM ai_mandates WHERE id = $1", mandate.id)
+        if seen is None or Decimal(str(seen)) != v["hwm"]:
             t = transition(AutonomyState(mandate.autonomy_level, mandate.status, mandate.allow_perps),
                            AutonomyTrigger.HALF_DRAWDOWN,
                            reason=f"drawdown {v['drawdown_pct']:.2f}% >= half the {mandate.max_drawdown_pct}% hard stop")
-            async with conn.transaction():
-                await apply_transition(conn, mandate.id, t, actor="risk:mandate_monitor",
-                                       detail={"equity": str(v["equity"]), "hwm": str(v["hwm"])})
-                await conn.execute("UPDATE ai_mandates SET last_dd_demotion_hwm = $2 WHERE id = $1", mandate.id, v["hwm"])
-            logger.warning("Mandate %s demoted to L%d: %s", mandate.name, int(t.after.level), t.reason)
+            detail = {"mandate_id": str(mandate.id), "mandate": mandate.name, "equity": str(v["equity"]),
+                      "hwm": str(v["hwm"]), "drawdown_pct": f"{v['drawdown_pct']:.2f}",
+                      "limit_pct": str(mandate.max_drawdown_pct), "episode": str(v["hwm"])}
+            # recorded as the alert (outbox row) and the episode marker; ai_autonomy_events has no kind for a warning
+            await conn.execute("UPDATE ai_mandates SET last_dd_demotion_hwm = $2 WHERE id = $1", mandate.id, v["hwm"])
+            await alert(conn, redis, "MANDATE_HALF_DRAWDOWN",
+                        f"Drawdown warning — {mandate.name}: {v['drawdown_pct']:.1f}% from HWM, at least half the "
+                        f"{mandate.max_drawdown_pct}% hard stop. Mode unchanged.", detail, tier="ACTION")
+            logger.warning("Mandate %s: %s (mode unchanged)", mandate.name, t.reason)
     return v
 
 
@@ -377,7 +351,7 @@ async def account_backstop(conn, engine, redis, now: datetime.datetime, benchmar
         except Exception as e:  # a row that does not load must not stop the backstop for the others
             logger.error("Account backstop: mandate %s does not load, skipped: %s", row["id"], e)
             continue
-        if m is not None and m.status is not MandateStatus.HALTED:
+        if m is not None and m.status not in (MandateStatus.HALTED, MandateStatus.STOPPED):
             t = transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps), AutonomyTrigger.BACKSTOP, reason=reason)
             async with conn.transaction():
                 await apply_transition(conn, m.id, t, actor="risk:account_backstop", detail={"equity": str(equity), "hwm": str(v["hwm"])})
@@ -421,27 +395,17 @@ async def mandate_monitor_once(engine, pool, redis, quotes=None, now: datetime.d
                 await track_session(conn, redis, m, v["equity"], now, account_id)
             except Exception as e:  # nor a session fault the drawdown stops above
                 logger.error("Mandate session tracker failed for %s: %s", m.name, e)
-        if time.monotonic() - _last_proposal_check[0] >= PROPOSAL_CHECK_EVERY_S:
-            _last_proposal_check[0] = time.monotonic()
-            await propose_promotions(conn, now)
-
-
-PROPOSAL_CHECK_EVERY_S = 600
-_last_proposal_check = [float("-inf")]
+            try:
+                if m.status is MandateStatus.STOPPING:  # flat -> STOPPED, locks released
+                    await finish_stop(conn, m.id)
+            except Exception as e:
+                logger.error("Finishing the stop of %s failed: %s", m.name, e)
 
 
 async def propose_promotions(conn, now: datetime.datetime) -> list[int]:
-    """§4.5: the system proposes a promotion when a gate passes; only the operator (TOTP) promotes."""
-    proposals = []
-    for row in await conn.fetch("SELECT id FROM ai_mandates WHERE status = 'ACTIVE' AND autonomy_level < 3"):
-        m = await load_mandate(conn, row["id"])
-        try:
-            async with conn.transaction():
-                if (pid := await propose_if_ready(conn, m, now)) is not None:
-                    proposals.append(pid)
-        except Exception as e:
-            logger.error("Gate evaluation failed for %s: %s", m.name, e)
-    return proposals
+    """ADR 0011 D3: the system no longer proposes promotions; the gate is a health score the operator reads. Kept so
+    callers and the autonomy view keep working; it proposes nothing."""
+    return []
 
 
 async def sweep_approvals_once(pool, now: datetime.datetime | None = None) -> list:

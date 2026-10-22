@@ -50,16 +50,17 @@ class AutonomyLevel(IntEnum):
     L3 = 3  # Autonomous: acts inside the mandate; digest only
 
 
-LEVEL_NAMES = {AutonomyLevel.L1: "L1 Copilot", AutonomyLevel.L2: "L2 Supervised", AutonomyLevel.L3: "L3 Autonomous"}
-# ADR 0009 D3: perps only at L1, where every risk-adding order waits for the operator's TOTP approval (was L3 only,
-# O1). L2/L3 autonomous perps are out of scope, so leaving L1 withdraws the opt-in.
-PERPS_AUTONOMY_LEVEL = AutonomyLevel.L1
+# ADR 0011 D2: the level is the execution mode the operator chose (ASK / VETO / AUTO), not a rank that is earned.
+# Perps are allowed at any mode (D4): `PERPS_AUTONOMY_LEVEL` is gone.
+LEVEL_NAMES = {AutonomyLevel.L1: "Ask me", AutonomyLevel.L2: "Veto window", AutonomyLevel.L3: "Fully automatic"}
 
 
 class MandateStatus(StrEnum):
     ACTIVE = "ACTIVE"
     HALTED = "HALTED"  # hard stop or backstop: reduce-only until the operator resumes it (TOTP)
     PAUSED = "PAUSED"  # operator pause: reduce-only, no TOTP needed to pause
+    STOPPING = "STOPPING"  # ADR 0011 D5: no new entries; coins stay locked until the positions are flat
+    STOPPED = "STOPPED"  # flat, coin locks released; Start runs it again
     ARCHIVED = "ARCHIVED"
 
 
@@ -100,6 +101,8 @@ class MandateReject(StrEnum):
     NO_REFERENCE_PRICE = "MANDATE_NO_REFERENCE_PRICE"
     INSTANCE_UNAVAILABLE = "MANDATE_INSTANCE_UNAVAILABLE"
     MARGIN_MODE_NOT_ALLOWED = "MANDATE_MARGIN_MODE_NOT_ALLOWED"  # ADR 0009 D5: mandate perps are ISOLATED only
+    # ADR 0011 D6: the base asset belongs to another running profile. A refusal, never a breach.
+    COIN_LOCKED = "COIN_LOCKED"
     # ADR 0010: the mandate's daily session refuses new entries until 00:00 UTC. Refusals, never breaches.
     DAILY_LOSS_LATCHED = "MANDATE_DAILY_LOSS_LATCHED"
     DAILY_TARGET_MET = "MANDATE_DAILY_TARGET_MET"  # also after the profit lock fired
@@ -126,8 +129,16 @@ def canonical_instrument(raw: str) -> str:
     return s if "." in s else f"{s}.BINANCE"
 
 
+def _profile():
+    """``cryptonite_schemas.profile`` imports this module for its constants, so this module reaches it lazily."""
+    from cryptonite_schemas import profile
+
+    return profile
+
+
 def is_perp_instrument(instrument_id: str) -> bool:
-    return canonical_instrument(instrument_id).split(".", 1)[0].endswith("-PERP")
+    p = _profile()
+    return p.market_of(instrument_id) is p.Market.PERP
 
 
 def mandate_instance_id(mandate_id: uuid.UUID | str) -> str:
@@ -189,6 +200,12 @@ def timeout_status(policy: TimeoutPolicy) -> ApprovalStatus:
     return ApprovalStatus.EXPIRED_PROCEEDED if policy is TimeoutPolicy.PROCEED else ApprovalStatus.EXPIRED
 
 
+_PROFILE_ROW_COLUMNS = (
+    "markets", "direction", "style", "environment", "max_open_positions", "max_debates_per_day", "exit_tp_r",
+    "exit_tp1_scale_pct", "exit_trail_activate_pct", "exit_trail_pct", "exit_max_hold_hours", "dry_run",
+    "notify_level", "breaker_max_loss_streak", "breaker_max_reject_streak", "paused_reason")
+
+
 class Mandate(BaseModel):
     """One ``ai_mandates`` row: the scope an AI may trade in, enforced in code."""
 
@@ -212,6 +229,24 @@ class Mandate(BaseModel):
     daily_loss_limit_pct: Decimal | None = Field(default=None, gt=0, le=MAX_DRAWDOWN_PCT_CAP)
     daily_profit_target_pct: Decimal | None = Field(default=None, gt=0, le=100)
     profit_lock_pct: Decimal = Field(default=DEFAULT_PROFIT_LOCK_PCT, ge=0, le=100)
+    # ADR 0011 profile columns (migration 050). The values are the ``cryptonite_schemas.profile`` enums (all str); the
+    # annotations are plain str because that module imports this one. ``markets`` is the truth, ``allow_perps`` derived.
+    markets: frozenset[str] = Field(default_factory=frozenset)  # empty: derived from instruments and allow_perps
+    direction: str = "LONG"
+    style: str = "SWING"
+    environment: str = "PAPER"
+    max_open_positions: int = Field(default=3, ge=1, le=20)
+    max_debates_per_day: int = Field(default=6, ge=0, le=48)
+    exit_tp_r: Decimal = Field(default=Decimal("2.0"), ge=Decimal("0.5"), le=20)
+    exit_tp1_scale_pct: Decimal = Field(default=Decimal("50"), ge=0, le=100)
+    exit_trail_activate_pct: Decimal | None = Field(default=None, gt=0, le=50)
+    exit_trail_pct: Decimal | None = Field(default=None, gt=0, le=50)
+    exit_max_hold_hours: int | None = Field(default=None, ge=1, le=720)
+    dry_run: bool = False
+    notify_level: str = "IMPORTANT"
+    breaker_max_loss_streak: int = Field(default=4, ge=1, le=50)
+    breaker_max_reject_streak: int = Field(default=5, ge=1, le=50)
+    paused_reason: str | None = None
 
     @field_validator("instruments")
     @classmethod
@@ -226,20 +261,34 @@ class Mandate(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _perps_only_at_l1(self) -> "Mandate":
-        # ADR 0009 D3: perps only at L1 (every risk-adding order approved with TOTP)
-        if self.allow_perps and self.autonomy_level != PERPS_AUTONOMY_LEVEL:
-            raise ValueError("allow_perps requires autonomy level L1 (ADR 0009 D3)")
-        # D2: enabling perps without naming a maximum gives 3x, not the spot 1x
+    def _markets_consistent(self) -> "Mandate":
+        """``markets`` is the truth (ADR 0011); ``allow_perps`` is derived from it. Then the profile rules."""
+        p = _profile()
+        markets = {p.Market(m) for m in self.markets}
+        if not markets:  # the DB trigger's derivation: SPOT for a spot instrument, PERP only when allow_perps
+            markets = {p.market_of(i) for i in self.instruments if p.market_of(i) is not p.Market.PERP}
+            if self.allow_perps:
+                markets.add(p.Market.PERP)
+            markets = markets or {p.Market.SPOT}
+        elif self.allow_perps:
+            markets.add(p.Market.PERP)
+        self.markets = frozenset(markets)
+        self.allow_perps = p.Market.PERP in markets
+        self.direction = p.Direction(self.direction)
+        self.style = p.Style(self.style)
+        self.environment = p.Environment(self.environment)
+        self.notify_level = p.NotifyLevel(self.notify_level)
+        # D2 of ADR 0009: enabling perps without naming a maximum gives 3x, not the spot 1x
         if self.allow_perps and "max_leverage" not in self.model_fields_set:
             self.max_leverage = DEFAULT_PERP_LEVERAGE
         return self
 
     @model_validator(mode="after")
     def _daily_loss_limit(self) -> "Mandate":
-        # ADR 0010: a perps mandate without a named daily loss limit gets 3 x its risk per trade, at most its hard stop
-        # (a hard stop below one trade's risk is tighter than any daily limit: no default then)
-        if self.allow_perps and "daily_loss_limit_pct" not in self.model_fields_set:
+        # ADR 0010/0011 D9: a perps or running mandate without a named daily loss limit gets 3 x its risk per trade, at
+        # most its hard stop (a hard stop below one trade's risk is tighter than any daily limit: no default then)
+        if ((self.allow_perps or self.status is MandateStatus.ACTIVE)
+                and "daily_loss_limit_pct" not in self.model_fields_set):
             default = min(PERP_DAILY_LOSS_RISK_MULTIPLE * self.max_risk_per_trade_pct, self.max_drawdown_pct)
             self.daily_loss_limit_pct = default if default >= self.max_risk_per_trade_pct else None
         if self.daily_loss_limit_pct is not None:
@@ -249,6 +298,30 @@ class Mandate(BaseModel):
                 raise ValueError("daily_loss_limit_pct must be at least max_risk_per_trade_pct: one stopped trade "
                                  "must fit in the day (ADR 0010)")
         return self
+
+    @model_validator(mode="after")
+    def _profile_rules(self) -> "Mandate":
+        if errors := _profile().profile_errors(self.profile_fields(), running=self.status is MandateStatus.ACTIVE):
+            raise ValueError(", ".join(errors))
+        return self
+
+    def profile_fields(self):
+        """The ``ProfileFields`` view of this mandate (the cross-field rules and the risk-adding diff read it)."""
+        p = _profile()
+        return p.ProfileFields(
+            markets=self.markets, direction=self.direction, style=self.style, environment=self.environment,
+            max_leverage=self.max_leverage, max_open_positions=self.max_open_positions,
+            max_debates_per_day=self.max_debates_per_day, max_risk_per_trade_pct=self.max_risk_per_trade_pct,
+            daily_loss_limit_pct=self.daily_loss_limit_pct, max_drawdown_pct=self.max_drawdown_pct,
+            exit_tp_r=self.exit_tp_r, exit_tp1_scale_pct=self.exit_tp1_scale_pct,
+            exit_trail_activate_pct=self.exit_trail_activate_pct, exit_trail_pct=self.exit_trail_pct,
+            exit_max_hold_hours=self.exit_max_hold_hours, dry_run=self.dry_run, notify_level=self.notify_level,
+            breaker_max_loss_streak=self.breaker_max_loss_streak,
+            breaker_max_reject_streak=self.breaker_max_reject_streak)
+
+    @property
+    def execution_mode(self):
+        return _profile().mode_of_level(int(self.autonomy_level))
 
     @property
     def instance_id(self) -> str:
@@ -272,6 +345,8 @@ class Mandate(BaseModel):
             min_conviction=r.get("min_conviction"), min_rr=r.get("min_rr"),
             daily_loss_limit_pct=r.get("daily_loss_limit_pct"), daily_profit_target_pct=r.get("daily_profit_target_pct"),
             profit_lock_pct=r.get("profit_lock_pct") if r.get("profit_lock_pct") is not None else DEFAULT_PROFIT_LOCK_PCT,
+            # migration 050 columns; an older row (or a test double) has none of them: the defaults apply
+            **{k: r[k] for k in _PROFILE_ROW_COLUMNS if r.get(k) is not None},
         )
 
 
@@ -331,7 +406,8 @@ def risk_adding_change(old: Mandate | None, new: Mandate) -> bool:
     """Does an edit give the AI more room? Those edits need operator TOTP (§7.1 Mandate editor)."""
     if old is None:
         return True
-    return (
+    return bool(_profile().risk_adding_profile_change(
+        old.profile_fields(), new.profile_fields(), old_mode=old.execution_mode, new_mode=new.execution_mode)) or (
         new.capital_budget_usd > old.capital_budget_usd
         or new.max_position_pct > old.max_position_pct
         or new.max_drawdown_pct > old.max_drawdown_pct

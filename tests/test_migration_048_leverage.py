@@ -44,19 +44,20 @@ def test_048_ceilings_and_refused_downgrade():
     with migrated_database("cryptonite_m048") as url:
         asyncio.run(_insert(url, allow_perps=True, max_leverage=10, max_risk_per_trade_pct=2))
         assert asyncio.run(_fetchval(url, "SELECT max_risk_per_trade_pct FROM ai_mandates")) == 2
-        for bad in ({"max_leverage": 11}, {"max_risk_per_trade_pct": 2.5}, {"max_risk_per_trade_pct": 0},
-                    {"allow_perps": True, "autonomy_level": 2}, {"allow_perps": True, "autonomy_level": 3}):
+        # ADR 0011 D4: migration 050 dropped chk_ai_mandates_perps_level, so perps at L2/L3 are no longer refused
+        # (and are covered by test_migration_050); the other 048 ceilings stand
+        for bad in ({"max_leverage": 11}, {"max_risk_per_trade_pct": 2.5}, {"max_risk_per_trade_pct": 0}):
             with pytest.raises(asyncpg.CheckViolationError):
                 asyncio.run(_insert(url, **bad))
-        asyncio.run(_insert(url, name="spot-default"))
+        asyncio.run(_insert(url, name="spot-default", instruments=["ETHUSDT.BINANCE"]))  # own coin: 050 locks one owner per coin
         assert asyncio.run(_fetchval(url, "SELECT max_risk_per_trade_pct FROM ai_mandates WHERE name = 'spot-default'")) == 1
 
         down = _alembic(url, "downgrade", "047", check=False)
         assert down.returncode != 0 and "max_leverage above 5" in (down.stderr + down.stdout)
-        asyncio.run(_fetchval(url, "UPDATE ai_mandates SET max_leverage = 5 RETURNING 1"))
+        asyncio.run(_fetchval(url, "UPDATE ai_mandates SET max_leverage = 5 WHERE allow_perps RETURNING 1"))
         down = _alembic(url, "downgrade", "047", check=False)
         assert down.returncode != 0 and "perps enabled below L3" in (down.stderr + down.stdout)
-        asyncio.run(_fetchval(url, "UPDATE ai_mandates SET allow_perps = false RETURNING 1"))
+        asyncio.run(_fetchval(url, "UPDATE ai_mandates SET allow_perps = false, markets = ARRAY['SPOT'], max_leverage = 1 RETURNING 1"))
         _alembic(url, "downgrade", "047")
         assert asyncio.run(_fetchval(url, "SELECT count(*) FROM information_schema.columns "
                                           "WHERE table_name = 'ai_mandates' AND column_name = 'max_risk_per_trade_pct'")) == 0

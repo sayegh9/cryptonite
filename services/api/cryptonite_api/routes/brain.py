@@ -61,12 +61,12 @@ from cryptonite_execution.mandate_store import (
     load_mandate,
     resolve_mandate_for,
 )
+from cryptonite_execution.profile_lifecycle import coin_lock_conflict
 from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
     MAX_POSITION_PCT_CAP,
     MIN_HOLDING_QTY,
     MIN_MANDATE_ENTRY_PCT,
-    PERPS_AUTONOMY_LEVEL,
     Mandate,
     MandateReject,
     canonical_instrument,
@@ -529,19 +529,22 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
     allocation = Decimal(str(card["allocation_pct"]))
     leverage_plan = None
     if perp_entry:
-        # ADR 0009 D3: perps only in a mandate that opted in, at L1 (every perp entry approved with TOTP)
-        if not mandate.allow_perps or mandate.autonomy_level != PERPS_AUTONOMY_LEVEL:
+        # ADR 0011 D4: perps in a mandate whose markets include PERP, at any execution mode
+        if not mandate.allow_perps:
             raise HTTPException(status_code=409, detail=(
-                f"{MandateReject.PERPS_NOT_ALLOWED.value}: mandate {mandate.name} does not allow perps "
-                f"(it needs the perps opt-in at L1); nothing was queued"))
+                f"{MandateReject.PERPS_NOT_ALLOWED.value}: mandate {mandate.name} does not trade perps "
+                f"(PERP is not in its markets); nothing was queued"))
     # An entry only gets the room the mandate has left under its position limit. An exit never does: a perp reduce
     # card closing a short is a BUY, but it is not an entry
     if (card["side"] == "BUY" and not perp_reduce) or perp_entry:
         # Another owner holding the instrument refuses the entry in the orchestrator's gate: refused here too, before
         # sizing and before the card is claimed, so the dry run and approve give the same answer
         async with pool.acquire() as conn:
-            conflict = await instrument_conflict(conn, mandate, card["instrument_id"],
-                                                 Decimal(str(card.get("quantity") or 0)), "card")
+            # ADR 0011 D6: the coin belongs to another profile (the gate refuses it at execution too)
+            conflict = await coin_lock_conflict(conn, mandate, card["instrument_id"], "card")
+            if conflict is None:
+                conflict = await instrument_conflict(conn, mandate, card["instrument_id"],
+                                                     Decimal(str(card.get("quantity") or 0)), "card")
         if conflict is not None:
             raise HTTPException(status_code=409, detail=conflict)
         # ADR 0010: the mandate's daily session, its conviction filter and its R:R filter. A card must carry what a
@@ -745,8 +748,8 @@ async def _card_remedy(request: Request, card: dict[str, Any], code: str, mandat
     if code == MandateReject.PERPS_NOT_ALLOWED.value:
         async with pool.acquire() as conn:
             mandate, _ = await resolve_mandate_for(conn, instrument, mandate_id)
-        # Perps live at L1 only: a mandate at L2/L3 is not offered the opt-in here
-        if mandate is None or mandate.autonomy_level != PERPS_AUTONOMY_LEVEL:
+        # ADR 0011 D4: offered at any execution mode; the edit adds PERP to the profile's markets
+        if mandate is None:
             return None
         return {"kind": "ALLOW_PERPS", "mandate_id": str(mandate.id), "mandate_name": mandate.name,
                 "autonomy_level": int(mandate.autonomy_level), "max_leverage_after": max(mandate.max_leverage, 3)}
