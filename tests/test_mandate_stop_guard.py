@@ -31,6 +31,7 @@ async def h(db_url, monkeypatch):
     monkeypatch.setenv("ALLOW_DEV_TOTP", "true")  # 000000 in DEV, as in test_d4_feed_validation
     monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "true")
     harness = await make_harness(db_url)
+    await harness.pool.execute("UPDATE paper_accounts SET total_equity = 1000000")  # ADR 0011 D11: create runs Start under the cap
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_positions CASCADE")
     try:
