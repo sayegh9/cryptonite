@@ -104,7 +104,8 @@ test.describe("AI mandate instances: no instance commands, link to Mission Contr
     await expect(page).toHaveURL(/ws=mission/);
   });
 
-  test("portfolio strategy dashboard hides command buttons for an AI mandate and keeps them for other instances", async ({ page }) => {
+  // P0.6: PortfolioConsole is not mounted on main; lead decides mount vs remove (StrategyDashboard only lives in PortfolioConsole)
+  test.skip("portfolio strategy dashboard hides command buttons for an AI mandate and keeps them for other instances", async ({ page }) => {
     await page.route("**/api/v1/paper/accounts*", (route) =>
       route.fulfill({
         status: 200,

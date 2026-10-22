@@ -91,7 +91,8 @@ test.describe("Units and formatting (G4)", () => {
     await expect(table).toContainText("ETHUSDT.BINANCE"); // dust is still held, as in the Brain rail
     await expect(table).not.toContainText("ETHUSDT-PERP");
     await expect(table).not.toContainText("SOLUSDT-PERP");
-    await expect(page.getByText("2 Active", { exact: true })).toBeVisible();
+    // the open-position count now lives in the Unrealized PnL metric card ("2L / 0S · 2 active")
+    await expect(page.getByText(/· 2 active$/)).toBeVisible();
   });
 
   test("Autonomy gate: drawdown in %, Sortino n/a with 0 closed trades, calibration greyed below 20", async ({ page }) => {

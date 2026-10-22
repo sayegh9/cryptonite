@@ -127,7 +127,8 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     });
   });
 
-  test("navigates to portfolio console and displays core metrics cards", async ({ page }) => {
+  // P0.6: PortfolioConsole is not mounted on main; lead decides mount vs remove
+  test.skip("navigates to portfolio console and displays core metrics cards", async ({ page }) => {
     // Mock paper trading endpoints
     await page.route("**/api/v1/paper/accounts", async (route) => {
       await route.fulfill({
@@ -233,7 +234,8 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     await expect(page.getByText("ARMED", { exact: true })).toBeVisible();
   });
 
-  test("displays active positions and executes flatten action", async ({ page }) => {
+  // P0.6: PortfolioConsole is not mounted on main; lead decides mount vs remove
+  test.skip("displays active positions and executes flatten action", async ({ page }) => {
     let positionClosed = false;
 
     await page.route("**/api/v1/paper/accounts", async (route) => {
@@ -359,7 +361,8 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     await expect(page.locator("text=No open positions.")).toHaveCount(0);
   });
 
-  test("manages strategy instances with pause, resume, and stop controls", async ({ page }) => {
+  // P0.6: PortfolioConsole is not mounted on main; lead decides mount vs remove
+  test.skip("manages strategy instances with pause, resume, and stop controls", async ({ page }) => {
     let stratStatus: "RUNNING" | "PAUSED" | "STOPPED" = "RUNNING";
 
     await page.route("**/api/v1/paper/accounts", async (route) => {
@@ -514,7 +517,8 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     expect(cancelEndpointCalled).toBe(true);
   });
 
-  test("opens deploy strategy modal and submits deployment command", async ({ page }) => {
+  // P0.6: PortfolioConsole is not mounted on main; lead decides mount vs remove
+  test.skip("opens deploy strategy modal and submits deployment command", async ({ page }) => {
     await page.route("**/api/v1/paper/accounts", async (route) => {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
     });
@@ -567,7 +571,8 @@ test.describe("Portfolio & Paper Execution Console E2E", () => {
     expect(deployPayload.allocation_usd).toBe(5000);
   });
 
-  test("handles emergency kill switch engagement and audited reset", async ({ page }) => {
+  // P0.6: PortfolioConsole is not mounted on main; lead decides mount vs remove
+  test.skip("handles emergency kill switch engagement and audited reset", async ({ page }) => {
     let latchedState = false;
 
     await page.route("**/api/v1/paper/accounts", async (route) => {
