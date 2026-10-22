@@ -78,7 +78,7 @@ async def apply_transition(conn, mandate_id: uuid.UUID, t: Transition, *, actor:
     if t.kind == "NOOP":
         return None
     halted = t.after.status is MandateStatus.HALTED and t.before.status is not MandateStatus.HALTED
-    resumed = t.kind == "RESUMED"
+    resumed = t.kind in ("RESUMED", "STARTED")
     paused = t.kind == "PAUSED"
     await conn.execute(
         """UPDATE ai_mandates SET

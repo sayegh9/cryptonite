@@ -96,7 +96,7 @@ async def test_start_takes_the_coin_locks_and_goes_active(h):
     assert await locks(h, m) == {"BTC", "ETH"}
     assert await h.pool.fetchval("SELECT count(*) FROM ai_profile_decisions WHERE mandate_id = $1 AND stage = 'LIFECYCLE' "
                                  "AND outcome = 'STARTED'", m.id) == 1
-    assert await h.pool.fetchval("SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'RESUMED'", m.id) == 1
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'STARTED'", m.id) == 1
 
 
 async def test_starting_an_active_profile_is_a_no_op_success(h):
@@ -104,7 +104,7 @@ async def test_starting_an_active_profile_is_a_no_op_success(h):
     await start(h, m)
     again = await start(h, m, settings=OFF, totp=False)  # not even the switch is asked again
     assert again.status is MandateStatus.ACTIVE
-    assert await h.pool.fetchval("SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'RESUMED'", m.id) == 1
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'STARTED'", m.id) == 1
 
 
 @pytest.mark.parametrize("level,mode", [(2, "VETO"), (3, "AUTO")])
@@ -241,6 +241,8 @@ async def test_stop_of_a_flat_profile_finishes_at_once_and_releases_the_locks(h)
     async with h.pool.acquire() as conn:
         got = await pl.stop(conn, m.id, actor="t", close=False)
     assert got.status is MandateStatus.STOPPED and await locks(h) == set()
+    kinds = [r["kind"] for r in await h.pool.fetch("SELECT kind FROM ai_autonomy_events WHERE mandate_id = $1 ORDER BY id", m.id)]
+    assert kinds[-3:] == ["STARTED", "STOPPING", "STOPPED"]
     assert await h.pool.fetchval("SELECT count(*) FROM ai_profile_decisions WHERE mandate_id = $1 AND outcome IN "
                                  "('STOPPING', 'STOPPED')", m.id) == 2
 
@@ -412,7 +414,7 @@ async def test_the_operator_sets_the_mode_directly(h):
         assert down.status_code == 200 and down.json()["level"] == 1
         same = await c.post(f"{V1}/{m.id}/autonomy/confirm", json={"level": 1}, headers=h.headers)
         assert same.status_code == 409 and same.json()["detail"] == "ALREADY_AT_LEVEL"
-    ev = await h.pool.fetchrow("SELECT detail FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'PROMOTED'", m.id)
+    ev = await h.pool.fetchrow("SELECT detail FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'MODE_SET'", m.id)
     assert ev is not None and "health_score" in str(ev["detail"])
 
 
@@ -615,3 +617,37 @@ def test_stored_settings_fall_back_to_the_safe_side():
     assert pl.parse_settings(None) == pl.AutotradeSettings(False, D(90))
     assert pl.parse_settings({"autotrade.enabled": "1", "autotrade.max_allocated_pct": '"50"'}) == pl.AutotradeSettings(True, D(50))
     assert pl.parse_settings({"autotrade.enabled": "7", "autotrade.max_allocated_pct": "junk"}) == pl.AutotradeSettings(False, D(90))
+
+
+# ------------------------------------------------------------------------- the audit kinds (migration 050)
+
+
+def test_050_widens_the_event_kinds_and_refuses_a_downgrade_over_them():
+    import asyncio
+    import os
+    import subprocess
+    import sys
+
+    import asyncpg
+    from migrated_db import REPO_ROOT
+
+    async def run(url, sql, *args):
+        c = await asyncpg.connect(url)
+        try:
+            return await c.fetchval(sql, *args)
+        finally:
+            await c.close()
+
+    with migrated_database("cryptonite_ci_p04_kinds") as url:
+        mid = asyncio.run(run(url, """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct)
+                                      VALUES ('k', 100, ARRAY['BTCUSDT.BINANCE'], 10) RETURNING id"""))
+        for kind in ("STARTED", "STOPPING", "STOPPED", "MODE_SET"):
+            asyncio.run(run(url, "INSERT INTO ai_autonomy_events (mandate_id, kind) VALUES ($1, $2) RETURNING 1", mid, kind))
+        with pytest.raises(asyncpg.CheckViolationError):
+            asyncio.run(run(url, "INSERT INTO ai_autonomy_events (mandate_id, kind) VALUES ($1, 'NOPE') RETURNING 1", mid))
+        cmd = [sys.executable, "-m", "alembic", "-c", "infra/migrations/alembic.ini", "downgrade", "049"]
+        env = {**os.environ, "DATABASE_URL": url}
+        refused = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True)
+        assert refused.returncode != 0 and "STARTED/STOPPING/STOPPED/MODE_SET" in refused.stderr + refused.stdout
+        asyncio.run(run(url, "DELETE FROM ai_autonomy_events WHERE kind IN ('STARTED','STOPPING','STOPPED','MODE_SET') RETURNING 1"))
+        assert subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True).returncode == 0

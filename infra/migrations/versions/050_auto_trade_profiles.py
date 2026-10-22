@@ -109,6 +109,12 @@ $fn$
 """
 
 
+# ai_autonomy_events.kind as 045 left it, and the lifecycle kinds 050 adds (start, stop, finish stop, operator mode change)
+EVENT_KINDS_045 = ("'CREATED', 'PROPOSED', 'PROMOTED', 'DEMOTED', 'HALTED', 'RESUMED', 'PAUSED', 'BREACH', 'EDITED', "
+                   "'BACKSTOP', 'BREACH_VOIDED'")
+EVENT_KINDS_NEW = ("'STARTED', 'STOPPING', 'STOPPED', 'MODE_SET'",)
+
+
 def base_asset(instrument_id: str) -> str:
     """The base asset of an instrument id (BTCUSDT-PERP.BINANCE -> BTC); equals profile.base_asset."""
     s = instrument_id.strip().upper()
@@ -157,6 +163,10 @@ def upgrade() -> None:
     ).fetchall()
     owners = _coin_owners(locking)
     _check_coin_overlap(owners)
+
+    op.execute("ALTER TABLE ai_autonomy_events DROP CONSTRAINT chk_ai_autonomy_events_kind")
+    op.execute(f"ALTER TABLE ai_autonomy_events ADD CONSTRAINT chk_ai_autonomy_events_kind "
+               f"CHECK (kind IN ({EVENT_KINDS_045}, {EVENT_KINDS_NEW[0]}))")
 
     op.execute("""
         ALTER TABLE ai_mandates
@@ -313,6 +323,13 @@ def downgrade() -> None:
             "market, or perps away from level 1). Archive, edit or delete them first:\n" + rows
         )
 
+    # Dropping the kinds would delete audit history: refuse while any lifecycle event exists
+    op.execute("""DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM ai_autonomy_events WHERE kind IN ('STARTED', 'STOPPING', 'STOPPED', 'MODE_SET')) THEN
+            RAISE EXCEPTION 'migration 050 downgrade refused: ai_autonomy_events has STARTED/STOPPING/STOPPED/MODE_SET rows';
+        END IF; END $$""")
+    op.execute("ALTER TABLE ai_autonomy_events DROP CONSTRAINT chk_ai_autonomy_events_kind")
+    op.execute(f"ALTER TABLE ai_autonomy_events ADD CONSTRAINT chk_ai_autonomy_events_kind CHECK (kind IN ({EVENT_KINDS_045}))")
     op.execute(f"DROP TRIGGER IF EXISTS {TRIGGER} ON ai_mandates")
     op.execute("DROP FUNCTION IF EXISTS ai_mandates_profile_defaults()")
     op.execute(f"DROP VIEW IF EXISTS {HEALTH_VIEW}")

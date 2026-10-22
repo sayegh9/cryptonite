@@ -11,8 +11,7 @@ changes ``ai_mandates.status`` between ACTIVE, PAUSED, STOPPING and STOPPED, and
   release them; ``pause`` and a halt keep them.
 - ``stop`` stops new entries; with ``close`` it also queues reduce-only closes. Exits never stop (D13).
 
-``ai_autonomy_events`` (migration 026) has no STARTED/STOPPED kinds and 050 did not add them, so a start is recorded as
-RESUMED and a stop as EDITED with ``detail.lifecycle``; the precise stage lives in ``ai_profile_decisions`` (LIFECYCLE).
+Audit: ``ai_autonomy_events`` kinds STARTED, STOPPING and STOPPED (migration 050), and ``ai_profile_decisions`` (LIFECYCLE).
 """
 
 import logging
@@ -194,8 +193,8 @@ async def _cancel_pending_add_risk(conn, mandate_id: uuid.UUID) -> None:
 async def _set_status(conn, m: Mandate, status: MandateStatus, kind_detail: str, *, actor: str, reason: str) -> None:
     """Move to STOPPING / STOPPED: status, audit event. (ACTIVE, PAUSED and HALTED go through ``apply_transition``.)"""
     await conn.execute("UPDATE ai_mandates SET status = $2, updated_at = now() WHERE id = $1", m.id, status.value)
-    await record_event(conn, m.id, "EDITED", from_level=int(m.autonomy_level), to_level=int(m.autonomy_level),
-                       reason=f"lifecycle: {status.value}: {reason}", actor=actor,
+    await record_event(conn, m.id, status.value, from_level=int(m.autonomy_level), to_level=int(m.autonomy_level),
+                       reason=f"{status.value}: {reason}", actor=actor,
                        detail={"lifecycle": status.value, "from": m.status.value, "step": kind_detail})
 
 
@@ -222,7 +221,7 @@ async def start(conn, mandate_id: uuid.UUID | str, *, actor: str, totp_ok: bool,
         await check_capital(conn, m.id, m.capital_budget_usd, cfg)
         await acquire_locks(conn, m.id, m.instruments)
         t = Transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps),
-                       AutonomyState(m.autonomy_level, MandateStatus.ACTIVE, m.allow_perps), "RESUMED",
+                       AutonomyState(m.autonomy_level, MandateStatus.ACTIVE, m.allow_perps), "STARTED",
                        f"operator started the profile ({m.status.value} -> ACTIVE)")
         await apply_transition(conn, m.id, t, actor=actor, detail={"lifecycle": "STARTED", "mode": mode.value,
                                                                     "from": m.status.value})

@@ -229,7 +229,7 @@ async def test_the_system_proposes_and_only_the_operator_promotes_with_totp(h):
         assert ok.json()["level"] == 2 and ok.json()["proposal"] is None
     events = [(r["kind"], r["proposal_status"]) for r in
               await h.pool.fetch("SELECT kind, proposal_status FROM ai_autonomy_events WHERE mandate_id = $1 ORDER BY id", m.id)]
-    assert ("PROPOSED", "CONFIRMED") in events and ("PROMOTED", None) in events
+    assert ("PROPOSED", "CONFIRMED") in events and ("MODE_SET", None) in events  # was PROMOTED: an operator mode change is MODE_SET (050)
 
 
 async def test_a_failing_gate_no_longer_blocks_the_confirmation(h):
