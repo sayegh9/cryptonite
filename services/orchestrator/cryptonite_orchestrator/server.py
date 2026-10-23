@@ -13,6 +13,7 @@ from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
+from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.mandate_store import load_mandate, others_spot_holding
@@ -310,13 +311,16 @@ async def record_profile_trade(conn, engine, owner: str, instrument_id: str, sid
                 if command is not None and stop is None:
                     source = _payload_dict(command["payload"])
                     stop = source.get("stop_loss") or source.get("stop_price") or source.get("proposed_stop_loss")
+                source = _payload_dict(command["payload"]) if command is not None else {}
                 m = await load_mandate(conn, mid)
                 if m is None:
                     return
                 from cryptonite_execution.profile_lifecycle import autotrade_switch_on
-                mode = {1: "ASK", 2: "VETO", 3: "AUTO"}[int(m.autonomy_level)]
-                if not await autotrade_switch_on(conn):
-                    mode = "ASK"
+                mode = source.get("profile_execution_mode")
+                if mode not in {"ASK", "VETO", "AUTO"}:
+                    mode = {1: "ASK", 2: "VETO", 3: "AUTO"}[int(m.autonomy_level)]
+                    if not await autotrade_switch_on(conn):
+                        mode = "ASK"
                 await record_decision(conn, mid, "FILL", "FILLED", instrument_id=instrument_id,
                                       command_id=command_id, side="LONG" if side == "BUY" else "SHORT",
                                       market="PERP" if perp else "SPOT", price=price, qty=qty,
@@ -2085,6 +2089,27 @@ async def command_poller(pool, engine, quote_cache=None):
                                         row["command_id"], mandate_reject,
                                     )
                                     continue
+                                if mandate is not None:
+                                    # The gate refreshed and locked the profile row. Use that committed snapshot for
+                                    # dry-run routing too; a toggle committed after the earlier sizing read must not
+                                    # let an entry reach the dispatcher.
+                                    mandate = await load_mandate(conn, mandate.id)
+                                    if mandate is None:
+                                        await conn.execute(
+                                            "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                            row["command_id"], MandateReject.NOT_FOUND.value,
+                                        )
+                                        continue
+                                    effective_mode = {1: "ASK", 2: "VETO", 3: "AUTO"}[int(mandate.autonomy_level)]
+                                    if not await profile_lifecycle.autotrade_switch_on(conn):
+                                        effective_mode = "ASK"
+                                    # Persist the mode that authorized this order. A delayed fill can arrive after
+                                    # the mandate or global switch changes, but its FILL audit must describe this
+                                    # order's effective mode.
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET payload = payload || jsonb_build_object('profile_execution_mode', $2) WHERE command_id = $1",
+                                        row["command_id"], effective_mode,
+                                    )
 
                             if ai_order and mandate is not None and mandate.dry_run and (
                                     perp_entry or (not is_perp_order and side == "BUY" and not intent.reduce_only)):

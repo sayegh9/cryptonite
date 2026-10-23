@@ -34,7 +34,7 @@ def decisions(conn):
             for sql, a in conn.executed if "INSERT INTO ai_profile_decisions" in sql]
 
 
-async def run_command(m, payload, *, dispatcher=None, command_type="SUBMIT_ORDER", positions=()):
+async def run_command(m, payload, *, dispatcher=None, command_type="SUBMIT_ORDER", positions=(), conn_type=FakeConn):
     """Execute one real poller claim with a real dispatcher and an isolated SQL double."""
     d = dispatcher or make_perp_dispatcher()
     engine = make_engine(d)
@@ -48,7 +48,7 @@ async def run_command(m, payload, *, dispatcher=None, command_type="SUBMIT_ORDER
     row = {"command_id": cid, "command_type": command_type, "target_instance_id": m.instance_id,
            "requester_id": "operator:test", "mandate_id": m.id, "payload": json.dumps(payload)}
     approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED", "command_id": cid}
-    conn = FakeConn(row, mandate_row(m), positions, approval)
+    conn = conn_type(row, mandate_row(m), positions, approval)
     pool = pool_for(conn)
     d.dispatch = MagicMock(wraps=d.dispatch)
     profile_lifecycle.reset_switch_cache()
@@ -92,6 +92,32 @@ async def test_dry_run_reductions_still_dispatch(instrument):
     engine.dispatcher.dispatch.assert_called_once()
     assert conn.outcome() == ("COMPLETED", None)
     assert not [r for r in decisions(conn) if r["outcome"] == "DRY_RUN"]
+
+
+async def test_dry_run_enabled_between_snapshot_and_gate_never_dispatches():
+    m = mandate(dry_run=False)
+
+    class DryRunRaceConn(FakeConn):
+        def __init__(self, *args):
+            super().__init__(*args)
+            self.mandate_reads = 0
+
+        async def fetchrow(self, sql, *args):
+            if "FROM ai_mandates" in sql:
+                self.mandate_reads += 1
+                fresh = m.model_copy(update={"dry_run": self.mandate_reads > 1})
+                return mandate_row(fresh)
+            return await super().fetchrow(sql, *args)
+
+    conn, engine = await run_command(
+        m, {"instrument_id": SPOT, "side": "BUY", "allocation_pct": 5, "stop_loss": "49750"},
+        conn_type=DryRunRaceConn,
+    )
+    engine.dispatcher.dispatch.assert_not_called()
+    assert conn.mandate_reads >= 2
+    assert conn.outcome() == ("COMPLETED", None)
+    row, = [r for r in decisions(conn) if r["stage"] == "ORDER"]
+    assert row["outcome"] == "DRY_RUN" and D(row["detail"]["plan"]["quantity"]) > 0
 
 
 @pytest.mark.parametrize("reason,outcome", [("TAKE_PROFIT_1", "TP1"), ("TRAILING_STOP", "TRAIL"),
@@ -169,13 +195,179 @@ async def test_cash_guard_counts_spot_cost_and_perp_margin_without_double_counti
     d.set_perp_position(PERP, D("0.02"), D("50000"), 2, "ISOLATED", m.instance_id)
     engine = make_engine(d)
     conn = AsyncMock()
-    conn.fetch.return_value = [{"instrument_id": SPOT, "net": D("0.008"), "avg_px": D("50000")}]
+    conn.fetch.return_value = [{"instrument_id": SPOT, "side": "BUY", "filled_qty": D("0.008"),
+                               "fill_price": D("50000")}]
     conn.fetchval.return_value = D("0")
     order = MandateOrder(PERP, "BUY", D("0.004"), D("50000"), order_type="LIMIT", leverage=2)
     # $400 spot + $500 margin + $100 new margin + $0.10 fee = the $1,000.10 budget.
     assert await mandate_gate.profile_cash_reject(conn, engine, m, order) is None
     larger = MandateOrder(PERP, "BUY", D("0.0041"), D("50000"), order_type="LIMIT", leverage=2)
     assert await mandate_gate.profile_cash_reject(conn, engine, m, larger) == "PROFILE_CASH_EXHAUSTED"
+
+
+async def test_gate_maps_budget_limited_exposure_to_non_breach_cash_refusal(monkeypatch):
+    m = mandate(capital_budget_usd=D("1000"))
+    other_coin = "ETHUSDT.BINANCE"
+    approval = {"mandate_id": m.id, "action_class": "ADD_RISK", "status": "APPROVED",
+                "command_id": uuid.uuid4()}
+    class CashLimitConn(FakeConn):
+        async def fetch(self, sql, *args):
+            if "SELECT instrument_id, side, filled_qty" in sql:
+                return [{"instrument_id": other_coin, "side": "BUY", "filled_qty": D("0.018"),
+                         "fill_price": D("50000")}]
+            return await super().fetch(sql, *args)
+
+    conn = CashLimitConn(None, mandate_row(m),
+                         [{"instance_id": m.instance_id, "instrument_id": other_coin,
+                           "quantity": D("0.018"), "current_price": D("50000")}], approval)
+    monkeypatch.setattr(mandate_gate.profile_lifecycle, "autotrade_switch_on", AsyncMock(return_value=True))
+    monkeypatch.setattr(mandate_gate, "session_verdict_for", AsyncMock(return_value=SessionVerdict.ACTIVE))
+    intent = OrderIntent(client_order_id="cash-cap", instance_id=m.instance_id, instrument_id=SPOT,
+                         side="BUY", order_type="LIMIT", quantity=D("0.004"), price=D("50000"))
+    reject = await mandate_gate.gate_ai_order(conn, make_engine(make_perp_dispatcher()),
+                                              {"command_id": approval["command_id"]},
+                                              {"approval_id": str(uuid.uuid4())}, intent, m, None)
+    assert reject == "PROFILE_CASH_EXHAUSTED"
+    assert conn.events == []
+
+
+async def test_fill_uses_the_order_mode_after_profile_mode_and_switch_change(monkeypatch):
+    m = mandate()
+    command_id = uuid.uuid4()
+
+    class StoredModeConn(FakeConn):
+        async def fetchrow(self, sql, *args):
+            if "FROM execution_commands" in sql:
+                return {"command_id": command_id, "payload": {"profile_execution_mode": "AUTO"}}
+            return await super().fetchrow(sql, *args)
+
+    conn = StoredModeConn(None, mandate_row(m))
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", AsyncMock(return_value=False))
+    await server.record_profile_trade(conn, make_engine(), m.instance_id, SPOT, "BUY", D("0.01"), D("50000"),
+                                      entry=True, command_id=command_id)
+    row, = decisions(conn)
+    assert row["stage"] == "FILL" and row["detail"]["mode"] == "AUTO"
+
+
+async def test_successful_dispatch_persists_the_effective_profile_mode(monkeypatch):
+    m = mandate(autonomy_level=3)
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", AsyncMock(return_value=True))
+    conn, engine = await run_command(
+        m, {"instrument_id": SPOT, "side": "BUY", "quantity": "0.001", "stop_loss": "49750"})
+    engine.dispatcher.dispatch.assert_called_once()
+    persisted = [args for sql, args in conn.executed
+                 if "profile_execution_mode" in sql and "UPDATE execution_commands" in sql]
+    assert persisted and persisted[0][1] == "AUTO"
+
+
+async def test_spot_cash_gate_uses_cost_basis_since_last_flat(h):
+    m = await h.mandate(budget=1000)
+    await h.pool.execute(
+        """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type,
+                   quantity, price, filled_qty, avg_fill_price, status, created_at, updated_at)
+           VALUES ('roundtrip-buy', $1, 'PAPER-ACCOUNT-001', 'ETHUSDT.BINANCE', 'BUY', 'LIMIT', 1, 100, 1, 100,
+                   'FILLED', now() - interval '3 days', now() - interval '3 days'),
+                  ('roundtrip-sell', $1, 'PAPER-ACCOUNT-001', 'ETHUSDT.BINANCE', 'SELL', 'LIMIT', 1, 100, 1, 100,
+                   'FILLED', now() - interval '2 days', now() - interval '2 days'),
+                  ('current-buy', $1, 'PAPER-ACCOUNT-001', 'ETHUSDT.BINANCE', 'BUY', 'LIMIT', 1, 900, 1, 900,
+                   'FILLED', now() - interval '1 day', now() - interval '1 day')""", m.instance_id)
+    engine = make_engine(make_perp_dispatcher())
+    async with h.pool.acquire() as conn:
+        async with conn.transaction():
+            reject = await mandate_gate.profile_cash_reject(
+                conn, engine, m, MandateOrder(SPOT, "BUY", D("0.004"), D("50000"), order_type="LIMIT"))
+    assert reject == "PROFILE_CASH_EXHAUSTED"
+
+
+async def test_two_connections_share_the_committed_working_order_claim(h):
+    m = await h.mandate(budget=1000)
+    await h.pool.execute(
+        """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type,
+                   quantity, price, filled_qty, avg_fill_price, status)
+           VALUES ('existing-spot-holding', $1, 'PAPER-ACCOUNT-001', 'ETHUSDT.BINANCE', 'BUY', 'LIMIT',
+                   0.014, 50000, 0.014, 50000, 'FILLED')""", m.instance_id)
+    first_engine = make_engine(make_perp_dispatcher())
+    second_engine = make_engine(make_perp_dispatcher())
+    order = MandateOrder(SPOT, "BUY", D("0.004"), D("50000"), order_type="LIMIT")
+    first_checked = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def first_claim():
+        async with h.pool.acquire() as conn:
+            async with conn.transaction():
+                assert await mandate_gate.profile_cash_reject(conn, first_engine, m, order) is None
+                first_checked.set()
+                await release_first.wait()
+                await conn.execute(
+                    """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id,
+                               side, order_type, quantity, price, filled_qty, status)
+                       VALUES ('first-working-order', $1, 'PAPER-ACCOUNT-001', $2, 'BUY', 'LIMIT', .004, 50000, 0,
+                               'ACCEPTED')""", m.instance_id, SPOT)
+
+    async def second_claim():
+        await first_checked.wait()
+        second_started.set()
+        async with h.pool.acquire() as conn:
+            async with conn.transaction():
+                return await mandate_gate.profile_cash_reject(conn, second_engine, m, order)
+
+    first = asyncio.create_task(first_claim())
+    second = asyncio.create_task(second_claim())
+    await second_started.wait()
+    await asyncio.sleep(0.05)
+    release_first.set()
+    await first
+    assert await second == "PROFILE_CASH_EXHAUSTED"
+
+
+async def test_durable_order_and_reservation_are_counted_once(h):
+    m = await h.mandate(budget=1000)
+    cid = uuid.uuid4()
+    oid = f"AI-{cid.hex[:12].upper()}"
+    await h.pool.execute(
+        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, mandate_id, payload)
+           VALUES ($1, $2, 'SUBMIT_ORDER', $3, jsonb_build_object('client_order_id', $4::text))""",
+        cid, str(cid), m.id, oid)
+    await h.pool.execute(
+        """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type,
+                   quantity, price, filled_qty, status)
+           VALUES ($1, $2, 'PAPER-ACCOUNT-001', $3, 'BUY', 'LIMIT', .01, 50000, 0, 'ACCEPTED')""",
+        oid, m.instance_id, SPOT)
+    await h.pool.execute(
+        """INSERT INTO trading_orders (environment, account_id, client_order_id, strategy_id, instrument_id,
+                   side, order_type, quantity, price, status)
+           VALUES ('PAPER', 'PAPER-ACCOUNT-001', $1, $2, $3, 'BUY', 'LIMIT', .01, 50000, 'SUBMITTED')""",
+        oid, m.instance_id, SPOT)
+    await h.pool.execute(
+        """INSERT INTO execution_reservations (command_id, client_order_id, environment, account_id, asset,
+                   amount, fee_slippage_headroom, state)
+           VALUES ($1, $2, 'PAPER', 'PAPER-ACCOUNT-001', 'USDT', 500, 0, 'ACKED_UNREFLECTED')""",
+        cid, oid)
+    engine = make_engine(make_perp_dispatcher())
+    async with h.pool.acquire() as conn:
+        async with conn.transaction():
+            reject = await mandate_gate.profile_cash_reject(
+                conn, engine, m, MandateOrder(SPOT, "BUY", D("0.008"), D("50000"), order_type="LIMIT"))
+    assert reject is None
+
+
+async def test_delayed_fill_keeps_execution_mode_from_the_order(h, monkeypatch):
+    m = await h.mandate()
+    cid = uuid.uuid4()
+    await h.pool.execute(
+        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, mandate_id, payload)
+           VALUES ($1, $2, 'SUBMIT_ORDER', $3, '{"profile_execution_mode":"AUTO"}'::jsonb)""",
+        cid, str(cid), m.id)
+    await h.pool.execute("UPDATE ai_mandates SET autonomy_level = 1 WHERE id = $1", m.id)
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", AsyncMock(return_value=False))
+    async with h.pool.acquire() as conn:
+        async with conn.transaction():
+            await server.record_profile_trade(conn, make_engine(), m.instance_id, SPOT, "BUY", D("0.01"),
+                                              D("50000"), entry=True, command_id=cid)
+    row = await h.pool.fetchrow(
+        "SELECT instrument_id, detail FROM ai_profile_decisions WHERE mandate_id = $1 AND stage = 'FILL'", m.id)
+    assert row["instrument_id"] == SPOT and json.loads(row["detail"])["mode"] == "AUTO"
 
 
 async def test_entry_gate_reloads_and_locks_status_before_risk_check(monkeypatch):

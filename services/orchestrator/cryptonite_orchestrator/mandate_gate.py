@@ -317,6 +317,12 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
         session = await session_verdict_for(conn, mandate, datetime.datetime.now(datetime.UTC))
     reject = check_mandate(mandate, order, exposure, approval_ok=ok, session=session, coin_owner=coin_owner,
                          autotrade_on=switch_on)
+    if reject is MandateReject.BUDGET_EXCEEDED and action_class(order) is ActionClass.ADD_RISK:
+        # Cash exhaustion due to already-held exposure/reservations is an expected profile refusal, not an AI breach.
+        # Preserve BUDGET_EXCEEDED when the cash check does not establish that condition.
+        cash_reject = await profile_cash_reject(conn, engine, mandate, order)
+        if cash_reject is not None:
+            return cash_reject
     if reject is None and order.is_perp and action_class(order) is ActionClass.ADD_RISK:
         # Leverage plan 2.4: the same valuation the sizing used; a refusal, never a breach
         if (perp_reject := perp_entry_reject(engine, mandate, intent)) is not None:
@@ -358,7 +364,7 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
         return None
     await conn.fetchrow("SELECT id FROM ai_mandates WHERE id = $1 FOR UPDATE", mandate.id)
     d = engine.dispatcher
-    used = sum((qty * px for qty, px in (await instance_spot_holdings(conn, mandate.instance_id)).values()), Decimal("0"))
+    used = sum((cost for cost in (await instance_spot_cost_basis(conn, mandate.instance_id)).values()), Decimal("0"))
     used += sum((pos.initial_margin for pos in getattr(d, "perp_positions", {}).values()
                  if getattr(pos, "instance_id", None) == mandate.instance_id and pos.signed_qty != 0), Decimal("0"))
     working_ids = []
@@ -368,6 +374,27 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
         if info.get("is_perp") or info.get("side") == "BUY":
             working_ids.append(cid)
             used += Decimal(str(info.get("reserved_notional") or 0))
+    durable_working = await conn.fetchval(
+        """SELECT COALESCE(SUM((p.quantity - p.filled_qty) * COALESCE(p.price, p.avg_fill_price, 0) *
+                                  CASE WHEN p.instrument_id LIKE '%-PERP.%' THEN 1.0005 ELSE 1.001 END), 0)
+           FROM paper_orders p
+           LEFT JOIN execution_commands c
+             ON c.payload->>'client_order_id' = p.client_order_id
+             OR p.client_order_id IN (
+                 'AI-' || upper(substr(replace(c.command_id::text, '-', ''), 1, 12)),
+                 'MANUAL-' || upper(substr(replace(c.command_id::text, '-', ''), 1, 12)))
+           WHERE p.instance_id = $1 AND p.status IN ('PENDING', 'SUBMITTED', 'ACCEPTED')
+             AND p.filled_qty < p.quantity AND p.order_type <> 'STOP_MARKET'
+             AND (p.side = 'BUY' OR p.instrument_id LIKE '%-PERP.%')
+             AND COALESCE(c.payload->>'reduce_only', 'false') <> 'true'
+             AND NOT EXISTS (
+                 SELECT 1 FROM execution_reservations r
+                 WHERE r.client_order_id = p.client_order_id AND r.account_id = p.account_id
+                   AND r.environment = 'PAPER' AND r.asset = 'USDT'
+                   AND r.state IN ('PRE_SEND', 'INFLIGHT', 'ACKED_UNREFLECTED'))
+             AND NOT (p.client_order_id = ANY($2::text[]))""",
+        mandate.instance_id, working_ids)
+    used += Decimal(str(durable_working or 0))
     reserved = await conn.fetchval(
         """SELECT COALESCE(SUM(r.amount + r.fee_slippage_headroom), 0)
            FROM execution_reservations r JOIN execution_commands c ON c.command_id = r.command_id
@@ -382,7 +409,42 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
     fee = getattr(d, "perp_taker_fee", Decimal("0.0005")) if order.is_perp else getattr(d, "taker_fee", Decimal("0.001"))
     needed = notional / Decimal(order.leverage or 1) if order.is_perp else notional
     needed += notional * fee
-    return "PROFILE_CASH_EXHAUSTED" if used + Decimal(str(reserved or 0)) + needed > mandate.capital_budget_usd else None
+    # A single instruction larger than the profile's entire budget remains a mandate breach. This refusal
+    # covers otherwise affordable entries that no longer fit because existing holdings/orders consumed cash.
+    return ("PROFILE_CASH_EXHAUSTED"
+            if needed <= mandate.capital_budget_usd
+            and used + Decimal(str(reserved or 0)) + needed > mandate.capital_budget_usd else None)
+
+
+async def instance_spot_cost_basis(conn, instance_id: str) -> dict[str, Decimal]:
+    """Return remaining spot cost by instrument, resetting after each round trip to flat."""
+    rows = await conn.fetch(
+        """SELECT instrument_id, side, filled_qty, COALESCE(avg_fill_price, price, 0) AS fill_price
+           FROM paper_orders
+           WHERE instance_id = $1 AND filled_qty > 0 AND instrument_id NOT LIKE '%-PERP.%'
+           ORDER BY created_at, updated_at, client_order_id""",
+        instance_id,
+    )
+    positions: dict[str, tuple[Decimal, Decimal]] = {}
+    for row in rows:
+        side = row.get("side")
+        if side not in ("BUY", "SELL"):
+            continue
+        instrument_id = row["instrument_id"]
+        quantity, cost = positions.get(instrument_id, (Decimal("0"), Decimal("0")))
+        filled_qty = Decimal(str(row["filled_qty"]))
+        fill_price = Decimal(str(row["fill_price"]))
+        if side == "BUY":
+            quantity += filled_qty
+            cost += filled_qty * fill_price
+        elif quantity > 0:
+            closed_qty = min(filled_qty, quantity)
+            cost -= (cost / quantity) * closed_qty
+            quantity -= closed_qty
+            if quantity == 0:
+                cost = Decimal("0")
+        positions[instrument_id] = (quantity, max(cost, Decimal("0")))
+    return {instrument_id: cost for instrument_id, (quantity, cost) in positions.items() if quantity > 0}
 
 
 async def record_breach(conn, mandate: Mandate, reject: MandateReject, row: Any, payload: dict) -> None:
