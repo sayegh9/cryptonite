@@ -529,9 +529,12 @@ async def test_review_real_resume_and_entry_only_rejections(kind):
         pytest.skip('requires the dedicated P1.8 database')
     pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
     mid = None
+    previous_equity = None
     try:
         async with pool.acquire() as conn:
             await seed_paper_account(conn)
+            previous_equity = await conn.fetchval("SELECT total_equity FROM paper_accounts WHERE account_id='PAPER-ACCOUNT-001'")
+            await conn.execute("UPDATE paper_accounts SET total_equity=100000 WHERE account_id='PAPER-ACCOUNT-001'")
         m = await make_mandate(pool, 1)
         mid = m.id
         async with pool.acquire() as conn:
@@ -574,4 +577,6 @@ async def test_review_real_resume_and_entry_only_rejections(kind):
                 await conn.execute('DELETE FROM ai_profile_coin_locks WHERE mandate_id=$1', mid)
                 await conn.execute('DELETE FROM ai_autonomy_events WHERE mandate_id=$1', mid)
                 await conn.execute('DELETE FROM ai_mandates WHERE id=$1', mid)
+        if previous_equity is not None:
+            await pool.execute("UPDATE paper_accounts SET total_equity=$1 WHERE account_id='PAPER-ACCOUNT-001'", previous_equity)
         await pool.close()
