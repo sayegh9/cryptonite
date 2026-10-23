@@ -42,6 +42,7 @@ from debate_queue import (
 from gate import (
     AUTOMATIC_SOURCES,
     BRAIN_SOURCES,
+    ProfileBudgetLockError,
     decision_trace_id,
     pre_debate_gate,
     profile_budget_guard,
@@ -63,6 +64,19 @@ RISK_PANEL_MODE = os.getenv("DEBATE_RISK_PANEL_MODE", "merged")
 # R3.2: no on-chain feed exists, so the full debate has no On-Chain Analyst (it argued from invented data)
 FULL_DEBATE_ANALYSTS = (MARKET_ANALYST, SENTIMENT_ANALYST)
 SENTIMENT_LAST_OK_KEY = "sentiment:last_ok"  # R7.5: the sentiment service has no Redis access by design
+
+
+async def _gather_cancel_on_error(*awaitables):
+    """Run parallel persona calls and cancel/drain every sibling if one call fails."""
+    tasks = [asyncio.create_task(awaitable) for awaitable in awaitables]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def load_brief(redis_client, payload: dict) -> str | None:
@@ -424,7 +438,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
 
         if lite is None:
             analysts = FULL_DEBATE_ANALYSTS
-            results = await asyncio.gather(*(run_agent(a, prompt) for a in analysts))
+            results = await _gather_cancel_on_error(*(run_agent(a, prompt) for a in analysts))
             await publish_sentiment_ok(redis_client)
             intel_dossier = "\n\n".join(section(a, r) for a, r in zip(analysts, results))
 
@@ -469,7 +483,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                 cro_decision = (await run_agent(RISK_PANEL, risk_prompt + "\nThen make the final sizing decision.")).output
             else:
                 risk_panel = (AGGRESSIVE_RISK, CONSERVATIVE_RISK, NEUTRAL_RISK)
-                results_risk = await asyncio.gather(*(run_agent(r, risk_prompt) for r in risk_panel))
+                results_risk = await _gather_cancel_on_error(*(run_agent(r, risk_prompt) for r in risk_panel))
                 risk_transcript = f"PM Proposal: {decision} ({allocation}%)\n\n" + "\n\n".join(
                     section(p, r) for p, r in zip(risk_panel, results_risk)
                 )
@@ -568,6 +582,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         logger.error(f"Debate failed for {instrument_id}: {e} (decision_trace_id={trace_id})")
         await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
         budget_reason = "AI_BUDGET_EXHAUSTED" if isinstance(e, BudgetExceeded) else None
+        profile_failure_reason = e.reason if isinstance(e, ProfileBudgetLockError) else None
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 rr = await conn.fetchrow("SELECT status,stream_message_id,claim_gen FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
@@ -580,13 +595,14 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                         except Exception:
                             owned = False
                     if owned:
-                        if budget_reason and gate.profile is not None:
-                            await record_decision(conn, gate.profile.id, "GATE", "REFUSED", budget_reason,
+                        if (budget_reason or profile_failure_reason) and gate.profile is not None:
+                            await record_decision(conn, gate.profile.id, "GATE", "REFUSED",
+                                                  budget_reason or profile_failure_reason,
                                                   instrument_id=instrument_id, run_id=run_id)
                         await conn.execute(
                             "UPDATE debate_runs SET status='FAILED',completed_at=now(),failure_reason=$3 "
                             "WHERE id=$1 AND status='RUNNING' AND claim_gen=$2",
-                            run_id, my_generation, budget_reason,
+                            run_id, my_generation, budget_reason or profile_failure_reason,
                         )
 
 async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,

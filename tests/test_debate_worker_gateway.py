@@ -2,6 +2,7 @@
 verdict fails the run closed instead of staging a HOLD decision. Throwaway DB at Alembic head;
 models are pydantic-ai FunctionModels."""
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -85,6 +86,28 @@ def redis_double():
     redis.eval.side_effect = eval_script
     redis.hgetall.return_value = fresh_marks()
     return redis
+
+
+async def test_parallel_persona_failure_cancels_and_drains_sibling(debate_main):
+    """A failed analyst must not leave another model call running in the background."""
+    sibling_started = asyncio.Event()
+    sibling_cancelled = asyncio.Event()
+
+    async def failing_call():
+        await sibling_started.wait()
+        raise RuntimeError("analyst failed")
+
+    async def sibling_call():
+        sibling_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            sibling_cancelled.set()
+
+    with pytest.raises(RuntimeError, match="analyst failed"):
+        await debate_main._gather_cancel_on_error(failing_call(), sibling_call())
+
+    assert sibling_cancelled.is_set()
 
 
 def fresh_marks(price: str = "65000.0", age_s: float = 2.0) -> dict:

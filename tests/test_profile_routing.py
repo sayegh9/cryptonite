@@ -301,8 +301,6 @@ async def test_profile_budget_lease_loss_fails_closed_without_releasing_another_
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
-    from cryptonite_agents.gateway import BudgetExceeded
-
     class Pool:
         @asynccontextmanager
         async def acquire(self):
@@ -333,7 +331,7 @@ async def test_profile_budget_lease_loss_fails_closed_without_releasing_another_
     monkeypatch.setattr(gate, "profile_budget_exhausted", budget_available)
     monkeypatch.setattr(gate, "PROFILE_BUDGET_LOCK_RENEW_S", .001)
     redis = Redis()
-    with pytest.raises(BudgetExceeded, match="PROFILE_BUDGET_LOCK_LOST"):
+    with pytest.raises(gate.ProfileBudgetLockError, match="PROFILE_BUDGET_LOCK_LOST"):
         async with gate.profile_budget_guard(Pool(), redis, SimpleNamespace(id=uuid.uuid4())):
             await asyncio.sleep(.01)
     assert redis.key == "replacement-owner"
@@ -342,15 +340,83 @@ async def test_profile_budget_lease_loss_fails_closed_without_releasing_another_
 async def test_profile_budget_lock_acquisition_failure_fails_closed(monkeypatch):
     from types import SimpleNamespace
 
-    from cryptonite_agents.gateway import BudgetExceeded
-
     class Redis:
         async def set(self, *args, **kwargs):
             raise ConnectionError("redis unavailable")
 
-    with pytest.raises(BudgetExceeded, match="PROFILE_BUDGET_LOCK_UNAVAILABLE"):
+    with pytest.raises(gate.ProfileBudgetLockError, match="PROFILE_BUDGET_LOCK_UNAVAILABLE"):
         async with gate.profile_budget_guard(object(), Redis(), SimpleNamespace(id=uuid.uuid4())):
             pytest.fail("profile call proceeded without its budget lock")
+
+
+async def test_parallel_slow_profile_calls_wait_for_healthy_budget_lease(monkeypatch):
+    """A healthy slow model call must not make its queued sibling look budget-exhausted."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    redis = _ProfileLeaseRedis()
+    entered_first = asyncio.Event()
+    release_first = asyncio.Event()
+    calls = []
+
+    @asynccontextmanager
+    async def acquire():
+        yield object()
+
+    class Pool:
+        def acquire(self):
+            return acquire()
+
+    async def budget_available(conn, mandate, now_s):
+        return False
+
+    monkeypatch.setattr(gate, "profile_budget_exhausted", budget_available)
+    monkeypatch.setattr(gate, "PROFILE_BUDGET_LOCK_RENEW_S", 5)
+    profile = SimpleNamespace(id=uuid.uuid4())
+
+    async def delayed_model_call(name):
+        async with gate.profile_budget_guard(Pool(), redis, profile):
+            calls.append(name)
+            if name == "first analyst":
+                entered_first.set()
+                await release_first.wait()
+            else:
+                await asyncio.sleep(.01)
+
+    first = asyncio.create_task(delayed_model_call("first analyst"))
+    await asyncio.wait_for(entered_first.wait(), timeout=1)
+    second = asyncio.create_task(delayed_model_call("second analyst"))
+    try:
+        await asyncio.sleep(.15)  # longer than the old admission cutoff and polling interval
+    finally:
+        release_first.set()
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    assert results == [None, None]
+    assert calls == ["first analyst", "second analyst"]
+
+
+class _ProfileLeaseRedis:
+    """Small owner-token-aware Redis double for lease concurrency tests."""
+
+    def __init__(self):
+        self.value = None
+
+    async def set(self, key, value, nx=False, ex=None):
+        if nx and self.value is not None:
+            return None
+        self.value = value
+        return True
+
+    async def get(self, key):
+        return self.value
+
+    async def eval(self, script, numkeys, key, token, *args):
+        if self.value != token:
+            return 0
+        if "EXPIRE" in script:
+            return 1
+        self.value = None
+        return 1
 
 
 async def test_later_persona_budget_exhaustion_is_a_visible_profile_decision(h, monkeypatch):
@@ -382,6 +448,39 @@ async def test_later_persona_budget_exhaustion_is_a_visible_profile_decision(h, 
     )
     assert (decision["stage"], decision["outcome"], decision["reason"], decision["run_id"]) == (
         "GATE", "REFUSED", "AI_BUDGET_EXHAUSTED", row["id"]
+    )
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+async def test_profile_lease_failure_is_visible_without_claiming_budget_exhaustion(h, monkeypatch):
+    from types import SimpleNamespace
+
+    from cryptonite_agents.gateway import Gateway
+    from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
+    from cryptonite_agents.gateway.routes import FLASH, FLASH_LITE, PRO
+    from test_debate_gate import Models, load, scanner_payload
+    from test_debate_perp_gate import CapRedis
+
+    m = await profile(h)
+    main = load("profile_lease_worker_main", "main.py")
+
+    async def lease_lost(*args, **kwargs):
+        raise gate.ProfileBudgetLockError("PROFILE_BUDGET_LOCK_UNAVAILABLE")
+
+    monkeypatch.setattr(main, "DEBATE_LITE", SimpleNamespace(name="DebateLite", role="debate.lite", run=lease_lost))
+    model = Models().model()
+    with override_model(FLASH, model), override_model(PRO, model), override_model(FLASH_LITE, model):
+        await main.process_debate_trigger(h.pool, CapRedis(), scanner_payload(), Gateway(pool=h.pool))
+    row = await h.pool.fetchrow(
+        "SELECT id,status,failure_reason FROM debate_runs WHERE instrument_id=$1 ORDER BY created_at DESC LIMIT 1", SPOT
+    )
+    assert row["status"] == "FAILED"
+    assert row["failure_reason"] == "PROFILE_BUDGET_LOCK_UNAVAILABLE"
+    decision = await h.pool.fetchrow(
+        "SELECT stage,outcome,reason,run_id FROM ai_profile_decisions WHERE mandate_id=$1 ORDER BY id DESC LIMIT 1", m.id
+    )
+    assert (decision["stage"], decision["outcome"], decision["reason"], decision["run_id"]) == (
+        "GATE", "REFUSED", "PROFILE_BUDGET_LOCK_UNAVAILABLE", row["id"]
     )
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
 

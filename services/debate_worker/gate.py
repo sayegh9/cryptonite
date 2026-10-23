@@ -37,7 +37,14 @@ TIMEFRAME_S = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 1
 PROFILE_CAP_TTL_S = 2 * 86400
 PROFILE_BUDGET_LOCK_TTL_S = 300
 PROFILE_BUDGET_LOCK_RENEW_S = 20
-PROFILE_BUDGET_LOCK_WAIT_S = 30
+
+
+class ProfileBudgetLockError(RuntimeError):
+    """The profile budget lease is unavailable or lost; fail closed without claiming budget spend."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
 
 
 @dataclass
@@ -219,15 +226,14 @@ async def profile_budget_guard(pg_pool, redis, profile, now_s: float | None = No
     timestamp = now_s if now_s is not None else datetime.datetime.now(datetime.UTC).timestamp()
     lock_key = f"debate_gate:profile_budget_lock:{profile.id}"
     lock_token = str(uuid.uuid4())
-    deadline = asyncio.get_running_loop().time() + PROFILE_BUDGET_LOCK_WAIT_S
     while True:
         try:
             if await redis.set(lock_key, lock_token, nx=True, ex=PROFILE_BUDGET_LOCK_TTL_S):
                 break
         except Exception as exc:
-            raise BudgetExceeded("debate.profile", "PROFILE_BUDGET_LOCK_UNAVAILABLE") from exc
-        if asyncio.get_running_loop().time() >= deadline:
-            raise BudgetExceeded("debate.profile", "PROFILE_BUDGET_LOCK_UNAVAILABLE")
+            raise ProfileBudgetLockError("PROFILE_BUDGET_LOCK_UNAVAILABLE") from exc
+        # A live owner renews its bounded lease while a model call runs. Wait for it to finish
+        # rather than turning ordinary 90s gateway latency into a false budget refusal.
         await asyncio.sleep(0.1)
     lease_lost = asyncio.Event()
 
@@ -257,7 +263,7 @@ async def profile_budget_guard(pg_pool, redis, profile, now_s: float | None = No
         if isinstance(owner, bytes):
             owner = owner.decode()
         if lease_lost.is_set() or owner != lock_token:
-            raise BudgetExceeded("debate.profile", "PROFILE_BUDGET_LOCK_LOST")
+            raise ProfileBudgetLockError("PROFILE_BUDGET_LOCK_LOST")
         async with pg_pool.acquire() as conn:
             if await profile_budget_exhausted(conn, profile, timestamp):
                 raise BudgetExceeded("debate.profile", "PROFILE_DAILY_SHARE_EXHAUSTED")
