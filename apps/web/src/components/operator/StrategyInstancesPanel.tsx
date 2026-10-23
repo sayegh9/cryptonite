@@ -16,11 +16,44 @@ import {
   Layers,
   } from "lucide-react";
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
+import { fmtCompactUsd, fmtSignedUsd, strategyStats } from "@/lib/portfolio/metrics";
+import type { PaperPosition } from "@/lib/stores/usePortfolioStore";
 import { DeployStrategyModal } from "./DeployStrategyModal";
 import { ManualTradeModal } from "./ManualTradeModal";
 
 /** AI mandates are paused, resumed and stopped in Mission Control; the API refuses instance commands for them. */
 const isAiMandate = (instanceId: string) => instanceId.startsWith("AI_MANDATE_");
+
+const SEGMENTS = 10;
+
+/** Capital in use vs. allocated, as discrete segments (over-deployment turns the bar red). */
+function AllocationBar({ used, allocated }: { used: number; allocated: number }) {
+  const ratio = allocated > 0 ? used / allocated : 0;
+  const filled = Math.min(SEGMENTS, Math.round(ratio * SEGMENTS));
+  const over = ratio > 1.001;
+  const text = `${fmtCompactUsd(used)} / ${fmtCompactUsd(allocated)}`;
+  return (
+    <div className="min-w-[7rem]">
+      <div
+        role="meter"
+        aria-label="Allocation in use"
+        aria-valuemin={0}
+        aria-valuemax={Math.max(allocated, 0)}
+        aria-valuenow={Math.max(used, 0)}
+        aria-valuetext={`${text}${over ? " (over-allocated)" : ""}`}
+        className="flex gap-px"
+      >
+        {Array.from({ length: SEGMENTS }, (_, i) => (
+          <span
+            key={i}
+            className={`h-1.5 flex-1 rounded-sm ${i < filled ? (over ? "bg-red-500" : "bg-emerald-500") : "bg-zinc-800"}`}
+          />
+        ))}
+      </div>
+      <div className="mt-1 text-2xs tabular-nums text-zinc-400" data-testid="allocation-text">{text}</div>
+    </div>
+  );
+}
 
 function MandateManagedNote() {
   return (
@@ -45,6 +78,7 @@ function MandateManagedNote() {
 export function StrategyInstancesPanel() {
   const [instances, setInstances] = useState<any[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<any | null>(null);
+  const [positions, setPositions] = useState<PaperPosition[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showDeployModal, setShowDeployModal] = useState(false);
@@ -59,6 +93,13 @@ export function StrategyInstancesPanel() {
         if (updated) setSelectedInstance(updated);
       }
       setError("");
+      // P&L and allocation use come from the positions ledger; failing to load it only blanks those two columns
+      try {
+        const rows = await fetchApi("/paper/positions");
+        setPositions(Array.isArray(rows) ? rows : null);
+      } catch {
+        setPositions(null);
+      }
     } catch (err: any) {
       setError(err.message || "Failed to load strategy instances");
     } finally {
@@ -134,13 +175,15 @@ export function StrategyInstancesPanel() {
               <th className="py-2.5 px-4 font-semibold">Strategy</th>
               <th className="py-2.5 px-4 font-semibold">Instrument</th>
               <th className="py-2.5 px-4 font-semibold">Status</th>
+              <th className="py-2.5 px-4 font-semibold text-right">7d P&amp;L</th>
+              <th className="py-2.5 px-4 font-semibold">Allocation</th>
               <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5 text-zinc-300">
             {instances.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-6 text-center text-zinc-500">
+                <td colSpan={7} className="py-6 text-center text-zinc-500">
                   No strategies deployed on this account.
                 </td>
               </tr>
@@ -151,6 +194,8 @@ export function StrategyInstancesPanel() {
                 const isPaused = inst.status === "PAUSED";
                 const isStopped = inst.status === "STOPPED" || inst.status === "STOP";
                 const managedByMandate = isAiMandate(inst.instance_id);
+                const stats = positions ? strategyStats(positions, inst.instance_id) : null;
+                const alloc = Number(inst.allocation_usd);
 
                 let statusColor = "text-zinc-400 bg-zinc-800";
                 if (isRunning) statusColor = "text-emerald-400 bg-emerald-950/70 border border-emerald-800/50";
@@ -185,6 +230,21 @@ export function StrategyInstancesPanel() {
                       <span className={`px-2 py-0.5 rounded text-2xs font-bold ${statusColor}`}>
                         {inst.status}
                       </span>
+                    </td>
+                    <td
+                      className={`py-3 px-3 text-right tabular-nums font-bold ${
+                        !stats ? "text-zinc-600" : stats.pnl7d > 0 ? "text-emerald-400" : stats.pnl7d < 0 ? "text-red-400" : "text-zinc-500"
+                      }`}
+                      data-testid="instance-pnl"
+                    >
+                      {stats ? fmtSignedUsd(stats.pnl7d) : "—"}
+                    </td>
+                    <td className="py-3 px-3">
+                      {stats && Number.isFinite(alloc) ? (
+                        <AllocationBar used={stats.openNotional} allocated={alloc} />
+                      ) : (
+                        <span className="text-zinc-600">—</span>
+                      )}
                     </td>
                     <td className="py-3 px-3 text-right space-x-1.5" onClick={(e) => e.stopPropagation()}>
                       {managedByMandate && <MandateManagedNote />}

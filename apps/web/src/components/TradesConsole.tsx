@@ -486,7 +486,5 @@ export function TradesConsole() {
   );
 }
 
-// Re-export PortfolioConsole for seamless backward compatibility
-export { PortfolioConsole } from "./PortfolioConsole";
 
 export default TradesConsole;
