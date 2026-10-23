@@ -375,8 +375,15 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
             working_ids.append(cid)
             used += Decimal(str(info.get("reserved_notional") or 0))
     durable_working = await conn.fetchval(
-        """SELECT COALESCE(SUM((p.quantity - p.filled_qty) * COALESCE(p.price, p.avg_fill_price, 0) *
-                                  CASE WHEN p.instrument_id LIKE '%-PERP.%' THEN 1.0005 ELSE 1.001 END), 0)
+        """SELECT COALESCE(SUM(
+                    CASE WHEN c.payload->>'profile_cash_reserve_usd' IS NOT NULL THEN
+                         (p.quantity - p.filled_qty) / NULLIF(p.quantity, 0) *
+                         (c.payload->>'profile_cash_reserve_usd')::numeric
+                    ELSE (p.quantity - p.filled_qty) * COALESCE(p.price, p.avg_fill_price, 0) *
+                         CASE WHEN p.instrument_id LIKE '%-PERP.%' THEN
+                             1 / GREATEST(COALESCE(NULLIF(c.payload->>'leverage', '')::numeric, 1), 1) + 0.0005
+                              ELSE 1.001 END
+                    END), 0)
            FROM paper_orders p
            LEFT JOIN execution_commands c
              ON c.payload->>'client_order_id' = p.client_order_id

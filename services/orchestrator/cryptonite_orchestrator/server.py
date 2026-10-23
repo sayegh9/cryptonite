@@ -2163,6 +2163,20 @@ async def command_poller(pool, engine, quote_cache=None):
                                 try:
                                     quote = quote_cache.quote(canonical_inst)
                                     order_info = engine.dispatcher.open_orders.get(client_oid)
+                                    if (mandate is not None and not intent.reduce_only
+                                            and (is_perp_order or side == "BUY")):
+                                        # The dispatcher has already computed the exact cash or initial-margin
+                                        # reservation, including its price buffers and fee. Persist it with the
+                                        # command so another process can claim the profile budget after restart.
+                                        profile_reserve = Decimal(str(
+                                            (order_info or {}).get("reserved_notional") or mandate.capital_budget_usd
+                                        ))
+                                        await conn.execute(
+                                            """UPDATE execution_commands
+                                               SET payload = payload || jsonb_build_object('profile_cash_reserve_usd', $2::numeric)
+                                               WHERE command_id = $1""",
+                                            row["command_id"], profile_reserve,
+                                        )
                                     if order_info is not None and order_info.get("is_perp") and intent.stop_loss is not None:
                                         order_info["attach_stop"] = intent.stop_loss
                                     fill = None

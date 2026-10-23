@@ -258,6 +258,9 @@ async def test_successful_dispatch_persists_the_effective_profile_mode(monkeypat
     persisted = [args for sql, args in conn.executed
                  if "profile_execution_mode" in sql and "UPDATE execution_commands" in sql]
     assert persisted and persisted[0][1] == "AUTO"
+    reserves = [args for sql, args in conn.executed
+                if "profile_cash_reserve_usd" in sql and "UPDATE execution_commands" in sql]
+    assert reserves and D(str(reserves[0][1])) > 0
 
 
 async def test_spot_cash_gate_uses_cost_basis_since_last_flat(h):
@@ -350,6 +353,102 @@ async def test_durable_order_and_reservation_are_counted_once(h):
             reject = await mandate_gate.profile_cash_reject(
                 conn, engine, m, MandateOrder(SPOT, "BUY", D("0.008"), D("50000"), order_type="LIMIT"))
     assert reject is None
+
+
+async def test_two_connections_claim_unpriced_working_market_order(h):
+    m = await h.mandate(budget=1000)
+    await h.pool.execute(
+        """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type,
+                   quantity, price, filled_qty, avg_fill_price, status)
+           VALUES ('market-profile-holding', $1, 'PAPER-ACCOUNT-001', 'ETHUSDT.BINANCE', 'BUY', 'LIMIT',
+                   .014, 50000, .014, 50000, 'FILLED')""", m.instance_id)
+    cid = uuid.uuid4()
+    oid = f"AI-{cid.hex[:12].upper()}"
+    await h.pool.execute(
+        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, mandate_id, payload)
+           VALUES ($1, $2, 'SUBMIT_ORDER', $3,
+                   jsonb_build_object('client_order_id', $4::text, 'profile_cash_reserve_usd', 205.2))""",
+        cid, str(cid), m.id, oid)
+    engine_a = make_engine(make_perp_dispatcher())
+    engine_b = make_engine(make_perp_dispatcher())
+    new_order = MandateOrder(SPOT, "BUY", D("0.004"), D("50000"), order_type="MARKET")
+    checked = asyncio.Event()
+    release = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def first_claim():
+        async with h.pool.acquire() as conn:
+            async with conn.transaction():
+                assert await mandate_gate.profile_cash_reject(conn, engine_a, m, new_order) is None
+                checked.set()
+                await release.wait()
+                await conn.execute(
+                    """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side,
+                               order_type, quantity, price, filled_qty, status)
+                       VALUES ($1, $2, 'PAPER-ACCOUNT-001', $3, 'BUY', 'MARKET', .004, NULL, 0, 'ACCEPTED')""",
+                    oid, m.instance_id, SPOT)
+
+    async def second_claim():
+        await checked.wait()
+        second_started.set()
+        async with h.pool.acquire() as conn:
+            async with conn.transaction():
+                return await mandate_gate.profile_cash_reject(conn, engine_b, m, new_order)
+
+    first = asyncio.create_task(first_claim())
+    second = asyncio.create_task(second_claim())
+    await second_started.wait()
+    await asyncio.sleep(0.05)
+    release.set()
+    await first
+    assert await second == "PROFILE_CASH_EXHAUSTED"
+
+
+async def test_two_connections_value_working_perp_at_initial_margin(h):
+    m = await h.mandate(budget=1000, instruments=(PERP,))
+    await h.pool.execute(
+        "UPDATE ai_mandates SET markets = ARRAY['PERP'], allow_perps = true, direction = 'BOTH', max_leverage = 2 WHERE id = $1",
+        m.id)
+    cid = uuid.uuid4()
+    oid = f"AI-{cid.hex[:12].upper()}"
+    await h.pool.execute(
+        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, mandate_id, payload)
+           VALUES ($1, $2, 'SUBMIT_ORDER', $3,
+                   jsonb_build_object('client_order_id', $4::text, 'profile_cash_reserve_usd', 450.45))""",
+        cid, str(cid), m.id, oid)
+    engine_a = make_engine(make_perp_dispatcher())
+    engine_b = make_engine(make_perp_dispatcher())
+    next_order = MandateOrder(PERP, "BUY", D("0.011"), D("50000"), order_type="LIMIT", leverage=2)
+    checked = asyncio.Event()
+    release = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def first_claim():
+        async with h.pool.acquire() as conn:
+            async with conn.transaction():
+                assert await mandate_gate.profile_cash_reject(conn, engine_a, m, next_order) is None
+                checked.set()
+                await release.wait()
+                await conn.execute(
+                    """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side,
+                               order_type, quantity, price, filled_qty, status)
+                       VALUES ($1, $2, 'PAPER-ACCOUNT-001', $3, 'BUY', 'LIMIT', .018, 50000, 0, 'ACCEPTED')""",
+                    oid, m.instance_id, PERP)
+
+    async def second_claim():
+        await checked.wait()
+        second_started.set()
+        async with h.pool.acquire() as conn:
+            async with conn.transaction():
+                return await mandate_gate.profile_cash_reject(conn, engine_b, m, next_order)
+
+    first = asyncio.create_task(first_claim())
+    second = asyncio.create_task(second_claim())
+    await second_started.wait()
+    await asyncio.sleep(0.05)
+    release.set()
+    await first
+    assert await second is None
 
 
 async def test_delayed_fill_keeps_execution_mode_from_the_order(h, monkeypatch):
