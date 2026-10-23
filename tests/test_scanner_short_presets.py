@@ -78,6 +78,32 @@ def _frame_for(preset, *, downtrend: bool) -> pl.DataFrame:
             else:
                 row0[left], row1[left] = right0 - 1, right1 + 1
 
+    if not downtrend:
+        for group in preset.rules:
+            if group.category != "trend":
+                continue
+            for condition in group.conditions:
+                if condition.operator == RuleOperator.LT and isinstance(condition.value, str):
+                    row1[condition.value] = row1[condition.field] - 1
+
+    if downtrend and any(
+        condition.field == "close" and condition.value == "open" and condition.operator == RuleOperator.LT
+        for group in preset.rules
+        for condition in group.conditions
+    ):
+        row1["open"] = row1["close"] + 1
+
+    minimum_volume = max(
+        (
+            float(condition.value)
+            for group in preset.rules
+            for condition in group.conditions
+            if condition.field == "volume_ratio" and condition.operator == RuleOperator.GTE
+        ),
+        default=0.0,
+    )
+    row1["volume_ratio"] = max(row1["volume_ratio"], minimum_volume)
+
     return pl.DataFrame([row0, row1])
 
 

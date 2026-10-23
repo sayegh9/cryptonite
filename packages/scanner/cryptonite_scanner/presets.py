@@ -209,6 +209,11 @@ PRESET_BOLLINGER_BREAKDOWN_SHORT = ScanSpecCreate(
     ),
     rules=[
         RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[RuleCondition(field="close", operator=RuleOperator.LT, value="ema_50", lookback=0)],
+        ),
+        RuleGroup(
             category="trigger",
             logic="AND",
             conditions=[RuleCondition(field="close", operator=RuleOperator.CROSS_BELOW, value="bb_lower", lookback=1)],
