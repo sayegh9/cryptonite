@@ -68,7 +68,8 @@ test.describe("AI mandate instances: no instance commands, link to Mission Contr
     await stubStrategies(page);
     await page.goto("/?ws=operator");
 
-    await page.locator("tr", { hasText: "AI_MANDATE_587a" }).click();
+    // Click the instance cell: the sticky Actions cell stops propagation and can sit under the row centre
+    await page.locator("tr", { hasText: "AI_MANDATE_587a" }).locator("td").first().click();
     const drawer = page.locator("div.fixed", { hasText: "INSTANCE DETAILS" });
     await expect(drawer).toBeVisible();
     await expect(drawer.getByRole("link", { name: "Mission Control" })).toBeVisible();
@@ -152,4 +153,21 @@ test.describe("AI mandate instances: no instance commands, link to Mission Contr
     await expect(mandateRow.getByTitle("Pause")).toHaveCount(0);
     await expect(mandateRow.getByTitle("Stop")).toHaveCount(0);
   });
+
+  for (const vp of [{ width: 1024, height: 768 }, { width: 1280, height: 800 }, { width: 1400, height: 900 }]) {
+    test(`safety controls stay inside the viewport at ${vp.width}x${vp.height}`, async ({ page }) => {
+      await page.setViewportSize(vp);
+      await page.route("**/api/v1/auth/me", (route) =>
+        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authenticated: true, username: "op", csrf_token: "t" }) }));
+      await stubStrategies(page);
+      await page.goto("/?ws=operator");
+
+      const running = page.locator("tr", { hasText: "INST-EMA-01" });
+      await expect(running.getByTitle("Pause")).toBeInViewport();
+      await expect(running.getByTitle("Flatten Position")).toBeInViewport();
+      const mandateRow = page.locator("tr", { hasText: "AI_MANDATE_587a" });
+      await expect(mandateRow.getByTitle("Flatten Position")).toBeInViewport();
+      await expect(mandateRow.getByRole("link", { name: "Mission Control" })).toBeInViewport();
+    });
+  }
 });

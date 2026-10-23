@@ -24,7 +24,7 @@ import { ManualTradeModal } from "./ManualTradeModal";
 /** AI mandates are paused, resumed and stopped in Mission Control; the API refuses instance commands for them. */
 const isAiMandate = (instanceId: string) => instanceId.startsWith("AI_MANDATE_");
 
-const SEGMENTS = 10;
+const SEGMENTS = 8;
 
 /** Capital in use vs. allocated, as discrete segments (over-deployment turns the bar red). */
 function AllocationBar({ used, allocated }: { used: number; allocated: number }) {
@@ -33,7 +33,7 @@ function AllocationBar({ used, allocated }: { used: number; allocated: number })
   const over = ratio > 1.001;
   const text = `${fmtCompactUsd(used)} / ${fmtCompactUsd(allocated)}`;
   return (
-    <div className="min-w-[7rem]">
+    <div className="w-[72px]">
       <div
         role="meter"
         aria-label="Allocation in use"
@@ -50,14 +50,14 @@ function AllocationBar({ used, allocated }: { used: number; allocated: number })
           />
         ))}
       </div>
-      <div className="mt-1 text-2xs tabular-nums text-zinc-400" data-testid="allocation-text">{text}</div>
+      <div className="mt-1 whitespace-nowrap text-[10px] leading-none tabular-nums text-zinc-400" data-testid="allocation-text">{text}</div>
     </div>
   );
 }
 
 function MandateManagedNote() {
   return (
-    <span className="text-2xs text-zinc-400 font-sans whitespace-nowrap">
+    <span className="inline-block max-w-[11rem] align-middle text-right text-2xs leading-tight text-zinc-400 font-sans">
       AI mandate — manage it in{" "}
       <a
         href={`/${buildQuery("mission", "overview")}`}
@@ -171,13 +171,13 @@ export function StrategyInstancesPanel() {
         <table className="w-full text-left text-2xs font-mono">
           <thead className="bg-zinc-900/50 border-b border-white/5 text-zinc-400 uppercase tracking-wider">
             <tr>
-              <th className="py-2.5 px-4 font-semibold">Instance ID</th>
-              <th className="py-2.5 px-4 font-semibold">Strategy</th>
-              <th className="py-2.5 px-4 font-semibold">Instrument</th>
-              <th className="py-2.5 px-4 font-semibold">Status</th>
-              <th className="py-2.5 px-4 font-semibold text-right">7d P&amp;L</th>
-              <th className="py-2.5 px-4 font-semibold">Allocation</th>
-              <th className="py-2.5 px-4 font-semibold text-right">Actions</th>
+              <th className="py-2.5 px-2 font-semibold">Instance ID</th>
+              <th className="py-2.5 px-2 font-semibold">Strategy</th>
+              <th className="py-2.5 px-2 font-semibold">Instrument</th>
+              <th className="py-2.5 px-2 font-semibold">Status</th>
+              <th className="py-2.5 px-2 font-semibold text-right whitespace-nowrap">7d P&amp;L</th>
+              <th className="py-2.5 px-2 font-semibold">Allocation</th>
+              <th className="py-2.5 px-2 font-semibold text-right sticky right-0 z-10 bg-zinc-900 border-l border-white/10 shadow-[-6px_0_6px_-6px_rgba(0,0,0,0.6)]">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5 text-zinc-300">
@@ -208,10 +208,10 @@ export function StrategyInstancesPanel() {
                     onClick={() => setSelectedInstance(inst)}
                     className="hover:bg-zinc-800/40 transition-colors cursor-pointer group"
                   >
-                    <td className="py-3 px-3 font-semibold text-zinc-200">
+                    <td className="py-3 px-2 font-semibold text-zinc-200">
                       <div className="flex items-center space-x-1.5">
-                        <span className="group-hover:text-cyan-400 transition-colors">
-                          {inst.instance_id.length > 18 ? inst.instance_id.slice(0, 18) + "..." : inst.instance_id}
+                        <span className="group-hover:text-cyan-400 transition-colors inline-block max-w-[7.5rem] truncate align-bottom" title={inst.instance_id}>
+                          {inst.instance_id}
                         </span>
                         {isSystem && (
                           <span className="px-1.5 py-0.5 rounded text-2xs bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 font-bold uppercase tracking-wider">
@@ -220,34 +220,36 @@ export function StrategyInstancesPanel() {
                         )}
                       </div>
                     </td>
-                    <td className="py-3 px-3">
+                    <td className="py-3 px-2">
                       <span className="bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-800 text-zinc-400">
                         {inst.strategy_name}
                       </span>
                     </td>
-                    <td className="py-3 px-3 text-cyan-400 font-semibold">{inst.instrument_id}</td>
-                    <td className="py-3 px-3">
+                    <td className="py-3 px-2 text-cyan-400 font-semibold">{inst.instrument_id}</td>
+                    <td className="py-3 px-2">
                       <span className={`px-2 py-0.5 rounded text-2xs font-bold ${statusColor}`}>
                         {inst.status}
                       </span>
                     </td>
                     <td
-                      className={`py-3 px-3 text-right tabular-nums font-bold ${
+                      className={`py-3 px-2 text-right tabular-nums font-bold whitespace-nowrap ${
                         !stats ? "text-zinc-600" : stats.pnl7d > 0 ? "text-emerald-400" : stats.pnl7d < 0 ? "text-red-400" : "text-zinc-500"
                       }`}
                       data-testid="instance-pnl"
                     >
                       {stats ? fmtSignedUsd(stats.pnl7d) : "—"}
                     </td>
-                    <td className="py-3 px-3">
+                    <td className="py-3 px-2">
                       {stats && Number.isFinite(alloc) ? (
                         <AllocationBar used={stats.openNotional} allocated={alloc} />
                       ) : (
                         <span className="text-zinc-600">—</span>
                       )}
                     </td>
-                    <td className="py-3 px-3 text-right space-x-1.5" onClick={(e) => e.stopPropagation()}>
-                      {managedByMandate && <MandateManagedNote />}
+                    <td className="py-3 px-2 text-right sticky right-0 z-10 bg-zinc-950 group-hover:bg-zinc-900 border-l border-white/10 shadow-[-6px_0_6px_-6px_rgba(0,0,0,0.6)]" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex flex-col items-end gap-1">
+{managedByMandate && <MandateManagedNote />}
+<div className="flex flex-nowrap items-center justify-end gap-1.5">
                       {isRunning && !managedByMandate && (
                         <button
                           onClick={() => handleCommand(inst.instance_id, "pause")}
@@ -290,7 +292,7 @@ export function StrategyInstancesPanel() {
                                 })
                               );
                             }}
-                            className="p-1.5 bg-cyan-600 hover:bg-cyan-500 text-zinc-950 rounded transition-colors inline-flex mr-1"
+                            className="p-1.5 bg-cyan-600 hover:bg-cyan-500 text-zinc-950 rounded transition-colors inline-flex"
                             title="Analyze Paper vs Backtest Delta"
                           >
                             <BrainCircuit className="w-3.5 h-3.5" />
@@ -310,7 +312,9 @@ export function StrategyInstancesPanel() {
                           )}
                         </>
                       )}
-                    </td>
+                    </div>
+</div>
+</td>
                   </tr>
                 );
               })
