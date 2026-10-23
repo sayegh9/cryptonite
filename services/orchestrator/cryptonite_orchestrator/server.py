@@ -2107,7 +2107,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                     # the mandate or global switch changes, but its FILL audit must describe this
                                     # order's effective mode.
                                     await conn.execute(
-                                        "UPDATE execution_commands SET payload = payload || jsonb_build_object('profile_execution_mode', $2) WHERE command_id = $1",
+                                        "UPDATE execution_commands SET payload = payload || jsonb_build_object('profile_execution_mode', $2::text) WHERE command_id = $1",
                                         row["command_id"], effective_mode,
                                     )
 
