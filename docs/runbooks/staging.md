@@ -20,9 +20,10 @@ the override `infra/docker-compose.staging.yml`. Production is the project `infr
 | Notifier | only if `STAGING_TELEGRAM_CHAT_ID` and `STAGING_TELEGRAM_BOT_TOKEN` are both set; production chat, bot token and ntfy topic are blanked everywhere | live |
 | Env | `CRYPTONITE_ENV=staging`, `ENVIRONMENT=PAPER` (paper account only) | |
 
-Memory limits sum to 11.5 GiB (postgres 1, redis 0.25, ingest 0.5, outbox 0.25, scanner 2, derivatives_feed 0.25,
-api 1.5, web 0.5, backtester 0.5, strategy_sandbox 0.5, orchestrator 0.5, agent_worker 0.75, debate_worker 0.5 x 1,
-exit_monitor 0.25, notifier 0.25, learner 1.5, sentiment 1). `staging_up.sh` refuses to start with less than
+Memory limits sum to 16 GiB (postgres 1, redis 0.25, ingest 0.5, outbox 0.25, scanner 4, derivatives_feed 0.25,
+api 1.5, web 0.5, backtester 0.5, strategy_sandbox 0.5, orchestrator 1.5, agent_worker 0.75, debate_worker 0.5 x 1,
+exit_monitor 0.25, notifier 0.25, learner 3, sentiment 1). These are caps, not usage (steady use is about 8 GiB);
+scanner, orchestrator and learner were raised on 2026-10-23 after the first bring-up OOM-killed them at 2g/512m/1.5g. `staging_up.sh` refuses to start with less than
 15 GiB available. Staging uses a separate bot token because two pollers on one Telegram token fight over `getUpdates`.
 
 ## Bring it up
