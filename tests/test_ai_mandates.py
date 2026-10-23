@@ -71,10 +71,11 @@ def test_contract_repeats_the_hard_ceilings():
         mandate(max_drawdown_pct=D("21"))
     with pytest.raises(ValidationError):  # ADR 0009 D2: 10x ceiling (was 5x)
         mandate(max_leverage=11)
-    assert mandate(max_leverage=10).max_leverage == 10
-    for level in (AutonomyLevel.L2, AutonomyLevel.L3):  # D3: perps only at L1 (was only at L3)
-        with pytest.raises(ValidationError):
-            mandate(allow_perps=True, autonomy_level=level)
+    assert mandate(max_leverage=10, allow_perps=True).max_leverage == 10  # leverage above 1x needs perps (ADR 0011)
+    with pytest.raises(ValidationError, match="LEVERAGE_NEEDS_MARGIN_OR_PERP"):
+        mandate(max_leverage=2)
+    for level in (AutonomyLevel.L2, AutonomyLevel.L3):  # ADR 0011 D4: perps at any execution mode (was L1 only)
+        assert mandate(allow_perps=True, autonomy_level=level).allow_perps
     assert mandate(allow_perps=True).allow_perps
     assert mandate(allow_perps=True).max_leverage == 3  # D2: enabling perps without a maximum gives 3x
     assert mandate(allow_perps=True, max_leverage=7).max_leverage == 7
@@ -87,56 +88,56 @@ def test_contract_repeats_the_hard_ceilings():
 
 
 def test_an_ai_order_without_a_mandate_is_rejected():
-    assert check_mandate(None, buy(), MandateExposure(), approval_ok=True) is MandateReject.REQUIRED
+    assert check_mandate(None, buy(), MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.REQUIRED
 
 
 def test_inside_the_mandate_with_approval_passes():
-    assert check_mandate(mandate(), buy(), MandateExposure(), approval_ok=True) is None
+    assert check_mandate(mandate(), buy(), MandateExposure(), approval_ok=True, autotrade_on=True) is None
 
 
 @pytest.mark.parametrize("status", [MandateStatus.HALTED, MandateStatus.PAUSED, MandateStatus.ARCHIVED])
 def test_a_mandate_that_is_not_active_takes_no_new_risk(status):
-    assert check_mandate(mandate(status=status), buy(), MandateExposure(), approval_ok=True) is MandateReject.HALTED
+    assert check_mandate(mandate(status=status), buy(), MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.HALTED
 
 
 def test_instrument_outside_the_mandate():
     assert check_mandate(mandate(), buy(inst="SOLUSDT.BINANCE", price="150"), MandateExposure(),
-                         approval_ok=True) is MandateReject.INSTRUMENT_NOT_ALLOWED
+                         approval_ok=True, autotrade_on=True) is MandateReject.INSTRUMENT_NOT_ALLOWED
 
 
 def test_perps_need_the_opt_in_at_l1_and_an_approval():
     m = mandate(instruments=["BTCUSDT-PERP"])
-    assert check_mandate(m, buy(inst=PERP), MandateExposure(), approval_ok=True) is MandateReject.PERPS_NOT_ALLOWED
+    assert check_mandate(m, buy(inst=PERP), MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.PERPS_NOT_ALLOWED
     l3 = mandate(instruments=["BTCUSDT-PERP"], autonomy_level=AutonomyLevel.L3)
-    assert check_mandate(l3, buy(inst=PERP), MandateExposure(), approval_ok=True) is MandateReject.PERPS_NOT_ALLOWED
+    assert check_mandate(l3, buy(inst=PERP), MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.PERPS_NOT_ALLOWED
     ok = mandate(instruments=["BTCUSDT-PERP"], allow_perps=True, max_leverage=5)
-    assert check_mandate(ok, buy(inst=PERP, leverage=5), MandateExposure(), approval_ok=True) is None
+    assert check_mandate(ok, buy(inst=PERP, leverage=5), MandateExposure(), approval_ok=True, autotrade_on=True) is None
     # L1: every risk-adding perp order needs the operator's approval (D3)
-    assert check_mandate(ok, buy(inst=PERP, leverage=5), MandateExposure(), approval_ok=False) \
+    assert check_mandate(ok, buy(inst=PERP, leverage=5), MandateExposure(), approval_ok=False, autotrade_on=True) \
         is MandateReject.APPROVAL_REQUIRED
-    assert check_mandate(ok, buy(inst=PERP, leverage=6), MandateExposure(), approval_ok=True) is MandateReject.LEVERAGE_EXCEEDED
+    assert check_mandate(ok, buy(inst=PERP, leverage=6), MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.LEVERAGE_EXCEEDED
     ten = mandate(instruments=["BTCUSDT-PERP"], allow_perps=True, max_leverage=10)
-    assert check_mandate(ten, buy(inst=PERP, leverage=10), MandateExposure(), approval_ok=True) is None
-    assert check_mandate(ten, buy(inst=PERP, leverage=11), MandateExposure(), approval_ok=True) \
+    assert check_mandate(ten, buy(inst=PERP, leverage=10), MandateExposure(), approval_ok=True, autotrade_on=True) is None
+    assert check_mandate(ten, buy(inst=PERP, leverage=11), MandateExposure(), approval_ok=True, autotrade_on=True) \
         is MandateReject.LEVERAGE_EXCEEDED
 
 
 def test_budget_and_position_limits_count_existing_exposure():
     m = mandate(capital_budget_usd=D("10000"), max_position_pct=D("10"))
     # 0.019 BTC @ 50,000 = 950 <= 1,000 (10% of budget)
-    assert check_mandate(m, buy("0.019"), MandateExposure(), approval_ok=True) is None
-    assert check_mandate(m, buy("0.021"), MandateExposure(), approval_ok=True) is MandateReject.POSITION_PCT_EXCEEDED
+    assert check_mandate(m, buy("0.019"), MandateExposure(), approval_ok=True, autotrade_on=True) is None
+    assert check_mandate(m, buy("0.021"), MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.POSITION_PCT_EXCEEDED
     assert check_mandate(m, buy("0.019"), MandateExposure(instrument_usd=D("100"), gross_usd=D("100")),
-                         approval_ok=True) is MandateReject.POSITION_PCT_EXCEEDED
+                         approval_ok=True, autotrade_on=True) is MandateReject.POSITION_PCT_EXCEEDED
     assert check_mandate(m, buy("0.019"), MandateExposure(gross_usd=D("9100")),
-                         approval_ok=True) is MandateReject.BUDGET_EXCEEDED
+                         approval_ok=True, autotrade_on=True) is MandateReject.BUDGET_EXCEEDED
 
 
 def test_market_orders_and_conviction_are_priced_worst_case():
     assert order_notional(buy("0.01", order_type="MARKET")) == D("512.5")  # +2.5% collar + slippage
     assert order_notional(buy("0.01", conviction_level="OVERWEIGHT")) == D("750")
     assert order_notional(buy(price=None)) is None
-    assert check_mandate(mandate(), buy(price=None), MandateExposure(), approval_ok=True) is MandateReject.NO_REFERENCE_PRICE
+    assert check_mandate(mandate(), buy(price=None), MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.NO_REFERENCE_PRICE
 
 
 def test_entry_room_counts_what_the_mandate_already_holds():
@@ -165,19 +166,19 @@ def test_an_entry_sized_to_the_room_is_never_a_breach(held, other, price, pct, o
     if qty <= 0:
         return
     order = buy(str(qty), str(price), order_type=order_type, conviction_level=conviction)
-    assert check_mandate(m, order, exposure, approval_ok=True) is None
+    assert check_mandate(m, order, exposure, approval_ok=True, autotrade_on=True) is None
     # "a hair more": 0.1%, or two quantity steps when rounding the quantity down to the step already
     # left more than 0.1% of slack (tiny rooms, e.g. $0.02 left at 2,111.71 -> 0.00000923)
     from cryptonite_execution.mandates import QUANTITY_STEP
     over_qty = max(qty * D("1.001"), qty + 2 * QUANTITY_STEP)
     over = buy(str(over_qty), str(price), order_type=order_type, conviction_level=conviction)
-    assert check_mandate(m, over, exposure, approval_ok=True) in (MandateReject.POSITION_PCT_EXCEEDED,
+    assert check_mandate(m, over, exposure, approval_ok=True, autotrade_on=True) in (MandateReject.POSITION_PCT_EXCEEDED,
                                                                   MandateReject.BUDGET_EXCEEDED)
 
 
 def test_someone_else_on_the_instrument_is_a_conflict():
     assert check_mandate(mandate(), buy(), MandateExposure(other_owner=True),
-                         approval_ok=True) is MandateReject.INSTRUMENT_CONFLICT
+                         approval_ok=True, autotrade_on=True) is MandateReject.INSTRUMENT_CONFLICT
 
 
 @pytest.mark.parametrize("level,approval,expected", [
@@ -187,29 +188,29 @@ def test_someone_else_on_the_instrument_is_a_conflict():
     (AutonomyLevel.L1, True, None),
 ])
 def test_add_risk_below_l3_needs_an_approval(level, approval, expected):
-    assert check_mandate(mandate(autonomy_level=level), buy(), MandateExposure(), approval_ok=approval) is expected
+    assert check_mandate(mandate(autonomy_level=level), buy(), MandateExposure(), approval_ok=approval, autotrade_on=True) is expected
 
 
 def test_reducing_is_always_allowed_for_what_the_mandate_holds_even_halted():
     sell = MandateOrder(instrument_id=SPOT, side="SELL", quantity=D("0.02"), ref_price=D("50000"))
     assert action_class(sell) is ActionClass.REDUCE_RISK
     halted = mandate(status=MandateStatus.HALTED)
-    assert check_mandate(halted, sell, MandateExposure(instrument_qty=D("0.02")), approval_ok=False) is None
+    assert check_mandate(halted, sell, MandateExposure(instrument_qty=D("0.02")), approval_ok=False, autotrade_on=True) is None
     # ...and even outside its instruments (a legacy position) or with no price
     no_px = MandateOrder(instrument_id="SOLUSDT.BINANCE", side="SELL", quantity=D("1"), ref_price=None)
-    assert check_mandate(halted, no_px, MandateExposure(instrument_qty=D("1")), approval_ok=False) is None
+    assert check_mandate(halted, no_px, MandateExposure(instrument_qty=D("1")), approval_ok=False, autotrade_on=True) is None
     # but never more than it holds: that would sell someone else's coins
     assert check_mandate(halted, sell, MandateExposure(instrument_qty=D("0.01"), other_owner=True),
-                         approval_ok=False) is MandateReject.POSITION_NOT_OWNED
+                         approval_ok=False, autotrade_on=True) is MandateReject.POSITION_NOT_OWNED
 
 
 def test_perp_reduce_must_close_the_mandates_own_side():
     m = mandate(instruments=["BTCUSDT-PERP"], allow_perps=True, max_leverage=5)
     close_long = MandateOrder(instrument_id=PERP, side="SELL", quantity=D("0.01"), ref_price=D("50000"), reduce_only=True)
     exp = MandateExposure(instrument_qty=D("0.01"), instrument_side="LONG")
-    assert check_mandate(m, close_long, exp, approval_ok=False) is None
+    assert check_mandate(m, close_long, exp, approval_ok=False, autotrade_on=True) is None
     wrong = MandateOrder(instrument_id=PERP, side="BUY", quantity=D("0.01"), ref_price=D("50000"), reduce_only=True)
-    assert check_mandate(m, wrong, exp, approval_ok=False) is MandateReject.POSITION_NOT_OWNED
+    assert check_mandate(m, wrong, exp, approval_ok=False, autotrade_on=True) is MandateReject.POSITION_NOT_OWNED
 
 
 # --------------------------------------------------------------------------------------- properties
@@ -223,12 +224,12 @@ instruments = st.sampled_from([SPOT, "ETHUSDT.BINANCE", "SOLUSDT.BINANCE", PERP,
 @st.composite
 def mandates(draw):
     level = draw(st.sampled_from(list(AutonomyLevel)))
-    perps = draw(st.booleans()) and level == AutonomyLevel.L1
+    perps = draw(st.booleans())  # ADR 0011 D4: perps at any level
     return Mandate(
         id=uuid.uuid4(), name="m", capital_budget_usd=draw(st.decimals(min_value=D("100"), max_value=D("100000"), places=2)),
         instruments=draw(st.lists(instruments, min_size=1, max_size=4)),
         max_position_pct=draw(st.decimals(min_value=D("1"), max_value=D("25"), places=1)),
-        allow_perps=perps, max_leverage=draw(st.integers(1, 10)), autonomy_level=level,
+        allow_perps=perps, max_leverage=draw(st.integers(1, 10)) if perps else 1, autonomy_level=level,
         status=draw(st.sampled_from(list(MandateStatus))),
     )
 
@@ -253,7 +254,7 @@ def exposures(draw):
 @settings(max_examples=2000, deadline=None)
 @given(m=mandates(), order=orders(), exposure=exposures(), approval=st.booleans())
 def test_no_accepted_ai_order_escapes_its_mandate(m, order, exposure, approval):
-    if check_mandate(m, order, exposure, approval_ok=approval) is not None:
+    if check_mandate(m, order, exposure, approval_ok=approval, autotrade_on=True) is not None:
         return
     if action_class(order) is ActionClass.REDUCE_RISK:
         # a reduce never exceeds what the mandate itself holds
@@ -270,7 +271,7 @@ def test_no_accepted_ai_order_escapes_its_mandate(m, order, exposure, approval):
     assert exposure.instrument_usd + notional <= m.capital_budget_usd * m.max_position_pct / 100
     assert m.max_position_pct <= 25
     if order.is_perp:
-        assert m.autonomy_level == AutonomyLevel.L1 and m.allow_perps and (order.leverage or 1) <= min(m.max_leverage, 10)
+        assert m.allow_perps and (order.leverage or 1) <= min(m.max_leverage, 10)
     if m.autonomy_level < AutonomyLevel.L3:
         assert approval
 
@@ -299,7 +300,7 @@ def test_the_mandate_check_only_adds_rejections_to_the_dispatcher(m, side, q, li
     before = intent.model_copy(deep=True)
     order = MandateOrder(instrument_id=SPOT, side=side, quantity=q, ref_price=limit or (D("50010") if side == "BUY" else D("50000")),
                          order_type=intent.order_type)
-    verdict = check_mandate(m, order, MandateExposure(instrument_qty=held), approval_ok=approval)
+    verdict = check_mandate(m, order, MandateExposure(instrument_qty=held), approval_ok=approval, autotrade_on=True)
     assert intent == before  # the mandate check never resizes or edits the order
 
     ok_alone, reason_alone, _ = alone.evaluate_intent(copy.deepcopy(intent))
@@ -466,7 +467,7 @@ async def test_l3_mandate_trades_without_approval_but_inside_its_budget():
     conn, engine = await run_ai_command({**payload, "quantity": "0.03"}, mandate_row=mandate_row(m))  # 1,538 > 1,000
     assert conn.outcome() == ("REJECTED", "MANDATE_BUDGET_EXCEEDED")
     assert engine.dispatcher.open_orders == {}
-    assert conn.events == ["BREACH", "DEMOTED"]  # §4.5: a breach demotes one level (A5.5)
+    assert conn.events == ["BREACH"]  # ADR 0011 D3: a breach is recorded and alerted, the mode stays
 
 
 async def test_approved_entry_on_top_of_a_position_is_sized_to_the_room_not_breached():
@@ -611,10 +612,12 @@ async def test_migration_025_enforces_the_ceilings(db_url):
                   "allow_perps, max_leverage, autonomy_level) VALUES ($1, 1000, $2, $3, $4, $5, $6, $7)")
         await conn.execute(insert, "ok", ["BTCUSDT.BINANCE"], 25, 20, False, 1, 1)
         for args in (("pos", ["BTCUSDT.BINANCE"], 26, 20, False, 1, 1), ("dd", ["BTCUSDT.BINANCE"], 10, 21, False, 1, 1),
-                     ("lev", ["BTCUSDT.BINANCE"], 10, 20, True, 6, 3), ("perps", ["BTCUSDT.BINANCE"], 10, 20, True, 2, 2),
+                     ("lev", ["BTCUSDT.BINANCE"], 10, 20, True, 11, 3),
                      ("none", [], 10, 20, False, 1, 1)):
             with pytest.raises(asyncpg.CheckViolationError):
                 await conn.execute(insert, *args)
+        # ADR 0011 D4: 050 dropped the perps-level CHECK, so perps are accepted at L2 as at L1
+        await conn.execute(insert, "perps-l2", ["BTCUSDT.BINANCE"], 10, 20, True, 2, 2)
         mid = await conn.fetchval("SELECT id FROM ai_mandates WHERE name = 'ok'")
         await conn.execute("INSERT INTO ai_autonomy_events (mandate_id, kind, proposal_status) VALUES ($1, 'PROPOSED', 'PENDING')", mid)
         with pytest.raises(asyncpg.UniqueViolationError):  # one open proposal per mandate
@@ -633,3 +636,15 @@ async def test_agent_ro_cannot_read_mandates(db_url):
     finally:
         await conn.close()
     assert (has, api, api_eq) == (False, True, False)
+
+
+@pytest.fixture(autouse=True)
+def _autotrade_switch_on(monkeypatch):
+    """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
+    Ask me. These tests exercise the switch-on behaviour of those levels."""
+    from cryptonite_execution import profile_lifecycle
+
+    async def on(conn):
+        return True
+
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)

@@ -24,6 +24,8 @@ VIEWS = {
         "min_conviction", "min_rr", "daily_loss_limit_pct", "daily_profit_target_pct", "profit_lock_pct",
         "session_date", "session_start_equity", "session_pnl", "session_loss_latched_at", "session_target_hit_at",
         "session_lock_fired_at",
+        # migration 050 (ADR 0011): the profile columns
+        "environment", "markets", "direction", "style", "max_open_positions", "dry_run", "paused_reason",
     ],
     "agent_safe_debate_verdicts": [
         "run_id", "instrument_id", "status", "trigger_source", "created_at", "completed_at", "failure_reason",

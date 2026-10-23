@@ -23,6 +23,9 @@ COPY apps/web ./
 # next.config.mjs bakes its rewrites into the build, so the API origin is a build argument too.
 ARG API_ORIGIN=http://api:8000
 ENV API_ORIGIN=$API_ORIGIN
+# Optional WebSocket URL baked into the client bundle (staging only); empty keeps host:8000.
+ARG NEXT_PUBLIC_WS_URL=
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 # .next/cache is build-time only (webpack/SWC cache); it must not ship in the runtime image.
 RUN pnpm build && pnpm prune --prod --ignore-scripts && rm -rf .next/cache
 

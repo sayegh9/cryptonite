@@ -24,7 +24,10 @@ from cryptonite_execution.autonomy import Transition
 
 MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
                    "max_leverage, max_risk_per_trade_pct, strategies, autonomy_level, status, active_hours_utc, veto_window_s, "
-                   "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct")
+                   "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct, "
+                   "markets, direction, style, environment, max_open_positions, max_debates_per_day, exit_tp_r, "
+                   "exit_tp1_scale_pct, exit_trail_activate_pct, exit_trail_pct, exit_max_hold_hours, dry_run, "
+                   "notify_level, breaker_max_loss_streak, breaker_max_reject_streak, paused_reason")
 
 
 async def load_mandate(conn, mandate_id: str | uuid.UUID, *, for_update: bool = False) -> Mandate | None:
@@ -75,10 +78,15 @@ async def apply_transition(conn, mandate_id: uuid.UUID, t: Transition, *, actor:
     if t.kind == "NOOP":
         return None
     halted = t.after.status is MandateStatus.HALTED and t.before.status is not MandateStatus.HALTED
-    resumed = t.kind == "RESUMED"
+    resumed = t.kind in ("RESUMED", "STARTED")
+    paused = t.kind == "PAUSED"
     await conn.execute(
         """UPDATE ai_mandates SET
                autonomy_level = $2, status = $3, allow_perps = $4,
+               -- markets is the truth and chk_ai_mandates_perps_markets ties allow_perps to it: they move together
+               markets = CASE WHEN $4 AND NOT 'PERP' = ANY(markets) THEN array_append(markets, 'PERP')
+                              WHEN NOT $4 THEN array_remove(markets, 'PERP') ELSE markets END,
+               paused_reason = CASE WHEN $8 THEN $6 WHEN $7 THEN NULL ELSE paused_reason END,
                level_since = CASE WHEN autonomy_level <> $2 THEN now() ELSE level_since END,
                halted_reason = CASE WHEN $5 THEN $6 WHEN $7 THEN NULL ELSE halted_reason END,
                halted_at = CASE WHEN $5 THEN now() WHEN $7 THEN NULL ELSE halted_at END,
@@ -86,7 +94,7 @@ async def apply_transition(conn, mandate_id: uuid.UUID, t: Transition, *, actor:
                last_dd_demotion_hwm = CASE WHEN $7 THEN NULL ELSE last_dd_demotion_hwm END,
                updated_at = now()
            WHERE id = $1""",
-        mandate_id, int(t.after.level), t.after.status.value, t.after.allow_perps, halted, t.reason, resumed,
+        mandate_id, int(t.after.level), t.after.status.value, t.after.allow_perps, halted, t.reason, resumed, paused,
     )
     if t.level_changed or t.after.status is not t.before.status:
         # a pending promotion proposal is stale once the level or the status moved
@@ -112,7 +120,7 @@ async def session_verdict_for(conn, mandate: Mandate, now: datetime.datetime) ->
 
 
 def level_name(level: int) -> str:
-    return {1: "L1 Copilot", 2: "L2 Supervised", 3: "L3 Autonomous"}.get(int(level), f"L{level}")
+    return {1: "Ask me", 2: "Veto window", 3: "Fully automatic"}.get(int(level), f"L{level}")
 
 
 

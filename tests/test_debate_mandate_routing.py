@@ -234,3 +234,15 @@ async def test_commands_without_a_trace_keep_it_null(h, routing):
         await routing.route_entry(conn, run_id, BTC, "Buy", 0.8, 5.0)
     assert await h.pool.fetchval("SELECT decision_trace_id FROM execution_commands WHERE idempotency_key = $1",
                                  f"debate:{run_id}") is None
+
+
+@pytest.fixture(autouse=True)
+def _autotrade_switch_on(monkeypatch):
+    """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
+    Ask me. These tests exercise the switch-on behaviour of those levels."""
+    from cryptonite_execution import profile_lifecycle
+
+    async def on(conn):
+        return True
+
+    monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)
