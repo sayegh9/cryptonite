@@ -150,6 +150,86 @@ PRESET_SCALP_MULTI_TF = ScanSpecCreate(
     risk=RiskConfig(stop_loss_atr_mult=0.5, take_profit_atr_mult=2.0, risk_reward_ratio=2.0),
 )
 
+PRESET_SCALP_MULTI_TF_SHORT = ScanSpecCreate(
+    slug="scalp-multi-tf-short",
+    name="Execution Strategist Multi-TF Short",
+    description="Captures 15m, 1H and 4H bar close states for the Execution Strategist Engine in a downtrend.",
+    universe=UniverseConfig(
+        instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
+        timeframes=["15m", "1h", "4h"],
+    ),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[RuleCondition(field="close", operator=RuleOperator.LT, value="ema_50", lookback=0)],
+        ),
+    ],
+    risk=RiskConfig(direction="SHORT", stop_loss_atr_mult=0.5, take_profit_atr_mult=2.0, risk_reward_ratio=2.0),
+)
+
+PRESET_TREND_PULLBACK_SHORT = ScanSpecCreate(
+    slug="trend-pullback-short",
+    name="Trend Pullback Rejection",
+    description="Scans for downtrending assets (Close < EMA200, EMA20 < EMA50) where RSI crosses below 60 on a bearish candle.",
+    universe=UniverseConfig(
+        instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
+        timeframes=["15m", "1h"],
+    ),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.LT, value="ema_200", lookback=0),
+                RuleCondition(field="ema_20", operator=RuleOperator.LT, value="ema_50", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[RuleCondition(field="rsi", operator=RuleOperator.CROSS_BELOW, value=60.0, lookback=1)],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[RuleCondition(field="close", operator=RuleOperator.LT, value="open", lookback=0)],
+        ),
+    ],
+    risk=RiskConfig(direction="SHORT", stop_loss_atr_mult=2.0, take_profit_atr_mult=4.0, risk_reward_ratio=2.0),
+)
+
+PRESET_BOLLINGER_BREAKDOWN_SHORT = ScanSpecCreate(
+    slug="bollinger-breakdown-short",
+    name="Bollinger Band Volatility Breakdown",
+    description="Detects downside momentum closing below the lower Bollinger Band with >= 1.5x volume expansion.",
+    universe=UniverseConfig(
+        instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
+        timeframes=["15m", "1h"],
+    ),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[RuleCondition(field="close", operator=RuleOperator.LT, value="ema_50", lookback=0)],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[RuleCondition(field="close", operator=RuleOperator.CROSS_BELOW, value="bb_lower", lookback=1)],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=1.5, lookback=0),
+                RuleCondition(field="close", operator=RuleOperator.LT, value="open", lookback=0),
+            ],
+        ),
+    ],
+    risk=RiskConfig(direction="SHORT", stop_loss_atr_mult=1.5, take_profit_atr_mult=3.0, risk_reward_ratio=2.0),
+)
+
 BUILTIN_PRESETS = [
     PRESET_RSI_OVERSOLD,
     PRESET_TREND_PULLBACK,
@@ -209,6 +289,37 @@ PRESET_SWING_TREND_PULLBACK_1H = ScanSpecCreate(
     risk=RiskConfig(min_risk_reward=1.8),
 )
 
+PRESET_SWING_TREND_PULLBACK_SHORT_1H = ScanSpecCreate(
+    slug="swing-trend-pullback-short-1h",
+    name="Swing Trend Pullback Short (1H/4H)",
+    description="1H swing downtrend pullback setup requiring HTF trend confluence (4H Close < EMA50) with RSI rejection and volume.",
+    universe=UniverseConfig(instrument_ids=SWING_LIQUID_12, timeframes=["15m", "1h", "4h"]),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="htf_close", operator=RuleOperator.LT, value="htf_ema_50", lookback=0),
+                RuleCondition(field="close", operator=RuleOperator.LT, value="ema_50", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[RuleCondition(field="rsi", operator=RuleOperator.CROSS_BELOW, value=60.0, lookback=1)],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.LT, value="open", lookback=0),
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=0.9, lookback=0),
+            ],
+        ),
+    ],
+    risk=RiskConfig(direction="SHORT", min_risk_reward=1.8),
+)
+
 PRESET_SWING_SNIPER_PULLBACK_15M = ScanSpecCreate(
     slug="swing-sniper-pullback-15m",
     name="Swing Sniper Pullback (15m/1H/4H)",
@@ -242,6 +353,34 @@ PRESET_SWING_SNIPER_PULLBACK_15M = ScanSpecCreate(
         ),
     ],
     risk=RiskConfig(min_risk_reward=1.8),
+)
+
+PRESET_SWING_SNIPER_PULLBACK_SHORT_15M = ScanSpecCreate(
+    slug="swing-sniper-pullback-short-15m",
+    name="Swing Sniper Pullback Short (15m/1H/4H)",
+    description="15m sniper entry into 1H/4H swing downtrend (HTF Close < EMA50) with upper Bollinger Band overbought rejection and volume.",
+    universe=UniverseConfig(instrument_ids=SWING_LIQUID_12, timeframes=["15m", "1h", "4h"]),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[RuleCondition(field="htf_close", operator=RuleOperator.LT, value="htf_ema_50", lookback=0)],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[RuleCondition(field="close", operator=RuleOperator.CROSS_BELOW, value="bb_upper", lookback=1)],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.LT, value="open", lookback=0),
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=0.9, lookback=0),
+            ],
+        ),
+    ],
+    risk=RiskConfig(direction="SHORT", min_risk_reward=1.8),
 )
 
 PRESET_SWING_SQUEEZE_BREAKOUT_1H = ScanSpecCreate(
@@ -279,11 +418,60 @@ PRESET_SWING_SQUEEZE_BREAKOUT_1H = ScanSpecCreate(
     risk=RiskConfig(min_risk_reward=1.8),
 )
 
+PRESET_SWING_SQUEEZE_BREAKDOWN_SHORT_1H = ScanSpecCreate(
+    slug="swing-squeeze-breakdown-short-1h",
+    name="Swing Volatility Breakdown Short (1H/4H)",
+    description="1H volatility breakdown closing below the lower Bollinger Band with HTF downtrend alignment (4H Close < EMA50) and volume.",
+    universe=UniverseConfig(instrument_ids=SWING_LIQUID_12, timeframes=["15m", "1h", "4h"]),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[RuleCondition(field="htf_close", operator=RuleOperator.LT, value="htf_ema_50", lookback=0)],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[RuleCondition(field="close", operator=RuleOperator.CROSS_BELOW, value="bb_lower", lookback=1)],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.LT, value="open", lookback=0),
+                RuleCondition(field="volume_ratio", operator=RuleOperator.GTE, value=0.9, lookback=0),
+            ],
+        ),
+    ],
+    risk=RiskConfig(direction="SHORT", min_risk_reward=1.8),
+)
+
 SWING_PRESETS: list[ScanSpecCreate] = [
     PRESET_SWING_TREND_PULLBACK_1H,
     PRESET_SWING_SNIPER_PULLBACK_15M,
     PRESET_SWING_SQUEEZE_BREAKOUT_1H,
 ]
+
+_PROFILE_PRESETS: dict[str, ScanSpecCreate] = {
+    preset.slug: preset for preset in [
+        *BUILTIN_PRESETS,
+        *SWING_PRESETS,
+        PRESET_SCALP_MULTI_TF_SHORT,
+        PRESET_TREND_PULLBACK_SHORT,
+        PRESET_BOLLINGER_BREAKDOWN_SHORT,
+        PRESET_SWING_TREND_PULLBACK_SHORT_1H,
+        PRESET_SWING_SNIPER_PULLBACK_SHORT_15M,
+        PRESET_SWING_SQUEEZE_BREAKDOWN_SHORT_1H,
+    ]
+}
+
+
+def preset_by_slug(slug: str) -> ScanSpecCreate:
+    """Resolve one of the twelve ADR 0011 profile presets by its stable slug."""
+    try:
+        return _PROFILE_PRESETS[slug]
+    except KeyError:
+        raise KeyError(slug) from None
 
 
 async def ensure_swing_presets(conn: Any) -> list[str]:
