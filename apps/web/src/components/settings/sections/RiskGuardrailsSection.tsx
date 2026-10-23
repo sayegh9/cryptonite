@@ -41,10 +41,6 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
     "leverage.grade_ceiling_b",
     "leverage.grade_ceiling_c",
     "leverage.slippage_allowance_pct",
-    // ADR 0010 amendment (auto-trade Phase B): scanner debates routed to a perp mandate per UTC day
-    "debate.perp_mandate_daily_cap",
-    // ADR 0010 P-10: which mandate takes a candidate a spot and a perps mandate both match (PERP_FIRST needs TOTP)
-    "debate.perp_routing",
   ];
   const leverageGuardKeys = [
     "guard.mandate_max_leverage",
@@ -183,9 +179,11 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
               Leveraged Perpetuals (ADR 0009)
             </div>
             <p className="text-[11px] text-zinc-400 leading-relaxed">
-              Perps only at L1, opted in per mandate with TOTP, so every entry is approved with TOTP. ISOLATED only, a
-              stop on every entry, at most 10x (each mandate&apos;s own maximum, default 3x), the loss at the stop within
-              1% of the budget (cap 2%), and notional within 25% of equity.
+              Perps follow each mandate&apos;s ADR 0011 runtime autonomy: Ask me (L1, with TOTP approval), Veto window
+              (L2), or Fully automatic (L3). The fixed display value of 1 for this legacy guardrail does not control
+              current routing. With the master switch OFF, every entry behaves as Ask me. ISOLATED only, with leverage
+              capped by each mandate and the account at 10x (default 3x), a stop on every entry, loss at the stop
+              within 1% of the budget (cap 2%), and notional within 25% of equity.
             </p>
           </div>
 

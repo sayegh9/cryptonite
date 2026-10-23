@@ -1,52 +1,15 @@
-"""Where a debate verdict goes (AI-first blueprint §4.5, D8, A5.7). Replaces DEBATE_EXECUTION_MODE.
-
-Autonomous execution exists only inside a mandate, at the level it has earned:
-
-- no ACTIVE mandate allows the instrument -> the verdict waits for the operator (PENDING_APPROVAL);
-- L1 Copilot -> an ``ai_approvals`` row: ADD_RISK times out as *no*;
-- L2 Supervised -> an ``ai_approvals`` veto window: ADD_RISK proceeds at timeout only inside the
-  operator's active hours; outside them it times out as *no*;
-- L3 Autonomous -> the order is queued at once (the mandate check and the dispatcher still apply);
-- risk reducing (a spot SELL of what the mandate holds, an exit debate's REDUCE/CLOSE) runs at once
-  at L2/L3; at L1 it waits a short veto window that *proceeds* at timeout (D8).
-
-Entry filters (ADR 0010, refuse only): before anything is sent for approval or queued, an entry is dropped
-(NO_TRADE, logged) when its conviction is below the mandate's ``min_conviction``, its reward:risk is below
-``min_rr`` (only when the verdict carries a stop, a target and a reference price), or the mandate's daily session
-is not ACTIVE (loss latch, profit target or profit lock). The orchestrator's mandate gate refuses the session cases
-again at execution.
-
-Perps (auto-trade Phase B, ADR 0010 amendment): a spot verdict no ACTIVE spot mandate takes goes to the single
-ACTIVE perps mandate that allows the instrument's USD-M perpetual (``resolve_route``). There a BUY opens or adds to a
-long and a SELL to a short; a verdict against the mandate's position closes it reduce-only. An entry needs a
-structural stop and a target on the correct side (the scanner candidate's own levels: long levels never become a
-short), a setup grade from code (``setup_grade.py``) other than NO_TRADE, and a leverage plan the API's card dry run
-(``leverage_card.card_leverage_plan``) accepts; it is always an L1 approval (TOTP to approve). It carries the dry run's
-leverage as a ceiling and no quantity: the orchestrator sizes it with ``plan_leveraged_order``, at most that leverage.
-A perp entry another owner's position blocks is refused ``INSTRUMENT_CONFLICT``. A reduction is a ``CLOSE_POSITION`` with
-a quantity, which the orchestrator caps to the live position. Which mandate takes a candidate both a spot and a perps
-mandate match is the ``debate.perp_routing`` setting (SPOT_FIRST by default).
-
-The allocation is capped at the room the mandate has left under its own position limit and budget
-(what it already holds counts) before anything is queued or sent for approval, so a model never
-"breaches" by over-sizing; with less than ``MIN_MANDATE_ENTRY_PCT`` of room there is no trade. The
-orchestrator sizes the order to the exact room again at execution. This module writes the same rows ``cryptonite_execution.approvals``
-writes; the orchestrator's sweeper and the API decide them. The spot path needs only ``cryptonite_schemas``; the
-perp path imports the scanner's grade and the API's card dry run lazily (the worker image installs every workspace
-package).
-"""
+"""ADR 0011: route debate verdicts by explicit profile or exclusive coin ownership."""
 
 import datetime
 import json
 import logging
-import time
 import uuid
 from decimal import Decimal
 from typing import Any
 
 from cryptonite_execution import profile_lifecycle
+from cryptonite_execution.profile_log import record_decision
 from cryptonite_schemas.debate import verdict_direction
-from cryptonite_schemas.identifiers import to_perp_instrument_id
 from cryptonite_schemas.mandate import (
     DEFAULT_APPROVAL_TTL_S,
     DEFAULT_REDUCE_VETO_S,
@@ -62,11 +25,12 @@ from cryptonite_schemas.mandate import (
 )
 from cryptonite_schemas.marks import LiveMark
 from cryptonite_schemas.marks import entry_room_pct as room_at_marks
-from cryptonite_schemas.runtime_settings import (
-    PERP_FIRST,
-    PERP_ROUTING_KEY,
-    SPOT_FIRST,
-    read_routing_mode,
+from cryptonite_schemas.profile import (
+    Market,
+    allows_side,
+    base_asset,
+    instrument_for,
+    select_market,
 )
 from cryptonite_schemas.session import (
     SESSION_COLUMNS,
@@ -81,7 +45,8 @@ logger = logging.getLogger("cryptonite.debate_worker.mandate_routing")
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
 MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
                    "max_leverage, max_risk_per_trade_pct, strategies, autonomy_level, status, active_hours_utc, veto_window_s, "
-                   "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct")
+                   "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct, "
+                   "markets, direction, style, max_open_positions, max_debates_per_day, dry_run")
 
 
 # Recorded in the payload and the summary of a debate entry the R:R filter could not measure (a debate carries no
@@ -92,36 +57,6 @@ STOP_REQUIRED = "STOP_REQUIRED"
 NO_SHORT_STRUCTURE = "NO_SHORT_STRUCTURE"
 
 
-# ``debate.perp_routing`` is read at routing time and cached for a short while (the gate and the router both ask)
-ROUTING_CACHE_S = 30.0
-_routing_cache: tuple[float, str] | None = None
-
-
-def reset_routing_cache() -> None:
-    global _routing_cache
-    _routing_cache = None
-
-
-async def routing_mode(conn) -> str:
-    """``debate.perp_routing`` (SPOT_FIRST | PERP_FIRST): the stored setting, cached ``ROUTING_CACHE_S``. SPOT_FIRST when
-    it is missing, invalid or cannot be read (the safe mode: never more perp trades than the operator chose)."""
-    global _routing_cache
-    now = time.monotonic()
-    if _routing_cache is not None and _routing_cache[0] > now:
-        return _routing_cache[1]
-    try:
-        async with conn.transaction():  # a savepoint: a failed read must not abort the routing transaction
-            raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = $1", PERP_ROUTING_KEY)
-    except Exception as e:
-        logger.warning("Could not read %s: %s; %s applies", PERP_ROUTING_KEY, e, SPOT_FIRST)
-        return SPOT_FIRST
-    mode, problem = read_routing_mode(raw)
-    if problem:
-        logger.warning("%s: %s; %s applies", PERP_ROUTING_KEY, problem, mode)
-    _routing_cache = (now + ROUTING_CACHE_S, mode)
-    return mode
-
-
 def side_of(recommendation: str) -> str | None:
     """The order side of a verdict (``normalize_verdict``'s mapping; "strong buy" with a space is
     STRONG_BUY); None for HOLD or an unknown verdict."""
@@ -129,64 +64,59 @@ def side_of(recommendation: str) -> str | None:
     return direction if direction in ("BUY", "SELL") else None
 
 
-async def resolve_mandate(conn, instrument_id: str, mandate_id: str | None = None) -> Mandate | None:
-    """The named mandate when it is ACTIVE and allows the instrument, else the single ACTIVE one that does."""
+async def resolve_profile(conn, instrument_id: str, mandate_id: str | None = None) -> Mandate | None:
+    """ADR 0011 D6: the payload profile wins; otherwise resolve only the base coin's lock owner.
+
+    Keep stopped profiles visible so routing can record PROFILE_NOT_RUNNING instead of silently
+    treating their candidates as operator trades. Never infer ownership from overlapping scopes.
+    """
     if mandate_id:
-        row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", uuid.UUID(str(mandate_id)))
-        m = Mandate.from_row(row) if row else None
-        return m if m and m.status.value == "ACTIVE" and m.allows_instrument(instrument_id) else None
-    rows = await conn.fetch(
-        f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE status = 'ACTIVE' AND $1 = ANY(instruments) ORDER BY created_at",
-        canonical_instrument(instrument_id))
-    return Mandate.from_row(rows[0]) if len(rows) == 1 else None
+        mid = uuid.UUID(str(mandate_id))
+    else:
+        try:
+            coin = base_asset(instrument_id)
+        except ValueError:
+            return None
+        mid = await conn.fetchval("SELECT mandate_id FROM ai_profile_coin_locks WHERE base_asset = $1", coin)
+        if mid is None:
+            return None
+    row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", mid)
+    return Mandate.from_row(row) if row else None
 
 
-async def _perp_mandates(conn, perp_instrument: str) -> list[Mandate]:
-    rows = await conn.fetch(
-        f"""SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE status = 'ACTIVE' AND allow_perps AND $1 = ANY(instruments)
-            ORDER BY created_at""", perp_instrument)
-    return [Mandate.from_row(r) for r in rows]
+async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: str) -> tuple[str | None, str]:
+    """ADR 0011: apply the profile entry refusals in their specified order, then select its market."""
+    if mandate.status.value != "ACTIVE":
+        return "PROFILE_NOT_RUNNING", instrument_id
+    if not allows_side(mandate.direction, "LONG" if side == "BUY" else "SHORT"):
+        return "DIRECTION_NOT_ALLOWED", instrument_id
+    count = await conn.fetchval(
+        "SELECT count(*) FROM paper_positions WHERE account_id = $1 AND instance_id = $2 "
+        "AND status = 'OPEN' AND quantity > 0", PAPER_ACCOUNT_ID, mandate.instance_id)
+    if int(count or 0) >= mandate.max_open_positions:
+        return "MAX_OPEN_POSITIONS", instrument_id
+    if await profile_lifecycle.coin_lock_conflict(conn, mandate, instrument_id, "debate"):
+        return "COIN_LOCKED", instrument_id
+    market = select_market("LONG" if side == "BUY" else "SHORT", mandate.max_leverage, mandate.markets)
+    if market is None:
+        return "NO_MARKET", instrument_id
+    instrument = instrument_for(instrument_id, market)
+    if market is Market.SPOT_MARGIN:
+        return "SPOT_MARGIN_NOT_AVAILABLE", instrument
+    return None, instrument
 
 
-async def resolve_route(conn, instrument_id: str, mandate_id: str | None = None, *,
-                        mode: str | None = None) -> tuple[Mandate | None, str]:
-    """(mandate, the instrument its order trades). The spot mandate as ``resolve_mandate`` finds it; else, for a spot
-    instrument no ACTIVE mandate allows, the single ACTIVE perps mandate that allows its perpetual, on the perpetual.
-    A named mandate wins: it trades the instrument when it allows it, else its perpetual when it has perps on and
-    allows that. When a spot and a perps mandate both match, the spot one is taken (logged) under SPOT_FIRST, the
-    default; under PERP_FIRST (``debate.perp_routing``, ``mode`` overrides the stored setting) the single ACTIVE
-    perps mandate that allows the perpetual is taken instead (logged), and with none or several the spot rule
-    applies. The operator can pick another in the Inbox. (None, instrument) when nothing matches or more than one
-    mandate of a kind does."""
-    inst = canonical_instrument(instrument_id)
-    perp = None if is_perp_instrument(inst) else to_perp_instrument_id(inst.split(".")[0])
-    if mandate_id:
-        mandate = await resolve_mandate(conn, inst, mandate_id)
-        if mandate is not None or perp is None:
-            return mandate, inst
-        row = await conn.fetchrow(f"SELECT {MANDATE_COLUMNS} FROM ai_mandates WHERE id = $1", uuid.UUID(str(mandate_id)))
-        m = Mandate.from_row(row) if row else None
-        if m and m.status.value == "ACTIVE" and m.allow_perps and m.allows_instrument(perp):
-            return m, perp
-        return None, inst
-    if perp is not None and (mode or await routing_mode(conn)) == PERP_FIRST:
-        perps = await _perp_mandates(conn, perp)
-        if len(perps) == 1:
-            logger.info("%s: %s routing; routed to perps mandate %s on %s", inst, PERP_FIRST, perps[0].name, perp)
-            return perps[0], perp
-    spot_count = await conn.fetchval(
-        "SELECT count(*) FROM ai_mandates WHERE status = 'ACTIVE' AND $1 = ANY(instruments)", inst)
-    if spot_count or perp is None:
-        mandate = await resolve_mandate(conn, inst)
-        if mandate is not None and perp is not None and (perps := await _perp_mandates(conn, perp)):
-            logger.info("%s: spot mandate %s preferred over perps mandate(s) %s", inst, mandate.name,
-                        ", ".join(m.name for m in perps))
-        return mandate, inst
-    perps = await _perp_mandates(conn, perp)
-    if len(perps) == 1:
-        logger.info("%s: no ACTIVE spot mandate allows it; routed to perps mandate %s on %s", inst, perps[0].name, perp)
-        return perps[0], perp
-    return None, inst
+async def reduction_instrument(conn, mandate: Mandate, instrument_id: str, side: str) -> str | None:
+    """Find an owned holding this verdict reduces before entry-only status, direction and market checks."""
+    if side == "SELL":
+        spot = instrument_for(instrument_id, Market.SPOT)
+        if await mandate_holding(conn, mandate, spot) > 0:
+            return spot
+    perp = instrument_for(instrument_id, Market.PERP)
+    held_side, held = await perp_position(conn, mandate, perp)
+    if held > 0 and held_side != ("LONG" if side == "BUY" else "SHORT"):
+        return perp
+    return None
 
 
 async def perp_position(conn, mandate: Mandate, instrument_id: str) -> tuple[str | None, Decimal]:
@@ -372,8 +302,10 @@ def perp_setup_grade(side: str, entry: float, stop: float, target: float, contex
                                    funding_rate_8h=funding_rate_8h, **kw)).as_dict()
 
 
-def _no_trade(run_id: uuid.UUID, instrument_id: str, mandate: Mandate, reason: str) -> tuple[str, Mandate]:
+async def _no_trade(conn, run_id: uuid.UUID, instrument_id: str, mandate: Mandate, reason: str) -> tuple[str, Mandate]:
     logger.info("Debate %s entry on %s refused by mandate %s: %s", run_id, instrument_id, mandate.name, reason)
+    await record_decision(conn, mandate.id, "ROUTE", "NO_TRADE", reason.split(":", 1)[0],
+                          instrument_id=instrument_id, run_id=run_id, explanation=reason)
     return "NO_TRADE", mandate
 
 
@@ -395,41 +327,41 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
                    "position_side": held_side}
         return (ActionClass.REDUCE_RISK, payload,
                 f"{side} {instrument} reduce-only {held:g} (closes the mandate's {held_side}) · conviction {conviction:.2f}")
-    if not mandate.allow_perps or mandate.autonomy_level != AutonomyLevel.L1:
-        return _no_trade(run_id, instrument, mandate, "MANDATE_PERPS_NOT_ALLOWED: perps need the opt-in at L1")
+    if not mandate.allow_perps:
+        return await _no_trade(conn, run_id, instrument, mandate, "MANDATE_PERPS_NOT_ALLOWED")
     from cryptonite_api.mandate_choice import instrument_conflict
 
     # Another owner holding the perpetual: the orchestrator's mandate gate would refuse the entry after the operator
     # spent a TOTP on it (the same read-only check the Brain card and the Inbox run)
     if conflict := await instrument_conflict(conn, mandate, instrument, Decimal("0"), "debate"):
-        return _no_trade(run_id, instrument, mandate, f"INSTRUMENT_CONFLICT: {conflict}")
+        return await _no_trade(conn, run_id, instrument, mandate, f"INSTRUMENT_CONFLICT: {conflict}")
     long = side == "BUY"
     if not (stop_loss and take_profit):
-        return _no_trade(run_id, instrument, mandate,
+        return await _no_trade(conn, run_id, instrument, mandate,
                          f"{STOP_REQUIRED}: a perp entry needs a structural stop and a target; the debate has none")
     stop, target = float(stop_loss), float(take_profit)
     if long != (stop < target):
         if not long:  # the scanner's levels are a long's: no code derives a short's stop and target from them
-            return _no_trade(run_id, instrument, mandate,
+            return await _no_trade(conn, run_id, instrument, mandate,
                              f"{NO_SHORT_STRUCTURE}: no short structure (the candidate's stop {stop:g} and target "
                              f"{target:g} are a long's)")
-        return _no_trade(run_id, instrument, mandate,
+        return await _no_trade(conn, run_id, instrument, mandate,
                          f"{STOP_REQUIRED}: stop {stop:g} and target {target:g} are a short's, not a long's")
     if not (reference_price and reference_price > 0):
-        return _no_trade(run_id, instrument, mandate, "NO_REFERENCE_PRICE: no decision price to measure the stop from")
+        return await _no_trade(conn, run_id, instrument, mandate, "NO_REFERENCE_PRICE: no decision price to measure the stop from")
     entry = float(reference_price)
     if not (stop < entry < target if long else target < entry < stop):
-        return _no_trade(run_id, instrument, mandate,
+        return await _no_trade(conn, run_id, instrument, mandate,
                          f"{STOP_REQUIRED}: stop {stop:g} / target {target:g} on the wrong side of the entry {entry:g}")
     if reason := await entry_filter_reason(conn, mandate, conviction, now=now, reference_price=entry,
                                            stop_loss=stop, take_profit=target, side=side):
-        return _no_trade(run_id, instrument, mandate, reason)
+        return await _no_trade(conn, run_id, instrument, mandate, reason)
     grade = perp_setup_grade(side, entry, stop, target, grade_context, await funding_8h(conn, redis, instrument))
     if grade["grade"] == "NO_TRADE":
-        return _no_trade(run_id, instrument, mandate, f"setup grade NO_TRADE: {'; '.join(grade['reasons'])}")
+        return await _no_trade(conn, run_id, instrument, mandate, f"setup grade NO_TRADE: {'; '.join(grade['reasons'])}")
     room = await entry_room_pct(conn, mandate, instrument, marks)
     if room < MIN_MANDATE_ENTRY_PCT:
-        return _no_trade(run_id, instrument, mandate, "MANDATE_POSITION_LIMIT_REACHED")
+        return await _no_trade(conn, run_id, instrument, mandate, "MANDATE_POSITION_LIMIT_REACHED")
     alloc = round(min(float(allocation_pct), float(mandate.max_position_pct), float(room)), 2)
     # The Brain card's dry run, with the orchestrator's sizing (a margin too large for 1x is cut, not refused)
     from cryptonite_api.leverage_card import card_leverage_plan
@@ -438,7 +370,7 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
             "stop_loss": stop, "setup_grade": grade["grade"]}
     plan = await card_leverage_plan(_OneConn(conn), redis, mandate, card, shrink_margin_to_fit=True)
     if not plan.ok:
-        return _no_trade(run_id, instrument, mandate,
+        return await _no_trade(conn, run_id, instrument, mandate,
                          f"{plan.reject}: the {plan.binding_ceiling or 'leverage plan'} allows no order")
     alloc = float((plan.margin_usd / mandate.capital_budget_usd * 100).quantize(Decimal("0.01")))
     # ``leverage``: the dry run's (code, never the model's), the ceiling the operator approved. The orchestrator sizes
@@ -473,12 +405,19 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     candidate's levels (none for a Brain- or Inbox-started debate). ``redis`` (the perp mark, funding and leverage
     brackets) and ``grade_context`` (``brief_data``'s) are read only on a perp route."""
     now = now or datetime.datetime.now(datetime.UTC)
+    mandate = await resolve_profile(conn, instrument_id, mandate_id)
     side = side_of(recommendation)
-    if side is None:
-        return "NO_TRADE", None
-    mandate, instrument = await resolve_route(conn, instrument_id, mandate_id)
     if mandate is None:
-        return "PENDING_APPROVAL", None  # outside any mandate: only the operator can act on it
+        return ("NO_TRADE" if side is None else "PENDING_APPROVAL"), None
+    await record_decision(conn, mandate.id, "DEBATE", recommendation, instrument_id=instrument_id,
+                          run_id=run_id, conviction=conviction)
+    if side is None:
+        return await _no_trade(conn, run_id, instrument_id, mandate, "HOLD")
+    instrument = await reduction_instrument(conn, mandate, instrument_id, side)
+    if instrument is None:
+        reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side)
+        if reason:
+            return await _no_trade(conn, run_id, instrument, mandate, reason)
     base = {"instrument_id": instrument, "side": side, "order_type": "MARKET",
             "recommendation": recommendation, "conviction_score": conviction, "source": "debate", "run_id": str(run_id)}
     if decision_trace_id:
@@ -500,10 +439,10 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     elif side == "BUY":
         if reason := await entry_filter_reason(conn, mandate, conviction, now=now, reference_price=reference_price,
                                                stop_loss=stop_loss, take_profit=take_profit):
-            return _no_trade(run_id, instrument, mandate, reason)
+            return await _no_trade(conn, run_id, instrument, mandate, reason)
         room = await entry_room_pct(conn, mandate, instrument, marks)
         if room < MIN_MANDATE_ENTRY_PCT:
-            return "NO_TRADE", mandate  # already at the position limit: nothing to ask the operator
+            return await _no_trade(conn, run_id, instrument, mandate, "MANDATE_POSITION_LIMIT_REACHED")
         alloc = round(min(float(allocation_pct), float(mandate.max_position_pct), float(room)), 2)
         payload = {**base, "allocation_pct": alloc}
         summary = (f"BUY {base['instrument_id']} {alloc:g}% of mandate "
@@ -515,14 +454,11 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     else:
         held = await mandate_holding(conn, mandate, instrument)
         if held <= 0:
-            return "NO_TRADE", mandate  # spot is long-only: nothing of the mandate's to sell
+            return await _no_trade(conn, run_id, instrument, mandate, "NO_OWN_HOLDING")
         payload = {**base, "quantity": str(held)}
         summary = f"SELL {held} {base['instrument_id']} (the mandate's position) · conviction {conviction:.2f}"
         action = ActionClass.REDUCE_RISK
     if action is ActionClass.ADD_RISK:
-        # ADR 0011 D6: the base asset may belong to another running profile; refuse before any approval is written
-        if conflict := await profile_lifecycle.coin_lock_conflict(conn, mandate, instrument, "debate"):
-            return _no_trade(run_id, instrument, mandate, conflict)
         # ADR 0011 D10 at runtime: with the master switch off, a Veto window or Fully automatic profile behaves as Ask
         # me: a TOTP approval, never a veto window or a direct enqueue
         if mandate.autonomy_level > AutonomyLevel.L1 and not await profile_lifecycle.autotrade_switch_on(conn):
@@ -534,9 +470,12 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     command_type = "CLOSE_POSITION" if action is ActionClass.REDUCE_RISK and is_perp_instrument(instrument) else "SUBMIT_ORDER"
     if action is ActionClass.REDUCE_RISK and mandate.autonomy_level >= AutonomyLevel.L2:
         await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")
+        await record_decision(conn, mandate.id, "ROUTE", "ENQUEUED", instrument_id=instrument, run_id=run_id)
         return "COMPLETED", mandate
     if timeout_policy_for(action, mandate.autonomy_level, in_active_hours(mandate.active_hours_utc, now)) is None:
         await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")  # ADD_RISK at L3: no approval needed
+        await record_decision(conn, mandate.id, "ROUTE", "DRY_RUN_ROUTED" if mandate.dry_run else "ENQUEUED",
+                              instrument_id=instrument, run_id=run_id)
         return "COMPLETED", mandate
     approval = await _approval(conn, mandate, action, command_type, payload, summary, "debate", run_id, now)
     if approval is None:
@@ -547,6 +486,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         status = _EXISTING_APPROVAL_STATUS.get(str(existing), "PENDING_APPROVAL")
         logger.warning("Debate %s was already routed (approval %s): returning %s, nothing queued", run_id, existing, status)
         return status, mandate
+    outcome = "VETO_WINDOW" if action is ActionClass.ADD_RISK and mandate.autonomy_level == AutonomyLevel.L2 else "APPROVAL_CREATED"
+    await record_decision(conn, mandate.id, "ROUTE", outcome, instrument_id=instrument, run_id=run_id)
     return "PENDING_APPROVAL", mandate
 
 
@@ -561,12 +502,15 @@ async def route_exit(conn, run_id: uuid.UUID, instrument_id: str, recommendation
     mandate, held = await position_owner(conn, instrument_id)
     if mandate is None or held <= 0:
         return "PENDING_APPROVAL", None
+    await record_decision(conn, mandate.id, "DEBATE", rec, instrument_id=instrument_id, run_id=run_id)
     qty = held if rec == "CLOSE" else (held / 2)
     payload = {"instrument_id": canonical_instrument(instrument_id), "quantity": str(qty), "reason": f"EXIT_DEBATE_{rec}",
                "source": "exit_debate", "run_id": str(run_id)}
     if mandate.autonomy_level >= AutonomyLevel.L2:
         await _enqueue(conn, mandate, "CLOSE_POSITION", payload, f"exit_debate:{run_id}")
+        await record_decision(conn, mandate.id, "ROUTE", "ENQUEUED", instrument_id=instrument_id, run_id=run_id)
         return "COMPLETED", mandate
     await _approval(conn, mandate, ActionClass.REDUCE_RISK, "CLOSE_POSITION", payload,
                     f"{rec} {qty} {payload['instrument_id']} (exit debate)", "exit_debate", run_id, now)
+    await record_decision(conn, mandate.id, "ROUTE", "APPROVAL_CREATED", instrument_id=instrument_id, run_id=run_id)
     return "PENDING_APPROVAL", mandate
