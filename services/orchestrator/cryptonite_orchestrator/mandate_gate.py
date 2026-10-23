@@ -379,6 +379,7 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
                     CASE WHEN c.payload->>'profile_cash_reserve_usd' IS NOT NULL THEN
                          (p.quantity - p.filled_qty) / NULLIF(p.quantity, 0) *
                          (c.payload->>'profile_cash_reserve_usd')::numeric
+                    WHEN COALESCE(p.price, p.avg_fill_price) IS NULL THEN $3::numeric
                     ELSE (p.quantity - p.filled_qty) * COALESCE(p.price, p.avg_fill_price, 0) *
                          CASE WHEN p.instrument_id LIKE '%-PERP.%' THEN
                              1 / GREATEST(COALESCE(NULLIF(c.payload->>'leverage', '')::numeric, 1), 1) + 0.0005
@@ -400,7 +401,7 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
                    AND r.environment = 'PAPER' AND r.asset = 'USDT'
                    AND r.state IN ('PRE_SEND', 'INFLIGHT', 'ACKED_UNREFLECTED'))
              AND NOT (p.client_order_id = ANY($2::text[]))""",
-        mandate.instance_id, working_ids)
+        mandate.instance_id, working_ids, mandate.capital_budget_usd)
     used += Decimal(str(durable_working or 0))
     reserved = await conn.fetchval(
         """SELECT COALESCE(SUM(r.amount + r.fee_slippage_headroom), 0)

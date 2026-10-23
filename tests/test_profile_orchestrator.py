@@ -451,6 +451,31 @@ async def test_two_connections_value_working_perp_at_initial_margin(h):
     assert await second is None
 
 
+async def test_legacy_unpriced_market_order_claims_full_profile_budget(h):
+    m = await h.mandate(budget=1000)
+    cid = uuid.uuid4()
+    oid = f"AI-{cid.hex[:12].upper()}"
+    await h.pool.execute(
+        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, mandate_id, payload)
+           VALUES ($1, $2, 'SUBMIT_ORDER', $3, '{}'::jsonb)""",
+        cid, str(cid), m.id)
+    await h.pool.execute(
+        """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type,
+                   quantity, price, filled_qty, avg_fill_price, status)
+           VALUES ($1, $2, 'PAPER-ACCOUNT-001', $3, 'BUY', 'MARKET', .004, NULL, 0, NULL, 'ACCEPTED')""",
+        oid, m.instance_id, SPOT)
+
+    # This fresh connection represents another orchestrator after restart: the legacy order has no memory claim
+    # and its command payload predates profile_cash_reserve_usd.
+    second_engine = make_engine(make_perp_dispatcher())
+    async with h.pool.acquire() as conn:
+        async with conn.transaction():
+            reject = await mandate_gate.profile_cash_reject(
+                conn, second_engine, m,
+                MandateOrder(SPOT, "BUY", D("0.004"), D("50000"), order_type="MARKET"))
+    assert reject == "PROFILE_CASH_EXHAUSTED"
+
+
 async def test_delayed_fill_keeps_execution_mode_from_the_order(h, monkeypatch):
     m = await h.mandate()
     cid = uuid.uuid4()
