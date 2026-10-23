@@ -394,22 +394,26 @@ async def mandate_monitor_once(engine, pool, redis, quotes=None, now: datetime.d
                 continue
             if m is None:
                 continue
-            try:
-                v = await track_mandate(conn, redis, m, quotes, now, account_id, benchmark)
-            except Exception as e:  # one broken mandate must not stop the others' stops
-                logger.error("Mandate tracker failed for %s: %s", m.name, e)
-                continue
-            try:
-                await track_session(conn, redis, m, v["equity"], now, account_id)
-            except Exception as e:  # nor a session fault the drawdown stops above
-                logger.error("Mandate session tracker failed for %s: %s", m.name, e)
+            # Breakers have independent data sources and must survive equity/quote failures.
             try:
                 ingress = getattr(engine, "ingress_health", None)
                 health = ingress.get_health_snapshot() if ingress is not None else {}
                 await track_profile_breakers(conn, redis, m, now, health)
+            except Exception as e:
+                logger.error("Profile breaker failed for %s: %s", m.name, e)
+            try:
+                v = await track_mandate(conn, redis, m, quotes, now, account_id, benchmark)
+            except Exception as e:
+                logger.error("Mandate tracker failed for %s: %s", m.name, e)
+            else:
+                try:
+                    await track_session(conn, redis, m, v["equity"], now, account_id)
+                except Exception as e:
+                    logger.error("Mandate session tracker failed for %s: %s", m.name, e)
+            try:
                 await profile_daily_summary(conn, redis, m, now)
             except Exception as e:
-                logger.error("Profile breaker/summary failed for %s: %s", m.name, e)
+                logger.error("Profile summary failed for %s: %s", m.name, e)
             try:
                 if m.status is MandateStatus.STOPPING:  # flat -> STOPPED, locks released
                     await finish_stop(conn, m.id)
@@ -510,50 +514,124 @@ async def notify_profile_decisions(conn, redis) -> None:
         await redis.set('profile_notify:cursor', row['id'])
 
 
-async def track_profile_breakers(conn, redis, mandate: Mandate, now: datetime.datetime, health: dict) -> None:
-    """ADR 0011 D7/D13: pause once for a breaker episode; leave all exit paths running."""
-    if mandate.status is not MandateStatus.ACTIVE:
-        return
-    reason = None
-    n = mandate.breaker_max_loss_streak
-    losses = await conn.fetch(
-        """SELECT realized_pnl FROM paper_positions WHERE instance_id = $1 AND status = 'CLOSED'
-           ORDER BY closed_at DESC, position_id DESC LIMIT $2""", mandate.instance_id, n)
-    if len(losses) == n and all(Decimal(str(r['realized_pnl'])) < 0 for r in losses):
-        reason = f'BREAKER_LOSS_STREAK: {n} losing trades'
-    n = mandate.breaker_max_reject_streak
-    commands = await conn.fetch(
-        """SELECT command_outcome FROM execution_commands WHERE target_instance_id = $1
-           AND environment = 'PAPER' AND status IN ('COMPLETED', 'FAILED', 'REJECTED')
-           ORDER BY created_at DESC, command_id DESC LIMIT $2""", mandate.instance_id, n)
-    if reason is None and len(commands) == n and all(r['command_outcome'] == 'REJECTED' for r in commands):
-        reason = f'BREAKER_REJECT_STREAK: {n} refused commands'
+async def _profile_stale_coin(conn, redis, mandate: Mandate, now: datetime.datetime, health: dict) -> str | None:
+    """ADR 0011: missing health gets ten minutes from start or the last healthy observation.
+
+    The start baseline comes from persisted STARTED/RESUMED events. Redis retains the last
+    healthy arrival across process restarts; an outage of Redis falls back to the start baseline.
+    """
+    started = await conn.fetchval(
+        """SELECT COALESCE((SELECT MAX(e.created_at) FROM ai_autonomy_events e
+                           WHERE e.mandate_id = m.id AND e.kind IN ('STARTED', 'RESUMED')),
+                          m.created_at) AS started_at FROM ai_mandates m WHERE m.id = $1""", mandate.id)
+    baseline = started.timestamp() if started is not None else now.timestamp()
     for coin in mandate.instruments:
         data = health.get(coin) or health.get(underlying_spot(coin))
-        # Never-seen telemetry is unknown. Known ingest timestamps use arrival time, as ingress freshness does.
-        if reason is None and data and now.timestamp() - int(data['arrival_ts_ns']) / 1e9 > 600:
-            reason = f'BREAKER_STALE_DATA: {coin} ingest older than 10 minutes'
-    if reason is None:
+        last = int(data['arrival_ts_ns']) / 1e9 if data else baseline
+        key = f'profile_breaker:last_healthy:{mandate.id}:{coin}'
+        if redis is not None:
+            try:
+                if data and now.timestamp() - last <= 600:
+                    await redis.set(key, str(last))
+                elif not data:
+                    cached = await redis.get(key)
+                    if cached is not None:
+                        last = max(last, float(cached))
+            except Exception as e:
+                logger.warning('Profile breaker health cache unavailable: %s', e)
+        if now.timestamp() - last > 600:
+            return coin
+    return None
+
+
+async def track_profile_breakers(conn, redis, mandate: Mandate, now: datetime.datetime, health: dict) -> None:
+    """ADR 0011 D7/D13: durably pause once per new trigger; audit failure cannot undo safety.
+
+    The lifecycle PAUSED event is the durable episode marker and retry source. Unlike the
+    best-effort decision log, lifecycle audit and state share the lifecycle transaction.
+    """
+    if mandate.status is not MandateStatus.ACTIVE:
+        return
+    triggers: list[tuple[str, str, str]] = []
+    n = mandate.breaker_max_loss_streak
+    losses = await conn.fetch(
+        """SELECT position_id, closed_at, realized_pnl FROM paper_positions
+           WHERE instance_id = $1 AND status = 'CLOSED'
+           ORDER BY closed_at DESC, position_id DESC LIMIT $2""", mandate.instance_id, n)
+    if len(losses) == n and all(Decimal(str(r['realized_pnl'])) < 0 for r in losses):
+        latest = losses[0]
+        triggers.append(('LOSS_STREAK', f"{latest['position_id']}:{latest['closed_at']}",
+                         f'BREAKER_LOSS_STREAK: {n} losing trades'))
+    n = mandate.breaker_max_reject_streak
+    commands = await conn.fetch(
+        """SELECT command_id, command_outcome FROM execution_commands WHERE target_instance_id = $1
+           AND environment = 'PAPER' AND status IN ('COMPLETED', 'FAILED', 'REJECTED')
+           AND command_type IN ('SUBMIT_ORDER', 'MANUAL_ORDER')
+           AND COALESCE(payload->>'reduce_only', 'false') <> 'true'
+           AND (payload->>'instrument_id' LIKE '%-PERP%' OR upper(payload->>'side') = 'BUY')
+           ORDER BY created_at DESC, command_id DESC LIMIT $2""", mandate.instance_id, n)
+    if len(commands) == n and all(r['command_outcome'] == 'REJECTED' for r in commands):
+        triggers.append(('REJECT_STREAK', str(commands[0]['command_id']),
+                         f'BREAKER_REJECT_STREAK: {n} refused commands'))
+    stale_coin = await _profile_stale_coin(conn, redis, mandate, now, health)
+    if stale_coin is not None:
+        # A still-stale feed remains unsafe after operator resume; never suppress this condition.
+        triggers.append(('STALE_DATA', stale_coin, f'BREAKER_STALE_DATA: {stale_coin} ingest older than 10 minutes'))
+    if not triggers:
         return
     async with conn.transaction():
         row = await conn.fetchrow('SELECT status, paused_reason FROM ai_mandates WHERE id = $1 FOR UPDATE', mandate.id)
         if row is None or row['status'] != 'ACTIVE':
             return
-        await pause(conn, mandate.id, actor='risk:breaker', reason=reason)
-        await conn.execute('UPDATE ai_mandates SET paused_reason = $2 WHERE id = $1', mandate.id, reason)
-        if not await record_decision(conn, mandate.id, 'BREAKER', 'PAUSED', reason):
-            raise RuntimeError('breaker decision could not be recorded')
-    # Safety pause commits independently of notification availability. Reconciliation below retries delivery.
+        for kind, event, reason in triggers:
+            if kind != 'STALE_DATA' and await conn.fetchval(
+                    """SELECT EXISTS (SELECT 1 FROM ai_autonomy_events WHERE mandate_id = $1
+                       AND actor = 'risk:breaker' AND kind = 'PAUSED'
+                       AND detail->>'trigger_kind' = $2 AND detail->>'trigger_event' = $3)""",
+                    mandate.id, kind, event):
+                continue
+            await pause(conn, mandate.id, actor='risk:breaker', reason=reason)
+            episode = await conn.fetchrow(
+                """SELECT id, detail FROM ai_autonomy_events WHERE mandate_id = $1
+                   AND actor = 'risk:breaker' AND kind = 'PAUSED' ORDER BY id DESC LIMIT 1""", mandate.id)
+            await conn.execute(
+                'UPDATE ai_autonomy_events SET detail = detail || $2::jsonb WHERE id = $1',
+                episode['id'], json.dumps(dict(trigger_kind=kind, trigger_event=event)))
+            break
+    # This independent best-effort path can fail repeatedly without reverting the committed PAUSE.
     await notify_profile_breakers(conn, redis)
 
 
 async def notify_profile_breakers(conn, redis) -> None:
-    """Retry durable BREAKER decisions after an outbox outage, including paused/NONE profiles."""
+    """Recover missing decision audits and alerts from durable lifecycle PAUSED events."""
+    events = await conn.fetch(
+        """SELECT e.id, e.mandate_id, e.reason, e.detail, m.name FROM ai_autonomy_events e
+           JOIN ai_mandates m ON m.id = e.mandate_id
+           WHERE e.kind = 'PAUSED' AND e.actor = 'risk:breaker' AND (
+               NOT EXISTS (SELECT 1 FROM ai_profile_decisions d WHERE d.mandate_id = e.mandate_id
+                           AND d.stage = 'BREAKER' AND d.detail->>'breaker_event_id' = e.id::text)
+               OR NOT EXISTS (SELECT 1 FROM notifications_outbox n
+                              WHERE n.dedupe_key = 'profile-breaker-event:' || e.id::text))
+           ORDER BY e.id LIMIT 100""")
+    for event in events:
+        exists = await conn.fetchval(
+            """SELECT EXISTS (SELECT 1 FROM ai_profile_decisions WHERE mandate_id = $1 AND stage = 'BREAKER'
+               AND detail->>'breaker_event_id' = $2)""", event['mandate_id'], str(event['id']))
+        if not exists:
+            await record_decision(conn, event['mandate_id'], 'BREAKER', 'PAUSED', event['reason'],
+                                  breaker_event_id=str(event['id']), **_detail(event['detail']))
+        await _profile_alert(conn, redis, 'PROFILE_BREAKER',
+                             dict(mandate_id=str(event['mandate_id']), mandate=event['name'], reason=event['reason']),
+                             f"profile-breaker-event:{event['id']}", tier='CRITICAL')
+    # Preserve delivery of decisions created before lifecycle-event reconciliation was introduced.
     rows = await conn.fetch(
         """SELECT d.id, d.mandate_id, d.reason, m.name FROM ai_profile_decisions d
            JOIN ai_mandates m ON m.id = d.mandate_id
-           WHERE d.stage = 'BREAKER' AND NOT EXISTS (
-               SELECT 1 FROM notifications_outbox n WHERE n.dedupe_key = 'profile-breaker:' || d.id::text)
+           WHERE d.stage = 'BREAKER' AND NOT (d.detail ? 'breaker_event_id') AND NOT EXISTS (
+               SELECT 1 FROM ai_autonomy_events e WHERE e.mandate_id = d.mandate_id
+                   AND e.kind = 'PAUSED' AND e.actor = 'risk:breaker' AND e.reason = d.reason)
+           AND NOT EXISTS (SELECT 1 FROM notifications_outbox n
+                           WHERE n.dedupe_key = 'profile-breaker:' || d.id::text)
            ORDER BY d.id LIMIT 100""")
     for row in rows:
         await _profile_alert(conn, redis, 'PROFILE_BREAKER',

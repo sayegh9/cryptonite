@@ -101,17 +101,14 @@ async def test_notification_levels(level, stage, mode, sent):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('trigger', ['LOSS_STREAK', 'REJECT_STREAK', 'STALE_DATA'])
 async def test_breaker_pauses_once_without_flattening(monkeypatch, trigger):
-    m = SimpleNamespace(id=uuid.uuid4(), name='Alpha', instance_id='AI_MANDATE_x',
-                        status=MandateStatus.ACTIVE, instruments=['BTCUSDT.BINANCE'],
-                        breaker_max_loss_streak=2, breaker_max_reject_streak=2, notify_level='NONE')
-    conn = Conn()
-    conn.fetchrow = AsyncMock(return_value={'status': 'ACTIVE', 'paused_reason': None})
-    conn.fetch = AsyncMock(side_effect=lambda sql, *args: (
-        [{'realized_pnl': -1}, {'realized_pnl': -2}] if 'paper_positions' in sql and trigger == 'LOSS_STREAK'
-        else [{'command_outcome': 'REJECTED'}] * 2 if 'execution_commands' in sql and trigger == 'REJECT_STREAK' else []))
-    pause, log, flatten = AsyncMock(), AsyncMock(return_value=True), AsyncMock()
-    monkeypatch.setattr(monitor, 'pause', pause, raising=False)
-    monkeypatch.setattr(monitor, 'record_decision', log, raising=False)
+    conn, m = BreakerConn(), breaker_profile()
+    m.breaker_max_loss_streak = m.breaker_max_reject_streak = 2
+    conn.loss_trigger = trigger == 'LOSS_STREAK'
+    conn.reject_trigger = trigger == 'REJECT_STREAK'
+    pause = AsyncMock(side_effect=fake_pause(conn, m))
+    log, flatten = AsyncMock(return_value=True), AsyncMock()
+    monkeypatch.setattr(monitor, 'pause', pause)
+    monkeypatch.setattr(monitor, 'record_decision', log)
     monkeypatch.setattr(monitor, 'flatten_instance', flatten)
     health = {'BTCUSDT.BINANCE': {'arrival_ts_ns': int((NOW.timestamp() - (601 if trigger == 'STALE_DATA' else 1)) * 1e9)}}
     await monitor.track_profile_breakers(conn, Redis(), m, NOW, health)
@@ -122,8 +119,7 @@ async def test_breaker_pauses_once_without_flattening(monkeypatch, trigger):
     assert f'BREAKER_{trigger}' in pause.call_args.kwargs['reason']
     assert log.await_count == 1
     flatten.assert_not_awaited()
-    # Delivery uses the separately committed BREAKER decision reconciliation.
-    assert not conn.outbox
+    assert len(conn.outbox) == 1
 
 
 @pytest.mark.asyncio
@@ -278,8 +274,9 @@ async def test_durable_delivery_survives_pubsub_failure():
 async def test_breaker_notification_outage_retry_and_none_bypass():
     """Paused profiles retain an unsent critical decision until outbox recovery."""
     conn, redis = Conn(), Redis()
-    conn.fetch = AsyncMock(return_value=[dict(id=10, mandate_id=uuid.uuid4(), name='Alpha',
-                                            reason='BREAKER_LOSS_STREAK: 2 losing trades')])
+    rows = [dict(id=10, mandate_id=uuid.uuid4(), name='Alpha',
+                 reason='BREAKER_LOSS_STREAK: 2 losing trades')]
+    conn.fetch = AsyncMock(side_effect=lambda sql, *args: rows if 'SELECT d.id' in sql else [])
     conn.fail = True
     await monitor.notify_profile_breakers(conn, redis)
     assert not conn.outbox
@@ -316,18 +313,22 @@ async def test_real_breaker_pause_survives_outbox_outage_and_exit_runs(monkeypat
         mid = m.id
         async with pool.acquire() as conn:
             original = monitor.alert
+            original_log = monitor.record_decision
+            monkeypatch.setattr(monitor, 'record_decision', AsyncMock(return_value=False))
             monkeypatch.setattr(monitor, 'alert', AsyncMock())
             health = {'BTCUSDT.BINANCE': {'arrival_ts_ns': int((NOW.timestamp() - 601) * 1e9)}}
             await monitor.track_profile_breakers(conn, Redis(), m, NOW, health)
             paused = await load_mandate(conn, mid)
             assert paused.status is MandateStatus.PAUSED
             assert paused.paused_reason.startswith('BREAKER_STALE_DATA')
-            assert await conn.fetchval("SELECT count(*) FROM ai_profile_decisions WHERE mandate_id=$1 AND stage='BREAKER'", mid) == 1
+            assert await conn.fetchval("SELECT count(*) FROM ai_profile_decisions WHERE mandate_id=$1 AND stage='BREAKER'", mid) == 0
             await monitor.track_profile_breakers(conn, Redis(), m, NOW, health)  # stale ACTIVE snapshot
             await monitor.track_profile_breakers(conn, Redis(), paused, NOW, health)
             monkeypatch.setattr(monitor, 'alert', original)
+            monkeypatch.setattr(monitor, 'record_decision', original_log)
             await monitor.notify_profile_breakers(conn, Redis())
             await monitor.notify_profile_breakers(conn, Redis())
+            assert await conn.fetchval("SELECT count(*) FROM ai_profile_decisions WHERE mandate_id=$1 AND stage='BREAKER'", mid) == 1
             assert await conn.fetchval("SELECT count(*) FROM notifications_outbox WHERE kind='PROFILE_BREAKER' AND payload->>'mandate_id'=$1", str(mid)) == 1
             await conn.execute(
                 """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side,
@@ -345,6 +346,232 @@ async def test_real_breaker_pause_survives_outbox_outage_and_exit_runs(monkeypat
             async with pool.acquire() as conn:
                 await conn.execute("DELETE FROM notifications_outbox WHERE payload->>'mandate_id'=$1", str(mid))
                 await conn.execute('DELETE FROM paper_orders WHERE instance_id=$1', m.instance_id)
+                await conn.execute('DELETE FROM ai_autonomy_events WHERE mandate_id=$1', mid)
+                await conn.execute('DELETE FROM ai_mandates WHERE id=$1', mid)
+        await pool.close()
+
+
+class BreakerConn(Conn):
+    """Durable lifecycle event store with rollback semantics for independent breaker tests."""
+    def __init__(self):
+        super().__init__()
+        self.status = 'ACTIVE'
+        self.events = []
+        self.loss_id = 'loss-1'
+        self.command_id = 'command-1'
+        self.loss_trigger = False
+        self.reject_trigger = False
+        self.started = NOW - dt.timedelta(minutes=11)
+        self.command_sql = ''
+
+    @asynccontextmanager
+    async def transaction(self):
+        status = self.status
+        try:
+            yield
+        except Exception:
+            self.status = status
+            raise
+
+    async def fetchrow(self, sql, *args):
+        if 'FOR UPDATE' in sql:
+            return {'status': self.status, 'paused_reason': None}
+        if 'ai_autonomy_events' in sql:
+            return self.events[-1] if self.events else None
+        return None
+
+    async def fetchval(self, sql, *args):
+        if 'AS started_at' in sql:
+            return self.started
+        if 'ai_autonomy_events' in sql:
+            return any(e['detail'].get('trigger_kind') == args[1] and
+                       e['detail'].get('trigger_event') == args[2] for e in self.events)
+        return await super().fetchval(sql, *args)
+
+    async def fetch(self, sql, *args):
+        if 'paper_positions' in sql:
+            return ([dict(position_id=self.loss_id, closed_at=NOW, realized_pnl=-1)] * args[1]
+                    if self.loss_trigger else [])
+        if 'execution_commands' in sql:
+            self.command_sql = sql
+            return ([dict(command_id=self.command_id, command_outcome='REJECTED')] * args[1]
+                    if self.reject_trigger else [])
+        if 'SELECT e.id' in sql:
+            return self.events
+        return await super().fetch(sql, *args)
+
+    async def execute(self, sql, *args):
+        if 'UPDATE ai_autonomy_events' in sql:
+            self.events[-1]['detail'].update(json.loads(args[1]))
+        return await super().execute(sql, *args)
+
+
+def breaker_profile():
+    return SimpleNamespace(id=uuid.uuid4(), name='Alpha', instance_id='AI_MANDATE_x',
+                           status=MandateStatus.ACTIVE, instruments=['BTCUSDT.BINANCE'],
+                           breaker_max_loss_streak=1, breaker_max_reject_streak=1)
+
+
+def fake_pause(conn, m):
+    async def pause(*args, **kwargs):
+        conn.status = 'PAUSED'
+        conn.events.append(dict(id=len(conn.events) + 1, mandate_id=m.id, name=m.name,
+                                reason=kwargs['reason'], detail={}))
+        return m
+    return pause
+
+
+@pytest.mark.asyncio
+async def test_review_decision_failure_cannot_rollback_pause(monkeypatch):
+    conn, m = BreakerConn(), breaker_profile()
+    conn.loss_trigger = True
+    monkeypatch.setattr(monitor, 'pause', fake_pause(conn, m))
+    log = AsyncMock(return_value=False)
+    monkeypatch.setattr(monitor, 'record_decision', log)
+    await monitor.track_profile_breakers(conn, Redis(), m, NOW, {})
+    assert conn.status == 'PAUSED'
+    assert len(conn.events) == 1
+    # A later pass can recover both the failed decision audit and notification from the lifecycle event.
+    log.return_value = True
+    await monitor.notify_profile_breakers(conn, Redis())
+    assert log.await_count >= 2
+    assert len(conn.outbox) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['LOSS_STREAK', 'REJECT_STREAK'])
+async def test_review_resume_requires_new_streak_event(monkeypatch, kind):
+    conn, m, redis = BreakerConn(), breaker_profile(), Redis()
+    conn.loss_trigger = kind == 'LOSS_STREAK'
+    conn.reject_trigger = kind == 'REJECT_STREAK'
+    monkeypatch.setattr(monitor, 'pause', fake_pause(conn, m))
+    monkeypatch.setattr(monitor, 'record_decision', AsyncMock(return_value=True))
+    health = {'BTCUSDT.BINANCE': {'arrival_ts_ns': int(NOW.timestamp() * 1e9)}}
+    await monitor.track_profile_breakers(conn, redis, m, NOW, health)
+    conn.status = 'ACTIVE'  # operator resume retains durable historical event markers
+    await monitor.track_profile_breakers(conn, redis, m, NOW, health)
+    assert conn.status == 'ACTIVE'
+    assert len(conn.events) == 1
+    conn.loss_id, conn.command_id = 'loss-2', 'command-2'
+    await monitor.track_profile_breakers(conn, redis, m, NOW, health)
+    assert conn.status == 'PAUSED'
+    assert len(conn.events) == 2
+    assert len(conn.outbox) == 2
+
+
+@pytest.mark.asyncio
+async def test_review_reject_query_excludes_lifecycle_and_reductions(monkeypatch):
+    conn, m = BreakerConn(), breaker_profile()
+    monkeypatch.setattr(monitor, 'pause', fake_pause(conn, m))
+    await monitor.track_profile_breakers(conn, Redis(), m, NOW, {
+        'BTCUSDT.BINANCE': {'arrival_ts_ns': int(NOW.timestamp() * 1e9)}})
+    assert "command_type IN ('SUBMIT_ORDER', 'MANUAL_ORDER')" in conn.command_sql
+    assert "payload->>'reduce_only'" in conn.command_sql
+    assert "payload->>'side'" in conn.command_sql  # spot SELL is a reduction
+    assert conn.status == 'ACTIVE'
+
+
+@pytest.mark.asyncio
+async def test_review_breakers_run_despite_equity_error(monkeypatch):
+    conn, m = BreakerConn(), breaker_profile()
+    conn.fetch = AsyncMock(return_value=[dict(id=m.id)])
+    @asynccontextmanager
+    async def acquire():
+        yield conn
+    monkeypatch.setattr(monitor, 'account_backstop', AsyncMock())
+    monkeypatch.setattr(monitor, 'notify_profile_breakers', AsyncMock())
+    monkeypatch.setattr(monitor, 'notify_profile_decisions', AsyncMock())
+    monkeypatch.setattr(monitor, 'load_mandate', AsyncMock(return_value=m))
+    monkeypatch.setattr(monitor, 'track_mandate', AsyncMock(side_effect=RuntimeError('bad equity quote')))
+    breaker = AsyncMock()
+    monkeypatch.setattr(monitor, 'track_profile_breakers', breaker)
+    monkeypatch.setattr(monitor, 'profile_daily_summary', AsyncMock())
+    await monitor.mandate_monitor_once(SimpleNamespace(dispatcher=SimpleNamespace()),
+                                      SimpleNamespace(acquire=acquire), Redis(), now=NOW)
+    breaker.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_review_absent_ingest_after_start_grace_and_last_healthy(monkeypatch):
+    conn, m, redis = BreakerConn(), breaker_profile(), Redis()
+    monkeypatch.setattr(monitor, 'pause', fake_pause(conn, m))
+    monkeypatch.setattr(monitor, 'record_decision', AsyncMock(return_value=True))
+    conn.started = NOW - dt.timedelta(minutes=9)
+    await monitor.track_profile_breakers(conn, redis, m, NOW, {})
+    assert conn.status == 'ACTIVE'
+    await monitor.track_profile_breakers(conn, redis, m, NOW + dt.timedelta(minutes=2), {})
+    assert conn.status == 'PAUSED'
+    conn.status = 'ACTIVE'
+    conn.started = NOW - dt.timedelta(hours=1)
+    await monitor.track_profile_breakers(conn, redis, m, NOW, {
+        'BTCUSDT.BINANCE': {'arrival_ts_ns': int(NOW.timestamp() * 1e9)}})
+    assert conn.status == 'ACTIVE'
+    await monitor.track_profile_breakers(conn, redis, m, NOW + dt.timedelta(minutes=9), {})
+    assert conn.status == 'ACTIVE'
+    await monitor.track_profile_breakers(conn, redis, m, NOW + dt.timedelta(minutes=11), {})
+    assert conn.status == 'PAUSED'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['LOSS_STREAK', 'REJECT_STREAK'])
+async def test_review_real_resume_and_entry_only_rejections(kind):
+    """Real lifecycle resume consumes historical episodes; unrelated refusals never trip entries."""
+    import os
+
+    import asyncpg
+    from cryptonite_execution.mandate_store import load_mandate
+    from cryptonite_execution.profile_lifecycle import start
+    from migrated_db import seed_paper_account
+    from test_mandate_hard_stop import make_mandate
+
+    url = os.environ.get('DATABASE_URL', '')
+    if not url.endswith('/cryptonite_ci_p18'):
+        pytest.skip('requires the dedicated P1.8 database')
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    mid = None
+    try:
+        async with pool.acquire() as conn:
+            await seed_paper_account(conn)
+        m = await make_mandate(pool, 1)
+        mid = m.id
+        async with pool.acquire() as conn:
+            await conn.execute('UPDATE ai_mandates SET breaker_max_loss_streak=1, breaker_max_reject_streak=1 WHERE id=$1', mid)
+            m = await load_mandate(conn, mid)
+            sql = """INSERT INTO execution_commands (idempotency_key, command_type, target_instance_id,
+                       payload, status, command_outcome, environment)
+                     VALUES ($1, $2, $3, $4::jsonb, 'REJECTED', 'REJECTED', 'PAPER')"""
+            for command, payload in [('PAUSE', {}), ('STOP', {}), ('RESUME', {}), ('DEPLOY', {}),
+                                     ('CLOSE_POSITION', {'instrument_id': 'BTCUSDT.BINANCE', 'side': 'SELL'}),
+                                     ('SUBMIT_ORDER', {'instrument_id': 'BTCUSDT.BINANCE', 'side': 'SELL'}),
+                                     ('SUBMIT_ORDER', {'instrument_id': 'BTCUSDT-PERP.BINANCE', 'side': 'BUY', 'reduce_only': True})]:
+                await conn.execute(sql, uuid.uuid4().hex, command, m.instance_id, json.dumps(payload))
+            health = {'BTCUSDT.BINANCE': {'arrival_ts_ns': int(NOW.timestamp() * 1e9)}}
+            await monitor.track_profile_breakers(conn, Redis(), m, NOW, health)
+            assert (await load_mandate(conn, mid)).status is MandateStatus.ACTIVE
+            for episode in range(2):
+                if kind == 'REJECT_STREAK':
+                    await conn.execute(sql, uuid.uuid4().hex, 'SUBMIT_ORDER', m.instance_id,
+                                       json.dumps(dict(instrument_id='BTCUSDT.BINANCE', side='BUY')))
+                else:
+                    await conn.execute(
+                        """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id,
+                           side, entry_price, quantity, current_price, realized_pnl, status, closed_at)
+                           VALUES ($1, 'PAPER-ACCOUNT-001', $2, 'BTCUSDT.BINANCE', 'LONG', 100, 0, 90, -10,
+                                   'CLOSED', $3)""", uuid.uuid4().hex, m.instance_id, NOW + dt.timedelta(seconds=episode))
+                await monitor.track_profile_breakers(conn, Redis(), m, NOW, health)
+                assert (await load_mandate(conn, mid)).status is MandateStatus.PAUSED
+                m = await start(conn, mid, actor='operator:test', totp_ok=True, settings=None)
+                await monitor.track_profile_breakers(conn, Redis(), m, NOW, health)
+                assert (await load_mandate(conn, mid)).status is MandateStatus.ACTIVE
+                assert await conn.fetchval("SELECT count(*) FROM ai_autonomy_events WHERE mandate_id=$1 AND actor='risk:breaker'", mid) == episode + 1
+                assert await conn.fetchval("SELECT count(*) FROM notifications_outbox WHERE kind='PROFILE_BREAKER' AND payload->>'mandate_id'=$1", str(mid)) == episode + 1
+    finally:
+        if mid is not None:
+            async with pool.acquire() as conn:
+                await conn.execute("DELETE FROM notifications_outbox WHERE payload->>'mandate_id'=$1", str(mid))
+                await conn.execute('DELETE FROM paper_positions WHERE instance_id=$1', m.instance_id)
+                await conn.execute('DELETE FROM execution_commands WHERE target_instance_id=$1', m.instance_id)
+                await conn.execute('DELETE FROM ai_profile_coin_locks WHERE mandate_id=$1', mid)
                 await conn.execute('DELETE FROM ai_autonomy_events WHERE mandate_id=$1', mid)
                 await conn.execute('DELETE FROM ai_mandates WHERE id=$1', mid)
         await pool.close()
