@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from uuid import uuid4
 
 import polars as pl
@@ -16,6 +18,20 @@ SHORT_SLUGS = {
     for (style, side), slugs in PRESETS.items()
     if side.value == "SHORT"
     for slug in slugs
+}
+
+# SHA-256 snapshots of the eight pre-P1.1 long preset dictionaries. These lock
+# down names, descriptions, universes, rules, and risk settings without
+# duplicating the verbose serialized specs in the test body.
+LONG_PRESET_SNAPSHOT_SHA256 = {
+    "rsi-oversold-reversal": "985279316e28302147581f1558551c2a39bdc3f6c970462759a95c978d5310f8",
+    "trend-pullback": "aab091495aff64cbb8a1c3e68d398208163b7290676fb5992372b16f8244d648",
+    "bollinger-breakout": "592247b3ca71a50bd035c230a8acb48c064de33c308d5c8fc301907db439a704",
+    "macd-momentum-shift": "e60ee5d29da71eb5bcc1757482031fa165fdb947669812197c3d78785f68ffd7",
+    "scalp-multi-tf": "6069a57f8af01f4d89e0ad70e1a0226602d05c447fbe49a95f767e8576792bbc",
+    "swing-trend-pullback-1h": "20009e67ef5d824c8d46901fca3e3106bcd5034c8621659b173c792008452d83",
+    "swing-sniper-pullback-15m": "747c4f50ed6127c38acc567e040baa851643433d061d0df850b7d9505e989733",
+    "swing-squeeze-breakout-1h": "730d9adaaf71034e6424bba5154f6379ddf5730b255dda970d49fcb0ea9c28e2",
 }
 
 
@@ -161,4 +177,6 @@ def test_existing_long_preset_definitions_are_unchanged():
     assert len(long_presets) == 8
     for preset in long_presets:
         assert preset_by_slug(preset.slug).model_dump(mode="json") == preset.model_dump(mode="json")
+        snapshot = json.dumps(preset.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        assert hashlib.sha256(snapshot.encode()).hexdigest() == LONG_PRESET_SNAPSHOT_SHA256[preset.slug]
 
