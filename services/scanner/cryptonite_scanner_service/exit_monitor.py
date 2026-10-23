@@ -47,11 +47,13 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
+from uuid import UUID
 
 import asyncpg
 import httpx
 import redis.asyncio as redis
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS, ExitThresholds, settled
+from cryptonite_schemas.mandate import mandate_id_from_instance
 from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -80,6 +82,7 @@ BLIND_ALERT_CYCLES = 2  # one blind check is a blip; two in a row (about a minut
 COVERAGE_KEY = "exit_monitor:coverage"
 BLIND_S_KEY = "exit_monitor:blind_s:{hour}"  # hash: instrument -> blind seconds in that UTC hour
 BLIND_S_TTL_S = 26 * 3600
+PROFILE_EXIT_CACHE_S = 30.0
 REST_TIMEOUT_S = 3.0
 LIQ_ALERT_BUFFER_USED = 0.5  # stop-to-liquidation buffer used: CRITICAL alert
 LIQ_CLOSE_BUFFER_USED = 0.75  # ... and a reduce-only close of an AI-owned perp (backup to the resting stop)
@@ -127,6 +130,71 @@ async def load_thresholds(pool, last_good: ExitThresholds) -> ExitThresholds:
 
 
 @dataclass(frozen=True)
+class ProfileExitSettings:
+    """Exit values loaded from an AI profile (ADR 0011 D13)."""
+
+    tp_r: Decimal | None
+    tp1_scale_pct: Decimal | None
+    trail_activate_pct: Decimal | None
+    trail_pct: Decimal | None
+    max_hold_hours: int | None
+
+
+_profile_exit_cache: dict[UUID, tuple[float, ProfileExitSettings | None]] = {}
+
+
+def clear_profile_exit_cache() -> None:
+    """Clear cached profile exits; exposed for deterministic tests."""
+    _profile_exit_cache.clear()
+
+
+async def load_profile_exits(conn, owners: list[str], redis_client=None) -> dict[UUID, ProfileExitSettings]:
+    """Read mandate exit settings with a 30-second cache and critical stale-config alerts (ADR 0011 D13)."""
+    now = time.monotonic()
+    profile_ids = {mid for owner in owners if (mid := mandate_id_from_instance(owner)) is not None}
+    stale = [mid for mid in profile_ids if mid not in _profile_exit_cache or now - _profile_exit_cache[mid][0] >= PROFILE_EXIT_CACHE_S]
+    if stale:
+        try:
+            rows = await conn.fetch(
+                """SELECT id, exit_tp_r, exit_tp1_scale_pct, exit_trail_activate_pct,
+                          exit_trail_pct, exit_max_hold_hours
+                   FROM ai_mandates WHERE id = ANY($1::uuid[])""",
+                stale,
+            )
+        except Exception as exc:
+            logger.warning("Profile exits not re-read (%s); using cached or global exits", exc)
+            if redis_client is not None:
+                for mid in stale:
+                    alert_key = f"exit_monitor:profile_exit_config_stale:{mid}"
+                    try:
+                        sent = await redis_client.set(alert_key, "1", nx=True, ex=ALERT_DEBOUNCE_S)
+                        if sent:
+                            await redis_client.publish("channel:system_alerts", json.dumps({
+                                "type": "EXIT_MONITOR", "severity": "CRITICAL",
+                                "reason": "PROFILE_EXIT_CONFIG_STALE", "mandate_id": str(mid),
+                            }))
+                    except Exception as alert_exc:
+                        logger.error("Could not publish stale profile exit alert for %s: %s", mid, alert_exc)
+        else:
+            loaded = {row["id"]: ProfileExitSettings(
+                Decimal(str(row["exit_tp_r"])) if row["exit_tp_r"] is not None else None,
+                Decimal(str(row["exit_tp1_scale_pct"])) if row["exit_tp1_scale_pct"] is not None else None,
+                Decimal(str(row["exit_trail_activate_pct"])) if row["exit_trail_activate_pct"] is not None else None,
+                Decimal(str(row["exit_trail_pct"])) if row["exit_trail_pct"] is not None else None,
+                row["exit_max_hold_hours"],
+            ) for row in rows}
+            for mid in stale:
+                _profile_exit_cache[mid] = (now, loaded.get(mid))
+                if redis_client is not None:
+                    try:
+                        await redis_client.delete(f"exit_monitor:profile_exit_config_stale:{mid}")
+                    except Exception as alert_exc:
+                        logger.debug("Could not clear stale profile exit alert for %s: %s", mid, alert_exc)
+    return {mid: _profile_exit_cache[mid][1] for mid in profile_ids
+            if mid in _profile_exit_cache and _profile_exit_cache[mid][1] is not None}
+
+
+@dataclass(frozen=True)
 class Position:
     instrument_id: str
     side: str  # LONG | SHORT
@@ -145,6 +213,11 @@ class Position:
     key_owner: bool = False  # the key names the owner: another owner's position opened in the same second
     leverage: int = 1  # perps
     liquidation_price: float | None = None  # perps: the snapshot written with the position (margin.py)
+    profile_tp_r: Decimal | None = None
+    profile_tp1_scale_pct: Decimal | None = None
+    profile_trail_activate_pct: Decimal | None = None
+    profile_trail_pct: Decimal | None = None
+    profile_max_hold_hours: int | None = None
 
     @property
     def liquidation_buffer_used(self) -> float | None:
@@ -179,6 +252,48 @@ class Position:
 class ExitAction:
     kind: str  # CLOSE | EXIT_DEBATE | ALERT | REDUCE_TP1
     reason: str
+
+
+def apply_profile_exit_levels(pos: Position) -> Position:
+    """Set profile TP1 from its structural stop, preserving legacy behavior without a usable profile R (ADR 0011 D13)."""
+    if not pos.ai_owned or pos.profile_tp_r is None or pos.stop_price is None or pos.entry_price <= 0:
+        return pos
+    risk = abs(pos.entry_price - pos.stop_price)
+    if risk <= 0 or (pos.side == "LONG" and pos.stop_price >= pos.entry_price) or (
+        pos.side == "SHORT" and pos.stop_price <= pos.entry_price
+    ):
+        return pos
+    target = pos.entry_price + risk * float(pos.profile_tp_r) * (1 if pos.side == "LONG" else -1)
+    return replace(pos, take_profit_price=target)
+
+
+def position_thresholds(pos: Position, global_thresholds: ExitThresholds) -> ExitThresholds:
+    """Apply per-profile trail values, falling back field-by-field to global thresholds (ADR 0011 D13)."""
+    activation = pos.profile_trail_activate_pct
+    trail = pos.profile_trail_pct
+    if activation is None and trail is None:
+        return global_thresholds
+    return replace(
+        global_thresholds,
+        trail_activate_pct=float(activation) if activation is not None else global_thresholds.trail_activate_pct,
+        trail_pct=float(trail) if trail is not None else global_thresholds.trail_pct,
+    )
+
+
+def max_hold_action(pos: Position, now_ts: float | None = None) -> ExitAction | None:
+    """Return the profile's reduce-only max-hold close when its holding deadline has passed (ADR 0011 D13)."""
+    if not pos.ai_owned or pos.profile_max_hold_hours is None or pos.opened_ts <= 0:
+        return None
+    now_ts = time.time() if now_ts is None else now_ts
+    if now_ts - pos.opened_ts >= pos.profile_max_hold_hours * 3600:
+        return ExitAction("CLOSE", "MAX_HOLD")
+    return None
+
+
+def tp1_reduce_quantity(pos: Position) -> str:
+    """Calculate a TP1 scale-out quantity using the profile percentage or the legacy 50% (ADR 0011 D13)."""
+    pct = pos.profile_tp1_scale_pct if pos.profile_tp1_scale_pct is not None else Decimal("50")
+    return format((Decimal(str(pos.quantity)) * Decimal(str(pct)) / Decimal("100")).normalize(), "f")
 
 
 def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawdown_episode: bool = False,
@@ -354,6 +469,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         """,
         PAPER_ACCOUNT_ID, AI_INSTANCE,
     )
+    profile_exits = await load_profile_exits(conn, [r["owner"] for r in rows], redis_client)
     positions = []
     sources = {} if sources is None else sources
     keys: set[str] = set()
@@ -403,6 +519,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
                     WHERE target_instance_id = $1
                       AND command_type = 'SUBMIT_ORDER'
                       AND status = 'COMPLETED'
+                      AND (payload->>'proposed_stop_loss' IS NOT NULL OR payload->>'stop_price' IS NOT NULL)
                       AND (payload->>'instrument_id' = $2 OR upper(split_part(payload->>'instrument_id', '.', 1)) = upper(split_part($2, '.', 1)))
                     ORDER BY created_at DESC, command_id DESC
                     LIMIT 1
@@ -422,6 +539,8 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
             except Exception as e:
                 logger.debug("Failed to lookup entry command stop/target for %s: %s", inst, e)
         opened_ts = int(r["opened_at"].timestamp()) if r["opened_at"] else 0
+        profile_id = mandate_id_from_instance(r["owner"])
+        profile = profile_exits.get(profile_id) if profile_id is not None else None
         position = Position(
             r["instrument_id"], r["side"], float(r["entry_price"] or 0), price, bool(r["ai_owned"]),
             opened_ts, funding,
@@ -433,7 +552,13 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
             liquidation_price=nearer_liquidation(r, inst),
             shared=bool(r["shared"]),
             own_quantity=format(Decimal(str(r["quantity"] or 0)).normalize(), "f"),
+            profile_tp_r=profile.tp_r if profile is not None else None,
+            profile_tp1_scale_pct=profile.tp1_scale_pct if profile is not None else None,
+            profile_trail_activate_pct=profile.trail_activate_pct if profile is not None else None,
+            profile_trail_pct=profile.trail_pct if profile is not None else None,
+            profile_max_hold_hours=profile.max_hold_hours if profile is not None else None,
         )
+        position = apply_profile_exit_levels(position)
         if position.key in keys:  # two owners opened in the same second: keep their state and closes apart
             position = replace(position, key_owner=True)
         keys.add(position.key)
@@ -540,16 +665,21 @@ async def enqueue_close(conn, pos: Position, reason: str) -> bool:
 
 def close_payload(pos: Position, reason: str) -> dict:
     """The CLOSE_POSITION payload. Alone on its instrument the owner's close flattens the instrument; on a shared
-    spot instrument it carries the owner's own quantity, so the orchestrator sells only that."""
+    spot instrument it carries the owner's own quantity. Max-hold always scopes by quantity to preserve other owners' orders."""
     payload = {"instrument_id": pos.instrument_id, "reason": reason}
-    if pos.shared and pos.own_quantity:
+    if reason == "MAX_HOLD" and pos.quantity > 0:
+        payload["quantity"] = pos.own_quantity or format(Decimal(str(pos.quantity)).normalize(), "f")
+    elif pos.shared and pos.own_quantity:
         payload["quantity"] = pos.own_quantity
     return payload
 
 
 async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1") -> bool:
-    """One TP1 50% scale-out per position; enqueues a SUBMIT_ORDER to reduce holding."""
+    """One TP1 scale-out per position; enqueues a reduction using profile scale or legacy 50% (ADR 0011 D13)."""
     if pos.quantity <= 0:
+        return False
+    scale_quantity = Decimal(tp1_reduce_quantity(pos))
+    if scale_quantity <= 0:
         return False
     prefix = f"exit_monitor:{pos.key}:{reason}"
     last = await conn.fetchrow(
@@ -562,13 +692,12 @@ async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1")
         if time.time() - last["created_at"].timestamp() < CLOSE_RETRY_AFTER_S:
             return False
     attempts = await conn.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key LIKE $1 || '%'", prefix)
-    half_qty = (Decimal(str(pos.quantity)) / Decimal(2)).normalize()
-    half_qty_str = format(half_qty, "f")
+    scale_qty_str = format(scale_quantity, "f")
     if is_perp(pos.instrument_id):
         # A perp scales out through the close path with a quantity (a reduce-only fill of half, the resting stop
         # stays for the rest): a SUBMIT_ORDER on the other side would be a new entry, not a reduction
         command_type = "CLOSE_POSITION"
-        payload = {"instrument_id": pos.instrument_id, "quantity": half_qty_str, "reason": reason,
+        payload = {"instrument_id": pos.instrument_id, "quantity": scale_qty_str, "reason": reason,
                    "source": "exit_monitor_tp1"}
     else:
         command_type = "SUBMIT_ORDER"
@@ -576,7 +705,7 @@ async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1")
             "instrument_id": pos.instrument_id,
             "side": "SELL" if pos.side == "LONG" else "BUY",
             "order_type": "MARKET",
-            "quantity": half_qty_str,
+            "quantity": scale_qty_str,
             "reason": reason,
             "source": "exit_monitor_tp1",
         }
@@ -602,7 +731,8 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
     elif action.kind == "REDUCE_TP1":
         if await enqueue_tp1_reduce(conn, pos, action.reason):
             await redis_client.set(f"exit:tp1:{pos.key}", "1", ex=30 * 86400)
-            logger.info("%s: reducing 50%% %s %s (pnl %.2f%%)", action.reason, pos.side, pos.instrument_id, pos.pnl_pct)
+            scale = pos.profile_tp1_scale_pct if pos.profile_tp1_scale_pct is not None else Decimal("50")
+            logger.info("%s: reducing %s%% %s %s (pnl %.2f%%)", action.reason, scale, pos.side, pos.instrument_id, pos.pnl_pct)
     elif action.kind == "EXIT_DEBATE":
         run_id = uuid.uuid4()
         await conn.execute(
@@ -646,13 +776,19 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
         await (coverage or Coverage()).record(redis_client, sources)
         for pos in positions:
             best = await best_price_since_open(redis_client, pos)
+            position_t = position_thresholds(pos, t)
             episode_key = f"exit:dd_episode:{pos.key}"
-            if pos.pnl_pct > -t.debate_drawdown_pct * REARM_FRACTION:
+            if pos.pnl_pct > -position_t.debate_drawdown_pct * REARM_FRACTION:
                 await redis_client.delete(episode_key)
             armed = not await redis_client.exists(f"debounce:exit:{pos.instrument_id}")
             in_episode = bool(await redis_client.exists(episode_key))
             tp1_done = bool(await redis_client.exists(f"exit:tp1:{pos.key}"))
-            for action in evaluate_exit(pos, best, armed, in_episode, t, tp1_done=tp1_done):
+            actions = evaluate_exit(pos, best, armed, in_episode, position_t, tp1_done=tp1_done)
+            max_hold = max_hold_action(pos)
+            if max_hold is not None and not any(a.kind == "CLOSE" for a in actions):
+                actions = [a for a in actions if a.kind == "ALERT" and a.reason == "LIQUIDATION_PROXIMITY"]
+                actions.append(max_hold)
+            for action in actions:
                 if action.reason == "DRAWDOWN":
                     await redis_client.set(episode_key, "1", ex=30 * 86400)
                 await act(conn, redis_client, pos, action)
