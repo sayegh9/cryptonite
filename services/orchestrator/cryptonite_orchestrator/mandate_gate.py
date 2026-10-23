@@ -29,6 +29,7 @@ from cryptonite_execution.leverage import (
 )
 from cryptonite_execution.mandate_store import (
     instance_spot_holdings,
+    load_mandate,
     record_event,
     session_verdict_for,
 )
@@ -38,6 +39,7 @@ from cryptonite_execution.mandates import (
     action_class,
     check_mandate,
     max_entry_quantity,
+    order_notional,
     same_instrument,
 )
 from cryptonite_schemas.mandate import (
@@ -299,6 +301,10 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
         order_type=intent.order_type, reduce_only=intent.reduce_only, leverage=intent.leverage,
         conviction_level=intent.conviction_level, margin_mode=intent.margin_mode,
     )
+    if action_class(order) is ActionClass.ADD_RISK:
+        mandate = await load_mandate(conn, mandate.id, for_update=True)
+        if mandate is None:
+            return MandateReject.NOT_FOUND
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     coin_owner = await coin_lock_owner(conn, intent.instrument_id)
     # ADR 0011 D10 at runtime: with the master switch off, VETO and AUTO behave as ASK (read cached, off if unreadable)
@@ -317,6 +323,9 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
             logger.warning("AI perp entry %s refused by mandate %s: %s", _row_get(row, "command_id"), mandate.name, perp_reject)
             return perp_reject
     if reject is None and action_class(order) is ActionClass.ADD_RISK:
+        cash_reject = await profile_cash_reject(conn, engine, mandate, order)
+        if cash_reject is not None:
+            return cash_reject
         # F4: an extra refusal on top of the mandate check (never a breach); exits are never refused
         from cryptonite_orchestrator.cross_mandate import cross_mandate_reject
         cross = await cross_mandate_reject(conn, engine, mandate, order, ref_prices)
@@ -335,6 +344,45 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
         if reject in BREACH_CODES:
             await record_breach(conn, mandate, reject, row, payload)
     return reject.value if reject is not None else None
+
+
+async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrder) -> str | None:
+    """ADR 0011 D11: only this profile's cash and margin may fund its entries.
+
+    Serialize against the profile row for the caller's claim transaction. Spot cost, posted perp margin and
+    working entry reservations consume its budget. Durable reservations use the reservation manager's active
+    states; an order present in memory is counted there once, rather than also counting its durable reservation.
+    The account's remaining cash is still independently guarded by GuardedOrderDispatcher.
+    """
+    if action_class(order) is ActionClass.REDUCE_RISK:
+        return None
+    await conn.fetchrow("SELECT id FROM ai_mandates WHERE id = $1 FOR UPDATE", mandate.id)
+    d = engine.dispatcher
+    used = sum((qty * px for qty, px in (await instance_spot_holdings(conn, mandate.instance_id)).values()), Decimal("0"))
+    used += sum((pos.initial_margin for pos in getattr(d, "perp_positions", {}).values()
+                 if getattr(pos, "instance_id", None) == mandate.instance_id and pos.signed_qty != 0), Decimal("0"))
+    working_ids = []
+    for cid, info in getattr(d, "open_orders", {}).items():
+        if info.get("instance_id") != mandate.instance_id or info.get("reduce_only"):
+            continue
+        if info.get("is_perp") or info.get("side") == "BUY":
+            working_ids.append(cid)
+            used += Decimal(str(info.get("reserved_notional") or 0))
+    reserved = await conn.fetchval(
+        """SELECT COALESCE(SUM(r.amount + r.fee_slippage_headroom), 0)
+           FROM execution_reservations r JOIN execution_commands c ON c.command_id = r.command_id
+           WHERE (c.mandate_id = $1 OR c.payload->>'mandate_id' = $1::text)
+             AND r.account_id = $2 AND r.environment = 'PAPER' AND r.asset = 'USDT'
+             AND r.state IN ('PRE_SEND', 'INFLIGHT', 'ACKED_UNREFLECTED')
+             AND NOT (r.client_order_id = ANY($3::text[]))""",
+        mandate.id, getattr(engine, "account_id", "PAPER-ACCOUNT-001"), working_ids)
+    notional = order_notional(order)
+    if notional is None:
+        return None  # the mandate and dispatcher refuse an entry without a usable price
+    fee = getattr(d, "perp_taker_fee", Decimal("0.0005")) if order.is_perp else getattr(d, "taker_fee", Decimal("0.001"))
+    needed = notional / Decimal(order.leverage or 1) if order.is_perp else notional
+    needed += notional * fee
+    return "PROFILE_CASH_EXHAUSTED" if used + Decimal(str(reserved or 0)) + needed > mandate.capital_budget_usd else None
 
 
 async def record_breach(conn, mandate: Mandate, reject: MandateReject, row: Any, payload: dict) -> None:
