@@ -148,8 +148,8 @@ def clear_profile_exit_cache() -> None:
     _profile_exit_cache.clear()
 
 
-async def load_profile_exits(conn, owners: list[str]) -> dict[UUID, ProfileExitSettings]:
-    """Read mandate exit settings and keep each result for 30 seconds (ADR 0011 D13)."""
+async def load_profile_exits(conn, owners: list[str], redis_client=None) -> dict[UUID, ProfileExitSettings]:
+    """Read mandate exit settings with a 30-second cache and critical stale-config alerts (ADR 0011 D13)."""
     now = time.monotonic()
     profile_ids = {mid for owner in owners if (mid := mandate_id_from_instance(owner)) is not None}
     stale = [mid for mid in profile_ids if mid not in _profile_exit_cache or now - _profile_exit_cache[mid][0] >= PROFILE_EXIT_CACHE_S]
@@ -163,6 +163,18 @@ async def load_profile_exits(conn, owners: list[str]) -> dict[UUID, ProfileExitS
             )
         except Exception as exc:
             logger.warning("Profile exits not re-read (%s); using cached or global exits", exc)
+            if redis_client is not None:
+                for mid in stale:
+                    alert_key = f"exit_monitor:profile_exit_config_stale:{mid}"
+                    try:
+                        sent = await redis_client.set(alert_key, "1", nx=True, ex=ALERT_DEBOUNCE_S)
+                        if sent:
+                            await redis_client.publish("channel:system_alerts", json.dumps({
+                                "type": "EXIT_MONITOR", "severity": "CRITICAL",
+                                "reason": "PROFILE_EXIT_CONFIG_STALE", "mandate_id": str(mid),
+                            }))
+                    except Exception as alert_exc:
+                        logger.error("Could not publish stale profile exit alert for %s: %s", mid, alert_exc)
         else:
             loaded = {row["id"]: ProfileExitSettings(
                 Decimal(str(row["exit_tp_r"])) if row["exit_tp_r"] is not None else None,
@@ -173,6 +185,11 @@ async def load_profile_exits(conn, owners: list[str]) -> dict[UUID, ProfileExitS
             ) for row in rows}
             for mid in stale:
                 _profile_exit_cache[mid] = (now, loaded.get(mid))
+                if redis_client is not None:
+                    try:
+                        await redis_client.delete(f"exit_monitor:profile_exit_config_stale:{mid}")
+                    except Exception as alert_exc:
+                        logger.debug("Could not clear stale profile exit alert for %s: %s", mid, alert_exc)
     return {mid: _profile_exit_cache[mid][1] for mid in profile_ids
             if mid in _profile_exit_cache and _profile_exit_cache[mid][1] is not None}
 
@@ -452,7 +469,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         """,
         PAPER_ACCOUNT_ID, AI_INSTANCE,
     )
-    profile_exits = await load_profile_exits(conn, [r["owner"] for r in rows])
+    profile_exits = await load_profile_exits(conn, [r["owner"] for r in rows], redis_client)
     positions = []
     sources = {} if sources is None else sources
     keys: set[str] = set()
@@ -502,6 +519,7 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
                     WHERE target_instance_id = $1
                       AND command_type = 'SUBMIT_ORDER'
                       AND status = 'COMPLETED'
+                      AND (payload->>'proposed_stop_loss' IS NOT NULL OR payload->>'stop_price' IS NOT NULL)
                       AND (payload->>'instrument_id' = $2 OR upper(split_part(payload->>'instrument_id', '.', 1)) = upper(split_part($2, '.', 1)))
                     ORDER BY created_at DESC, command_id DESC
                     LIMIT 1
@@ -647,9 +665,11 @@ async def enqueue_close(conn, pos: Position, reason: str) -> bool:
 
 def close_payload(pos: Position, reason: str) -> dict:
     """The CLOSE_POSITION payload. Alone on its instrument the owner's close flattens the instrument; on a shared
-    spot instrument it carries the owner's own quantity, so the orchestrator sells only that."""
+    spot instrument it carries the owner's own quantity. Max-hold always scopes by quantity to preserve other owners' orders."""
     payload = {"instrument_id": pos.instrument_id, "reason": reason}
-    if pos.shared and pos.own_quantity:
+    if reason == "MAX_HOLD" and pos.quantity > 0:
+        payload["quantity"] = pos.own_quantity or format(Decimal(str(pos.quantity)).normalize(), "f")
+    elif pos.shared and pos.own_quantity:
         payload["quantity"] = pos.own_quantity
     return payload
 

@@ -1,5 +1,6 @@
 """P1.7 per-profile exit policy regressions (ADR 0011 D13)."""
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -77,8 +78,39 @@ def test_profile_max_hold_closes_as_reduce_only_close():
 
     assert em.max_hold_action(pos, now_ts=1_000 + 2 * 3600) == ExitAction("CLOSE", "MAX_HOLD")
     assert em.max_hold_action(pos, now_ts=1_000 + 2 * 3600 - 1) is None
-    payload = em.close_payload(pos, "MAX_HOLD")
-    assert payload == {"instrument_id": "BTCUSDT.BINANCE", "reason": "MAX_HOLD"}
+    # Another owner can appear after the monitor's sole-owner snapshot.
+    sole_owner_snapshot = replace(pos, shared=False, own_quantity="2")
+    payload = em.close_payload(sole_owner_snapshot, "MAX_HOLD")
+    assert payload == {"instrument_id": "BTCUSDT.BINANCE", "reason": "MAX_HOLD", "quantity": "2"}
+
+
+async def test_max_hold_enqueue_always_scopes_close_to_the_profile_quantity():
+    class CommandConn:
+        def __init__(self):
+            self.command = None
+
+        async def fetchrow(self, *args):
+            return None
+
+        async def fetchval(self, *args):
+            return 0
+
+        async def execute(self, query, *args):
+            self.command = (query, args)
+
+    conn = CommandConn()
+    pos = profile_position("LONG", current_price=101.0, profile_max_hold_hours=2,
+                           shared=False, own_quantity="1.25")
+    action = em.max_hold_action(pos, now_ts=1_000 + 2 * 3600)
+
+    assert action == ExitAction("CLOSE", "MAX_HOLD")
+    assert await em.enqueue_close(conn, pos, action.reason)
+    query, args = conn.command
+    assert "'CLOSE_POSITION'" in query
+    assert args[2] == pos.owner_instance
+    assert json.loads(args[3]) == {
+        "instrument_id": pos.instrument_id, "reason": "MAX_HOLD", "quantity": "1.25"
+    }
 
 
 def test_unowned_and_manual_positions_keep_existing_take_profit_behavior():
@@ -106,21 +138,46 @@ def test_no_profile_position_exit_snapshot_is_unchanged():
 class ProfileConn:
     def __init__(self):
         self.fetch_calls = 0
+        self.fail = False
+        self.tp_r = 3
 
     async def fetch(self, query, profile_ids):
         self.fetch_calls += 1
+        if self.fail:
+            raise OSError("database unavailable")
         assert "exit_tp_r" in query
-        return [{"id": profile_ids[0], "exit_tp_r": 3, "exit_tp1_scale_pct": 40,
+        return [{"id": profile_ids[0], "exit_tp_r": self.tp_r, "exit_tp1_scale_pct": 40,
                  "exit_trail_activate_pct": 7, "exit_trail_pct": 2, "exit_max_hold_hours": 12}]
 
 
+class AlertRedis:
+    def __init__(self):
+        self.kv = {}
+        self.published = []
+
+    async def set(self, key, value, *, nx=False, ex=None):
+        if nx and key in self.kv:
+            return None
+        self.kv[key] = value
+        return True
+
+    async def delete(self, key):
+        self.kv.pop(key, None)
+
+    async def publish(self, channel, message):
+        self.published.append((channel, json.loads(message)))
+
+
 class PositionConn:
+    def __init__(self, side="LONG"):
+        self.side = side
+
     async def fetch(self, query, *args):
         if "FROM ai_mandates" in query:
             return [{"id": args[0][0], "exit_tp_r": 2, "exit_tp1_scale_pct": 25,
                      "exit_trail_activate_pct": None, "exit_trail_pct": None,
                      "exit_max_hold_hours": 4}]
-        return [{"instrument_id": "BTCUSDT.BINANCE", "side": "LONG", "owner":
+        return [{"instrument_id": "BTCUSDT.BINANCE", "side": self.side, "owner":
                  "AI_MANDATE_00000000000000000000000000000001", "quantity": 2,
                  "entry_price": 100, "opened_at": datetime.now(UTC), "ai_owned": True,
                  "shared": False, "leverage": 1, "liquidation_price": None,
@@ -135,6 +192,20 @@ class EmptyRedis:
         if key.startswith("exit:plan:"):
             return '{"stop_price": "90", "take_profit_price": "130"}'
         return None
+
+
+class NoExitPlanRedis(EmptyRedis):
+    async def get(self, key):
+        return None
+
+
+class ReductionAfterEntryConn(PositionConn):
+    async def fetchrow(self, query, *args):
+        if "payload->>'proposed_stop_loss' IS NOT NULL" not in query:
+            return {"payload": '{"side":"SELL","instrument_id":"BTCUSDT.BINANCE"}'}
+        stop = "90" if self.side == "LONG" else "110"
+        order_side = "BUY" if self.side == "LONG" else "SELL"
+        return {"payload": f'{{"side":"{order_side}","proposed_stop_loss":"{stop}","instrument_id":"BTCUSDT.BINANCE"}}'}
 
 
 async def test_load_positions_attaches_cached_profile_settings_and_uses_structural_stop():
@@ -152,6 +223,18 @@ async def test_load_positions_attaches_cached_profile_settings_and_uses_structur
     assert positions[0].take_profit_price == 120.0
 
 
+@pytest.mark.parametrize(("side", "stop", "target"), [("LONG", 90.0, 120.0), ("SHORT", 110.0, 80.0)])
+async def test_profile_r_target_uses_entry_stop_after_later_completed_reduction(side, stop, target):
+    em.clear_profile_exit_cache()
+    quotes = em.QuoteBook()
+    quotes.apply({"instrument_id": "BTCUSDT.BINANCE", "bid_price": "101", "ask_price": "102"})
+
+    positions = await em.load_positions(ReductionAfterEntryConn(side), NoExitPlanRedis(), quotes)
+
+    assert positions[0].stop_price == stop
+    assert positions[0].take_profit_price == target
+
+
 async def test_profile_exit_settings_are_cached_for_30_seconds(monkeypatch):
     import uuid
 
@@ -167,5 +250,21 @@ async def test_profile_exit_settings_are_cached_for_30_seconds(monkeypatch):
     assert first == second and first[profile_id].tp_r == 3
 
     monkeypatch.setattr(em.time, "monotonic", lambda: 40.1)
-    await em.load_profile_exits(conn, [owner])
-    assert conn.fetch_calls == 2
+    redis = AlertRedis()
+    conn.fail = True
+    stale = await em.load_profile_exits(conn, [owner], redis)
+    assert stale[profile_id].tp_r == 3  # last known exits remain active during the outage
+    assert redis.published == [("channel:system_alerts", {
+        "type": "EXIT_MONITOR", "severity": "CRITICAL", "reason": "PROFILE_EXIT_CONFIG_STALE",
+        "mandate_id": str(profile_id),
+    })]
+
+    await em.load_profile_exits(conn, [owner], redis)
+    assert conn.fetch_calls == 3 and len(redis.published) == 1  # one alert per outage
+
+    conn.fail = False
+    conn.tp_r = 4
+    recovered = await em.load_profile_exits(conn, [owner], redis)
+    assert recovered[profile_id].tp_r == 4
+    assert conn.fetch_calls == 4
+    assert not redis.kv  # recovery clears the alert debounce so a later outage can notify again
