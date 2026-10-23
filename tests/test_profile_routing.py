@@ -530,6 +530,67 @@ async def test_profile_ai_budget_share_counts_only_its_traced_spend(h):
     assert await h.pool.fetchval("SELECT SUM(total_cost_usd) FROM llm_cost_ledger") == 2  # global spend remains below $8
 
 
+async def test_billed_gateway_failure_counts_toward_profile_share(h, monkeypatch):
+    """A provider-billed failure is trace-attributed to its mandate and blocks that profile only."""
+    import importlib
+
+    from cryptonite_agents.gateway import (
+        BudgetGuard,
+        CallContext,
+        Gateway,
+        ModelUnavailable,
+        RoleRoute,
+    )
+
+    m = await profile(h, max_debates_per_day=1)
+    await profile(h, lock=False, max_debates_per_day=9)
+    await h.pool.execute(
+        "INSERT INTO system_settings(key,value) VALUES('LLM_DAILY_BUDGET_USD','100') "
+        "ON CONFLICT(key) DO UPDATE SET value='100'"
+    )
+    gateway_module = importlib.import_module("cryptonite_agents.gateway.gateway")
+
+    async def billed_failure(*args, **kwargs):
+        raise gateway_module.backend.BackendError(
+            "mock provider failure",
+            gateway_module.backend.Usage(input_tokens=1_000_000, output_tokens=1_000_000),
+        )
+
+    monkeypatch.setattr(gateway_module.backend, "run_model", billed_failure)
+    route = RoleRoute("debate.triage", "google:gemini-2.5-pro")
+    budget = BudgetGuard(pool=h.pool, default_cap_usd=100)
+    gateway = Gateway(pool=h.pool, routes={route.role: route}, budget=budget)
+    context = CallContext(role=route.role, mandate_id=str(m.id))
+
+    with pytest.raises(ModelUnavailable):
+        await gateway.run(route.role, "mock prompt", context=context)
+
+    trace = await h.pool.fetchrow(
+        "SELECT id,mandate_id,status,cost_usd FROM ai_decision_traces WHERE role=$1", route.role
+    )
+    assert trace["mandate_id"] == str(m.id)
+    assert trace["status"] == "ERROR"
+    assert trace["cost_usd"] > 10
+    spent = await h.pool.fetchrow(
+        """SELECT SUM(l.total_cost_usd) AS global_spent,
+                  SUM(l.total_cost_usd) FILTER (WHERE t.mandate_id=$1) AS profile_spent
+           FROM llm_cost_ledger l JOIN ai_decision_traces t ON t.id=l.trace_id""",
+        str(m.id),
+    )
+    assert spent["global_spent"] == trace["cost_usd"]
+    assert spent["profile_spent"] == trace["cost_usd"]
+    async with h.pool.acquire() as conn:
+        assert await gate.profile_budget_exhausted(conn, m, datetime.datetime.now(datetime.UTC).timestamp())
+    decision = await gate.pre_debate_gate(
+        h.pool, h.redis,
+        {"instrument_id": SPOT, "mandate_id": str(m.id), "candidate_payload": json.dumps({"timeframe": "1h"})},
+        None, "a brief", now_s=datetime.datetime.now(datetime.UTC).timestamp(),
+    )
+    assert (decision.allowed, decision.reason) == (False, "AI_BUDGET_EXHAUSTED")
+    # Attribution changes only the profile filter; global spend remains the single billed ledger amount.
+    assert await h.pool.fetchval("SELECT SUM(total_cost_usd) FROM llm_cost_ledger") == trace["cost_usd"]
+
+
 async def test_profile_daily_debate_cap_zero_refuses_without_spending(h):
     m = await profile(h, max_debates_per_day=0)
     payload = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "1h"})}
