@@ -13,10 +13,12 @@ from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
+from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.mandate_store import load_mandate, others_spot_holding
 from cryptonite_execution.matching import PaperFill, match_order, match_working_orders
+from cryptonite_execution.profile_log import record_decision
 from cryptonite_execution.risk import OrderIntent
 from cryptonite_execution.stop_ratchet import ratcheted_stop
 from cryptonite_schemas.debate import verdict_direction
@@ -205,7 +207,13 @@ async def apply_paper_fill(
     fee_rate = fee_rate_for(engine.dispatcher, fill.instrument_id)  # maker fills pay it too
     comm = fill.quantity * fill.price * fee_rate
     # A perp entry that carries its stop (``stop_loss``) gets a resting stop once it fills (leverage plan 1.4)
-    attach_stop = (engine.dispatcher.open_orders.get(fill.client_order_id) or {}).get("attach_stop")
+    order_info = engine.dispatcher.open_orders.get(fill.client_order_id) or {}
+    attach_stop = order_info.get("attach_stop")
+    entry_order = not order_info.get("reduce_only") and (order_info.get("is_perp") or fill.side == "BUY")
+    old_pos = getattr(engine.dispatcher, "perp_positions", {}).get(fill.instrument_id)
+    entry_price = old_pos.entry_price if old_pos is not None else None
+    position_side = "SHORT" if old_pos is not None and old_pos.signed_qty < 0 else "LONG"
+    leverage = getattr(order_info.get("intent"), "leverage", None) or getattr(old_pos, "leverage", 1)
     stops_before = set(engine.dispatcher.resting_stops(fill.instrument_id)) if hasattr(
         engine.dispatcher, "resting_stops") else set()
     realized = engine.dispatcher.handle_fill(
@@ -245,6 +253,14 @@ async def apply_paper_fill(
                 fill.client_order_id, instance_id, acc_id, fill.instrument_id,
                 fill.side, order_type, fill.quantity, limit_price, fill.price,
             )
+            await record_profile_trade(
+                conn, engine, instance_id, fill.instrument_id, fill.side, fill.quantity, fill.price,
+                entry=entry_order, position_side=position_side, entry_price=entry_price,
+                leverage=leverage, stop=attach_stop or getattr(order_info.get("intent"), "stop_price", None),
+                realized=realized, commission=comm, client_order_id=fill.client_order_id,
+                command_id=dispatched_by(engine, fill.client_order_id),
+                reason="STOP" if order_type == "STOP_MARKET" else None,
+            )
     except Exception as e:  # the bridge event above still records the fill
         logger.error("paper_orders upsert failed for %s (bridge will record it): %s", fill.client_order_id, e)
     logger.info("Order %s filled %s %s @ %s (%s)", fill.client_order_id, fill.side, fill.quantity, fill.price, fill.liquidity)
@@ -259,6 +275,109 @@ async def apply_paper_fill(
             logger.error("Could not cancel the rows of dropped stops %s: %s", sorted(released_stops), e)
     if attach_stop is not None:
         await attach_resting_stop(conn, engine, fill.instrument_id, Decimal(str(attach_stop)), instance_id)
+
+
+async def record_profile_trade(conn, engine, owner: str, instrument_id: str, side: str,
+                               qty: Decimal, price: Decimal, *, entry: bool, position_side: str = "LONG",
+                               entry_price: Decimal | None = None, leverage: int = 1,
+                               stop: Decimal | None = None, realized: Decimal | None = None,
+                               commission: Decimal = Decimal("0"), command_id=None, reason: str | None = None,
+                               client_order_id: str | None = None) -> None:
+    """ADR 0011/P1.8 trade contract, in the caller's fill transaction; never notify or block a fill.
+
+    The instrument is the decision row's column. Entry stop and execution mode are captured at fill; an exit
+    reads that entry record so a tightened stop never changes the original R denominator. Unknown risk stays null.
+    """
+    mid = mandate_id_from_instance(owner)
+    if mid is None:
+        return
+    try:
+        async with _savepoint(conn):
+            perp = "-PERP." in instrument_id
+            if entry:
+                command = None
+                if command_id is not None:
+                    command = await conn.fetchrow("SELECT command_id, payload FROM execution_commands WHERE command_id = $1",
+                                                  uuid.UUID(str(command_id)))
+                elif client_order_id is not None:
+                    # A working order can fill after restart, when the in-memory command map is empty.
+                    prefix = client_order_id.removeprefix("AI-").removeprefix("MANUAL-").lower()
+                    command = await conn.fetchrow(
+                        """SELECT command_id, payload FROM execution_commands WHERE mandate_id = $1
+                           AND (payload->>'client_order_id' = $2 OR replace(command_id::text, '-', '') LIKE $3)
+                           ORDER BY created_at DESC LIMIT 1""", mid, client_order_id, prefix + "%")
+                    if command:
+                        command_id = command["command_id"]
+                if command is not None and stop is None:
+                    source = _payload_dict(command["payload"])
+                    stop = source.get("stop_loss") or source.get("stop_price") or source.get("proposed_stop_loss")
+                source = _payload_dict(command["payload"]) if command is not None else {}
+                m = await load_mandate(conn, mid)
+                if m is None:
+                    return
+                from cryptonite_execution.profile_lifecycle import autotrade_switch_on
+                mode = source.get("profile_execution_mode")
+                if mode not in {"ASK", "VETO", "AUTO"}:
+                    mode = {1: "ASK", 2: "VETO", 3: "AUTO"}[int(m.autonomy_level)]
+                    if not await autotrade_switch_on(conn):
+                        mode = "ASK"
+                await record_decision(conn, mid, "FILL", "FILLED", instrument_id=instrument_id,
+                                      command_id=command_id, side="LONG" if side == "BUY" else "SHORT",
+                                      market="PERP" if perp else "SPOT", price=price, qty=qty,
+                                      leverage=leverage, stop=stop, mode=mode)
+                return
+            previous = await conn.fetchrow(
+                """SELECT detail FROM ai_profile_decisions WHERE mandate_id = $1 AND instrument_id = $2
+                   AND stage = 'FILL' ORDER BY ts DESC, id DESC LIMIT 1""", mid, instrument_id)
+            detail = _payload_dict(previous["detail"]) if previous else {}
+            if entry_price is None:
+                # The bridge can lag the fill. Rebuild the remaining spot cost from committed fill rows,
+                # resetting at flat and removing a partial sale at its weighted entry cost. Historical buys
+                # from a previous trade must never change this exit's PnL.
+                history = await conn.fetch(
+                    """SELECT side, filled_qty, COALESCE(avg_fill_price, price) AS fill_price FROM paper_orders
+                       WHERE instance_id = $1 AND instrument_id = $2 AND filled_qty > 0
+                         AND ($3::text IS NULL OR client_order_id <> $3)
+                       ORDER BY created_at, updated_at, client_order_id""", owner, instrument_id, client_order_id)
+                held = cost = Decimal("0")
+                for trade in history:
+                    if trade.get("side") not in ("BUY", "SELL"):
+                        continue
+                    trade_qty = Decimal(str(trade["filled_qty"]))
+                    if trade["side"] == "BUY":
+                        cost += trade_qty * Decimal(str(trade["fill_price"]))
+                        held += trade_qty
+                    elif held > 0:
+                        closed = min(trade_qty, held)
+                        cost -= cost / held * closed
+                        held -= closed
+                entry_price = cost / held if held > 0 else detail.get("price")
+                if entry_price is None:
+                    holdings = await instance_spot_holdings(conn, owner)
+                    entry_price = holdings.get(instrument_id, (None, None))[1]
+            entry_price = Decimal(str(entry_price)) if entry_price else None
+            gross = realized
+            if not perp and entry_price is not None:
+                gross = (price - entry_price) * qty
+            pnl = Decimal(str(gross)) - commission if gross is not None else None
+            original_stop = Decimal(str(detail["stop"])) if detail.get("stop") is not None else None
+            risk = abs(entry_price - original_stop) * qty if entry_price is not None and original_stop is not None else None
+            outcome = {"HARD_STOP": "STOP", "STRUCTURAL_STOP": "STOP", "TRAILING_STOP": "TRAIL",
+                       "TAKE_PROFIT_1": "TP1", "TAKE_PROFIT": "TP"}.get(reason, reason) or "MANUAL"
+            if outcome == "STOP" and stop is not None and original_stop is not None and Decimal(str(stop)) != original_stop:
+                outcome = "TRAIL"
+            if command_id is not None and reason is None:
+                command = await conn.fetchrow("SELECT payload FROM execution_commands WHERE command_id = $1", uuid.UUID(str(command_id)))
+                if command:
+                    raw = _payload_dict(command["payload"]).get("reason")
+                    outcome = {"TAKE_PROFIT_1": "TP1", "TRAILING_STOP": "TRAIL", "STRUCTURAL_STOP": "STOP",
+                               "HARD_STOP": "STOP", "TAKE_PROFIT": "TP"}.get(raw, raw) or outcome
+            await record_decision(conn, mid, "EXIT", outcome, instrument_id=instrument_id, command_id=command_id,
+                                  side=position_side if perp else "LONG", market="PERP" if perp else "SPOT",
+                                  price=price, qty=qty, realized_pnl=pnl,
+                                  r_multiple=pnl / risk if pnl is not None and risk else None)
+    except Exception as exc:
+        logger.warning("Profile trade decision not recorded for %s: %s", owner, exc)
 
 
 def fee_rate_for(dispatcher, instrument_id: str) -> Decimal:
@@ -489,9 +608,29 @@ def _text(v) -> str:
     return v.decode() if isinstance(v, bytes) else str(v)
 
 
-async def ratchet_thresholds(pool, engine, now: float) -> ExitThresholds:
+async def ratchet_thresholds(pool, engine, now: float, owner: str | None = None) -> ExitThresholds:
     """The exit monitor's thresholds as stored (re-read every STOP_RATCHET_SETTINGS_TTL_S). A failed read or a
     refused set keeps the last valid one, as the exit monitor does."""
+    mid = mandate_id_from_instance(owner)
+    if mid is not None:
+        global_t = await ratchet_thresholds(pool, engine, now)
+        profiles = engine.__dict__.setdefault("profile_ratchet_thresholds", {})
+        cached = profiles.get(mid)
+        if cached is None or now - cached[1] >= STOP_RATCHET_SETTINGS_TTL_S:
+            values = cached[0] if cached is not None else (None, None)
+            try:
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT exit_trail_activate_pct, exit_trail_pct FROM ai_mandates WHERE id = $1", mid)
+                values = (row["exit_trail_activate_pct"], row["exit_trail_pct"]) if row else (None, None)
+            except Exception as exc:
+                logger.warning("Profile ratchet thresholds not re-read for %s: %s", owner, exc)
+            profiles[mid] = (values, now)
+        else:
+            values = cached[0]
+        return dataclasses.replace(global_t,
+                                   trail_activate_pct=float(values[0]) if values[0] is not None else global_t.trail_activate_pct,
+                                   trail_pct=float(values[1]) if values[1] is not None else global_t.trail_pct)
     cached = getattr(engine, "stop_ratchet_thresholds", None)
     if cached is not None and now - cached[1] < STOP_RATCHET_SETTINGS_TTL_S:
         return cached[0]
@@ -626,12 +765,12 @@ async def ratchet_resting_stops(pool, engine, redis, mark_prices: dict[str, Deci
              and info["instrument_id"] in mark_prices]
     if not stops:
         return 0
-    t = await ratchet_thresholds(pool, engine, now)
     moved = 0
     for cid, inst, owner in stops:
         pos = d.perp_positions.get(inst)
         if pos is None or pos.signed_qty == 0 or pos.instance_id != owner:
             continue
+        t = await ratchet_thresholds(pool, engine, now, owner)
         long, mark = pos.signed_qty > 0, mark_prices[inst]
         st = await ratchet_state(redis, engine, inst, owner, long, pos.entry_price, mark)
         if st.last_move is not None and now - st.last_move < STOP_RATCHET_MIN_INTERVAL_S:
@@ -1645,6 +1784,8 @@ async def command_poller(pool, engine, quote_cache=None):
                                 client_oid = f"CLOSE-{uuid.uuid4().hex[:8].upper()}"
                                 instance_id = target or "MANUAL_TRADE"
 
+                                close_position = engine.dispatcher.perp_positions.get(canonical_inst) if perp_qty else None
+                                close_entry_price = close_position.entry_price if close_position is not None else None
                                 realized = None
                                 if perp_qty != 0:
                                     _, _, realized = engine.dispatcher.flatten_perp_position(
@@ -1687,6 +1828,13 @@ async def command_poller(pool, engine, quote_cache=None):
                                     "occurred_at_ns": time.time_ns(),
                                     **engine.dispatcher.fill_event_fields(canonical_inst, realized, fill_px),
                                 })
+                                await record_profile_trade(
+                                    conn, engine, instance_id, canonical_inst, close_side, close_qty, fill_px,
+                                    entry=False, position_side="SHORT" if perp_qty < 0 else "LONG",
+                                    entry_price=close_entry_price, realized=realized, commission=comm,
+                                    command_id=row["command_id"], reason=payload.get("reason") or "MANUAL",
+                                    client_order_id=client_oid,
+                                )
                             else:
                                 effects_applied = True
                                 release_instrument_orders()
@@ -1779,6 +1927,7 @@ async def command_poller(pool, engine, quote_cache=None):
                             is_perp_order = canonical_inst.split(".")[0].endswith("-PERP")
                             perp_entry = is_perp_order and not payload.get("reduce_only")
                             planned_leverage = None
+                            sizing_plan = None
                             qty_val = Decimal(str(payload["quantity"])) if payload.get("quantity") else None
                             if qty_val and mandate is not None and perp_entry:
                                 # A mandate perp entry with its own quantity is not re-sized, but it is still held to
@@ -1806,6 +1955,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                     )
                                     continue
                                 qty_val, planned_leverage = plan.quantity, plan.leverage
+                                sizing_plan = plan.as_dict()
                                 logger.info("AI perp entry %s sized: %s %s %s at %sx (%s), margin %s, loss at stop %s",
                                             row["command_id"], side, qty_val, canonical_inst, plan.leverage,
                                             plan.binding_ceiling, plan.margin_usd, plan.loss_at_stop_usd)
@@ -1939,6 +2089,48 @@ async def command_poller(pool, engine, quote_cache=None):
                                         row["command_id"], mandate_reject,
                                     )
                                     continue
+                                if mandate is not None:
+                                    # The gate refreshed and locked the profile row. Use that committed snapshot for
+                                    # dry-run routing too; a toggle committed after the earlier sizing read must not
+                                    # let an entry reach the dispatcher.
+                                    mandate = await load_mandate(conn, mandate.id)
+                                    if mandate is None:
+                                        await conn.execute(
+                                            "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                            row["command_id"], MandateReject.NOT_FOUND.value,
+                                        )
+                                        continue
+                                    effective_mode = {1: "ASK", 2: "VETO", 3: "AUTO"}[int(mandate.autonomy_level)]
+                                    if not await profile_lifecycle.autotrade_switch_on(conn):
+                                        effective_mode = "ASK"
+                                    # Persist the mode that authorized this order. A delayed fill can arrive after
+                                    # the mandate or global switch changes, but its FILL audit must describe this
+                                    # order's effective mode.
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET payload = payload || jsonb_build_object('profile_execution_mode', $2) WHERE command_id = $1",
+                                        row["command_id"], effective_mode,
+                                    )
+
+                            if ai_order and mandate is not None and mandate.dry_run and (
+                                    perp_entry or (not is_perp_order and side == "BUY" and not intent.reduce_only)):
+                                # ADR 0011 D-P1-4: complete normal sizing and the mandate gates, then persist the
+                                # exact intended order without creating any dispatcher reservation or order.
+                                if sizing_plan is None:
+                                    room, ref, _ = await mandate_entry_room(
+                                        conn, engine, mandate, canonical_inst, side, price_dec,
+                                        quote_cache.quote(canonical_inst), order_type)
+                                    sizing_plan = {"instrument_id": canonical_inst, "side": side,
+                                                   "quantity": str(qty_dec), "entry_price": str(ref),
+                                                   "room_quantity": str(room), "leverage": intent.leverage or 1,
+                                                   "stop_price": payload.get("stop_loss") or payload.get("stop_price"),
+                                                   "notional_usd": str(qty_dec * ref) if ref else None}
+                                await conn.execute(
+                                    """UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS',
+                                       payload = payload || jsonb_build_object('dry_run_plan', $2::jsonb), processed_at = now()
+                                       WHERE command_id = $1""", row["command_id"], json.dumps(sizing_plan, default=str))
+                                await record_decision(conn, mandate.id, "ORDER", "DRY_RUN", instrument_id=canonical_inst,
+                                                      command_id=row["command_id"], plan=sizing_plan)
+                                continue
 
                             # Dispatch intent to dispatcher (evaluates risk + atomically reserves)
                             approved = False
@@ -1971,6 +2163,20 @@ async def command_poller(pool, engine, quote_cache=None):
                                 try:
                                     quote = quote_cache.quote(canonical_inst)
                                     order_info = engine.dispatcher.open_orders.get(client_oid)
+                                    if (mandate is not None and not intent.reduce_only
+                                            and (is_perp_order or side == "BUY")):
+                                        # The dispatcher has already computed the exact cash or initial-margin
+                                        # reservation, including its price buffers and fee. Persist it with the
+                                        # command so another process can claim the profile budget after restart.
+                                        profile_reserve = Decimal(str(
+                                            (order_info or {}).get("reserved_notional") or mandate.capital_budget_usd
+                                        ))
+                                        await conn.execute(
+                                            """UPDATE execution_commands
+                                               SET payload = payload || jsonb_build_object('profile_cash_reserve_usd', $2::numeric)
+                                               WHERE command_id = $1""",
+                                            row["command_id"], profile_reserve,
+                                        )
                                     if order_info is not None and order_info.get("is_perp") and intent.stop_loss is not None:
                                         order_info["attach_stop"] = intent.stop_loss
                                     fill = None
@@ -2041,6 +2247,36 @@ async def command_poller(pool, engine, quote_cache=None):
                                                  compensated=compensated, unsettled=unsettled)
             await asyncio.sleep(pause)
         await asyncio.sleep(0.1)
+
+
+async def prune_profile_decisions(pool) -> int:
+    """ADR 0011/P1: retain ninety days of decisions, committing each batch of at most 10,000."""
+    total = 0
+    while True:
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """WITH expired AS (
+                       SELECT id FROM ai_profile_decisions WHERE ts < now() - interval '90 days'
+                       ORDER BY ts, id LIMIT 10000 FOR UPDATE SKIP LOCKED
+                   ) DELETE FROM ai_profile_decisions WHERE id IN (SELECT id FROM expired)""")
+        removed = int(result.rsplit(" ", 1)[-1])
+        total += removed
+        if removed < 10000:
+            return total
+
+
+async def profile_decision_retention(pool) -> None:
+    """Prune the profile decision log hourly, with failures isolated from order processing (ADR 0011)."""
+    while True:
+        try:
+            removed = await prune_profile_decisions(pool)
+            if removed:
+                logger.info("Profile decision retention removed %s rows older than 90 days", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Profile decision retention failed: %s", exc)
+        await asyncio.sleep(3600)
 
 
 async def rehydrate_dispatcher_state(pool, engine):
@@ -2278,6 +2514,7 @@ async def main():
     # Launch background tasks
     asyncio.create_task(sync_strategies())
     asyncio.create_task(command_poller(pool, engine, quote_cache))
+    asyncio.create_task(profile_decision_retention(pool))
     asyncio.create_task(consume_market_data(redis, engine, quote_cache, pool))
     asyncio.create_task(consume_perp_marks(redis, engine, pool=pool))
     asyncio.create_task(reload_leverage_brackets(redis))
