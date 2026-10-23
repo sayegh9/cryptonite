@@ -39,6 +39,11 @@ PROFILE_BUDGET_LOCK_TTL_S = 300
 PROFILE_BUDGET_LOCK_RENEW_S = 20
 
 
+def _utc_now_s() -> float:
+    """Current UTC epoch seconds for day-scoped budget and slot accounting."""
+    return datetime.datetime.now(datetime.UTC).timestamp()
+
+
 class ProfileBudgetLockError(RuntimeError):
     """The profile budget lease is unavailable or lost; fail closed without claiming budget spend."""
 
@@ -218,12 +223,11 @@ return 0
 
 
 @asynccontextmanager
-async def profile_budget_guard(pg_pool, redis, profile, now_s: float | None = None):
-    """Serialize a profile's model calls and enforce its persisted daily share at both call boundaries."""
+async def profile_budget_guard(pg_pool, redis, profile):
+    """Serialize profile calls and check the share using the UTC day at each call boundary."""
     if profile is None:
         yield
         return
-    timestamp = now_s if now_s is not None else datetime.datetime.now(datetime.UTC).timestamp()
     lock_key = f"debate_gate:profile_budget_lock:{profile.id}"
     lock_token = str(uuid.uuid4())
     while True:
@@ -253,7 +257,7 @@ async def profile_budget_guard(pg_pool, redis, profile, now_s: float | None = No
     renew_task = asyncio.create_task(renew_lease())
     try:
         async with pg_pool.acquire() as conn:
-            if await profile_budget_exhausted(conn, profile, timestamp):
+            if await profile_budget_exhausted(conn, profile, _utc_now_s()):
                 raise BudgetExceeded("debate.profile", "PROFILE_DAILY_SHARE_EXHAUSTED")
         yield
         try:
@@ -265,7 +269,7 @@ async def profile_budget_guard(pg_pool, redis, profile, now_s: float | None = No
         if lease_lost.is_set() or owner != lock_token:
             raise ProfileBudgetLockError("PROFILE_BUDGET_LOCK_LOST")
         async with pg_pool.acquire() as conn:
-            if await profile_budget_exhausted(conn, profile, timestamp):
+            if await profile_budget_exhausted(conn, profile, _utc_now_s()):
                 raise BudgetExceeded("debate.profile", "PROFILE_DAILY_SHARE_EXHAUSTED")
     finally:
         renew_task.cancel()
@@ -333,12 +337,13 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         if timeframe not in STYLE_TIMEFRAMES[profile.style]:
             return GateDecision(False, "TIMEFRAME_NOT_IN_STYLE")
         cap = profile.max_debates_per_day
-        slot_key = profile_cap_key(profile.id, now_s)
-        if int(await redis.get(slot_key) or 0) >= cap:
-            return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
-        async with pg_pool.acquire() as conn:
-            if await profile_budget_exhausted(conn, profile, now_s):
-                return GateDecision(False, "AI_BUDGET_EXHAUSTED")
+        if gateway is None:
+            slot_key = profile_cap_key(profile.id, _utc_now_s())
+            if int(await redis.get(slot_key) or 0) >= cap:
+                return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
+            async with pg_pool.acquire() as conn:
+                if await profile_budget_exhausted(conn, profile, _utc_now_s()):
+                    return GateDecision(False, "AI_BUDGET_EXHAUSTED")
 
     cooldown_key = f"debate:cooldown:{instrument_id}:{timeframe}"
     # Candidate-aware: the value is the candidate's token, so a crash or cancellation after this point
@@ -357,13 +362,20 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, rule)
 
     if gateway is None:
+        if profile is not None:
+            slot_key = profile_cap_key(profile.id, _utc_now_s())
         if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap):
             await release_cooldown(redis, cooldown_key, cooldown_token)
             return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
         return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key, cooldown_token=cooldown_token)
     try:
         # The setup's decision_trace_id as the trace parent links triage (and its F2 shadow) to outcomes
-        async with profile_budget_guard(pg_pool, redis, profile, now_s):
+        async with profile_budget_guard(pg_pool, redis, profile):
+            if profile is not None:
+                slot_key = profile_cap_key(profile.id, _utc_now_s())
+                if int(await redis.get(slot_key) or 0) >= cap:
+                    await release_cooldown(redis, cooldown_key, cooldown_token)
+                    return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
             result = await TRIAGE.run(gateway, brief, parent_trace_id=_trace_uuid(payload),
                                       context=CallContext(role=TRIAGE.role, mandate_id=str(profile.id)) if profile else None)
     except BudgetExceeded:
@@ -375,6 +387,8 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, "TRIAGE_UNAVAILABLE")
     if not result.output.worth_debate:
         return GateDecision(False, "TRIAGE_REJECTED", result.output, result.trace_id)
+    if profile is not None:
+        slot_key = profile_cap_key(profile.id, _utc_now_s())
     if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap):
         await release_cooldown(redis, cooldown_key, cooldown_token)
         return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP", result.output, result.trace_id)

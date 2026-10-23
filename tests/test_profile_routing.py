@@ -349,6 +349,39 @@ async def test_profile_budget_lock_acquisition_failure_fails_closed(monkeypatch)
             pytest.fail("profile call proceeded without its budget lock")
 
 
+async def test_profile_budget_guard_rechecks_execution_day_after_midnight(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from cryptonite_agents.gateway import BudgetExceeded
+
+    before = datetime.datetime(2026, 12, 31, 23, 59, 59, tzinfo=datetime.UTC)
+    after = datetime.datetime(2027, 1, 1, 0, 0, 1, tzinfo=datetime.UTC)
+    current_time = [before.timestamp()]
+    observed_days = []
+
+    @asynccontextmanager
+    async def acquire():
+        yield object()
+
+    class Pool:
+        def acquire(self):
+            return acquire()
+
+    async def budget_exhausted(conn, mandate, now_s):
+        day = datetime.datetime.fromtimestamp(now_s, datetime.UTC).date()
+        observed_days.append(day)
+        return day == after.date()
+
+    monkeypatch.setattr(gate, "_utc_now_s", lambda: current_time[0])
+    monkeypatch.setattr(gate, "profile_budget_exhausted", budget_exhausted)
+    monkeypatch.setattr(gate, "PROFILE_BUDGET_LOCK_RENEW_S", 5)
+    with pytest.raises(BudgetExceeded, match="PROFILE_DAILY_SHARE_EXHAUSTED"):
+        async with gate.profile_budget_guard(Pool(), _ProfileLeaseRedis(), SimpleNamespace(id=uuid.uuid4())):
+            current_time[0] = after.timestamp()
+    assert observed_days == [before.date(), after.date()]
+
+
 async def test_parallel_slow_profile_calls_wait_for_healthy_budget_lease(monkeypatch):
     """A healthy slow model call must not make its queued sibling look budget-exhausted."""
     from contextlib import asynccontextmanager
@@ -393,6 +426,92 @@ async def test_parallel_slow_profile_calls_wait_for_healthy_budget_lease(monkeyp
     results = await asyncio.gather(first, second, return_exceptions=True)
     assert results == [None, None]
     assert calls == ["first analyst", "second analyst"]
+
+
+@pytest.mark.parametrize(
+    "current_day_condition,expected_reason",
+    [("budget", "AI_BUDGET_EXHAUSTED"), ("counter", "PROFILE_DEBATE_DAILY_CAP")],
+)
+async def test_profile_lease_wait_across_utc_midnight_uses_execution_day(
+    h, monkeypatch, current_day_condition, expected_reason
+):
+    """A contender uses the day it acquires the lease for share checks and slot reservation."""
+    from types import SimpleNamespace
+
+    before = datetime.datetime(2026, 12, 31, 23, 59, 59, tzinfo=datetime.UTC)
+    after = datetime.datetime(2027, 1, 1, 0, 0, 1, tzinfo=datetime.UTC)
+    current_time = [before.timestamp()]
+    monkeypatch.setattr(gate, "_utc_now_s", lambda: current_time[0], raising=False)
+
+    m = await profile(h, max_debates_per_day=1)
+    await profile(h, lock=False, max_debates_per_day=9)
+    await h.pool.execute(
+        "INSERT INTO system_settings(key,value) VALUES('LLM_DAILY_BUDGET_USD','100') "
+        "ON CONFLICT(key) DO UPDATE SET value='100'"
+    )
+    current_slot_key = gate.profile_cap_key(m.id, after.timestamp())
+    if current_day_condition == "budget":
+        trace_id = uuid.uuid4()
+        await h.pool.execute(
+            """INSERT INTO ai_decision_traces(id,role,model,status,mandate_id,created_at)
+               VALUES($1,'debate.triage','test','ERROR',$2,$3)""",
+            trace_id, str(m.id), after,
+        )
+        await h.pool.execute(
+            """INSERT INTO llm_cost_ledger(request_id,agent_name,model_name,input_tokens,output_tokens,
+               total_cost_usd,trace_id,created_at) VALUES($1,'debate.triage','test',1,1,11,$2,$3)""",
+            str(trace_id), trace_id, after,
+        )
+    else:
+        await h.redis.set(current_slot_key, 1, ex=gate.PROFILE_CAP_TTL_S)
+
+    lock_key = f"debate_gate:profile_budget_lock:{m.id}"
+    owner = "midnight-test-holder"
+    assert await h.redis.set(lock_key, owner, nx=True, ex=gate.PROFILE_BUDGET_LOCK_TTL_S)
+    waiting = asyncio.Event()
+
+    class ContentionRedis:
+        def __getattr__(self, name):
+            return getattr(h.redis, name)
+
+        async def set(self, key, value, **kwargs):
+            result = await h.redis.set(key, value, **kwargs)
+            if key == lock_key and not result:
+                waiting.set()
+            return result
+
+    triage_calls = 0
+
+    async def triage(*args, **kwargs):
+        nonlocal triage_calls
+        triage_calls += 1
+        return SimpleNamespace(
+            output=SimpleNamespace(worth_debate=True), trace_id=uuid.uuid4()
+        )
+
+    monkeypatch.setattr(gate, "TRIAGE", SimpleNamespace(role="debate.triage", run=triage))
+    payload = {
+        "instrument_id": SPOT,
+        "candidate_payload": json.dumps({"timeframe": "1h"}),
+    }
+    task = asyncio.create_task(
+        gate.pre_debate_gate(h.pool, ContentionRedis(), payload, object(), "brief", now_s=before.timestamp())
+    )
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=2)
+        current_time[0] = after.timestamp()
+        await h.redis.delete(lock_key)
+        decision = await asyncio.wait_for(task, timeout=3)
+    finally:
+        await h.redis.delete(lock_key)
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert (decision.allowed, decision.reason) == (False, expected_reason)
+    assert triage_calls == 0
+    current_count = await h.redis.get(current_slot_key)
+    assert int(current_count) == 1 if current_day_condition == "counter" else current_count is None
 
 
 class _ProfileLeaseRedis:
