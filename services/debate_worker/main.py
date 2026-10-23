@@ -24,7 +24,7 @@ from cryptonite_agents.debate_fleet import (
     SENTIMENT_ANALYST,
     research_manager,
 )
-from cryptonite_agents.gateway import BudgetGuard, Gateway
+from cryptonite_agents.gateway import BudgetGuard, CallContext, Gateway
 from cryptonite_schemas.debate import normalize_verdict
 from cryptonite_schemas.marks import read_live_quote, read_marks, resolve_quote_price
 from debate_queue import (
@@ -379,7 +379,9 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
             await emit_heartbeat(redis_client, role_name, "PROCESSING", f"Analyzing {instrument_id}...")
             try:
                 # parent = the setup's decision_trace_id: telemetry only (links traces and F2 shadows to outcomes)
-                result = await persona.run(gateway, prompt_text, parent_trace_id=uuid.UUID(trace_id))
+                result = await persona.run(
+                    gateway, prompt_text, parent_trace_id=uuid.UUID(trace_id),
+                    context=CallContext(role=persona.role, mandate_id=payload.get("mandate_id")))
                 txt = turn_text(result.output)
                 async with pg_pool.acquire() as c:
                     await c.execute("INSERT INTO debate_turns (run_id, agent_role, content) VALUES ($1, $2, $3)", run_id, role_name, txt)
@@ -531,20 +533,17 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
                     run_id, instrument_id, recommendation, conviction_level, conviction, allocation, reasoning, decision_price
                 )
-                # Autonomous execution exists only inside a mandate, at its earned level (A5.7; there
+                # Autonomous execution exists only inside a profile, in its chosen mode (ADR 0011; there
                 # is no global execution mode any more): L1 approval, L2 veto window, L3 queued.
-                if recommendation == "HOLD":
-                    final_status, mandate = 'NO_TRADE', None  # nothing to approve or execute
-                else:
-                    # A scanner debate carries its candidate's structural stop and TP1 (Phase B, B0): the mandate's
-                    # R:R and side checks measure them, and a perp entry needs them. Other debates carry none
-                    stop_loss, take_profit = candidate_levels(payload)
-                    final_status, mandate = await route_entry(
-                        conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
-                        mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
-                        reference_price=decision_price, stop_loss=stop_loss, take_profit=take_profit,
-                        redis=redis_client, grade_context=(brief_data or {}).get("grade_context"),
-                    )
+                # A scanner debate carries its candidate's structural stop and TP1 (Phase B, B0): the mandate's
+                # R:R and side checks measure them, and a perp entry needs them. Other debates carry none
+                stop_loss, take_profit = candidate_levels(payload)
+                final_status, mandate = await route_entry(
+                    conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
+                    mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
+                    reference_price=decision_price, stop_loss=stop_loss, take_profit=take_profit,
+                    redis=redis_client, grade_context=(brief_data or {}).get("grade_context"),
+                )
                 await conn.execute(
                     """UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3
                         WHERE id = $2 AND status = 'RUNNING' AND claim_gen = $4""",

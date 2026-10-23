@@ -50,13 +50,6 @@ def db_url():
         yield url
 
 
-@pytest.fixture(autouse=True)
-def fresh_routing_cache(routing):
-    routing.reset_routing_cache()
-    yield
-    routing.reset_routing_cache()
-
-
 @pytest.fixture
 async def h(db_url, monkeypatch):
     monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "false")
@@ -71,6 +64,22 @@ async def h(db_url, monkeypatch):
                                "WHERE account_id = 'PAPER-ACCOUNT-001'")
     await harness.redis.set(MARK_KEY, json.dumps({"type": "perp.mark", "mark_price": "60000", "funding_rate": "0.0001",
                                                   "ts_event_ns": 1}), ex=300)
+    from cryptonite_execution import profile_lifecycle
+    from cryptonite_schemas.profile import base_asset
+    await harness.pool.execute("DELETE FROM ai_profile_coin_locks")
+    await harness.pool.execute("INSERT INTO system_settings(key,value) VALUES('autotrade.enabled','1') "
+                               "ON CONFLICT(key) DO UPDATE SET value='1'")
+    profile_lifecycle.reset_switch_cache()
+    original_mandate = harness.mandate
+
+    async def owned_mandate(*args, **kw):
+        m = await original_mandate(*args, **kw)
+        for inst in m.instruments:
+            await harness.pool.execute("INSERT INTO ai_profile_coin_locks(base_asset,mandate_id) VALUES($1,$2) "
+                                       "ON CONFLICT DO NOTHING", base_asset(inst), m.id)
+        return m
+
+    harness.mandate = owned_mandate
     try:
         yield harness
     finally:
@@ -84,12 +93,13 @@ async def perp_mandate(h, *, level: int = 1, max_leverage: int = 3, name: str | 
 
     mid = await h.pool.fetchval(
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level, status,
-               allow_perps, max_leverage)
-           VALUES ($1, 10000, ARRAY[$2], 25, $3, 'ACTIVE', true, $4) RETURNING id""",
+               allow_perps, max_leverage, direction)
+           VALUES ($1, 10000, ARRAY[$2], 25, $3, 'ACTIVE', true, $4, 'BOTH') RETURNING id""",
         name or f"Brain {PERP} {uuid.uuid4().hex[:4]}", PERP, level, max_leverage)
     async with h.pool.acquire() as conn:
         m = await load_mandate(conn, mid)
         await ensure_mandate_instance(conn, m, "PAPER-ACCOUNT-001")
+    await h.pool.execute("INSERT INTO ai_profile_coin_locks(base_asset,mandate_id) VALUES('BTC',$1) ON CONFLICT DO NOTHING", mid)
     return m
 
 
@@ -123,51 +133,44 @@ async def approval_of(h, run_id) -> dict | None:
 
 # --- B1: spot -> perp mapping ---------------------------------------------------------------------------------------
 
-async def test_a_spot_candidate_no_spot_mandate_takes_goes_to_the_perps_mandate(h, routing):
+async def test_a_spot_candidate_routes_to_its_perp_coin_owner(h, routing):
     m = await perp_mandate(h)
     async with h.pool.acquire() as conn:
-        mandate, instrument = await routing.resolve_route(conn, SPOT)
-    assert (mandate.id, instrument) == (m.id, PERP)
+        assert (await routing.resolve_profile(conn, SPOT)).id == m.id
     status, mandate, run_id = await route(h, routing)
     assert (status, mandate.id) == ("PENDING_APPROVAL", m.id)
     assert (await approval_of(h, run_id))["payload"]["instrument_id"] == PERP
 
 
-async def test_a_spot_mandate_is_preferred_over_a_perps_mandate(h, routing, caplog):
+async def test_a_spot_coin_owner_is_preferred_over_an_unlocked_perp_profile(h, routing):
     spot = await h.mandate(level=1, instruments=(SPOT,))
     await perp_mandate(h)
-    with caplog.at_level("INFO"):
-        async with h.pool.acquire() as conn:
-            mandate, instrument = await routing.resolve_route(conn, SPOT)
-    assert (mandate.id, instrument) == (spot.id, SPOT)
-    assert any("preferred over perps mandate" in r.message for r in caplog.records)
+    async with h.pool.acquire() as conn:
+        assert (await routing.resolve_profile(conn, SPOT)).id == spot.id
 
 
-async def test_two_perps_mandates_are_ambiguous(h, routing):
-    await perp_mandate(h)
+async def test_two_perp_profiles_use_the_exclusive_coin_owner(h, routing):
+    owner = await perp_mandate(h)
     await perp_mandate(h)
     async with h.pool.acquire() as conn:
-        assert await routing.resolve_route(conn, SPOT) == (None, SPOT)
+        assert (await routing.resolve_profile(conn, SPOT)).id == owner.id
 
 
-async def test_an_explicit_mandate_wins(h, routing):
+async def test_an_explicit_profile_wins_resolution(h, routing):
     spot = await h.mandate(level=1, instruments=(SPOT,))
     perp = await perp_mandate(h)
     async with h.pool.acquire() as conn:
-        # named perps mandate: its perpetual, although a spot mandate allows the spot instrument
-        assert (await routing.resolve_route(conn, SPOT, str(perp.id)))[0].id == perp.id
-        assert (await routing.resolve_route(conn, SPOT, str(perp.id)))[1] == PERP
-        assert (await routing.resolve_route(conn, SPOT, str(spot.id))) == (
-            await routing.resolve_mandate(conn, SPOT, str(spot.id)), SPOT)
+        assert (await routing.resolve_profile(conn, SPOT, str(perp.id))).id == perp.id
+        assert (await routing.resolve_profile(conn, SPOT, str(spot.id))).id == spot.id
         other = await h.mandate(level=1, instruments=("ETHUSDT.BINANCE",))
-        assert await routing.resolve_route(conn, SPOT, str(other.id)) == (None, SPOT)
+        assert (await routing.resolve_profile(conn, SPOT, str(other.id))).id == other.id
 
 
-async def test_a_paused_perps_mandate_takes_nothing(h, routing):
+async def test_a_paused_perp_profile_refuses_new_entries(h, routing):
     m = await perp_mandate(h)
     await h.pool.execute("UPDATE ai_mandates SET status = 'PAUSED' WHERE id = $1", m.id)
     status, mandate, _ = await route(h, routing)
-    assert (status, mandate) == ("PENDING_APPROVAL", None)  # outside any mandate: the operator's call, as before
+    assert (status, mandate.id) == ("NO_TRADE", m.id)
 
 
 # --- B2: the routing matrix -----------------------------------------------------------------------------------------
@@ -502,87 +505,13 @@ async def test_the_orchestrator_refuses_a_debate_perp_entry_above_its_ceilings(h
 # Item 3: a routed run never turns into an unapproved order. Item 4: the approved leverage is a ceiling. Item 5: an
 # entry another owner blocks is refused before the operator spends a TOTP.
 
-SPOT_FIRST, PERP_FIRST = "SPOT_FIRST", "PERP_FIRST"
-
-
-async def set_routing(h, routing, mode: str) -> None:
-    await h.pool.execute(
-        """INSERT INTO system_settings (key, value, updated_at) VALUES ('debate.perp_routing', $1::jsonb, now())
-           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
-        json.dumps({SPOT_FIRST: "0", PERP_FIRST: "1"}.get(mode, mode)))
-    routing.reset_routing_cache()
-
-
-@pytest.mark.parametrize("mode", [SPOT_FIRST, PERP_FIRST])
-@pytest.mark.parametrize("spots", [0, 1, 2])
-@pytest.mark.parametrize("perps", [0, 1, 2])
-async def test_the_routing_matrix_of_the_preference(h, routing, mode, spots, perps):
-    spot_mandates = [await h.mandate(level=1, instruments=(SPOT,), name=f"spot-{i}-{uuid.uuid4().hex[:4]}")
-                     for i in range(spots)]
-    perp_mandates = [await perp_mandate(h) for _ in range(perps)]
-    await set_routing(h, routing, mode)
-    async with h.pool.acquire() as conn:
-        mandate, instrument = await routing.resolve_route(conn, SPOT)
-    if mode == PERP_FIRST and perps == 1:
-        expected = (perp_mandates[0].id, PERP)  # the single perps mandate, although spot mandates match
-    elif spots == 1:
-        expected = (spot_mandates[0].id, SPOT)
-    elif spots == 0 and perps == 1:
-        expected = (perp_mandates[0].id, PERP)
-    else:
-        expected = (None, SPOT)  # none, or several of a kind: the operator decides
-    assert (mandate.id if mandate else None, instrument) == expected
-
-
-async def test_perp_first_routes_a_btc_candidate_to_the_perps_mandate_and_logs_it(h, routing, caplog):
-    await h.mandate(level=1, instruments=(SPOT,))
-    await h.mandate(level=1, instruments=(SPOT,), name=f"second-{uuid.uuid4().hex[:4]}")  # two spot mandates: ambiguous
-    m = await perp_mandate(h)
-    status, mandate, _ = await route(h, routing)
-    assert (status, mandate) == ("PENDING_APPROVAL", None)  # SPOT_FIRST: the operator decides
-    await set_routing(h, routing, PERP_FIRST)
-    with caplog.at_level("INFO"):
-        status, mandate, run_id = await route(h, routing)
-    assert (status, mandate.id) == ("PENDING_APPROVAL", m.id)
-    assert (await approval_of(h, run_id))["payload"]["instrument_id"] == PERP
-    assert any("PERP_FIRST routing; routed to perps mandate" in r.message for r in caplog.records)
-
-
-async def test_an_explicit_mandate_wins_under_perp_first(h, routing):
+async def test_retired_routing_setting_cannot_override_coin_ownership(h, routing):
     spot = await h.mandate(level=1, instruments=(SPOT,))
-    perp = await perp_mandate(h)
-    await set_routing(h, routing, PERP_FIRST)
+    await perp_mandate(h)
+    await h.pool.execute("INSERT INTO system_settings(key,value) VALUES('debate.perp_routing','1') "
+                         "ON CONFLICT(key) DO UPDATE SET value='1'")
     async with h.pool.acquire() as conn:
-        assert (await routing.resolve_route(conn, SPOT, str(spot.id)))[1] == SPOT
-        assert (await routing.resolve_route(conn, SPOT, str(spot.id)))[0].id == spot.id
-        assert (await routing.resolve_route(conn, SPOT, str(perp.id)))[0].id == perp.id
-        assert (await routing.resolve_route(conn, SPOT))[0].id == perp.id  # and without a name, the perps mandate
-
-
-async def test_the_routing_setting_is_cached_and_an_unreadable_one_is_spot_first(h, routing, monkeypatch, caplog):
-    await set_routing(h, routing, PERP_FIRST)
-    async with h.pool.acquire() as conn:
-        assert await routing.routing_mode(conn) == PERP_FIRST
-        await h.pool.execute("UPDATE system_settings SET value = '\"0\"' WHERE key = 'debate.perp_routing'")
-        assert await routing.routing_mode(conn) == PERP_FIRST  # cached
-        clock = routing.time.monotonic() + routing.ROUTING_CACHE_S + 1
-        monkeypatch.setattr(routing.time, "monotonic", lambda: clock)
-        assert await routing.routing_mode(conn) == SPOT_FIRST  # read again after the cache window
-    assert routing.ROUTING_CACHE_S <= 60
-
-    class Broken:
-        def transaction(self):
-            raise RuntimeError("database unavailable")
-
-    routing.reset_routing_cache()
-    with caplog.at_level("WARNING"):
-        assert await routing.routing_mode(Broken()) == SPOT_FIRST
-    assert "Could not read debate.perp_routing" in caplog.text
-    # a stored value that is not 0 or 1 is not trusted either
-    await set_routing(h, routing, "7")
-    async with h.pool.acquire() as conn:
-        assert await routing.routing_mode(conn) == SPOT_FIRST
-    assert routing.read_routing_mode(None) == (SPOT_FIRST, None)
+        assert (await routing.resolve_profile(conn, SPOT)).id == spot.id
 
 
 # --- item 2: the reduction is a CLOSE_POSITION the orchestrator caps ------------------------------------------------------

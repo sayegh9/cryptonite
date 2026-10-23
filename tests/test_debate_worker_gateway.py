@@ -97,11 +97,12 @@ def debate_model(pm_valid: bool = True) -> FunctionModel:
     return FunctionModel(fn)
 
 
-async def run_debate(debate_main, pool, pm_valid=True):
+async def run_debate(debate_main, pool, pm_valid=True, mandate_id=None):
     model = debate_model(pm_valid)
     with override_model(FLASH, model), override_model(PRO, model), override_model(EMBED, FakeEmbedder()):
         await debate_main.process_debate_trigger(
-            pool, redis_double(), {"instrument_id": INSTRUMENT, "trigger_source": "test"}, Gateway()
+            pool, redis_double(), {"instrument_id": INSTRUMENT, "trigger_source": "test",
+                                  "mandate_id": str(mandate_id) if mandate_id else None}, Gateway()
         )
     return await pool.fetchrow("SELECT * FROM debate_runs WHERE instrument_id = $1", INSTRUMENT)
 
@@ -165,7 +166,7 @@ async def test_debate_inside_an_l3_mandate_queues_its_order(debate_main, pool):
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level)
            VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 5, 3) RETURNING id""", f"l3-{uuid.uuid4().hex[:6]}")
     try:
-        run = await run_debate(debate_main, pool)
+        run = await run_debate(debate_main, pool, mandate_id=mid)
         assert (run["status"], run["mandate_id"]) == ("COMPLETED", mid)
         cmd = await pool.fetchrow("SELECT * FROM execution_commands WHERE idempotency_key = $1", f"debate:{run['id']}")
         payload = json.loads(cmd["payload"])

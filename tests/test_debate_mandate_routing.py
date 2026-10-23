@@ -47,6 +47,22 @@ async def h(db_url):
     harness = await make_harness(db_url)
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_positions CASCADE")
+    from cryptonite_execution import profile_lifecycle
+    from cryptonite_schemas.profile import base_asset
+    await harness.pool.execute("DELETE FROM ai_profile_coin_locks")
+    await harness.pool.execute("INSERT INTO system_settings(key,value) VALUES('autotrade.enabled','1') "
+                               "ON CONFLICT(key) DO UPDATE SET value='1'")
+    profile_lifecycle.reset_switch_cache()
+    original_mandate = harness.mandate
+
+    async def owned_mandate(*args, **kw):
+        m = await original_mandate(*args, **kw)
+        for inst in m.instruments:
+            await harness.pool.execute("INSERT INTO ai_profile_coin_locks(base_asset,mandate_id) VALUES($1,$2) "
+                                       "ON CONFLICT DO NOTHING", base_asset(inst), m.id)
+        return m
+
+    harness.mandate = owned_mandate
     try:
         yield harness
     finally:

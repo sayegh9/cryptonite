@@ -22,7 +22,7 @@ from cryptonite_schemas.exit_thresholds import (
     ExitThresholds,
     violations,
 )
-from cryptonite_schemas.runtime_settings import ROUTING_MODES, RUNTIME_BOUNDS
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS
 
 
 class Tier(StrEnum):
@@ -190,15 +190,6 @@ REGISTRY: tuple[Setting, ...] = (
             Decimal("2.00"), Apply.HOT, Tier.T_L, "0009", SYSTEM_STORE,
             "priced into the risk at the stop and the liquidation buffer; a higher allowance is the tighter one",
             decimals=2, tighter=Tighter.HIGHER),
-    _runtime_setting("debate.perp_mandate_daily_cap", "Scanner debates per perp mandate per day", Tier.T_L, "0010",
-                     "read by the debate gate on every scanner candidate that would route to a perp mandate (1h bars "
-                     "only); 0 stops them; lowering is free, raising needs TOTP"),
-    _runtime_setting("debate.perp_routing", "Spot candidates: spot or perps first", Tier.T_L, "0010",
-                     "read by the debate worker (cached up to 60 s) when a spot and a perps mandate both match a "
-                     "candidate: SPOT_FIRST takes the spot mandate, PERP_FIRST the single perps mandate; an explicit "
-                     "mandate always wins. PERP_FIRST sends more trades to leveraged perps, so it needs TOTP; "
-                     "SPOT_FIRST is free",
-                     choices=tuple((str(i), mode) for i, mode in enumerate(ROUTING_MODES))),
     # Auto-trade profiles (ADR 0011): enabling and raising are risk-adding (TOTP); switching off and lowering are free
     _runtime_setting("autotrade.enabled", "Auto-trade master switch", Tier.T_L, "0011",
                      "applies at runtime (read every 30 s, off if unreadable): while off, a profile in Veto window or "

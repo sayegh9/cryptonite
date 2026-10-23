@@ -691,41 +691,9 @@ async def test_get_settings_audit():
 
 
 
-# --- debate.perp_routing (ADR 0010 P-10): an enum stored as 0 (SPOT_FIRST) / 1 (PERP_FIRST) ---------------------------
+# ADR 0011 D-P1-1: retired Phase B routing settings have no registry/write path.
 
-def test_perp_routing_is_a_two_choice_setting_whose_perp_first_is_the_looser_value():
-    routing = by_key("debate.perp_routing")
-    assert (routing.tier, routing.adr, routing.default, routing.minimum, routing.maximum) == (Tier.T_L, "0010", 0, 0, 1)
-    view = entry_view(routing, None)
-    assert view["choices"] == [{"value": "0", "label": "SPOT_FIRST"}, {"value": "1", "label": "PERP_FIRST"}]
-    assert view["writable"] is True and view["default"] == "0"
-    assert entry_view(by_key("debate.perp_mandate_daily_cap"), None)["choices"] == []  # numbers carry none
-    assert write_needs_totp(routing, Decimal("1"), Decimal("0")) is False  # to SPOT_FIRST: free
-    assert write_needs_totp(routing, Decimal("0"), Decimal("1")) is True  # to PERP_FIRST: TOTP
-    for bad in (Decimal("2"), Decimal("-1"), Decimal("0.5")):
-        with pytest.raises(ValueError):
-            validate_value(routing, bad)
-
-
-@pytest.mark.asyncio
-async def test_setting_perp_first_needs_totp_and_spot_first_is_free(monkeypatch):
-    async def missing_totp(request, auth, code):
-        if code is None:
-            raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
-
-    monkeypatch.setattr(settings_route, "require_totp", missing_totp)
-    pool, auth_mgr = WritePool({}), FakeAuthMgr()  # nothing stored: SPOT_FIRST is current
-    with pytest.raises(HTTPException) as refused:
-        await put("debate.perp_routing", "1", pool=pool, auth_mgr=auth_mgr)
-    assert refused.value.status_code == 401 and "TOTP_REQUIRED" in refused.value.detail
-    assert pool.inserts() == []
-    out = await put("debate.perp_routing", "1", pool=pool, auth_mgr=auth_mgr, totp="123456")
-    assert out["totp_verified"] is True and out["value"] == "1" and pool.inserts() == [("debate.perp_routing", '"1"')]
-
-    async def no_totp(*args, **kwargs):
-        raise AssertionError("SPOT_FIRST must not ask for TOTP")
-
-    monkeypatch.setattr(settings_route, "require_totp", no_totp)
-    pool, auth_mgr = WritePool({"debate.perp_routing": '"1"'}), FakeAuthMgr()
-    out = await put("debate.perp_routing", "0", pool=pool, auth_mgr=auth_mgr)
-    assert out["totp_verified"] is False and out["previous"] == "1" and pool.inserts() == [("debate.perp_routing", '"0"')]
+@pytest.mark.parametrize("key", ["debate.perp_routing", "debate.perp_mandate_daily_cap"])
+def test_retired_perp_settings_are_not_writable(key):
+    assert key not in {entry.key for entry in REGISTRY}
+    assert key not in WRITE_PATHS
