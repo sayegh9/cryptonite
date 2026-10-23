@@ -6,11 +6,10 @@ from uuid import uuid4
 
 import polars as pl
 import pytest
-from cryptonite_schemas.profile import PRESETS
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import RuleOperator
 from cryptonite_scanner.presets import BUILTIN_PRESETS, SWING_PRESETS
-
+from cryptonite_schemas.profile import PRESETS
 
 SHORT_SLUGS = {
     slug
