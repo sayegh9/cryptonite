@@ -268,32 +268,36 @@ async def test_successful_dispatch_persists_effective_mode_in_postgres(h):
     m = await h.mandate(level=3, instruments=(SPOT,))
     command_id = uuid.uuid4()
     approval_id = uuid.uuid4()
-    await h.pool.execute(
-        "INSERT INTO system_settings (key, value) VALUES ('autotrade.enabled', '1') "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
-    await h.pool.execute(
-        """INSERT INTO ai_approvals (id, mandate_id, action_class, command_type, payload, summary, source, source_ref,
-                   level_at_creation, timeout_policy, expires_at, status, command_id)
-           VALUES ($1, $2, 'ADD_RISK', 'SUBMIT_ORDER', '{}'::jsonb, 'buy', 'debate', $3, 3, 'DENY',
-                   now() + interval '15 minutes', 'APPROVED', $4)""",
-        approval_id, m.id, str(uuid.uuid4()), command_id)
-    await h.pool.execute(
-        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
-                   requester_id, payload, status, environment, account_id, mandate_id)
-           VALUES ($1, $2, 'SUBMIT_ORDER', $3, 'ai:debate_worker', $4::jsonb, 'PENDING', 'PAPER',
-                   'PAPER-ACCOUNT-001', $5)""",
-        command_id, f"mode-persist:{command_id}", m.instance_id,
-        json.dumps({"mandate_id": str(m.id), "approval_id": str(approval_id), "instrument_id": SPOT,
-                    "side": "BUY", "quantity": "0.001", "stop_loss": "49750"}), m.id)
+    previous_switch = await h.pool.fetchrow(
+        "SELECT value::text AS value FROM system_settings WHERE key = 'autotrade.enabled'")
 
     dispatcher = make_perp_dispatcher()
     engine = make_engine(dispatcher)
     engine.bridge = MagicMock()
     quotes = server.SimpleQuoteCache()
     quotes.set_quote(SPOT, 50000, 50010)
-    profile_lifecycle.reset_switch_cache()
-    poller = asyncio.create_task(server.command_poller(h.pool, engine, quotes))
+    poller = None
+    row = None
     try:
+        await h.pool.execute(
+            "INSERT INTO system_settings (key, value) VALUES ('autotrade.enabled', '1') "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
+        await h.pool.execute(
+            """INSERT INTO ai_approvals (id, mandate_id, action_class, command_type, payload, summary, source, source_ref,
+                       level_at_creation, timeout_policy, expires_at, status, command_id)
+               VALUES ($1, $2, 'ADD_RISK', 'SUBMIT_ORDER', '{}'::jsonb, 'buy', 'debate', $3, 3, 'DENY',
+                       now() + interval '15 minutes', 'APPROVED', $4)""",
+            approval_id, m.id, str(uuid.uuid4()), command_id)
+        await h.pool.execute(
+            """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
+                       requester_id, payload, status, environment, account_id, mandate_id)
+               VALUES ($1, $2, 'SUBMIT_ORDER', $3, 'ai:debate_worker', $4::jsonb, 'PENDING', 'PAPER',
+                       'PAPER-ACCOUNT-001', $5)""",
+            command_id, f"mode-persist:{command_id}", m.instance_id,
+            json.dumps({"mandate_id": str(m.id), "approval_id": str(approval_id), "instrument_id": SPOT,
+                        "side": "BUY", "quantity": "0.001", "stop_loss": "49750"}), m.id)
+        profile_lifecycle.reset_switch_cache()
+        poller = asyncio.create_task(server.command_poller(h.pool, engine, quotes))
         for _ in range(200):
             status = await h.pool.fetchval(
                 "SELECT status FROM execution_commands WHERE command_id = $1", command_id)
@@ -303,9 +307,16 @@ async def test_successful_dispatch_persists_effective_mode_in_postgres(h):
         row = await h.pool.fetchrow(
             "SELECT status, payload FROM execution_commands WHERE command_id = $1", command_id)
     finally:
-        poller.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await poller
+        if poller is not None:
+            poller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await poller
+        if previous_switch is None:
+            await h.pool.execute("DELETE FROM system_settings WHERE key = 'autotrade.enabled'")
+        else:
+            await h.pool.execute(
+                "UPDATE system_settings SET value = $1::jsonb WHERE key = 'autotrade.enabled'",
+                previous_switch["value"])
         profile_lifecycle.reset_switch_cache()
 
     assert row["status"] == "COMPLETED"
