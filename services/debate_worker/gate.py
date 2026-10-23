@@ -1,10 +1,12 @@
 """ADR 0011: account safety, profile style, debate slots and proportional AI budget."""
 
+import asyncio
 import datetime
 import json
 import logging
 import math
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -33,6 +35,9 @@ MIN_STALE_S = 15 * 60
 # (F-H6) of the same message passes the gate again, while a delivery whose run exists is dropped.
 TIMEFRAME_S = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 PROFILE_CAP_TTL_S = 2 * 86400
+PROFILE_BUDGET_LOCK_TTL_S = 300
+PROFILE_BUDGET_LOCK_RENEW_S = 20
+PROFILE_BUDGET_LOCK_WAIT_S = 30
 
 
 @dataclass
@@ -43,6 +48,7 @@ class GateDecision:
     triage_trace_id: Any = None
     cooldown_key: str | None = None  # released by the caller if the debate it allowed fails
     cooldown_token: str | None = None  # the caller's own token: release only while it still holds the key
+    profile: Any = None
 
 
 # Atomic compare-and-delete: read and delete in one script, so between the two no TTL expiry or other
@@ -97,17 +103,19 @@ def _trace_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
 
 async def pre_debate_gate(pg_pool, redis, payload: dict[str, Any], gateway: Gateway | None,
                           brief: str | None, now_s: float | None = None,
-                          brief_data: dict[str, Any] | None = None) -> GateDecision:
+                          brief_data: dict[str, Any] | None = None,
+                          run_id: uuid.UUID | None = None) -> GateDecision:
     async with pg_pool.acquire() as conn:
         profile = await resolve_profile(conn, payload["instrument_id"], payload.get("mandate_id"))
     if profile is not None:
         payload["mandate_id"] = str(profile.id)
     decision = await _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data, profile)
+    decision.profile = profile
     if profile is not None:
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 await record_decision(conn, profile.id, "GATE", "ACCEPTED" if decision.allowed else "REFUSED",
-                                      decision.reason, instrument_id=payload["instrument_id"])
+                                      decision.reason, instrument_id=payload["instrument_id"], run_id=run_id)
 
     await _count(redis, decision.reason)
     trace = payload.get("decision_trace_id")
@@ -186,6 +194,83 @@ async def profile_budget_exhausted(conn, profile, now_s: float) -> bool:
     weight = Decimal(str(total_weight or 0))
     share = cap * profile.max_debates_per_day / weight if weight > 0 else Decimal("0")
     return Decimal(str(row["global_spent"])) >= cap or Decimal(str(row["profile_spent"])) >= share
+
+
+_RELEASE_PROFILE_BUDGET_LOCK_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+_RENEW_PROFILE_BUDGET_LOCK_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
+
+@asynccontextmanager
+async def profile_budget_guard(pg_pool, redis, profile, now_s: float | None = None):
+    """Serialize a profile's model calls and enforce its persisted daily share at both call boundaries."""
+    if profile is None:
+        yield
+        return
+    timestamp = now_s if now_s is not None else datetime.datetime.now(datetime.UTC).timestamp()
+    lock_key = f"debate_gate:profile_budget_lock:{profile.id}"
+    lock_token = str(uuid.uuid4())
+    deadline = asyncio.get_running_loop().time() + PROFILE_BUDGET_LOCK_WAIT_S
+    while True:
+        try:
+            if await redis.set(lock_key, lock_token, nx=True, ex=PROFILE_BUDGET_LOCK_TTL_S):
+                break
+        except Exception as exc:
+            raise BudgetExceeded("debate.profile", "PROFILE_BUDGET_LOCK_UNAVAILABLE") from exc
+        if asyncio.get_running_loop().time() >= deadline:
+            raise BudgetExceeded("debate.profile", "PROFILE_BUDGET_LOCK_UNAVAILABLE")
+        await asyncio.sleep(0.1)
+    lease_lost = asyncio.Event()
+
+    async def renew_lease():
+        while True:
+            await asyncio.sleep(PROFILE_BUDGET_LOCK_RENEW_S)
+            try:
+                renewed = await redis.eval(
+                    _RENEW_PROFILE_BUDGET_LOCK_LUA, 1, lock_key, lock_token, PROFILE_BUDGET_LOCK_TTL_S
+                )
+            except Exception:
+                renewed = 0
+            if not renewed:
+                lease_lost.set()
+                return
+
+    renew_task = asyncio.create_task(renew_lease())
+    try:
+        async with pg_pool.acquire() as conn:
+            if await profile_budget_exhausted(conn, profile, timestamp):
+                raise BudgetExceeded("debate.profile", "PROFILE_DAILY_SHARE_EXHAUSTED")
+        yield
+        try:
+            owner = await redis.get(lock_key)
+        except Exception:
+            owner = None
+        if isinstance(owner, bytes):
+            owner = owner.decode()
+        if lease_lost.is_set() or owner != lock_token:
+            raise BudgetExceeded("debate.profile", "PROFILE_BUDGET_LOCK_LOST")
+        async with pg_pool.acquire() as conn:
+            if await profile_budget_exhausted(conn, profile, timestamp):
+                raise BudgetExceeded("debate.profile", "PROFILE_DAILY_SHARE_EXHAUSTED")
+    finally:
+        renew_task.cancel()
+        try:
+            await renew_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await redis.eval(_RELEASE_PROFILE_BUDGET_LOCK_LUA, 1, lock_key, lock_token)
+        except Exception:
+            logger.warning("Profile budget lock %s could not be released; its lease will expire", profile.id)
 
 
 async def _reserve_profile_slot(redis, key: str, cap: int) -> bool:
@@ -272,8 +357,9 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key, cooldown_token=cooldown_token)
     try:
         # The setup's decision_trace_id as the trace parent links triage (and its F2 shadow) to outcomes
-        result = await TRIAGE.run(gateway, brief, parent_trace_id=_trace_uuid(payload),
-                                  context=CallContext(role=TRIAGE.role, mandate_id=str(profile.id)) if profile else None)
+        async with profile_budget_guard(pg_pool, redis, profile, now_s):
+            result = await TRIAGE.run(gateway, brief, parent_trace_id=_trace_uuid(payload),
+                                      context=CallContext(role=TRIAGE.role, mandate_id=str(profile.id)) if profile else None)
     except BudgetExceeded:
         await release_cooldown(redis, cooldown_key, cooldown_token)
         return GateDecision(False, "AI_BUDGET_EXHAUSTED")

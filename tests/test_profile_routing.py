@@ -6,6 +6,7 @@ import importlib
 import json
 import sys
 import uuid
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,196 @@ async def test_debate_and_dry_run_route_decisions_keep_the_plan_path(h):
     assert await h.pool.fetchval("SELECT mandate_id FROM execution_commands") == m.id
 
 
+@pytest.mark.parametrize("level,outcome", [(1, "APPROVAL_CREATED"), (2, "VETO_WINDOW")])
+async def test_dry_run_pending_approvals_log_their_actual_mode(h, level, outcome):
+    await profile(h, level=level, dry_run=True, active_hours_utc="08:00-22:00")
+    await h.pool.execute("INSERT INTO system_settings(key,value) VALUES('autotrade.enabled','1')")
+    (status, _), run = await route(h)
+    assert status == "PENDING_APPROVAL"
+    assert await h.pool.fetchval(
+        "SELECT outcome FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run
+    ) == outcome
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals WHERE source_ref=$1", str(run)) == 1
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+async def test_triage_that_spends_past_the_profile_share_is_refused(h, monkeypatch):
+    from types import SimpleNamespace
+
+    m = await profile(h, max_debates_per_day=2)
+    await profile(h, lock=False, max_debates_per_day=6)
+    await h.pool.execute("INSERT INTO system_settings(key,value) VALUES('LLM_DAILY_BUDGET_USD','32')")
+    prior_trace = uuid.uuid4()
+    await h.pool.execute(
+        "INSERT INTO ai_decision_traces(id,role,model,status,mandate_id) VALUES($1,'debate.triage','test','OK',$2)",
+        prior_trace, str(m.id),
+    )
+    await h.pool.execute(
+        """INSERT INTO llm_cost_ledger(request_id,agent_name,model_name,input_tokens,output_tokens,total_cost_usd,trace_id)
+           VALUES($1,'debate.triage','test',1,1,7.99,$2)""", str(prior_trace), prior_trace,
+    )
+
+    async def spend_during_triage(gateway, brief, **kwargs):
+        trace = uuid.uuid4()
+        await h.pool.execute(
+            "INSERT INTO ai_decision_traces(id,role,model,status,mandate_id) VALUES($1,'debate.triage','test','OK',$2)",
+            trace, str(m.id),
+        )
+        await h.pool.execute(
+            """INSERT INTO llm_cost_ledger(request_id,agent_name,model_name,input_tokens,output_tokens,total_cost_usd,trace_id)
+               VALUES($1,'debate.triage','test',1,1,.02,$2)""", str(trace), trace,
+        )
+        return SimpleNamespace(output=SimpleNamespace(worth_debate=True), trace_id=uuid.uuid4())
+
+    monkeypatch.setattr(gate, "TRIAGE", SimpleNamespace(role="triage", run=spend_during_triage))
+    payload = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "1h"})}
+    decision = await gate.pre_debate_gate(h.pool, h.redis, payload, object(), "a brief", now_s=NOW.timestamp())
+    assert (decision.allowed, decision.reason) == (False, "AI_BUDGET_EXHAUSTED")
+    assert await h.redis.get(gate.profile_cap_key(m.id, NOW.timestamp())) is None
+    assert not await h.redis.exists(f"debate:cooldown:{SPOT}:1h")
+    assert await h.pool.fetchval(
+        "SELECT reason FROM ai_profile_decisions WHERE mandate_id=$1 AND stage='GATE'", m.id
+    ) == "AI_BUDGET_EXHAUSTED"
+
+
+async def test_concurrent_profile_triage_calls_share_one_budget_boundary(h, monkeypatch):
+    from types import SimpleNamespace
+
+    m = await profile(h, max_debates_per_day=2)
+    await profile(h, lock=False, max_debates_per_day=6)
+    await h.pool.execute("INSERT INTO system_settings(key,value) VALUES('LLM_DAILY_BUDGET_USD','32')")
+    prior_trace = uuid.uuid4()
+    await h.pool.execute(
+        "INSERT INTO ai_decision_traces(id,role,model,status,mandate_id) VALUES($1,'debate.triage','test','OK',$2)",
+        prior_trace, str(m.id),
+    )
+    await h.pool.execute(
+        """INSERT INTO llm_cost_ledger(request_id,agent_name,model_name,input_tokens,output_tokens,total_cost_usd,trace_id)
+           VALUES($1,'debate.triage','test',1,1,7.9,$2)""", str(prior_trace), prior_trace,
+    )
+    triage_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls = 0
+
+    async def spend_once(gateway, brief, **kwargs):
+        nonlocal calls
+        calls += 1
+        triage_started.set()
+        await release_first.wait()
+        trace = uuid.uuid4()
+        await h.pool.execute(
+            "INSERT INTO ai_decision_traces(id,role,model,status,mandate_id) VALUES($1,'debate.triage','test','OK',$2)",
+            trace, str(m.id),
+        )
+        await h.pool.execute(
+            """INSERT INTO llm_cost_ledger(request_id,agent_name,model_name,input_tokens,output_tokens,total_cost_usd,trace_id)
+               VALUES($1,'debate.triage','test',1,1,.2,$2)""", str(trace), trace,
+        )
+        return SimpleNamespace(output=SimpleNamespace(worth_debate=True), trace_id=uuid.uuid4())
+
+    monkeypatch.setattr(gate, "TRIAGE", SimpleNamespace(role="triage", run=spend_once))
+    first = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "1h"})}
+    second = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "4h"})}
+    first_task = asyncio.create_task(gate.pre_debate_gate(h.pool, h.redis, first, object(), "brief", NOW.timestamp()))
+    await asyncio.wait_for(triage_started.wait(), timeout=5)
+    second_task = asyncio.create_task(gate.pre_debate_gate(h.pool, h.redis, second, object(), "brief", NOW.timestamp()))
+    await asyncio.sleep(0.1)
+    release_first.set()
+    first_result, second_result = await asyncio.gather(first_task, second_task)
+    assert [first_result.reason, second_result.reason] == ["AI_BUDGET_EXHAUSTED", "AI_BUDGET_EXHAUSTED"]
+    assert calls == 1
+    assert await h.pool.fetchval("SELECT SUM(total_cost_usd) FROM llm_cost_ledger") == Decimal("8.1")
+
+
+async def test_profile_budget_lease_loss_fails_closed_without_releasing_another_owner(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from cryptonite_agents.gateway import BudgetExceeded
+
+    class Pool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield object()
+
+    class Redis:
+        key = None
+
+        async def set(self, key, value, nx=False, ex=None):
+            self.key = value
+            return True
+
+        async def get(self, key):
+            return self.key
+
+        async def eval(self, script, numkeys, key, token, *args):
+            if "EXPIRE" in script:
+                self.key = "replacement-owner"
+                return 0
+            if self.key == token:
+                self.key = None
+                return 1
+            return 0
+
+    async def budget_available(conn, mandate, now_s):
+        return False
+
+    monkeypatch.setattr(gate, "profile_budget_exhausted", budget_available)
+    monkeypatch.setattr(gate, "PROFILE_BUDGET_LOCK_RENEW_S", .001)
+    redis = Redis()
+    with pytest.raises(BudgetExceeded, match="PROFILE_BUDGET_LOCK_LOST"):
+        async with gate.profile_budget_guard(Pool(), redis, SimpleNamespace(id=uuid.uuid4())):
+            await asyncio.sleep(.01)
+    assert redis.key == "replacement-owner"
+
+
+async def test_profile_budget_lock_acquisition_failure_fails_closed(monkeypatch):
+    from types import SimpleNamespace
+
+    from cryptonite_agents.gateway import BudgetExceeded
+
+    class Redis:
+        async def set(self, *args, **kwargs):
+            raise ConnectionError("redis unavailable")
+
+    with pytest.raises(BudgetExceeded, match="PROFILE_BUDGET_LOCK_UNAVAILABLE"):
+        async with gate.profile_budget_guard(object(), Redis(), SimpleNamespace(id=uuid.uuid4())):
+            pytest.fail("profile call proceeded without its budget lock")
+
+
+async def test_later_persona_budget_exhaustion_is_a_visible_profile_decision(h, monkeypatch):
+    from types import SimpleNamespace
+
+    from cryptonite_agents.gateway import BudgetExceeded, Gateway
+    from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
+    from cryptonite_agents.gateway.routes import FLASH, FLASH_LITE, PRO
+    from test_debate_gate import Models, load, scanner_payload
+    from test_debate_perp_gate import CapRedis
+
+    m = await profile(h)
+    main = load("profile_budget_worker_main", "main.py")
+
+    async def exhausted(*args, **kwargs):
+        raise BudgetExceeded("debate.lite", "DAILY_BUDGET_EXHAUSTED")
+
+    monkeypatch.setattr(main, "DEBATE_LITE", SimpleNamespace(name="DebateLite", role="debate.lite", run=exhausted))
+    model = Models().model()
+    with override_model(FLASH, model), override_model(PRO, model), override_model(FLASH_LITE, model):
+        await main.process_debate_trigger(h.pool, CapRedis(), scanner_payload(), Gateway(pool=h.pool))
+    row = await h.pool.fetchrow(
+        "SELECT id,status,failure_reason FROM debate_runs WHERE instrument_id=$1 ORDER BY created_at DESC LIMIT 1", SPOT
+    )
+    assert row["status"] == "FAILED"
+    assert row["failure_reason"] == "AI_BUDGET_EXHAUSTED"
+    decision = await h.pool.fetchrow(
+        "SELECT stage,outcome,reason,run_id FROM ai_profile_decisions WHERE mandate_id=$1 ORDER BY id DESC LIMIT 1", m.id
+    )
+    assert (decision["stage"], decision["outcome"], decision["reason"], decision["run_id"]) == (
+        "GATE", "REFUSED", "AI_BUDGET_EXHAUSTED", row["id"]
+    )
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
 @pytest.mark.parametrize("market", ["SPOT", "PERP"])
 @pytest.mark.parametrize("status", ["PAUSED", "STOPPING", "HALTED"])
 async def test_reductions_bypass_profile_entry_refusals_and_disabled_switch(h, market, status):
@@ -260,8 +451,10 @@ async def test_worker_preserves_profile_context_through_gate_debate_and_route(h)
     with override_model(FLASH, model), override_model(PRO, model), override_model(FLASH_LITE, model):
         await main.process_debate_trigger(h.pool, CapRedis(), scanner_payload(), Gateway(pool=h.pool))
     assert await h.pool.fetchval("SELECT mandate_id FROM debate_runs") == m.id
-    rows = await h.pool.fetch("SELECT stage FROM ai_profile_decisions WHERE mandate_id=$1 ORDER BY id", m.id)
+    run_id = await h.pool.fetchval("SELECT id FROM debate_runs WHERE mandate_id=$1", m.id)
+    rows = await h.pool.fetch("SELECT stage,run_id FROM ai_profile_decisions WHERE mandate_id=$1 ORDER BY id", m.id)
     assert [r["stage"] for r in rows] == ["GATE", "DEBATE", "ROUTE"]
+    assert {r["run_id"] for r in rows} == {run_id}
     traces = await h.pool.fetch("SELECT mandate_id FROM ai_decision_traces")
     assert len(traces) == 2
     assert {r["mandate_id"] for r in traces} == {str(m.id)}

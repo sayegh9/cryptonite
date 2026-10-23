@@ -487,8 +487,7 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         logger.warning("Debate %s was already routed (approval %s): returning %s, nothing queued", run_id, existing, status)
         return status, mandate
     outcome = "VETO_WINDOW" if action is ActionClass.ADD_RISK and mandate.autonomy_level == AutonomyLevel.L2 else "APPROVAL_CREATED"
-    await record_decision(conn, mandate.id, "ROUTE", "DRY_RUN_ROUTED" if mandate.dry_run and action is ActionClass.ADD_RISK else outcome,
-                          instrument_id=instrument, run_id=run_id)
+    await record_decision(conn, mandate.id, "ROUTE", outcome, instrument_id=instrument, run_id=run_id)
     return "PENDING_APPROVAL", mandate
 
 

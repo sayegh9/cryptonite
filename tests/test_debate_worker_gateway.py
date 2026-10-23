@@ -56,8 +56,33 @@ async def pool(db_url):
 def redis_double():
     from cryptonite_schemas.marks import quote_tick_key
     redis = AsyncMock()
-    redis.get.side_effect = lambda key: fresh_tick_body() if str(key) == quote_tick_key(INSTRUMENT) \
-        else json.dumps({"last_price": 65000.0})
+    values = {}
+
+    async def get_value(key):
+        key = str(key)
+        if key == quote_tick_key(INSTRUMENT):
+            return fresh_tick_body()
+        return values.get(key, json.dumps({"last_price": 65000.0}))
+
+    async def set_value(key, value, nx=False, ex=None):
+        key = str(key)
+        if nx and key in values:
+            return None
+        values[key] = value
+        return True
+
+    async def eval_script(script, numkeys, key, token, *args):
+        key = str(key)
+        if values.get(key) != token:
+            return 0
+        if "EXPIRE" in script:
+            return 1
+        del values[key]
+        return 1
+
+    redis.get.side_effect = get_value
+    redis.set.side_effect = set_value
+    redis.eval.side_effect = eval_script
     redis.hgetall.return_value = fresh_marks()
     return redis
 

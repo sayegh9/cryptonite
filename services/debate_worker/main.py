@@ -24,7 +24,8 @@ from cryptonite_agents.debate_fleet import (
     SENTIMENT_ANALYST,
     research_manager,
 )
-from cryptonite_agents.gateway import BudgetGuard, CallContext, Gateway
+from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, CallContext, Gateway
+from cryptonite_execution.profile_log import record_decision
 from cryptonite_schemas.debate import normalize_verdict
 from cryptonite_schemas.marks import read_live_quote, read_marks, resolve_quote_price
 from debate_queue import (
@@ -43,6 +44,7 @@ from gate import (
     BRAIN_SOURCES,
     decision_trace_id,
     pre_debate_gate,
+    profile_budget_guard,
     release_cooldown,
 )
 from mandate_routing import route_entry, route_exit
@@ -322,7 +324,9 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
 
     brief = await load_brief(redis_client, payload)
     brief_data = await load_brief_data(redis_client, payload)
-    gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief, brief_data=brief_data)
+    run_id = uuid.uuid4()
+    gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
+                                 brief_data=brief_data, run_id=run_id)
     if not gate.allowed:
         if trigger_source in BRAIN_SOURCES:  # the Brain already said "staged": the refusal is recorded, not silent
             await record_gate_refusal(pg_pool, redis_client, instrument_id, trigger_source, gate.reason, trace_id,
@@ -333,7 +337,6 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     # cooldown and re-raises, so the PEL retry of the same message passes the gate again instead of
     # hitting a cooldown (or dedupe) left behind by an attempt that never became durable.
     my_generation = 0  # the INSERT itself is this attempt's claim (the unique message ref orders entries)
-    run_id = uuid.uuid4()
     try:
         acl = AntiCorruptionLayer(pg_pool)
         context = await acl.get_instrument_context(instrument_id)
@@ -379,9 +382,10 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
             await emit_heartbeat(redis_client, role_name, "PROCESSING", f"Analyzing {instrument_id}...")
             try:
                 # parent = the setup's decision_trace_id: telemetry only (links traces and F2 shadows to outcomes)
-                result = await persona.run(
-                    gateway, prompt_text, parent_trace_id=uuid.UUID(trace_id),
-                    context=CallContext(role=persona.role, mandate_id=payload.get("mandate_id")))
+                async with profile_budget_guard(pg_pool, redis_client, gate.profile):
+                    result = await persona.run(
+                        gateway, prompt_text, parent_trace_id=uuid.UUID(trace_id),
+                        context=CallContext(role=persona.role, mandate_id=payload.get("mandate_id")))
                 txt = turn_text(result.output)
                 async with pg_pool.acquire() as c:
                     await c.execute("INSERT INTO debate_turns (run_id, agent_role, content) VALUES ($1, $2, $3)", run_id, role_name, txt)
@@ -563,6 +567,7 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     except Exception as e:
         logger.error(f"Debate failed for {instrument_id}: {e} (decision_trace_id={trace_id})")
         await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
+        budget_reason = "AI_BUDGET_EXHAUSTED" if isinstance(e, BudgetExceeded) else None
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 rr = await conn.fetchrow("SELECT status,stream_message_id,claim_gen FROM debate_runs WHERE id=$1 FOR UPDATE", run_id)
@@ -575,7 +580,14 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                         except Exception:
                             owned = False
                     if owned:
-                        await conn.execute("UPDATE debate_runs SET status='FAILED',completed_at=now() WHERE id=$1 AND status='RUNNING' AND claim_gen=$2", run_id,my_generation)
+                        if budget_reason and gate.profile is not None:
+                            await record_decision(conn, gate.profile.id, "GATE", "REFUSED", budget_reason,
+                                                  instrument_id=instrument_id, run_id=run_id)
+                        await conn.execute(
+                            "UPDATE debate_runs SET status='FAILED',completed_at=now(),failure_reason=$3 "
+                            "WHERE id=$1 AND status='RUNNING' AND claim_gen=$2",
+                            run_id, my_generation, budget_reason,
+                        )
 
 async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
                                       message_ref: str | None = None, delivered: int | None = None,
