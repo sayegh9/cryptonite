@@ -257,6 +257,7 @@ async def exit_at_tp(ctx, m):
     assert await ctx.pool.fetchval(
         "SELECT count(*) FROM paper_positions WHERE instance_id=$1 AND status='OPEN'", m.instance_id,
     ) == 0
+    return cid
 
 
 async def test_a_auto_short_to_resting_stop_tp_audit_and_notification(replay):
@@ -264,7 +265,7 @@ async def test_a_auto_short_to_resting_stop_tp_audit_and_notification(replay):
     ctx = replay
     m = await profile(ctx)
     run, entry_command = await enter_short(ctx, m)
-    await exit_at_tp(ctx, m)
+    exit_command = await exit_at_tp(ctx, m)
     rows = await ctx.pool.fetch(
         "SELECT stage,outcome,detail,run_id,command_id FROM ai_profile_decisions WHERE mandate_id=$1 "
         "AND stage IN ('GATE','DEBATE','ROUTE','FILL','EXIT') ORDER BY id", m.id,
@@ -272,6 +273,7 @@ async def test_a_auto_short_to_resting_stop_tp_audit_and_notification(replay):
     assert [r["stage"] for r in rows] == ["GATE", "DEBATE", "ROUTE", "FILL", "EXIT"]
     assert all(r["run_id"] == run for r in rows[:3])
     assert rows[3]["command_id"] == entry_command
+    assert rows[4]["command_id"] == exit_command
     assert [(r["stage"], r["outcome"]) for r in rows[3:]] == [("FILL", "FILLED"), ("EXIT", "TP1")]
     fill, close = [json.loads(r["detail"]) for r in rows[3:]]
     assert (fill["side"], fill["market"], fill["mode"]) == ("SHORT", "PERP", "AUTO")
