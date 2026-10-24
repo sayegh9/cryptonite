@@ -784,3 +784,222 @@ def test_malformed_structure_cannot_suppress_long_triage_refusals():
     data = {"candidate": {"entry": "invalid", "stop": 105, "target": 90, "reward_to_risk": 1},
             "timeframes": [{"timeframe": "4h", "trend": "down"}, {"timeframe": "1h", "trend": "down"}]}
     assert gate._rule_rejection(data) == "TRIAGE_RULE_REWARD_TO_RISK"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "daily_cap",
+        "budget_share",
+        "budget_share_accept",
+        "style_timeframe",
+        "direction",
+        "mode_ask",
+        "mode_veto",
+        "mode_auto",
+        "master_switch_off",
+        "dry_run",
+        "max_open_positions",
+    ],
+)
+async def test_tagged_and_coin_locked_global_candidates_have_identical_profile_contract(
+    h, monkeypatch, case
+):
+    """P1.2's global-candidate exception must behave exactly like a profile-tagged candidate.
+
+    The triage backend is stubbed at the role boundary, so this exercises the real profile resolution,
+    gate, decision-log and routing code without making a provider call. Each candidate pair uses the
+    same active profile and coin: one carries the published ``mandate_id`` and the other resolves it
+    solely through ``ai_profile_coin_locks``.
+    """
+    from types import SimpleNamespace
+
+    level = {"mode_ask": 1, "mode_veto": 2, "mode_auto": 3, "master_switch_off": 3}.get(case, 3)
+    changes = {"max_debates_per_day": 1}
+    if case == "direction":
+        changes["direction"] = "SHORT"
+    if case == "max_open_positions":
+        changes["max_open_positions"] = 1
+    if case == "dry_run":
+        changes["dry_run"] = True
+    if case == "mode_veto":
+        changes["active_hours_utc"] = "00:00-00:00"
+    m = await profile(h, market="PERP" if case == "direction" else "SPOT", level=level, **changes)
+    await h.pool.execute(
+        "INSERT INTO system_settings(key,value) VALUES('autotrade.enabled',$1) "
+        "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
+        "0" if case == "master_switch_off" else "1",
+    )
+    await h.pool.execute(
+        "INSERT INTO system_settings(key,value) VALUES('LLM_DAILY_BUDGET_USD','100') "
+        "ON CONFLICT(key) DO UPDATE SET value='100'"
+    )
+
+    timeframe = "15m" if case == "style_timeframe" else "1h"
+    if case == "daily_cap":
+        await h.redis.set(gate.profile_cap_key(m.id, NOW.timestamp()), 1, ex=gate.PROFILE_CAP_TTL_S)
+    elif case in {"budget_share", "budget_share_accept"}:
+        # The profile receives its proportional $10 share; prior traced spend exhausts that share.
+        await profile(h, lock=False, max_debates_per_day=9)
+        if case == "budget_share":
+            await h.pool.execute(
+                "UPDATE system_settings SET value='100' WHERE key='LLM_DAILY_BUDGET_USD'"
+            )
+            trace_id = uuid.uuid4()
+            await h.pool.execute(
+                "INSERT INTO ai_decision_traces(id,role,model,status,mandate_id) "
+                "VALUES($1,'debate.triage','stub','OK',$2)", trace_id, str(m.id)
+            )
+            await h.pool.execute(
+                """INSERT INTO llm_cost_ledger(request_id,agent_name,model_name,input_tokens,output_tokens,
+                   total_cost_usd,trace_id,created_at) VALUES($1,'debate.triage','stub',1,1,10,$2,$3)""",
+                str(trace_id), trace_id, NOW,
+            )
+    elif case == "max_open_positions":
+        await h.pool.execute(
+            """INSERT INTO paper_positions(position_id,account_id,instance_id,instrument_id,side,entry_price,
+               current_price,quantity,status) VALUES($1,'PAPER-ACCOUNT-001',$2,$3,'LONG',60000,60000,.01,'OPEN')""",
+            uuid.uuid4().hex, m.instance_id, SPOT,
+        )
+
+    monkeypatch.setattr(gate, "_utc_now_s", lambda: NOW.timestamp())
+
+    async def mock_triage(*args, context=None, **kwargs):
+        """Record deterministic, profile-attributed mock spend inside the real share guard."""
+        trace_id = uuid.uuid4()
+        await h.pool.execute(
+            "INSERT INTO ai_decision_traces(id,role,model,status,mandate_id,created_at) "
+            "VALUES($1,'debate.triage','stub','OK',$2,$3)",
+            trace_id, context.mandate_id, NOW,
+        )
+        await h.pool.execute(
+            """INSERT INTO llm_cost_ledger(request_id,agent_name,model_name,input_tokens,output_tokens,
+               total_cost_usd,trace_id,created_at) VALUES($1,'debate.triage','stub',1,1,1,$2,$3)""",
+            str(trace_id), trace_id, NOW,
+        )
+        return SimpleNamespace(output=SimpleNamespace(worth_debate=True), trace_id=trace_id)
+
+    monkeypatch.setattr(
+        gate,
+        "TRIAGE",
+        SimpleNamespace(role="debate.triage", run=mock_triage),
+    )
+
+    candidate_id = str(uuid.uuid4())
+
+    async def run_candidate(tagged: bool):
+        run_id = uuid.uuid4()
+        payload = {
+            "instrument_id": SPOT,
+            "trigger_source": "scanner",
+            "candidate_payload": json.dumps({"timeframe": timeframe, "candidate_id": candidate_id}),
+        }
+        if tagged:
+            payload["mandate_id"] = str(m.id)
+        decision = await gate.pre_debate_gate(
+            h.pool, h.redis, payload, object(), "stub brief", now_s=NOW.timestamp(), run_id=run_id
+        )
+        slot_count = int(await h.redis.get(gate.profile_cap_key(m.id, NOW.timestamp())) or 0)
+        route_result = None
+        if decision.allowed:
+            async with h.pool.acquire() as conn:
+                status, routed_profile = await routing.route_entry(
+                    conn, run_id, SPOT, "BUY", .8, 3, mandate_id=payload.get("mandate_id"),
+                    now=NOW, stop_loss=57000, take_profit=66000, reference_price=60000,
+                    redis=h.redis, grade_context=BULL,
+                )
+            route_result = (status, str(routed_profile.id) if routed_profile else None)
+        rows = await h.pool.fetch(
+            "SELECT mandate_id,stage,outcome,reason FROM ai_profile_decisions WHERE run_id=$1 ORDER BY id", run_id
+        )
+        # Each stage row is attached to the resolved profile even when the source payload omitted its id.
+        assert all(row["mandate_id"] == m.id for row in rows)
+        return (decision.allowed, decision.reason, route_result, slot_count), [
+            (row["stage"], row["outcome"], row["reason"]) for row in rows
+        ], run_id
+
+    tagged = await run_candidate(True)
+    await h.redis.delete(f"debate:cooldown:{SPOT}:{timeframe}")
+    if case not in {"daily_cap", "budget_share"}:
+        await h.redis.delete(gate.profile_cap_key(m.id, NOW.timestamp()))
+    untagged = await run_candidate(False)
+    assert tagged[:2] == untagged[:2]
+
+    expected_gate = {
+        "daily_cap": "PROFILE_DEBATE_DAILY_CAP",
+        "budget_share": "AI_BUDGET_EXHAUSTED",
+        "style_timeframe": "TIMEFRAME_NOT_IN_STYLE",
+    }.get(case, "TRIAGE_ACCEPTED")
+    assert tagged[0][1] == expected_gate
+    if expected_gate != "TRIAGE_ACCEPTED":
+        assert tagged[1] == [("GATE", "REFUSED", expected_gate)]
+        assert tagged[0][2] is None
+        assert tagged[0][3] == (1 if case == "daily_cap" else 0)
+        assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
+        assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+        return
+
+    expected_route = {
+        "direction": ("NO_TRADE", "NO_TRADE", "DIRECTION_NOT_ALLOWED"),
+        "max_open_positions": ("NO_TRADE", "NO_TRADE", "MAX_OPEN_POSITIONS"),
+        "mode_ask": ("PENDING_APPROVAL", "APPROVAL_CREATED", None),
+        "mode_veto": ("PENDING_APPROVAL", "VETO_WINDOW", None),
+        "mode_auto": ("COMPLETED", "ENQUEUED", None),
+        "budget_share_accept": ("COMPLETED", "ENQUEUED", None),
+        "master_switch_off": ("PENDING_APPROVAL", "APPROVAL_CREATED", None),
+        "dry_run": ("COMPLETED", "DRY_RUN_ROUTED", None),
+    }[case]
+    assert tagged[0][2][0] == expected_route[0]
+    assert tagged[0][2][1] == str(m.id)
+    assert tagged[0][3] == 1
+    assert tagged[1] == [
+        ("GATE", "ACCEPTED", "TRIAGE_ACCEPTED"),
+        ("DEBATE", "BUY", None),
+        ("ROUTE", expected_route[1], expected_route[2]),
+    ]
+    if case == "direction" or case == "max_open_positions":
+        assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
+        assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+    else:
+        assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == (
+            0 if expected_route[0] == "COMPLETED" else 2
+        )
+    # Assert persisted ownership and approval policy independently for both routes.
+    for _, _, _, _, run_id in (tagged[0] + (tagged[2],), untagged[0] + (untagged[2],)):
+        approvals = await h.pool.fetch(
+            "SELECT mandate_id, action_class, command_type, timeout_policy FROM ai_approvals WHERE source_ref=$1",
+            str(run_id),
+        )
+        commands = await h.pool.fetch(
+            "SELECT mandate_id, command_type, idempotency_key, payload FROM execution_commands "
+            "WHERE idempotency_key=$1",
+            f"debate:{run_id}",
+        )
+        if expected_route[0] == "NO_TRADE":
+            assert not approvals
+            assert not commands
+        elif expected_route[0] == "PENDING_APPROVAL":
+            assert len(approvals) == 1
+            assert approvals[0]["mandate_id"] == m.id
+            assert approvals[0]["action_class"] == "ADD_RISK"
+            assert approvals[0]["command_type"] == "SUBMIT_ORDER"
+            assert approvals[0]["timeout_policy"] == ("PROCEED" if case == "mode_veto" else "DENY")
+            assert not commands
+        else:
+            assert not approvals
+            assert len(commands) == 1
+            assert commands[0]["mandate_id"] == m.id
+            assert commands[0]["command_type"] == "SUBMIT_ORDER"
+            assert commands[0]["idempotency_key"] == f"debate:{run_id}"
+            assert json.loads(commands[0]["payload"])["mandate_id"] == str(m.id)
+    if case not in {"direction", "max_open_positions"}:
+        # The profile slot is independently reset between runs; each accepted candidate consumes one.
+        for _, _, _, slot_count, _ in (tagged[0] + (tagged[2],), untagged[0] + (untagged[2],)):
+            assert slot_count == 1
+    if case == "budget_share_accept":
+        attributed_spend = await h.pool.fetchval(
+            """SELECT COALESCE(SUM(l.total_cost_usd),0) FROM llm_cost_ledger l
+               JOIN ai_decision_traces t ON t.id=l.trace_id WHERE t.mandate_id=$1""",
+            str(m.id),
+        )
+        assert attributed_spend == Decimal("2")
