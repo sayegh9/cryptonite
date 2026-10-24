@@ -250,11 +250,13 @@ async def already_handled(pg_pool, message_ref: str | None, redis_client=None, c
 
 
 async def record_gate_refusal(pg_pool, redis_client, instrument_id: str, trigger_source: str, reason: str,
-                              trace_id: str, message_ref: str | None, consumer: str | None) -> None:
-    """A Brain-started debate the pre-debate gate refused ends as a terminal GATE_REFUSED run (WS-3C), so the card the
-    Brain showed as staged can say why it did not run. One row per queued message: the unique message ref drops a
-    redelivery's write. Owner-guarded like NO_PRICE, so a stale attempt cannot block the owner's run. Never raises:
-    the refusal stands either way."""
+                              trace_id: str, message_ref: str | None, consumer: str | None, *,
+                              candidate_id=None, gate=None, run_id=None) -> None:
+    """Persist terminal refusal and profile GATE in the same candidate/message-fenced transaction.
+
+    Legacy callers retain best-effort recording. Worker callers propagate storage failures so
+    the queue retries instead of acknowledging an outcome whose audit was never committed.
+    """
     try:
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
@@ -266,13 +268,21 @@ async def record_gate_refusal(pg_pool, redis_client, instrument_id: str, trigger
                         return
                 await conn.execute(
                     """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at,
-                                                completed_at, failure_reason, stream_message_id, decision_trace_id)
-                       VALUES ($1, $2, 'GATE_REFUSED', $3, now(), now(), $4, $5, $6)""",
-                    uuid.uuid4(), instrument_id, trigger_source, reason, message_ref, uuid.UUID(trace_id))
+                                                completed_at, failure_reason, stream_message_id, decision_trace_id,
+                                                candidate_id, mandate_id)
+                       VALUES ($1, $2, 'GATE_REFUSED', $3, now(), now(), $4, $5, $6, $7, $8)""",
+                    run_id := run_id or uuid.uuid4(), instrument_id, trigger_source, reason, message_ref,
+                    uuid.UUID(trace_id), candidate_id, gate.profile.id if gate and gate.profile else None)
+                if gate and gate.profile:
+                    if not await record_decision(conn, gate.profile.id, "GATE", "REFUSED", reason,
+                                                 instrument_id=instrument_id, run_id=run_id):
+                        raise RuntimeError("GATE refusal audit could not be persisted")
     except asyncpg.UniqueViolationError:
         logger.info(f"GATE_REFUSED outcome for {message_ref} already recorded: redelivery is idempotent")
     except Exception:
         logger.exception(f"GATE_REFUSED outcome for {message_ref} ({reason}) not recorded")
+        if gate is not None:
+            raise
 
 
 async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
@@ -340,13 +350,16 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     brief_data = await load_brief_data(redis_client, payload)
     run_id = uuid.uuid4()
     gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
-                                 brief_data=brief_data, run_id=run_id)
+                                 brief_data=brief_data, run_id=run_id, defer_record=True)
     if not gate.allowed:
-        if trigger_source in BRAIN_SOURCES:  # the Brain already said "staged": the refusal is recorded, not silent
+        if gate.reason == "DUPLICATE_CANDIDATE":
+            return
+        if candidate_id is not None or trigger_source in BRAIN_SOURCES or gate.profile is not None:
             await record_gate_refusal(pg_pool, redis_client, instrument_id, trigger_source, gate.reason, trace_id,
-                                      message_ref, consumer)
+                                      message_ref, consumer, candidate_id=candidate_id, gate=gate, run_id=run_id)
         return
 
+    # The unique run insert and GATE audit commit together; only the winning delivery records GATE.
     # D1: the run row is the first durable write of a run. Until it commits, any failure releases the
     # cooldown and re-raises, so the PEL retry of the same message passes the gate again instead of
     # hitting a cooldown (or dedupe) left behind by an attempt that never became durable.
@@ -374,6 +387,10 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                        VALUES ($1, $2, 'RUNNING', $3, now(), $4, $5, $6, $7)""",
                     run_id, instrument_id, trigger_source, uuid.UUID(trace_id), candidate_id, message_ref, my_generation,
                 )
+                if gate.profile:
+                    if not await record_decision(conn, gate.profile.id, "GATE", "ACCEPTED", gate.reason,
+                                                 instrument_id=instrument_id, run_id=run_id):
+                        raise RuntimeError("GATE acceptance audit could not be persisted")
     except asyncpg.UniqueViolationError:
         # D1 / B4: two deliveries raced past the gate; the winner owns the candidate/message. This one ends here —
         # no model call and never a second durable decision.

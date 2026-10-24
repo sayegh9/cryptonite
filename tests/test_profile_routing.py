@@ -1003,3 +1003,103 @@ async def test_tagged_and_coin_locked_global_candidates_have_identical_profile_c
             str(m.id),
         )
         assert attributed_spend == Decimal("2")
+
+
+async def _audit_worker(h, monkeypatch):
+    """Exercise durable worker boundaries with deterministic data and no model calls."""
+    from types import SimpleNamespace
+
+    from test_debate_gate import load
+    main = load("profile_audit_worker", "main.py")
+
+    async def nothing(*args):
+        return None
+
+    async def brief(*args):
+        return "audit brief"
+
+    class Context:
+        def __init__(self, pool):
+            pass
+
+        async def get_instrument_context(self, instrument):
+            return {}
+
+    async def no_model(*args, **kwargs):
+        raise RuntimeError("audit stops after durable run")
+
+    monkeypatch.setattr(main, "read_live_quote", nothing)
+    monkeypatch.setattr(main, "resolve_quote_price", lambda *args: SimpleNamespace(
+        price=60000, source="audit", age_s=0, quote_ts_ns=1))
+    monkeypatch.setattr(main, "load_brief", brief)
+    monkeypatch.setattr(main, "load_brief_data", nothing)
+    monkeypatch.setattr(main, "AntiCorruptionLayer", Context)
+    monkeypatch.setattr(main, "DEBATE_LITE", SimpleNamespace(name="audit", role="debate.lite", run=no_model))
+    return main
+
+
+@pytest.mark.parametrize("refused", [False, True])
+async def test_candidate_delivery_records_one_atomic_gate_and_run(h, monkeypatch, refused):
+    """Distinct messages race after gate evaluation; exactly one durable audit survives."""
+    m = await profile(h)
+    main = await _audit_worker(h, monkeypatch)
+    await h.pool.execute("UPDATE paper_accounts SET daily_loss_latched=false")
+    if refused:
+        await h.pool.execute("UPDATE paper_accounts SET daily_loss_latched=true")
+    arrived = 0
+    barrier = asyncio.Event()
+
+    async def synchronized_gate(pool, redis, payload, gateway, brief, **kwargs):
+        nonlocal arrived
+        decision = await gate.pre_debate_gate(pool, redis, payload, None, brief, **kwargs)
+        arrived += 1
+        if arrived >= 2:
+            barrier.set()
+        await asyncio.wait_for(barrier.wait(), 5)
+        return decision
+
+    monkeypatch.setattr(main, "pre_debate_gate", synchronized_gate)
+    cid = uuid.uuid4()
+    payload = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "1h", "candidate_id": str(cid)})}
+    await asyncio.gather(*(main.process_debate_trigger(h.pool, h.redis, payload, object(), message_ref=f"audit/{i}-0")
+                           for i in (1, 2)))
+    await main.process_debate_trigger(h.pool, h.redis, payload, object(), message_ref="audit/3-0")
+    rows = await h.pool.fetch("SELECT outcome,run_id FROM ai_profile_decisions WHERE mandate_id=$1 AND stage='GATE'", m.id)
+    runs = await h.pool.fetch("SELECT id,status FROM debate_runs WHERE candidate_id=$1", cid)
+    assert len(rows) == len(runs) == 1
+    assert rows[0]["outcome"] == ("REFUSED" if refused else "ACCEPTED")
+    assert rows[0]["run_id"] == runs[0]["id"]
+    if refused:
+        assert runs[0]["status"] == "GATE_REFUSED"
+    else:
+        assert int(await h.redis.get(gate.profile_cap_key(m.id, gate._utc_now_s()))) == 1
+
+
+async def test_candidate_retry_after_slot_reservation_preserves_slot_and_audit(h, monkeypatch):
+    """Failure before a durable run leaves the candidate able to reuse its last daily slot."""
+    m = await profile(h, max_debates_per_day=1)
+    main = await _audit_worker(h, monkeypatch)
+    await h.pool.execute("UPDATE paper_accounts SET daily_loss_latched=false")
+
+    async def no_triage(pool, redis, payload, gateway, brief, **kwargs):
+        return await gate.pre_debate_gate(pool, redis, payload, None, brief, **kwargs)
+
+    monkeypatch.setattr(main, "pre_debate_gate", no_triage)
+    context_class = main.AntiCorruptionLayer
+
+    class Crash(context_class):
+        async def get_instrument_context(self, instrument):
+            raise RuntimeError("crash after reservation")
+
+    monkeypatch.setattr(main, "AntiCorruptionLayer", Crash)
+    cid = uuid.uuid4()
+    payload = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "1h", "candidate_id": str(cid)})}
+    with pytest.raises(RuntimeError, match="crash after reservation"):
+        await main.process_debate_trigger(h.pool, h.redis, payload, object(), message_ref="audit/1-0")
+    assert await h.pool.fetchval("SELECT count(*) FROM debate_runs WHERE candidate_id=$1", cid) == 0
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_profile_decisions WHERE stage='GATE'") == 0
+    monkeypatch.setattr(main, "AntiCorruptionLayer", context_class)
+    await main.process_debate_trigger(h.pool, h.redis, payload, object(), message_ref="audit/2-0")
+    assert await h.pool.fetchval("SELECT count(*) FROM debate_runs WHERE candidate_id=$1", cid) == 1
+    assert await h.pool.fetchval("SELECT outcome FROM ai_profile_decisions WHERE stage='GATE'") == "ACCEPTED"
+    assert int(await h.redis.get(gate.profile_cap_key(m.id, gate._utc_now_s()))) == 1
