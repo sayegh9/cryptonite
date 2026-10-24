@@ -84,6 +84,26 @@ def plain_text(tier: str, title: str, body: str) -> str:
 def alert_text(alert: dict[str, Any]) -> tuple[str, str]:
     """(title, body) for a system alert from ``channel:system_alerts`` or ``send_alert``."""
     kind = str(alert.get("kind") or alert.get("reason") or alert.get("type") or "ALERT")
+    profile = alert.get("mandate", "Profile")
+    if kind == "PROFILE_BREAKER":
+        return f"{profile} · breaker", f"Profile paused: {alert.get('reason', '')}. Exits continue."
+    if kind == "PROFILE_FILL":
+        return f"{profile} · fill", (
+            f"{alert.get('side')} {alert.get('market')} {alert.get('instrument_id')} · {alert.get('mode')}\n"
+            f"Quantity {alert.get('qty')} @ {_price(alert.get('price'))} · {alert.get('leverage')}x · "
+            f"stop {_price(alert.get('stop'))}")
+    if kind == "PROFILE_EXIT":
+        return f"{profile} · exit", (
+            f"{alert.get('side')} {alert.get('market')} {alert.get('instrument_id')} · {alert.get('reason')}\n"
+            f"Quantity {alert.get('qty')} @ {_price(alert.get('price'))} · "
+            f"P&L {_money(alert.get('realized_pnl'))} · {alert.get('r_multiple') if alert.get('r_multiple') is not None else 'unknown '}R")
+    if kind == "PROFILE_DAILY_SUMMARY":
+        refusals = alert.get('refusals')
+        digest = f"\nRefusals: {refusals}" if refusals is not None else ''
+        return f"{profile} · daily summary", (
+            f"{alert.get('day', '')} · P&L {_money(alert.get('pnl'))} · {alert.get('trades')} trades\n"
+            f"Wins {alert.get('wins')} / losses {alert.get('losses')} · "
+            f"Breaker events {alert.get('breaker_events')}{digest}")
     if alert.get("message"):
         return kind.replace("_", " ").title(), str(alert["message"])
     detail = ", ".join(f"{k}={v}" for k, v in alert.items() if k not in ("type", "v", "severity", "kind", "message"))
