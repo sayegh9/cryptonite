@@ -1,9 +1,10 @@
-"""ADR 0011 P1.6: deterministic scanner-to-paper replay with real SQL and Redis.
+"""ADR 0011 P1.6: deterministic scanner-engine-to-paper replay with real SQL and Redis.
 
 Only the debate verdict is supplied locally. The scanner evaluates synthetic closed
 bars, and the production gate, routing, command poller, guarded dispatcher, bridge,
 exit monitor and notification consumer execute their normal paths. No lake, model,
-exchange connection or running application service is needed.
+exchange connection or running application service is needed. Profile scanner worker
+publication and preset selection are covered by the P1.2 worker tests.
 """
 
 import asyncio
@@ -152,15 +153,15 @@ async def debate(ctx, m, *, direction="SHORT", coin=None):
     # A unique scanner window permits each replay step without waiting out production cooldowns.
     await ctx.redis.delete(f"debate:cooldown:{coin}:1h")
     run = uuid.uuid4()
-    decision = await gate.pre_debate_gate(
-        ctx.pool, ctx.redis, payload, None, "Synthetic closed-bar market brief",
-        now_s=time.time(), run_id=None,
-    )
-    assert decision.allowed, decision.reason
     await ctx.pool.execute(
         "INSERT INTO debate_runs(id,instrument_id,status,trigger_source) VALUES($1,$2,'RUNNING','test')",
         run, coin,
     )
+    decision = await gate.pre_debate_gate(
+        ctx.pool, ctx.redis, payload, None, "Synthetic closed-bar market brief",
+        now_s=time.time(), run_id=run,
+    )
+    assert decision.allowed, decision.reason
     trend = "BEAR" if direction == "SHORT" else "BULL"
     context = {"trend_4h": trend, "trend_1h": trend, "trend_15m": trend,
                "adx": 30, "plus_di": 10 if direction == "SHORT" else 30,
@@ -216,6 +217,11 @@ async def enter_short(ctx, m):
     position = ctx.engine.dispatcher.perp_positions[PERP]
     assert position.signed_qty < 0 and position.instance_id == m.instance_id
     assert position.margin_mode == "ISOLATED"
+    assert D("1") <= position.leverage <= D("3")
+    assert abs(position.signed_qty) * position.entry_price <= min(
+        D("0.25") * D("10000"), m.capital_budget_usd * m.max_position_pct / D("100"),
+    )
+    ctx.engine.dispatcher.dispatch.assert_called()
     stops = ctx.engine.dispatcher.resting_stops(PERP, m.instance_id)
     assert len(stops) == 1
     stop = next(iter(stops.values()))
@@ -226,7 +232,7 @@ async def enter_short(ctx, m):
         "SELECT count(*) FROM paper_positions WHERE instance_id=$1 AND status='OPEN' AND side='SHORT'",
         m.instance_id,
     ) == 1
-    return position
+    return run, cmd["command_id"]
 
 
 async def exit_at_tp(ctx, m):
@@ -257,14 +263,17 @@ async def test_a_auto_short_to_resting_stop_tp_audit_and_notification(replay):
     """P1.6 scenario 1: an AUTO perpetual short survives every real pipeline boundary."""
     ctx = replay
     m = await profile(ctx)
-    await enter_short(ctx, m)
+    run, entry_command = await enter_short(ctx, m)
     await exit_at_tp(ctx, m)
     rows = await ctx.pool.fetch(
-        "SELECT stage,outcome,detail FROM ai_profile_decisions WHERE mandate_id=$1 "
-        "AND stage IN ('FILL','EXIT') ORDER BY id", m.id,
+        "SELECT stage,outcome,detail,run_id,command_id FROM ai_profile_decisions WHERE mandate_id=$1 "
+        "AND stage IN ('GATE','DEBATE','ROUTE','FILL','EXIT') ORDER BY id", m.id,
     )
-    assert [(r["stage"], r["outcome"]) for r in rows] == [("FILL", "FILLED"), ("EXIT", "TP1")]
-    fill, close = [json.loads(r["detail"]) for r in rows]
+    assert [r["stage"] for r in rows] == ["GATE", "DEBATE", "ROUTE", "FILL", "EXIT"]
+    assert all(r["run_id"] == run for r in rows[:3])
+    assert rows[3]["command_id"] == entry_command
+    assert [(r["stage"], r["outcome"]) for r in rows[3:]] == [("FILL", "FILLED"), ("EXIT", "TP1")]
+    fill, close = [json.loads(r["detail"]) for r in rows[3:]]
     assert (fill["side"], fill["market"], fill["mode"]) == ("SHORT", "PERP", "AUTO")
     assert D(close["realized_pnl"]) > 0 and D(close["r_multiple"]) > 0
     async with ctx.pool.acquire() as conn:
@@ -393,17 +402,16 @@ async def test_two_profiles_cannot_dispatch_over_their_reserved_cash(replay):
                amount,fee_slippage_headroom,state) VALUES($1,$2,'PAPER',$3,'USDT',2899,1,'PRE_SEND')""",
             claim, oid, ACCOUNT,
         )
-        cid = uuid.uuid4()
-        await ctx.pool.execute(
-            """INSERT INTO execution_commands(command_id,idempotency_key,command_type,mandate_id,
-               target_instance_id,payload,environment,account_id) VALUES($1,$2,'SUBMIT_ORDER',$3,$4,$5::jsonb,'PAPER','PAPER-ACCOUNT-001')""",
-            cid, str(cid), m.id, m.instance_id,
-            json.dumps({"instrument_id": coin, "side": "BUY", "quantity": ".004", "order_type": "LIMIT",
-                        "price": "50000", "stop_loss": "49500", "mandate_id": str(m.id)}),
-        )
-        settled = await poll(ctx, cid)
+        status, run = await debate(ctx, m, direction="LONG", coin=coin)
+        assert status == "COMPLETED"
+        cmd = await command_for(ctx, run)
+        settled = await poll(ctx, cmd["command_id"])
         assert settled["status"] == "REJECTED", dict(settled)
         assert settled["error_message"] == "PROFILE_CASH_EXHAUSTED"
+        assert await ctx.pool.fetchval(
+            "SELECT count(*) FROM execution_reservations WHERE command_id=$1 AND state='PRE_SEND'",
+            claim,
+        ) == 1
     ctx.engine.dispatcher.dispatch.assert_not_called()
     assert await ctx.pool.fetchval("SELECT count(*) FROM paper_orders") == 0
     assert await ctx.pool.fetchval("SELECT count(*) FROM ai_autonomy_events WHERE kind='BREACH'") == 0
