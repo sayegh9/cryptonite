@@ -822,6 +822,8 @@ async def test_tagged_and_coin_locked_global_candidates_have_identical_profile_c
         changes["max_open_positions"] = 1
     if case == "dry_run":
         changes["dry_run"] = True
+    if case == "mode_veto":
+        changes["active_hours_utc"] = "00:00-00:00"
     m = await profile(h, market="PERP" if case == "direction" else "SPOT", level=level, **changes)
     await h.pool.execute(
         "INSERT INTO system_settings(key,value) VALUES('autotrade.enabled',$1) "
@@ -841,7 +843,7 @@ async def test_tagged_and_coin_locked_global_candidates_have_identical_profile_c
         await profile(h, lock=False, max_debates_per_day=9)
         if case == "budget_share":
             await h.pool.execute(
-                "UPDATE system_settings SET value='10' WHERE key='LLM_DAILY_BUDGET_USD'"
+                "UPDATE system_settings SET value='100' WHERE key='LLM_DAILY_BUDGET_USD'"
             )
             trace_id = uuid.uuid4()
             await h.pool.execute(
@@ -883,12 +885,14 @@ async def test_tagged_and_coin_locked_global_candidates_have_identical_profile_c
         SimpleNamespace(role="debate.triage", run=mock_triage),
     )
 
+    candidate_id = str(uuid.uuid4())
+
     async def run_candidate(tagged: bool):
         run_id = uuid.uuid4()
         payload = {
             "instrument_id": SPOT,
             "trigger_source": "scanner",
-            "candidate_payload": json.dumps({"timeframe": timeframe, "candidate_id": str(uuid.uuid4())}),
+            "candidate_payload": json.dumps({"timeframe": timeframe, "candidate_id": candidate_id}),
         }
         if tagged:
             payload["mandate_id"] = str(m.id)
@@ -912,14 +916,14 @@ async def test_tagged_and_coin_locked_global_candidates_have_identical_profile_c
         assert all(row["mandate_id"] == m.id for row in rows)
         return (decision.allowed, decision.reason, route_result, slot_count), [
             (row["stage"], row["outcome"], row["reason"]) for row in rows
-        ]
+        ], run_id
 
     tagged = await run_candidate(True)
     await h.redis.delete(f"debate:cooldown:{SPOT}:{timeframe}")
     if case not in {"daily_cap", "budget_share"}:
         await h.redis.delete(gate.profile_cap_key(m.id, NOW.timestamp()))
     untagged = await run_candidate(False)
-    assert tagged == untagged
+    assert tagged[:2] == untagged[:2]
 
     expected_gate = {
         "daily_cap": "PROFILE_DEBATE_DAILY_CAP",
@@ -960,6 +964,38 @@ async def test_tagged_and_coin_locked_global_candidates_have_identical_profile_c
         assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == (
             0 if expected_route[0] == "COMPLETED" else 2
         )
+    # Assert persisted ownership and approval policy independently for both routes.
+    for _, _, _, _, run_id in (tagged[0] + (tagged[2],), untagged[0] + (untagged[2],)):
+        approvals = await h.pool.fetch(
+            "SELECT mandate_id, action_class, command_type, timeout_policy FROM ai_approvals WHERE source_ref=$1",
+            str(run_id),
+        )
+        commands = await h.pool.fetch(
+            "SELECT mandate_id, command_type, idempotency_key, payload FROM execution_commands "
+            "WHERE idempotency_key=$1",
+            f"debate:{run_id}",
+        )
+        if expected_route[0] == "NO_TRADE":
+            assert not approvals
+            assert not commands
+        elif expected_route[0] == "PENDING_APPROVAL":
+            assert len(approvals) == 1
+            assert approvals[0]["mandate_id"] == m.id
+            assert approvals[0]["action_class"] == "ADD_RISK"
+            assert approvals[0]["command_type"] == "SUBMIT_ORDER"
+            assert approvals[0]["timeout_policy"] == ("PROCEED" if case == "mode_veto" else "DENY")
+            assert not commands
+        else:
+            assert not approvals
+            assert len(commands) == 1
+            assert commands[0]["mandate_id"] == m.id
+            assert commands[0]["command_type"] == "SUBMIT_ORDER"
+            assert commands[0]["idempotency_key"] == f"debate:{run_id}"
+            assert json.loads(commands[0]["payload"])["mandate_id"] == str(m.id)
+    if case not in {"direction", "max_open_positions"}:
+        # The profile slot is independently reset between runs; each accepted candidate consumes one.
+        for _, _, _, slot_count, _ in (tagged[0] + (tagged[2],), untagged[0] + (untagged[2],)):
+            assert slot_count == 1
     if case == "budget_share_accept":
         attributed_spend = await h.pool.fetchval(
             """SELECT COALESCE(SUM(l.total_cost_usd),0) FROM llm_cost_ledger l
