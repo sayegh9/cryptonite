@@ -25,6 +25,8 @@ class Redis:
         return self.values.get(key)
 
     async def set(self, key, value, **kwargs):
+        if kwargs.get('nx') and key in self.values:
+            return False
         self.values[key] = value
         return True
 
@@ -514,6 +516,67 @@ async def test_review_absent_ingest_after_start_grace_and_last_healthy(monkeypat
     assert conn.status == 'ACTIVE'
     await monitor.track_profile_breakers(conn, redis, m, NOW + dt.timedelta(minutes=11), {})
     assert conn.status == 'PAUSED'
+
+
+@pytest.mark.asyncio
+async def test_missing_health_after_resume_fails_closed_after_redis_cache_loss(monkeypatch):
+    conn, m, redis = BreakerConn(), breaker_profile(), Redis()
+    monkeypatch.setattr(monitor, 'pause', fake_pause(conn, m))
+    monkeypatch.setattr(monitor, 'record_decision', AsyncMock(return_value=True))
+    conn.started = NOW - dt.timedelta(minutes=11)  # first durable STARTED event
+    await monitor.track_profile_breakers(conn, redis, m, NOW, {})
+    assert conn.status == 'PAUSED'
+    # Model Redis losing its key during restart; the persisted first-start time still governs.
+    redis.values.clear()
+    conn.status = 'ACTIVE'
+    await monitor.track_profile_breakers(conn, redis, m, NOW + dt.timedelta(minutes=1), {})
+    assert conn.status == 'PAUSED'
+    assert len(conn.events) == 2
+
+
+@pytest.mark.asyncio
+async def test_real_breaker_alerts_are_not_starved_by_audit_failures(monkeypatch):
+    """Even with 101 missing audits, alert reconciliation includes the newest durable pause."""
+    import os
+
+    import asyncpg
+    from migrated_db import seed_paper_account
+    from test_mandate_hard_stop import make_mandate
+
+    url = os.environ.get('DATABASE_URL', '')
+    if not url.endswith('/cryptonite_ci_p18'):
+        pytest.skip('requires the dedicated P1.8 database')
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    mid = None
+    try:
+        async with pool.acquire() as conn:
+            await seed_paper_account(conn)
+        m = await make_mandate(pool, 1)
+        mid = m.id
+        async with pool.acquire() as conn:
+            for index in range(101):
+                await conn.execute(
+                    """INSERT INTO ai_autonomy_events (mandate_id, kind, reason, detail, actor)
+                       VALUES ($1, 'PAUSED', $2, '{}'::jsonb, 'risk:breaker')""",
+                    mid, f'BREAKER_STALE_DATA: episode {index}')
+            monkeypatch.setattr(monitor, 'record_decision', AsyncMock(return_value=False))
+            await monitor.notify_profile_breakers(conn, Redis())
+            newest = await conn.fetchval(
+                """SELECT id FROM ai_autonomy_events WHERE mandate_id=$1 AND actor='risk:breaker'
+                   ORDER BY id DESC LIMIT 1""", mid)
+            assert await conn.fetchval(
+                'SELECT EXISTS (SELECT 1 FROM notifications_outbox WHERE dedupe_key=$1)',
+                f'profile-breaker-event:{newest}')
+            assert await conn.fetchval(
+                """SELECT count(*) FROM notifications_outbox WHERE kind='PROFILE_BREAKER'
+                   AND payload->>'mandate_id'=$1""", str(mid)) == 100
+    finally:
+        if mid is not None:
+            async with pool.acquire() as conn:
+                await conn.execute("DELETE FROM notifications_outbox WHERE payload->>'mandate_id'=$1", str(mid))
+                await conn.execute('DELETE FROM ai_autonomy_events WHERE mandate_id=$1', mid)
+                await conn.execute('DELETE FROM ai_mandates WHERE id=$1', mid)
+        await pool.close()
 
 
 @pytest.mark.asyncio

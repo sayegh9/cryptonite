@@ -28,6 +28,7 @@ while flat), halts every mandate and closes every AI-owned position.
 import datetime
 import json
 import logging
+import math
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -515,13 +516,13 @@ async def notify_profile_decisions(conn, redis) -> None:
 
 
 async def _profile_stale_coin(conn, redis, mandate: Mandate, now: datetime.datetime, health: dict) -> str | None:
-    """ADR 0011: missing health gets ten minutes from start or the last healthy observation.
+    """ADR 0011: missing health gets ten minutes from the first persisted start or last healthy observation.
 
-    The start baseline comes from persisted STARTED/RESUMED events. Redis retains the last
-    healthy arrival across process restarts; an outage of Redis falls back to the start baseline.
+    Redis retains the last healthy arrival across process restarts. Its absence or outage falls
+    back to the first persisted STARTED/RESUMED event, so a resume cannot renew the grace period.
     """
     started = await conn.fetchval(
-        """SELECT COALESCE((SELECT MAX(e.created_at) FROM ai_autonomy_events e
+        """SELECT COALESCE((SELECT MIN(e.created_at) FROM ai_autonomy_events e
                            WHERE e.mandate_id = m.id AND e.kind IN ('STARTED', 'RESUMED')),
                           m.created_at) AS started_at FROM ai_mandates m WHERE m.id = $1""", mandate.id)
     baseline = started.timestamp() if started is not None else now.timestamp()
@@ -536,7 +537,16 @@ async def _profile_stale_coin(conn, redis, mandate: Mandate, now: datetime.datet
                 else:
                     cached = await redis.get(key)
                     if cached is not None:
-                        last = float(cached)
+                        # Redis clients return bytes or strings. Ignore mock/garbled values rather
+                        # than coercing arbitrary objects into a recent timestamp (AsyncMock does
+                        # this as 1.0), which could incorrectly declare absent health fresh.
+                        if isinstance(cached, (bytes, str, int, float)) and not isinstance(cached, bool):
+                            try:
+                                cached_ts = float(cached)
+                            except (TypeError, ValueError):
+                                cached_ts = math.nan
+                            if math.isfinite(cached_ts):
+                                last = cached_ts
                     else:
                         # Preserve the first grace baseline across resumes until data actually arrives.
                         await redis.set(key, str(last), nx=True)
@@ -607,25 +617,29 @@ async def track_profile_breakers(conn, redis, mandate: Mandate, now: datetime.da
 
 async def notify_profile_breakers(conn, redis) -> None:
     """Recover missing decision audits and alerts from durable lifecycle PAUSED events."""
+    # Alert reconciliation is independent from audit writes. A failed decision INSERT must not
+    # keep an already-alerted event in the same bounded query and starve newer CRITICAL alerts.
     events = await conn.fetch(
         """SELECT e.id, e.mandate_id, e.reason, e.detail, m.name FROM ai_autonomy_events e
            JOIN ai_mandates m ON m.id = e.mandate_id
-           WHERE e.kind = 'PAUSED' AND e.actor = 'risk:breaker' AND (
-               NOT EXISTS (SELECT 1 FROM ai_profile_decisions d WHERE d.mandate_id = e.mandate_id
-                           AND d.stage = 'BREAKER' AND d.detail->>'breaker_event_id' = e.id::text)
-               OR NOT EXISTS (SELECT 1 FROM notifications_outbox n
-                              WHERE n.dedupe_key = 'profile-breaker-event:' || e.id::text))
-           ORDER BY e.id LIMIT 100""")
+           WHERE e.kind = 'PAUSED' AND e.actor = 'risk:breaker'
+             AND NOT EXISTS (SELECT 1 FROM notifications_outbox n
+                             WHERE n.dedupe_key = 'profile-breaker-event:' || e.id::text)
+           ORDER BY e.id DESC LIMIT 100""")
     for event in events:
-        exists = await conn.fetchval(
-            """SELECT EXISTS (SELECT 1 FROM ai_profile_decisions WHERE mandate_id = $1 AND stage = 'BREAKER'
-               AND detail->>'breaker_event_id' = $2)""", event['mandate_id'], str(event['id']))
-        if not exists:
-            await record_decision(conn, event['mandate_id'], 'BREAKER', 'PAUSED', event['reason'],
-                                  breaker_event_id=str(event['id']), **_detail(event['detail']))
         await _profile_alert(conn, redis, 'PROFILE_BREAKER',
                              dict(mandate_id=str(event['mandate_id']), mandate=event['name'], reason=event['reason']),
                              f"profile-breaker-event:{event['id']}", tier='CRITICAL')
+    # Audit retries have their own bounded queue and cannot block alert delivery above.
+    events = await conn.fetch(
+        """SELECT e.id, e.mandate_id, e.reason, e.detail FROM ai_autonomy_events e
+           WHERE e.kind = 'PAUSED' AND e.actor = 'risk:breaker'
+             AND NOT EXISTS (SELECT 1 FROM ai_profile_decisions d WHERE d.mandate_id = e.mandate_id
+                             AND d.stage = 'BREAKER' AND d.detail->>'breaker_event_id' = e.id::text)
+           ORDER BY e.id LIMIT 100""")
+    for event in events:
+        await record_decision(conn, event['mandate_id'], 'BREAKER', 'PAUSED', event['reason'],
+                              breaker_event_id=str(event['id']), **_detail(event['detail']))
     # Preserve delivery of decisions created before lifecycle-event reconciliation was introduced.
     rows = await conn.fetch(
         """SELECT d.id, d.mandate_id, d.reason, m.name FROM ai_profile_decisions d
