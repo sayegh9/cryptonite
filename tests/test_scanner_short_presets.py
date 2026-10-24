@@ -179,4 +179,3 @@ def test_existing_long_preset_definitions_are_unchanged():
         assert preset_by_slug(preset.slug).model_dump(mode="json") == preset.model_dump(mode="json")
         snapshot = json.dumps(preset.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
         assert hashlib.sha256(snapshot.encode()).hexdigest() == LONG_PRESET_SNAPSHOT_SHA256[preset.slug]
-
