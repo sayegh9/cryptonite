@@ -1,7 +1,7 @@
 """Read-only spot replay of scanner presets against the analytics lake (ADR 0011, P1.9).
 
-The output is one row per preset × requested coin. DuckDB opens a temporary catalog in read-only
-mode; bars are read from Parquet only, and this program never writes to the analytics lake.
+The output is one row per preset × requested coin. DuckDB streams Parquet rows from a read-only
+catalog in bounded batches; this program never writes to the analytics lake.
 
 Run inside the scanner image with the live lake mounted read-only (after building the scanner image):
 
@@ -20,14 +20,28 @@ import argparse
 import json
 import re
 import tempfile
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import polars as pl
-from cryptonite_scanner.preset_stats import replay_entries, report_document, summarize_replay
+from cryptonite_scanner.preset_stats import (
+    replay_batches,
+    report_document,
+    summarize_replay,
+)
 from cryptonite_scanner.presets import _PROFILE_PRESETS
+
+DUCKDB_MEMORY_LIMIT = (
+    "700MB"  # both DuckDB connections plus Polars/Python must fit under the 2 GB container cap
+)
+DUCKDB_BATCH_ROWS = 2048
+INDICATOR_CONTEXT_BARS = 300  # matches the scanner's EMA-200 plus warmup window
+HTF_MAP = {"15m": "1h", "1h": "4h", "4h": "1d"}
+EARLY_RECEIPT_TOLERANCE_NS = 5_000_000_000
+OPEN_STAMP_RANK_LAG_NS = 1_000_000
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -47,55 +61,6 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_bars(lake: Path, coin: str, timeframe: str, since: date) -> pl.DataFrame:
-    """Read deduplicated OHLCV bars from Parquet using a read-only DuckDB catalog."""
-    coin_dir = lake / "binance_klines_enriched" / "binance" / "spot" / timeframe / coin
-    source = coin_dir / "date=*" / "*.parquet"
-    if not any(coin_dir.glob("date=*/*.parquet")):
-        return pl.DataFrame()
-    # DuckDB refuses a read-only in-memory database. Create an empty temporary catalog, then reopen it
-    # read-only; the catalog is outside the lake and all queries are SELECTs over read-only Parquet files.
-    with tempfile.TemporaryDirectory(prefix="cryptonite-preset-replay-") as temp_dir:
-        catalog = Path(temp_dir) / "replay.duckdb"
-        with duckdb.connect(
-            str(catalog), config={"memory_limit": "1GB", "threads": 2}
-        ) as initializer:
-            initializer.execute("SELECT 1")
-        connection = duckdb.connect(
-            str(catalog), read_only=True, config={"memory_limit": "1GB", "threads": 2}
-        )
-        try:
-            source_sql = str(source).replace("'", "''")
-            since_ns = (
-                int(datetime.combine(since, datetime.min.time(), UTC).timestamp()) * 1_000_000_000
-            )
-            rows = connection.execute(
-                f"""
-                SELECT ts_event_ns::BIGINT AS ts_event_ns,
-                       open::DOUBLE AS open, high::DOUBLE AS high,
-                       low::DOUBLE AS low, close::DOUBLE AS close,
-                       volume::DOUBLE AS volume
-                FROM read_parquet('{source_sql}')
-                WHERE ts_event_ns >= ?
-                QUALIFY row_number() OVER (
-                    PARTITION BY ts_init_ns
-                    ORDER BY
-                        CASE
-                            WHEN received_at_ns::BIGINT < ts_event_ns::BIGINT THEN 1
-                            ELSE 0
-                        END ASC,
-                        ts_event_ns DESC, received_at_ns DESC,
-                        ingest_batch_id DESC, payload_checksum DESC
-                ) = 1
-                ORDER BY ts_event_ns
-                """,
-                [since_ns],
-            ).fetch_arrow_table()
-        finally:
-            connection.close()
-    return pl.from_arrow(rows)
-
-
 def _validate_coins(value: str) -> list[str]:
     """Normalize comma-separated Binance spot symbols and reject unsafe path components."""
     coins = [item.strip().upper() for item in value.split(",") if item.strip()]
@@ -106,36 +71,202 @@ def _validate_coins(value: str) -> list[str]:
     return list(dict.fromkeys(coins))
 
 
+class LakeReader:
+    """Bounded, read-only Parquet reader backed by two DuckDB connections to a temporary catalog."""
+
+    def __init__(self, lake: Path, batch_rows: int = DUCKDB_BATCH_ROWS) -> None:
+        self.lake = lake
+        self.batch_rows = batch_rows
+        self._temp: tempfile.TemporaryDirectory[str] | None = None
+        self._stream_connection: duckdb.DuckDBPyConnection | None = None
+        self._window_connection: duckdb.DuckDBPyConnection | None = None
+
+    def __enter__(self) -> LakeReader:
+        self._temp = tempfile.TemporaryDirectory(prefix="cryptonite-preset-replay-")
+        catalog = Path(self._temp.name) / "replay.duckdb"
+        with duckdb.connect(
+            str(catalog), config={"memory_limit": DUCKDB_MEMORY_LIMIT, "threads": 2}
+        ) as initializer:
+            initializer.execute("SELECT 1")
+        self._stream_connection = duckdb.connect(
+            str(catalog), read_only=True, config={"memory_limit": DUCKDB_MEMORY_LIMIT, "threads": 2}
+        )
+        self._window_connection = duckdb.connect(
+            str(catalog), read_only=True, config={"memory_limit": DUCKDB_MEMORY_LIMIT, "threads": 2}
+        )
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self._stream_connection is not None:
+            self._stream_connection.close()
+        if self._window_connection is not None:
+            self._window_connection.close()
+        if self._temp is not None:
+            self._temp.cleanup()
+
+    def iter_batches(self, coin: str, timeframe: str, since_ns: int) -> Iterator[pl.DataFrame]:
+        """Yield a stable, deduplicated stream of bars from the requested date onward."""
+        coin_dir = self.lake / "binance_klines_enriched" / "binance" / "spot" / timeframe / coin
+        if not any(coin_dir.glob("date=*/*.parquet")):
+            return
+        connection = self._required(self._stream_connection)
+        query, _ = self._query(coin_dir, timeframe)
+        sql = (
+            query
+            + " WHERE ts_event_ns >= ?"
+            + self._dedupe_order(timeframe)
+            + " ORDER BY ts_event_ns"
+        )
+        result = connection.execute(sql, [since_ns])
+        reader = result.to_arrow_reader(batch_size=self.batch_rows)
+        for batch in reader:
+            yield pl.from_arrow(batch)
+
+    def read_window(
+        self,
+        coin: str,
+        timeframe: str,
+        start_ns: int,
+        end_ns: int,
+        *,
+        limit: int | None = None,
+        descending: bool = False,
+    ) -> pl.DataFrame:
+        """Read a bounded time window or recent tail for base/HTF indicator context."""
+        coin_dir = self.lake / "binance_klines_enriched" / "binance" / "spot" / timeframe / coin
+        if not any(coin_dir.glob("date=*/*.parquet")):
+            return pl.DataFrame()
+        connection = self._required(self._window_connection)
+        query, source = self._query(coin_dir, timeframe)
+        order = "DESC" if descending else "ASC"
+        sql = (
+            query
+            + " WHERE ts_event_ns >= ? AND ts_event_ns <= ?"
+            + self._dedupe_order(timeframe)
+            + f" ORDER BY ts_event_ns {order}"
+        )
+        params: list[Any] = [start_ns, end_ns]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        table = connection.execute(sql, params).to_arrow_table()
+        result = pl.from_arrow(table)
+        return result.sort("ts_event_ns") if descending else result
+
+    @staticmethod
+    def _required(connection: duckdb.DuckDBPyConnection | None) -> duckdb.DuckDBPyConnection:
+        if connection is None:
+            raise RuntimeError("LakeReader must be used as a context manager")
+        return connection
+
+    @staticmethod
+    def _query(coin_dir: Path, timeframe: str) -> tuple[str, str]:
+        """Build a Parquet SELECT with its path escaped as a SQL string literal."""
+        source = str(coin_dir / "date=*" / "*.parquet")
+        source_sql = source.replace("'", "''")
+        return (
+            "SELECT ts_event_ns::BIGINT AS ts_event_ns, open::DOUBLE AS open, "
+            "high::DOUBLE AS high, low::DOUBLE AS low, close::DOUBLE AS close, volume::DOUBLE AS volume "
+            f"FROM read_parquet('{source_sql}')",
+            source,
+        )
+
+    @staticmethod
+    def _dedupe_order(timeframe: str) -> str:
+        """Select the best received record per catalog event timestamp, matching AnalyticsQueryEngine."""
+        lag = timeframe_ns(timeframe) - OPEN_STAMP_RANK_LAG_NS
+        early = EARLY_RECEIPT_TOLERANCE_NS
+        return f""" QUALIFY row_number() OVER (
+            PARTITION BY ts_init_ns
+            ORDER BY CASE
+                WHEN received_at_ns::BIGINT - ts_event_ns::BIGINT = {lag} THEN 2
+                WHEN received_at_ns::BIGINT < ts_event_ns::BIGINT - {early} THEN 1
+                ELSE 0
+            END ASC,
+            ts_event_ns DESC, received_at_ns DESC, ingest_batch_id DESC, payload_checksum DESC
+        ) = 1"""
+
+
+def timeframe_ns(timeframe: str) -> int:
+    """Convert the supported lake timeframe syntax to nanoseconds."""
+    units = {"m": 60, "h": 3600, "d": 86400}
+    if not timeframe[:-1].isdigit() or timeframe[-1:] not in units:
+        raise ValueError(f"unsupported timeframe: {timeframe}")
+    amount = int(timeframe[:-1])
+    if amount <= 0:
+        raise ValueError(f"unsupported timeframe: {timeframe}")
+    return amount * units[timeframe[-1]] * 1_000_000_000
+
+
+def _requires_htf(preset) -> bool:
+    """Return whether a registered preset uses higher-timeframe fields."""
+    return any(
+        condition.field.startswith("htf_")
+        or (isinstance(condition.value, str) and condition.value.startswith("htf_"))
+        for group in preset.rules
+        for condition in group.conditions
+    )
+
+
 def run(lake: Path, coins: list[str], since: date) -> dict[str, Any]:
-    """Replay all registered presets for each requested coin, across preset timeframes."""
-    results: list[dict[str, Any]] = []
-    frame_cache: dict[tuple[str, str], pl.DataFrame] = {}
-    for preset in _PROFILE_PRESETS.values():
-        for coin in coins:
-            all_trades = []
-            timestamps: list[int] = []
+    """Replay each registered preset without retaining full histories in Python memory."""
+    since_ns = int(datetime.combine(since, datetime.min.time(), UTC).timestamp()) * 1_000_000_000
+    summary_state: dict[tuple[str, str], dict[str, Any]] = {
+        (preset.slug, coin): {"trades": [], "first": None, "last": None}
+        for preset in _PROFILE_PRESETS.values()
+        for coin in coins
+    }
+
+    with LakeReader(lake) as reader:
+        for preset in _PROFILE_PRESETS.values():
             configured_coins = {
                 item.split(".", maxsplit=1)[0].upper() for item in preset.universe.instrument_ids
             }
-            timeframes = preset.universe.timeframes if coin in configured_coins else []
-            for timeframe in timeframes:
-                key = (coin, timeframe)
-                if key not in frame_cache:
-                    frame_cache[key] = _read_bars(lake, coin, timeframe, since)
-                frame = frame_cache[key]
-                if frame.is_empty():
+            for coin in coins:
+                if coin not in configured_coins:
                     continue
-                timestamps.extend(int(value) for value in frame.get_column("ts_event_ns").to_list())
-                all_trades.extend(replay_entries(frame, preset, coin, timeframe))
-            results.append(
-                summarize_replay(
-                    preset.slug,
-                    coin,
-                    all_trades,
-                    min(timestamps) if timestamps else None,
-                    max(timestamps) if timestamps else None,
-                )
-            )
+                summary = summary_state[(preset.slug, coin)]
+                for timeframe in preset.universe.timeframes:
+                    initial_context = reader.read_window(
+                        coin,
+                        timeframe,
+                        since_ns - INDICATOR_CONTEXT_BARS * timeframe_ns(timeframe),
+                        since_ns - 1,
+                        limit=INDICATOR_CONTEXT_BARS,
+                        descending=True,
+                    )
+                    htf_loader = None
+                    if _requires_htf(preset):
+                        htf_timeframe = HTF_MAP[timeframe]
+
+                        def load_htf(start: int, end: int) -> pl.DataFrame:
+                            return reader.read_window(coin, htf_timeframe, start, end)
+
+                        htf_loader = load_htf
+                    trades, first_ns, last_ns = replay_batches(
+                        reader.iter_batches(coin, timeframe, since_ns),
+                        preset,
+                        coin,
+                        timeframe,
+                        htf_loader=htf_loader,
+                        initial_context=initial_context,
+                        context_bars=INDICATOR_CONTEXT_BARS,
+                    )
+                    summary["trades"].extend(trades)
+                    if first_ns is not None:
+                        summary["first"] = (
+                            first_ns
+                            if summary["first"] is None
+                            else min(summary["first"], first_ns)
+                        )
+                        summary["last"] = (
+                            last_ns if summary["last"] is None else max(summary["last"], last_ns)
+                        )
+
+    results = [
+        summarize_replay(slug, coin, data["trades"], data["first"], data["last"])
+        for (slug, coin), data in summary_state.items()
+    ]
     return report_document(results)
 
 
