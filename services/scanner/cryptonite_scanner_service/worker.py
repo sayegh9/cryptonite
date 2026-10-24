@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import asyncpg
 import duckdb
@@ -35,9 +35,12 @@ from cryptonite_scanner.models import (
     RuleOperator,
     SignalCandidateRead,
     active_spec_cap,
+    compute_spec_hash,
     deduplicate_candidates,
 )
+from cryptonite_scanner.presets import preset_by_slug
 from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
+from cryptonite_schemas.profile import STYLE_TIMEFRAMES, preset_ids_for, underlying_spot
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
 BRIEF_TTL_S = 2 * 3600
@@ -134,6 +137,10 @@ class ScannerWorker:
         self.query_engine = AnalyticsQueryEngine(self.lake_path)
         self._running = False
         self._tasks: list[asyncio.Task[None]] = []
+
+        self._profiles_cached_at: float | None = None
+        self._active_profiles: list[dict[str, Any]] = []
+        self._feed_instruments: set[str] = set()
 
         self.processed_events_count = 0
         self.executed_runs_count = 0
@@ -236,6 +243,32 @@ class ScannerWorker:
 
     async def _publish_outbox_row(self, candidate_id: UUID, fields: dict[str, Any], brief_key: str,
                                   attempt_count: int) -> bool:
+        """Serialize profile adoption and publication, refreshing a relay's older claim snapshot.
+
+        ADR 0011 P1.2: a pending global match may acquire profile context before its first
+        publication. The same bar lock used by candidate insertion keeps DB and Redis payloads
+        consistent. Already published entries keep their original provenance and are never resent
+        merely to add routing context; P1.3 resolves those historical events via the coin lock.
+        """
+        if not self.redis:
+            # No publication can race adoption while Redis is disconnected; preserve expiry/backoff.
+            return await self._publish_locked_outbox_row(candidate_id, fields, brief_key, attempt_count, self.pool)
+        payload = fields["candidate_payload"]
+        lock_key = f"signal_candidate:{fields['instrument_id']}:{payload['timeframe']}:{payload['bar_close_inclusive_ns']}"
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lock_key)
+                stored = await conn.fetchrow(
+                    "SELECT fields, status FROM scanner_debate_outbox WHERE candidate_id=$1", candidate_id,
+                )
+                if stored:
+                    if stored["status"] == "PUBLISHED":
+                        return False
+                    fields = json.loads(stored["fields"]) if isinstance(stored["fields"], str) else stored["fields"]
+                return await self._publish_locked_outbox_row(candidate_id, fields, brief_key, attempt_count, conn)
+
+    async def _publish_locked_outbox_row(self, candidate_id: UUID, fields: dict[str, Any], brief_key: str,
+                                         attempt_count: int, conn: Any) -> bool:
         """XADD one scanner_debate_outbox row to the debate queue and mark it PUBLISHED, or schedule a retry.
 
         Freshness is rechecked immediately before the queue write: a relay that only gets to a row after
@@ -247,7 +280,7 @@ class ScannerWorker:
             age_s = (now_ns - int(payload.get("interval_end_exclusive_ns") or 0)) / 1e9
             reason = f"expired before publish: bar closed {age_s:.0f}s ago (fresh window is one bar)"
             try:
-                await self.pool.execute(
+                await conn.execute(
                     "UPDATE scanner_debate_outbox SET status = 'EXPIRED', last_error = $2 WHERE candidate_id = $1",
                     candidate_id, reason)
             except Exception as e:  # the row stays PENDING: the next relay pass completes it
@@ -257,21 +290,23 @@ class ScannerWorker:
         try:
             if not self.redis:
                 raise RuntimeError("Redis client not connected")
-            stream_id = await enqueue_debate(self.redis, {
-                "instrument_id": fields["instrument_id"],
-                "trigger_source": fields["trigger_source"],
-                "candidate_payload": json.dumps(payload),
-                "brief_key": brief_key,
-            })
+            # Publication and profile adoption share a lock; bound the Redis wait while holding it.
+            async with asyncio.timeout(30):
+                stream_id = await enqueue_debate(self.redis, {
+                    "instrument_id": fields["instrument_id"],
+                    "trigger_source": fields["trigger_source"],
+                    "candidate_payload": json.dumps(payload),
+                    "brief_key": brief_key,
+                })
         except Exception as e:
             logger.error("Candidate %s not queued for debate (attempt %d): %s", candidate_id, attempt_count, e)
-            await self._retry_outbox_row(candidate_id, attempt_count, str(e))
+            await self._retry_outbox_row(candidate_id, attempt_count, str(e), conn=conn)
             return False
         self.queued_candidates_count += 1
         logger.info("Candidate %s %s %s queued for debate (decision_trace_id=%s)", candidate_id,
                     fields["instrument_id"], payload.get("timeframe"), payload.get("decision_trace_id"))
         try:
-            await self.pool.execute(
+            await conn.execute(
                 """UPDATE scanner_debate_outbox SET status = 'PUBLISHED', published_stream_id = $2,
                        published_at = now(), last_error = NULL WHERE candidate_id = $1""",
                 candidate_id, str(stream_id))
@@ -279,15 +314,16 @@ class ScannerWorker:
             logger.error("Candidate %s queued as %s but not marked published: %s", candidate_id, stream_id, e)
         return True
 
-    async def _retry_outbox_row(self, candidate_id: UUID, attempt_count: int, error: str) -> None:
+    async def _retry_outbox_row(self, candidate_id: UUID, attempt_count: int, error: str, *, conn: Any = None) -> None:
+        executor = conn if conn is not None else self.pool
         try:
             if attempt_count >= DEBATE_RELAY_MAX_ATTEMPTS:
-                await self.pool.execute(
+                await executor.execute(
                     "UPDATE scanner_debate_outbox SET status = 'FAILED', last_error = $2 WHERE candidate_id = $1",
                     candidate_id, error)
                 logger.error("Candidate %s: debate enqueue FAILED after %d attempts", candidate_id, attempt_count)
             else:
-                await self.pool.execute(
+                await executor.execute(
                     """UPDATE scanner_debate_outbox SET last_error = $2,
                            next_attempt_at = now() + make_interval(secs => $3) WHERE candidate_id = $1""",
                     candidate_id, error, float(min(2 ** attempt_count, 300)))
@@ -504,6 +540,128 @@ class ScannerWorker:
                 logger.error("Error in event consumer loop: %s", e)
                 await asyncio.sleep(1.0)
 
+    async def _profile_scan_context(self) -> tuple[list[dict[str, Any]], set[str]]:
+        """ADR 0011: cache running profiles and ingest's active spot universe for 30 seconds.
+
+        The predicate matches IngestRecorder._onboarded_symbols exactly. Profile instruments,
+        including perpetual-only selections, are always mapped to this spot feed.
+        """
+        now = time.monotonic()
+        if self._profiles_cached_at is None or now - self._profiles_cached_at >= 30:
+            try:
+                profiles = await self.pool.fetch(
+                    "SELECT id, instruments, style, direction FROM ai_mandates WHERE status = 'ACTIVE' ORDER BY id"
+                )
+                feed = await self.pool.fetch(
+                    """SELECT raw_symbol FROM instruments
+                       WHERE venue = 'BINANCE' AND market_type = 'SPOT' AND is_active AND status = 'TRADING'
+                       ORDER BY raw_symbol"""
+                ) if profiles else []
+            except asyncpg.InsufficientPrivilegeError:
+                # Older least-privilege deployments cannot scan profiles; their globals still run.
+                logger.error("Profile scans unavailable: scanner role needs profile read/write permissions")
+                profiles, feed = [], []
+            self._active_profiles = [dict(p) for p in profiles]
+            self._feed_instruments = {f"{r['raw_symbol'].upper()}.BINANCE" for r in feed}
+            self._profiles_cached_at = now
+        return self._active_profiles, self._feed_instruments
+
+    async def _profile_preset_version(self, slug: str) -> tuple[UUID, str, dict[str, Any], list[dict[str, Any]]]:
+        """Persist immutable registry definitions for candidate foreign keys without activating globals.
+
+        ADR 0011: reuse an identical global version; otherwise add an inactive version. The
+        slug lock serializes profile workers and avoids duplicate version numbers.
+        """
+        preset = preset_by_slug(slug)
+        universe = preset.universe.model_dump(mode="json") | {"risk": preset.risk.model_dump(mode="json")}
+        rules = [r.model_dump(mode="json") for r in preset.rules]
+        digest = compute_spec_hash(universe, rules)
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"profile_preset:{slug}")
+                spec_id = await conn.fetchval("SELECT id FROM scan_specs WHERE slug=$1", slug)
+                if spec_id is None:
+                    spec_id = uuid4()
+                    await conn.execute(
+                        """INSERT INTO scan_specs (id, slug, name, description, is_archived)
+                           VALUES ($1, $2, $3, $4, true)""",
+                        spec_id, slug, preset.name, preset.description,
+                    )
+                version_id = await conn.fetchval(
+                    "SELECT id FROM scan_spec_versions WHERE spec_id=$1 AND spec_hash=$2 ORDER BY version_num DESC LIMIT 1",
+                    spec_id, digest,
+                )
+                if version_id is None:
+                    version_id = uuid4()
+                    await conn.execute(
+                        """INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+                           SELECT $1, $2, COALESCE(MAX(version_num), 0)+1, $3, $4::jsonb, $5::jsonb
+                           FROM scan_spec_versions WHERE spec_id=$2""",
+                        version_id, spec_id, digest, json.dumps(universe), json.dumps(rules),
+                    )
+        return version_id, digest, universe, rules
+
+    async def _scan_profiles(self, instrument_id: str, timeframe: str, bar_close_ns: int, event_id: str) -> None:
+        """ADR 0011 P1.2: scan the committed spot bar for its running profile, including dry runs.
+
+        Profiles run before globals, so the existing cross-spec/bar lock preserves the
+        mandate-tagged candidate when both paths match. Only this closed bar is evaluated
+        for profile output; historical warm-up matches cannot become profile entries.
+        """
+        profiles, feed = await self._profile_scan_context()
+        for profile in profiles:
+            if timeframe not in STYLE_TIMEFRAMES[profile["style"]]:
+                continue
+            coins = {underlying_spot(i) for i in profile["instruments"]}
+            if instrument_id not in coins:
+                continue
+            mandate_id = profile["id"]
+            run_ids = []
+            skipped = {"COIN_NOT_IN_FEED": len(coins - feed)}
+            if instrument_id in feed:
+                for slug in preset_ids_for(profile["style"], profile["direction"]):
+                    preset = preset_by_slug(slug)
+                    if timeframe not in preset.universe.timeframes:
+                        continue
+                    version_id, digest, universe, rules = await self._profile_preset_version(slug)
+                    run_ids.append(await self._execute_scan(
+                        spec_version_id=version_id, spec_hash=digest,
+                        universe_data=universe | {"instrument_ids": [instrument_id]}, rules_data=rules,
+                        trigger_reason="COMMITTED_BAR_EVENT", trigger_event_id=str(uuid5(mandate_id, event_id)),
+                        watermark_ns=bar_close_ns, bar_timeframe=timeframe,
+                        mandate_id=mandate_id, preset_slug=slug,
+                    ))
+            # One aggregate per logical profile/bar, even after stream redelivery or multiple specs.
+            # Enqueued means durably scheduled; published_initial is the initial success snapshot.
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                                       f"profile_scan:{mandate_id}:{instrument_id}:{timeframe}:{bar_close_ns}")
+                    counts = await conn.fetchrow(
+                        """SELECT count(*) AS found, count(o.candidate_id) AS enqueued,
+                                  count(*) FILTER (WHERE o.status='PUBLISHED') AS published_initial
+                           FROM signal_candidates c LEFT JOIN scanner_debate_outbox o ON o.candidate_id=c.id
+                           WHERE c.instrument_id=$2 AND c.timeframe=$3 AND c.bar_close_inclusive_ns=$4
+                             AND (c.scan_run_id=ANY($1::uuid[]) OR c.metrics->>'mandate_id'=$5)""",
+                        run_ids, instrument_id, timeframe, bar_close_ns, str(mandate_id),
+                    )
+                    detail = dict(timeframe=timeframe, bar_close_inclusive_ns=bar_close_ns,
+                                  specs_run=len(run_ids), candidates_found=counts["found"],
+                                  enqueued=counts["enqueued"], published_initial=counts["published_initial"], skipped=skipped)
+                    # Inline profile_log's savepoint semantics: the scanner has no execution dependency.
+                    try:
+                        async with conn.transaction():
+                            await conn.execute(
+                                """INSERT INTO ai_profile_decisions (mandate_id, instrument_id, stage, outcome, detail)
+                                   SELECT $1::uuid, $2::varchar, 'SCAN', 'COMPLETED', $3::jsonb
+                                   WHERE NOT EXISTS (SELECT 1 FROM ai_profile_decisions
+                                       WHERE mandate_id=$1 AND instrument_id=$2 AND stage='SCAN'
+                                       AND detail->>'timeframe'=$4 AND detail->>'bar_close_inclusive_ns'=$5)""",
+                                mandate_id, instrument_id, json.dumps(detail), timeframe, str(bar_close_ns),
+                            )
+                    except Exception as exc:
+                        logger.warning("Profile scan decision not recorded: %s", exc)
+
     async def _handle_stream_message(self, stream: str, msg_id: str, msg_data: dict[str, Any]) -> None:
         """Process a single closed_bar_committed stream entry and call XACK only after DB commit."""
         raw_payload = msg_data.get("data")
@@ -529,9 +687,12 @@ class ScannerWorker:
                 self.processed_events_count += 1
             return
 
-        # Load active scan spec versions deterministically ordered
+        # Profile candidates win global duplicates while carrying their routing context.
         if not self.pool:
             return
+        await self._scan_profiles(instrument_id, bar_timeframe, bar_close_ns, event_id)
+
+        # Load active scan spec versions deterministically ordered
         active_specs = await self.pool.fetch(
             """
             SELECT s.slug, s.active_version_id, s.created_at, v.id as version_id, v.universe, v.rules, v.spec_hash
@@ -669,6 +830,8 @@ class ScannerWorker:
         watermark_ns: int | None = None,
         scan_job_id: UUID | None = None,
         bar_timeframe: str | None = None,
+        mandate_id: UUID | None = None,
+        preset_slug: str | None = None,
     ) -> UUID:
         """Core execution logic: loads 1m lake data, resamples, evaluates rules, commits run & candidates."""
         if not self.pool:
@@ -835,6 +998,10 @@ class ScannerWorker:
 
         now_ns = time.time_ns()
         all_candidates = drop_unclosed_candidates(all_candidates, now_ns)
+        if mandate_id is not None:
+            all_candidates = [c for c in all_candidates if c.bar_close_inclusive_ns == watermark_ns]
+            for candidate in all_candidates:
+                candidate.metrics.update(mandate_id=str(mandate_id), preset_slug=preset_slug)
 
         # 1. Pre-insert qualification gate: evaluate unrounded derived price ratio for each candidate.
         # Reject candidates failing R:R >= MIN_RISK_REWARD_RATIO BEFORE deduplication, so a passing
@@ -942,30 +1109,69 @@ class ScannerWorker:
 
                     # Deduplicate across specs per (instrument, timeframe, bar)
                     existing_across_specs = None
-                    if hasattr(conn, "fetchval"):
+                    if mandate_id is not None:
+                        existing_across_specs = await conn.fetchval(
+                            """SELECT c.id FROM signal_candidates c
+                               JOIN scan_spec_versions v ON v.id=c.spec_version_id
+                               JOIN scan_specs s ON s.id=v.spec_id
+                               WHERE c.instrument_id=$1 AND c.timeframe=$2 AND c.bar_close_inclusive_ns=$3
+                                 AND s.slug=$4 LIMIT 1""",
+                            c.instrument_id, c.timeframe, c.bar_close_inclusive_ns, preset_slug,
+                        )
+                    elif hasattr(conn, "fetchval"):
                         existing_across_specs = await conn.fetchval(
                             """
                             SELECT id FROM signal_candidates
                             WHERE instrument_id = $1 AND timeframe = $2 AND bar_close_inclusive_ns = $3
+                              AND (NOT metrics ? 'mandate_id' OR spec_version_id IN (
+                                  SELECT id FROM scan_spec_versions WHERE spec_id=(
+                                      SELECT spec_id FROM scan_spec_versions WHERE id=$4)))
                             LIMIT 1;
                             """,
                             c.instrument_id,
                             c.timeframe,
                             c.bar_close_inclusive_ns,
+                            spec_version_id,
                         )
                     elif hasattr(conn, "fetchrow"):
                         r = await conn.fetchrow(
                             """
                             SELECT id FROM signal_candidates
                             WHERE instrument_id = $1 AND timeframe = $2 AND bar_close_inclusive_ns = $3
+                              AND (NOT metrics ? 'mandate_id' OR spec_version_id IN (
+                                  SELECT id FROM scan_spec_versions WHERE spec_id=(
+                                      SELECT spec_id FROM scan_spec_versions WHERE id=$4)))
                             LIMIT 1;
                             """,
                             c.instrument_id,
                             c.timeframe,
                             c.bar_close_inclusive_ns,
+                            spec_version_id,
                         )
                         existing_across_specs = r.get("id") if isinstance(r, dict) else (r[0] if r else None)
                     if existing_across_specs:
+                        if mandate_id is not None:
+                            # Priming or another worker may have committed the global match first.
+                            context = json.dumps({"mandate_id": str(mandate_id), "preset_slug": preset_slug})
+                            await conn.execute(
+                                """UPDATE signal_candidates SET metrics=metrics || $2::jsonb
+                                   WHERE id=$1 AND NOT metrics ? 'mandate_id'""", existing_across_specs, context,
+                            )
+                            await conn.execute(
+                                """UPDATE outbox_events SET payload=payload || $2::jsonb
+                                   WHERE event_type='signal_candidate' AND payload->>'candidate_id'=$1
+                                     AND NOT payload ? 'mandate_id'
+                                     AND NOT EXISTS (SELECT 1 FROM scanner_debate_outbox
+                                         WHERE candidate_id=$3 AND status='PUBLISHED')""",
+                                str(existing_across_specs), context, existing_across_specs,
+                            )
+                            await conn.execute(
+                                """UPDATE scanner_debate_outbox SET fields=jsonb_set(
+                                       fields, '{candidate_payload}', fields->'candidate_payload' || $2::jsonb)
+                                   WHERE candidate_id=$1 AND status <> 'PUBLISHED'
+                                     AND NOT (fields->'candidate_payload') ? 'mandate_id'""",
+                                existing_across_specs, context,
+                            )
                         logger.debug(
                             "Candidate %s for %s %s %d skipped: already exists across specs (%s)",
                             c.id,
@@ -1029,6 +1235,10 @@ class ScannerWorker:
                             # R7.4: follows this setup through gate, triage, debate, approval, command and fill
                             "decision_trace_id": str(uuid4()),
                         }
+
+                        if mandate_id is not None:
+                            candidate_payload["mandate_id"] = str(mandate_id)
+                            candidate_payload["preset_slug"] = preset_slug
 
                         # AI Debate Engine: only a bar that just closed is worth a debate (D1 / F-H2). The
                         # outbox row commits with the candidate; the queue write happens after the commit.
