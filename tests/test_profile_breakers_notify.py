@@ -502,6 +502,10 @@ async def test_review_absent_ingest_after_start_grace_and_last_healthy(monkeypat
     await monitor.track_profile_breakers(conn, redis, m, NOW + dt.timedelta(minutes=2), {})
     assert conn.status == 'PAUSED'
     conn.status = 'ACTIVE'
+    conn.started = NOW + dt.timedelta(minutes=2)
+    await monitor.track_profile_breakers(conn, redis, m, NOW + dt.timedelta(minutes=2), {})
+    assert conn.status == 'PAUSED'  # resume cannot make an already missing feed healthy
+    conn.status = 'ACTIVE'
     conn.started = NOW - dt.timedelta(hours=1)
     await monitor.track_profile_breakers(conn, redis, m, NOW, {
         'BTCUSDT.BINANCE': {'arrival_ts_ns': int(NOW.timestamp() * 1e9)}})

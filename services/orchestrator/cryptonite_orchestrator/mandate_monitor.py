@@ -531,12 +531,15 @@ async def _profile_stale_coin(conn, redis, mandate: Mandate, now: datetime.datet
         key = f'profile_breaker:last_healthy:{mandate.id}:{coin}'
         if redis is not None:
             try:
-                if data and now.timestamp() - last <= 600:
+                if data:
                     await redis.set(key, str(last))
-                elif not data:
+                else:
                     cached = await redis.get(key)
                     if cached is not None:
-                        last = max(last, float(cached))
+                        last = float(cached)
+                    else:
+                        # Preserve the first grace baseline across resumes until data actually arrives.
+                        await redis.set(key, str(last), nx=True)
             except Exception as e:
                 logger.warning('Profile breaker health cache unavailable: %s', e)
         if now.timestamp() - last > 600:
