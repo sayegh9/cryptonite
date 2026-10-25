@@ -84,6 +84,91 @@ async def release_cooldown(redis, key: str | None, token: str | None) -> None:
         logger.warning("Cooldown %s not released", key)
 
 
+CANDIDATE_GATE_LEASE_TTL_S = 60
+CANDIDATE_GATE_LEASE_RENEW_S = 10
+CANDIDATE_GATE_LEASE_POLL_S = .05
+
+
+class CandidateGateLeaseError(RuntimeError):
+    """Candidate evaluation lost its lease and must retry without committing an outcome."""
+
+
+@dataclass
+class CandidateGateLease:
+    """Token-fenced ownership spanning candidate evaluation and durable outcome insertion."""
+
+    redis: Any
+    key: str
+    token: str
+    lost: bool = False
+    released: bool = False
+
+    async def assert_owned(self) -> None:
+        """Renew only our token; fail closed if ownership or Redis availability was lost."""
+        if self.lost or self.released:
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_LOST")
+        try:
+            renewed = await self.redis.eval(
+                _RENEW_PROFILE_BUDGET_LOCK_LUA, 1, self.key, self.token, CANDIDATE_GATE_LEASE_TTL_S)
+        except Exception as exc:
+            self.lost = True
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_UNAVAILABLE") from exc
+        if not renewed:
+            self.lost = True
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_LOST")
+
+    async def release(self) -> None:
+        """Release only our token, including cancellation and failed outcome transactions."""
+        if self.released:
+            return
+        self.released = True
+        try:
+            await self.redis.eval(_RELEASE_COOLDOWN_LUA, 1, self.key, self.token)
+        except Exception:
+            logger.warning("Candidate gate lease %s not released; bounded expiry permits retry", self.key)
+
+
+@asynccontextmanager
+async def candidate_gate_guard(redis, candidate_id: uuid.UUID | None):
+    """Wait for a candidate owner to commit, or retry after its crash lease expires.
+
+    Waiting does not acknowledge the queue delivery. No database connection is held while
+    waiting or evaluating models; only the short outcome transaction acquires one.
+    """
+    if candidate_id is None:
+        yield None
+        return
+    lease = CandidateGateLease(redis, f"debate:candidate_gate:{candidate_id}", str(uuid.uuid4()))
+    while True:
+        try:
+            if await redis.set(lease.key, lease.token, nx=True, ex=CANDIDATE_GATE_LEASE_TTL_S):
+                break
+        except Exception as exc:
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_UNAVAILABLE") from exc
+        await asyncio.sleep(CANDIDATE_GATE_LEASE_POLL_S)
+
+    async def renew_lease():
+        while not lease.released:
+            await asyncio.sleep(CANDIDATE_GATE_LEASE_RENEW_S)
+            if lease.released:
+                return
+            try:
+                await lease.assert_owned()
+            except CandidateGateLeaseError:
+                return  # Outcome transactions check the lost flag and raise for queue retry.
+
+    renewal = asyncio.create_task(renew_lease())
+    try:
+        yield lease
+    finally:
+        renewal.cancel()
+        try:
+            await renewal
+        except asyncio.CancelledError:
+            pass
+        await lease.release()
+
+
 async def _count(redis, reason: str) -> None:
     try:
         key = f"debate_gate:{datetime.datetime.now(datetime.UTC):%Y-%m-%d}:{reason}"
@@ -116,14 +201,15 @@ def _trace_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
 async def pre_debate_gate(pg_pool, redis, payload: dict[str, Any], gateway: Gateway | None,
                           brief: str | None, now_s: float | None = None,
                           brief_data: dict[str, Any] | None = None,
-                          run_id: uuid.UUID | None = None) -> GateDecision:
+                          run_id: uuid.UUID | None = None, *, defer_record: bool = False) -> GateDecision:
+    """Evaluate ADR 0011 gates; workers defer auditing until their unique run insert commits."""
     async with pg_pool.acquire() as conn:
         profile = await resolve_profile(conn, payload["instrument_id"], payload.get("mandate_id"))
     if profile is not None:
         payload["mandate_id"] = str(profile.id)
     decision = await _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data, profile)
     decision.profile = profile
-    if profile is not None:
+    if profile is not None and not defer_record:
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 await record_decision(conn, profile.id, "GATE", "ACCEPTED" if decision.allowed else "REFUSED",
@@ -283,8 +369,29 @@ async def profile_budget_guard(pg_pool, redis, profile):
             logger.warning("Profile budget lock %s could not be released; its lease will expire", profile.id)
 
 
-async def _reserve_profile_slot(redis, key: str, cap: int) -> bool:
-    """Atomically reserve a slot; return only the excess slot when concurrent workers reach the cap."""
+_RESERVE_CANDIDATE_SLOT_LUA = """
+if redis.call('GET', KEYS[2]) and redis.call('GET', KEYS[1]) then return 1 end
+local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+if used >= tonumber(ARGV[1]) then return 0 end
+redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
+return 1
+"""
+
+
+async def _profile_slot_full(redis, key: str, cap: int, candidate_id) -> bool:
+    """A retry can reuse its reservation even when the daily counter is full."""
+    if candidate_id and await redis.get(f"{key}:candidate:{candidate_id}"):
+        return False
+    return int(await redis.get(key) or 0) >= cap
+
+
+async def _reserve_profile_slot(redis, key: str, cap: int, candidate_id=None) -> bool:
+    """Reserve at most one daily slot per identified candidate, including crash retries."""
+    if candidate_id:
+        return bool(await redis.eval(_RESERVE_CANDIDATE_SLOT_LUA, 2, key,
+                                     f"{key}:candidate:{candidate_id}", cap, PROFILE_CAP_TTL_S))
     used = await redis.incr(key)
     await redis.expire(key, PROFILE_CAP_TTL_S)
     if used > cap:
@@ -339,7 +446,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         cap = profile.max_debates_per_day
         if gateway is None:
             slot_key = profile_cap_key(profile.id, _utc_now_s())
-            if int(await redis.get(slot_key) or 0) >= cap:
+            if await _profile_slot_full(redis, slot_key, cap, cid):
                 return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
             async with pg_pool.acquire() as conn:
                 if await profile_budget_exhausted(conn, profile, _utc_now_s()):
@@ -353,7 +460,8 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     held = await redis.get(cooldown_key)
     if held is None:
         if not await redis.set(cooldown_key, cooldown_token, nx=True, ex=COOLDOWN_S):
-            return GateDecision(False, "COOLDOWN")  # lost the set to a concurrent candidate
+            if cid is None or await redis.get(cooldown_key) != cooldown_token:
+                return GateDecision(False, "COOLDOWN")
     elif cid is None or held != cooldown_token:
         return GateDecision(False, "COOLDOWN")
 
@@ -364,7 +472,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     if gateway is None:
         if profile is not None:
             slot_key = profile_cap_key(profile.id, _utc_now_s())
-        if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap):
+        if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap, cid):
             await release_cooldown(redis, cooldown_key, cooldown_token)
             return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
         return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key, cooldown_token=cooldown_token)
@@ -373,7 +481,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         async with profile_budget_guard(pg_pool, redis, profile):
             if profile is not None:
                 slot_key = profile_cap_key(profile.id, _utc_now_s())
-                if int(await redis.get(slot_key) or 0) >= cap:
+                if await _profile_slot_full(redis, slot_key, cap, cid):
                     await release_cooldown(redis, cooldown_key, cooldown_token)
                     return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
             result = await TRIAGE.run(gateway, brief, parent_trace_id=_trace_uuid(payload),
@@ -389,7 +497,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, "TRIAGE_REJECTED", result.output, result.trace_id)
     if profile is not None:
         slot_key = profile_cap_key(profile.id, _utc_now_s())
-    if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap):
+    if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap, cid):
         await release_cooldown(redis, cooldown_key, cooldown_token)
         return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP", result.output, result.trace_id)
     return GateDecision(True, "TRIAGE_ACCEPTED", result.output, result.trace_id, cooldown_key, cooldown_token)
