@@ -84,6 +84,91 @@ async def release_cooldown(redis, key: str | None, token: str | None) -> None:
         logger.warning("Cooldown %s not released", key)
 
 
+CANDIDATE_GATE_LEASE_TTL_S = 60
+CANDIDATE_GATE_LEASE_RENEW_S = 10
+CANDIDATE_GATE_LEASE_POLL_S = .05
+
+
+class CandidateGateLeaseError(RuntimeError):
+    """Candidate evaluation lost its lease and must retry without committing an outcome."""
+
+
+@dataclass
+class CandidateGateLease:
+    """Token-fenced ownership spanning candidate evaluation and durable outcome insertion."""
+
+    redis: Any
+    key: str
+    token: str
+    lost: bool = False
+    released: bool = False
+
+    async def assert_owned(self) -> None:
+        """Renew only our token; fail closed if ownership or Redis availability was lost."""
+        if self.lost or self.released:
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_LOST")
+        try:
+            renewed = await self.redis.eval(
+                _RENEW_PROFILE_BUDGET_LOCK_LUA, 1, self.key, self.token, CANDIDATE_GATE_LEASE_TTL_S)
+        except Exception as exc:
+            self.lost = True
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_UNAVAILABLE") from exc
+        if not renewed:
+            self.lost = True
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_LOST")
+
+    async def release(self) -> None:
+        """Release only our token, including cancellation and failed outcome transactions."""
+        if self.released:
+            return
+        self.released = True
+        try:
+            await self.redis.eval(_RELEASE_COOLDOWN_LUA, 1, self.key, self.token)
+        except Exception:
+            logger.warning("Candidate gate lease %s not released; bounded expiry permits retry", self.key)
+
+
+@asynccontextmanager
+async def candidate_gate_guard(redis, candidate_id: uuid.UUID | None):
+    """Wait for a candidate owner to commit, or retry after its crash lease expires.
+
+    Waiting does not acknowledge the queue delivery. No database connection is held while
+    waiting or evaluating models; only the short outcome transaction acquires one.
+    """
+    if candidate_id is None:
+        yield None
+        return
+    lease = CandidateGateLease(redis, f"debate:candidate_gate:{candidate_id}", str(uuid.uuid4()))
+    while True:
+        try:
+            if await redis.set(lease.key, lease.token, nx=True, ex=CANDIDATE_GATE_LEASE_TTL_S):
+                break
+        except Exception as exc:
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_UNAVAILABLE") from exc
+        await asyncio.sleep(CANDIDATE_GATE_LEASE_POLL_S)
+
+    async def renew_lease():
+        while not lease.released:
+            await asyncio.sleep(CANDIDATE_GATE_LEASE_RENEW_S)
+            if lease.released:
+                return
+            try:
+                await lease.assert_owned()
+            except CandidateGateLeaseError:
+                return  # Outcome transactions check the lost flag and raise for queue retry.
+
+    renewal = asyncio.create_task(renew_lease())
+    try:
+        yield lease
+    finally:
+        renewal.cancel()
+        try:
+            await renewal
+        except asyncio.CancelledError:
+            pass
+        await lease.release()
+
+
 async def _count(redis, reason: str) -> None:
     try:
         key = f"debate_gate:{datetime.datetime.now(datetime.UTC):%Y-%m-%d}:{reason}"

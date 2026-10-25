@@ -43,6 +43,7 @@ from gate import (
     AUTOMATIC_SOURCES,
     BRAIN_SOURCES,
     ProfileBudgetLockError,
+    candidate_gate_guard,
     decision_trace_id,
     pre_debate_gate,
     profile_budget_guard,
@@ -251,7 +252,7 @@ async def already_handled(pg_pool, message_ref: str | None, redis_client=None, c
 
 async def record_gate_refusal(pg_pool, redis_client, instrument_id: str, trigger_source: str, reason: str,
                               trace_id: str, message_ref: str | None, consumer: str | None, *,
-                              candidate_id=None, gate=None, run_id=None) -> None:
+                              candidate_id=None, gate=None, run_id=None, candidate_lease=None) -> None:
     """Persist terminal refusal and profile GATE in the same candidate/message-fenced transaction.
 
     Legacy callers retain best-effort recording. Worker callers propagate storage failures so
@@ -260,6 +261,8 @@ async def record_gate_refusal(pg_pool, redis_client, instrument_id: str, trigger
     try:
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
+                if candidate_lease:
+                    await candidate_lease.assert_owned()
                 if consumer and message_ref:
                     sr, _, mr = message_ref.partition("/")
                     if not await is_pel_owner(redis_client, sr, mr, consumer):
@@ -277,6 +280,8 @@ async def record_gate_refusal(pg_pool, redis_client, instrument_id: str, trigger
                     if not await record_decision(conn, gate.profile.id, "GATE", "REFUSED", reason,
                                                  instrument_id=instrument_id, run_id=run_id):
                         raise RuntimeError("GATE refusal audit could not be persisted")
+                if candidate_lease:
+                    await candidate_lease.assert_owned()
     except asyncpg.UniqueViolationError:
         logger.info(f"GATE_REFUSED outcome for {message_ref} already recorded: redelivery is idempotent")
     except Exception:
@@ -288,6 +293,26 @@ async def record_gate_refusal(pg_pool, redis_client, instrument_id: str, trigger
 async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
                                  message_ref: str | None = None, delivered: int | None = None,
                                  consumer: str | None = None):
+    """Serialize each candidate through gate evaluation and its first durable outcome."""
+    candidate_id = None
+    try:
+        candidate = json.loads(payload.get("candidate_payload") or "{}")
+        if isinstance(candidate, dict) and candidate.get("candidate_id"):
+            candidate_id = uuid.UUID(str(candidate["candidate_id"]))
+    except (TypeError, ValueError):
+        pass
+    async with candidate_gate_guard(redis_client, candidate_id) as lease:
+        if candidate_id is not None:
+            async with pg_pool.acquire() as conn:
+                if await conn.fetchval("SELECT EXISTS (SELECT 1 FROM debate_runs WHERE candidate_id=$1)", candidate_id):
+                    return
+        return await _process_debate_trigger(pg_pool, redis_client, payload, gateway, message_ref,
+                                             delivered, consumer, candidate_lease=lease)
+
+
+async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: Gateway | None = None,
+                                 message_ref: str | None = None, delivered: int | None = None,
+                                 consumer: str | None = None, *, candidate_lease=None):
     gateway = gateway or Gateway(redis=redis_client)
     instrument_id = payload.get("instrument_id")
     trigger_source = payload.get("trigger_source", "scanner")
@@ -325,6 +350,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         try:
             async with pg_pool.acquire() as conn:
                 async with conn.transaction():
+                    if candidate_lease:
+                        await candidate_lease.assert_owned()
                     if consumer and message_ref:
                         sr, _, mr = message_ref.partition("/")
                         if not await is_pel_owner(redis_client, sr, mr, consumer):
@@ -338,6 +365,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                            VALUES ($1, $2, 'NO_PRICE', $3, now(), now(), $4, $5, $6, 0, 'NO_PRICE')""",
                         uuid.uuid4(), instrument_id, trigger_source, uuid.UUID(trace_id),
                         candidate_id, message_ref)
+                    if candidate_lease:
+                        await candidate_lease.assert_owned()
         except asyncpg.UniqueViolationError:
             logger.info(f"NO_PRICE outcome for {message_ref or candidate_id} already recorded: "
                         f"redelivery is idempotent")
@@ -349,6 +378,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
     brief = await load_brief(redis_client, payload)
     brief_data = await load_brief_data(redis_client, payload)
     run_id = uuid.uuid4()
+    if candidate_lease:
+        await candidate_lease.assert_owned()
     gate = await pre_debate_gate(pg_pool, redis_client, payload, gateway, brief,
                                  brief_data=brief_data, run_id=run_id, defer_record=True)
     if not gate.allowed:
@@ -356,7 +387,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
             return
         if candidate_id is not None or trigger_source in BRAIN_SOURCES or gate.profile is not None:
             await record_gate_refusal(pg_pool, redis_client, instrument_id, trigger_source, gate.reason, trace_id,
-                                      message_ref, consumer, candidate_id=candidate_id, gate=gate, run_id=run_id)
+                                      message_ref, consumer, candidate_id=candidate_id, gate=gate, run_id=run_id,
+                                      candidate_lease=candidate_lease)
         return
 
     # The unique run insert and GATE audit commit together; only the winning delivery records GATE.
@@ -372,6 +404,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
 
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
+                if candidate_lease:
+                    await candidate_lease.assert_owned()
                 if consumer and message_ref:
                     sr, _, mr = message_ref.partition("/")
                     if not await is_pel_owner(redis_client, sr, mr, consumer):
@@ -391,6 +425,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
                     if not await record_decision(conn, gate.profile.id, "GATE", "ACCEPTED", gate.reason,
                                                  instrument_id=instrument_id, run_id=run_id):
                         raise RuntimeError("GATE acceptance audit could not be persisted")
+                if candidate_lease:
+                    await candidate_lease.assert_owned()
     except asyncpg.UniqueViolationError:
         # D1 / B4: two deliveries raced past the gate; the winner owns the candidate/message. This one ends here —
         # no model call and never a second durable decision.
@@ -401,6 +437,8 @@ async def process_debate_trigger(pg_pool, redis_client, payload: dict, gateway: 
         # key behind, but its value is the candidate's own token, so the redelivery passes it anyway.
         await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
         raise
+    if candidate_lease:
+        await candidate_lease.release()  # The durable outcome now fences every duplicate before model work.
     try:
         logger.info(f"Phase 1: Gathering Intelligence for {instrument_id}...")
         context_text = f"{brief}\n\n" if brief else ""

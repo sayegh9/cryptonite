@@ -1040,23 +1040,14 @@ async def _audit_worker(h, monkeypatch):
 
 @pytest.mark.parametrize("refused", [False, True])
 async def test_candidate_delivery_records_one_atomic_gate_and_run(h, monkeypatch, refused):
-    """Distinct messages race after gate evaluation; exactly one durable audit survives."""
+    """Concurrent distinct messages persist exactly one candidate outcome and audit."""
     m = await profile(h)
     main = await _audit_worker(h, monkeypatch)
     await h.pool.execute("UPDATE paper_accounts SET daily_loss_latched=false")
     if refused:
         await h.pool.execute("UPDATE paper_accounts SET daily_loss_latched=true")
-    arrived = 0
-    barrier = asyncio.Event()
-
     async def synchronized_gate(pool, redis, payload, gateway, brief, **kwargs):
-        nonlocal arrived
-        decision = await gate.pre_debate_gate(pool, redis, payload, None, brief, **kwargs)
-        arrived += 1
-        if arrived >= 2:
-            barrier.set()
-        await asyncio.wait_for(barrier.wait(), 5)
-        return decision
+        return await gate.pre_debate_gate(pool, redis, payload, None, brief, **kwargs)
 
     monkeypatch.setattr(main, "pre_debate_gate", synchronized_gate)
     cid = uuid.uuid4()
@@ -1103,3 +1094,157 @@ async def test_candidate_retry_after_slot_reservation_preserves_slot_and_audit(h
     assert await h.pool.fetchval("SELECT count(*) FROM debate_runs WHERE candidate_id=$1", cid) == 1
     assert await h.pool.fetchval("SELECT outcome FROM ai_profile_decisions WHERE stage='GATE'") == "ACCEPTED"
     assert int(await h.redis.get(gate.profile_cap_key(m.id, gate._utc_now_s()))) == 1
+
+
+@pytest.mark.parametrize("paid_triage", [False, True])
+@pytest.mark.parametrize("crash_owner", [False, True])
+async def test_candidate_lease_serializes_mixed_outcomes_and_paid_triage(h, monkeypatch, paid_triage, crash_owner):
+    """A duplicate waits for the accepted owner; it cannot refuse or bill triage ahead of it."""
+    from types import SimpleNamespace
+
+    m = await profile(h, max_debates_per_day=1)
+    main = await _audit_worker(h, monkeypatch)
+    await h.pool.execute("UPDATE paper_accounts SET daily_loss_latched=false")
+    calls = 0
+    evaluations = 0
+    context_entered = asyncio.Event()
+    release_context = asyncio.Event()
+
+    async def triage(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(output=SimpleNamespace(worth_debate=True), trace_id=uuid.uuid4())
+
+    monkeypatch.setattr(gate, "TRIAGE", SimpleNamespace(role="debate.triage", run=triage))
+
+    async def evaluate(pool, redis, payload, gateway, brief, **kwargs):
+        nonlocal evaluations
+        evaluations += 1
+        if not paid_triage and payload.get("audit_duplicate"):
+            brief = None
+        return await gate.pre_debate_gate(pool, redis, payload, gateway if paid_triage else None, brief, **kwargs)
+
+    context_calls = 0
+
+    class DelayedContext(main.AntiCorruptionLayer):
+        async def get_instrument_context(self, instrument):
+            nonlocal context_calls
+            context_calls += 1
+            first_context = context_calls == 1
+            context_entered.set()
+            await release_context.wait()
+            if crash_owner and first_context:
+                raise RuntimeError("owner crashed before commit")
+            return {}
+
+    monkeypatch.setattr(main, "pre_debate_gate", evaluate)
+    monkeypatch.setattr(main, "AntiCorruptionLayer", DelayedContext)
+    cid = uuid.uuid4()
+    payload = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "1h", "candidate_id": str(cid)})}
+    first = asyncio.create_task(main.process_debate_trigger(h.pool, h.redis, payload, object(), message_ref="lease/1-0"))
+    await asyncio.wait_for(context_entered.wait(), 5)
+    second = asyncio.create_task(main.process_debate_trigger(
+        h.pool, h.redis, {**payload, "audit_duplicate": True}, object(), message_ref="lease/2-0"))
+    try:
+        await asyncio.sleep(.15)
+        pending_before_commit = not second.done()
+        early_evaluations = evaluations
+        early_calls = calls
+        early_runs = await h.pool.fetchval("SELECT count(*) FROM debate_runs WHERE candidate_id=$1", cid)
+    finally:
+        release_context.set()
+        results = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 5)
+    if crash_owner:
+        assert isinstance(results[0], RuntimeError)
+        assert str(results[0]) == "owner crashed before commit"
+    else:
+        assert results[0] is None
+    assert results[1] is None
+    assert pending_before_commit
+    assert early_evaluations == 1
+    assert early_calls == (1 if paid_triage else 0)
+    assert early_runs == 0
+    assert evaluations == (2 if crash_owner else 1)
+    assert calls == ((2 if crash_owner else 1) if paid_triage else 0)
+    assert await h.pool.fetchval("SELECT count(*) FROM debate_runs WHERE candidate_id=$1", cid) == 1
+    expected_outcome = "REFUSED" if crash_owner and not paid_triage else "ACCEPTED"
+    assert await h.pool.fetchval("SELECT outcome FROM ai_profile_decisions WHERE stage='GATE'") == expected_outcome
+    assert int(await h.redis.get(gate.profile_cap_key(m.id, gate._utc_now_s()))) == 1
+
+
+async def test_candidate_crashed_owner_expiry_retries_reserved_slot_and_triage(h, monkeypatch):
+    """A dead owner's lease expires; its uncommitted last slot is reusable by a pending delivery."""
+    from types import SimpleNamespace
+
+    m = await profile(h, max_debates_per_day=1)
+    main = await _audit_worker(h, monkeypatch)
+    await h.pool.execute("UPDATE paper_accounts SET daily_loss_latched=false")
+    cid = uuid.uuid4()
+    payload = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "1h", "candidate_id": str(cid)})}
+    decision = await gate.pre_debate_gate(h.pool, h.redis, payload, None, "brief", defer_record=True)
+    assert decision.allowed
+    lease_key = f"debate:candidate_gate:{cid}"
+    await h.redis.set(lease_key, "crashed-owner", px=250)
+    calls = 0
+
+    async def triage(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(output=SimpleNamespace(worth_debate=True), trace_id=uuid.uuid4())
+
+    monkeypatch.setattr(gate, "TRIAGE", SimpleNamespace(role="debate.triage", run=triage))
+    retry = asyncio.create_task(main.process_debate_trigger(h.pool, h.redis, payload, object(), message_ref="lease/3-0"))
+    try:
+        await asyncio.sleep(.05)
+        pending_before_expiry = not retry.done()
+        calls_before_expiry = calls
+    finally:
+        await asyncio.wait_for(retry, 5)
+    assert pending_before_expiry
+    assert calls_before_expiry == 0
+    assert calls == 1
+    assert await h.pool.fetchval("SELECT count(*) FROM debate_runs WHERE candidate_id=$1", cid) == 1
+    assert await h.pool.fetchval("SELECT outcome FROM ai_profile_decisions WHERE stage='GATE'") == "ACCEPTED"
+    assert int(await h.redis.get(gate.profile_cap_key(m.id, gate._utc_now_s()))) == 1
+    assert await h.redis.get(lease_key) is None
+
+
+async def test_candidate_lease_renewal_and_lost_owner_cannot_commit_or_release_successor(h, monkeypatch):
+    """A slow owner renews; a token takeover fences its outcome and survives stale release."""
+    await profile(h)
+    main = await _audit_worker(h, monkeypatch)
+    await h.pool.execute("UPDATE paper_accounts SET daily_loss_latched=false")
+    monkeypatch.setattr(gate, "CANDIDATE_GATE_LEASE_TTL_S", 1, raising=False)
+    monkeypatch.setattr(gate, "CANDIDATE_GATE_LEASE_RENEW_S", .05, raising=False)
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def no_triage(pool, redis, payload, gateway, brief, **kwargs):
+        return await gate.pre_debate_gate(pool, redis, payload, None, brief, **kwargs)
+
+    class DelayedContext(main.AntiCorruptionLayer):
+        async def get_instrument_context(self, instrument):
+            entered.set()
+            await resume.wait()
+            return {}
+
+    monkeypatch.setattr(main, "pre_debate_gate", no_triage)
+    monkeypatch.setattr(main, "AntiCorruptionLayer", DelayedContext)
+    cid = uuid.uuid4()
+    key = f"debate:candidate_gate:{cid}"
+    payload = {"instrument_id": SPOT, "candidate_payload": json.dumps({"timeframe": "1h", "candidate_id": str(cid)})}
+    owner = asyncio.create_task(main.process_debate_trigger(h.pool, h.redis, payload, object(), message_ref="lease/4-0"))
+    await asyncio.wait_for(entered.wait(), 5)
+    token = await h.redis.get(key)
+    try:
+        await asyncio.sleep(1.15)  # Longer than the original lease: its live token must be renewed.
+        renewed_token = await h.redis.get(key)
+        await h.redis.set(key, "successor", ex=10)
+    finally:
+        resume.set()
+        results = await asyncio.wait_for(asyncio.gather(owner, return_exceptions=True), 5)
+    assert token and renewed_token == token
+    assert isinstance(results[0], gate.CandidateGateLeaseError)
+    assert await h.redis.get(key) == "successor"
+    assert await h.pool.fetchval("SELECT count(*) FROM debate_runs WHERE candidate_id=$1", cid) == 0
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_profile_decisions WHERE stage='GATE'") == 0
