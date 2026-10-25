@@ -4,7 +4,7 @@ import datetime
 import json
 import logging
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from cryptonite_execution import profile_lifecycle
@@ -418,6 +418,16 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side)
         if reason:
             return await _no_trade(conn, run_id, instrument, mandate, reason)
+    if side == "BUY" and not is_perp_instrument(instrument):
+        # A profile spot entry must have the structural stop used by the exit monitor.
+        # Refuse before creating an ASK/VETO approval, including Brain and Inbox debates.
+        try:
+            entry = Decimal(str(reference_price))
+            stop = Decimal(str(stop_loss))
+        except (InvalidOperation, TypeError, ValueError):
+            return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+        if not entry.is_finite() or not stop.is_finite() or entry <= 0 or stop <= 0 or stop >= entry:
+            return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
     base = {"instrument_id": instrument, "side": side, "order_type": "MARKET",
             "recommendation": recommendation, "conviction_score": conviction, "source": "debate", "run_id": str(run_id)}
     if decision_trace_id:
