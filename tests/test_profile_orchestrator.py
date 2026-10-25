@@ -34,13 +34,14 @@ def decisions(conn):
             for sql, a in conn.executed if "INSERT INTO ai_profile_decisions" in sql]
 
 
-async def run_command(m, payload, *, dispatcher=None, command_type="SUBMIT_ORDER", positions=(), conn_type=FakeConn):
+async def run_command(m, payload, *, dispatcher=None, command_type="SUBMIT_ORDER", positions=(),
+                      conn_type=FakeConn, spot_ask=50010):
     """Execute one real poller claim with a real dispatcher and an isolated SQL double."""
     d = dispatcher or make_perp_dispatcher()
     engine = make_engine(d)
     engine.bridge = MagicMock()
     quotes = server.SimpleQuoteCache()
-    quotes.set_quote(SPOT, 50000, 50010)
+    quotes.set_quote(SPOT, 50000, spot_ask)
     quotes.set_quote(PERP, 50000, 50010)
     cid = uuid.uuid4()
     approval_id = uuid.uuid4()
@@ -225,9 +226,11 @@ async def test_gate_maps_budget_limited_exposure_to_non_breach_cash_refusal(monk
     intent = OrderIntent(client_order_id="cash-cap", instance_id=m.instance_id, instrument_id=SPOT,
                          side="BUY", order_type="LIMIT", quantity=D("0.004"), price=D("50000"),
                          stop_loss=D("49000"))
+    quotes = server.SimpleQuoteCache()
+    quotes.set_quote(SPOT, 50000, 50010)
     reject = await mandate_gate.gate_ai_order(conn, make_engine(make_perp_dispatcher()),
                                               {"command_id": approval["command_id"]},
-                                              {"approval_id": str(uuid.uuid4())}, intent, m, None)
+                                              {"approval_id": str(uuid.uuid4())}, intent, m, quotes.quote(SPOT))
     assert reject == "PROFILE_CASH_EXHAUSTED"
     assert conn.events == []
 
@@ -577,8 +580,11 @@ async def test_entry_gate_reloads_and_locks_status_before_risk_check(monkeypatch
     intent = OrderIntent(client_order_id="stale-active", instance_id=m.instance_id, instrument_id=SPOT,
                          side="BUY", order_type="LIMIT", quantity=D("0.001"), price=D("50000"),
                          stop_loss=D("49000"))
+    quotes = server.SimpleQuoteCache()
+    quotes.set_quote(SPOT, 50000, 50010)
     reject = await mandate_gate.gate_ai_order(
-        conn, make_engine(make_perp_dispatcher()), {"command_id": uuid.uuid4()}, {}, intent, m, None)
+        conn, make_engine(make_perp_dispatcher()), {"command_id": uuid.uuid4()}, {}, intent, m,
+        quotes.quote(SPOT))
     assert reject == MandateReject.HALTED.value
     assert conn.locked_status_query is True
 
@@ -616,11 +622,13 @@ async def test_final_add_risk_gate_reads_switch_off_after_cached_on(h, level):
             instrument_id=SPOT, side="BUY", order_type="LIMIT", quantity=D("0.001"),
             price=D("50000"), stop_loss=D("49000"), require_stop=True,
         )
+        quotes = server.SimpleQuoteCache()
+        quotes.set_quote(SPOT, 50000, 50010)
         async with h.pool.acquire() as conn:
             async with conn.transaction():
                 reject = await mandate_gate.gate_ai_order(
                     conn, make_engine(make_perp_dispatcher()), {"command_id": cid}, payload,
-                    intent, m, None,
+                    intent, m, quotes.quote(SPOT),
                 )
         assert reject == MandateReject.APPROVAL_REQUIRED.value
         assert reject not in BREACH_CODES
@@ -643,7 +651,7 @@ async def test_final_add_risk_gate_reads_switch_off_after_cached_on(h, level):
             async with conn.transaction():
                 approved = await mandate_gate.gate_ai_order(
                     conn, make_engine(make_perp_dispatcher()), {"command_id": cid}, payload,
-                    intent, m, None,
+                    intent, m, quotes.quote(SPOT),
                 )
         assert approved is None  # OFF behaves as ASK, not a permanent block.
     finally:
@@ -671,6 +679,37 @@ async def test_fresh_switch_missing_or_unreadable_fails_closed():
     assert await mandate_gate.fresh_autotrade_switch_on(UnreadableConn(None)) is False
 
 
+async def test_fresh_switch_read_serializes_an_off_update(h):
+    """A committed OFF cannot overtake a previously authorized dispatch transaction."""
+    previous = await h.pool.fetchrow(
+        "SELECT value::text AS value FROM system_settings WHERE key='autotrade.enabled'"
+    )
+    try:
+        await h.pool.execute(
+            "INSERT INTO system_settings(key,value) VALUES('autotrade.enabled','1') "
+            "ON CONFLICT(key) DO UPDATE SET value='1'"
+        )
+        async with h.pool.acquire() as conn:
+            async with conn.transaction():
+                assert await mandate_gate.fresh_autotrade_switch_on(conn)
+                turn_off = asyncio.create_task(h.pool.execute(
+                    "UPDATE system_settings SET value='0' WHERE key='autotrade.enabled'"
+                ))
+                await asyncio.sleep(0.05)
+                assert not turn_off.done()
+        await asyncio.wait_for(turn_off, timeout=2)
+        async with h.pool.acquire() as conn:
+            assert not await mandate_gate.fresh_autotrade_switch_on(conn)
+    finally:
+        if previous is None:
+            await h.pool.execute("DELETE FROM system_settings WHERE key='autotrade.enabled'")
+        else:
+            await h.pool.execute(
+                "UPDATE system_settings SET value=$1::jsonb WHERE key='autotrade.enabled'",
+                previous["value"],
+            )
+
+
 async def test_profile_spot_buy_without_stop_is_refused_before_dispatch():
     """A direct AI command cannot bypass the route's structural-stop check."""
     m = mandate()
@@ -694,7 +733,36 @@ async def test_profile_spot_buy_uses_structural_stop_not_stop_market_trigger():
     intent = engine.dispatcher.dispatch.call_args.args[0]
     assert intent.stop_loss == D("49000")
     assert intent.stop_price is None
+    assert any("jsonb_build_object('proposed_stop_loss'" in sql and args[1] == D("49000")
+               for sql, args in conn.executed)
     assert "STOP_PRICE_ONLY_ON_STOP_MARKET" not in str(conn.outcome())
+
+
+async def test_spot_limit_stop_must_be_below_live_ask_as_well_as_limit():
+    """Price improvement on a marketable BUY limit cannot start above its stop."""
+    m = mandate()
+    conn, engine = await run_command(
+        m, {"instrument_id": SPOT, "side": "BUY", "quantity": "0.004",
+            "order_type": "LIMIT", "price": "50000", "stop_loss": "49980"},
+        spot_ask=49950,
+    )
+    assert conn.outcome() == ("REJECTED", "STOP_REQUIRED")
+    engine.dispatcher.dispatch.assert_not_called()
+
+
+async def test_spot_buy_rechecks_actual_fill_price_before_booking(monkeypatch):
+    """A changed quote after the gate cannot fill at or below the structural stop."""
+    m = mandate()
+    monkeypatch.setattr(server, "match_order", lambda *args, **kwargs: PaperFill(
+        args[0], SPOT, "BUY", D("0.004"), D("49980"), "TAKER",
+    ))
+    conn, engine = await run_command(
+        m, {"instrument_id": SPOT, "side": "BUY", "quantity": "0.004",
+            "order_type": "LIMIT", "price": "50020", "stop_loss": "49990"},
+    )
+    assert any("error_message = 'STOP_REQUIRED'" in sql for sql, _ in conn.executed)
+    engine.bridge.publish.assert_not_called()
+    assert engine.dispatcher.open_orders == {}
 
 
 async def test_spot_exit_pnl_uses_the_remaining_cost_after_earlier_round_trips():

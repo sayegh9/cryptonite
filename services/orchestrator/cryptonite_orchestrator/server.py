@@ -2106,6 +2106,15 @@ async def command_poller(pool, engine, quote_cache=None):
                                         row["command_id"], mandate_reject,
                                     )
                                     continue
+                                if profile_spot_entry:
+                                    # The exit monitor reads the persisted command payload, including for a
+                                    # direct AI command that supplied stop_loss without proposed_stop_loss.
+                                    payload["proposed_stop_loss"] = str(structural_stop)
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET payload = payload || "
+                                        "jsonb_build_object('proposed_stop_loss', $2::numeric) WHERE command_id = $1",
+                                        row["command_id"], structural_stop,
+                                    )
                                 if mandate is not None:
                                     # The gate refreshed and locked the profile row. Use that committed snapshot for
                                     # dry-run routing too; a toggle committed after the earlier sizing read must not
@@ -2203,6 +2212,19 @@ async def command_poller(pool, engine, quote_cache=None):
                                             Decimal(str(quote.bid_price)), Decimal(str(quote.ask_price)),
                                             *((quote.bid_size, quote.ask_size) if getattr(quote, "sizes_known", False) else (None, None)),
                                         )
+                                    if fill and profile_spot_entry and fill.price <= structural_stop:
+                                        # A marketable BUY limit can improve below its submitted limit. Its
+                                        # structural stop must remain below the actual fill, not just the limit.
+                                        engine.dispatcher.release_reservation(client_oid)
+                                        forget_dispatched(engine, client_oid)
+                                        compensated = True
+                                        await conn.execute(
+                                            "UPDATE execution_commands SET status = 'REJECTED', "
+                                            "command_outcome = 'REJECTED', error_message = 'STOP_REQUIRED', "
+                                            "processed_at = now() WHERE command_id = $1",
+                                            row["command_id"],
+                                        )
+                                        continue
                                     if fill:
                                         await apply_paper_fill(conn, engine, fill, instance_id, order_type, price_dec)
                                         logger.info("Order %s filled at %s (decision_trace_id=%s)", client_oid, fill.price, trace_id)

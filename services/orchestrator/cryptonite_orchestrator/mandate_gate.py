@@ -66,7 +66,9 @@ async def fresh_autotrade_switch_on(conn) -> bool:
     try:
         async with conn.transaction():
             raw = await conn.fetchval(
-                "SELECT value FROM system_settings WHERE key = $1",
+                # Hold the row through dispatch. An OFF update waits for this command to finish;
+                # the next command then sees OFF rather than racing a cached ON decision.
+                "SELECT value FROM system_settings WHERE key = $1 FOR SHARE",
                 profile_lifecycle.AUTOTRADE_ENABLED_KEY,
             )
     except Exception as exc:
@@ -328,9 +330,11 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
             try:
                 stop = Decimal(str(intent.stop_loss))
                 entry = Decimal(str(ref))
-            except (InvalidOperation, TypeError, ValueError):
+                ask = Decimal(str(quote.ask_price))
+            except (AttributeError, InvalidOperation, TypeError, ValueError):
                 return "STOP_REQUIRED"
-            if not stop.is_finite() or not entry.is_finite() or stop <= 0 or entry <= 0 or stop >= entry:
+            if (not stop.is_finite() or not entry.is_finite() or not ask.is_finite()
+                    or stop <= 0 or entry <= 0 or ask <= 0 or stop >= entry or stop >= ask):
                 return "STOP_REQUIRED"
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     coin_owner = await coin_lock_owner(conn, intent.instrument_id)

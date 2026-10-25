@@ -9,6 +9,7 @@ import importlib.util
 import json
 import sys
 import uuid
+from functools import wraps
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,16 @@ def routing():
     spec = importlib.util.spec_from_file_location("debate_mandate_routing", WORKER / "mandate_routing.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    original_route_entry = module.route_entry
+
+    @wraps(original_route_entry)
+    async def route_entry_with_structural_stop(*args, **kwargs):
+        """Give legacy spot-entry scenarios a valid structural stop and decision price."""
+        kwargs.setdefault("reference_price", 50000)
+        kwargs.setdefault("stop_loss", 49000)
+        return await original_route_entry(*args, **kwargs)
+
+    module.route_entry = route_entry_with_structural_stop
     return module
 
 
