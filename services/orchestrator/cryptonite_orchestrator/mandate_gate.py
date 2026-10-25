@@ -13,7 +13,7 @@ import datetime
 import json
 import logging
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from cryptonite_execution import profile_lifecycle
@@ -51,10 +51,28 @@ from cryptonite_schemas.mandate import (
     MandateReject,
     is_ai_instance,
 )
-from cryptonite_schemas.profile import base_asset
+from cryptonite_schemas.profile import Market, base_asset, market_of
 from cryptonite_schemas.session import SessionVerdict
 
 logger = logging.getLogger("cryptonite.orchestrator.mandates")
+
+
+async def fresh_autotrade_switch_on(conn) -> bool:
+    """Read the committed switch at the final risk gate, without the display/routing cache.
+
+    A savepoint keeps an unreadable setting from aborting the command transaction. Missing,
+    malformed and unreadable values all count as OFF.
+    """
+    try:
+        async with conn.transaction():
+            raw = await conn.fetchval(
+                "SELECT value FROM system_settings WHERE key = $1",
+                profile_lifecycle.AUTOTRADE_ENABLED_KEY,
+            )
+    except Exception as exc:
+        logger.warning("Fresh auto-trade switch read failed; treating it as OFF: %s", exc)
+        return False
+    return profile_lifecycle.parse_settings({profile_lifecycle.AUTOTRADE_ENABLED_KEY: raw}).enabled
 
 
 def is_ai_command(cmd_type: str, target: str | None, requester: str | None) -> bool:
@@ -301,14 +319,23 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
         order_type=intent.order_type, reduce_only=intent.reduce_only, leverage=intent.leverage,
         conviction_level=intent.conviction_level, margin_mode=intent.margin_mode,
     )
-    if action_class(order) is ActionClass.ADD_RISK:
+    action = action_class(order)
+    if action is ActionClass.ADD_RISK:
         mandate = await load_mandate(conn, mandate.id, for_update=True)
         if mandate is None:
             return MandateReject.NOT_FOUND
+        if market_of(intent.instrument_id) is Market.SPOT and side == "BUY":
+            try:
+                stop = Decimal(str(intent.stop_loss))
+                entry = Decimal(str(ref))
+            except (InvalidOperation, TypeError, ValueError):
+                return "STOP_REQUIRED"
+            if not stop.is_finite() or not entry.is_finite() or stop <= 0 or entry <= 0 or stop >= entry:
+                return "STOP_REQUIRED"
     exposure = await mandate_exposure(conn, engine, mandate, intent.instrument_id, ref_prices)
     coin_owner = await coin_lock_owner(conn, intent.instrument_id)
-    # ADR 0011 D10 at runtime: with the master switch off, VETO and AUTO behave as ASK (read cached, off if unreadable)
-    switch_on = await profile_lifecycle.autotrade_switch_on(conn)
+    # The switch is authoritative only for an entry. Exits never consult it.
+    switch_on = await fresh_autotrade_switch_on(conn) if action is ActionClass.ADD_RISK else True
     ok = await approval_granted(conn, row, payload, mandate, autotrade_on=switch_on)
     # ADR 0010: today's session (loss latch, profit target, profit lock), read at execution, so an entry approved
     # before the latch is refused too. Only an ADD_RISK order reads it: a failed read can never fail an exit

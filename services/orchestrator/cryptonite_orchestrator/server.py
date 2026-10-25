@@ -8,12 +8,11 @@ import logging
 import os
 import time
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
-from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.mandate_store import load_mandate, others_spot_holding
@@ -37,6 +36,7 @@ from pydantic import ValidationError
 
 from cryptonite_orchestrator.mandate_gate import (
     command_mandate_id,
+    fresh_autotrade_switch_on,
     gate_ai_order,
     grade_ceiling,
     instance_spot_holdings,
@@ -2008,6 +2008,19 @@ async def command_poller(pool, engine, quote_cache=None):
                             instance_id = target or ("MANUAL_TRADE" if cmd_type == "MANUAL_ORDER" else "AI_DEBATE_WORKER")
                             if mandate is not None:
                                 instance_id = mandate.instance_id
+                            profile_spot_entry = bool(
+                                ai_order and mandate is not None and not is_perp_order
+                                and side == "BUY" and not payload.get("reduce_only")
+                            )
+                            structural_stop = None
+                            if profile_spot_entry:
+                                raw_stop = payload.get("proposed_stop_loss") or payload.get("stop_loss")
+                                try:
+                                    structural_stop = Decimal(str(raw_stop)) if raw_stop is not None else None
+                                    if structural_stop is not None and not structural_stop.is_finite():
+                                        structural_stop = None
+                                except (InvalidOperation, TypeError, ValueError):
+                                    structural_stop = None
                             
                             try:
                                 intent = OrderIntent(
@@ -2026,10 +2039,14 @@ async def command_poller(pool, engine, quote_cache=None):
                                     margin_mode=payload.get("margin_mode") or (
                                         "ISOLATED" if mandate is not None and is_perp_order else None),
                                     reduce_only=payload.get("reduce_only") or False,
-                                    stop_price=Decimal(str(payload["stop_price"])) if payload.get("stop_price") else None,
+                                    # Spot entry protection is an exit-monitor structural level, never a resting
+                                    # STOP_MARKET trigger on its MARKET/LIMIT entry.
+                                    stop_price=(None if profile_spot_entry else
+                                                Decimal(str(payload["stop_price"])) if payload.get("stop_price") else None),
                                     # a perp entry carries its stop; an AI one must (leverage plan 2.3)
-                                    stop_loss=Decimal(str(payload["stop_loss"])) if perp_entry and payload.get("stop_loss") else None,
-                                    require_stop=bool(ai_order and perp_entry),
+                                    stop_loss=(structural_stop if profile_spot_entry else
+                                               Decimal(str(payload["stop_loss"])) if perp_entry and payload.get("stop_loss") else None),
+                                    require_stop=bool(ai_order and (perp_entry or profile_spot_entry)),
                                     risk_budget_usd=mandate_risk_budget(mandate) if mandate is not None and perp_entry else None,
                                 )
                             except ValidationError as e:
@@ -2101,7 +2118,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                         )
                                         continue
                                     effective_mode = {1: "ASK", 2: "VETO", 3: "AUTO"}[int(mandate.autonomy_level)]
-                                    if not await profile_lifecycle.autotrade_switch_on(conn):
+                                    if (perp_entry or profile_spot_entry) and not await fresh_autotrade_switch_on(conn):
                                         effective_mode = "ASK"
                                     # Persist the mode that authorized this order. A delayed fill can arrive after
                                     # the mandate or global switch changes, but its FILL audit must describe this

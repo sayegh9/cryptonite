@@ -339,6 +339,28 @@ async def test_c_dry_run_persists_sizing_plan_without_dispatch(replay):
     assert await ctx.pool.fetchval("SELECT count(*) FROM paper_positions") == 0
 
 
+async def test_spot_entry_structural_stop_reaches_exit_monitor_without_stop_market(replay):
+    """A routed spot stop protects the filled position through the existing exit monitor field."""
+    ctx = replay
+    m = await profile(ctx, coin=ETH, market="SPOT", direction="LONG", level=3)
+    status, run = await debate(ctx, m, direction="LONG", coin=ETH)
+    assert status == "COMPLETED"
+    command = await command_for(ctx, run)
+    payload = json.loads(command["payload"])
+    expected_stop = D(str(payload["proposed_stop_loss"]))
+    settled = await poll(ctx, command["command_id"])
+    assert settled["status"] == "COMPLETED", dict(settled)
+    ctx.engine.dispatcher.dispatch.assert_called_once()
+    intent = ctx.engine.dispatcher.dispatch.call_args.args[0]
+    assert intent.stop_loss == expected_stop and intent.stop_price is None
+    quotes = exits.QuoteBook()
+    quotes.apply({"instrument_id": ETH, "bid_price": 50000, "ask_price": 50000})
+    async with ctx.pool.acquire() as conn:
+        positions = await exits.load_positions(conn, ctx.redis, quotes)
+    position, = [p for p in positions if p.owner_instance == m.instance_id]
+    assert D(str(position.stop_price)) == expected_stop
+
+
 async def test_loss_streak_pauses_profile_but_open_short_still_exits(replay):
     """P1.6 scenario 5: the breaker persists PAUSED while a real TP command still closes."""
     ctx = replay

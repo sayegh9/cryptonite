@@ -81,6 +81,40 @@ async def route(h, mid=None, **kw):
     return result, run
 
 
+@pytest.mark.parametrize("stop", [None, 60000, 61000, float("nan")])
+async def test_spot_entry_needs_a_below_entry_structural_stop_before_approval(h, stop):
+    """A profile spot BUY with no usable loss-side stop cannot create operator work."""
+    m = await profile(h, level=1)
+    run = uuid.uuid4()
+    await h.pool.execute(
+        "INSERT INTO debate_runs(id,instrument_id,status,trigger_source) VALUES($1,$2,'RUNNING','test')",
+        run, SPOT,
+    )
+    async with h.pool.acquire() as conn:
+        status, _ = await routing.route_entry(
+            conn, run, SPOT, "BUY", .8, 2.5, mandate_id=str(m.id), now=NOW,
+            stop_loss=stop, take_profit=66000, reference_price=60000,
+            redis=h.redis, grade_context=BULL,
+        )
+    assert status == "NO_TRADE"
+    assert await h.pool.fetchval(
+        "SELECT reason FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run,
+    ) == "STOP_REQUIRED"
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals WHERE mandate_id=$1", m.id) == 0
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE mandate_id=$1", m.id) == 0
+
+
+async def test_spot_entry_carries_structural_stop_without_spot_stop_price(h):
+    """A valid profile spot stop survives the route in the exit monitor's existing field."""
+    m = await profile(h, level=1)
+    (status, _), run = await route(h, m.id)
+    assert status == "PENDING_APPROVAL"
+    row = await h.pool.fetchrow("SELECT payload FROM ai_approvals WHERE source_ref=$1", str(run))
+    payload = json.loads(row["payload"])
+    assert payload["proposed_stop_loss"] == 57000
+    assert "stop_price" not in payload
+
+
 async def test_resolution_uses_payload_then_lock_owner_else_operator(h):
     owner = await profile(h)
     other = await profile(h, lock=False)
