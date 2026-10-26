@@ -238,7 +238,8 @@ async def test_two_mandates_cannot_together_exceed_the_btc_cap(db):
     b = await make_mandate(db, ETH)
     await hold(db, a.instance_id, BTC, "0.4", "50000")  # A: $20,000 of BTC, inside its own mandate limits
     engine, quotes = two_asset_engine()  # equity ~100,000 -> cap $25,000
-    eth_entry = {"instrument_id": "ETHUSDT", "side": "BUY", "quantity": "2.8"}  # ~$7,180 worst case, inside B's $7,500
+    eth_entry = {"instrument_id": "ETHUSDT", "side": "BUY", "quantity": "2.8",
+                 "proposed_stop_loss": "2450"}  # ~$7,180 worst case, inside B's $7,500
 
     # No lake data: ETH counts at beta 1.0 -> 20,000 + 7,180 > 25,000
     status, reason = await drain(db, engine, quotes, await queue(db, b, dict(eth_entry)))
@@ -296,8 +297,11 @@ def _autotrade_switch_on(monkeypatch):
     """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
     Ask me. These tests exercise the switch-on behaviour of those levels."""
     from cryptonite_execution import profile_lifecycle
+    from cryptonite_orchestrator import mandate_gate, server
 
     async def on(conn):
         return True
 
     monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)
+    monkeypatch.setattr(mandate_gate, "fresh_autotrade_switch_on", on)
+    monkeypatch.setattr(server, "fresh_autotrade_switch_on", on)
