@@ -609,7 +609,8 @@ async def test_a_run_routed_twice_returns_the_existing_status_and_queues_nothing
 
     async def once():
         async with h.pool.acquire() as conn:
-            return await routing.route_entry(conn, run_id, SPOT, "Buy", 0.8, 2.5, reference_price=60000.0)
+            return await routing.route_entry(conn, run_id, SPOT, "Buy", 0.8, 2.5,
+                                             reference_price=60000.0, stop_loss=57000.0)
 
     first = await once()
     assert first[0] == "PENDING_APPROVAL"
@@ -629,7 +630,8 @@ async def test_l3_still_queues_an_entry_without_an_approval(h, routing):
     m = await h.mandate(level=3, instruments=(SPOT,))
     run_id = uuid.uuid4()
     async with h.pool.acquire() as conn:
-        status, mandate = await routing.route_entry(conn, run_id, SPOT, "Buy", 0.8, 2.5, reference_price=60000.0)
+        status, mandate = await routing.route_entry(conn, run_id, SPOT, "Buy", 0.8, 2.5,
+                                                    reference_price=60000.0, stop_loss=57000.0)
     assert (status, mandate.id) == ("COMPLETED", m.id)
     assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key = $1",
