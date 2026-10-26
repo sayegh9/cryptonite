@@ -285,7 +285,9 @@ async def test_a_breach_in_the_order_path_records_but_keeps_the_mode(h):
         """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload, status,
                environment, account_id, mandate_id) VALUES ($1, $2, 'SUBMIT_ORDER', $3, 'ai:debate_worker', $4::jsonb, 'PENDING', 'PAPER',
                'PAPER-ACCOUNT-001', $5)""",
-        cid, f"t:{cid}", m.instance_id, json.dumps({"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.001"}), m.id)
+        cid, f"t:{cid}", m.instance_id,
+        json.dumps({"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.001", "proposed_stop_loss": "49000"}),
+        m.id)
     d, _ = make_fresh_dispatcher(starting_cash=D("100000"))
     engine = make_engine(d)
     engine.bridge = MagicMock()
