@@ -76,7 +76,7 @@ async def pool(db_url):
 
 
 class QuoteRedis:
-    """The worker's Redis: a fresh live quote for the instrument. Nothing else is read on the refusal path."""
+    """The worker's Redis: a live quote and the candidate's single-owner lease."""
 
     def __init__(self) -> None:
         now_ns = time.time_ns()
@@ -86,6 +86,20 @@ class QuoteRedis:
 
     async def get(self, key):
         return self.kv.get(str(key))
+
+    async def set(self, key, value, *, nx=False, ex=None):
+        if nx and str(key) in self.kv:
+            return None
+        self.kv[str(key)] = value
+        return True
+
+    async def eval(self, script, numkeys, key, token, *args):
+        if self.kv.get(str(key)) != token:
+            return 0
+        if "EXPIRE" in script:
+            return 1
+        self.kv.pop(str(key), None)
+        return 1
 
 
 def brain_payload() -> dict:
