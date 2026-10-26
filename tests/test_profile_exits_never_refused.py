@@ -51,13 +51,15 @@ async def set_switch(h, on: bool) -> None:
 
 def intent(m, instrument, side, *, reduce_only=False):
     return OrderIntent(client_order_id=uuid.uuid4().hex, instance_id=m.instance_id, instrument_id=instrument,
-                       side=side, order_type="LIMIT", quantity=D("0.01"), price=D("50000"), reduce_only=reduce_only)
+                       side=side, order_type="LIMIT", quantity=D("0.01"), price=D("50000"), reduce_only=reduce_only,
+                       stop_loss=D("49000") if instrument == SPOT and side == "BUY" else None)
 
 
 async def gate(h, m, i, engine):
     async with h.pool.acquire() as conn:
         fresh = await load_mandate(conn, m.id)
-        return await gate_ai_order(conn, engine, {"command_id": uuid.uuid4()}, {}, i, fresh, None)
+        quote = SimpleNamespace(ask_price=D("50000")) if i.instrument_id == SPOT and i.side == "BUY" else None
+        return await gate_ai_order(conn, engine, {"command_id": uuid.uuid4()}, {}, i, fresh, quote)
 
 
 @pytest.mark.parametrize("level", [1, 3])

@@ -409,6 +409,10 @@ def mandate_row(m: Mandate) -> dict:
 
 async def run_ai_command(payload, *, mandate_row=None, target="AI_DEBATE_WORKER", requester="operator:u1",
                          cmd_type="SUBMIT_ORDER", mandate_id=None, positions=(), approval=None, dispatcher_position=None):
+    if (cmd_type == "SUBMIT_ORDER" and mandate_row is not None and payload.get("side") == "BUY"
+            and "-PERP" not in str(payload.get("instrument_id", ""))):
+        payload = {**payload}
+        payload.setdefault("proposed_stop_loss", "49000")
     d, _ = make_fresh_dispatcher()
     if dispatcher_position is not None:
         d.positions[SPOT] = dispatcher_position
@@ -666,8 +670,11 @@ def _autotrade_switch_on(monkeypatch):
     """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
     Ask me. These tests exercise the switch-on behaviour of those levels."""
     from cryptonite_execution import profile_lifecycle
+    from cryptonite_orchestrator import mandate_gate, server
 
     async def on(conn):
         return True
 
     monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)
+    monkeypatch.setattr(mandate_gate, "fresh_autotrade_switch_on", on)
+    monkeypatch.setattr(server, "fresh_autotrade_switch_on", on)
