@@ -208,8 +208,9 @@ async def test_exit_debate_stages_a_typed_exit_decision(debate_main, pool, monke
     assert await pool.fetchval("SELECT status FROM debate_runs WHERE id = $1", run_id) == "PENDING_APPROVAL"
 
 
-async def test_debate_inside_an_l3_mandate_queues_its_order(debate_main, pool):
+async def test_debate_inside_an_l3_mandate_queues_its_order(debate_main, pool, monkeypatch):
     """A5.7: no global execution mode; an L3 mandate that allows the instrument gets the order queued."""
+    monkeypatch.setattr(debate_main, "candidate_levels", lambda payload: (63000.0, 69000.0))
     mid = await pool.fetchval(
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level)
            VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 5, 3) RETURNING id""", f"l3-{uuid.uuid4().hex[:6]}")
