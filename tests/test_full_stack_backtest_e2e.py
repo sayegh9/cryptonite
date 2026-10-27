@@ -80,6 +80,8 @@ async def test_full_stack_backtest_lifecycle_e2e(tmp_path: Path, operator_auth, 
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
 
     try:
+        # Keep this event within the relay's first batch in the disposable CI database.
+        await pool.execute("DELETE FROM outbox_events WHERE status = 'PENDING'")
         # Seed strategy and version
         strat_id = uuid4()
         ver_id = uuid4()

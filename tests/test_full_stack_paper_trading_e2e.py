@@ -12,7 +12,6 @@ Verifies:
 9. Emergency latched kill switch trip and audited net-zero reset lifecycle.
 """
 
-import asyncio
 import json
 import os
 import socket
@@ -23,15 +22,18 @@ from decimal import Decimal
 import asyncpg
 import pytest
 import redis.asyncio as aioredis
-from cryptonite_execution.bridge import EventBridge, EventBridgeWorker
+from connections import DB_URL, REDIS_URL
+from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.risk import OrderIntent
 from cryptonite_execution.version_lock import assert_version_locked
 from cryptonite_outbox.relay import OutboxRelay
-from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_nautilus_instrument_id, to_spot_instrument_id
-from nautilus_trader.model import Bar, BarType, Price, Quantity, QuoteTick
-from connections import DB_URL, REDIS_URL
-
+from cryptonite_schemas.identifiers import (
+    to_nautilus_bar_type,
+    to_nautilus_instrument_id,
+    to_spot_instrument_id,
+)
+from nautilus_trader.model import Bar, Price, Quantity, QuoteTick
 
 
 @pytest.mark.asyncio
@@ -41,6 +43,8 @@ async def test_full_stack_paper_trading_e2e():
 
     pool = await asyncpg.create_pool(dsn=DB_URL, min_size=2, max_size=5)
     r_client = aioredis.from_url(REDIS_URL, decode_responses=False)
+    # Isolate this pipeline's outbox delivery from older pending CI events.
+    await pool.execute("DELETE FROM outbox_events WHERE status = 'PENDING'")
 
     test_id = uuid.uuid4().hex[:8].upper()
     account_id = f"ACC-E2E-{test_id}"
