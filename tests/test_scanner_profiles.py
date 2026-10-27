@@ -35,6 +35,7 @@ async def scanner(monkeypatch):
     assert "cryptonite_ci_" in url
     pool = await asyncpg.create_pool(url, min_size=1, max_size=3)
     await pool.execute("TRUNCATE ai_mandates, instruments, scan_specs CASCADE")
+    await pool.execute("TRUNCATE execution_commands CASCADE")
     for inst in (BTC, ETH):
         await pool.execute(
             """INSERT INTO instruments (instrument_id, raw_symbol, base_currency, quote_currency,

@@ -201,7 +201,8 @@ async def test_replay_daily_loss_flattens_refuses_entries_and_clears_next_day(db
     assert len(alerts(redis, "MANDATE_DAILY_LOSS")) == 1
 
     # An approved BUY executed now is refused
-    buy = await queue(pool, m, {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.001"})
+    buy = await queue(pool, m, {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.001",
+                                "proposed_stop_loss": "49000"})
     await pool.execute(
         """INSERT INTO ai_approvals (mandate_id, action_class, command_type, payload, summary, source, source_ref,
                level_at_creation, timeout_policy, expires_at, status, command_id)
