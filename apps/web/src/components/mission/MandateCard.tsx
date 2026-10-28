@@ -175,25 +175,25 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
     <article
       data-testid="mandate-card"
       aria-label={`Mandate ${m.name}`}
-      className={`rounded border bg-zinc-950 p-3 font-mono text-2xs ${halted ? "border-red-800" : "border-zinc-800"}`}
+      className={`rounded-2xl border bg-zinc-900/80 p-4 font-mono text-2xs shadow-xs transition-colors ${halted ? "border-red-800" : "border-zinc-800/90 hover:border-zinc-700"}`}
     >
-      <header className="mb-2 flex items-center justify-between gap-2">
+      <header className="mb-3 flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate text-xs font-bold text-zinc-100">{m.name}</h3>
-          <p className="truncate text-2xs text-zinc-500">{m.instruments.join(", ")}</p>
+          <p className="truncate text-2xs text-zinc-400">{m.instruments.join(", ")}</p>
         </div>
         <div className="flex flex-none items-center gap-1.5">
-          <span className="rounded border border-cyan-800 px-1.5 py-0.5 text-2xs font-bold text-cyan-300" data-testid="mandate-level">
+          <span className="rounded-md border border-cyan-800/80 bg-cyan-950/50 px-2 py-0.5 text-2xs font-bold text-cyan-300" data-testid="mandate-level">
             {m.level_name}
           </span>
-          <span className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${STATUS_STYLE[m.status] || ""}`} data-testid="mandate-status">
+          <span className={`rounded-md border px-2 py-0.5 text-2xs font-bold ${STATUS_STYLE[m.status] || ""}`} data-testid="mandate-status">
             {m.status}
           </span>
         </div>
       </header>
 
       {halted && (
-        <p className="mb-2 rounded border border-red-900 bg-red-950/40 px-2 py-1 text-red-200" data-testid="mandate-halted-reason">
+        <p className="mb-2.5 rounded-xl border border-red-900 bg-red-950/40 px-2.5 py-1.5 text-red-200" data-testid="mandate-halted-reason">
           Halted: {m.halted_reason || "hard stop"}. Reduce-only until you resume it.
         </p>
       )}

@@ -64,4 +64,24 @@ test.describe("Workstation navigation", () => {
     await expect(page).toHaveURL(/ws=mission&view=autonomy/);
     await expect(page.getByRole("tab", { name: "Autonomy & Evals" })).toHaveAttribute("aria-selected", "true");
   });
+
+  test("left sidebar auto-collapses to w-12 icon rail on Terminal and opens Pixel Office view", async ({ page }) => {
+    await page.goto("/");
+    const sidebar = page.getByTestId("workspace-sidebar");
+    await expect(sidebar).toHaveAttribute("data-collapsed", "false");
+
+    await page.getByRole("button", { name: "Terminal", exact: true }).click();
+    await expect(page).toHaveURL(/\?ws=terminal$/);
+    await expect(sidebar).toHaveAttribute("data-collapsed", "true");
+
+    await page.getByRole("button", { name: "AI Brain", exact: true }).click();
+    await expect(page).toHaveURL(/ws=brain&view=home/);
+    await expect(sidebar).toHaveAttribute("data-collapsed", "false");
+
+    await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Pixel Office" }).click();
+    await expect(page).toHaveURL(/ws=brain&view=pixel-office/);
+    await expect(page.getByTestId("pixel-office-view")).toBeVisible();
+    await expect(page.getByTestId("pixel-desk-orchestrator")).toBeVisible();
+    await expect(page.getByTestId("pixel-desk-debater")).toBeVisible();
+  });
 });

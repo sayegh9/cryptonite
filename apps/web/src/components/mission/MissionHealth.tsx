@@ -16,7 +16,7 @@ const SENTIMENT_MAX_AGE_MS = 30 * 60_000;
 
 function Tile({ name, health, detail, testId }: { name: string; health: Health; detail: string; testId: string }) {
   return (
-    <div className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-2" data-testid={testId} data-health={health}>
+    <div className="rounded-xl border border-zinc-800/90 bg-zinc-950/80 px-3 py-2.5 shadow-2xs" data-testid={testId} data-health={health}>
       <div className="flex items-center gap-1.5 text-2xs font-bold text-zinc-200">
         <span className={`h-2 w-2 rounded-full ${DOT[health]}`} aria-hidden="true" />
         {name}
@@ -90,11 +90,11 @@ export function MissionHealth({ status }: { status: AiStatus | null }) {
   const exitTile = status === null ? null : exitMonitorTile(status.exit_monitor_up, status.stop_coverage);
 
   return (
-    <section aria-label="System health" className="rounded border border-zinc-800 bg-zinc-900/30 p-3" data-testid="mission-health">
-      <h3 className="mb-2 flex items-center gap-1.5 text-2xs font-bold uppercase tracking-wider text-zinc-400">
-        <Activity className="h-3.5 w-3.5" aria-hidden="true" /> Health
+    <section aria-label="System health" className="rounded-2xl border border-zinc-800/90 bg-zinc-900/60 p-4 shadow-xs" data-testid="mission-health">
+      <h3 className="mb-2.5 flex items-center gap-1.5 text-2xs font-bold uppercase tracking-wider text-zinc-400">
+        <Activity className="h-3.5 w-3.5 text-cyan-400" aria-hidden="true" /> Health
       </h3>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-6">
         <Tile testId="health-exit-monitor" name="Exit monitor" health={exitTile?.health ?? "unknown"}
           detail={exitTile?.detail ?? noStatus} />
         <Tile testId="health-notifier" name="Notifier" health={flag(status?.notifier_up)}
@@ -105,7 +105,7 @@ export function MissionHealth({ status }: { status: AiStatus | null }) {
           detail={status === null ? noStatus : !tier ? "not probed yet" : tier.healthy ? `${tier.models.length} model(s)` : tier.error || "unhealthy"} />
         <Tile testId="health-sentiment" name="Sentiment" health={sentimentHealth}
           detail={status === null ? noStatus : sentimentAt === null ? "not reported" : `last OK ${ageLabel(sentimentAt)}`} />
-        <div className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-2" data-testid="health-ai-spend">
+        <div className="rounded-xl border border-zinc-800/90 bg-zinc-950/80 px-3 py-2.5 shadow-2xs" data-testid="health-ai-spend">
           <div className="text-2xs font-bold text-zinc-200">AI spend today</div>
           {spend ? (
             <>

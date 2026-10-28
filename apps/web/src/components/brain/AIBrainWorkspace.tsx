@@ -8,6 +8,7 @@ import { AIBrainTourModal } from "./AIBrainTourModal";
 import { useDebateStore } from "@/lib/stores/useDebateStore";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { BrainHome } from "./BrainHome";
+import { PixelOfficeView } from "./PixelOfficeView";
 import { ModeBanner } from "@/components/mission/ModeBanner";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import {
@@ -18,6 +19,7 @@ import {
   Inbox,
   MessagesSquare,
   GitBranch,
+  Building2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -111,17 +113,23 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
 
           <ModeBanner compact className="hidden lg:flex flex-none" />
 
-          <div role="group" aria-label="AI Brain view" className="flex items-center rounded border border-zinc-800 bg-zinc-900 p-0.5 text-2xs font-mono flex-none">
+          <div role="group" aria-label="AI Brain view" className="flex items-center rounded-lg border border-zinc-800 bg-zinc-900 p-0.5 text-2xs font-mono flex-none">
             {([
               { id: "brain", label: "Brain", Icon: MessagesSquare },
               { id: "debates", label: "Debates", Icon: GitBranch },
+              { id: "pixel-office", label: "Pixel Office", Icon: Building2 },
             ] as const).map(({ id, label, Icon }) => (
               <button
                 key={id}
                 type="button"
-                onClick={() => dispatchSwitchWorkspace({ mode: "debates", view: id === "brain" ? "home" : "debates" })}
+                onClick={() =>
+                  dispatchSwitchWorkspace({
+                    mode: "debates",
+                    view: id === "brain" ? "home" : id,
+                  })
+                }
                 aria-pressed={view === id}
-                className={`flex items-center gap-1 rounded px-2 py-0.5 transition-colors ${
+                className={`flex items-center gap-1 rounded-md px-2 py-0.5 transition-colors ${
                   view === id ? "bg-cyan-950/80 text-cyan-300 font-bold" : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
@@ -193,6 +201,15 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
       {view === "brain" && (
         <div className="flex-1 min-h-0 min-w-0 flex">
           <BrainHome active={isActive} />
+        </div>
+      )}
+
+      {view === "pixel-office" && (
+        <div className="flex-1 min-h-0 min-w-0 flex">
+          <PixelOfficeView
+            selectedSymbol={selectedSymbol || "BTCUSDT"}
+            onTriggerDebate={handleTriggerLiveDebate}
+          />
         </div>
       )}
 

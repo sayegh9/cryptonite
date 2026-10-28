@@ -4,6 +4,7 @@ import { fetchApi } from "@/lib/api";
 import React, { useEffect, useState } from "react";
 import { ScanSpec, ScanJob, SignalCandidate } from "@/lib/types";
 import { getStreamClient } from "@/lib/ws";
+import { useSessionStore } from "@/lib/stores/useSessionStore";
 import {
   Play,
   RotateCcw,
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick }) => {
+  const sessionStatus = useSessionStore((s) => s.status);
   const [specs, setSpecs] = useState<ScanSpec[]>([]);
   const [selectedSpecId, setSelectedSpecId] = useState<string>("");
   const [loadingSpecs, setLoadingSpecs] = useState<boolean>(true);
@@ -59,7 +61,7 @@ export const ScannerStudio: React.FC<Props> = ({ onViewOnChart, onCreateClick })
   useEffect(() => {
     fetchSpecs();
     fetchSignals();
-  }, []);
+  }, [sessionStatus]);
 
   // Listen to live signal candidate stream
   useEffect(() => {

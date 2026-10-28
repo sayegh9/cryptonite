@@ -87,8 +87,13 @@ export function ModeBanner({
       role="status"
       data-testid="mode-banner"
       data-tone={banner.tone}
-      title={`${banner.text}\n${banner.detail}`}
-      className={`flex min-w-0 items-center gap-1.5 rounded border px-2 font-mono text-2xs ${compact ? "py-0.5" : "py-1"} ${cls} ${className}`}
+      title={denied ? "Click to sign in as Operator\n" + `${banner.text}\n${banner.detail}` : `${banner.text}\n${banner.detail}`}
+      onClick={
+        denied
+          ? () => window.dispatchEvent(new CustomEvent("cryptonite:open-login"))
+          : undefined
+      }
+      className={`flex min-w-0 items-center gap-1.5 rounded border px-2 font-mono text-2xs ${compact ? "py-0.5" : "py-1"} ${cls} ${denied ? "cursor-pointer hover:brightness-110 transition-all" : ""} ${className}`}
     >
       <Icon className="h-3 w-3 flex-none" aria-hidden="true" />
       <span
