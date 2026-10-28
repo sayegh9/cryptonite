@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { BrainCircuit, Loader2, Send, Square, User as UserIcon, Wrench, ShieldAlert, Info } from "lucide-react";
+import { BrainCircuit, CheckCircle2, ChevronDown, ChevronRight, Loader2, Send, Square, User as UserIcon, Wrench, ShieldAlert, Info } from "lucide-react";
 import { sendBrainMessage, stopBrain } from "@/lib/brain/client";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import type { BrainMessage } from "@/lib/brain/types";
@@ -45,36 +45,66 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 function ToolChips({ message }: { message: BrainMessage }) {
+  const [expanded, setExpanded] = useState(true);
   if (message.toolCalls.length === 0) return null;
+  const anyRunning = message.toolCalls.some((c) => c.status === "RUNNING");
+  const stepCount = message.toolCalls.length;
+
   return (
-    <ul className="mb-1.5 flex flex-wrap gap-1" aria-label="Tools used">
-      {message.toolCalls.map((c) => {
-        const held = c.status === "DENIED";
-        return (
-          <li
-            key={c.id}
-            className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-2xs font-mono ${
-              held
-                ? "border-amber-700 text-amber-300"
-                : c.status === "RUNNING"
-                  ? "border-cyan-800 text-cyan-300"
-                  : "border-zinc-800 text-zinc-400"
-            }`}
-          >
-            {c.status === "RUNNING" ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Wrench className="h-2.5 w-2.5" />}
-            <span>{TOOL_LABELS[c.tool] ?? c.tool}</span>
-            <span className="text-zinc-500">{held ? "held for approval" : c.status === "RUNNING" ? "running" : "done"}</span>
-          </li>
-        );
-      })}
-    </ul>
+    <div className="mb-2 overflow-hidden rounded-lg border border-zinc-800/80 bg-zinc-950/60">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-2 px-2.5 py-1 text-2xs font-mono text-zinc-400 hover:bg-zinc-900/60 transition-colors"
+      >
+        <span className="flex items-center gap-1.5">
+          {anyRunning ? (
+            <Loader2 className="h-3 w-3 animate-spin text-cyan-400" aria-hidden="true" />
+          ) : (
+            <CheckCircle2 className="h-3 w-3 text-cyan-400" aria-hidden="true" />
+          )}
+          <span>
+            {anyRunning ? "Working" : "Worked"} · {stepCount} {stepCount === 1 ? "step" : "steps"}
+          </span>
+        </span>
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 text-zinc-400" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="h-3 w-3 text-zinc-400" aria-hidden="true" />
+        )}
+      </button>
+      {expanded && (
+        <ul className="flex flex-wrap gap-1 border-t border-zinc-800/60 px-2.5 py-1.5" aria-label="Tools used">
+          {message.toolCalls.map((c) => {
+            const held = c.status === "DENIED";
+            return (
+              <li
+                key={c.id}
+                className={`flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-2xs font-mono ${
+                  held
+                    ? "border-amber-700 bg-amber-950/30 text-amber-300"
+                    : c.status === "RUNNING"
+                      ? "border-cyan-800 bg-cyan-950/30 text-cyan-300"
+                      : "border-zinc-800 bg-zinc-900/60 text-zinc-300"
+                }`}
+              >
+                {c.status === "RUNNING" ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Wrench className="h-2.5 w-2.5" />}
+                <span>{TOOL_LABELS[c.tool] ?? c.tool}</span>
+                <span className="text-zinc-400">{held ? "held for approval" : c.status === "RUNNING" ? "running" : "done"}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
 function MessageView({ message }: { message: BrainMessage }) {
   if (message.role === "system") {
     return (
-      <div className="flex items-start gap-1.5 px-2 text-2xs font-mono text-zinc-500" data-testid="brain-system-note">
+      <div className="msg-enter flex items-start gap-1.5 px-2 text-2xs font-mono text-zinc-500" data-testid="brain-system-note">
         <Info className="mt-0.5 h-3 w-3 flex-none" />
         <span>{message.content}</span>
       </div>
@@ -82,14 +112,14 @@ function MessageView({ message }: { message: BrainMessage }) {
   }
   const user = message.role === "user";
   return (
-    <div className={`flex ${user ? "justify-end" : "justify-start"}`} data-testid={user ? "brain-user-message" : "brain-assistant-message"}>
+    <div className={`msg-enter flex ${user ? "justify-end" : "justify-start"}`} data-testid={user ? "brain-user-message" : "brain-assistant-message"}>
       <div
-        className={`max-w-[92%] rounded-xl border p-3 ${
-          user ? "border-cyan-800/50 bg-cyan-950/40 text-cyan-100" : "border-zinc-800/80 bg-zinc-900/90 text-zinc-200"
+        className={`max-w-[92%] rounded-2xl border p-3.5 shadow-xs ${
+          user ? "border-cyan-800/60 bg-cyan-950/50 text-cyan-100" : "border-zinc-800/90 bg-zinc-900/95 text-zinc-200"
         }`}
       >
-        <div className="mb-1 flex items-center justify-between gap-3 text-2xs font-mono uppercase tracking-wider text-zinc-400">
-          <span className="flex items-center gap-1">
+        <div className="mb-1.5 flex items-center justify-between gap-3 text-2xs font-mono uppercase tracking-wider text-zinc-400">
+          <span className="flex items-center gap-1.5">
             {user ? <UserIcon className="h-3 w-3 text-cyan-400" /> : <BrainCircuit className="h-3 w-3 text-cyan-400" />}
             {user ? "You" : "Brain"}
           </span>
@@ -97,7 +127,7 @@ function MessageView({ message }: { message: BrainMessage }) {
             <button
               type="button"
               onClick={() => dispatchBrainOpenTrace(message.traceId!)}
-              className="normal-case tracking-normal text-cyan-500 hover:text-cyan-300 hover:underline"
+              className="normal-case tracking-normal text-cyan-400 hover:text-cyan-300 hover:underline"
             >
               trace
             </button>
@@ -113,7 +143,7 @@ function MessageView({ message }: { message: BrainMessage }) {
                 {message.content}
               </ReactMarkdown>
             ) : message.status === "streaming" ? (
-              <span className="flex items-center gap-1 text-zinc-500" role="status">
+              <span className="flex items-center gap-1 text-zinc-400" role="status">
                 <Loader2 className="h-3 w-3 animate-spin" /> Thinking…
               </span>
             ) : null}
@@ -208,24 +238,29 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className={`flex-1 space-y-3 overflow-y-auto ${compact ? "p-3" : "p-4"}`} aria-live="polite" data-testid="brain-conversation">
+      <div className={`flex-1 space-y-3 overflow-y-auto ${compact ? "p-3" : "p-4 sm:p-6"}`} aria-live="polite" data-testid="brain-conversation">
         {messages.length === 0 && (
-          <div className="mx-auto max-w-md py-10 text-center font-mono">
-            <BrainCircuit className="mx-auto mb-3 h-10 w-10 text-cyan-400/40" />
-            <p className="text-sm font-semibold text-zinc-200">One conversation with the Brain</p>
-            <p className="mt-1 text-2xs leading-relaxed text-zinc-400">
+          <div className="mx-auto max-w-xl py-8 sm:py-12 text-center">
+            <div className="mx-auto mb-4 inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-cyan-500/30 bg-cyan-950/60 shadow-sm">
+              <BrainCircuit className="h-6 w-6 text-cyan-400" />
+            </div>
+            <p className="font-serif text-xl sm:text-2xl font-semibold tracking-tight text-zinc-100">
+              One conversation with the Brain
+            </p>
+            <p className="mx-auto mt-2 max-w-md font-mono text-2xs leading-relaxed text-zinc-400">
               It reads markets, research data and backtests, and can stage debates. It can only <em>propose</em> paper orders:
               every order card waits for your approval.
             </p>
-            <div className="mt-4 flex flex-col gap-1.5">
+            <div className="mt-6 grid grid-cols-1 gap-2 text-left font-mono">
               {STARTERS.map((s) => (
                 <button
                   key={s}
                   type="button"
                   onClick={() => submit(s)}
-                  className="rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-left text-2xs text-zinc-300 hover:border-cyan-800 hover:text-cyan-200"
+                  className="group flex items-center justify-between gap-3 rounded-xl border border-zinc-800/90 bg-zinc-900/80 px-4 py-3 text-left text-xs text-zinc-300 transition-all hover:border-cyan-500/50 hover:bg-zinc-900 hover:text-cyan-200 shadow-xs"
                 >
-                  {s}
+                  <span>{s}</span>
+                  <ChevronRight className="h-3.5 w-3.5 flex-none text-zinc-400 transition-transform group-hover:translate-x-0.5 group-hover:text-cyan-400" aria-hidden="true" />
                 </button>
               ))}
             </div>
@@ -239,59 +274,68 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
       </div>
 
       <form
-        className="flex-none border-t border-zinc-800 bg-zinc-900/80 p-3"
+        className="flex-none border-t border-zinc-800/80 bg-zinc-950/90 p-3 sm:px-4"
         onSubmit={(e) => {
           e.preventDefault();
           submit(draft);
         }}
       >
-        <div className="mb-2 flex items-center gap-1.5 font-mono text-2xs text-zinc-400">
-          <span className="text-zinc-500">Quick:</span>
-          <button
-            type="button"
-            onClick={() => submit("/swing")}
-            className="rounded border border-cyan-800/60 bg-cyan-950/40 px-1.5 py-0.5 text-2xs font-semibold text-cyan-300 hover:bg-cyan-900/60 transition-colors"
-          >
-            /swing
-          </button>
-        </div>
-        <div className="flex items-end gap-2">
-          <label htmlFor={compact ? "brain-input-compact" : "brain-input"} className="sr-only">
-            Message the Brain
-          </label>
-          <textarea
-            id={compact ? "brain-input-compact" : "brain-input"}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit(draft);
-              }
-            }}
-            rows={compact ? 1 : 2}
-            placeholder="Ask the Brain… (/swing scans MTF setups, /why opens the last trace, /new starts over, /postmortem [SYMBOL] reviews a trade)"
-            className="min-h-[36px] flex-1 resize-none rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 focus:border-cyan-600 focus:outline-none"
-          />
-          {streaming ? (
+        <div className="rounded-2xl border border-zinc-800/90 bg-zinc-900/90 p-2.5 shadow-sm transition-colors focus-within:border-cyan-500/60">
+          <div className="mb-2 flex flex-wrap items-center gap-1.5 font-mono text-2xs text-zinc-400">
+            <span className="text-zinc-400">Quick:</span>
             <button
               type="button"
-              onClick={stopBrain}
-              className="flex items-center gap-1 rounded-lg border border-rose-800 bg-rose-950/60 px-3 py-2 text-2xs font-bold text-rose-300 hover:bg-rose-900"
-              aria-label="Stop the Brain"
+              onClick={() => submit("/swing")}
+              className="rounded-md border border-cyan-800/60 bg-cyan-950/50 px-2 py-0.5 text-2xs font-semibold text-cyan-300 hover:bg-cyan-900/60 transition-colors"
             >
-              <Square className="h-3 w-3" /> Stop
+              /swing
             </button>
-          ) : (
             <button
-              type="submit"
-              disabled={!draft.trim()}
-              className="flex items-center gap-1 rounded-lg bg-cyan-600 px-3 py-2 text-2xs font-bold text-zinc-950 hover:bg-cyan-500 disabled:opacity-40"
-              aria-label="Send to the Brain"
+              type="button"
+              onClick={() => submit("/postmortem")}
+              className="rounded-md border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-2xs text-zinc-300 hover:border-zinc-700 hover:text-zinc-100 transition-colors"
             >
-              <Send className="h-3 w-3" /> Send
+              /postmortem
             </button>
-          )}
+          </div>
+          <div className="flex items-end gap-2">
+            <label htmlFor={compact ? "brain-input-compact" : "brain-input"} className="sr-only">
+              Message the Brain
+            </label>
+            <textarea
+              id={compact ? "brain-input-compact" : "brain-input"}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submit(draft);
+                }
+              }}
+              rows={compact ? 1 : 2}
+              placeholder="Ask the Brain… (/swing scans MTF setups, /why opens the last trace, /new starts over, /postmortem [SYMBOL] reviews a trade)"
+              className="min-h-[36px] flex-1 resize-none rounded-xl border border-zinc-800/80 bg-zinc-950 px-3 py-2 text-xs text-zinc-200 focus:border-cyan-600 focus:outline-none"
+            />
+            {streaming ? (
+              <button
+                type="button"
+                onClick={stopBrain}
+                className="flex items-center gap-1 rounded-xl border border-rose-800 bg-rose-950/60 px-3.5 py-2 text-2xs font-bold text-rose-300 hover:bg-rose-900"
+                aria-label="Stop the Brain"
+              >
+                <Square className="h-3 w-3" /> Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!draft.trim()}
+                className="flex items-center gap-1 rounded-xl bg-cyan-600 px-3.5 py-2 text-2xs font-bold text-zinc-950 hover:bg-cyan-500 disabled:opacity-40 transition-colors"
+                aria-label="Send to the Brain"
+              >
+                <Send className="h-3 w-3" /> Send
+              </button>
+            )}
+          </div>
         </div>
       </form>
     </div>

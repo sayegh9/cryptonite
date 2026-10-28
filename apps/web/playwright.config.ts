@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const CI = !!process.env.CI;
+const PORT = process.env.PLAYWRIGHT_PORT || "3000";
+const BASE_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -15,7 +17,7 @@ export default defineConfig({
   retries: 0,
   reporter: CI ? [["github"], ["list"], ["html", { open: "never" }]] : "list",
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: BASE_URL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
@@ -27,9 +29,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm --pm-on-fail=ignore start",
-    url: "http://127.0.0.1:3000",
-    reuseExistingServer: !CI,
+    command: `./node_modules/.bin/next start -p ${PORT}`,
+    url: BASE_URL,
+    reuseExistingServer: !CI && !process.env.PLAYWRIGHT_PORT,
     timeout: 30000,
   },
 });

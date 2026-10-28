@@ -65,12 +65,21 @@ function Workstation() {
   const urlView = parseView(workspaceMode, searchParams.get("view"));
   const navigate = useCallback((mode: WorkspaceMode, view?: string | null) => {
     // Workspaces with sub-views always carry one, so Back restores the exact view
-    if (!view && mode === "debates") view = useBrainStore.getState().workspaceView === "debates" ? "debates" : "home";
+    if (!view && mode === "debates") {
+      const wv = useBrainStore.getState().workspaceView;
+      view = wv === "debates" ? "debates" : wv === "pixel-office" ? "pixel-office" : "home";
+    }
     if (!view && (mode === "mission" || mode === "governance")) view = useMandateStore.getState().view;
     const query = buildQuery(mode, view);
     if (query !== window.location.search) window.history.pushState(null, "", query);
   }, []);
   const setWorkspaceMode = useCallback((mode: WorkspaceMode) => navigate(mode), [navigate]);
+
+  // Vibe-Trading layout: automatically collapse left sidebar to w-12 icon rail when entering Terminal
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(workspaceMode === "terminal");
+  useEffect(() => {
+    setSidebarCollapsed(workspaceMode === "terminal");
+  }, [workspaceMode]);
 
   // Apply desk DOM preferences (theme, density) on mount and subscribe to store changes
   useEffect(() => {
@@ -90,7 +99,9 @@ function Workstation() {
       if (!view) return;
       // A set before rehydration would persist the defaults over the stored session; wait for it
       if (mode === "debates" && useBrainStore.persist.hasHydrated()) {
-        useBrainStore.getState().setWorkspaceView(view === "home" ? "brain" : "debates");
+        useBrainStore.getState().setWorkspaceView(
+          view === "home" ? "brain" : view === "pixel-office" ? "pixel-office" : "debates"
+        );
       }
       if (mode === "mission" && useMandateStore.persist.hasHydrated()) useMandateStore.getState().setView(view as MissionView);
     };
@@ -111,6 +122,7 @@ function Workstation() {
   }, [workspaceMode, urlView]);
 
   const [isAgentChatOpen, setIsAgentChatOpen] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(false);
   // One session answer for the whole app (see useSessionStore): "checking" is not "signed out"
   const sessionStatus = useSessionStore((s) => s.status);
   const [showScannerBuilder, setShowScannerBuilder] = useState(false);
@@ -243,12 +255,14 @@ function Workstation() {
         toast.error(`Debate trigger error: ${err.message}`);
       }
     };
+    const openLoginHandler = () => setShowLoginModal(true);
 
     window.addEventListener("cryptonite:select-symbol" as any, handler);
     window.addEventListener("cryptonite:open-profile" as any, profileHandler);
     window.addEventListener("cryptonite:switch-workspace" as any, switchWsHandler);
     window.addEventListener("cryptonite:open-copilot" as any, copilotHandler);
     window.addEventListener("cryptonite:trigger-debate" as any, debateTriggerHandler);
+    window.addEventListener("cryptonite:open-login" as any, openLoginHandler);
 
     return () => {
       window.removeEventListener("cryptonite:select-symbol" as any, handler);
@@ -256,6 +270,7 @@ function Workstation() {
       window.removeEventListener("cryptonite:switch-workspace" as any, switchWsHandler);
       window.removeEventListener("cryptonite:open-copilot" as any, copilotHandler);
       window.removeEventListener("cryptonite:trigger-debate" as any, debateTriggerHandler);
+      window.removeEventListener("cryptonite:open-login" as any, openLoginHandler);
     };
   }, [selectedSymbol, navigate, setWorkspaceMode]);
 
@@ -296,8 +311,8 @@ function Workstation() {
         button always fit. Below md the banner takes a full-width second row, clear of the logo.
       */}
       <header className="flex-none bg-zinc-950 border-b border-white/5 flex flex-wrap md:flex-nowrap items-center px-4 z-20">
-        <div className="flex flex-none items-center h-12 space-x-2 mr-3 md:mr-8">
-          <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-2xs text-zinc-950" aria-hidden="true">
+        <div className="flex flex-none items-center h-12 space-x-2 mr-3 md:mr-6">
+          <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-2xs text-zinc-950 shadow-xs" aria-hidden="true">
             C
           </div>
           <span className="hidden sm:inline font-bold text-sm tracking-widest text-zinc-100">
@@ -305,13 +320,22 @@ function Workstation() {
           </span>
         </div>
 
-        <WorkspaceNav workspaceMode={workspaceMode} urlView={urlView} navigate={navigate} className="h-12 flex-1 md:min-w-64" />
+        <WorkspaceNav
+          workspaceMode={workspaceMode}
+          urlView={urlView}
+          navigate={navigate}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
+          sessionStatus={sessionStatus}
+          onSignIn={() => setShowLoginModal(true)}
+          className="h-12 flex-1"
+        />
 
         <ModeBanner
           poll
           wrapBelowMd
-          className="order-last w-full mb-2 md:order-none md:w-auto md:mb-0 md:ml-4 md:min-w-0 md:shrink"
-          summaryClassName="md:max-w-40 lg:max-w-56 xl:max-w-xs 2xl:max-w-md"
+          className="order-last w-full mb-2 md:order-none md:w-auto md:mb-0 md:ml-auto md:min-w-0 md:shrink"
+          summaryClassName="md:max-w-64 lg:max-w-80 xl:max-w-md 2xl:max-w-lg"
         />
 
         {/* Leverage plan 4.7: shown only while a perp position is open */}
@@ -347,139 +371,146 @@ function Workstation() {
         )}
       </header>
 
-      {/* Persistent Terminal Workspace */}
-      <div className={workspaceMode === "terminal" ? "flex-1 flex min-h-0 min-w-0" : "hidden"}>
-        {/* Left Watchlist Sidebar (Collapsible) */}
-        {showWatchlist && (
-          <aside className="w-60 flex-none h-full min-h-0 hidden md:flex border-r border-white/5 z-10">
-            <WatchlistPanel
-              selectedSymbol={selectedSymbol}
-              onSelectSymbol={handleSelectSymbol}
-            />
-          </aside>
+      {/* Main Workspace Canvas (offset on desktop by collapsible left sidebar: md:pl-12 when collapsed, md:pl-56 when expanded) */}
+      <div
+        className={`flex-1 flex flex-col min-h-0 min-w-0 transition-[padding] duration-200 ${
+          sidebarCollapsed ? "md:pl-12" : "md:pl-56"
+        }`}
+      >
+        {/* Persistent Terminal Workspace */}
+        <div className={workspaceMode === "terminal" ? "flex-1 flex min-h-0 min-w-0" : "hidden"}>
+          {/* Left Watchlist Sidebar (Collapsible) */}
+          {showWatchlist && (
+            <aside className="w-60 flex-none h-full min-h-0 hidden md:flex border-r border-white/5 z-10">
+              <WatchlistPanel
+                selectedSymbol={selectedSymbol}
+                onSelectSymbol={handleSelectSymbol}
+              />
+            </aside>
+          )}
+
+          <TerminalWorkspace
+            selectedSymbol={selectedSymbol}
+            scannerFocus={urlView === "scanner"}
+            showWatchlist={showWatchlist}
+            onToggleWatchlist={(val) => {
+              setShowWatchlist(val);
+              try {
+                localStorage.setItem("cryptonite:panel-watchlist", String(val));
+              } catch {}
+            }}
+            chartComponent={
+              <MultiChartGrid
+                activeTarget={activeChartTarget}
+                onActiveChartSelect={(sym) => setSelectedSymbol(sym)}
+              />
+            }
+            debateSidebarComponent={
+              activeDebateId ? (
+                <DebateTranscriptViewer runId={activeDebateId} symbol={selectedSymbol} />
+              ) : undefined
+            }
+            blotterComponent={
+              showScannerBuilder ? (
+                <div className="flex-1 overflow-y-auto p-4 relative h-full">
+                  <div className="absolute top-2 right-2 z-10">
+                    <button
+                      onClick={() => setShowScannerBuilder(false)}
+                      className="bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded text-xs font-bold transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <ScannerBuilder onCreated={() => setShowScannerBuilder(false)} />
+                </div>
+              ) : (
+                <ScannerStudio 
+                  onViewOnChart={handleViewOnChart} 
+                  onCreateClick={() => setShowScannerBuilder(true)} 
+                />
+              )
+            }
+          />
+        </div>
+
+        {/* Persistent AI Brain Workspace */}
+        <div className={workspaceMode === "debates" ? "flex-1 overflow-hidden relative flex flex-col min-h-0 min-w-0" : "hidden"}>
+          <AIBrainWorkspace selectedSymbol={selectedSymbol} isActive={workspaceMode === "debates"} />
+        </div>
+
+        {/* Risk & Governance Flight Deck: Unified institutional control plane */}
+        {workspaceMode === "governance" && (
+          <div className="flex-1 min-h-0 min-w-0">
+            <GovernanceConsole isActive initialView={urlView ?? undefined} />
+          </div>
         )}
 
-        <TerminalWorkspace
-          selectedSymbol={selectedSymbol}
-          scannerFocus={urlView === "scanner"}
-          showWatchlist={showWatchlist}
-          onToggleWatchlist={(val) => {
-            setShowWatchlist(val);
-            try {
-              localStorage.setItem("cryptonite:panel-watchlist", String(val));
-            } catch {}
-          }}
-          chartComponent={
-            <MultiChartGrid
-              activeTarget={activeChartTarget}
-              onActiveChartSelect={(sym) => setSelectedSymbol(sym)}
-            />
-          }
-          debateSidebarComponent={
-            activeDebateId ? (
-              <DebateTranscriptViewer runId={activeDebateId} symbol={selectedSymbol} />
-            ) : undefined
-          }
-          blotterComponent={
-            showScannerBuilder ? (
-              <div className="flex-1 overflow-y-auto p-4 relative h-full">
-                <div className="absolute top-2 right-2 z-10">
-                  <button
-                    onClick={() => setShowScannerBuilder(false)}
-                    className="bg-zinc-800 hover:bg-zinc-700 text-white px-3 py-1.5 rounded text-xs font-bold transition-colors"
-                  >
-                    Cancel
-                  </button>
+        {/* Mission Control: mandates, approvals, autonomy (blueprint §7.1) */}
+        {workspaceMode === "mission" && (
+          <div className="flex-1 min-h-0 min-w-0">
+            <MissionControl isActive />
+          </div>
+        )}
+
+        {/* On-Demand Secondary Workspaces */}
+        {workspaceMode === "markets" && (
+          <div className="flex-1 min-h-0 min-w-0 max-w-4xl mx-auto w-full">
+            <MarketOverview onSelectSymbol={(sym) => {
+              handleSelectSymbol(sym);
+              setWorkspaceMode("terminal");
+            }} />
+          </div>
+        )}
+        {workspaceMode === "alerts" && (
+          <div className="flex-1 min-h-0 min-w-0 max-w-3xl mx-auto w-full">
+            <AlertsPanel />
+          </div>
+        )}
+        {workspaceMode === "settings" && (
+          <div className="flex-1 min-h-0 min-w-0 w-full px-2 py-3 sm:px-4">
+            <SettingsPanel />
+          </div>
+        )}
+        {workspaceMode === "strategies" && (
+          <main className="flex-1 overflow-hidden relative">
+            <StrategyStudio />
+          </main>
+        )}
+        <main className={workspaceMode === "research" ? "flex-1 overflow-hidden relative p-1 pb-[33px]" : "hidden"}>
+          <ResearchLab />
+        </main>
+        {(workspaceMode === "trades" || workspaceMode === "portfolio") && (
+          <div className="flex-1 min-h-0 min-w-0">
+            <TradesConsole />
+          </div>
+        )}
+        {workspaceMode === "operator" && (
+          <div className="flex-1 min-h-0 min-w-0 bg-zinc-950 p-6 overflow-y-auto">
+            {/* Only a known sign-out hides the console. While the session is checked, each panel shows its own state. */}
+            {sessionStatus !== "anonymous" ? (
+              <div className="max-w-7xl mx-auto space-y-6">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* Left Column (35%) */}
+                  <div className="lg:col-span-4 space-y-6">
+                    <KillSwitchPanel />
+                    <KillSwitchPanel environment="DEMO" accountId="DEMO-ACCOUNT-001" />
+                    <EnforcedLimitsCard />
+                  </div>
+                  {/* Right Column (65%) */}
+                  <div className="lg:col-span-8 space-y-6">
+                    <StrategyInstancesPanel />
+                    <ReconciliationLedger />
+                  </div>
                 </div>
-                <ScannerBuilder onCreated={() => setShowScannerBuilder(false)} />
               </div>
             ) : (
-              <ScannerStudio 
-                onViewOnChart={handleViewOnChart} 
-                onCreateClick={() => setShowScannerBuilder(true)} 
-              />
-            )
-          }
-        />
-      </div>
-
-      {/* Persistent AI Brain Workspace */}
-      <div className={workspaceMode === "debates" ? "flex-1 overflow-hidden relative flex flex-col min-h-0 min-w-0" : "hidden"}>
-        <AIBrainWorkspace selectedSymbol={selectedSymbol} isActive={workspaceMode === "debates"} />
-      </div>
-
-      {/* Risk & Governance Flight Deck: Unified institutional control plane */}
-      {workspaceMode === "governance" && (
-        <div className="flex-1 min-h-0 min-w-0">
-          <GovernanceConsole isActive initialView={urlView ?? undefined} />
-        </div>
-      )}
-
-      {/* Mission Control: mandates, approvals, autonomy (blueprint §7.1) */}
-      {workspaceMode === "mission" && (
-        <div className="flex-1 min-h-0 min-w-0">
-          <MissionControl isActive />
-        </div>
-      )}
-
-      {/* On-Demand Secondary Workspaces */}
-      {workspaceMode === "markets" && (
-        <div className="flex-1 min-h-0 min-w-0 max-w-4xl mx-auto w-full">
-          <MarketOverview onSelectSymbol={(sym) => {
-            handleSelectSymbol(sym);
-            setWorkspaceMode("terminal");
-          }} />
-        </div>
-      )}
-      {workspaceMode === "alerts" && (
-        <div className="flex-1 min-h-0 min-w-0 max-w-3xl mx-auto w-full">
-          <AlertsPanel />
-        </div>
-      )}
-      {workspaceMode === "settings" && (
-        <div className="flex-1 min-h-0 min-w-0 w-full px-2 py-3 sm:px-4">
-          <SettingsPanel />
-        </div>
-      )}
-      {workspaceMode === "strategies" && (
-        <main className="flex-1 overflow-hidden relative">
-          <StrategyStudio />
-        </main>
-      )}
-      <main className={workspaceMode === "research" ? "flex-1 overflow-hidden relative p-1 pb-[33px]" : "hidden"}>
-        <ResearchLab />
-      </main>
-      {(workspaceMode === "trades" || workspaceMode === "portfolio") && (
-        <div className="flex-1 min-h-0 min-w-0">
-          <TradesConsole />
-        </div>
-      )}
-      {workspaceMode === "operator" && (
-        <div className="flex-1 min-h-0 min-w-0 bg-zinc-950 p-6 overflow-y-auto">
-          {/* Only a known sign-out hides the console. While the session is checked, each panel shows its own state. */}
-          {sessionStatus !== "anonymous" ? (
-            <div className="max-w-7xl mx-auto space-y-6">
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Left Column (35%) */}
-                <div className="lg:col-span-4 space-y-6">
-                  <KillSwitchPanel />
-                  <KillSwitchPanel environment="DEMO" accountId="DEMO-ACCOUNT-001" />
-                  <EnforcedLimitsCard />
-                </div>
-                {/* Right Column (65%) */}
-                <div className="lg:col-span-8 space-y-6">
-                  <StrategyInstancesPanel />
-                  <ReconciliationLedger />
-                </div>
+              <div role="status" className="flex items-center justify-center h-full text-zinc-500 font-mono">
+                Sign in as operator to see the operator console.
               </div>
-            </div>
-          ) : (
-            <div role="status" className="flex items-center justify-center h-full text-zinc-500 font-mono">
-              Sign in as operator to see the operator console.
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Bottom Global Footer & Attribution */}
       <footer className="h-7 flex-none bg-zinc-950 border-t border-zinc-900 px-4 flex items-center justify-between text-2xs text-zinc-500 z-20 font-mono">
@@ -517,8 +548,16 @@ function Workstation() {
         onClose={() => setProfileSymbol(null)} 
       />
 
-      {/* Shown only once the session is confirmed anonymous: never over a page that is still verifying */}
-      {workspaceMode === "operator" && sessionStatus === "anonymous" && <OperatorLoginModal />}
+      {/* Shown when operator clicks Sign in or on the Operator page once confirmed anonymous */}
+      {(showLoginModal || (workspaceMode === "operator" && sessionStatus === "anonymous")) && (
+        <OperatorLoginModal
+          onClose={showLoginModal ? () => setShowLoginModal(false) : undefined}
+          onSuccess={() => {
+            setShowLoginModal(false);
+            void useMandateStore.getState().refresh({ after: performance.now() });
+          }}
+        />
+      )}
     </div>
   );
 }

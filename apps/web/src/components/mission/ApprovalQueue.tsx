@@ -113,8 +113,8 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
   const shown = [...approvals.map((a) => decided[a.id] ?? a), ...Object.values(decided).filter((d) => !approvals.some((a) => a.id === d.id))];
 
   return (
-    <section aria-label="Pending approvals" className="rounded border border-zinc-800 bg-zinc-950 p-3 font-mono text-2xs">
-      <h3 className="mb-2 text-2xs font-bold uppercase tracking-wider text-zinc-400">Approval queue</h3>
+    <section aria-label="Pending approvals" className="rounded-2xl border border-zinc-800/90 bg-zinc-900/70 p-4 font-mono text-2xs shadow-xs">
+      <h3 className="mb-2.5 text-2xs font-bold uppercase tracking-wider text-zinc-400">Approval queue</h3>
       <p aria-live="polite" className="sr-only" data-testid="approval-announcer">
         {announcement}
       </p>
@@ -122,7 +122,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
         <p role="status" className="text-amber-200">Approvals could not be loaded, so whether anything is waiting is unknown.</p>
       )}
       {shown.length === 0 && approvalsOk === true && <p className="text-zinc-500">Nothing waiting for you.</p>}
-      <ul className="space-y-2">
+      <ul className="space-y-2.5">
         {shown.map((a) => {
           const add = a.action_class === "ADD_RISK";
           const pending = a.status === "PENDING";
@@ -131,7 +131,7 @@ export function ApprovalQueue({ approvals, onDecided }: { approvals: Approval[];
             <li
               key={a.id}
               data-testid="approval-row"
-              className={`rounded border p-2 ${add ? "border-amber-700 bg-amber-950/20" : "border-emerald-800 bg-emerald-950/20"}`}
+              className={`rounded-xl border p-3 ${add ? "border-amber-700/80 bg-amber-950/20" : "border-emerald-800/80 bg-emerald-950/20"}`}
             >
               <div className="flex items-center justify-between gap-2">
                 <span className={`text-2xs font-bold ${add ? "text-amber-300" : "text-emerald-300"}`}>

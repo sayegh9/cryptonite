@@ -22,7 +22,7 @@ interface BrainState {
   railOpen: boolean;
   /** The conversation history column on Brain Home; null = automatic (open on wide screens, closed on phones) */
   historyOpen: boolean | null;
-  workspaceView: "brain" | "debates";
+  workspaceView: "brain" | "debates" | "pixel-office";
 
   messages: BrainMessage[];
   streaming: boolean;
@@ -32,7 +32,7 @@ interface BrainState {
   setDraft: (draft: string) => void;
   setRailOpen: (open: boolean) => void;
   setHistoryOpen: (open: boolean) => void;
-  setWorkspaceView: (view: "brain" | "debates") => void;
+  setWorkspaceView: (view: "brain" | "debates" | "pixel-office") => void;
   setSessionId: (id: string | null) => void;
   newConversation: () => void;
   loadHistory: (sessionId: string, messages: StoredBrainMessage[]) => void;

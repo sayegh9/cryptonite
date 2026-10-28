@@ -6,9 +6,9 @@
 
 @layer base {
   body {
-    background-color: #09090b;
-    color: #f4f4f5;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: #0a0c0f;
+    color: #ebedf2;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     @apply bg-background text-foreground;
   }
@@ -38,14 +38,14 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #18181b;
+  background: #0a0c0f;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: #2b3342;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: #3d485c;
 }
 
 @keyframes price-flash-green {
@@ -67,17 +67,39 @@
 }
 
 /*
- * Readability tokens (R6.5).
- * - text-2xs (12px) is the floor for any data or label text; the old 8-11.5px sizes map to it.
- *   It was 11px, and most of the workstation's labels and figures were set at that size.
- * - zinc-500/600 are lifted so secondary text keeps a contrast of at least 4.5:1 on the
- *   zinc-950/900 surfaces (stock zinc-500 was about 4.1:1, zinc-600 about 2.6:1).
+ * Readability & Vibe-Trading Surface/Brand Tokens (R6.5 WCAG AA compliant).
+ * - Primary brand accent: #419547 (RGB: 65, 149, 71).
+ * - 4-level deep slate-blue dark surfaces (#0a0c0f base -> #12161f card -> #1c222d muted -> #2b3342 border).
+ * - text-2xs (12px) floor and >=4.5:1 contrast for zinc-500/600 on dark slate surfaces.
  */
 @theme {
   --text-2xs: 0.75rem;
   --text-2xs--line-height: 1rem;
-  --color-zinc-500: #8f8f99;
-  --color-zinc-600: #82828c;
+
+  /* Vibe-Trading 4-level slate surface mapping */
+  --color-zinc-950: #0a0c0f;
+  --color-zinc-900: #12161f;
+  --color-zinc-800: #1e2430;
+  --color-zinc-700: #2b3342;
+  --color-zinc-600: #878e99;
+  --color-zinc-500: #949ba6;
+  --color-zinc-400: #a6aebc;
+  --color-zinc-300: #d5d9e2;
+  --color-zinc-200: #e6e9ef;
+  --color-zinc-100: #f1f3f7;
+
+  /* Primary Brand Green (#419547) mapped across accent scale (5.03:1 WCAG AA contrast on text-zinc-950) */
+  --color-cyan-50: #f2fbf3;
+  --color-cyan-100: #e0f6e2;
+  --color-cyan-200: #c2ecc6;
+  --color-cyan-300: #8ed994;
+  --color-cyan-400: #58bd60;
+  --color-cyan-500: #4ca853;
+  --color-cyan-600: #419547;
+  --color-cyan-700: #2b622f;
+  --color-cyan-800: #234e26;
+  --color-cyan-900: #153318;
+  --color-cyan-950: #0b1d0d;
 }
 
 @theme inline {
@@ -127,18 +149,18 @@
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
 
-  /* Surface Hierarchy */
-  --color-canvas: oklch(0.14 0 0);
-  --color-surface-panel: oklch(0.17 0 0);
-  --color-surface-card: oklch(0.20 0 0);
-  --color-surface-raised: oklch(0.24 0 0);
-  --color-surface-hover: oklch(0.28 0 0);
-  --color-surface-border: oklch(1 0 0 / 7%);
+  /* Surface Hierarchy (Vibe-Trading 4-level slate) */
+  --color-canvas: #0a0c0f;
+  --color-surface-panel: #12161f;
+  --color-surface-card: #141820;
+  --color-surface-raised: #1c222d;
+  --color-surface-hover: #252c3a;
+  --color-surface-border: #2b3342;
 
   /* Financial Semantic Accents */
   --color-bid: oklch(0.72 0.19 148);
   --color-ask: oklch(0.65 0.22 25);
-  --color-copilot: oklch(0.75 0.14 220);
+  --color-copilot: #419547;
   --color-risk: oklch(0.75 0.16 75);
   --color-agent-pm: oklch(0.65 0.2 280);
 
@@ -154,38 +176,38 @@
   --color-swing-stop: #f43f5e;
   --color-swing-trail: #f59e0b;
   --color-swing-tp1: #10b981;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --background: #f8f9fb;
+  --foreground: #14181f;
+  --card: #ffffff;
+  --card-foreground: #14181f;
+  --popover: #ffffff;
+  --popover-foreground: #14181f;
+  --primary: #419547;
+  --primary-foreground: #ffffff;
+  --secondary: #e8ebf0;
+  --secondary-foreground: #14181f;
+  --muted: #e8ebf0;
+  --muted-foreground: #5c667a;
+  --accent: #e8ebf0;
+  --accent-foreground: #14181f;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --border: #d8dde6;
+  --input: #d8dde6;
+  --ring: #419547;
+  --chart-1: #419547;
+  --chart-2: #3b82f6;
+  --chart-3: #f59e0b;
+  --chart-4: #10b981;
+  --chart-5: #ef4444;
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: #ffffff;
+  --sidebar-foreground: #14181f;
+  --sidebar-primary: #419547;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e8ebf0;
+  --sidebar-accent-foreground: #14181f;
+  --sidebar-border: #d8dde6;
+  --sidebar-ring: #419547;
 
   /* Leverage tiers, dark: 1-3x low, 4-7x mid, 8-10x high; the liquidation price and its distance */
   --leverage-low: oklch(0.78 0.14 160);
@@ -195,37 +217,37 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: #0a0c0f;
+  --foreground: #ebedf2;
+  --card: #12161f;
+  --card-foreground: #ebedf2;
+  --popover: #161b26;
+  --popover-foreground: #ebedf2;
+  --primary: #419547;
+  --primary-foreground: #ffffff;
+  --secondary: #1e2430;
+  --secondary-foreground: #ebedf2;
+  --muted: #1e2430;
+  --muted-foreground: #949ba6;
+  --accent: #1e2430;
+  --accent-foreground: #ebedf2;
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --border: #2b3342;
+  --input: #2b3342;
+  --ring: #419547;
+  --chart-1: #419547;
+  --chart-2: #60a5fa;
+  --chart-3: #fbbf24;
+  --chart-4: #10b981;
+  --chart-5: #f43f5e;
+  --sidebar: #12161f;
+  --sidebar-foreground: #ebedf2;
+  --sidebar-primary: #419547;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1e2430;
+  --sidebar-accent-foreground: #ebedf2;
+  --sidebar-border: #2b3342;
+  --sidebar-ring: #419547;
 
   /* Leverage tiers, dark: 1-3x low, 4-7x mid, 8-10x high; the liquidation price and its distance */
   --leverage-low: oklch(0.78 0.14 160);
@@ -289,12 +311,12 @@
 }
 
 [data-theme="dark"] {
-  --color-canvas: oklch(0.14 0 0);
-  --color-surface-panel: oklch(0.17 0 0);
-  --color-surface-card: oklch(0.20 0 0);
-  --color-surface-raised: oklch(0.24 0 0);
-  --color-surface-hover: oklch(0.28 0 0);
-  --color-surface-border: oklch(1 0 0 / 7%);
+  --color-canvas: #0a0c0f;
+  --color-surface-panel: #12161f;
+  --color-surface-card: #141820;
+  --color-surface-raised: #1c222d;
+  --color-surface-hover: #252c3a;
+  --color-surface-border: #2b3342;
 
   /* Leverage tiers, dark: 1-3x low, 4-7x mid, 8-10x high; the liquidation price and its distance */
   --leverage-low: oklch(0.78 0.14 160);
@@ -326,4 +348,101 @@
   --desk-row-height: 2.25rem;
   --desk-table-cell-py: 0.5rem;
   --desk-font-scale: 1.05;
+}
+
+/* Vibe-Trading Streaming pulse-slide & message entrance animations */
+@keyframes pulse-slide {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(200%); }
+  100% { transform: translateX(-100%); }
+}
+
+@keyframes msg-enter {
+  from { opacity: 0; transform: translateY(10px); }
+}
+.msg-enter { animation: msg-enter 300ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .msg-enter { animation: none; }
+}
+
+/* Vibe-Trading Lightweight Pixel Office sprites for Cryptonite Agent Fleet */
+.pixel-office-floor {
+  background-color: var(--card);
+  background-image:
+    linear-gradient(rgb(65 149 71 / 0.14) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(65 149 71 / 0.14) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.pixel-desk {
+  background: rgb(10 12 15 / 0.85);
+  box-shadow: inset 0 -10px 0 rgb(30 36 48 / 0.45);
+}
+[data-theme="light"] .pixel-desk {
+  background: rgb(255 255 255 / 0.9);
+  box-shadow: inset 0 -10px 0 rgb(216 221 230 / 0.55);
+}
+.pixel-character {
+  position: relative;
+  width: 66px;
+  height: 70px;
+  image-rendering: pixelated;
+}
+.pixel-character__shadow {
+  position: absolute;
+  left: 8px;
+  bottom: 3px;
+  width: 48px;
+  height: 8px;
+  background: rgb(235 237 242 / 0.14);
+  border-radius: 50%;
+}
+.pixel-character__body {
+  position: absolute;
+  left: 16px;
+  top: 6px;
+  width: 34px;
+  height: 55px;
+  filter: drop-shadow(2px 3px 0 rgb(0 0 0 / 0.35));
+}
+.pixel-character__head {
+  position: absolute;
+  left: 6px;
+  top: 0;
+  width: 24px;
+  height: 24px;
+  background: #f1b48b;
+  box-shadow: 0 -5px 0 #3b2a24, 5px -5px 0 #3b2a24, 10px -5px 0 #3b2a24, 0 5px 0 #f1b48b, 24px 5px 0 #f1b48b;
+}
+.pixel-character__torso {
+  position: absolute;
+  left: 5px;
+  top: 29px;
+  width: 25px;
+  height: 20px;
+  background: var(--pixel-color, #419547);
+}
+.pixel-character__arm,
+.pixel-character__leg {
+  position: absolute;
+  width: 7px;
+  background: var(--pixel-color, #419547);
+}
+.pixel-character__arm { top: 30px; height: 18px; }
+.pixel-character__arm--left { left: 0; }
+.pixel-character__arm--right { right: 0; }
+.pixel-character__leg { top: 49px; height: 12px; background: #334155; }
+.pixel-character__leg--left { left: 7px; }
+.pixel-character__leg--right { right: 7px; }
+.pixel-character__typing {
+  position: absolute;
+  right: 0;
+  top: 2px;
+  color: var(--pixel-color, #419547);
+  font-weight: 800;
+  letter-spacing: 1px;
+  animation: pixel-typing 900ms steps(2, end) infinite;
+}
+@keyframes pixel-typing {
+  0%, 100% { opacity: 0.25; transform: translateY(2px); }
+  50% { opacity: 1; transform: translateY(0); }
 }

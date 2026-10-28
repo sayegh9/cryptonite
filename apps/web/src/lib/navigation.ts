@@ -54,6 +54,7 @@ export const VIEWS: Partial<Record<WorkspaceMode, { id: string; label: string }[
   debates: [
     { id: "home", label: "Brain Home" },
     { id: "debates", label: "Debates" },
+    { id: "pixel-office", label: "Pixel Office" },
   ],
   mission: [
     { id: "overview", label: "Overview" },

@@ -53,8 +53,8 @@ function TradesMetricCards() {
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
       {/* 1. Total Equity */}
-      <div className="p-3.5 bg-zinc-900/70 border border-zinc-800 rounded-lg shadow-xs">
-        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Total Equity</div>
+      <div className="p-4 bg-zinc-900/80 border border-zinc-800/90 rounded-2xl shadow-xs">
+        <div className="text-zinc-400 text-2xs uppercase font-bold tracking-wider">Total Equity</div>
         <div className="text-lg font-black text-white mt-1 tabular-nums">
           {account ? fmtUsd(account.total_equity) : "—"}
         </div>
@@ -62,8 +62,8 @@ function TradesMetricCards() {
       </div>
 
       {/* 2. Unrealized PnL */}
-      <div className="p-3.5 bg-zinc-900/70 border border-zinc-800 rounded-lg shadow-xs">
-        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Unrealized PnL</div>
+      <div className="p-4 bg-zinc-900/80 border border-zinc-800/90 rounded-2xl shadow-xs">
+        <div className="text-zinc-400 text-2xs uppercase font-bold tracking-wider">Unrealized PnL</div>
         <div
           className={`text-lg font-black mt-1 tabular-nums ${
             !positionsKnown ? "text-zinc-500" : totalUpnl >= 0 ? "text-emerald-400" : "text-red-400"
@@ -84,8 +84,8 @@ function TradesMetricCards() {
       </div>
 
       {/* 3. Day Realized PnL */}
-      <div className="p-3.5 bg-zinc-900/70 border border-zinc-800 rounded-lg shadow-xs">
-        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Day Realized PnL</div>
+      <div className="p-4 bg-zinc-900/80 border border-zinc-800/90 rounded-2xl shadow-xs">
+        <div className="text-zinc-400 text-2xs uppercase font-bold tracking-wider">Day Realized PnL</div>
         <div
           className={`text-lg font-black mt-1 tabular-nums ${
             daily === null ? "text-zinc-500" : daily >= 0 ? "text-emerald-400" : "text-red-400"
@@ -97,8 +97,8 @@ function TradesMetricCards() {
       </div>
 
       {/* 4. Margin Used */}
-      <div className="p-3.5 bg-zinc-900/70 border border-zinc-800 rounded-lg shadow-xs">
-        <div className="text-zinc-500 text-2xs uppercase font-bold tracking-wider">Margin Used</div>
+      <div className="p-4 bg-zinc-900/80 border border-zinc-800/90 rounded-2xl shadow-xs">
+        <div className="text-zinc-400 text-2xs uppercase font-bold tracking-wider">Margin Used</div>
         <div className="text-lg font-black text-cyan-400 mt-1 tabular-nums">
           {positionsKnown ? fmtUsd(marginUsed) : "—"}
         </div>

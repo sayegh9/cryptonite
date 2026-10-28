@@ -58,26 +58,26 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
   }, [isActive, reload, refresh]);
 
   return (
-    <div data-testid="mission-control" className="flex h-full min-h-0 flex-col overflow-y-auto bg-zinc-950 p-4 text-zinc-100">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-zinc-300">
+    <div data-testid="mission-control" className="flex h-full min-h-0 flex-col overflow-y-auto bg-zinc-950 p-4 sm:p-5 text-zinc-100">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-zinc-200">
           <Gauge className="h-4 w-4 text-cyan-400" /> Mission Control · PAPER
         </h2>
         <div className="flex items-center gap-3">
-          <div role="tablist" aria-label="Mission Control views" className="flex gap-1 font-mono text-2xs">
+          <div role="tablist" aria-label="Mission Control views" className="flex gap-1 rounded-xl border border-zinc-800 bg-zinc-900/80 p-0.5 font-mono text-2xs">
             {VIEWS.map((v) => (
               <button
                 key={v.id}
                 role="tab"
                 aria-selected={view === v.id}
                 onClick={() => dispatchSwitchWorkspace({ mode: "mission", view: v.id })}
-                className={`rounded px-2 py-1 font-bold ${view === v.id ? "bg-cyan-900/50 text-cyan-300" : "text-zinc-400 hover:text-zinc-200"}`}
+                className={`rounded-lg px-2.5 py-1 font-bold transition-colors ${view === v.id ? "bg-cyan-950/80 text-cyan-300 border border-cyan-500/40 shadow-xs" : "text-zinc-400 hover:text-zinc-200"}`}
               >
                 {v.label}
               </button>
             ))}
           </div>
-          <button type="button" onClick={reloadNow} aria-label="Refresh Mission Control" className="text-zinc-500 hover:text-zinc-200">
+          <button type="button" onClick={reloadNow} aria-label="Refresh Mission Control" className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-1.5 text-zinc-400 hover:text-zinc-200 transition-colors">
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -85,27 +85,36 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
 
       <MissionBanners status={status} mandates={mandates} />
       {error && (
-        <p role="alert" className="mt-2 font-mono text-2xs text-zinc-400">
-          {error}
-        </p>
+        <div role="alert" className="mt-2 flex flex-wrap items-center gap-3 font-mono text-2xs text-zinc-300">
+          <span>{error}</span>
+          {error.toLowerCase().includes("sign in") && (
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent("cryptonite:open-login"))}
+              className="rounded-lg bg-cyan-600 hover:bg-cyan-500 px-3 py-1 font-mono text-2xs font-bold text-zinc-950 transition-colors"
+            >
+              Sign in as Operator
+            </button>
+          )}
+        </div>
       )}
 
       <div className="mt-3 min-h-0 flex-1">
         {view === "overview" && <MissionHealth status={status} />}
         {view === "overview" && (
-          <div className="mt-3 grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-12">
             <div className="space-y-3 xl:col-span-7">
               {loaded && mandatesOk === false && mandates.length === 0 && (
-                <p role="status" className="rounded border border-amber-800/60 p-3 font-mono text-2xs text-amber-200">
+                <p role="status" className="rounded-2xl border border-amber-800/60 bg-amber-950/20 p-4 font-mono text-2xs text-amber-200">
                   Mandates could not be loaded, so the AI's authority is unknown here, not zero.
                 </p>
               )}
               {loaded && mandatesOk === true && mandates.length === 0 && (
-                <p className="rounded border border-zinc-800 p-3 font-mono text-2xs text-zinc-500">
+                <p className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4 font-mono text-2xs text-zinc-400">
                   No mandates. The AI cannot place any order until you create one (Mandate editor); every mandate starts at L1 Copilot.
                 </p>
               )}
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
                 {mandates.map((m) => (
                   <MandateCard key={m.id} mandate={m} onChanged={reload} />
                 ))}
