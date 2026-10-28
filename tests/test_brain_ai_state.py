@@ -177,6 +177,8 @@ async def world():
     conn = await asyncpg.connect(DB_URL)
     w = World(conn, client)
     try:
+        # Older disposable-CI DEMO latches can fill the Brain's 20-row risk view before this test's PAPER row.
+        await conn.execute("DELETE FROM execution_kill_switch WHERE environment = 'DEMO' AND account_id NOT LIKE 'WS2B-%'")
         active = await w.mandate("active")
         await w.mandate("halted", status="HALTED", halted_reason="Drawdown breach: halted by the system")
         await w.paper_account()

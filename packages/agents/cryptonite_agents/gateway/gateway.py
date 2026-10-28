@@ -334,7 +334,8 @@ class Gateway:
                 cost = pricing.cost_usd(model, u.input_tokens, u.output_tokens, u.cached_input_tokens)
                 ok = await write_call(self.pool, CallRecord(
                     role, model, "ERROR", u.input_tokens, u.output_tokens, u.cached_input_tokens, u.thinking_tokens,
-                    cost, latency, error=last_error, parent_trace_id=parent_trace_id, session_id=ctx.session_id))
+                    cost, latency, error=last_error, parent_trace_id=parent_trace_id, session_id=ctx.session_id,
+                    mandate_id=ctx.mandate_id))
                 await self.budget.record(role, cost, persisted=ok)
                 logger.warning("Gateway %s attempt %d on %s failed: %s", role, attempt + 1, model, e)
                 await self._note_local(model, e)

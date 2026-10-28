@@ -21,7 +21,8 @@ D = Decimal
 
 def perp_mandate() -> Mandate:
     return Mandate(id=uuid.UUID(int=7), name="perps", capital_budget_usd=D("10000"), instruments=["BTCUSDT-PERP"],
-                   max_position_pct=D("25"), allow_perps=True, max_leverage=5, autonomy_level=AutonomyLevel.L1)
+                   max_position_pct=D("25"), allow_perps=True, max_leverage=5, autonomy_level=AutonomyLevel.L1,
+                   direction="BOTH")
 
 
 def perp_order(**kw) -> MandateOrder:

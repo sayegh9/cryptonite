@@ -8,13 +8,16 @@ from uuid import uuid4
 import asyncpg
 import pytest
 import redis.asyncio as aioredis
+from connections import DB_URL, REDIS_URL
 from cryptonite_backtester_service.worker import BacktestWorker
 from cryptonite_outbox.relay import OutboxRelay
-from cryptonite_schemas.identifiers import to_nautilus_bar_type, to_nautilus_instrument_id, to_spot_instrument_id
+from cryptonite_schemas.identifiers import (
+    to_nautilus_bar_type,
+    to_nautilus_instrument_id,
+    to_spot_instrument_id,
+)
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
 from nautilus_trader.model import Bar, Currency, CurrencyPair, Price, Quantity
-from connections import DB_URL, REDIS_URL
-
 
 
 @pytest.mark.asyncio
@@ -68,6 +71,8 @@ async def test_backtest_completion_outbox_emission_and_relay(tmp_path: Path):
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
 
     try:
+        # The shared CI database can contain older pending events beyond this relay's batch.
+        await pool.execute("DELETE FROM outbox_events WHERE status = 'PENDING'")
         strat_id = uuid4()
         ver_id = uuid4()
         run_id = uuid4()

@@ -6,14 +6,19 @@ from uuid import uuid4
 import asyncpg
 import pytest
 import redis.asyncio as aioredis
+from connections import REDIS_URL
 from cryptonite_outbox.relay import OutboxRelay
-from connections import DB_URL, REDIS_URL
+from migrated_db import migrated_database
 
 
+@pytest.fixture
+def db_url():
+    with migrated_database("cryptonite_outbox_relay") as url:
+        yield url
 
 @pytest.mark.asyncio
-async def test_outbox_relay_lifecycle_and_redis_stream():
-    pool = await asyncpg.create_pool(DB_URL)
+async def test_outbox_relay_lifecycle_and_redis_stream(db_url):
+    pool = await asyncpg.create_pool(db_url)
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
 
     try:
@@ -42,7 +47,7 @@ async def test_outbox_relay_lifecycle_and_redis_stream():
             json.dumps(payload),
         )
 
-        relay = OutboxRelay(database_url=DB_URL, redis_url=REDIS_URL, max_attempts=3)
+        relay = OutboxRelay(database_url=db_url, redis_url=REDIS_URL, max_attempts=3)
         relay.pool = pool
         relay.redis = r
 

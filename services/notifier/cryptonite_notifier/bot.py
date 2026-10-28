@@ -34,7 +34,8 @@ HEARTBEAT_KEY = "notifier:heartbeat"
 OFFSET_KEY = "notifier:telegram:offset"
 # these reach Telegram through the outbox (the mandate monitor writes them there and on the channel)
 OUTBOX_KINDS = {"MANDATE_HARD_STOP", "ACCOUNT_BACKSTOP_DRAWDOWN", "HEARTBEAT_DOWN",
-                "MANDATE_DAILY_LOSS", "MANDATE_PROFIT_LOCK", "MANDATE_DAILY_TARGET"}  # ADR 0010 daily sessions
+                "MANDATE_DAILY_LOSS", "MANDATE_PROFIT_LOCK", "MANDATE_DAILY_TARGET",
+                "PROFILE_BREAKER", "PROFILE_FILL", "PROFILE_EXIT", "PROFILE_DAILY_SUMMARY"}  # ADR 0010 daily sessions
 TOTP_WINDOW_S = 90
 MAX_ATTEMPTS = 5
 TOTP_RE = re.compile(r"^\d{6}$")

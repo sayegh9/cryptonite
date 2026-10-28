@@ -1,7 +1,4 @@
-"""Auto-trade Phase B, B3 (ADR 0010 amendment): a scanner candidate that would route to a perps mandate is debated only
-from a closed 1h bar, and at most ``debate.perp_mandate_daily_cap`` times per perps mandate per UTC day (default 6).
-Spot candidates are unchanged. The gate runs as the debate worker's own role (cryptonite_api); no model is called
-(gateway None)."""
+"""ADR 0011: exclusive profile ownership replaces Phase B perp preferences and caps."""
 
 import json
 import uuid
@@ -48,6 +45,7 @@ def db_url():
 @pytest.fixture
 async def admin(db_url):
     conn = await asyncpg.connect(db_url)
+    await conn.execute("DELETE FROM ai_profile_coin_locks")
     await conn.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await conn.execute("DELETE FROM system_settings WHERE key = $1", CAP_KEY)
     await seed_paper_account(conn)
@@ -55,6 +53,7 @@ async def admin(db_url):
         yield conn
     finally:
         await conn.execute("TRUNCATE debate_runs CASCADE")
+        await conn.execute("DELETE FROM ai_profile_coin_locks")
         await conn.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
         await conn.execute("DELETE FROM system_settings WHERE key = $1", CAP_KEY)
         await conn.close()
@@ -68,11 +67,16 @@ async def pool(db_url, admin):
 
 
 async def add_mandate(admin, instrument: str, *, perps: bool) -> uuid.UUID:
-    return await admin.fetchval(
+    mid = await admin.fetchval(
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level, status,
                allow_perps, max_leverage)
            VALUES ($1, 10000, ARRAY[$2], 25, 1, 'ACTIVE', $3, $4) RETURNING id""",
         f"m-{uuid.uuid4().hex[:6]}", instrument, perps, 3 if perps else 1)
+    await admin.execute("INSERT INTO ai_profile_coin_locks(base_asset,mandate_id) VALUES('BTC',$1) ON CONFLICT DO NOTHING", mid)
+    if not perps:
+        await admin.execute("UPDATE ai_mandates SET style='INTRADAY' WHERE id=$1", mid)
+    return mid
+
 
 
 async def ask(gate, pool, redis, timeframe: str = "1h"):
@@ -84,19 +88,19 @@ async def test_a_spot_candidate_is_unchanged(gate, pool, admin):
     await add_mandate(admin, PERP, perps=True)  # a spot mandate takes the candidate: the perp rules do not apply
     redis = CapRedis()
     assert (await ask(gate, pool, redis, "15m")).reason == "NO_TRIAGE_GATEWAY"
-    assert not any(str(k).startswith("debate:perp_cap:") for k in redis.kv)
+    assert any(str(k).startswith("debate_gate:profile:") for k in redis.kv)
 
 
 async def test_no_mandate_at_all_is_unchanged(gate, pool, admin):
     assert (await ask(gate, pool, CapRedis(), "15m")).reason == "NO_TRIAGE_GATEWAY"
 
 
-async def test_a_perps_mandate_takes_only_1h_bars(gate, pool, admin):
+async def test_a_perp_profile_takes_only_its_style_bars(gate, pool, admin):
     await add_mandate(admin, PERP, perps=True)
     redis = CapRedis()
-    for tf in ("15m", "4h", "5m"):
+    for tf in ("15m", "5m"):
         refused = await ask(gate, pool, redis, tf)
-        assert (refused.allowed, refused.reason) == (False, "PERP_MANDATE_NOT_1H")
+        assert (refused.allowed, refused.reason) == (False, "TIMEFRAME_NOT_IN_STYLE")
     assert not any(str(k).startswith("debate:cooldown:") for k in redis.kv)  # refused before the cooldown
     assert (await ask(gate, pool, redis, "1h")).allowed is True
 
@@ -108,61 +112,49 @@ async def test_the_default_cap_is_6_a_day_per_mandate(gate, pool, admin):
     for _ in range(8):
         redis.drop_cooldowns()  # one candidate per setup window: each call here is a new window
         reasons.append((await ask(gate, pool, redis)).reason)
-    assert reasons == ["NO_TRIAGE_GATEWAY"] * 6 + ["PERP_MANDATE_DAILY_CAP"] * 2
-    (key,) = [k for k in redis.kv if str(k).startswith("debate:perp_cap:")]
+    assert reasons == ["NO_TRIAGE_GATEWAY"] * 6 + ["PROFILE_DEBATE_DAILY_CAP"] * 2
+    (key,) = [k for k in redis.kv if str(k).startswith("debate_gate:profile:")]
     assert str(mid) in key and redis.kv[key] == 6
 
 
-async def test_the_cap_is_the_stored_setting(gate, pool, admin):
+async def test_the_cap_is_the_profile_debate_limit(gate, pool, admin):
     await add_mandate(admin, PERP, perps=True)
-    await admin.execute("INSERT INTO system_settings (key, value) VALUES ($1, $2)", CAP_KEY, json.dumps("1"))
+    await admin.execute("UPDATE ai_mandates SET max_debates_per_day=1 WHERE status='ACTIVE'")
     redis = CapRedis()
     assert (await ask(gate, pool, redis)).allowed is True
     redis.drop_cooldowns()
-    assert (await ask(gate, pool, redis)).reason == "PERP_MANDATE_DAILY_CAP"
-    await admin.execute("UPDATE system_settings SET value = $2 WHERE key = $1", CAP_KEY, json.dumps("0"))
-    assert (await ask(gate, pool, CapRedis())).reason == "PERP_MANDATE_DAILY_CAP"  # 0 stops them
+    assert (await ask(gate, pool, redis)).reason == "PROFILE_DEBATE_DAILY_CAP"
+    await admin.execute("UPDATE ai_mandates SET max_debates_per_day=0 WHERE status='ACTIVE'")
+    assert (await ask(gate, pool, CapRedis())).reason == "PROFILE_DEBATE_DAILY_CAP"  # 0 stops them
 
 
-async def test_a_stored_value_out_of_bounds_falls_back_to_the_default(gate, pool, admin, caplog):
+async def test_a_retired_cap_setting_does_not_override_the_profile(gate, pool, admin):
     await add_mandate(admin, PERP, perps=True)
-    await admin.execute("INSERT INTO system_settings (key, value) VALUES ($1, $2)", CAP_KEY, json.dumps("500"))
-    async with pool.acquire() as conn:
-        with caplog.at_level("WARNING"):
-            assert await gate.perp_debate_cap(conn) == 6
-    assert any("outside" in r.message for r in caplog.records)
+    await admin.execute("INSERT INTO system_settings (key, value) VALUES ($1, $2)", CAP_KEY, json.dumps("0"))
+    assert (await ask(gate, pool, CapRedis())).allowed is True
 
 
 async def test_the_reservation_refuses_over_the_cap_and_gives_the_slot_back(gate):
     redis = CapRedis()
-    key = gate.perp_cap_key(uuid.uuid4(), 0)
-    assert [await gate._reserve_perp_slot(redis, key, 2) for _ in range(3)] == [True, True, False]
+    key = gate.profile_cap_key(uuid.uuid4(), 0)
+    assert [await gate._reserve_profile_slot(redis, key, 2) for _ in range(3)] == [True, True, False]
     assert redis.kv[key] == 2
 
 
 def test_the_cap_key_is_per_utc_day():
     gate = load("debate_worker_gate_perp_key", "gate.py")
     mid = uuid.uuid4()
-    assert gate.perp_cap_key(mid, 0) == f"debate:perp_cap:{mid}:1970-01-01"
-    assert gate.perp_cap_key(mid, 86399) == gate.perp_cap_key(mid, 0)
-    assert gate.perp_cap_key(mid, 86400).endswith("1970-01-02")
+    assert gate.profile_cap_key(mid, 0) == f"debate_gate:profile:{mid}:1970-01-01"
+    assert gate.profile_cap_key(mid, 86399) == gate.profile_cap_key(mid, 0)
+    assert gate.profile_cap_key(mid, 86400).endswith("1970-01-02")
 
 
-async def test_perp_first_puts_a_spot_covered_candidate_under_the_perp_cadence(gate, pool, admin):
-    """ADR 0010 P-10: under PERP_FIRST a BTC candidate a spot mandate also takes routes to the perps mandate, so the 1h
-    and daily-cap rules apply to it; under the default SPOT_FIRST it stays a spot candidate."""
-    import mandate_routing  # the module the gate imported
-
+async def test_retired_preference_cannot_change_profile_cadence(gate, pool, admin):
     await add_mandate(admin, INSTRUMENT, perps=False)
     await add_mandate(admin, PERP, perps=True)
-    key = "debate.perp_routing"
+    await admin.execute("INSERT INTO system_settings(key,value) VALUES('debate.perp_routing','1') "
+                        "ON CONFLICT(key) DO UPDATE SET value='1'")
     try:
-        mandate_routing.reset_routing_cache()
-        assert (await ask(gate, pool, CapRedis(), "15m")).reason == "NO_TRIAGE_GATEWAY"  # SPOT_FIRST
-        await admin.execute("INSERT INTO system_settings (key, value) VALUES ($1, $2)", key, json.dumps("1"))
-        mandate_routing.reset_routing_cache()
-        assert (await ask(gate, pool, CapRedis(), "15m")).reason == "PERP_MANDATE_NOT_1H"
-        assert (await ask(gate, pool, CapRedis(), "1h")).allowed is True
+        assert (await ask(gate, pool, CapRedis(), "15m")).reason == "NO_TRIAGE_GATEWAY"
     finally:
-        await admin.execute("DELETE FROM system_settings WHERE key = $1", key)
-        mandate_routing.reset_routing_cache()
+        await admin.execute("DELETE FROM system_settings WHERE key='debate.perp_routing'")

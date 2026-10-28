@@ -95,6 +95,29 @@ def test_inside_the_mandate_with_approval_passes():
     assert check_mandate(mandate(), buy(), MandateExposure(), approval_ok=True, autotrade_on=True) is None
 
 
+def test_spot_market_and_direction_defenses_are_refusals_not_breaches():
+    no_spot = mandate(markets=["PERP"])
+    reject_market = check_mandate(no_spot, buy(), MandateExposure(), approval_ok=True, autotrade_on=True)
+    assert reject_market is MandateReject.MARKET_NOT_ALLOWED
+    assert reject_market not in BREACH_CODES
+
+    short_only = mandate(instruments=["BTCUSDT-PERP"], markets=["PERP"], direction="LONG",
+                         allow_perps=True, max_leverage=3)
+    reject_direction = check_mandate(
+        short_only, MandateOrder(PERP, "SELL", D("0.01"), D("50000"), order_type="LIMIT", leverage=2),
+        MandateExposure(),
+        approval_ok=True, autotrade_on=True,
+    )
+    assert reject_direction is MandateReject.DIRECTION_NOT_ALLOWED
+    assert reject_direction not in BREACH_CODES
+
+    margin = mandate(instruments=["BTCUSDT-MARGIN"], markets=["SPOT_MARGIN"])
+    reject_margin = check_mandate(margin, buy(inst="BTCUSDT-MARGIN.BINANCE"), MandateExposure(),
+                                  approval_ok=True, autotrade_on=True)
+    assert reject_margin is MandateReject.MARKET_NOT_ALLOWED
+    assert reject_margin not in BREACH_CODES
+
+
 @pytest.mark.parametrize("status", [MandateStatus.HALTED, MandateStatus.PAUSED, MandateStatus.ARCHIVED])
 def test_a_mandate_that_is_not_active_takes_no_new_risk(status):
     assert check_mandate(mandate(status=status), buy(), MandateExposure(), approval_ok=True, autotrade_on=True) is MandateReject.HALTED
@@ -386,6 +409,10 @@ def mandate_row(m: Mandate) -> dict:
 
 async def run_ai_command(payload, *, mandate_row=None, target="AI_DEBATE_WORKER", requester="operator:u1",
                          cmd_type="SUBMIT_ORDER", mandate_id=None, positions=(), approval=None, dispatcher_position=None):
+    if (cmd_type == "SUBMIT_ORDER" and mandate_row is not None and payload.get("side") == "BUY"
+            and "-PERP" not in str(payload.get("instrument_id", ""))):
+        payload = {**payload}
+        payload.setdefault("proposed_stop_loss", "49000")
     d, _ = make_fresh_dispatcher()
     if dispatcher_position is not None:
         d.positions[SPOT] = dispatcher_position
@@ -643,8 +670,11 @@ def _autotrade_switch_on(monkeypatch):
     """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
     Ask me. These tests exercise the switch-on behaviour of those levels."""
     from cryptonite_execution import profile_lifecycle
+    from cryptonite_orchestrator import mandate_gate, server
 
     async def on(conn):
         return True
 
     monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)
+    monkeypatch.setattr(mandate_gate, "fresh_autotrade_switch_on", on)
+    monkeypatch.setattr(server, "fresh_autotrade_switch_on", on)

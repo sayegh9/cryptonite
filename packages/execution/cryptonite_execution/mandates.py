@@ -25,7 +25,7 @@ from cryptonite_schemas.mandate import (
     canonical_instrument,
     is_perp_instrument,
 )
-from cryptonite_schemas.profile import Market, accepts_entries
+from cryptonite_schemas.profile import Market, accepts_entries, allows_side, market_of
 from cryptonite_schemas.session import SessionVerdict
 
 # Market buys are valued like the dispatcher reserves them: ask + 2% collar + 0.5% slippage
@@ -150,9 +150,15 @@ def check_mandate(
         return MandateReject.INSTRUMENT_NOT_ALLOWED
     if coin_owner is not None and coin_owner != mandate.id:
         return MandateReject.COIN_LOCKED
+    # ADR 0011/P1: retain the established perp opt-in breach; other market and direction failures are refusals.
+    if order.is_perp and Market.PERP not in mandate.markets:
+        return MandateReject.PERPS_NOT_ALLOWED
+    market = market_of(order.instrument_id)
+    if market is Market.SPOT_MARGIN or market not in mandate.markets:
+        return MandateReject.MARKET_NOT_ALLOWED
+    if not allows_side(mandate.direction, "LONG" if order.side.upper() == "BUY" else "SHORT"):
+        return MandateReject.DIRECTION_NOT_ALLOWED
     if order.is_perp:
-        if Market.PERP not in mandate.markets:  # ADR 0011 D4: perps at any execution mode
-            return MandateReject.PERPS_NOT_ALLOWED
         if (order.leverage or 1) > min(mandate.max_leverage, MAX_PERP_LEVERAGE_CAP):
             return MandateReject.LEVERAGE_EXCEEDED
         if (order.margin_mode or "ISOLATED").upper() != "ISOLATED":

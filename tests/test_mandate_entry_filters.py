@@ -52,6 +52,22 @@ async def h(db_url, monkeypatch):
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_orders, "
                                "paper_positions, ai_mandate_daily_sessions CASCADE")
+    from cryptonite_execution import profile_lifecycle
+    from cryptonite_schemas.profile import base_asset
+    await harness.pool.execute("DELETE FROM ai_profile_coin_locks")
+    await harness.pool.execute("INSERT INTO system_settings(key,value) VALUES('autotrade.enabled','1') "
+                               "ON CONFLICT(key) DO UPDATE SET value='1'")
+    profile_lifecycle.reset_switch_cache()
+    original_mandate = harness.mandate
+
+    async def owned_mandate(*args, **kw):
+        m = await original_mandate(*args, **kw)
+        for inst in m.instruments:
+            await harness.pool.execute("INSERT INTO ai_profile_coin_locks(base_asset,mandate_id) VALUES($1,$2) "
+                                       "ON CONFLICT DO NOTHING", base_asset(inst), m.id)
+        return m
+
+    harness.mandate = owned_mandate
     try:
         yield harness
     finally:
@@ -77,8 +93,10 @@ async def test_route_entry_refuses_a_conviction_below_the_minimum(h, routing):
     m = await h.mandate(level=1)
     await limits(h, m, min_conviction="0.70")
     async with h.pool.acquire() as conn:
-        low = await routing.route_entry(conn, uuid.uuid4(), BTC, "Overweight", 0.62, 5.0)
-        ok = await routing.route_entry(conn, uuid.uuid4(), BTC, "Overweight", 0.70, 5.0)
+        low = await routing.route_entry(conn, uuid.uuid4(), BTC, "Overweight", 0.62, 5.0,
+                                        reference_price=100.0, stop_loss=95.0, take_profit=110.0)
+        ok = await routing.route_entry(conn, uuid.uuid4(), BTC, "Overweight", 0.70, 5.0,
+                                       reference_price=100.0, stop_loss=95.0, take_profit=110.0)
     assert (low[0], low[1].id) == ("NO_TRADE", m.id)
     assert ok[0] == "PENDING_APPROVAL"
     assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 1  # only the second asked the operator
@@ -92,24 +110,27 @@ async def test_route_entry_refuses_a_reward_risk_below_the_minimum(h, routing):
                                         reference_price=100.0)
         ok = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.8, 5.0, stop_loss=95.0, take_profit=110.0,
                                        reference_price=100.0)
-        # no reference price: the R:R filter is skipped (logged), not a refusal
-        unpriced = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.8, 5.0, stop_loss=95.0,
+        # A spot BUY without a reference price cannot validate its structural stop.
+        unpriced_id = uuid.uuid4()
+        unpriced = await routing.route_entry(conn, unpriced_id, BTC, "Buy", 0.8, 5.0, stop_loss=95.0,
                                              take_profit=101.0)
-    assert [low[0], ok[0], unpriced[0]] == ["NO_TRADE", "PENDING_APPROVAL", "PENDING_APPROVAL"]
+    assert [low[0], ok[0], unpriced[0]] == ["NO_TRADE", "PENDING_APPROVAL", "NO_TRADE"]
+    assert await h.pool.fetchval(
+        "SELECT reason FROM ai_profile_decisions WHERE run_id = $1 AND stage = 'ROUTE'", unpriced_id
+    ) == "STOP_REQUIRED"
 
 
-async def test_route_entry_records_that_min_rr_was_skipped_without_a_stop_and_target(h, routing, caplog):
+async def test_route_entry_refuses_spot_buy_without_a_structural_stop(h, routing):
     m = await h.mandate(level=1)
     await limits(h, m, min_rr="2.0")
-    with caplog.at_level("INFO"):
-        async with h.pool.acquire() as conn:
-            res = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.8, 5.0, reference_price=100.0)
-    assert res[0] == "PENDING_APPROVAL"
-    row = await h.pool.fetchrow("SELECT payload, summary FROM ai_approvals")
-    payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
-    assert payload["filters_skipped"] == ["min_rr skipped: no stop/target"]
-    assert "min_rr skipped: no stop/target" in row["summary"]
-    assert any("min_rr skipped: no stop/target" in r.message and r.levelname == "INFO" for r in caplog.records)
+    run_id = uuid.uuid4()
+    async with h.pool.acquire() as conn:
+        res = await routing.route_entry(conn, run_id, BTC, "Buy", 0.8, 5.0, reference_price=100.0)
+    assert res[0] == "NO_TRADE"
+    assert await h.pool.fetchval(
+        "SELECT reason FROM ai_profile_decisions WHERE run_id = $1 AND stage = 'ROUTE'", run_id
+    ) == "STOP_REQUIRED"
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
 
 
 async def test_route_entry_still_applies_min_conviction_to_a_debate_without_a_stop(h, routing):

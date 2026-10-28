@@ -1,44 +1,24 @@
-"""Pre-debate gate (AI-first blueprint §6, A2.1 + A2.3): spend nothing on debates that cannot matter.
+"""ADR 0011: account safety, profile style, debate slots and proportional AI budget."""
 
-Automatic (scanner) triggers pass, in order, before any model is called:
-  0. one decision per candidate id    -> the scanner's enqueue is at least once (D1): a delivery whose
-     durable run (``debate_runs.candidate_id``) already exists is dropped; a retry before any run exists
-     passes again (nothing durable was written, so a transient failure cannot poison the retry)
-  1. kill switch / daily-loss latch   -> a new entry could not be placed anyway
-  2. position at the concentration cap -> a new entry could not be sized
-  3. stale candidate                  -> the setup is old news
-  4. cooldown per instrument+timeframe -> one debate per setup window. The key holds the candidate's own
-     token: a crash or cancellation after this point leaves a window the same candidate's redelivery
-     still passes (no durable row yet), while other candidates wait it out
-  4b. a candidate that would route to a perps mandate (Phase B: no ACTIVE spot mandate allows the instrument, one
-     perps mandate allows its perpetual) -> only from a closed 1h bar (``PERP_MANDATE_NOT_1H``), and at most
-     ``debate.perp_mandate_daily_cap`` such debates per perps mandate per UTC day (``PERP_MANDATE_DAILY_CAP``; a slot
-     is taken when the gate lets the debate run, and not given back if the debate fails)
-  5. hard triage rules in code (R3.1, ``cryptonite_scanner.brief.hard_rejects`` on the scanner's
-     structured brief): reward-to-risk < 1.5, the two highest timeframes both trending down, chop
-     -> ``TRIAGE_RULE_<NAME>`` with no model call. Missing data never rejects: it falls through to 6.
-  6. triage (Flash-Lite, one cheap call on the market brief) -> worth a full debate?
-Brain-started debates (``brain_on_demand``, WS-1E) run only the account checks, kill switch, daily loss and
-position cap, then pass as ``BRAIN_TRIGGER``: no triage call and no dedupe, stale, brief or cooldown check. The
-API's per-day cap bounds how many there are. Debates staged by an AI tool (the Brain and the research chat,
-``trigger_source = "brain_on_demand"``) pass the account safety checks and count toward the daily Brain debate cap.
-Only debates the operator starts from the dashboard skip the gate: that spend is an explicit choice.
-"""
-
+import asyncio
 import datetime
 import json
 import logging
+import math
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from cryptonite_agents.debate_fleet import TRIAGE
-from cryptonite_agents.gateway import Gateway
+from cryptonite_agents.gateway import CallContext, Gateway
+from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD, BudgetExceeded, parse_cap
+from cryptonite_execution.profile_log import record_decision
 from cryptonite_scanner.brief import hard_rejects
 from cryptonite_schemas.debate import TriageDecision
-from cryptonite_schemas.mandate import is_perp_instrument
-from cryptonite_schemas.runtime_settings import PERP_DEBATE_CAP_KEY, RUNTIME_BOUNDS, read_number
-from mandate_routing import resolve_route
+from cryptonite_schemas.profile import STYLE_TIMEFRAMES
+from mandate_routing import resolve_profile
 
 logger = logging.getLogger("debate_worker.gate")
 
@@ -54,8 +34,22 @@ MIN_STALE_S = 15 * 60
 # 039), not a key set before any work: a failure before the run leaves nothing behind, so a PEL retry
 # (F-H6) of the same message passes the gate again, while a delivery whose run exists is dropped.
 TIMEFRAME_S = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
-PERP_DEBATE_TIMEFRAME = "1h"  # scanner debates routed to a perps mandate come only from closed 1h bars
-PERP_CAP_TTL_S = 2 * 86400
+PROFILE_CAP_TTL_S = 2 * 86400
+PROFILE_BUDGET_LOCK_TTL_S = 300
+PROFILE_BUDGET_LOCK_RENEW_S = 20
+
+
+def _utc_now_s() -> float:
+    """Current UTC epoch seconds for day-scoped budget and slot accounting."""
+    return datetime.datetime.now(datetime.UTC).timestamp()
+
+
+class ProfileBudgetLockError(RuntimeError):
+    """The profile budget lease is unavailable or lost; fail closed without claiming budget spend."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
 
 
 @dataclass
@@ -66,6 +60,7 @@ class GateDecision:
     triage_trace_id: Any = None
     cooldown_key: str | None = None  # released by the caller if the debate it allowed fails
     cooldown_token: str | None = None  # the caller's own token: release only while it still holds the key
+    profile: Any = None
 
 
 # Atomic compare-and-delete: read and delete in one script, so between the two no TTL expiry or other
@@ -87,6 +82,91 @@ async def release_cooldown(redis, key: str | None, token: str | None) -> None:
         await redis.eval(_RELEASE_COOLDOWN_LUA, 1, key, token)
     except Exception:  # a failed release only costs the cooldown window, never the retry itself
         logger.warning("Cooldown %s not released", key)
+
+
+CANDIDATE_GATE_LEASE_TTL_S = 60
+CANDIDATE_GATE_LEASE_RENEW_S = 10
+CANDIDATE_GATE_LEASE_POLL_S = .05
+
+
+class CandidateGateLeaseError(RuntimeError):
+    """Candidate evaluation lost its lease and must retry without committing an outcome."""
+
+
+@dataclass
+class CandidateGateLease:
+    """Token-fenced ownership spanning candidate evaluation and durable outcome insertion."""
+
+    redis: Any
+    key: str
+    token: str
+    lost: bool = False
+    released: bool = False
+
+    async def assert_owned(self) -> None:
+        """Renew only our token; fail closed if ownership or Redis availability was lost."""
+        if self.lost or self.released:
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_LOST")
+        try:
+            renewed = await self.redis.eval(
+                _RENEW_PROFILE_BUDGET_LOCK_LUA, 1, self.key, self.token, CANDIDATE_GATE_LEASE_TTL_S)
+        except Exception as exc:
+            self.lost = True
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_UNAVAILABLE") from exc
+        if not renewed:
+            self.lost = True
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_LOST")
+
+    async def release(self) -> None:
+        """Release only our token, including cancellation and failed outcome transactions."""
+        if self.released:
+            return
+        self.released = True
+        try:
+            await self.redis.eval(_RELEASE_COOLDOWN_LUA, 1, self.key, self.token)
+        except Exception:
+            logger.warning("Candidate gate lease %s not released; bounded expiry permits retry", self.key)
+
+
+@asynccontextmanager
+async def candidate_gate_guard(redis, candidate_id: uuid.UUID | None):
+    """Wait for a candidate owner to commit, or retry after its crash lease expires.
+
+    Waiting does not acknowledge the queue delivery. No database connection is held while
+    waiting or evaluating models; only the short outcome transaction acquires one.
+    """
+    if candidate_id is None:
+        yield None
+        return
+    lease = CandidateGateLease(redis, f"debate:candidate_gate:{candidate_id}", str(uuid.uuid4()))
+    while True:
+        try:
+            if await redis.set(lease.key, lease.token, nx=True, ex=CANDIDATE_GATE_LEASE_TTL_S):
+                break
+        except Exception as exc:
+            raise CandidateGateLeaseError("CANDIDATE_GATE_LEASE_UNAVAILABLE") from exc
+        await asyncio.sleep(CANDIDATE_GATE_LEASE_POLL_S)
+
+    async def renew_lease():
+        while not lease.released:
+            await asyncio.sleep(CANDIDATE_GATE_LEASE_RENEW_S)
+            if lease.released:
+                return
+            try:
+                await lease.assert_owned()
+            except CandidateGateLeaseError:
+                return  # Outcome transactions check the lost flag and raise for queue retry.
+
+    renewal = asyncio.create_task(renew_lease())
+    try:
+        yield lease
+    finally:
+        renewal.cancel()
+        try:
+            await renewal
+        except asyncio.CancelledError:
+            pass
+        await lease.release()
 
 
 async def _count(redis, reason: str) -> None:
@@ -120,8 +200,21 @@ def _trace_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
 
 async def pre_debate_gate(pg_pool, redis, payload: dict[str, Any], gateway: Gateway | None,
                           brief: str | None, now_s: float | None = None,
-                          brief_data: dict[str, Any] | None = None) -> GateDecision:
-    decision = await _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data)
+                          brief_data: dict[str, Any] | None = None,
+                          run_id: uuid.UUID | None = None, *, defer_record: bool = False) -> GateDecision:
+    """Evaluate ADR 0011 gates; workers defer auditing until their unique run insert commits."""
+    async with pg_pool.acquire() as conn:
+        profile = await resolve_profile(conn, payload["instrument_id"], payload.get("mandate_id"))
+    if profile is not None:
+        payload["mandate_id"] = str(profile.id)
+    decision = await _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data, profile)
+    decision.profile = profile
+    if profile is not None and not defer_record:
+        async with pg_pool.acquire() as conn:
+            async with conn.transaction():
+                await record_decision(conn, profile.id, "GATE", "ACCEPTED" if decision.allowed else "REFUSED",
+                                      decision.reason, instrument_id=payload["instrument_id"], run_id=run_id)
+
     await _count(redis, decision.reason)
     trace = payload.get("decision_trace_id")
     if not decision.allowed:
@@ -134,7 +227,23 @@ async def pre_debate_gate(pg_pool, redis, payload: dict[str, Any], gateway: Gate
 def _rule_rejection(brief_data: dict[str, Any] | None) -> str | None:
     """The first hard triage rule the structured brief hits, or None (also for malformed data)."""
     try:
-        hits = hard_rejects(brief_data) if brief_data else []
+        data = brief_data
+        candidate = data.get("candidate") if isinstance(data, dict) else None
+        if isinstance(candidate, dict):
+            levels = [candidate.get(k) for k in ("entry", "stop", "target")]
+            if all(v is not None for v in levels):
+                try:
+                    entry, stop, target = map(float, levels)
+                except (TypeError, ValueError, OverflowError):
+                    entry = stop = target = 0.0  # malformed structure cannot skip the existing LONG rules
+                if all(math.isfinite(v) for v in (entry, stop, target)) and 0 < target < entry < stop:
+                    # The shared triage rule is LONG-oriented. Mirror only trend direction for a valid SHORT;
+                    # reward:risk and chop inputs stay identical, and incomplete/wrong-side levels never opt in.
+                    data = {**data, "timeframes": [
+                        {**frame, "trend": "down" if frame.get("trend") == "up" else
+                         "up" if frame.get("trend") == "down" else frame.get("trend")}
+                        if isinstance(frame, dict) else frame for frame in data.get("timeframes") or []]}
+        hits = hard_rejects(data) if data else []
     except Exception as e:  # a bad payload must not block the model path
         logger.warning("Triage rules skipped: %s", e)
         return None
@@ -160,38 +269,138 @@ async def _account_refusal(conn, instrument_id: str) -> str | None:
     return None
 
 
-def perp_cap_key(mandate_id: Any, now_s: float) -> str:
+def profile_cap_key(mandate_id: Any, now_s: float) -> str:
+    """ADR 0011 D-P1-6: one shared daily counter for every profile, across all worker replicas."""
     day = datetime.datetime.fromtimestamp(now_s, datetime.UTC).date().isoformat()
-    return f"debate:perp_cap:{mandate_id}:{day}"
+    return f"debate_gate:profile:{mandate_id}:{day}"
 
 
-async def perp_debate_cap(conn) -> int:
-    """``debate.perp_mandate_daily_cap`` as stored (a value that does not parse or is out of bounds: the default)."""
-    raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = $1", PERP_DEBATE_CAP_KEY)
-    bound = RUNTIME_BOUNDS[PERP_DEBATE_CAP_KEY]
-    value, problem = read_number(raw, bound, bound.default)
-    if problem:
-        logger.warning("%s: %s; the default %g applies", PERP_DEBATE_CAP_KEY, problem, bound.default)
-    return int(value)
+async def profile_budget_exhausted(conn, profile, now_s: float) -> bool:
+    """Read the gateway's UTC cost ledger and the profile's trace-attributed share of the global cap."""
+    start = datetime.datetime.combine(datetime.datetime.fromtimestamp(now_s, datetime.UTC).date(),
+                                      datetime.time(), datetime.UTC)
+    end = start + datetime.timedelta(days=1)
+    cap = parse_cap(await conn.fetchval("SELECT value FROM system_settings WHERE key = 'LLM_DAILY_BUDGET_USD'"),
+                    DEFAULT_DAILY_CAP_USD)
+    row = await conn.fetchrow(
+        """SELECT COALESCE(SUM(l.total_cost_usd), 0) AS global_spent,
+           COALESCE(SUM(l.total_cost_usd) FILTER (WHERE t.mandate_id = $3), 0) AS profile_spent
+           FROM llm_cost_ledger l LEFT JOIN ai_decision_traces t ON t.id = l.trace_id
+           WHERE l.created_at >= $1 AND l.created_at < $2""", start, end, str(profile.id))
+    total_weight = await conn.fetchval(
+        "SELECT COALESCE(SUM(max_debates_per_day), 0) FROM ai_mandates WHERE status = 'ACTIVE'")
+    weight = Decimal(str(total_weight or 0))
+    share = cap * profile.max_debates_per_day / weight if weight > 0 else Decimal("0")
+    return Decimal(str(row["global_spent"])) >= cap or Decimal(str(row["profile_spent"])) >= share
 
 
-async def _perp_route(conn, instrument_id: str):
-    """The perps mandate a scanner debate on ``instrument_id`` would be routed to, or None (spot, or no mandate)."""
-    mandate, routed = await resolve_route(conn, instrument_id)
-    return mandate if mandate is not None and is_perp_instrument(routed) else None
+_RELEASE_PROFILE_BUDGET_LOCK_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+_RENEW_PROFILE_BUDGET_LOCK_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+"""
 
 
-async def _reserve_perp_slot(redis, key: str, cap: int) -> bool:
-    """Take one of the day's slots atomically (several workers): INCR, and give it back when it went over the cap."""
+@asynccontextmanager
+async def profile_budget_guard(pg_pool, redis, profile):
+    """Serialize profile calls and check the share using the UTC day at each call boundary."""
+    if profile is None:
+        yield
+        return
+    lock_key = f"debate_gate:profile_budget_lock:{profile.id}"
+    lock_token = str(uuid.uuid4())
+    while True:
+        try:
+            if await redis.set(lock_key, lock_token, nx=True, ex=PROFILE_BUDGET_LOCK_TTL_S):
+                break
+        except Exception as exc:
+            raise ProfileBudgetLockError("PROFILE_BUDGET_LOCK_UNAVAILABLE") from exc
+        # A live owner renews its bounded lease while a model call runs. Wait for it to finish
+        # rather than turning ordinary 90s gateway latency into a false budget refusal.
+        await asyncio.sleep(0.1)
+    lease_lost = asyncio.Event()
+
+    async def renew_lease():
+        while True:
+            await asyncio.sleep(PROFILE_BUDGET_LOCK_RENEW_S)
+            try:
+                renewed = await redis.eval(
+                    _RENEW_PROFILE_BUDGET_LOCK_LUA, 1, lock_key, lock_token, PROFILE_BUDGET_LOCK_TTL_S
+                )
+            except Exception:
+                renewed = 0
+            if not renewed:
+                lease_lost.set()
+                return
+
+    renew_task = asyncio.create_task(renew_lease())
+    try:
+        async with pg_pool.acquire() as conn:
+            if await profile_budget_exhausted(conn, profile, _utc_now_s()):
+                raise BudgetExceeded("debate.profile", "PROFILE_DAILY_SHARE_EXHAUSTED")
+        yield
+        try:
+            owner = await redis.get(lock_key)
+        except Exception:
+            owner = None
+        if isinstance(owner, bytes):
+            owner = owner.decode()
+        if lease_lost.is_set() or owner != lock_token:
+            raise ProfileBudgetLockError("PROFILE_BUDGET_LOCK_LOST")
+        async with pg_pool.acquire() as conn:
+            if await profile_budget_exhausted(conn, profile, _utc_now_s()):
+                raise BudgetExceeded("debate.profile", "PROFILE_DAILY_SHARE_EXHAUSTED")
+    finally:
+        renew_task.cancel()
+        try:
+            await renew_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await redis.eval(_RELEASE_PROFILE_BUDGET_LOCK_LUA, 1, lock_key, lock_token)
+        except Exception:
+            logger.warning("Profile budget lock %s could not be released; its lease will expire", profile.id)
+
+
+_RESERVE_CANDIDATE_SLOT_LUA = """
+if redis.call('GET', KEYS[2]) and redis.call('GET', KEYS[1]) then return 1 end
+local used = tonumber(redis.call('GET', KEYS[1]) or '0')
+if used >= tonumber(ARGV[1]) then return 0 end
+redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[2])
+return 1
+"""
+
+
+async def _profile_slot_full(redis, key: str, cap: int, candidate_id) -> bool:
+    """A retry can reuse its reservation even when the daily counter is full."""
+    if candidate_id and await redis.get(f"{key}:candidate:{candidate_id}"):
+        return False
+    return int(await redis.get(key) or 0) >= cap
+
+
+async def _reserve_profile_slot(redis, key: str, cap: int, candidate_id=None) -> bool:
+    """Reserve at most one daily slot per identified candidate, including crash retries."""
+    if candidate_id:
+        return bool(await redis.eval(_RESERVE_CANDIDATE_SLOT_LUA, 2, key,
+                                     f"{key}:candidate:{candidate_id}", cap, PROFILE_CAP_TTL_S))
     used = await redis.incr(key)
-    await redis.expire(key, PERP_CAP_TTL_S)
+    await redis.expire(key, PROFILE_CAP_TTL_S)
     if used > cap:
         await redis.decr(key)
         return False
     return True
 
 
-async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=None) -> GateDecision:
+async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=None, profile=None) -> GateDecision:
     source = payload.get("trigger_source", "scanner")
     if source in BRAIN_SOURCES:
         async with pg_pool.acquire() as conn:
@@ -229,17 +438,19 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     if not brief:  # no market data: a debate would argue from nothing
         return GateDecision(False, "NO_BRIEF")
 
-    # Phase B cadence and cost: a debate for a perps mandate only from a closed 1h bar, and a daily cap per mandate
-    async with pg_pool.acquire() as conn:
-        perp_mandate = await _perp_route(conn, instrument_id)
-        cap = await perp_debate_cap(conn) if perp_mandate is not None else None
     slot_key = None
-    if perp_mandate is not None:
-        if timeframe != PERP_DEBATE_TIMEFRAME:
-            return GateDecision(False, "PERP_MANDATE_NOT_1H")
-        slot_key = perp_cap_key(perp_mandate.id, now_s)
-        if int(await redis.get(slot_key) or 0) >= cap:
-            return GateDecision(False, "PERP_MANDATE_DAILY_CAP")
+    cap = 0
+    if profile is not None:
+        if timeframe not in STYLE_TIMEFRAMES[profile.style]:
+            return GateDecision(False, "TIMEFRAME_NOT_IN_STYLE")
+        cap = profile.max_debates_per_day
+        if gateway is None:
+            slot_key = profile_cap_key(profile.id, _utc_now_s())
+            if await _profile_slot_full(redis, slot_key, cap, cid):
+                return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
+            async with pg_pool.acquire() as conn:
+                if await profile_budget_exhausted(conn, profile, _utc_now_s()):
+                    return GateDecision(False, "AI_BUDGET_EXHAUSTED")
 
     cooldown_key = f"debate:cooldown:{instrument_id}:{timeframe}"
     # Candidate-aware: the value is the candidate's token, so a crash or cancellation after this point
@@ -249,7 +460,8 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     held = await redis.get(cooldown_key)
     if held is None:
         if not await redis.set(cooldown_key, cooldown_token, nx=True, ex=COOLDOWN_S):
-            return GateDecision(False, "COOLDOWN")  # lost the set to a concurrent candidate
+            if cid is None or await redis.get(cooldown_key) != cooldown_token:
+                return GateDecision(False, "COOLDOWN")
     elif cid is None or held != cooldown_token:
         return GateDecision(False, "COOLDOWN")
 
@@ -258,20 +470,34 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, rule)
 
     if gateway is None:
-        if slot_key is not None and not await _reserve_perp_slot(redis, slot_key, cap):
+        if profile is not None:
+            slot_key = profile_cap_key(profile.id, _utc_now_s())
+        if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap, cid):
             await release_cooldown(redis, cooldown_key, cooldown_token)
-            return GateDecision(False, "PERP_MANDATE_DAILY_CAP")
+            return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
         return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key, cooldown_token=cooldown_token)
     try:
         # The setup's decision_trace_id as the trace parent links triage (and its F2 shadow) to outcomes
-        result = await TRIAGE.run(gateway, brief, parent_trace_id=_trace_uuid(payload))
+        async with profile_budget_guard(pg_pool, redis, profile):
+            if profile is not None:
+                slot_key = profile_cap_key(profile.id, _utc_now_s())
+                if await _profile_slot_full(redis, slot_key, cap, cid):
+                    await release_cooldown(redis, cooldown_key, cooldown_token)
+                    return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
+            result = await TRIAGE.run(gateway, brief, parent_trace_id=_trace_uuid(payload),
+                                      context=CallContext(role=TRIAGE.role, mandate_id=str(profile.id)) if profile else None)
+    except BudgetExceeded:
+        await release_cooldown(redis, cooldown_key, cooldown_token)
+        return GateDecision(False, "AI_BUDGET_EXHAUSTED")
     except Exception as e:  # gateway, budget or anything else: no triage, no paid debate; retry next candidate
         logger.warning("Triage unavailable for %s: %s", instrument_id, e)
         await release_cooldown(redis, cooldown_key, cooldown_token)
         return GateDecision(False, "TRIAGE_UNAVAILABLE")
     if not result.output.worth_debate:
         return GateDecision(False, "TRIAGE_REJECTED", result.output, result.trace_id)
-    if slot_key is not None and not await _reserve_perp_slot(redis, slot_key, cap):
+    if profile is not None:
+        slot_key = profile_cap_key(profile.id, _utc_now_s())
+    if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap, cid):
         await release_cooldown(redis, cooldown_key, cooldown_token)
-        return GateDecision(False, "PERP_MANDATE_DAILY_CAP", result.output, result.trace_id)
+        return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP", result.output, result.trace_id)
     return GateDecision(True, "TRIAGE_ACCEPTED", result.output, result.trace_id, cooldown_key, cooldown_token)

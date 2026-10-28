@@ -16,8 +16,10 @@ import importlib.util
 import os
 import subprocess
 import sys
+import uuid
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import asyncpg
 import pytest
@@ -447,6 +449,55 @@ def test_fm6_operator_debates_list_shows_the_direction_and_the_cros_wording():
     assert [g["convictionLevel"] for g in got] == ["Overweight", "HOLD", None]
     assert got[0]["decision"].startswith("BUY · Overweight (72.0% Conviction)")
     assert got[1]["decision"].startswith("HOLD (") and got[2]["decision"].startswith("SELL (")
+
+
+@pytest.mark.integration
+def test_debate_history_hides_only_scanner_gate_refusals_and_keeps_their_audit_rows():
+    """The Brain Action Inbox consumes this list; scanner refusals stay durable without becoming inbox cards."""
+
+    async def check(url: str) -> None:
+        pool = await asyncpg.create_pool(url)
+        try:
+            mandate_id = await pool.fetchval(
+                """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct,
+                                            autonomy_level)
+                   VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 5, 1) RETURNING id""",
+                f"history-{uuid.uuid4().hex[:8]}",
+            )
+            scanner_refused = await pool.fetchval(
+                """INSERT INTO debate_runs (instrument_id, trigger_source, status, failure_reason)
+                   VALUES ('BTCUSDT.BINANCE', 'scanner', 'GATE_REFUSED', 'KILL_SWITCH_LATCHED') RETURNING id"""
+            )
+            scanner_pending = await pool.fetchval(
+                """INSERT INTO debate_runs (instrument_id, trigger_source, status)
+                   VALUES ('BTCUSDT.BINANCE', 'scanner', 'PENDING_APPROVAL') RETURNING id"""
+            )
+            brain_refused = await pool.fetchval(
+                """INSERT INTO debate_runs (instrument_id, trigger_source, status, failure_reason)
+                   VALUES ('BTCUSDT.BINANCE', 'brain_on_demand', 'GATE_REFUSED', 'KILL_SWITCH_LATCHED') RETURNING id"""
+            )
+            await pool.execute(
+                """INSERT INTO ai_profile_decisions (mandate_id, instrument_id, stage, outcome, reason, run_id)
+                   VALUES ($1, 'BTCUSDT.BINANCE', 'GATE', 'REFUSED', 'KILL_SWITCH_LATCHED', $2)""",
+                mandate_id, scanner_refused,
+            )
+
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=pool)))
+            listed = await agents.list_debates(request, limit=50, _auth=None)
+            visible = {row["runId"]: row for row in listed}
+            assert str(scanner_refused) not in visible
+            assert visible[str(scanner_pending)]["status"] == "PENDING_APPROVAL"
+            assert visible[str(brain_refused)]["status"] == "GATE_REFUSED"
+            assert await pool.fetchval("SELECT count(*) FROM debate_runs WHERE id = $1", scanner_refused) == 1
+            assert await pool.fetchval(
+                "SELECT count(*) FROM ai_profile_decisions WHERE run_id = $1 AND stage = 'GATE' AND outcome = 'REFUSED'",
+                scanner_refused,
+            ) == 1
+        finally:
+            await pool.close()
+
+    with migrated_database("cryptonite_p1_debate_history") as url:
+        asyncio.run(check(url))
 
 
 def test_fc2_similar_decisions_has_nothing_to_compare_for_an_unknown_verdict():

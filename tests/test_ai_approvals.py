@@ -85,7 +85,8 @@ async def h(db_url):
 
 
 def buy_payload(qty="0.01"):
-    return {"instrument_id": SPOT, "side": "BUY", "order_type": "MARKET", "quantity": qty}
+    return {"instrument_id": SPOT, "side": "BUY", "order_type": "MARKET", "quantity": qty,
+            "proposed_stop_loss": "49000"}
 
 
 async def commands_for(pool, approval_id):
@@ -286,7 +287,7 @@ async def test_web_approve_and_veto(h):
 
 
 BRAIN_CARD = {"kind": "order_card", "id": "call-1", "instrument_id": SPOT, "side": "BUY", "quantity": 0.01,
-              "order_type": "MARKET", "limit_price": None, "allocation_pct": 5.0, "stop_loss": 58000.0,
+              "order_type": "MARKET", "limit_price": None, "allocation_pct": 5.0, "stop_loss": 49000.0,
               "take_profit": None, "status": "PENDING_APPROVAL", "trace_id": str(uuid.uuid4()), "command_id": None}
 
 

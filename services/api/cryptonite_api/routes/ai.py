@@ -529,6 +529,8 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
     """A new mandate always starts at L1 Copilot; creating one gives the AI room, so it needs TOTP. Perps may be
     enabled at L1 (ADR 0009 D3: every risk-adding order is then approved with TOTP); the perp instruments must be
     fed like any other."""
+    if Market.SPOT_MARGIN in (req.markets or ()):
+        raise HTTPException(status_code=422, detail="MARGIN_NOT_AVAILABLE")
     await require_fed(request, req.instruments)  # D4: no mandate on an instrument ingest does not feed
     # A stopped mandate on one of these instruments refuses the request whatever the code: refuse first, so the
     # operator's code is not spent on it (the same check runs again inside the transaction below, against a race)
@@ -591,6 +593,8 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
 @router.patch("/mandates/{mandate_id}", dependencies=OPERATOR_WRITE)
 async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Request, auth: dict = Depends(require_human_operator)):
     """Tightening is free; anything that gives the AI more room needs TOTP."""
+    if Market.SPOT_MARGIN in (req.markets or ()):
+        raise HTTPException(status_code=422, detail="MARGIN_NOT_AVAILABLE")
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
             old = await load_mandate(conn, mandate_id, for_update=True)
@@ -622,6 +626,8 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 new = Mandate(**{**base, **patch})
             except ValidationError as e:
                 raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
+            if Market.SPOT_MARGIN in new.markets:
+                raise HTTPException(status_code=422, detail="MARGIN_NOT_AVAILABLE")
             if added := sorted(set(new.instruments) - set(old.instruments)):
                 await require_fed(request, added)  # D4: an edit cannot add an un-fed instrument either
                 if stopped := await _stopped_mandate_on(conn, added, except_id=mandate_id):

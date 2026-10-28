@@ -20,7 +20,6 @@ Verifies the complete institutional command-to-ledger-to-outbox lifecycle:
 
 import asyncio
 import json
-import os
 import time
 import uuid
 from decimal import Decimal
@@ -28,20 +27,14 @@ from decimal import Decimal
 import asyncpg
 import pytest
 import redis.asyncio as aioredis
-
-from cryptonite_execution.clock import ClockSyncMonitor
+from connections import DB_URL, REDIS_URL
 from cryptonite_execution.demo_pipeline import (
     DemoExecutionPipeline,
     FencingTokenError,
     MockVenueAdapter,
-    VenueAmbiguousError,
 )
-from cryptonite_execution.filters import DynamicExchangeFilterValidator
-from cryptonite_execution.kill_switch import LatchedKillSwitch
 from cryptonite_execution.version_lock import assert_version_locked
 from cryptonite_outbox.relay import OutboxRelay
-from connections import DB_URL, REDIS_URL
-
 
 
 @pytest.fixture(scope="module")
@@ -69,6 +62,8 @@ async def test_demo_execution_pipeline_full_stack_e2e(tmp_path):
     active_pipeline = None
 
     try:
+        # Isolate this pipeline's outbox delivery from older pending CI events.
+        await pool.execute("DELETE FROM outbox_events WHERE status = 'PENDING'")
         # 1. Seed initial trading balances
         async with pool.acquire() as conn:
             await conn.execute(

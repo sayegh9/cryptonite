@@ -590,6 +590,7 @@ async def list_debates(request: Request, limit: int = 50, _auth=Depends(require_
                    d.recommendation, d.conviction_level, d.conviction_score, d.allocation_pct, d.reasoning
             FROM debate_runs r
             LEFT JOIN portfolio_decisions d ON d.run_id = r.id
+            WHERE r.status <> 'GATE_REFUSED' OR r.trigger_source <> 'scanner'
             ORDER BY r.created_at DESC
             LIMIT $1
         """, limit)

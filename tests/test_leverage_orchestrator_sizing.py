@@ -89,7 +89,7 @@ def test_spot_is_untouched_by_the_perp_checks():
 
 def perp_mandate(**kw) -> Mandate:
     base = dict(id=uuid.UUID(int=48), name="perp-l1", capital_budget_usd=D("10000"), instruments=["BTCUSDT-PERP"],
-                max_position_pct=D("25"), allow_perps=True, max_leverage=10)
+                max_position_pct=D("25"), allow_perps=True, max_leverage=10, direction="BOTH")
     base.update(kw)
     return Mandate(**base)
 

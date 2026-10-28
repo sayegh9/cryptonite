@@ -20,7 +20,12 @@ import sys
 
 PROJECT = "cryptonite-staging"
 PG = "stg_postgres"
-ERROR_RE = re.compile(r"Traceback \(most recent call last\)|\b(ERROR|CRITICAL|FATAL)\b|Unhandled exception", re.IGNORECASE)
+# Match log severity, not words inside a WARNING message (for example a recovered
+# WebSocket close reason containing "internal error"). Tracebacks still fail the soak.
+ERROR_RE = re.compile(
+    r"Traceback \(most recent call last\)|\[(?:ERROR|CRITICAL|FATAL)\]|\b(?:ERROR|CRITICAL|FATAL):|Unhandled exception",
+    re.IGNORECASE,
+)
 
 
 def _run(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess[str]:

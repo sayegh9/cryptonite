@@ -249,8 +249,10 @@ async def test_back_to_back_orders_cannot_overrun_the_mandate_before_the_bridge_
     m = await make_mandate(db, level=3)
     await db.execute("UPDATE ai_mandates SET capital_budget_usd = 1000 WHERE id = $1", m.id)  # 25% cap = 250 USD
     engine = engine_holding("0")  # bridge mocked: paper_positions never updated
-    first = await queue(db, m, {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.004"})  # ~205 USD
-    second = await queue(db, m, {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.004"})
+    first = await queue(db, m, {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.004",
+                                "proposed_stop_loss": "49000"})  # ~205 USD
+    second = await queue(db, m, {"instrument_id": "BTCUSDT", "side": "BUY", "quantity": "0.004",
+                                 "proposed_stop_loss": "49000"})
     out = await drain(db, engine, quotes_at(50000), [first, second])
     assert out[first] == ("COMPLETED", None)
     assert out[second] == ("REJECTED", "MANDATE_POSITION_PCT_EXCEEDED")
@@ -274,8 +276,11 @@ def _autotrade_switch_on(monkeypatch):
     """ADR 0011 D10 applies at runtime: with the master switch off a Veto window or Fully automatic mandate behaves as
     Ask me. These tests exercise the switch-on behaviour of those levels."""
     from cryptonite_execution import profile_lifecycle
+    from cryptonite_orchestrator import mandate_gate, server
 
     async def on(conn):
         return True
 
     monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)
+    monkeypatch.setattr(mandate_gate, "fresh_autotrade_switch_on", on)
+    monkeypatch.setattr(server, "fresh_autotrade_switch_on", on)

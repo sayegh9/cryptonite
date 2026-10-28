@@ -225,7 +225,8 @@ async def test_with_the_switch_off_a_veto_or_auto_entry_is_asked_for_like_level_
     m = await profile(h, level=level, status="ACTIVE")
     run_id = uuid.uuid4()
     async with h.pool.acquire() as conn:
-        status, got = await routing.route_entry(conn, run_id, BTC, "Buy", 0.7, 5.0)
+        status, got = await routing.route_entry(conn, run_id, BTC, "Buy", 0.7, 5.0, mandate_id=str(m.id),
+                                                reference_price=50000, stop_loss=49000)
     assert status == "PENDING_APPROVAL" and got.id == m.id
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0  # never a direct enqueue
     a = await h.pool.fetchrow("SELECT * FROM ai_approvals WHERE source_ref = $1", str(run_id))
@@ -234,17 +235,35 @@ async def test_with_the_switch_off_a_veto_or_auto_entry_is_asked_for_like_level_
 
 async def test_with_the_switch_on_a_level_3_entry_still_goes_straight_to_the_queue(h, routing):
     await switch(h, True)
-    await profile(h, level=3, status="ACTIVE")
+    m = await profile(h, level=3, status="ACTIVE")
     async with h.pool.acquire() as conn:
-        status, _ = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.7, 5.0)
+        status, _ = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.7, 5.0, mandate_id=str(m.id),
+                                              reference_price=50000, stop_loss=49000)
     assert status == "COMPLETED" and await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 1
+
+
+@pytest.mark.parametrize("level", [2, 3])
+async def test_switch_off_stopless_spot_buy_is_refused_before_approval(h, routing, level):
+    """The switch's ASK fallback cannot approve an entry lacking its structural stop."""
+    await switch(h, False)
+    m = await profile(h, level=level, status="ACTIVE")
+    run_id = uuid.uuid4()
+    async with h.pool.acquire() as conn:
+        status, got = await routing.route_entry(conn, run_id, BTC, "Buy", 0.7, 5.0,
+                                                mandate_id=str(m.id), reference_price=50000)
+    assert status == "NO_TRADE" and got.id == m.id
+    assert await h.pool.fetchval(
+        "SELECT reason FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run_id,
+    ) == "STOP_REQUIRED"
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals WHERE mandate_id=$1", m.id) == 0
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE mandate_id=$1", m.id) == 0
 
 
 async def test_with_the_switch_off_a_level_3_exit_is_still_immediate(h, routing):
     m = await profile(h, level=3, status="ACTIVE")
     await hold(h, m)
     async with h.pool.acquire() as conn:
-        status, _ = await routing.route_entry(conn, uuid.uuid4(), BTC, "Sell", 0.7, 5.0)
+        status, _ = await routing.route_entry(conn, uuid.uuid4(), BTC, "Sell", 0.7, 5.0, mandate_id=str(m.id))
     assert status == "COMPLETED" and await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 1
 
 
@@ -441,9 +460,9 @@ async def test_debate_routing_refuses_a_coin_another_profile_holds_before_writin
     holder = await profile(h, status="PAUSED", name="route-holder")
     async with h.pool.acquire() as conn:
         await pl.acquire_locks(conn, holder.id, holder.instruments)
-    await h.mandate(1, instruments=(BTC,), name="route-other", budget=1000)
+    m = await h.mandate(1, instruments=(BTC,), name="route-other", budget=1000)
     async with h.pool.acquire() as conn:
-        status, _ = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.7, 5.0)
+        status, _ = await routing.route_entry(conn, uuid.uuid4(), BTC, "Buy", 0.7, 5.0, mandate_id=str(m.id))
     assert status == "NO_TRADE"
     assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0

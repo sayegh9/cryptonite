@@ -51,7 +51,7 @@ def brain_card(monkeypatch):
     from cryptonite_api.routes import brain as brain_routes
 
     card = {"kind": "order_card", "id": "call-1", "instrument_id": BTC, "side": "BUY", "quantity": 0.01,
-            "order_type": "MARKET", "limit_price": None, "allocation_pct": 5.0, "stop_loss": 58000.0, "take_profit": None,
+            "order_type": "MARKET", "limit_price": None, "allocation_pct": 5.0, "stop_loss": 49000.0, "take_profit": None,
             "status": "PENDING_APPROVAL", "trace_id": str(uuid.uuid4()), "command_id": None}
 
     def handler(request: httpx.Request) -> httpx.Response:

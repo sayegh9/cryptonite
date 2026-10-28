@@ -112,9 +112,12 @@ class Redis:
     async def delete(self, key):
         self.kv.pop(key, None)
 
-    async def eval(self, script, numkeys, *args):  # the one Lua script the gate runs: atomic compare-del
+    async def eval(self, script, numkeys, *args):
+        """Emulate token-checked lease renewal and release without changing ownership."""
         key, token = args[0], args[1]
         if self.kv.get(key) == token:
+            if "'EXPIRE'" in script:
+                return 1  # This double has no clock; renewal preserves the live token.
             del self.kv[key]
             return 1
         return 0

@@ -74,7 +74,7 @@ services:
   scanner:
     <<: *restart
     container_name: stg_scanner
-    mem_limit: 2g
+    mem_limit: 4g  # production scanner uses ~2.7 GB steady (2026-10-23); 2g OOM-killed it at priming
     environment: *staging-env
     volumes: *data-mounts
     ports: !override
@@ -129,7 +129,7 @@ services:
   orchestrator:
     <<: *restart
     container_name: stg_orchestrator
-    mem_limit: 512m
+    mem_limit: 1536m  # startup peak exceeded 512m (OOM-killed twice on the first bring-up)
     environment: *staging-env
     volumes:
       - ${STAGING_LAKE_DIR:-${HOME}/Documents/projects/cryptonite/deploy-main/data}/analytics_lake:/app/data/analytics_lake:ro
@@ -180,7 +180,7 @@ services:
   learner:
     <<: *restart
     container_name: stg_learner
-    mem_limit: 1536m
+    mem_limit: 3g  # production learner uses ~1.9 GB
     environment: *staging-env
     volumes:
       - ${STAGING_DATA_DIR:-${HOME}/cryptonite-staging-data}/data:/app/data:ro

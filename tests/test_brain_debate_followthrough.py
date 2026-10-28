@@ -14,7 +14,7 @@ import uuid
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import asyncpg
 import httpx
@@ -76,7 +76,7 @@ async def pool(db_url):
 
 
 class QuoteRedis:
-    """The worker's Redis: a fresh live quote for the instrument. Nothing else is read on the refusal path."""
+    """The worker's Redis: a live quote and the candidate's single-owner lease."""
 
     def __init__(self) -> None:
         now_ns = time.time_ns()
@@ -86,6 +86,20 @@ class QuoteRedis:
 
     async def get(self, key):
         return self.kv.get(str(key))
+
+    async def set(self, key, value, *, nx=False, ex=None):
+        if nx and str(key) in self.kv:
+            return None
+        self.kv[str(key)] = value
+        return True
+
+    async def eval(self, script, numkeys, key, token, *args):
+        if self.kv.get(str(key)) != token:
+            return 0
+        if "EXPIRE" in script:
+            return 1
+        self.kv.pop(str(key), None)
+        return 1
 
 
 def brain_payload() -> dict:
@@ -105,8 +119,11 @@ async def latch_kill_switch(db_url: str) -> None:
     await admin.close()
 
 
-async def run_trigger(debate_main, pool, payload: dict, consumer: str = "debate-w1", ref: str = STREAM_REF) -> None:
-    await debate_main.process_debate_trigger(pool, QuoteRedis(), payload, Gateway(), message_ref=ref, consumer=consumer)
+async def run_trigger(debate_main, pool, payload: dict, consumer: str = "debate-w1", ref: str = STREAM_REF,
+                      gateway=None) -> None:
+    await debate_main.process_debate_trigger(pool, QuoteRedis(), payload,
+                                             gateway if gateway is not None else Gateway(),
+                                             message_ref=ref, consumer=consumer)
 
 
 async def test_a_refused_brain_debate_is_recorded_as_gate_refused(debate_main, pool, db_url, monkeypatch):
@@ -120,11 +137,37 @@ async def test_a_refused_brain_debate_is_recorded_as_gate_refused(debate_main, p
     assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 0  # no model, no decision
 
 
-async def test_a_refused_scanner_candidate_records_no_run(debate_main, pool, db_url, monkeypatch):
+async def test_a_refused_scanner_candidate_records_one_audited_run(debate_main, pool, db_url, monkeypatch):
     monkeypatch.setattr(debate_main, "is_pel_owner", AsyncMock(return_value=True))
     await latch_kill_switch(db_url)
-    await run_trigger(debate_main, pool, scanner_payload(), ref="stream:debate_queue/1700000000001-0")
-    assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
+    mid = await pool.fetchval(
+        """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level)
+           VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 5, 1) RETURNING id""",
+        f"scanner-refusal-{uuid.uuid4().hex[:8]}",
+    )
+    try:
+        payload = scanner_payload()
+        payload["mandate_id"] = str(mid)
+        model_gateway = AsyncMock()
+        await run_trigger(debate_main, pool, payload, ref="stream:debate_queue/1700000000001-0",
+                          gateway=model_gateway)
+        runs = await pool.fetch("SELECT status, failure_reason, trigger_source, candidate_id FROM debate_runs")
+        assert len(runs) == 1
+        assert (runs[0]["status"], runs[0]["failure_reason"], runs[0]["trigger_source"]) == (
+            "GATE_REFUSED", "KILL_SWITCH_LATCHED", "scanner")
+        assert runs[0]["candidate_id"] is not None
+        decisions = await pool.fetch(
+            "SELECT stage, outcome, reason FROM ai_profile_decisions WHERE mandate_id = $1", mid)
+        assert [(r["stage"], r["outcome"], r["reason"]) for r in decisions] == [
+            ("GATE", "REFUSED", "KILL_SWITCH_LATCHED")]
+        assert model_gateway.mock_calls == [call.__bool__()]  # only gateway presence was checked; no model call
+        assert await pool.fetchval("SELECT count(*) FROM portfolio_decisions") == 0
+        assert await pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
+        assert await pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+        assert await pool.fetchval("SELECT count(*) FROM paper_orders") == 0
+    finally:
+        await pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED' WHERE id = $1", mid)
+        await pool.execute("DELETE FROM ai_profile_decisions WHERE mandate_id = $1", mid)
 
 
 async def test_a_redelivered_gate_refusal_is_recorded_once(debate_main, pool, db_url, monkeypatch):
@@ -154,10 +197,11 @@ async def test_a_refusal_from_a_stale_attempt_records_nothing(debate_main, pool,
     assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
 
 
-async def test_a_failed_refusal_write_never_raises_out_of_the_handler(debate_main, pool, db_url, monkeypatch):
+async def test_a_failed_refusal_write_raises_for_queue_retry(debate_main, pool, db_url, monkeypatch):
     monkeypatch.setattr(debate_main, "is_pel_owner", AsyncMock(side_effect=RuntimeError("redis down")))
     await latch_kill_switch(db_url)
-    await run_trigger(debate_main, pool, brain_payload())  # must return normally: the refusal stands
+    with pytest.raises(RuntimeError, match="redis down"):
+        await run_trigger(debate_main, pool, brain_payload())  # retry; no unaudited acknowledgement
     assert await pool.fetchval("SELECT count(*) FROM debate_runs") == 0
 
 

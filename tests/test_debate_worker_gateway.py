@@ -2,6 +2,7 @@
 verdict fails the run closed instead of staging a HOLD decision. Throwaway DB at Alembic head;
 models are pydantic-ai FunctionModels."""
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -56,10 +57,57 @@ async def pool(db_url):
 def redis_double():
     from cryptonite_schemas.marks import quote_tick_key
     redis = AsyncMock()
-    redis.get.side_effect = lambda key: fresh_tick_body() if str(key) == quote_tick_key(INSTRUMENT) \
-        else json.dumps({"last_price": 65000.0})
+    values = {}
+
+    async def get_value(key):
+        key = str(key)
+        if key == quote_tick_key(INSTRUMENT):
+            return fresh_tick_body()
+        return values.get(key, json.dumps({"last_price": 65000.0}))
+
+    async def set_value(key, value, nx=False, ex=None):
+        key = str(key)
+        if nx and key in values:
+            return None
+        values[key] = value
+        return True
+
+    async def eval_script(script, numkeys, key, token, *args):
+        key = str(key)
+        if values.get(key) != token:
+            return 0
+        if "EXPIRE" in script:
+            return 1
+        del values[key]
+        return 1
+
+    redis.get.side_effect = get_value
+    redis.set.side_effect = set_value
+    redis.eval.side_effect = eval_script
     redis.hgetall.return_value = fresh_marks()
     return redis
+
+
+async def test_parallel_persona_failure_cancels_and_drains_sibling(debate_main):
+    """A failed analyst must not leave another model call running in the background."""
+    sibling_started = asyncio.Event()
+    sibling_cancelled = asyncio.Event()
+
+    async def failing_call():
+        await sibling_started.wait()
+        raise RuntimeError("analyst failed")
+
+    async def sibling_call():
+        sibling_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            sibling_cancelled.set()
+
+    with pytest.raises(RuntimeError, match="analyst failed"):
+        await debate_main._gather_cancel_on_error(failing_call(), sibling_call())
+
+    assert sibling_cancelled.is_set()
 
 
 def fresh_marks(price: str = "65000.0", age_s: float = 2.0) -> dict:
@@ -97,11 +145,12 @@ def debate_model(pm_valid: bool = True) -> FunctionModel:
     return FunctionModel(fn)
 
 
-async def run_debate(debate_main, pool, pm_valid=True):
+async def run_debate(debate_main, pool, pm_valid=True, mandate_id=None):
     model = debate_model(pm_valid)
     with override_model(FLASH, model), override_model(PRO, model), override_model(EMBED, FakeEmbedder()):
         await debate_main.process_debate_trigger(
-            pool, redis_double(), {"instrument_id": INSTRUMENT, "trigger_source": "test"}, Gateway()
+            pool, redis_double(), {"instrument_id": INSTRUMENT, "trigger_source": "test",
+                                  "mandate_id": str(mandate_id) if mandate_id else None}, Gateway()
         )
     return await pool.fetchrow("SELECT * FROM debate_runs WHERE instrument_id = $1", INSTRUMENT)
 
@@ -159,13 +208,14 @@ async def test_exit_debate_stages_a_typed_exit_decision(debate_main, pool, monke
     assert await pool.fetchval("SELECT status FROM debate_runs WHERE id = $1", run_id) == "PENDING_APPROVAL"
 
 
-async def test_debate_inside_an_l3_mandate_queues_its_order(debate_main, pool):
+async def test_debate_inside_an_l3_mandate_queues_its_order(debate_main, pool, monkeypatch):
     """A5.7: no global execution mode; an L3 mandate that allows the instrument gets the order queued."""
+    monkeypatch.setattr(debate_main, "candidate_levels", lambda payload: (63000.0, 69000.0))
     mid = await pool.fetchval(
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level)
            VALUES ($1, 10000, ARRAY['BTCUSDT.BINANCE'], 5, 3) RETURNING id""", f"l3-{uuid.uuid4().hex[:6]}")
     try:
-        run = await run_debate(debate_main, pool)
+        run = await run_debate(debate_main, pool, mandate_id=mid)
         assert (run["status"], run["mandate_id"]) == ("COMPLETED", mid)
         cmd = await pool.fetchrow("SELECT * FROM execution_commands WHERE idempotency_key = $1", f"debate:{run['id']}")
         payload = json.loads(cmd["payload"])
