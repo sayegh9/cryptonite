@@ -116,6 +116,44 @@ def test_spot_margin_entries_are_allowed_by_market_and_exits_remain_allowed_latc
                          approval_ok=False, autotrade_on=False) is None
 
 
+def test_margin_entry_cannot_claim_kill_switch_exit_to_bypass_latch():
+    dispatcher, _ = make_fresh_dispatcher()
+    dispatcher.kill_switch.trip("test", "latched")
+    entry = OrderIntent(
+        client_order_id="M-ENTRY-KILL-FLAG", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="BUY", order_type="MARKET", quantity=D("0.01"), leverage=2,
+        margin_mode="ISOLATED", stop_loss=D("47000"), require_stop=True,
+        is_kill_switch_exit=True,
+    )
+
+    approved, reason, _ = dispatcher.evaluate_intent(entry)
+
+    assert not approved and reason == "KILL_SWITCH_ENGAGED"
+    assert dispatcher.is_entry_order({"is_margin": True, "reduce_only": False})
+
+
+def test_margin_reduce_only_close_does_not_depend_on_pair_entry_settings():
+    dispatcher, _ = make_fresh_dispatcher()
+    entry = OrderIntent(
+        client_order_id="M-OPEN-FOR-EXIT", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="BUY", order_type="MARKET", quantity=D("0.01"), leverage=2,
+        margin_mode="ISOLATED", stop_loss=D("47000"), require_stop=True,
+    )
+    assert dispatcher.dispatch(entry, lambda _: None, None)[0]
+    dispatcher.handle_fill("M-OPEN-FOR-EXIT", D("0.01"), D("50000"), D("0.5"),
+                            side="BUY", instrument_id=MARGIN)
+    dispatcher.margin_pair_settings.pop("BTCUSDT")
+    dispatcher.kill_switch.trip("test", "latched")
+    dispatcher.daily_loss_latched = True
+    close = OrderIntent(
+        client_order_id="M-CLOSE-NO-PAIR-SETTINGS", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="SELL", order_type="MARKET", quantity=D("0.005"), leverage=2,
+        margin_mode="ISOLATED", reduce_only=True,
+    )
+
+    assert dispatcher.evaluate_intent(close) == (True, "APPROVED", D("0"))
+
+
 def test_plain_spot_short_is_still_refused():
     dispatcher, _ = make_fresh_dispatcher()
     intent = OrderIntent(

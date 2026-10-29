@@ -747,9 +747,6 @@ class GuardedOrderDispatcher:
         if side not in ("BUY", "SELL"):
             return False, f"INVALID_SIDE: {intent.side}", Decimal("0")
         pair = underlying_spot(intent.instrument_id).split(".", 1)[0]
-        config = self.margin_pair_settings.get(pair)
-        if config is None:
-            return False, "MARGIN_PAIR_NOT_SUPPORTED", Decimal("0")
         account = self.margin_accounts.get(intent.instrument_id)
         if intent.reduce_only:
             if account is None:
@@ -764,6 +761,10 @@ class GuardedOrderDispatcher:
                 if (side == "SELL" and intent.stop_price >= mark) or (side == "BUY" and intent.stop_price <= mark):
                     return False, "STOP_WOULD_TRIGGER_IMMEDIATELY", Decimal("0")
             return True, "APPROVED", Decimal("0")
+
+        config = self.margin_pair_settings.get(pair)
+        if config is None:
+            return False, "MARGIN_PAIR_NOT_SUPPORTED", Decimal("0")
 
         if intent.order_type.upper() == STOP_MARKET:
             return False, "MARGIN_ENTRY_CANNOT_BE_A_STOP", Decimal("0")
@@ -977,7 +978,12 @@ class GuardedOrderDispatcher:
 
         # Exits may pass the latches: kill-switch exits, and perp reduce-only orders (the reduce-only
         # guard below guarantees they can only shrink an existing position, never add or flip)
-        exit_only = intent.is_kill_switch_exit or ((is_perp or is_margin) and intent.reduce_only)
+        # Derivative closes must prove reduce-only; a generic kill-switch marker alone cannot
+        # turn a margin/perp entry into an exit and bypass the latch. Spot kill-switch SELLs
+        # retain their established path because spot has no derivative reduce-only flag.
+        exit_only = ((is_perp or is_margin) and intent.reduce_only) or (
+            intent.is_kill_switch_exit and not (is_perp or is_margin)
+        )
 
         # 1. Kill switch latch check
         if self.kill_switch.is_latched and not exit_only:
