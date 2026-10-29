@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">Cryptonite</title>
+  <style>.w{fill:#0F2B1C}@media (prefers-color-scheme: dark){.w{fill:#EAF7E3}}</style>
+  <path class="w" d="M117.88 28.64 L138.12 28.64 L138.12 61.76 L117.88 61.76 Z"/>
+  <path d="M117.88 61.76 L59 120.64 L59 135.36 L117.88 194.24 Z" fill="#7CDB4C"/>
+  <path d="M138.12 61.76 L197 120.64 L197 135.36 L138.12 194.24 Z" fill="#419547"/>
+  <path class="w" d="M117.88 194.24 L138.12 194.24 L138.12 227.36 L117.88 227.36 Z"/>
+</svg>

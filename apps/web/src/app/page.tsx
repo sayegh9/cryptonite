@@ -26,6 +26,7 @@ import { MissionControl } from "@/components/mission/MissionControl";
 import { ModeBanner } from "@/components/mission/ModeBanner";
 import { StaleBuildBanner } from "@/components/StaleBuildBanner";
 import { WorkspaceNav } from "@/components/WorkspaceNav";
+import { CryptoniteLogo } from "@/components/brand/CryptoniteLogo";
 import { dispatchBrainAsk } from "@/lib/brain/events";
 import { useBrainSetup } from "@/lib/brain/useBrainSetup";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
@@ -311,13 +312,8 @@ function Workstation() {
         button always fit. Below md the banner takes a full-width second row, clear of the logo.
       */}
       <header className="flex-none bg-zinc-950 border-b border-white/5 flex flex-wrap md:flex-nowrap items-center px-4 z-20">
-        <div className="flex flex-none items-center h-12 space-x-2 mr-3 md:mr-6">
-          <div className="w-5 h-5 rounded bg-cyan-500 flex items-center justify-center font-black text-2xs text-zinc-950 shadow-xs" aria-hidden="true">
-            C
-          </div>
-          <span className="hidden sm:inline font-bold text-sm tracking-widest text-zinc-100">
-            CRYPTONITE
-          </span>
+        <div className="flex flex-none items-center h-12 mr-3 md:mr-6">
+          <CryptoniteLogo wordmarkClassName="hidden sm:block" />
         </div>
 
         <WorkspaceNav

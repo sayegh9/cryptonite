@@ -1,4 +1,9 @@
-# Cryptonite
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/svg/cryptonite-horizontal-reversed.svg">
+    <img alt="Cryptonite" src="docs/brand/svg/cryptonite-horizontal-colour.svg" width="360">
+  </picture>
+</h1>
 
 **A self-hosted crypto trading workstation where a team of AI agents researches, debates and proposes
 trades, and deterministic risk controls decide what is allowed to happen.**
