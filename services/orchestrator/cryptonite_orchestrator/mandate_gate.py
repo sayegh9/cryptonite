@@ -26,6 +26,7 @@ from cryptonite_execution.leverage import (
     LeveragePlan,
     check_leveraged_order,
     plan_leveraged_order,
+    plan_spot_margin_order,
 )
 from cryptonite_execution.mandate_store import (
     instance_spot_holdings,
@@ -247,6 +248,40 @@ async def plan_perp_entry(conn, engine, mandate: Mandate, instrument_id: str, si
     requested = int(payload["leverage"]) if payload.get("leverage") else None
     return plan_leveraged_order(instrument_id, side, entry, stop, margin, limits, requested_leverage=requested,
                                 budget_usd=mandate.capital_budget_usd, shrink_margin_to_fit=True)
+
+
+async def plan_spot_margin_entry(conn, engine, mandate: Mandate, instrument_id: str, side: str, payload: dict,
+                                 quote) -> LeveragePlan:
+    """Size an isolated spot-margin entry to the mandate's room and 25% account clamp."""
+    order_type = str(payload.get("order_type", "MARKET")).upper()
+    limit_px = Decimal(str(payload["price"])) if payload.get("price") else None
+    entry = mandate_ref_price(limit_px, side, quote)
+    stop = Decimal(str(payload["stop_loss"])) if payload.get("stop_loss") else None
+    margin = mandate.capital_budget_usd * Decimal(str(payload.get("allocation_pct", 5.0))) / Decimal("100")
+    if entry is None:
+        return LeveragePlan(instrument_id, side, "NO_MARK_PRICE", 0, payload.get("leverage"), 0, None, False)
+    room_qty, _, _ = await mandate_entry_room(conn, engine, mandate, instrument_id, side, limit_px, quote, order_type)
+    d = engine.dispatcher
+    held = abs(d.get_position_qty(instrument_id)) * entry if hasattr(d, "get_position_qty") else Decimal("0")
+    equity = d.portfolio_equity()
+    max_notional = max(Decimal("0"), min(room_qty * entry, ACCOUNT_EXPOSURE_CAP * equity - held)) * PERP_SIZING_MARGIN
+    pair = instrument_id.split("-", 1)[0].split(".", 1)[0].upper()
+    runtime_pairs = getattr(getattr(engine, "margin_settings", None), "pair_settings", None)
+    pair_settings = runtime_pairs.get(pair, {}) if runtime_pairs is not None else None
+    limits = LeverageLimits(
+        risk_budget_usd=mandate_risk_budget(mandate) * PERP_SIZING_MARGIN,
+        max_notional_usd=max_notional,
+        max_leverage=mandate.max_leverage,
+        slippage_pct=getattr(d, "slippage_allowance_pct", DEFAULT_SLIPPAGE_ALLOWANCE) + PERP_SIZING_EXTRA_SLIPPAGE,
+        fee_pct=getattr(d, "spot_taker_fee", Decimal("0.001")),
+        min_notional_usd=getattr(d, "min_order_equity_pct", Decimal("0")) * equity / PERP_SIZING_MARGIN,
+    )
+    requested = int(payload["leverage"]) if payload.get("leverage") else None
+    return plan_spot_margin_order(
+        instrument_id, side, entry, stop, margin, limits, requested_leverage=requested,
+        pair_settings=pair_settings, base_asset=base_asset(instrument_id), budget_usd=mandate.capital_budget_usd,
+        shrink_margin_to_fit=True,
+    )
 
 
 def perp_entry_reject(engine, mandate: Mandate, intent) -> str | None:

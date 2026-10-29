@@ -23,8 +23,12 @@ from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, Decimal
 from enum import StrEnum
 
+from cryptonite_schemas.runtime_settings import MARGIN_PAIR_SETTINGS
+
 from cryptonite_execution.derivatives import MarginMode
 from cryptonite_execution.margin import bracket_source, calculate_liquidation_price, get_bracket
+from cryptonite_execution.spot_margin import liquidation_price as spot_margin_liquidation_price
+from cryptonite_execution.spot_margin import size_margin_borrow
 
 ACCOUNT_MAX_LEVERAGE = 10  # ADR 0009 D2: the manual ticket and the dispatcher (was 20)
 ACCOUNT_EXPOSURE_CAP = Decimal("0.25")  # D1: perp notional <= 25% of account equity
@@ -62,6 +66,8 @@ class LeverageReject(StrEnum):
     NO_LEVERAGE_BRACKETS = "NO_LEVERAGE_BRACKETS"
     STALE_LEVERAGE_BRACKETS = "STALE_LEVERAGE_BRACKETS"
     INVALID_ORDER = "INVALID_ORDER"
+    MARGIN_PAIR_NOT_SUPPORTED = "MARGIN_PAIR_NOT_SUPPORTED"
+    MARGIN_BORROW_LIMIT = "MARGIN_BORROW_LIMIT"
 
 
 # The refusal when a ceiling allows not even 1x
@@ -278,6 +284,105 @@ def plan_leveraged_order(
         loss_if_liquidated_usd=isolated_margin,
         funding_8h_usd=-sign * notional * funding_rate if funding_rate is not None else None,
         margin_cut=margin_cut,
+    )
+
+
+def plan_spot_margin_order(
+    instrument_id: str,
+    side: str,
+    entry_price: Decimal,
+    stop_price: Decimal | None,
+    margin_usd: Decimal,
+    limits: LeverageLimits,
+    *,
+    base_asset: str,
+    requested_leverage: int | None = None,
+    pair_settings: dict[str, Decimal] | None = None,
+    quote_asset: str = "USDT",
+    budget_usd: Decimal | None = None,
+    shrink_margin_to_fit: bool = False,
+) -> LeveragePlan:
+    """Plan an isolated spot-margin order using pair risk levels and borrow caps.
+
+    Unlike a perpetual, this path has no exchange leverage bracket table. It uses the
+    configured pair maximum, the spot-margin liquidation equation and the per-side
+    displayed borrow cap. A pair with no configuration or a borrow above its cap is
+    refused. The result keeps the existing plan shape for shared dry-run consumers.
+    """
+    side = side.upper()
+
+    def refused(code: str, **kw) -> LeveragePlan:
+        return LeveragePlan(instrument_id, side, code, 0, requested_leverage, 0, kw.pop("binding", None), False,
+                            entry_price=entry_price, stop_price=stop_price, margin_usd=margin_usd, **kw)
+
+    if side not in ("BUY", "SELL") or entry_price <= 0 or margin_usd <= 0:
+        return refused(LeverageReject.INVALID_ORDER)
+    pair = instrument_id.split("-", 1)[0].split(".", 1)[0].upper()
+    config = pair_settings if pair_settings is not None else MARGIN_PAIR_SETTINGS.get(pair)
+    if not config:
+        return refused(LeverageReject.MARGIN_PAIR_NOT_SUPPORTED)
+    if stop_price is None:
+        return refused(LeverageReject.STOP_REQUIRED)
+    distance = stop_distance(side, entry_price, stop_price)
+    if distance is None:
+        return refused(LeverageReject.STOP_WRONG_SIDE)
+
+    max_leverage = min(int(config["max_leverage"]), limits.max_leverage, ACCOUNT_MAX_LEVERAGE)
+    requested = max(1, min(requested_leverage or max_leverage, max_leverage))
+    capped = requested_leverage is not None and requested_leverage > max_leverage
+    leverage = requested
+    stop_gap = distance + limits.slippage_pct
+    cost = stop_gap + limits.fee_pct
+    original_margin = margin_usd
+    if shrink_margin_to_fit:
+        max_notional = min(limits.max_notional_usd, limits.risk_budget_usd / cost)
+        if max_notional <= 0:
+            return refused(LeverageReject.EXPOSURE_LIMIT_REACHED)
+        margin_usd = min(margin_usd, max_notional / Decimal(leverage))
+
+    sizing = size_margin_borrow("LONG" if side == "BUY" else "SHORT", margin_usd,
+                                entry_price, Decimal(leverage))
+    borrow_asset = quote_asset if side == "BUY" else base_asset
+    borrow_field = f"max_borrow_{borrow_asset}"
+    borrow_amount = sizing.borrowed_quote if side == "BUY" else sizing.borrowed_base
+    borrow_cap = config.get(borrow_field, Decimal("0"))
+    if borrow_amount > borrow_cap:
+        return refused(LeverageReject.MARGIN_BORROW_LIMIT, binding=borrow_field)
+
+    try:
+        liq = spot_margin_liquidation_price(
+            "LONG" if side == "BUY" else "SHORT", base_qty=sizing.base_qty, quote_qty=sizing.quote_qty,
+            borrowed_base=sizing.borrowed_base, borrowed_quote=sizing.borrowed_quote,
+            interest_base=Decimal("0"), interest_quote=Decimal("0"),
+            liquidation_level=config["liquidation_level"], entry_price=entry_price,
+        )
+    except ValueError:
+        return refused(LeverageReject.LIQUIDATION_BUFFER_TOO_THIN)
+    liq_distance = abs(entry_price - liq) / entry_price
+    if stop_gap > LIQUIDATION_BUFFER_FRACTION * liq_distance:
+        return refused(LeverageReject.LIQUIDATION_BUFFER_TOO_THIN)
+
+    notional = margin_usd * Decimal(leverage)
+    if notional > limits.max_notional_usd:
+        return refused(LeverageReject.EXPOSURE_LIMIT_REACHED)
+    loss = notional * cost
+    if loss > limits.risk_budget_usd:
+        return refused(LeverageReject.RISK_AT_STOP_EXCEEDED)
+    if notional < limits.min_notional_usd:
+        return refused(LeverageReject.ORDER_BELOW_MIN_NOTIONAL)
+    return LeveragePlan(
+        instrument_id=instrument_id, side=side, reject=None, leverage=leverage,
+        requested_leverage=requested_leverage, allowed_max_leverage=max_leverage,
+        binding_ceiling="pair maximum", capped=capped, ceilings={"pair maximum": max_leverage},
+        margin_usd=margin_usd, notional_usd=notional,
+        quantity=(notional / entry_price).quantize(QUANTITY_STEP, rounding=ROUND_DOWN),
+        entry_price=entry_price, stop_price=stop_price, stop_distance_pct=distance * 100,
+        liquidation_price=liq, liquidation_distance_pct=liq_distance * 100,
+        buffer_used_pct=stop_gap / liq_distance * 100,
+        loss_at_stop_usd=loss,
+        loss_at_stop_pct=loss / budget_usd * 100 if budget_usd else None,
+        loss_if_liquidated_usd=margin_usd,
+        margin_cut=margin_usd < original_margin,
     )
 
 
