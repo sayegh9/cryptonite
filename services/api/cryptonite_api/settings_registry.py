@@ -22,7 +22,11 @@ from cryptonite_schemas.exit_thresholds import (
     ExitThresholds,
     violations,
 )
-from cryptonite_schemas.runtime_settings import MARGIN_SETTING_BOUNDS, RUNTIME_BOUNDS
+from cryptonite_schemas.runtime_settings import (
+    MARGIN_PAIR_SETTINGS,
+    MARGIN_SETTING_BOUNDS,
+    RUNTIME_BOUNDS,
+)
 
 
 class Tier(StrEnum):
@@ -130,6 +134,23 @@ def _margin_setting(key: str, label: str, note: str, *, tighter: Tighter = Tight
                    SYSTEM_STORE, note, decimals=bound.decimals, tighter=tighter)
 
 
+def _margin_pair_setting(pair: str, field: str) -> Setting:
+    """Register a pair-specific margin value with its protective change direction."""
+    key = f"margin.pair.{pair}.{field}"
+    if field.startswith("max_borrow_"):
+        asset = field.removeprefix("max_borrow_")
+        label = f"{pair} maximum borrow, {asset}"
+        note = "regular-user displayed limit, not tier-identified; unverified cap may be lowered freely, raising it needs TOTP"
+        tighter = Tighter.LOWER
+    elif field == "max_leverage":
+        label, note, tighter = f"{pair} maximum leverage (x)", "verified against public Binance isolated-pair data; lowering is stricter", Tighter.LOWER
+    else:
+        label = f"{pair} {field.replace('_', ' ')}"
+        note = "verified against Binance's leverage-tier FAQ; raising this trigger is stricter"
+        tighter = Tighter.HIGHER
+    return _margin_setting(key, label, note, tighter=tighter)
+
+
 def _exit_setting(key: str, label: str, default: Decimal | int | float, field: str, note: str) -> Setting:
     low, high = BOUNDS[field]
     return Setting(key, label, default, Decimal(low), Decimal(high), Apply.HOT, Tier.T_L, "0002", SYSTEM_STORE,
@@ -220,6 +241,11 @@ REGISTRY: tuple[Setting, ...] = (
             "WLD": "margin.interest_hourly.WLD",
             "USDT": "margin.interest_hourly.USDT",
         }.items()
+    ),
+    *(
+        _margin_pair_setting(pair, field)
+        for pair, fields in MARGIN_PAIR_SETTINGS.items()
+        for field in fields
     ),
     _margin_setting("margin.liquidation_fee_pct", "Margin liquidation fee (%)",
                     "Binance fee on liquidated assets; lowering the fee is risk-reducing and free"),

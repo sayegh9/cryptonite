@@ -97,6 +97,35 @@ def test_margin_values_are_validated_at_their_decimal_quantum():
             validate_value(rate, bad)
 
 
-def test_no_pair_is_accepted_until_a_complete_tier_one_row_is_sourced():
-    assert MARGIN_PAIR_SETTINGS == {}
-    assert not any(key.startswith("margin.pair.") for key in MARGIN_SETTING_BOUNDS)
+def test_pair_defaults_use_displayed_borrow_caps_and_faq_levels():
+    assert MARGIN_PAIR_SETTINGS == {
+        "BTCUSDT": {"max_leverage": D("10"), "call_level": D("1.10"), "liquidation_level": D("1.05"),
+                    "max_borrow_BTC": D("80"), "max_borrow_USDT": D("450000")},
+        "ETHUSDT": {"max_leverage": D("10"), "call_level": D("1.10"), "liquidation_level": D("1.05"),
+                    "max_borrow_ETH": D("1600"), "max_borrow_USDT": D("450000")},
+        "XRPUSDT": {"max_leverage": D("10"), "call_level": D("1.10"), "liquidation_level": D("1.05"),
+                    "max_borrow_XRP": D("584000"), "max_borrow_USDT": D("450000")},
+        "WLDUSDT": {"max_leverage": D("5"), "call_level": D("1.19"), "liquidation_level": D("1.15"),
+                    "max_borrow_WLD": D("66600"), "max_borrow_USDT": D("119000")},
+    }
+    assert {k for k in MARGIN_SETTING_BOUNDS if k.startswith("margin.pair.")} == {
+        f"margin.pair.{pair}.{field}" for pair, fields in MARGIN_PAIR_SETTINGS.items() for field in fields
+    }
+
+
+def test_pair_settings_reader_defaults_caps_to_zero_per_missing_side_and_rejects_unknown_pairs():
+    base = default_margin_settings()
+    applied, problems = read_margin_settings({"margin.pair.BTCUSDT.max_borrow_BTC": '"0"'}, base)
+    assert problems == []
+    assert applied.pair_settings["BTCUSDT"]["max_borrow_BTC"] == D("0")
+    assert applied.pair_settings["BTCUSDT"]["max_borrow_USDT"] == D("450000")
+    assert "DOGEUSDT" not in applied.pair_settings
+
+
+def test_unverified_pair_borrow_caps_are_tightened_for_free_and_raised_with_totp():
+    cap = by_key("margin.pair.BTCUSDT.max_borrow_BTC")
+    assert cap.tighter is Tighter.LOWER
+    assert "regular-user displayed limit, not tier-identified" in cap.note
+    assert write_needs_totp(cap, D("80"), D("40")) is False
+    assert write_needs_totp(cap, D("40"), D("80")) is True
+    validate_value(cap, D("100"))
