@@ -3,7 +3,8 @@
 Every shape is a polygon (no live text). The wordmark is custom: round letters are cut with the same
 45-degree facets as the crystal, so the type and the symbol share one geometry.
 """
-import math, os
+import math
+import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "svg")
@@ -129,8 +130,9 @@ def letters(s=19.0, hs=None):
     # P
     w = 74.0
     bowl_out = [(0, 0), (w - c2, 0), (w, c2), (w, yb - c2), (w - c2, yb)]
-    counter = lambda w: [(s, hs), (w - s - ci2, hs), (w - s, hs + ci2), (w - s, yb - hs - ci2),
-                         (w - s - ci2, yb - hs), (s, yb - hs)]
+    def counter(w):
+        return [(s, hs), (w - s - ci2, hs), (w - s, hs + ci2), (w - s, yb - hs - ci2),
+                (w - s - ci2, yb - hs), (s, yb - hs)]
     G["P"] = (w, [("EO", bowl_out + [(s, yb), (s, H), (0, H)], counter(w))])
 
     # R: P bowl + 60-degree leg that starts where the bowl facet ends
