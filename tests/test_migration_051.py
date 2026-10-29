@@ -36,6 +36,16 @@ def _run(url: str, sql: str, *args):
     return asyncio.run(go())
 
 
+def _exec(url: str, sql: str, *args):
+    async def go():
+        conn = await asyncpg.connect(url)
+        try:
+            return await conn.execute(sql, *args)
+        finally:
+            await conn.close()
+    return asyncio.run(go())
+
+
 def _val(url: str, sql: str, *args):
     rows = _run(url, sql, *args)
     return rows[0][0] if rows else None
@@ -118,17 +128,26 @@ def test_decimal_balances_open_pair_uniqueness_and_interest_idempotency(db050):
     period_start = datetime(2026, 10, 29, 12, 20, tzinfo=UTC)
     period_end = datetime(2026, 10, 29, 13, 0, tzinfo=UTC)
     args = (margin_id, period_start, period_end, "USDT", "1.25", "0.00000656", "0.000001312")
-    _run(url, """
-        INSERT INTO paper_margin_interest
-            (margin_account_id, period_start, period_end, asset, principal, hourly_rate, amount)
-        VALUES ($1, $2::timestamptz, $3::timestamptz, $4, $5::numeric, $6::numeric, $7::numeric)
-    """, *args)
-    with pytest.raises(asyncpg.UniqueViolationError):
-        _run(url, """
+    insert_charge = """
             INSERT INTO paper_margin_interest
                 (margin_account_id, period_start, period_end, asset, principal, hourly_rate, amount)
             VALUES ($1, $2::timestamptz, $3::timestamptz, $4, $5::numeric, $6::numeric, $7::numeric)
-        """, *args)
+            ON CONFLICT (margin_account_id, period_end, asset) DO NOTHING
+        """
+
+    async def concurrent_passes():
+        async def insert_once():
+            conn = await asyncpg.connect(url)
+            try:
+                return await conn.execute(insert_charge, *args)
+            finally:
+                await conn.close()
+        return await asyncio.gather(insert_once(), insert_once())
+
+    race_results = asyncio.run(concurrent_passes())
+    assert sorted(race_results) == ["INSERT 0 0", "INSERT 0 1"]
+    # A process restart repeats the same settlement insert; the persisted unique key turns it into a no-op.
+    assert _exec(url, insert_charge, *args) == "INSERT 0 0"
     assert str(_val(url, "SELECT sum(amount) FROM paper_margin_interest WHERE margin_account_id=$1", margin_id)) == "0.000001312000000000"
 
 
