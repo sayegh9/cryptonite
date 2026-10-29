@@ -14,6 +14,7 @@ from cryptonite_api.routes.auth import require_csrf, require_operator
 from cryptonite_api.universe import require_fed
 from cryptonite_schemas.mandate import MANDATE_INSTANCE_PREFIX, canonical_instrument
 from cryptonite_schemas.marks import read_marks, resolve_mark, unrealized_pnl
+from cryptonite_schemas.profile import Market, market_of
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -134,9 +135,13 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
     if account_id:
         rows = await pool.fetch(
             """
-            SELECT p.*, s.strategy_name
+            SELECT p.*, s.strategy_name, m.base_qty AS margin_base_qty, m.quote_qty AS margin_quote_qty,
+                   m.borrowed_base AS margin_borrowed_base, m.borrowed_quote AS margin_borrowed_quote,
+                   m.interest_base AS margin_interest_base, m.interest_quote AS margin_interest_quote
             FROM paper_positions p
             LEFT JOIN paper_strategy_instances s ON p.instance_id = s.instance_id
+            LEFT JOIN paper_margin_accounts m ON m.account_id = p.account_id
+                AND m.pair = split_part(p.instrument_id, '-', 1) AND m.status = 'OPEN'
             WHERE p.account_id = $1
             ORDER BY p.opened_at DESC;
             """,
@@ -145,9 +150,13 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
     else:
         rows = await pool.fetch(
             """
-            SELECT p.*, s.strategy_name
+            SELECT p.*, s.strategy_name, m.base_qty AS margin_base_qty, m.quote_qty AS margin_quote_qty,
+                   m.borrowed_base AS margin_borrowed_base, m.borrowed_quote AS margin_borrowed_quote,
+                   m.interest_base AS margin_interest_base, m.interest_quote AS margin_interest_quote
             FROM paper_positions p
             LEFT JOIN paper_strategy_instances s ON p.instance_id = s.instance_id
+            LEFT JOIN paper_margin_accounts m ON m.account_id = p.account_id
+                AND m.pair = split_part(p.instrument_id, '-', 1) AND m.status = 'OPEN'
             ORDER BY p.opened_at DESC;
             """
         )
@@ -191,6 +200,23 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
                 row["current_price"] = view.price
                 row["unrealized_pnl"] = unrealized_pnl(row["side"], row["quantity"], row["entry_price"], view.price)
             row.update(view.fields())
+        if market_of(row["instrument_id"]) is Market.SPOT_MARGIN:
+            px = Decimal(str(row["current_price"]))
+            base = Decimal(str(row.get("margin_base_qty") or 0))
+            quote = Decimal(str(row.get("margin_quote_qty") or 0))
+            borrowed_base = Decimal(str(row.get("margin_borrowed_base") or 0))
+            borrowed_quote = Decimal(str(row.get("margin_borrowed_quote") or 0))
+            interest_base = Decimal(str(row.get("margin_interest_base") or 0))
+            interest_quote = Decimal(str(row.get("margin_interest_quote") or 0))
+            assets = base * px + quote
+            liabilities = (borrowed_base + interest_base) * px + borrowed_quote + interest_quote
+            row["margin_account_assets"] = assets
+            row["margin_account_liabilities"] = liabilities
+            row["margin_account_equity"] = assets - liabilities
+            row["margin_level"] = assets / liabilities if liabilities > 0 else None
+            for key in ("margin_base_qty", "margin_quote_qty", "margin_borrowed_base", "margin_borrowed_quote",
+                        "margin_interest_base", "margin_interest_quote"):
+                row.pop(key, None)
 
         # Strategy name resolution
         row["strategy_name"] = _resolve_strategy_name(row.get("instance_id"), row.get("strategy_name"))

@@ -19,6 +19,7 @@ from typing import Any
 
 from cryptonite_execution.bridge import CoalescedMarkToMarketProjector
 from cryptonite_schemas.marks import MARKS_KEY, MAX_MARK_QUOTE_AGE_S, encode_mark
+from cryptonite_schemas.profile import Market, market_of, underlying_spot
 
 logger = logging.getLogger("cryptonite.orchestrator.marks")
 
@@ -39,7 +40,7 @@ def live_mark_price(engine, quote_cache, instrument_id: str, now_ns: int | None 
     """(price, quote_ts_ns) from a fresh live input, else None."""
     now_ns = now_ns or time.time_ns()
     d = engine.dispatcher
-    if "-PERP." in instrument_id:
+    if market_of(instrument_id) is Market.PERP:
         mark = d.mark_prices.get(instrument_id)
         if mark is None or d.is_mark_stale(instrument_id):
             return None
@@ -53,7 +54,7 @@ def live_mark_price(engine, quote_cache, instrument_id: str, now_ns: int | None 
         if ts > now_ns + 1_000_000_000:
             return None
         return px, ts
-    quote = quote_cache.quote(instrument_id)
+    quote = quote_cache.quote(underlying_spot(instrument_id))
     if quote is None:
         return None
     try:

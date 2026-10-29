@@ -54,7 +54,13 @@ import httpx
 import redis.asyncio as redis
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS, ExitThresholds, settled
 from cryptonite_schemas.mandate import mandate_id_from_instance
-from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
+from cryptonite_schemas.profile import Market, market_of, symbol_of, underlying_spot
+from cryptonite_schemas.runtime_settings import (
+    RUNTIME_BOUNDS,
+    default_margin_settings,
+    read_margin_settings,
+    read_number,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("exit_monitor")
@@ -213,6 +219,9 @@ class Position:
     key_owner: bool = False  # the key names the owner: another owner's position opened in the same second
     leverage: int = 1  # perps
     liquidation_price: float | None = None  # perps: the snapshot written with the position (margin.py)
+    margin_level: float | None = None
+    margin_call_level: float | None = None
+    margin_liquidation_level: float | None = None
     profile_tp_r: Decimal | None = None
     profile_tp1_scale_pct: Decimal | None = None
     profile_trail_activate_pct: Decimal | None = None
@@ -304,6 +313,14 @@ def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawd
     env-or-code defaults)."""
     t = t or default_thresholds()
     long = pos.side == "LONG"
+    if (pos.margin_level is not None and pos.margin_call_level is not None
+            and pos.margin_liquidation_level is not None):
+        close_at = pos.margin_liquidation_level + (pos.margin_call_level - pos.margin_liquidation_level) * 0.5
+        if pos.margin_level <= close_at:
+            return ([ExitAction("CLOSE", "MARGIN_LEVEL_PROXIMITY")] if pos.ai_owned
+                    else [ExitAction("ALERT", "MARGIN_LEVEL_PROXIMITY")])
+        if pos.margin_level <= pos.margin_call_level:
+            return [ExitAction("ALERT", "MARGIN_CALL")]
     used = pos.liquidation_buffer_used
     if used is not None and used >= LIQ_CLOSE_BUFFER_USED:
         return [ExitAction("CLOSE", "LIQUIDATION_PROXIMITY")] if pos.ai_owned else [ExitAction("ALERT", "LIQUIDATION_PROXIMITY")]
@@ -347,7 +364,8 @@ class QuoteBook:
         self.quotes[data["instrument_id"]] = (float(data["bid_price"]), float(data["ask_price"]), arrival_s)
 
     def exit_price(self, instrument_id: str, side: str, now_s: float | None = None) -> float | None:
-        quote = self.quotes.get(instrument_id)
+        quote_id = underlying_spot(instrument_id) if market_of(instrument_id) is Market.SPOT_MARGIN else instrument_id
+        quote = self.quotes.get(quote_id)
         if not quote or (now_s if now_s is not None else time.time()) - quote[2] > MAX_QUOTE_AGE_S:
             return None
         return quote[0] if side == "LONG" else quote[1]
@@ -384,11 +402,11 @@ async def rest_exit_price(http: httpx.AsyncClient | None, instrument_id: str, si
     """The backup exit price from Binance's REST book ticker (bid for longs, ask for shorts); None on any failure."""
     if http is None:
         return None
-    symbol = instrument_id.split(".")[0]
-    perp = symbol.endswith("-PERP")
+    market = market_of(instrument_id)
+    perp = market is Market.PERP
     try:
         resp = await http.get(PERP_BOOK_TICKER_URL if perp else SPOT_BOOK_TICKER_URL,
-                              params={"symbol": symbol.removesuffix("-PERP").upper()}, timeout=REST_TIMEOUT_S)
+                              params={"symbol": symbol_of(instrument_id).upper()}, timeout=REST_TIMEOUT_S)
         resp.raise_for_status()
         book = resp.json()
         price = float(book["bidPrice"] if side == "LONG" else book["askPrice"])
@@ -452,30 +470,44 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         )
         -- one position per owner: an AI owner (the legacy AI instance or a mandate's own instance, A5.2)
         -- keeps its stops on a spot instrument another owner shares
-        SELECT r.instrument_id, r.side, r.instance_id AS owner,
+        SELECT r.instrument_id, r.side, r.instance_id AS owner, o.n_owners,
                SUM(r.quantity) AS quantity,
                SUM(r.quantity * r.entry_price) / NULLIF(SUM(r.quantity), 0) AS entry_price,
                MIN(r.opened_at) AS opened_at,
-               (r.instance_id = $2 OR r.instance_id LIKE 'AI!_MANDATE!_%' ESCAPE '!')
-                   AND (o.n_owners = 1 OR r.instrument_id NOT LIKE '%-PERP.%') AS ai_owned,
                o.n_owners > 1 AS shared,
                MAX(r.leverage) AS leverage,
                -- the liquidation nearest the price: highest for a long, lowest for a short
                CASE WHEN r.side = 'SHORT' THEN MIN(r.liquidation_price) ELSE MAX(r.liquidation_price) END AS liquidation_price,
-               SUM(r.isolated_margin) FILTER (WHERE r.margin_mode = 'ISOLATED') AS isolated_margin
+               SUM(r.isolated_margin) FILTER (WHERE r.margin_mode = 'ISOLATED') AS isolated_margin,
+               MAX(m.base_qty) AS margin_base_qty, MAX(m.quote_qty) AS margin_quote_qty,
+               MAX(m.borrowed_base) AS margin_borrowed_base, MAX(m.borrowed_quote) AS margin_borrowed_quote,
+               MAX(m.interest_base) AS margin_interest_base, MAX(m.interest_quote) AS margin_interest_quote
         FROM open_rows r JOIN owners o USING (instrument_id)
+        LEFT JOIN paper_margin_accounts m ON m.account_id = r.account_id
+             AND m.pair = split_part(r.instrument_id, '-', 1) AND m.status = 'OPEN'
         GROUP BY r.instrument_id, r.side, r.instance_id, o.n_owners
         ORDER BY r.instrument_id, r.side, MIN(r.opened_at), r.instance_id
         """,
-        PAPER_ACCOUNT_ID, AI_INSTANCE,
+        PAPER_ACCOUNT_ID,
     )
+    margin_cfg = default_margin_settings()
+    if any(market_of(r["instrument_id"]) is Market.SPOT_MARGIN for r in rows):
+        try:
+            stored_rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key LIKE 'margin.pair.%'")
+            stored = {r["key"]: r["value"] for r in stored_rows}
+            margin_cfg, problems = read_margin_settings(stored, margin_cfg)
+            for problem in problems:
+                logger.warning("Ignoring invalid margin setting while loading exits: %s", problem)
+        except Exception as exc:
+            logger.warning("Margin pair settings not re-read (%s); using defaults", exc)
     profile_exits = await load_profile_exits(conn, [r["owner"] for r in rows], redis_client)
     positions = []
     sources = {} if sources is None else sources
     keys: set[str] = set()
     for r in rows:
         inst = r["instrument_id"]
-        mark = await perp_mark(redis_client, inst) if is_perp(inst) else None
+        market = market_of(inst)
+        mark = await perp_mark(redis_client, inst) if market is Market.PERP else None
         if mark is not None:  # a perp is valued at its mark, the price liquidation uses
             price, source = mark, "MARK"
         else:
@@ -490,8 +522,26 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         sources[inst] = max(sources[inst], source, key=_SOURCE_RANK.__getitem__) if inst in sources else source
         if price is None:
             continue
+        ai_owner = r["owner"] == AI_INSTANCE or r["owner"].startswith("AI_MANDATE_")
+        ai_owned = ai_owner and (r["n_owners"] == 1 or market not in (Market.PERP, Market.SPOT_MARGIN))
+        margin_level = margin_call_level = margin_liquidation_level = None
+        if market is Market.SPOT_MARGIN:
+            pair = symbol_of(inst)
+            pair_cfg = margin_cfg.pair_settings.get(pair)
+            base_qty = Decimal(str(_row(r, "margin_base_qty") or 0))
+            quote_qty = Decimal(str(_row(r, "margin_quote_qty") or 0))
+            borrowed_base = Decimal(str(_row(r, "margin_borrowed_base") or 0))
+            borrowed_quote = Decimal(str(_row(r, "margin_borrowed_quote") or 0))
+            interest_base = Decimal(str(_row(r, "margin_interest_base") or 0))
+            interest_quote = Decimal(str(_row(r, "margin_interest_quote") or 0))
+            assets = base_qty * Decimal(str(price)) + quote_qty
+            debt = (borrowed_base + interest_base) * Decimal(str(price)) + borrowed_quote + interest_quote
+            margin_level = float(assets / debt) if debt > 0 else None
+            if pair_cfg:
+                margin_call_level = float(pair_cfg["call_level"])
+                margin_liquidation_level = float(pair_cfg["liquidation_level"])
         funding = None
-        sym = r["instrument_id"].split(".")[0].replace("-PERP", "").upper()
+        sym = symbol_of(r["instrument_id"])
         try:
             if raw := await redis_client.get(f"perp:mark:{sym}"):
                 funding = float(json.loads(raw).get("funding_rate"))
@@ -542,14 +592,17 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         profile_id = mandate_id_from_instance(r["owner"])
         profile = profile_exits.get(profile_id) if profile_id is not None else None
         position = Position(
-            r["instrument_id"], r["side"], float(r["entry_price"] or 0), price, bool(r["ai_owned"]),
+            r["instrument_id"], r["side"], float(r["entry_price"] or 0), price, ai_owned,
             opened_ts, funding,
-            r["owner"] if r["ai_owned"] else AI_INSTANCE, source,
+            r["owner"] if ai_owned else AI_INSTANCE, source,
             stop_price=stop_price,
             take_profit_price=take_profit_price,
             quantity=float(r["quantity"] or 0),
             leverage=int(_row(r, "leverage") or 1),
             liquidation_price=nearer_liquidation(r, inst),
+            margin_level=margin_level,
+            margin_call_level=margin_call_level,
+            margin_liquidation_level=margin_liquidation_level,
             shared=bool(r["shared"]),
             own_quantity=format(Decimal(str(r["quantity"] or 0)).normalize(), "f"),
             profile_tp_r=profile.tp_r if profile is not None else None,
@@ -623,7 +676,7 @@ async def perp_mark(redis_client, instrument_id: str) -> float | None:
     """The cached mark (15 s TTL, so a present key is fresh), or None."""
     if redis_client is None:
         return None
-    sym = instrument_id.split(".")[0].replace("-PERP", "").upper()
+    sym = symbol_of(instrument_id)
     try:
         raw = await redis_client.get(f"perp:mark:{sym}")
         return float(json.loads(raw)["mark_price"]) if raw else None
@@ -693,7 +746,7 @@ async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1")
             return False
     attempts = await conn.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key LIKE $1 || '%'", prefix)
     scale_qty_str = format(scale_quantity, "f")
-    if is_perp(pos.instrument_id):
+    if market_of(pos.instrument_id) in (Market.PERP, Market.SPOT_MARGIN):
         # A perp scales out through the close path with a quantity (a reduce-only fill of half, the resting stop
         # stays for the rest): a SUBMIT_ORDER on the other side would be a new entry, not a reduction
         command_type = "CLOSE_POSITION"
@@ -721,7 +774,7 @@ async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1")
 
 
 def is_perp(instrument_id: str) -> bool:
-    return instrument_id.split(".", 1)[0].upper().endswith("-PERP")
+    return market_of(instrument_id) is Market.PERP
 
 
 async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
@@ -762,6 +815,15 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
                             + ("Closing it (reduce-only market)." if action.kind == "CLOSE" else
                                "Alert only: a manual position is not closed by the monitor.")),
             })
+        elif action.reason in ("MARGIN_CALL", "MARGIN_LEVEL_PROXIMITY"):
+            alert.update({
+                "margin_level": pos.margin_level,
+                "margin_call_level": pos.margin_call_level,
+                "margin_liquidation_level": pos.margin_liquidation_level,
+                "message": (f"{pos.instrument_id} isolated margin level {pos.margin_level:.4f} is below the "
+                            f"{action.reason.lower().replace('_', ' ')} threshold. "
+                            + ("Closing reduce-only." if action.kind == "CLOSE" else "Check the position immediately.")),
+            })
         await redis_client.publish("channel:system_alerts", json.dumps(alert))
 
 
@@ -775,6 +837,10 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
         # the loop passes one Coverage for its lifetime: blind checks in a row are counted across cycles
         await (coverage or Coverage()).record(redis_client, sources)
         for pos in positions:
+            margin_episode = f"exit:margin_call_episode:{pos.key}"
+            if (pos.margin_level is not None and pos.margin_call_level is not None
+                    and pos.margin_level > pos.margin_call_level):
+                await redis_client.delete(margin_episode)
             best = await best_price_since_open(redis_client, pos)
             position_t = position_thresholds(pos, t)
             episode_key = f"exit:dd_episode:{pos.key}"
@@ -789,6 +855,10 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
                 actions = [a for a in actions if a.kind == "ALERT" and a.reason == "LIQUIDATION_PROXIMITY"]
                 actions.append(max_hold)
             for action in actions:
+                if action.reason == "MARGIN_CALL":
+                    if await redis_client.exists(margin_episode):
+                        continue
+                    await redis_client.set(margin_episode, "1", ex=30 * 86400)
                 if action.reason == "DRAWDOWN":
                     await redis_client.set(episode_key, "1", ex=30 * 86400)
                 await act(conn, redis_client, pos, action)

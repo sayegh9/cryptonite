@@ -54,7 +54,7 @@ from cryptonite_schemas.mandate import (
     is_ai_instance,
     mandate_instance_id,
 )
-from cryptonite_schemas.profile import underlying_spot
+from cryptonite_schemas.profile import Market, market_of, underlying_spot
 from cryptonite_schemas.session import (
     SessionVerdict,
     next_session_start,
@@ -86,26 +86,37 @@ def evaluate_drawdown(equity: Decimal, prev_hwm: Decimal | None, max_drawdown_pc
 
 
 def _bid(quotes, instrument_id: str) -> Decimal | None:
-    q = quotes.quote(instrument_id) if quotes is not None else None
+    quote_id = underlying_spot(instrument_id) if market_of(instrument_id) is Market.SPOT_MARGIN else instrument_id
+    q = quotes.quote(quote_id) if quotes is not None else None
     return Decimal(str(q.bid_price)) if q is not None and q.bid_price else None
 
 
 async def mandate_equity(conn, mandate: Mandate, quotes=None) -> Decimal:
     inst = mandate.instance_id
-    spot_cash = await conn.fetchval(
-        """SELECT COALESCE(SUM(CASE WHEN side = 'SELL' THEN price * quantity - commission
-                                    ELSE -(price * quantity + commission) END), 0)
-           FROM paper_trades WHERE instance_id = $1 AND instrument_id NOT LIKE '%-PERP.%'""",
-        inst,
+    trades = await conn.fetch(
+        "SELECT instrument_id, side, price, quantity, commission FROM paper_trades WHERE instance_id = $1", inst,
     )
+    spot_cash = sum((
+        Decimal(str(r["price"])) * Decimal(str(r["quantity"]))
+        - Decimal(str(r["commission"] or 0)) if r["side"] == "SELL" else
+        -(Decimal(str(r["price"])) * Decimal(str(r["quantity"])) + Decimal(str(r["commission"] or 0)))
+        for r in trades if market_of(r["instrument_id"]) is Market.SPOT
+    ), D0)
     rows = await conn.fetch(
-        """SELECT instrument_id, side, quantity, entry_price, current_price, realized_pnl, status
-           FROM paper_positions WHERE instance_id = $1 AND (status = 'OPEN' OR instrument_id LIKE '%-PERP.%')""",
+        """SELECT p.instrument_id, p.side, p.quantity, p.entry_price, p.current_price, p.realized_pnl,
+                  p.unrealized_pnl, p.status, m.interest_base, m.interest_quote
+           FROM paper_positions p LEFT JOIN paper_margin_accounts m ON m.account_id = p.account_id
+                AND m.pair = split_part(p.instrument_id, '-', 1) AND m.status = 'OPEN'
+           WHERE p.instance_id = $1""",
         inst,
     )
     value = D0
     for r in rows:
-        perp = "-PERP." in r["instrument_id"]
+        market = market_of(r["instrument_id"])
+        if r["status"] != "OPEN" and market not in (Market.PERP, Market.SPOT_MARGIN):
+            continue
+        perp = market is Market.PERP
+        margin = market is Market.SPOT_MARGIN
         price = _bid(quotes, r["instrument_id"]) or Decimal(str(r["current_price"]))
         qty = Decimal(str(r["quantity"]))
         if perp:
@@ -113,6 +124,16 @@ async def mandate_equity(conn, mandate: Mandate, quotes=None) -> Decimal:
             if r["status"] == "OPEN":
                 sign = Decimal("-1") if r["side"] == "SHORT" else Decimal("1")
                 value += sign * qty * (price - Decimal(str(r["entry_price"])))
+        elif margin:
+            realized = Decimal(str(r["realized_pnl"] or 0))
+            value += realized
+            if r["status"] == "OPEN":
+                # Positions persist the exact account's mark P&L as unrealized_pnl; interest is
+                # deducted separately because accrued interest is not yet a realized fill.
+                value += Decimal(str(r["unrealized_pnl"] or 0))
+                interest = (Decimal(str(r["interest_base"] or 0)) * price
+                            + Decimal(str(r["interest_quote"] or 0)))
+                value -= interest
         else:
             value += qty * price
     return mandate.capital_budget_usd + Decimal(str(spot_cash or 0)) + value
