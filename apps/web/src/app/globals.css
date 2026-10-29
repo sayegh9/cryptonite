@@ -172,6 +172,12 @@
 }
 
 :root {
+  /* Brand palette (docs/brand/GUIDELINES.md). Fixed in every theme: the logo never recolours. */
+  --brand-kryptonite: #7cdb4c;
+  --brand-facet: #419547;
+  --brand-ore: #0f2b1c;
+  --brand-obsidian: #0a120e;
+  --brand-quartz: #eaf7e3;
   --color-swing-entry: #38bdf8;
   --color-swing-stop: #f43f5e;
   --color-swing-trail: #f59e0b;

@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import localFont from "next/font/local";
 import { cn } from "@/lib/utils";
@@ -13,6 +13,12 @@ const geist = localFont({
 export const metadata: Metadata = {
   title: "Cryptonite Terminal | Market Intelligence & Polars Scanner",
   description: "Self-hosted crypto intelligence, multi-chart terminal, and vectorized Polars market scanner.",
+  applicationName: "Cryptonite",
+};
+
+// Brand Obsidian (--brand-obsidian); the favicon, apple-icon and manifest icons live next to this file.
+export const viewport: Viewport = {
+  themeColor: "#0a120e", // ds-allow-hardcode: meta tag value, CSS variables don't apply here
 };
 
 export default function RootLayout({
