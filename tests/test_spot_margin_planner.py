@@ -47,6 +47,31 @@ def test_pair_borrow_cap_refuses_only_the_side_that_uses_it():
     assert short.ok
 
 
+def test_short_plan_quantity_exposure_and_stop_loss_match_borrowed_base():
+    result = plan_spot_margin_order(
+        "BTCUSDT-MARGIN.BINANCE", "SELL", D("100"), D("110"), D("10"), limits(),
+        base_asset="BTC", requested_leverage=2,
+    )
+    assert result.ok
+    # At 2x the short borrows BTC worth one collateral unit; unlike a long,
+    # it does not sell collateral * leverage worth of base.
+    assert result.quantity == D("0.1")
+    assert result.notional_usd == D("10")
+    assert result.loss_at_stop_usd == D("1.040")
+
+
+def test_short_shrink_to_fit_uses_short_notional_per_collateral():
+    result = plan_spot_margin_order(
+        "BTCUSDT-MARGIN.BINANCE", "SELL", D("100"), D("110"), D("100"),
+        limits(budget="10", room="100", leverage=3), base_asset="BTC", requested_leverage=3,
+        shrink_margin_to_fit=True,
+    )
+    assert result.ok
+    assert result.margin_usd == D("10") / D("0.104") / D("2")
+    assert result.notional_usd == result.margin_usd * D("2")
+    assert result.loss_at_stop_usd == D("10")
+
+
 def test_unlisted_pair_is_refused_without_a_breach_code():
     result = plan_spot_margin_order("DOGEUSDT-MARGIN", "BUY", D("0.1"), D("0.09"), D("10"), limits(),
                                     base_asset="DOGE", requested_leverage=2)

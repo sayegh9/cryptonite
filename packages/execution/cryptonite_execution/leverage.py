@@ -333,12 +333,18 @@ def plan_spot_margin_order(
     leverage = requested
     stop_gap = distance + limits.slippage_pct
     cost = stop_gap + limits.fee_pct
+    # A long's purchased notional is collateral * leverage. A short borrows and sells
+    # only the base worth collateral * (leverage - 1); its collateral remains quote.
+    # Keep exposure/risk sizing aligned with the order quantity that is actually sent.
+    exposure_per_margin = Decimal(leverage) if side == "BUY" else Decimal(leverage - 1)
+    if exposure_per_margin <= 0:
+        return refused(LeverageReject.MARGIN_BORROW_LIMIT, binding=f"max_borrow_{base_asset}")
     original_margin = margin_usd
     if shrink_margin_to_fit:
         max_notional = min(limits.max_notional_usd, limits.risk_budget_usd / cost)
         if max_notional <= 0:
             return refused(LeverageReject.EXPOSURE_LIMIT_REACHED)
-        margin_usd = min(margin_usd, max_notional / Decimal(leverage))
+        margin_usd = min(margin_usd, max_notional / exposure_per_margin)
 
     sizing = size_margin_borrow("LONG" if side == "BUY" else "SHORT", margin_usd,
                                 entry_price, Decimal(leverage))
@@ -362,7 +368,7 @@ def plan_spot_margin_order(
     if stop_gap > LIQUIDATION_BUFFER_FRACTION * liq_distance:
         return refused(LeverageReject.LIQUIDATION_BUFFER_TOO_THIN)
 
-    notional = margin_usd * Decimal(leverage)
+    notional = borrow_amount * entry_price if side == "SELL" else sizing.base_qty * entry_price
     if notional > limits.max_notional_usd:
         return refused(LeverageReject.EXPOSURE_LIMIT_REACHED)
     loss = notional * cost
@@ -375,7 +381,8 @@ def plan_spot_margin_order(
         requested_leverage=requested_leverage, allowed_max_leverage=max_leverage,
         binding_ceiling="pair maximum", capped=capped, ceilings={"pair maximum": max_leverage},
         margin_usd=margin_usd, notional_usd=notional,
-        quantity=(notional / entry_price).quantize(QUANTITY_STEP, rounding=ROUND_DOWN),
+        quantity=(sizing.borrowed_base if side == "SELL" else sizing.base_qty)
+        .quantize(QUANTITY_STEP, rounding=ROUND_DOWN),
         entry_price=entry_price, stop_price=stop_price, stop_distance_pct=distance * 100,
         liquidation_price=liq, liquidation_distance_pct=liq_distance * 100,
         buffer_used_pct=stop_gap / liq_distance * 100,
