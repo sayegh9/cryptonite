@@ -423,6 +423,105 @@ async def test_margin_resting_entry_does_not_fill_during_ingress_gap(margin_orch
 
 
 @pytest.mark.asyncio
+async def test_resting_margin_entry_cancels_when_fill_crosses_structural_stop(margin_orch_ctx):
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    intent = OrderIntent(
+        client_order_id="P45-ENTRY-GAPPED-THROUGH-STOP", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="BUY", order_type="LIMIT", quantity=D("0.01"), price=D("50000"), leverage=2,
+        margin_mode="ISOLATED", stop_loss=D("49000"), require_stop=True, risk_budget_usd=D("100"),
+    )
+    ok, reason = dispatcher.dispatch(intent, MagicMock(), MagicMock())
+    assert ok, reason
+    await pool.execute(
+        """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side,
+                  order_type, quantity, price, filled_qty, status, last_event_version)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 'ACCEPTED', 0)""",
+        intent.client_order_id, INSTANCE, ACCOUNT, MARGIN, "BUY", "LIMIT", D("0.01"), D("50000"),
+    )
+    cash_before = dispatcher.cash_balance
+    dispatcher.node_cache.quote.return_value = SimpleNamespace(
+        bid_price=D("48900"), ask_price=D("50000"), ts_init=1_800_000_000_000_000_000,
+    )
+
+    await server.match_resting_orders(pool, engine, SPOT, 48_900, 50_000)
+
+    assert MARGIN not in dispatcher.margin_accounts
+    assert intent.client_order_id not in dispatcher.open_orders
+    assert dispatcher.cash_balance == cash_before
+    assert await pool.fetchval(
+        "SELECT status FROM paper_orders WHERE client_order_id=$1", intent.client_order_id,
+    ) == "CANCELED"
+
+
+@pytest.mark.asyncio
+async def test_margin_entry_stop_attachment_failure_queues_durable_close(margin_orch_ctx, monkeypatch):
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    intent = OrderIntent(
+        client_order_id="P45-ENTRY-STOP-ATTACH-FAIL", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="BUY", order_type="MARKET", quantity=D("0.01"), leverage=2,
+        margin_mode="ISOLATED", stop_loss=D("47000"), require_stop=True, risk_budget_usd=D("100"),
+    )
+    ok, reason = dispatcher.dispatch(intent, MagicMock(), MagicMock())
+    assert ok, reason
+    dispatcher.open_orders[intent.client_order_id]["attach_stop"] = D("47000")
+    monkeypatch.setattr(server, "attach_resting_stop", AsyncMock(return_value=False))
+
+    async with pool.acquire() as conn:
+        booked = await server.apply_paper_fill(
+            conn, engine, PaperFill(intent.client_order_id, MARGIN, "BUY", D("0.01"), D("50000"), "TAKER"),
+            INSTANCE, "MARKET", None, now=datetime(2026, 10, 29, 12, 20, tzinfo=UTC),
+        )
+
+    assert booked
+    assert engine.dispatcher.margin_accounts[MARGIN].position_qty == D("0.01")
+    close = await pool.fetchrow(
+        "SELECT command_type, status, payload FROM execution_commands WHERE idempotency_key=$1",
+        f"margin-stop-not-restored:{ACCOUNT}:{intent.client_order_id}",
+    )
+    assert close is not None and (close["command_type"], close["status"]) == ("CLOSE_POSITION", "PENDING")
+    assert json.loads(close["payload"])["reason"] == "STOP_NOT_RESTORED"
+
+
+@pytest.mark.asyncio
+async def test_manual_margin_entry_refuses_quote_already_through_structural_stop(margin_orch_ctx):
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    quote_cache = SimpleQuoteCache()
+    # The buy fills at the ask above 49,000, but the adverse bid is already through the stop.
+    quote_cache.set_quote(SPOT, 48_900, 50_000)
+    command_id = uuid.uuid4()
+    cash_before = engine.dispatcher.cash_balance
+    await pool.execute(
+        """INSERT INTO execution_commands
+               (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload,
+                status, environment, account_id)
+           VALUES ($1, $2, 'MANUAL_ORDER', 'MANUAL_TRADE', 'test', $3::jsonb, 'PENDING', 'PAPER', $4)""",
+        command_id, f"p45-manual-entry-through-stop:{command_id}",
+        json.dumps({"instrument_id": MARGIN, "side": "BUY", "order_type": "MARKET",
+                    "quantity": "0.01", "leverage": 2, "stop_loss": "49000"}), ACCOUNT,
+    )
+
+    poller = asyncio.create_task(server.command_poller(pool, engine, quote_cache))
+    try:
+        for _ in range(100):
+            state = await pool.fetchrow(
+                "SELECT status, error_message FROM execution_commands WHERE command_id=$1", command_id,
+            )
+            if state["status"] in ("COMPLETED", "REJECTED", "FAILED"):
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        poller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await poller
+
+    assert state["status"] == "REJECTED" and state["error_message"] == "STOP_REQUIRED"
+    assert MARGIN not in engine.dispatcher.margin_accounts
+    assert engine.dispatcher.cash_balance == cash_before
+
+
+@pytest.mark.asyncio
 async def test_margin_close_restores_memory_when_bridge_queue_rejects_fill(margin_orch_ctx, monkeypatch):
     await margin_orch_ctx["open_long"]()
     pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
@@ -697,6 +796,45 @@ async def test_deferred_manual_margin_close_keeps_command_pending_for_restart(ma
     assert await pool.fetchval(
         "SELECT count(*) FROM paper_orders WHERE client_order_id=$1", client_oid,
     ) == 0
+    assert engine.dispatcher.margin_accounts[MARGIN].position_qty == D("0.01")
+
+
+@pytest.mark.asyncio
+async def test_margin_close_waits_for_quote_when_dispatch_data_is_stale(margin_orch_ctx):
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    await margin_orch_ctx["open_long"]()
+    engine.dispatcher.margin_accounts[MARGIN].instance_id = "MANUAL_TRADE"
+    engine.dispatcher.ingress_health.is_fresh.return_value = False
+    quote_cache = SimpleQuoteCache()  # no underlying quote is available to price a fill
+    command_id = uuid.uuid4()
+    await pool.execute(
+        """INSERT INTO execution_commands
+               (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload,
+                status, environment, account_id)
+           VALUES ($1, $2, 'MANUAL_ORDER', $3, 'test', $4::jsonb, 'PENDING', 'PAPER', $5)""",
+        command_id, f"p45-margin-close-stale:{command_id}", "MANUAL_TRADE",
+        json.dumps({"instrument_id": MARGIN, "side": "SELL", "order_type": "MARKET",
+                    "quantity": "0.01", "reduce_only": True}), ACCOUNT,
+    )
+
+    poller = asyncio.create_task(server.command_poller(pool, engine, quote_cache))
+    try:
+        for _ in range(100):
+            state = await pool.fetchrow(
+                "SELECT status, error_message FROM execution_commands WHERE command_id=$1", command_id,
+            )
+            if state["error_message"] == "WAITING_FOR_MARGIN_EXIT_QUOTE":
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        poller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await poller
+
+    client_oid = f"MANUAL-{str(command_id).replace('-', '')[:12].upper()}"
+    assert state["status"] == "PENDING"
+    assert state["error_message"] == "WAITING_FOR_MARGIN_EXIT_QUOTE"
+    assert client_oid not in engine.dispatcher.open_orders
     assert engine.dispatcher.margin_accounts[MARGIN].position_qty == D("0.01")
 
 

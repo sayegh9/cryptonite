@@ -164,6 +164,30 @@ def test_margin_reduce_only_close_does_not_depend_on_pair_entry_settings():
     assert dispatcher.evaluate_intent(close) == (True, "APPROVED", D("0"))
 
 
+def test_owned_margin_close_remains_approved_without_fresh_or_cached_quote():
+    dispatcher, cache = make_fresh_dispatcher()
+    opening = OrderIntent(
+        client_order_id="M-OPEN-NO-QUOTE-EXIT", instance_id=INSTANCE, instrument_id=MARGIN, side="BUY",
+        order_type="MARKET", quantity=D("0.01"), leverage=2, margin_mode="ISOLATED",
+        stop_loss=D("47000"), require_stop=True,
+    )
+    assert dispatcher.dispatch(opening, lambda _: None, None)[0]
+    dispatcher.handle_fill("M-OPEN-NO-QUOTE-EXIT", D("0.01"), D("50000"), D("0.5"),
+                            side="BUY", instrument_id=MARGIN)
+    dispatcher.kill_switch.trip("test", "latched")
+    dispatcher.daily_loss_latched = True
+    dispatcher.ingress_health.is_fresh.return_value = False
+    cache.quote.return_value = None
+    close = OrderIntent(
+        client_order_id="M-CLOSE-NO-QUOTE", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="SELL", order_type="MARKET", quantity=D("0.01"), reduce_only=True,
+    )
+
+    approved, reason = dispatcher.dispatch(close, lambda _: None, None)
+    assert approved and reason == "SUBMITTED"
+    assert close.client_order_id in dispatcher.open_orders
+
+
 def test_margin_reduce_only_cannot_close_another_instances_position():
     dispatcher, _ = make_fresh_dispatcher()
     opening = OrderIntent(

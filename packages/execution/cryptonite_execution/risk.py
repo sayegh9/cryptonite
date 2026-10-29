@@ -761,7 +761,9 @@ class GuardedOrderDispatcher:
         intent.leverage, intent.margin_mode = leverage, mode
         return None
 
-    def _evaluate_margin(self, intent: OrderIntent, bid_price: Decimal, ask_price: Decimal) -> tuple[bool, str, Decimal]:
+    def _evaluate_margin(
+        self, intent: OrderIntent, bid_price: Decimal, ask_price: Decimal, *, quote_is_fresh: bool = True,
+    ) -> tuple[bool, str, Decimal]:
         """Evaluate isolated spot-margin entry/exit risk and reserve collateral, not borrowed notional."""
         side = intent.side.upper()
         if side not in ("BUY", "SELL"):
@@ -778,7 +780,9 @@ class GuardedOrderDispatcher:
                 return False, "REDUCE_ONLY_INVALID_DIRECTION", Decimal("0")
             if intent.quantity > abs(account.position_qty):
                 return False, f"REDUCE_ONLY_OVERSIZE: quantity {intent.quantity} > closable {abs(account.position_qty)}", Decimal("0")
-            if intent.order_type.upper() == STOP_MARKET:
+            if intent.order_type.upper() == STOP_MARKET and intent.stop_price is None:
+                return False, "STOP_PRICE_REQUIRED", Decimal("0")
+            if intent.order_type.upper() == STOP_MARKET and quote_is_fresh:
                 mark = self.mark_prices.get(underlying_spot(intent.instrument_id)) or bid_price
                 if (side == "SELL" and intent.stop_price >= mark) or (side == "BUY" and intent.stop_price <= mark):
                     return False, "STOP_WOULD_TRIGGER_IMMEDIATELY", Decimal("0")
@@ -1025,24 +1029,28 @@ class GuardedOrderDispatcher:
         if self.daily_loss_latched and not exit_only:
             return False, "DAILY_LOSS_LIMIT_BREACHED", Decimal("0")
 
-        # 3. Freshness check
-        if not self.ingress_health.is_fresh(intent.instrument_id, self.node_cache):
+        # 3. Freshness check. A margin reduction is still a valid exit when data is stale:
+        # approve the owned, bounded reduction and let the order command wait for a fresh quote
+        # before filling it. Entries and every other market still fail closed on stale data.
+        quote_is_fresh = self.ingress_health.is_fresh(intent.instrument_id, self.node_cache)
+        deferred_margin_exit = is_margin and intent.reduce_only and not quote_is_fresh
+        if not quote_is_fresh and not deferred_margin_exit:
             return False, "DATA_STALE_OR_DISCONTINUOUS", Decimal("0")
 
         # Retrieve quote from cache
         quote_id = underlying_spot(intent.instrument_id) if is_margin else intent.instrument_id
         inst = InstrumentId.from_str(quote_id)
         quote: QuoteTick | None = self.node_cache.quote(inst) if self.node_cache else None
-        if quote is None:
+        if quote is None and not (is_margin and intent.reduce_only):
             return False, "NO_LIVE_QUOTE_IN_CACHE", Decimal("0")
 
-        ask_price = Decimal(str(quote.ask_price))
-        bid_price = Decimal(str(quote.bid_price))
+        ask_price = Decimal(str(quote.ask_price)) if quote is not None else Decimal("0")
+        bid_price = Decimal(str(quote.bid_price)) if quote is not None else Decimal("0")
 
         if is_perp:
             return self._evaluate_perp(intent, bid_price, ask_price)
         if is_margin:
-            return self._evaluate_margin(intent, bid_price, ask_price)
+            return self._evaluate_margin(intent, bid_price, ask_price, quote_is_fresh=quote_is_fresh)
 
         # 4. Risk Margin & Spot Cash Invariants
         if intent.side.upper() == "SELL":

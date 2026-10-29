@@ -206,6 +206,48 @@ def dispatched_by(engine, client_order_id: str) -> str | None:
     return engine.__dict__.get("_dispatched_order_ids", {}).get(client_order_id)
 
 
+def _margin_entry_fill_crosses_stop(
+    fill: PaperFill, order_info: dict, bid_price: Decimal, ask_price: Decimal,
+) -> bool:
+    """Whether an entry fill or its adverse quote side is already through its structural stop."""
+    if not order_info.get("is_margin") or order_info.get("reduce_only"):
+        return False
+    intent = order_info.get("intent")
+    stop = order_info.get("attach_stop") or getattr(intent, "stop_loss", None)
+    if stop is None:
+        return False
+    stop = Decimal(str(stop))
+    if fill.side == "BUY":
+        return fill.price <= stop or bid_price <= stop
+    return fill.price >= stop or ask_price >= stop
+
+
+async def _queue_margin_stop_failure_close(conn, engine, instrument_id: str, instance_id: str,
+                                           entry_client_order_id: str) -> None:
+    """Queue a durable risk close when a just-filled margin entry cannot restore its stop."""
+    account = engine.dispatcher.margin_accounts.get(instrument_id)
+    if account is None or account.position_qty == 0:
+        return
+    command_id = uuid.uuid4()
+    payload = {
+        "instrument_id": instrument_id,
+        "reason": "STOP_NOT_RESTORED",
+        "position_side": account.side,
+        "quantity": str(abs(account.position_qty)),
+        "reduce_only": True,
+    }
+    await conn.execute(
+        """INSERT INTO execution_commands
+               (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload,
+                status, environment, account_id)
+           VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:orchestrator', $4::jsonb, 'PENDING', 'PAPER', $5)
+           ON CONFLICT (idempotency_key) DO NOTHING""",
+        command_id, f"margin-stop-not-restored:{engine.account_id}:{entry_client_order_id}",
+        instance_id, json.dumps(payload), engine.account_id,
+    )
+    logger.critical("Margin entry %s has no resting stop; durable reduce-only close queued", entry_client_order_id)
+
+
 async def apply_paper_fill(
     conn, engine, fill: PaperFill, instance_id: str, order_type: str, limit_price: Decimal | None,
     *, now: datetime.datetime | None = None,
@@ -353,7 +395,13 @@ async def apply_paper_fill(
         except Exception as e:
             logger.error("Could not cancel the rows of dropped stops %s: %s", sorted(released_stops), e)
     if attach_stop is not None:
-        await attach_resting_stop(conn, engine, fill.instrument_id, Decimal(str(attach_stop)), instance_id)
+        stop_attached = await attach_resting_stop(
+            conn, engine, fill.instrument_id, Decimal(str(attach_stop)), instance_id,
+        )
+        if is_margin and entry_order and not stop_attached:
+            await _queue_margin_stop_failure_close(
+                conn, engine, fill.instrument_id, instance_id, fill.client_order_id,
+            )
     return True
 
 
@@ -1565,6 +1613,21 @@ async def match_resting_orders(pool, engine, instrument_id: str, bid: float, ask
                     and not d.ingress_health.is_fresh(underlying_spot(fill.instrument_id), d.node_cache)):
                 # Re-check after waiting for the pool: a gap may have been reported after matching.
                 continue
+            intent = info["intent"]
+            if market_of(fill.instrument_id) is Market.SPOT_MARGIN and not info.get("reduce_only"):
+                current_quote = (d.node_cache.quote(InstrumentId.from_str(underlying_spot(fill.instrument_id)))
+                                 if d.node_cache else None)
+                stop_bid = Decimal(str(current_quote.bid_price)) if current_quote else Decimal(str(bid))
+                stop_ask = Decimal(str(current_quote.ask_price)) if current_quote else Decimal(str(ask))
+                if _margin_entry_fill_crosses_stop(fill, info, stop_bid, stop_ask):
+                    structural_stop = info.get("attach_stop") or getattr(intent, "stop_loss", None)
+                    logger.critical(
+                        "Resting margin entry %s cancelled: fill %s or adverse quote is through structural stop %s",
+                        fill.client_order_id, fill.price, structural_stop,
+                    )
+                    d.release_reservation(fill.client_order_id)
+                    cancelled.append(fill.client_order_id)
+                    continue
             qty = d.fillable_quantity(info)
             if qty <= 0:
                 logger.warning("Working exit %s outlived its position; cancelled", fill.client_order_id)
@@ -1573,7 +1636,6 @@ async def match_resting_orders(pool, engine, instrument_id: str, bid: float, ask
                 continue
             if qty < fill.quantity:
                 fill = dataclasses.replace(fill, quantity=qty)
-            intent = info["intent"]
             await apply_paper_fill(conn, engine, fill, intent.instance_id, intent.order_type.upper(), intent.price)
         if cancelled:
             await reconcile_working_orders(conn, engine)
@@ -3120,8 +3182,23 @@ async def command_poller(pool, engine, quote_cache=None):
                                             Decimal(str(quote.bid_price)), Decimal(str(quote.ask_price)),
                                             *((quote.bid_size, quote.ask_size) if getattr(quote, "sizes_known", False) else (None, None)),
                                         )
-                                    if fill and (profile_spot_entry or profile_margin_entry) and (
-                                            fill.price <= structural_stop if side == "BUY" else fill.price >= structural_stop):
+                                    stop_crossed = bool(fill and profile_spot_entry and structural_stop is not None and (
+                                        fill.price <= structural_stop if side == "BUY" else fill.price >= structural_stop
+                                    ))
+                                    if fill and is_margin_order and margin_entry:
+                                        entry_info = engine.dispatcher.open_orders.get(client_oid) or {}
+                                        entry_stop = getattr(intent, "stop_loss", None)
+                                        if entry_stop is not None:
+                                            stop_crossed = (
+                                                fill.price <= entry_stop if side == "BUY" else fill.price >= entry_stop
+                                            )
+                                            if quote is not None:
+                                                stop_bid = Decimal(str(quote.bid_price))
+                                                stop_ask = Decimal(str(quote.ask_price))
+                                                stop_crossed = stop_crossed or _margin_entry_fill_crosses_stop(
+                                                    fill, entry_info, stop_bid, stop_ask,
+                                                )
+                                    if stop_crossed:
                                         # A marketable BUY limit can improve below its submitted limit. Its
                                         # structural stop must remain below the actual fill, not just the limit.
                                         engine.dispatcher.release_reservation(client_oid)
