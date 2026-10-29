@@ -144,4 +144,3 @@ def test_profile_preset_registry_keeps_the_existing_twelve_slugs():
     assert {"scalp-multi-tf", "scalp-multi-tf-short"} <= expected
     for slug in expected:
         assert preset_by_slug(slug).slug == slug
-
