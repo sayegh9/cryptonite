@@ -90,12 +90,14 @@ These arithmetic examples validate the accounting identities; they do not author
 unsupported pair or supply a missing tier-1 cap. Assume price `100`, no fees, and one
 USDT collateral unit unless noted.
 
-- Long: post `10 USDT`, borrow `10 USDT`, buy `0.2 BTC` at `100`. Assets are `0.2 BTC`
-  (`20 USDT`) plus any free quote balance; liability is `10 USDT`. With exactly `10 USDT`
-  collateral retained in the isolated account, margin level is `20/10 = 2.0` before
-  interest. At tier-1 10x liquidation level `1.05`, a simplified long with base quantity
-  `0.2`, quote debt `10` and quote collateral `10` reaches the threshold where
-  `(0.2 * price + 10 - 10) / 10 = 1.05`, or `price = 52.5`.
+- Long: post `10 USDT`, borrow `10 USDT`, and spend all `20 USDT` on `0.2 BTC` at `100`;
+  no free quote remains. Assets are `20 USDT`, liability is `10 USDT`, and margin level
+  is `20/10 = 2.0` before interest. At tier-1 10x liquidation level `1.05`, the long
+  reaches its threshold at `0.2 * price / 10 = 1.05`, or `price = 52.5`.
+- Long with free quote: post `20 USDT`, borrow `10 USDT`, buy `0.2 BTC` at `100`, and
+  retain `10 USDT` quote. Assets are `20 USDT` of BTC plus `10 USDT` quote against
+  `10 USDT` debt, so margin level is `30/10 = 3.0`. Its liquidation equation is
+  `(0.2 * price + 10) / 10 = 1.05`, or `price = 2.5`.
 - Short: post `10 USDT`, borrow `0.1 BTC`, sell at `100`, leaving `20 USDT` in assets
   against `0.1 BTC` debt worth `10 USDT`. Initial margin level is `20/10 = 2.0`. With
   quote assets fixed at `20 USDT` and BTC debt `0.1`, tier-1 10x liquidation level `1.05`

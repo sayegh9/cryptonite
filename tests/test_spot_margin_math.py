@@ -54,6 +54,15 @@ def test_margin_level_and_liquidation_prices_match_the_documented_examples():
     )
     assert long_liquidation == D("52.5")
 
+    free_quote_level = margin_level(D("0.2"), D("10"), D("0"), D("10"), D("0"), D("0"), D("100"))
+    assert account_asset_value(D("0.2"), D("10"), D("100")) == D("30")
+    assert free_quote_level == D("3")
+    free_quote_liquidation = liquidation_price(
+        "LONG", base_qty=D("0.2"), quote_qty=D("10"), borrowed_base=D("0"), borrowed_quote=D("10"),
+        interest_base=D("0"), interest_quote=D("0"), liquidation_level=D("1.05"), entry_price=D("100"),
+    )
+    assert free_quote_liquidation == D("2.5")
+
     short_level = margin_level(D("0"), D("20"), D("0.1"), D("0"), D("0"), D("0"), D("100"))
     assert short_level == D("2")
     short_liquidation = liquidation_price(
