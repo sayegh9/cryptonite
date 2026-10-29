@@ -3,7 +3,9 @@
 import asyncio
 import json
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, localcontext
 from decimal import Decimal as D
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -12,7 +14,9 @@ import asyncpg
 import pytest
 from cryptonite_execution.bridge import EventBridge, EventBridgeWorker
 from cryptonite_execution.engine import PaperTradingEngine
+from cryptonite_execution.matching import PaperFill
 from cryptonite_execution.risk import OrderIntent, SpotMarginAccountState
+from cryptonite_execution.spot_margin import interest_for_period
 from cryptonite_orchestrator import server
 from cryptonite_orchestrator.server import SimpleQuoteCache
 from migrated_db import migrated_database
@@ -36,7 +40,7 @@ async def margin_orch_ctx(margin_db_url):
     strat_id = uuid.uuid4()
     async with pool.acquire() as conn:
         await conn.execute(
-            "TRUNCATE paper_execution_events, paper_trades, paper_positions, paper_orders, "
+            "TRUNCATE execution_commands, paper_execution_events, paper_trades, paper_positions, paper_orders, "
             "paper_margin_interest, paper_margin_accounts, paper_strategy_instances, paper_accounts CASCADE"
         )
         await conn.execute(
@@ -71,11 +75,12 @@ async def margin_orch_ctx(margin_db_url):
     engine.bridge = EventBridge(dispatcher.kill_switch)
     worker = EventBridgeWorker(engine.bridge, pool, engine.engine_run_id)
 
-    async def open_long():
+    async def open_long(leverage=2):
+        borrowed_at = datetime(2026, 10, 29, 12, 20, tzinfo=UTC)
         intent = OrderIntent(
             client_order_id="P45-OPEN", instance_id=INSTANCE, instrument_id=MARGIN, side="BUY",
-            order_type="MARKET", quantity=D("0.01"), leverage=2, margin_mode="ISOLATED",
-            stop_loss=D("47000"), require_stop=True,
+            order_type="MARKET", quantity=D("0.01"), leverage=leverage, margin_mode="ISOLATED",
+            stop_loss=D("48000"), require_stop=True,
         )
         ok, reason = dispatcher.dispatch(intent, MagicMock(), MagicMock())
         assert ok, reason
@@ -86,17 +91,18 @@ async def margin_orch_ctx(margin_db_url):
             "account_id": ACCOUNT, "instance_id": INSTANCE, "instrument_id": MARGIN, "side": "BUY",
             "price": "50000", "quantity": "0.01", "commission": "0.5", "filled_qty": "0.01",
             "avg_fill_price": "50000", "status": "FILLED",
-            **dispatcher.fill_event_fields(MARGIN, realized, D("50000")),
+            **dispatcher.fill_event_fields(MARGIN, realized, D("50000"), opened_at=borrowed_at),
         })
         assert await worker.drain_and_commit_batch() == 1
-        borrowed_at = datetime(2026, 10, 29, 12, 20, tzinfo=UTC)
-        await pool.execute(
-            "UPDATE paper_margin_accounts SET opened_at = $3 WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'",
-            ACCOUNT, "BTCUSDT", borrowed_at,
+        persisted_opened_at = await pool.fetchval(
+            "SELECT opened_at FROM paper_margin_accounts WHERE account_id=$1 AND pair='BTCUSDT' AND status='OPEN'",
+            ACCOUNT,
         )
+        assert persisted_opened_at == borrowed_at
         return borrowed_at
 
     async def open_short():
+        borrowed_at = datetime(2026, 10, 29, 12, 20, tzinfo=UTC)
         intent = OrderIntent(
             client_order_id="P45-OPEN-SHORT", instance_id=INSTANCE, instrument_id=MARGIN, side="SELL",
             order_type="MARKET", quantity=D("0.01"), leverage=2, margin_mode="ISOLATED",
@@ -111,14 +117,14 @@ async def margin_orch_ctx(margin_db_url):
             "account_id": ACCOUNT, "instance_id": INSTANCE, "instrument_id": MARGIN, "side": "SELL",
             "price": "50000", "quantity": "0.01", "commission": "0.5", "filled_qty": "0.01",
             "avg_fill_price": "50000", "status": "FILLED",
-            **dispatcher.fill_event_fields(MARGIN, realized, D("50000")),
+            **dispatcher.fill_event_fields(MARGIN, realized, D("50000"), opened_at=borrowed_at),
         })
         assert await worker.drain_and_commit_batch() == 1
-        borrowed_at = datetime(2026, 10, 29, 12, 20, tzinfo=UTC)
-        await pool.execute(
-            "UPDATE paper_margin_accounts SET opened_at = $3 WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'",
-            ACCOUNT, "BTCUSDT", borrowed_at,
+        persisted_opened_at = await pool.fetchval(
+            "SELECT opened_at FROM paper_margin_accounts WHERE account_id=$1 AND pair='BTCUSDT' AND status='OPEN'",
+            ACCOUNT,
         )
+        assert persisted_opened_at == borrowed_at
         return borrowed_at
 
     yield {"pool": pool, "engine": engine, "dispatcher": dispatcher, "cache": cache,
@@ -213,28 +219,37 @@ async def test_margin_interest_is_exact_and_idempotent_across_concurrent_passes_
     )
     assert [(row["period_start"], row["period_end"], row["asset"]) for row in rows] == [
         (borrowed_at, settle, "USDT"),
+        (settle, datetime(2026, 10, 29, 14, 0, tzinfo=UTC), "USDT"),
     ]
-    assert [row["principal"] for row in rows] == [D("250")]
-    assert [row["hourly_rate"] for row in rows] == [D("0.00000656")]
-    assert sum((row["amount"] for row in rows), D("0")) == D("0.001093333333333333")
-    assert engine.dispatcher.margin_accounts[MARGIN].interest_quote == sum(
-        (row["amount"] for row in rows), D("0")
-    )
+    assert [row["principal"] for row in rows] == [D("250"), D("250")]
+    assert [row["hourly_rate"] for row in rows] == [D("0.00000656"), D("0.00000656")]
+    first_charge = interest_for_period(D("250"), D("0.00000656"), D("2400"))
+    first_full_hour = interest_for_period(D("250"), D("0.00000656"), D("3600"))
+    assert [row["amount"] for row in rows] == [first_charge, first_full_hour]
+    with localcontext() as context:
+        context.prec = 38
+        ledger_total = sum((row["amount"] for row in rows), D("0"))
+        assert ledger_total == first_charge + first_full_hour
+        assert engine.dispatcher.margin_accounts[MARGIN].interest_quote == ledger_total
 
     restarted_dispatcher, _ = make_fresh_dispatcher()
     restarted = SimpleNamespace(account_id=ACCOUNT, dispatcher=restarted_dispatcher,
                                 kill_switch=restarted_dispatcher.kill_switch)
     await server.rehydrate_dispatcher_state(pool, restarted)
     await server.accrue_margin_interest_once(pool, restarted, now=settle)
-    assert await pool.fetchval("SELECT count(*) FROM paper_margin_interest") == 1
+    assert await pool.fetchval("SELECT count(*) FROM paper_margin_interest") == 2
     assert restarted_dispatcher.margin_accounts[MARGIN].interest_quote == engine.dispatcher.margin_accounts[MARGIN].interest_quote
     second_settlement = datetime(2026, 10, 29, 14, 0, tzinfo=UTC)
     await server.accrue_margin_interest_once(pool, restarted, now=second_settlement)
     rows = await pool.fetch("SELECT period_start, period_end, amount FROM paper_margin_interest ORDER BY period_end")
     assert [(row["period_start"], row["period_end"]) for row in rows] == [
         (borrowed_at, settle), (settle, second_settlement),
+        (second_settlement, datetime(2026, 10, 29, 15, 0, tzinfo=UTC)),
     ]
-    assert sum((row["amount"] for row in rows), D("0")) == D("0.002733333333333333")
+    third_charge = interest_for_period(D("250"), D("0.00000656"), D("3600"))
+    with localcontext() as context:
+        context.prec = 38
+        assert sum((row["amount"] for row in rows), D("0")) == first_charge + first_full_hour + third_charge
 
 
 @pytest.mark.asyncio
@@ -251,14 +266,185 @@ async def test_mid_hour_repay_uses_settled_interest_and_ledger_matches_interest_
     interest_repaid = account.interest_quote
     assert [(row["period_start"], row["period_end"]) for row in rows] == [
         (borrowed_at, datetime(2026, 10, 29, 13, 0, tzinfo=UTC)),
-        (datetime(2026, 10, 29, 13, 0, tzinfo=UTC), repay_at),
+        (datetime(2026, 10, 29, 13, 0, tzinfo=UTC), datetime(2026, 10, 29, 14, 0, tzinfo=UTC)),
     ]
-    assert sum((row["amount"] for row in rows), D("0")) == interest_repaid
+    with localcontext() as context:
+        context.prec = 38
+        ledger_total = sum((row["amount"] for row in rows), D("0"))
+        assert ledger_total == interest_repaid
+        assert interest_repaid == (
+            interest_for_period(D("250"), D("0.00000656"), D("2400"))
+            + interest_for_period(D("250"), D("0.00000656"), D("3600"))
+        )
 
     cash_before = dispatcher.cash_balance
     dispatcher.flatten_margin_position(MARGIN, D("50000"), D("0"), "P45-REPAY")
-    assert dispatcher.cash_balance == cash_before + D("250") - interest_repaid
+    with localcontext() as context:
+        context.prec = 38
+        expected_cash = (cash_before + D("250") - interest_repaid).quantize(
+            D("0.000000000000000001"), rounding=ROUND_HALF_UP,
+        )
+    assert dispatcher.cash_balance == expected_cash
     assert MARGIN not in dispatcher.margin_accounts
+
+
+@pytest.mark.parametrize("leverage", [3, 7])
+@pytest.mark.asyncio
+async def test_repeating_decimal_borrow_persists_exactly_and_interest_does_not_skip(margin_orch_ctx, leverage):
+    await margin_orch_ctx["open_long"](leverage)
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    account = engine.dispatcher.margin_accounts[MARGIN]
+    persisted = await pool.fetchrow(
+        "SELECT borrowed_quote FROM paper_margin_accounts WHERE account_id=$1 AND pair='BTCUSDT' AND status='OPEN'",
+        ACCOUNT,
+    )
+    assert persisted["borrowed_quote"] == account.borrowed_quote
+
+    settle = datetime(2026, 10, 29, 13, 0, tzinfo=UTC)
+    await server.accrue_margin_interest_once(pool, engine, now=settle)
+
+    assert await pool.fetchval("SELECT count(*) FROM paper_margin_interest") == 2
+    persisted_interest = await pool.fetchval(
+        "SELECT interest_quote FROM paper_margin_accounts WHERE account_id=$1 AND pair='BTCUSDT' AND status='OPEN'",
+        ACCOUNT,
+    )
+    assert persisted_interest == account.interest_quote > 0
+
+
+@pytest.mark.asyncio
+async def test_paper_fill_accrues_prorated_interest_before_full_repay(margin_orch_ctx):
+    borrowed_at = await margin_orch_ctx["open_long"]()
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    repay_at = datetime(2026, 10, 29, 12, 30, tzinfo=UTC)
+    intent = OrderIntent(
+        client_order_id="P45-PRE-SETTLEMENT-REPAY", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="SELL", order_type="MARKET", quantity=D("0.01"), leverage=2,
+        margin_mode="ISOLATED", reduce_only=True,
+    )
+    ok, reason = dispatcher.dispatch(intent, MagicMock(), MagicMock())
+    assert ok, reason
+
+    async with pool.acquire() as conn:
+        await server.apply_paper_fill(
+            conn, engine,
+            PaperFill("P45-PRE-SETTLEMENT-REPAY", MARGIN, "SELL", D("0.01"), D("50000"), "TAKER"),
+            INSTANCE, "MARKET", None, now=repay_at,
+        )
+    assert await margin_orch_ctx["worker"].drain_and_commit_batch() == 1
+
+    row = await pool.fetchrow("SELECT period_start, period_end, asset, amount FROM paper_margin_interest")
+    assert row is not None
+    assert (row["period_start"], row["period_end"], row["asset"]) == (borrowed_at, repay_at, "USDT")
+    assert row["amount"] == interest_for_period(D("250"), D("0.00000656"), D("600"))
+    assert await pool.fetchval("SELECT status FROM paper_margin_accounts WHERE account_id=$1 AND pair='BTCUSDT'",
+                               ACCOUNT) == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_margin_reduce_fill_waits_for_previous_bridge_snapshot(margin_orch_ctx):
+    await margin_orch_ctx["open_long"]()
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    account = dispatcher.margin_accounts[MARGIN]
+    account.quote_qty += D("1")  # Simulate a newer in-memory fill whose bridge event is still queued.
+    intent = OrderIntent(
+        client_order_id="P45-REDUCE-AFTER-QUEUED-FILL", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="SELL", order_type="MARKET", quantity=D("0.01"), reduce_only=True,
+    )
+    ok, reason = dispatcher.dispatch(intent, MagicMock(), MagicMock())
+    assert ok, reason
+
+    async with pool.acquire() as conn:
+        booked = await server.apply_paper_fill(
+            conn, engine,
+            PaperFill(intent.client_order_id, MARGIN, "SELL", D("0.01"), D("50000"), "TAKER"),
+            INSTANCE, "MARKET", None, now=datetime(2026, 10, 29, 12, 30, tzinfo=UTC),
+        )
+
+    assert not booked
+    assert MARGIN in dispatcher.margin_accounts
+    assert intent.client_order_id in dispatcher.open_orders
+    assert await pool.fetchval("SELECT count(*) FROM paper_margin_interest") == 0
+
+
+@pytest.mark.asyncio
+async def test_margin_fill_queue_rejection_rolls_back_and_keeps_order_working(margin_orch_ctx, monkeypatch):
+    await margin_orch_ctx["open_long"]()
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    intent = OrderIntent(
+        client_order_id="P45-QUEUE-FULL-CLOSE", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="SELL", order_type="MARKET", quantity=D("0.01"), reduce_only=True,
+    )
+    ok, reason = dispatcher.dispatch(intent, MagicMock(), MagicMock())
+    assert ok, reason
+    await server.accrue_margin_interest_once(
+        pool, engine, now=datetime(2026, 10, 29, 12, 25, tzinfo=UTC), repaid_instrument_id=MARGIN,
+    )
+    before = replace(dispatcher.margin_accounts[MARGIN])
+    monkeypatch.setattr(engine.bridge, "enqueue_event", lambda _: False)
+
+    async with pool.acquire() as conn:
+        booked = await server.apply_paper_fill(
+            conn, engine,
+            PaperFill(intent.client_order_id, MARGIN, "SELL", D("0.01"), D("50000"), "TAKER"),
+            INSTANCE, "MARKET", None, now=datetime(2026, 10, 29, 12, 25, tzinfo=UTC),
+        )
+
+    assert not booked
+    assert dispatcher.margin_accounts[MARGIN] == before
+    assert intent.client_order_id in dispatcher.open_orders
+    assert await pool.fetchval(
+        "SELECT status FROM paper_margin_accounts WHERE account_id=$1 AND pair='BTCUSDT' AND status='OPEN'",
+        ACCOUNT,
+    ) == "OPEN"
+
+
+@pytest.mark.asyncio
+async def test_margin_resting_entry_does_not_fill_during_ingress_gap(margin_orch_ctx):
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    intent = OrderIntent(
+        client_order_id="P45-ENTRY-INGRESS-GAP", instance_id=INSTANCE, instrument_id=MARGIN,
+        side="BUY", order_type="LIMIT", quantity=D("0.01"), price=D("50000"), leverage=2,
+        margin_mode="ISOLATED", stop_loss=D("48000"), require_stop=True,
+    )
+    ok, reason = dispatcher.dispatch(intent, MagicMock(), MagicMock())
+    assert ok, reason
+    cash_before = dispatcher.cash_balance
+    dispatcher.ingress_health.is_fresh.return_value = False  # recent-arrival quote, discontinuous sequence
+
+    await server.match_resting_orders(pool, engine, SPOT, 49_000, 49_001)
+
+    assert MARGIN not in dispatcher.margin_accounts
+    assert intent.client_order_id in dispatcher.open_orders
+    assert dispatcher.cash_balance == cash_before
+
+
+@pytest.mark.asyncio
+async def test_margin_close_restores_memory_when_bridge_queue_rejects_fill(margin_orch_ctx, monkeypatch):
+    await margin_orch_ctx["open_long"]()
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    margin_id = await pool.fetchval(
+        "SELECT id FROM paper_margin_accounts WHERE account_id=$1 AND pair='BTCUSDT' AND status='OPEN'", ACCOUNT,
+    )
+    account_before = replace(dispatcher.margin_accounts[MARGIN])
+    cash_before = dispatcher.cash_balance
+    monkeypatch.setattr(engine.bridge, "enqueue_event", lambda _: False)
+
+    closed = await server.force_close_margin_position(
+        pool, engine, MARGIN, D("50000"), reason="TEST_QUEUE_FULL", margin_account_id=margin_id,
+        now=datetime(2026, 10, 29, 12, 20, tzinfo=UTC),
+    )
+
+    assert not closed
+    assert dispatcher.margin_accounts[MARGIN].position_qty == account_before.position_qty
+    assert dispatcher.cash_balance == cash_before
+    assert await pool.fetchval(
+        "SELECT status FROM paper_margin_accounts WHERE id=$1", margin_id,
+    ) == "OPEN"
 
 
 @pytest.mark.asyncio
@@ -427,6 +613,126 @@ async def test_stop_and_kill_switch_close_margin_via_durable_fill(margin_orch_ct
 
 
 @pytest.mark.asyncio
+async def test_stop_command_retries_when_margin_close_cannot_be_persisted(margin_orch_ctx, monkeypatch):
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    await margin_orch_ctx["open_long"]()
+    quote_cache = SimpleQuoteCache()
+    quote_cache.set_quote(SPOT, 49_000, 49_001)
+    engine.dispatcher.node_cache.quote.return_value = SimpleNamespace(
+        bid_price=D("49000"), ask_price=D("49001"), ts_init=1_800_000_000_000_000_000,
+    )
+    monkeypatch.setattr(engine.bridge, "enqueue_event", lambda _: False)
+    command_id = uuid.uuid4()
+    await pool.execute(
+        """INSERT INTO execution_commands
+               (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload,
+                status, environment, account_id)
+           VALUES ($1, $2, 'STOP', $3, 'test', '{}'::jsonb, 'PENDING', 'PAPER', $4)""",
+        command_id, f"p45-stop-deferred:{command_id}", None, ACCOUNT,
+    )
+
+    poller = asyncio.create_task(server.command_poller(pool, engine, quote_cache))
+    try:
+        for _ in range(100):
+            state = await pool.fetchrow(
+                "SELECT status, error_message FROM execution_commands WHERE command_id=$1", command_id,
+            )
+            if state["error_message"] == "MARGIN_STOP_CLOSE_DEFERRED":
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        poller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await poller
+
+    assert state["status"] == "PENDING"
+    assert state["error_message"] == "MARGIN_STOP_CLOSE_DEFERRED"
+    assert engine.dispatcher.margin_accounts[MARGIN].position_qty == D("0.01")
+    assert await pool.fetchval(
+        "SELECT status FROM paper_strategy_instances WHERE instance_id=$1", INSTANCE,
+    ) == "RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_deferred_manual_margin_close_keeps_command_pending_for_restart(margin_orch_ctx, monkeypatch):
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    await margin_orch_ctx["open_long"]()
+    # Use a non-mandate owner so MANUAL_ORDER exercises the shared dispatcher path directly.
+    engine.dispatcher.margin_accounts[MARGIN].instance_id = "MANUAL_TRADE"
+    quote_cache = SimpleQuoteCache()
+    quote_cache.set_quote(SPOT, 49_000, 49_001)
+    engine.dispatcher.node_cache.quote.return_value = SimpleNamespace(
+        bid_price=D("49000"), ask_price=D("49001"), ts_init=1_800_000_000_000_000_000,
+    )
+    monkeypatch.setattr(engine.bridge, "enqueue_event", lambda _: False)
+    command_id = uuid.uuid4()
+    await pool.execute(
+        """INSERT INTO execution_commands
+               (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload,
+                status, environment, account_id)
+           VALUES ($1, $2, 'MANUAL_ORDER', $3, 'test', $4::jsonb, 'PENDING', 'PAPER', $5)""",
+        command_id, f"p45-margin-close-pending:{command_id}", "MANUAL_TRADE",
+        json.dumps({"instrument_id": MARGIN, "side": "SELL", "order_type": "MARKET",
+                    "quantity": "0.01", "reduce_only": True}), ACCOUNT,
+    )
+
+    poller = asyncio.create_task(server.command_poller(pool, engine, quote_cache))
+    try:
+        for _ in range(100):
+            state = await pool.fetchrow(
+                "SELECT status, error_message FROM execution_commands WHERE command_id=$1", command_id,
+            )
+            if state["error_message"] == "MARGIN_FILL_DEFERRED":
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        poller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await poller
+
+    client_oid = f"MANUAL-{str(command_id).replace('-', '')[:12].upper()}"
+    assert state["status"] == "PENDING"
+    assert state["error_message"] == "MARGIN_FILL_DEFERRED"
+    assert client_oid not in engine.dispatcher.open_orders
+    assert await pool.fetchval(
+        "SELECT count(*) FROM paper_orders WHERE client_order_id=$1", client_oid,
+    ) == 0
+    assert engine.dispatcher.margin_accounts[MARGIN].position_qty == D("0.01")
+
+
+@pytest.mark.asyncio
+async def test_margin_close_waits_for_fresh_quote_instead_of_rejecting(margin_orch_ctx):
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    await margin_orch_ctx["open_long"]()
+    command_id = uuid.uuid4()
+    await pool.execute(
+        """INSERT INTO execution_commands
+               (command_id, idempotency_key, command_type, target_instance_id, requester_id, payload,
+                status, environment, account_id)
+           VALUES ($1, $2, 'CLOSE_POSITION', $3, 'test', $4::jsonb, 'PENDING', 'PAPER', $5)""",
+        command_id, f"p45-stale-close:{command_id}", INSTANCE,
+        json.dumps({"instrument_id": MARGIN, "position_side": "LONG", "quantity": "0.01"}), ACCOUNT,
+    )
+    poller = asyncio.create_task(server.command_poller(pool, engine, SimpleQuoteCache()))
+    try:
+        for _ in range(100):
+            state = await pool.fetchrow(
+                "SELECT status, error_message FROM execution_commands WHERE command_id=$1", command_id,
+            )
+            if state["error_message"] == "WAITING_FOR_FRESH_MARGIN_QUOTE":
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        poller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await poller
+
+    assert state["status"] == "PENDING"
+    assert state["error_message"] == "WAITING_FOR_FRESH_MARGIN_QUOTE"
+    assert MARGIN in engine.dispatcher.margin_accounts
+
+
+@pytest.mark.asyncio
 async def test_margin_liquidation_is_once_and_persists_the_fee(margin_orch_ctx):
     await margin_orch_ctx["open_long"]()
     pool, engine, worker = margin_orch_ctx["pool"], margin_orch_ctx["engine"], margin_orch_ctx["worker"]
@@ -456,3 +762,54 @@ async def test_margin_liquidation_is_once_and_persists_the_fee(margin_orch_ctx):
     await server.margin_risk_monitor_once(pool, engine, None, now=now)
     assert engine.bridge.queue.qsize() == 0
     assert await pool.fetchval("SELECT count(*) FROM paper_trades WHERE account_id = $1", ACCOUNT) == 2
+
+
+@pytest.mark.asyncio
+async def test_deferred_liquidation_suppresses_resting_stop_for_same_mark(margin_orch_ctx, monkeypatch):
+    await margin_orch_ctx["open_long"]()
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    assert await server.attach_resting_stop(pool, engine, MARGIN, D("47000"), INSTANCE)
+    dispatcher.node_cache.quote.return_value = SimpleNamespace(
+        bid_price=D("26000"), ask_price=D("26001"), ts_init=1_800_000_000_000_000_000,
+    )
+    attempted = []
+    monkeypatch.setattr(engine.bridge, "enqueue_event", lambda event: attempted.append(event) or False)
+
+    await server.margin_risk_monitor_once(pool, engine, None, now=datetime(2026, 10, 29, 13, 0, tzinfo=UTC))
+
+    assert len(attempted) == 1
+    assert attempted[0]["liquidation"] is True
+    assert MARGIN in dispatcher.margin_accounts
+    assert any(order.get("instrument_id") == MARGIN for order in dispatcher.open_orders.values())
+
+
+@pytest.mark.asyncio
+async def test_liquidation_crossing_blocks_stop_while_open_snapshot_is_unprojected(margin_orch_ctx, monkeypatch):
+    await margin_orch_ctx["open_long"]()
+    pool, engine = margin_orch_ctx["pool"], margin_orch_ctx["engine"]
+    dispatcher = engine.dispatcher
+    assert await server.attach_resting_stop(pool, engine, MARGIN, D("47000"), INSTANCE)
+    dispatcher.node_cache.quote.return_value = SimpleNamespace(
+        bid_price=D("26000"), ask_price=D("26001"), ts_init=1_800_000_000_000_000_000,
+    )
+    class ProjectionLagPool:
+        """Pool facade that hides the OPEN account id while leaving projection reads intact."""
+
+        def acquire(self):
+            return pool.acquire()
+
+        async def fetchval(self, query, *args):
+            if "FROM paper_margin_accounts" in query and "status = 'OPEN'" in query:
+                return None
+            return await pool.fetchval(query, *args)
+
+    lagged_pool = ProjectionLagPool()
+
+    await server.margin_risk_monitor_once(
+        lagged_pool, engine, None, now=datetime(2026, 10, 29, 13, 0, tzinfo=UTC),
+    )
+
+    assert MARGIN in dispatcher.margin_accounts
+    assert engine.bridge.queue.qsize() == 0
+    assert any(order.get("instrument_id") == MARGIN for order in dispatcher.open_orders.values())

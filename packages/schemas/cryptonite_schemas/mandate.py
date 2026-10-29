@@ -330,7 +330,14 @@ class Mandate(BaseModel):
         return mandate_instance_id(self.id)
 
     def allows_instrument(self, instrument_id: str) -> bool:
-        return canonical_instrument(instrument_id) in self.instruments
+        canonical = canonical_instrument(instrument_id)
+        if canonical in self.instruments:
+            return True
+        # Margin trades use the ingested spot symbol as their profile scope. Market authorization is
+        # checked separately in ``check_mandate``; this alias only preserves that pair scope.
+        p = _profile()
+        return (p.market_of(canonical) is p.Market.SPOT_MARGIN
+                and p.underlying_spot(canonical) in self.instruments)
 
     @classmethod
     def from_row(cls, row) -> "Mandate":

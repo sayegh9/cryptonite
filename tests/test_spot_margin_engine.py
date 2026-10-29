@@ -116,6 +116,16 @@ def test_spot_margin_entries_are_allowed_by_market_and_exits_remain_allowed_latc
                          approval_ok=False, autotrade_on=False) is None
 
 
+def test_margin_alias_matches_the_profile_spot_instrument_scope():
+    mandate = Mandate(
+        id=uuid.uuid4(), name="margin", capital_budget_usd=D("10000"), instruments=[SPOT],
+        markets=["SPOT_MARGIN"], max_leverage=3, max_position_pct=D("25"),
+        max_drawdown_pct=D("20"), direction="BOTH",
+    )
+
+    assert mandate.allows_instrument(MARGIN)
+
+
 def test_margin_entry_cannot_claim_kill_switch_exit_to_bypass_latch():
     dispatcher, _ = make_fresh_dispatcher()
     dispatcher.kill_switch.trip("test", "latched")
@@ -152,6 +162,66 @@ def test_margin_reduce_only_close_does_not_depend_on_pair_entry_settings():
     )
 
     assert dispatcher.evaluate_intent(close) == (True, "APPROVED", D("0"))
+
+
+def test_margin_reduce_only_cannot_close_another_instances_position():
+    dispatcher, _ = make_fresh_dispatcher()
+    opening = OrderIntent(
+        client_order_id="M-OWNED-OPEN", instance_id=INSTANCE, instrument_id=MARGIN, side="BUY",
+        order_type="MARKET", quantity=D("0.01"), leverage=2, margin_mode="ISOLATED",
+        stop_loss=D("48000"), require_stop=True,
+    )
+    assert dispatcher.dispatch(opening, lambda _: None, None)[0]
+    dispatcher.handle_fill("M-OWNED-OPEN", D("0.01"), D("50000"), D("0.5"), side="BUY", instrument_id=MARGIN)
+
+    foreign_close = OrderIntent(
+        client_order_id="M-FOREIGN-CLOSE", instance_id="OTHER-INSTANCE", instrument_id=MARGIN,
+        side="SELL", order_type="MARKET", quantity=D("0.01"), reduce_only=True,
+    )
+    assert dispatcher.evaluate_intent(foreign_close) == (
+        False, "MARGIN_POSITION_OWNED_BY_OTHER_INSTANCE", D("0")
+    )
+
+
+def test_only_one_margin_entry_can_be_working_for_a_pair():
+    dispatcher, _ = make_fresh_dispatcher()
+    first = OrderIntent(
+        client_order_id="M-PENDING-ENTRY-1", instance_id=INSTANCE, instrument_id=MARGIN, side="BUY",
+        order_type="LIMIT", quantity=D("0.01"), price=D("50000"), leverage=2,
+        margin_mode="ISOLATED", stop_loss=D("48000"), require_stop=True,
+    )
+    second = first.model_copy(update={"client_order_id": "M-PENDING-ENTRY-2"})
+
+    assert dispatcher.dispatch(first, lambda _: None, None)[0]
+    assert dispatcher.evaluate_intent(second) == (False, "MARGIN_ENTRY_ALREADY_PENDING", D("0"))
+
+
+def test_margin_scale_in_is_refused_and_late_fill_cannot_reuse_old_cash_delta():
+    dispatcher, _ = make_fresh_dispatcher()
+    opening = OrderIntent(
+        client_order_id="M-OPEN-SCALE-GUARD", instance_id=INSTANCE, instrument_id=MARGIN, side="BUY",
+        order_type="MARKET", quantity=D("0.01"), leverage=2, margin_mode="ISOLATED",
+        stop_loss=D("47000"), require_stop=True,
+    )
+    assert dispatcher.dispatch(opening, lambda _: None, None)[0]
+    dispatcher.handle_fill("M-OPEN-SCALE-GUARD", D("0.01"), D("50000"), D("0.5"),
+                            side="BUY", instrument_id=MARGIN)
+    assert dispatcher.last_margin_cash_delta == D("-250.5")
+
+    scale_in = OrderIntent(
+        client_order_id="M-SCALE-IN", instance_id=INSTANCE, instrument_id=MARGIN, side="BUY",
+        order_type="MARKET", quantity=D("0.005"), leverage=2, margin_mode="ISOLATED",
+        stop_loss=D("47000"), require_stop=True,
+    )
+    accepted, reason = dispatcher.dispatch(scale_in, lambda _: None, None)
+    assert not accepted and reason == "MARGIN_POSITION_ALREADY_OPEN"
+
+    # A delayed/duplicate exchange fill with no accepted order must not reuse the previous fill's cash debit.
+    dispatcher.handle_fill("M-UNMATCHED-SCALE-FILL", D("0.005"), D("50000"), D("0.25"),
+                            side="BUY", instrument_id=MARGIN)
+    assert dispatcher.last_margin_cash_delta == D("0")
+    assert dispatcher.get_margin_position_qty(MARGIN) == D("0.01")
+    assert dispatcher.cash_balance == D("9749.5")
 
 
 def test_plain_spot_short_is_still_refused():
@@ -268,6 +338,61 @@ def test_short_margin_repay_returns_collateral_and_realized_gain_as_exact_decima
     dispatcher.handle_fill("M-CLOSE", D("0.01"), D("45000"), D("0.45"), side="BUY", instrument_id=MARGIN)
     assert dispatcher.cash_balance == D("10049.05")
     assert MARGIN not in dispatcher.margin_accounts
+
+
+@pytest.mark.parametrize(
+    "entry_side,close_side,entry,close,entry_fee,close_fee,expected_cash,expected_realized",
+    [
+        ("BUY", "SELL", D("50000"), D("10000"), D("0.5"), D("0.1"), D("9599.4"), D("-400.1")),
+        ("SELL", "BUY", D("50000"), D("200000"), D("0.5"), D("2"), D("8497.5"), D("-1502")),
+    ],
+)
+def test_margin_gap_beyond_collateral_settles_loss_without_invalid_inventory(
+    entry_side, close_side, entry, close, entry_fee, close_fee, expected_cash, expected_realized,
+):
+    dispatcher, _ = make_fresh_dispatcher()
+    stop = D("47000") if entry_side == "BUY" else D("55000")
+    opening = OrderIntent(
+        client_order_id="M-GAP-OPEN", instance_id=INSTANCE, instrument_id=MARGIN, side=entry_side,
+        order_type="MARKET", quantity=D("0.01"), leverage=2, margin_mode="ISOLATED",
+        stop_loss=stop, require_stop=True,
+    )
+    assert dispatcher.dispatch(opening, lambda _: None, None)[0]
+    dispatcher.handle_fill("M-GAP-OPEN", D("0.01"), entry, entry_fee, side=entry_side, instrument_id=MARGIN)
+
+    result = dispatcher.handle_fill("M-GAP-CLOSE", D("0.01"), close, close_fee,
+                                    side=close_side, instrument_id=MARGIN)
+
+    assert result == expected_realized
+    assert dispatcher.cash_balance == expected_cash
+    assert dispatcher.last_margin_cash_delta == expected_cash - D("9749.5" if entry_side == "BUY" else "9499.5")
+    assert dispatcher.daily_realized_pnl == expected_cash - D("10000")
+    assert MARGIN not in dispatcher.margin_accounts
+
+
+@pytest.mark.parametrize("side,interest_field,close_side", [
+    ("BUY", "interest_quote", "SELL"),
+    ("SELL", "interest_base", "BUY"),
+])
+def test_margin_interest_repaid_is_included_in_realized_pnl(side, interest_field, close_side):
+    dispatcher, _ = make_fresh_dispatcher()
+    opening = OrderIntent(
+        client_order_id="M-INTEREST-OPEN", instance_id=INSTANCE, instrument_id=MARGIN, side=side,
+        order_type="MARKET", quantity=D("0.01"), leverage=2, margin_mode="ISOLATED",
+        stop_loss=D("47000") if side == "BUY" else D("55000"), require_stop=True,
+    )
+    assert dispatcher.dispatch(opening, lambda _: None, None)[0]
+    dispatcher.handle_fill("M-INTEREST-OPEN", D("0.01"), D("50000"), D("0.5"), side=side,
+                            instrument_id=MARGIN)
+    setattr(dispatcher.margin_accounts[MARGIN], interest_field,
+            D("2") if interest_field == "interest_quote" else D("0.00004"))
+
+    realized = dispatcher.handle_fill("M-INTEREST-CLOSE", D("0.01"), D("50000"), D("0.5"),
+                                      side=close_side, instrument_id=MARGIN)
+
+    assert realized == D("-2.5")
+    assert dispatcher.daily_realized_pnl == D("-3")
+    assert dispatcher.cash_balance == D("9997")
 
 
 async def test_margin_bridge_persists_exact_account_and_position_state_idempotently(margin_bridge):

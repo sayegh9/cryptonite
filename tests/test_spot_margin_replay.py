@@ -45,6 +45,13 @@ def replay_database():
 @pytest.fixture
 async def replay(replay_database):
     """Reset a throwaway database and test Redis before each full-path replay."""
+    # Keep the new operator session created by ``make_harness`` after clearing old test state.
+    import redis.asyncio as aioredis
+    from connections import REDIS_URL
+
+    cleanup_redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    await cleanup_redis.flushdb()
+    await cleanup_redis.aclose()
     h = await make_harness(replay_database)
     await h.pool.execute(
         "TRUNCATE ai_mandates, debate_runs, execution_commands, ai_approvals, ai_profile_decisions, "
@@ -60,7 +67,6 @@ async def replay(replay_database):
         "INSERT INTO system_settings(key,value) VALUES('autotrade.enabled','1'),"
         "('autotrade.max_allocated_pct','90') ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value"
     )
-    await h.redis.flushdb()
     profile_lifecycle.reset_switch_cache()
     exits.clear_profile_exit_cache()
 
@@ -92,25 +98,40 @@ async def mark(ctx, spot_instrument: str, price: D, spread: D = D("1")) -> None:
 
 async def create_profile(ctx, *, spot_instrument: str, market: str, direction: str,
                          level: int = 3, dry_run: bool = False, budget: int = 3000):
-    """Create, configure, and lifecycle-start an isolated test profile."""
-    m = await ctx.h.mandate(level, instruments=(spot_instrument,), budget=budget, status="STOPPED")
+    """Create a profile through the operator API, then select the replay's autonomy level."""
     leverage = 2 if market == "SPOT_MARGIN" else 1
-    allowed_instruments = [spot_instrument]
-    if market == "SPOT_MARGIN":
-        # Routing begins with the spot symbol; execution gates the selected margin alias.
-        allowed_instruments.append(spot_instrument.replace(".BINANCE", "-MARGIN.BINANCE"))
+    async with ctx.h.client() as client:
+        response = None
+        # Several deterministic replays can create profiles inside one 30-second TOTP
+        # step. A reused code is correctly refused by the API, so retry once with another
+        # currently valid step rather than making this fixture timing-dependent.
+        now = time.time()
+        for totp_code in (ctx.h.totp.at(now), ctx.h.totp.at(now - 30), ctx.h.totp.at(now + 30)):
+            response = await client.post(
+                "/api/v1/ai/mandates",
+                json={
+                    "name": f"p48-{uuid.uuid4().hex[:10]}", "capital_budget_usd": budget,
+                    "instruments": [spot_instrument], "max_position_pct": "25", "max_drawdown_pct": "20",
+                    "max_leverage": leverage, "markets": [market], "direction": direction,
+                    "daily_loss_limit_pct": "3", "totp_code": totp_code,
+                },
+                headers=ctx.h.headers,
+            )
+            if response.status_code != 401 or not response.json().get("detail", "").startswith("TOTP_REUSED"):
+                break
+    assert response.status_code == 201, response.text
+    mandate_id = uuid.UUID(response.json()["id"])
+    assert response.json()["started"] is True
     await ctx.pool.execute(
         """UPDATE ai_mandates SET instruments=$2::text[], markets=ARRAY[$3]::text[], allow_perps=false,
-           direction=$4, max_leverage=$5, daily_loss_limit_pct=3, dry_run=$6, notify_level='ALL',
+           autonomy_level=$4, direction=$5, max_leverage=$6, daily_loss_limit_pct=3, dry_run=$7, notify_level='ALL',
            exit_tp_r=2, exit_tp1_scale_pct=100, breaker_max_loss_streak=2 WHERE id=$1""",
-        m.id, allowed_instruments, market, direction, leverage, dry_run,
+        mandate_id, [spot_instrument], market, level, direction, leverage, dry_run,
     )
     async with ctx.pool.acquire() as conn:
-        started = await profile_lifecycle.start(
-            conn, m.id, actor="operator:p48", totp_ok=True,
-            settings={"autotrade.enabled": 1, "autotrade.max_allocated_pct": 90},
-        )
-    return started
+        from cryptonite_execution.mandate_store import load_mandate
+
+        return await load_mandate(conn, mandate_id)
 
 
 async def route_verdict(ctx, mandate, *, spot_instrument: str, side: str,
@@ -222,6 +243,7 @@ async def test_auto_margin_short_interest_ratchet_and_tp_repay(replay, monkeypat
     assert [(r["period_start"], r["period_end"]) for r in base_rows] == [
         (borrowed_at, datetime(2026, 10, 29, 13, 0, tzinfo=UTC)),
         (datetime(2026, 10, 29, 13, 0, tzinfo=UTC), datetime(2026, 10, 29, 14, 0, tzinfo=UTC)),
+        (datetime(2026, 10, 29, 14, 0, tzinfo=UTC), datetime(2026, 10, 29, 15, 0, tzinfo=UTC)),
     ]
     assert sum((r["amount"] for r in base_rows), D("0")) == account.interest_base
 

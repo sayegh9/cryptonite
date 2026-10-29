@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import asyncpg
 import pytest
@@ -73,17 +74,24 @@ def test_upgrade_schema_constraints_grants_and_down_up_round_trip(db050):
     _alembic(url, "upgrade", "051")
 
     assert _val(url, "SELECT version_num FROM alembic_version") == "051"
-    columns = {row["column_name"]: row["data_type"] for row in _run(
+    columns = {row["column_name"]: row for row in _run(
         url,
-        "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='paper_margin_accounts'",
+        "SELECT column_name, data_type, numeric_precision, numeric_scale "
+        "FROM information_schema.columns WHERE table_name='paper_margin_accounts'",
     )}
     for name in ("base_qty", "quote_qty", "borrowed_base", "borrowed_quote", "interest_base", "interest_quote"):
-        assert columns[name] == "numeric", name
-    interest_columns = {row["column_name"]: row["data_type"] for row in _run(
+        assert columns[name]["data_type"] == "numeric", name
+        assert columns[name]["numeric_precision"] is None, name
+        assert columns[name]["numeric_scale"] is None, name
+    interest_columns = {row["column_name"]: row for row in _run(
         url,
-        "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='paper_margin_interest'",
+        "SELECT column_name, data_type, numeric_precision, numeric_scale "
+        "FROM information_schema.columns WHERE table_name='paper_margin_interest'",
     )}
-    assert all(interest_columns[name] == "numeric" for name in ("principal", "hourly_rate", "amount"))
+    for name in ("principal", "hourly_rate", "amount"):
+        assert interest_columns[name]["data_type"] == "numeric", name
+        assert interest_columns[name]["numeric_precision"] is None, name
+        assert interest_columns[name]["numeric_scale"] is None, name
     index_defs = [row["indexdef"] for row in _run(
         url, "SELECT indexdef FROM pg_indexes WHERE tablename IN ('paper_margin_accounts','paper_margin_interest')",
     )]
@@ -100,6 +108,7 @@ def test_upgrade_schema_constraints_grants_and_down_up_round_trip(db050):
 
     # A clean schema can move down and up again.
     _alembic(url, "downgrade", "050")
+    assert _val(url, "SELECT has_table_privilege('cryptonite_scanner', 'instruments', 'SELECT')") is True
     assert _val(url, "SELECT to_regclass('paper_margin_accounts')") is None
     _alembic(url, "upgrade", "051")
     assert _val(url, "SELECT to_regclass('paper_margin_interest')") == "paper_margin_interest"
@@ -148,7 +157,7 @@ def test_decimal_balances_open_pair_uniqueness_and_interest_idempotency(db050):
     assert sorted(race_results) == ["INSERT 0 0", "INSERT 0 1"]
     # A process restart repeats the same settlement insert; the persisted unique key turns it into a no-op.
     assert _exec(url, insert_charge, *args) == "INSERT 0 0"
-    assert str(_val(url, "SELECT sum(amount) FROM paper_margin_interest WHERE margin_account_id=$1", margin_id)) == "0.000001312000000000"
+    assert _val(url, "SELECT sum(amount) FROM paper_margin_interest WHERE margin_account_id=$1", margin_id) == Decimal("0.000001312")
 
 
 def test_margin_positions_allow_isolated_short_but_plain_spot_stays_long_only(db050):

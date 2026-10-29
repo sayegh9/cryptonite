@@ -5,7 +5,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
 from cryptonite_schemas.identifiers import parse_instrument_id
@@ -49,6 +49,14 @@ from cryptonite_execution.spot_margin import liquidation_price as margin_liquida
 logger = logging.getLogger("cryptonite.execution.risk")
 
 STOP_MARKET = "STOP_MARKET"
+CASH_BALANCE_QUANTUM = Decimal("0.000000000000000001")
+
+
+def _cash_balance_amount(value: Decimal) -> Decimal:
+    """Round margin cash movements to the persisted ``NUMERIC(38, 18)`` cash scale."""
+    with localcontext() as context:
+        context.prec = 38
+        return value.quantize(CASH_BALANCE_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 class OrderIntent(BaseModel):
@@ -318,22 +326,29 @@ class GuardedOrderDispatcher:
         side = "SELL" if signed_qty > 0 else "BUY"
         qty = abs(signed_qty) if quantity is None else min(abs(signed_qty), quantity)
         account = self.margin_accounts[instrument_id]
-        self.open_orders[client_order_id] = {
-            "intent": None, "reserved_notional": Decimal("0"), "side": side, "quantity": qty,
-            "instrument_id": instrument_id, "instance_id": account.instance_id, "is_margin": True,
-            "reduce_only": True,
-        }
+        intent = OrderIntent(
+            client_order_id=client_order_id, instance_id=account.instance_id, instrument_id=instrument_id,
+            side=side, order_type="MARKET", quantity=qty, reduce_only=True,
+            leverage=account.leverage, margin_mode="ISOLATED",
+        )
+        approved, reason = self.dispatch(intent, lambda _: None, None)
+        if not approved:
+            logger.warning("Margin close %s was deferred by dispatcher: %s", client_order_id, reason)
+            return None
         realized = self.handle_fill(client_order_id, qty, fill_price, commission, side=side,
                                     instrument_id=instrument_id)
         return side, qty, realized or Decimal("0")
 
-    def fill_event_fields(self, instrument_id: str, realized_pnl: Decimal | None, fill_price: Decimal) -> dict[str, Any]:
+    def fill_event_fields(
+        self, instrument_id: str, realized_pnl: Decimal | None, fill_price: Decimal,
+        *, opened_at: Any | None = None,
+    ) -> dict[str, Any]:
         """Extra ORDER_FILLED fields for EventBridgeWorker: perp realized PnL and post-fill position."""
         if market_of(instrument_id) is Market.SPOT_MARGIN:
             return {
                 "realized_pnl": str(realized_pnl) if realized_pnl is not None else None,
                 "margin_cash_delta": str(self.last_margin_cash_delta),
-                "margin_account": self.margin_account_snapshot(instrument_id, fill_price),
+                "margin_account": self.margin_account_snapshot(instrument_id, fill_price, opened_at=opened_at),
             }
         if not parse_instrument_id(instrument_id)[2]:
             return {}
@@ -342,7 +357,9 @@ class GuardedOrderDispatcher:
             "position": self.perp_position_snapshot(instrument_id, fill_price),
         }
 
-    def margin_account_snapshot(self, instrument_id: str, reference_price: Decimal) -> dict[str, str | None]:
+    def margin_account_snapshot(
+        self, instrument_id: str, reference_price: Decimal, *, opened_at: Any | None = None,
+    ) -> dict[str, str | None]:
         """Serialize the post-fill isolated pair account without binary float conversion."""
         account = self.margin_accounts.get(instrument_id)
         if account is None:
@@ -359,7 +376,7 @@ class GuardedOrderDispatcher:
             )
         except ValueError:
             liq = None
-        return {
+        snapshot = {
             "status": "OPEN", "side": account.side, "base_qty": str(account.base_qty),
             "quote_qty": str(account.quote_qty), "borrowed_base": str(account.borrowed_base),
             "borrowed_quote": str(account.borrowed_quote), "interest_base": str(account.interest_base),
@@ -368,6 +385,9 @@ class GuardedOrderDispatcher:
             "isolated_margin": str(account.collateral_usdt), "current_price": str(reference_price),
             "quantity": str(abs(account.position_qty)), "entry_price": str(account.entry_price),
         }
+        if opened_at is not None:
+            snapshot["opened_at"] = opened_at.isoformat()
+        return snapshot
 
     def perp_position_snapshot(self, instrument_id: str, reference_price: Decimal | None = None) -> dict[str, Any]:
         """Post-fill position state for persistence (strings for Decimal fields).
@@ -751,6 +771,8 @@ class GuardedOrderDispatcher:
         if intent.reduce_only:
             if account is None:
                 return False, "REDUCE_ONLY_NO_POSITION", Decimal("0")
+            if account.instance_id != intent.instance_id:
+                return False, "MARGIN_POSITION_OWNED_BY_OTHER_INSTANCE", Decimal("0")
             closing_side = "SELL" if account.side == "LONG" else "BUY"
             if side != closing_side:
                 return False, "REDUCE_ONLY_INVALID_DIRECTION", Decimal("0")
@@ -775,6 +797,16 @@ class GuardedOrderDispatcher:
             return False, "MARGIN_POSITION_OWNED_BY_OTHER_INSTANCE", Decimal("0")
         if account is not None and account.side != ("LONG" if side == "BUY" else "SHORT"):
             return False, "MARGIN_POSITION_SIDE_LOCKED", Decimal("0")
+        if account is not None:
+            # Scale-in is unsupported until its added borrow, weighted entry and collateral are tracked together.
+            # Refuse before submission so an accepted fill can never be silently ignored.
+            return False, "MARGIN_POSITION_ALREADY_OPEN", Decimal("0")
+        if any(
+            info.get("is_margin") and not info.get("reduce_only")
+            and info.get("instrument_id") == intent.instrument_id
+            for info in self.open_orders.values()
+        ):
+            return False, "MARGIN_ENTRY_ALREADY_PENDING", Decimal("0")
         price = ask_price if side == "BUY" else bid_price
         if intent.order_type.upper() == "LIMIT" and intent.price is not None:
             if side == "BUY" and intent.price > ask_price * (Decimal("1") + self.collar_pct):
@@ -1162,6 +1194,8 @@ class GuardedOrderDispatcher:
         if parse_instrument_id(inst_id)[2]:
             return self._handle_perp_fill(order_info, inst_id, actual_side, fill_qty, fill_price, commission)
         if market_of(inst_id) is Market.SPOT_MARGIN:
+            # An unmatched/late fill must not emit the previous margin fill's cash movement.
+            self.last_margin_cash_delta = Decimal("0")
             return self._handle_margin_fill(order_info, inst_id, actual_side, fill_qty, fill_price, commission)
 
         if actual_side == "BUY":
@@ -1200,8 +1234,10 @@ class GuardedOrderDispatcher:
                 return None
             leverage = int(intent.leverage or 1)
             position_side = "LONG" if side == "BUY" else "SHORT"
-            collateral = (fill_qty * fill_price / Decimal(leverage) if side == "BUY"
-                          else fill_qty * fill_price / Decimal(leverage - 1))
+            collateral = _cash_balance_amount(
+                fill_qty * fill_price / Decimal(leverage) if side == "BUY"
+                else fill_qty * fill_price / Decimal(leverage - 1)
+            )
             sizing = size_margin_borrow(position_side, collateral, fill_price, Decimal(leverage))
             if side == "SELL" and sizing.borrowed_base != fill_qty:
                 sizing = sizing.__class__(sizing.base_qty, sizing.quote_qty, fill_qty, sizing.borrowed_quote)
@@ -1211,8 +1247,8 @@ class GuardedOrderDispatcher:
                 (order_info or {}).get("instance_id") or "MANUAL_TRADE",
             )
             self.margin_accounts[instrument_id] = account
-            self.last_margin_cash_delta = -(collateral + commission)
-            self.cash_balance += self.last_margin_cash_delta
+            self.last_margin_cash_delta = _cash_balance_amount(-(collateral + commission))
+            self.cash_balance = _cash_balance_amount(self.cash_balance + self.last_margin_cash_delta)
             self.daily_realized_pnl -= commission
             return None
 
@@ -1221,36 +1257,59 @@ class GuardedOrderDispatcher:
             logger.error("Ignoring non-reduce margin fill %s that would flip an isolated pair", instrument_id)
             return None
         position_qty = abs(account.position_qty)
-        closed_qty = min(fill_qty, position_qty)
-        ratio = closed_qty / position_qty
-        collateral_released = account.collateral_usdt * ratio
-        if account.side == "LONG":
-            principal_repay = account.borrowed_quote * ratio
-            interest_repay = account.interest_quote * ratio
-            account.base_qty -= closed_qty
-            account.quote_qty += closed_qty * fill_price - principal_repay - interest_repay
-            account.borrowed_quote -= principal_repay
-            account.interest_quote -= interest_repay
-            gross_pnl = (fill_price - account.entry_price) * closed_qty
-        else:
-            principal_repay = account.borrowed_base * ratio
-            interest_repay = account.interest_base * ratio
-            account.borrowed_base -= principal_repay
-            account.interest_base -= interest_repay
-            account.quote_qty -= (principal_repay + interest_repay) * fill_price
-            gross_pnl = (account.entry_price - fill_price) * closed_qty
-        account.collateral_usdt -= collateral_released
-        realized = gross_pnl - commission
-        self.daily_realized_pnl += realized
-        if account.position_qty == 0:
-            returned = account_asset_value(account.base_qty, account.quote_qty, fill_price) - account_liability_value(
-                account.borrowed_base, account.borrowed_quote, account.interest_base, account.interest_quote, fill_price)
-            self.last_margin_cash_delta = returned - commission
-            self.cash_balance += self.last_margin_cash_delta
-            del self.margin_accounts[instrument_id]
-        else:
-            self.last_margin_cash_delta = -commission
-            self.cash_balance += self.last_margin_cash_delta
+        if position_qty <= 0 or fill_qty <= 0:
+            return None
+        with localcontext() as context:
+            context.prec = 38
+            closed_qty = min(fill_qty, position_qty)
+            ratio = closed_qty / position_qty
+            collateral_released = account.collateral_usdt * ratio
+            if account.side == "LONG":
+                principal_repay = account.borrowed_quote * ratio
+                interest_repay = account.interest_quote * ratio
+                base_after = account.base_qty - closed_qty
+                quote_after = account.quote_qty + closed_qty * fill_price - principal_repay - interest_repay
+                borrowed_base_after = account.borrowed_base
+                borrowed_quote_after = account.borrowed_quote - principal_repay
+                interest_base_after = account.interest_base
+                interest_quote_after = account.interest_quote - interest_repay
+                gross_pnl = (fill_price - account.entry_price) * closed_qty
+                interest_value = interest_repay
+            else:
+                principal_repay = account.borrowed_base * ratio
+                interest_repay = account.interest_base * ratio
+                base_after = account.base_qty
+                quote_after = account.quote_qty - (principal_repay + interest_repay) * fill_price
+                borrowed_base_after = account.borrowed_base - principal_repay
+                borrowed_quote_after = account.borrowed_quote
+                interest_base_after = account.interest_base - interest_repay
+                interest_quote_after = account.interest_quote
+                gross_pnl = (account.entry_price - fill_price) * closed_qty
+                interest_value = interest_repay * fill_price
+            # The isolated account cannot store a negative inventory balance. Settle any shortfall against
+            # paper cash, preserving total equity and allowing a gap liquidation to finish cleanly.
+            shortfall = min(quote_after, Decimal("0"))
+            quote_after = max(quote_after, Decimal("0"))
+            remaining_qty = position_qty - closed_qty
+            account.base_qty = base_after
+            account.quote_qty = quote_after
+            account.borrowed_base = borrowed_base_after
+            account.borrowed_quote = borrowed_quote_after
+            account.interest_base = interest_base_after
+            account.interest_quote = interest_quote_after
+            account.collateral_usdt = _cash_balance_amount(account.collateral_usdt - collateral_released)
+            realized = gross_pnl - interest_value - commission
+            self.daily_realized_pnl += realized
+            if remaining_qty == 0:
+                returned = (account.base_qty * fill_price + quote_after + shortfall
+                            - account.borrowed_base * fill_price - account.borrowed_quote
+                            - account.interest_base * fill_price - account.interest_quote)
+                self.last_margin_cash_delta = _cash_balance_amount(returned - commission)
+                self.cash_balance = _cash_balance_amount(self.cash_balance + self.last_margin_cash_delta)
+                del self.margin_accounts[instrument_id]
+            else:
+                self.last_margin_cash_delta = _cash_balance_amount(shortfall - commission)
+                self.cash_balance = _cash_balance_amount(self.cash_balance + self.last_margin_cash_delta)
         self._fit_margin_resting_stops(instrument_id)
         return realized
 

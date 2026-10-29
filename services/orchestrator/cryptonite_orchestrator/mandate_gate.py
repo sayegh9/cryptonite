@@ -52,7 +52,7 @@ from cryptonite_schemas.mandate import (
     MandateReject,
     is_ai_instance,
 )
-from cryptonite_schemas.profile import Market, base_asset, market_of
+from cryptonite_schemas.profile import Market, base_asset, market_of, underlying_spot
 from cryptonite_schemas.session import SessionVerdict
 
 logger = logging.getLogger("cryptonite.orchestrator.mandates")
@@ -144,12 +144,31 @@ async def mandate_exposure(conn, engine, mandate: Mandate, instrument_id: str, r
                 inst_usd += value
                 inst_qty += abs(pos.signed_qty)
                 inst_side = "LONG" if pos.signed_qty > 0 else "SHORT"
-    other_owner = bool(await conn.fetchval(
+    memory_other_owner = False
+    for inst, account in getattr(d, "margin_accounts", {}).items():
+        qty = abs(account.position_qty)
+        if qty <= 0:
+            continue
+        spot_inst = underlying_spot(inst)
+        px = Decimal(str(ref_prices.get(inst) or ref_prices.get(spot_inst)
+                         or d.mark_prices.get(spot_inst) or account.entry_price))
+        value = qty * px
+        if account.instance_id == mandate.instance_id:
+            gross += value
+            if same_instrument(inst, instrument_id):
+                inst_usd += value
+                inst_qty += qty
+                inst_side = account.side
+        elif same_instrument(inst, instrument_id):
+            memory_other_owner = True
+    other_owner = memory_other_owner or bool(await conn.fetchval(
         """SELECT 1 FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
            AND instrument_id = $2 AND instance_id <> $3 LIMIT 1""",
         account_id, instrument_id, mandate.instance_id))
     for info in getattr(d, "open_orders", {}).values():
-        entry = not info.get("reduce_only") and (info.get("is_perp") or info.get("side") == "BUY")
+        entry = not info.get("reduce_only") and (
+            info.get("is_perp") or info.get("is_margin") or info.get("side") == "BUY"
+        )
         if info.get("instance_id") == mandate.instance_id:
             if entry:
                 notional = Decimal(str(info.get("reserved_notional") or 0))
@@ -433,11 +452,13 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
     used = sum((cost for cost in (await instance_spot_cost_basis(conn, mandate.instance_id)).values()), Decimal("0"))
     used += sum((pos.initial_margin for pos in getattr(d, "perp_positions", {}).values()
                  if getattr(pos, "instance_id", None) == mandate.instance_id and pos.signed_qty != 0), Decimal("0"))
+    used += sum((account.collateral_usdt for account in getattr(d, "margin_accounts", {}).values()
+                 if account.instance_id == mandate.instance_id and account.position_qty != 0), Decimal("0"))
     working_ids = []
     for cid, info in getattr(d, "open_orders", {}).items():
         if info.get("instance_id") != mandate.instance_id or info.get("reduce_only"):
             continue
-        if info.get("is_perp") or info.get("side") == "BUY":
+        if info.get("is_perp") or info.get("is_margin") or info.get("side") == "BUY":
             working_ids.append(cid)
             used += Decimal(str(info.get("reserved_notional") or 0))
     durable_working = await conn.fetchval(
@@ -446,6 +467,11 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
                          (p.quantity - p.filled_qty) / NULLIF(p.quantity, 0) *
                          (c.payload->>'profile_cash_reserve_usd')::numeric
                     WHEN COALESCE(p.price, p.avg_fill_price) IS NULL THEN $3::numeric
+                    WHEN p.instrument_id LIKE '%-MARGIN.%' THEN
+                         COALESCE(NULLIF(c.payload->'margin_plan'->>'margin_usd', '')::numeric,
+                           (p.quantity - p.filled_qty) * COALESCE(p.price, p.avg_fill_price, 0) /
+                             GREATEST(COALESCE(NULLIF(c.payload->>'leverage', '')::numeric, 1)
+                               - CASE WHEN p.side = 'SELL' THEN 1 ELSE 0 END, 1)) * 1.001
                     ELSE (p.quantity - p.filled_qty) * COALESCE(p.price, p.avg_fill_price, 0) *
                          CASE WHEN p.instrument_id LIKE '%-PERP.%' THEN
                              1 / GREATEST(COALESCE(NULLIF(c.payload->>'leverage', '')::numeric, 1), 1) + 0.0005
@@ -459,7 +485,7 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
                  'MANUAL-' || upper(substr(replace(c.command_id::text, '-', ''), 1, 12)))
            WHERE p.instance_id = $1 AND p.status IN ('PENDING', 'SUBMITTED', 'ACCEPTED')
              AND p.filled_qty < p.quantity AND p.order_type <> 'STOP_MARKET'
-             AND (p.side = 'BUY' OR p.instrument_id LIKE '%-PERP.%')
+             AND (p.side = 'BUY' OR p.instrument_id LIKE '%-PERP.%' OR p.instrument_id LIKE '%-MARGIN.%')
              AND COALESCE(c.payload->>'reduce_only', 'false') <> 'true'
              AND NOT EXISTS (
                  SELECT 1 FROM execution_reservations r
@@ -481,7 +507,14 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
     if notional is None:
         return None  # the mandate and dispatcher refuse an entry without a usable price
     fee = getattr(d, "perp_taker_fee", Decimal("0.0005")) if order.is_perp else getattr(d, "taker_fee", Decimal("0.001"))
-    needed = notional / Decimal(order.leverage or 1) if order.is_perp else notional
+    if order.is_perp:
+        needed = notional / Decimal(order.leverage or 1)
+    elif order.is_spot_margin:
+        leverage = int(order.leverage or 1)
+        divisor = max(1, leverage - (1 if order.side.upper() == "SELL" else 0))
+        needed = notional / Decimal(divisor)
+    else:
+        needed = notional
     needed += notional * fee
     # A single instruction larger than the profile's entire budget remains a mandate breach. This refusal
     # covers otherwise affordable entries that no longer fit because existing holdings/orders consumed cash.
@@ -496,6 +529,7 @@ async def instance_spot_cost_basis(conn, instance_id: str) -> dict[str, Decimal]
         """SELECT instrument_id, side, filled_qty, COALESCE(avg_fill_price, price, 0) AS fill_price
            FROM paper_orders
            WHERE instance_id = $1 AND filled_qty > 0 AND instrument_id NOT LIKE '%-PERP.%'
+             AND instrument_id NOT LIKE '%-MARGIN.%'
            ORDER BY created_at, updated_at, client_order_id""",
         instance_id,
     )

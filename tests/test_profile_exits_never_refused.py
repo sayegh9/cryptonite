@@ -10,7 +10,7 @@ import pytest
 from ai_api_harness import ACCOUNT, close_harness, make_harness
 from cryptonite_execution import profile_lifecycle as pl
 from cryptonite_execution.mandate_store import load_mandate
-from cryptonite_execution.risk import OrderIntent
+from cryptonite_execution.risk import OrderIntent, SpotMarginAccountState
 from cryptonite_orchestrator.mandate_gate import gate_ai_order
 from cryptonite_schemas.mandate import MandateReject
 from migrated_db import migrated_database
@@ -18,6 +18,7 @@ from migrated_db import migrated_database
 D = Decimal
 SPOT = "BTCUSDT.BINANCE"
 PERP = "BTCUSDT-PERP.BINANCE"
+MARGIN = "BTCUSDT-MARGIN.BINANCE"
 NEVER = {MandateReject.APPROVAL_REQUIRED.value, MandateReject.HALTED.value, MandateReject.COIN_LOCKED.value}
 
 
@@ -74,11 +75,18 @@ async def test_exits_are_accepted_and_entries_refused(h, status, switch_on, leve
                filled_qty, avg_fill_price, status) VALUES ($1, $2, $3, $4, 'BUY', 'MARKET', 0.01, 0.01, 50000, 'FILLED')""",
         uuid.uuid4().hex, m.instance_id, ACCOUNT, SPOT)
     perp_pos = SimpleNamespace(instance_id=m.instance_id, signed_qty=D("0.01"), entry_price=D("50000"))
-    engine = SimpleNamespace(dispatcher=SimpleNamespace(perp_positions={PERP: perp_pos}, mark_prices={}, open_orders={}),
+    margin_pos = SpotMarginAccountState(
+        "SHORT", D("0"), D("1000"), D("0.01"), D("0"), D("0"), D("0"),
+        D("500"), D("50000"), 2, m.instance_id,
+    )
+    engine = SimpleNamespace(dispatcher=SimpleNamespace(
+                                 perp_positions={PERP: perp_pos}, margin_accounts={MARGIN: margin_pos},
+                                 mark_prices={}, open_orders={}),
                              account_id=ACCOUNT)
 
     for exit_order in (intent(m, SPOT, "SELL"),  # REDUCE_RISK / CLOSE_POSITION of a spot holding
-                       intent(m, PERP, "SELL", reduce_only=True)):  # reduce-only close of a perp long
+                       intent(m, PERP, "SELL", reduce_only=True),  # reduce-only close of a perp long
+                       intent(m, MARGIN, "BUY", reduce_only=True)):  # close an owned margin short
         reject = await gate(h, m, exit_order, engine)
         assert reject not in NEVER, (exit_order.instrument_id, reject)
         assert reject is None, (exit_order.instrument_id, reject)

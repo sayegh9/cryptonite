@@ -8,7 +8,7 @@ import logging
 import os
 import time
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
 import asyncpg
@@ -207,20 +207,32 @@ def dispatched_by(engine, client_order_id: str) -> str | None:
 
 
 async def apply_paper_fill(
-    conn, engine, fill: PaperFill, instance_id: str, order_type: str, limit_price: Decimal | None
-) -> None:
+    conn, engine, fill: PaperFill, instance_id: str, order_type: str, limit_price: Decimal | None,
+    *, now: datetime.datetime | None = None,
+) -> bool:
     """Book a paper fill.
 
     Order: dispatcher ledger (pops the working order), then the ORDER_FILLED bridge event (the bridge
     also creates the paper_orders row if missing), then a best-effort paper_orders upsert for
     immediate UI consistency. A failed upsert therefore never leaves memory ahead of the database.
     """
+    fill_time = now or datetime.datetime.now(datetime.UTC)
     fee_rate = fee_rate_for(engine.dispatcher, fill.instrument_id)  # maker fills pay it too
     comm = fill.quantity * fill.price * fee_rate
     # A perp entry that carries its stop (``stop_loss``) gets a resting stop once it fills (leverage plan 1.4)
     order_info = engine.dispatcher.open_orders.get(fill.client_order_id) or {}
     attach_stop = order_info.get("attach_stop")
     is_margin = market_of(fill.instrument_id) is Market.SPOT_MARGIN
+    if is_margin and order_info.get("reduce_only"):
+        if not await _margin_snapshot_is_persisted(conn, engine, fill.instrument_id):
+            # The preceding snapshot has not reached the durable ledger yet. Keep this order
+            # working so a later quote can retry after EventBridge catches up.
+            return False
+        # Charge through the repayment timestamp before the dispatcher removes the liability.
+        # This shared path covers ordinary closes and resting-stop fills alike.
+        await accrue_margin_interest_once(
+            conn, engine, now=fill_time, repaid_instrument_id=fill.instrument_id,
+        )
     entry_order = not order_info.get("reduce_only") and (
         order_info.get("is_perp") or order_info.get("is_margin") or fill.side == "BUY"
     )
@@ -240,6 +252,18 @@ async def apply_paper_fill(
         }
     stops_before = set(engine.dispatcher.resting_stops(fill.instrument_id)) if hasattr(
         engine.dispatcher, "resting_stops") else set()
+    margin_state_before = None
+    if is_margin:
+        dispatcher = engine.dispatcher
+        margin_state_before = {
+            "account": dataclasses.replace(old_margin) if old_margin is not None else None,
+            "cash_balance": dispatcher.cash_balance,
+            "daily_realized_pnl": dispatcher.daily_realized_pnl,
+            "last_margin_cash_delta": dispatcher.last_margin_cash_delta,
+            "reserved_cash": dispatcher.reserved_cash,
+            "reserved_positions": dict(dispatcher.reserved_positions),
+            "open_orders": {cid: dict(info) for cid, info in dispatcher.open_orders.items()},
+        }
     realized = engine.dispatcher.handle_fill(
         client_order_id=fill.client_order_id,
         fill_qty=fill.quantity,
@@ -265,12 +289,32 @@ async def apply_paper_fill(
         "filled_qty": str(fill.quantity),
         "avg_fill_price": str(fill.price),
         "status": "FILLED",
-        "occurred_at_ns": time.time_ns(),
-        **engine.dispatcher.fill_event_fields(fill.instrument_id, realized, fill.price),
+        "occurred_at_ns": _epoch_nanoseconds(fill_time),
+        **engine.dispatcher.fill_event_fields(
+            fill.instrument_id, realized, fill.price,
+            opened_at=fill_time if is_margin and entry_order and old_margin is None else None,
+        ),
     }
     if is_margin:
         fill_event["idempotency_key"] = f"MARGIN_FILL:{acc_id}:{fill.client_order_id}"
-    engine.bridge.enqueue_event(fill_event)
+    enqueued = engine.bridge.enqueue_event(fill_event)
+    if is_margin and not enqueued:
+        logger.critical("Margin fill %s was rolled back because EventBridge rejected persistence", fill.client_order_id)
+        if margin_state_before is not None:
+            dispatcher = engine.dispatcher
+            if margin_state_before["account"] is None:
+                dispatcher.margin_accounts.pop(fill.instrument_id, None)
+            else:
+                dispatcher.margin_accounts[fill.instrument_id] = margin_state_before["account"]
+            dispatcher.cash_balance = margin_state_before["cash_balance"]
+            dispatcher.daily_realized_pnl = margin_state_before["daily_realized_pnl"]
+            dispatcher.last_margin_cash_delta = margin_state_before["last_margin_cash_delta"]
+            dispatcher.reserved_cash = margin_state_before["reserved_cash"]
+            dispatcher.reserved_positions.clear()
+            dispatcher.reserved_positions.update(margin_state_before["reserved_positions"])
+            dispatcher.open_orders.clear()
+            dispatcher.open_orders.update(margin_state_before["open_orders"])
+        return False
     if is_margin and entry_order:
         account = engine.dispatcher.margin_accounts.get(fill.instrument_id)
         if account is not None:
@@ -310,6 +354,7 @@ async def apply_paper_fill(
             logger.error("Could not cancel the rows of dropped stops %s: %s", sorted(released_stops), e)
     if attach_stop is not None:
         await attach_resting_stop(conn, engine, fill.instrument_id, Decimal(str(attach_stop)), instance_id)
+    return True
 
 
 async def record_profile_trade(conn, engine, owner: str, instrument_id: str, side: str,
@@ -458,11 +503,44 @@ async def _acquire_connection(pool_or_conn):
         yield pool_or_conn
 
 
+async def _margin_snapshot_is_persisted(pool_or_conn, engine, instrument_id: str) -> bool:
+    """Require the bridge-projected account snapshot before accruing or repaying its debt."""
+    account = engine.dispatcher.margin_accounts.get(instrument_id)
+    if account is None:
+        return False
+    pair = underlying_spot(instrument_id).split(".", 1)[0]
+    async with _acquire_connection(pool_or_conn) as conn:
+        row = await conn.fetchrow(
+            """SELECT base_qty, quote_qty, borrowed_base, borrowed_quote, interest_base, interest_quote,
+                      collateral_usdt
+               FROM paper_margin_accounts WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'""",
+            engine.account_id, pair,
+        )
+    if row is None:
+        return False
+    names = ("base_qty", "quote_qty", "borrowed_base", "borrowed_quote", "interest_base", "interest_quote",
+             "collateral_usdt")
+    persisted_values = tuple(Decimal(str(row[name])) for name in names)
+    memory_values = (
+        account.base_qty, account.quote_qty, account.borrowed_base, account.borrowed_quote,
+        account.interest_base, account.interest_quote, account.collateral_usdt,
+    )
+    return persisted_values == memory_values
+
+
 def _decimal_seconds(start: datetime.datetime, end: datetime.datetime) -> Decimal:
     """Convert an aware datetime interval to Decimal seconds without float conversion."""
     delta = end - start
     return (Decimal(delta.days * 86_400 + delta.seconds)
             + Decimal(delta.microseconds) / Decimal(1_000_000))
+
+
+def _epoch_nanoseconds(value: datetime.datetime) -> int:
+    """Convert an aware timestamp to nanoseconds without a float round-trip."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("fill timestamp must be timezone-aware")
+    delta = value.astimezone(datetime.UTC) - datetime.datetime(1970, 1, 1, tzinfo=datetime.UTC)
+    return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
 
 
 def _margin_interest_due(
@@ -471,9 +549,12 @@ def _margin_interest_due(
 ) -> list[tuple[datetime.datetime, datetime.datetime, Decimal, Decimal, Decimal]]:
     """Return unbooked Binance-style periods, including FAQ-silent repayment proration.
 
-    Settled rows use a full hour at every top-of-hour settlement after the first prorated
-    period. A repayment inside an uncharged hour accrues only through repayment time; the
-    spec marks that FAQ-silent case unverified.
+    The first row covers borrowing through the next top-of-hour. At each settlement where
+    the loan remains outstanding, Binance also charges the full hour beginning at that
+    settlement, so that row's ``period_end`` is the following top-of-hour. Repayment after
+    a settlement does not prorate or refund that already charged hour. Before the first
+    settlement, the FAQ is silent on repayment; §8.4 books the accrued fraction through
+    repayment and marks that case unverified in the spec.
     """
     full_hour = datetime.timedelta(hours=1)
     first_settlement = next_hour_settlement(borrowed_at)
@@ -481,22 +562,28 @@ def _margin_interest_due(
     due: list[tuple[datetime.datetime, datetime.datetime, Decimal, Decimal, Decimal]] = []
     covered_until = max((row["period_end"] for row in known), default=borrowed_at)
 
-    # A charge is due at its settlement boundary. The first interval ends at the next
-    # top-of-hour; subsequent intervals end on later hour boundaries. A persisted early
-    # repayment interval advances coverage, so the remaining principal is charged only for
-    # the time after that repayment.
+    # Book the initial prorated period at its first top-of-hour settlement.
     settlement = first_settlement
+    if settlement <= through and covered_until < settlement:
+        seconds = _decimal_seconds(covered_until, settlement)
+        due.append((covered_until, settlement, principal, hourly_rate,
+                    interest_for_period(principal, hourly_rate, seconds)))
+        covered_until = settlement
+
+    # If the debt is still outstanding at a settlement, it incurs the next full hour
+    # immediately. Persist that charged-forward interval so a restart or a repayment
+    # inside the hour cannot accrue or refund it again.
     while settlement <= through:
-        if covered_until < settlement:
-            seconds = _decimal_seconds(covered_until, settlement)
-            due.append((covered_until, settlement, principal, hourly_rate,
-                        interest_for_period(principal, hourly_rate, seconds)))
-            covered_until = settlement
+        period_end = settlement + full_hour
+        if covered_until < period_end:
+            due.append((settlement, period_end, principal, hourly_rate,
+                        interest_for_period(principal, hourly_rate, Decimal(3600))))
+            covered_until = period_end
         settlement += full_hour
 
-    # Binance's FAQ does not specify early repayment inside an unsettled interval. Per §8.4,
-    # book the accrued fraction through repayment and let a later settlement charge only the
-    # remaining interval against the then-outstanding principal.
+    # Binance's FAQ does not specify repayment before the first settlement. Per §8.4, book
+    # the accrued fraction through repayment. Once a settlement has charged a forward hour,
+    # ``covered_until`` already includes that full period and no refund is made.
     if repaid_at is not None and covered_until < repaid_at:
         seconds = _decimal_seconds(covered_until, repaid_at)
         due.append((covered_until, repaid_at, principal, hourly_rate,
@@ -585,7 +672,9 @@ async def accrue_margin_interest_once(
                                 db_id, period_start, period_end, asset, amount_principal, hourly_rate, amount,
                             )
                             if inserted is not None:
-                                totals[asset] += Decimal(str(inserted["amount"]))
+                                with localcontext() as context:
+                                    context.prec = 38
+                                    totals[asset] += Decimal(str(inserted["amount"]))
                                 booked += 1
                     if totals[base] or totals["USDT"]:
                         await conn.execute(
@@ -598,8 +687,10 @@ async def accrue_margin_interest_once(
             if db_id is not None and (totals[base] or totals["USDT"]):
                 current = engine.dispatcher.margin_accounts.get(instrument_id)
                 if current is account:
-                    account.interest_base += totals[base]
-                    account.interest_quote += totals["USDT"]
+                    with localcontext() as context:
+                        context.prec = 38
+                        account.interest_base += totals[base]
+                        account.interest_quote += totals["USDT"]
     return booked
 
 
@@ -669,6 +760,9 @@ async def force_close_margin_position(
     account = engine.dispatcher.margin_accounts.get(instrument_id)
     if account is None or account.position_qty == 0:
         return False
+    if not await _margin_snapshot_is_persisted(pool_or_conn, engine, instrument_id):
+        # Interest and the latest fill snapshot must be durable before a close can repay it.
+        return False
     pair = underlying_spot(instrument_id).split(".", 1)[0]
     if margin_account_id is None:
         async with _acquire_connection(pool_or_conn) as conn:
@@ -688,6 +782,13 @@ async def force_close_margin_position(
         f"LIQ-MARGIN-{margin_account_id}" if liquidation and margin_account_id is not None
         else f"MARGIN-CLOSE-{uuid.uuid4().hex[:12].upper()}"
     )
+    dispatcher = engine.dispatcher
+    cash_before = dispatcher.cash_balance
+    realized_before = dispatcher.daily_realized_pnl
+    cash_delta_before = dispatcher.last_margin_cash_delta
+    reserved_cash_before = dispatcher.reserved_cash
+    reserved_positions_before = dict(dispatcher.reserved_positions)
+    open_orders_before = {cid: dict(info) for cid, info in dispatcher.open_orders.items()}
     result = engine.dispatcher.flatten_margin_position(
         instrument_id, price, fee, client_order_id, quantity=quantity,
     )
@@ -717,6 +818,18 @@ async def force_close_margin_position(
     }
     if not engine.bridge.enqueue_event(event):
         logger.critical("Margin close %s flattened in memory but EventBridge rejected persistence", client_order_id)
+        # The bridge fail-closed latch records the queue-overflow incident. Restore the
+        # account until this exact close event can be queued and committed.
+        dispatcher.margin_accounts[instrument_id] = before
+        dispatcher.cash_balance = cash_before
+        dispatcher.daily_realized_pnl = realized_before
+        dispatcher.last_margin_cash_delta = cash_delta_before
+        dispatcher.reserved_cash = reserved_cash_before
+        dispatcher.reserved_positions.clear()
+        dispatcher.reserved_positions.update(reserved_positions_before)
+        dispatcher.open_orders.clear()
+        dispatcher.open_orders.update(open_orders_before)
+        return False
     margin_details = {
         "borrowed": {"base": str(before.borrowed_base), "quote": str(before.borrowed_quote)},
         "interest": {"base": str(before.interest_base), "quote": str(before.interest_quote)},
@@ -758,6 +871,7 @@ async def margin_risk_monitor_once(pool, engine, redis=None, now: datetime.datet
     # Resolve liquidation before evaluating stops. A gap through both a stop and liquidation
     # must be booked as liquidation (with its clearance fee), not as an unbounded stop fill.
     levels = settings.pair_settings
+    deferred_risk_closes: set[str] = set()
     for instrument_id in list(engine.dispatcher.margin_accounts):
         spot_id = underlying_spot(instrument_id)
         price = prices.get(spot_id)
@@ -777,6 +891,10 @@ async def margin_risk_monitor_once(pool, engine, redis=None, now: datetime.datet
             engine.account_id, spot_id.split(".", 1)[0],
         )
         if margin_id is None:
+            if engine.kill_switch.is_latched or margin_level <= config["liquidation_level"]:
+                # The opening fill may have crossed liquidation while its EventBridge
+                # projection is still pending. Do not let the stop path win this mark pass.
+                deferred_risk_closes.add(spot_id)
             continue
         if engine.kill_switch.is_latched or margin_level <= config["liquidation_level"]:
             reason = "KILL_SWITCH" if engine.kill_switch.is_latched else "LIQUIDATION"
@@ -791,14 +909,24 @@ async def margin_risk_monitor_once(pool, engine, redis=None, now: datetime.datet
             )
             if closed:
                 engine.__dict__.setdefault("margin_call_episodes", set()).discard(int(margin_id))
+            else:
+                # Do not try another close path for this account during the same pass. In
+                # particular, a stop must not replace a liquidation whose durable event was
+                # deferred; retry the risk close on the next monitor pass.
+                deferred_risk_closes.add(spot_id)
     if prices and any(engine.dispatcher.is_stop_order(order)
                       for order in engine.dispatcher.open_orders.values()):
-        await fire_resting_stops(pool, engine, prices)
+        await fire_resting_stops(
+            pool, engine, {instrument_id: price for instrument_id, price in prices.items()
+                           if instrument_id not in deferred_risk_closes},
+        )
 
     active_episodes = engine.__dict__.setdefault("margin_call_episodes", set())
     alerted = 0
     for instrument_id in list(engine.dispatcher.margin_accounts):
         spot_id = underlying_spot(instrument_id)
+        if spot_id in deferred_risk_closes:
+            continue
         price = prices.get(spot_id)
         if price is None:
             continue
@@ -873,6 +1001,9 @@ async def margin_risk_monitor_once(pool, engine, redis=None, now: datetime.datet
             logger.error("Margin stop ratchet pass timed out after %ss; skipped", STOP_RATCHET_TIMEOUT_S)
         except Exception as exc:
             logger.error("Margin stop ratchet pass failed: %s", exc)
+    # consume_perp_marks has a second stop pass using the perp marks. Carry this pass's
+    # exclusions across that call boundary so deferred liquidation keeps priority there too.
+    engine.__dict__["deferred_margin_stop_instruments"] = set(deferred_risk_closes)
     return alerted
 
 
@@ -1099,18 +1230,23 @@ async def fire_resting_stops(pool, engine, mark_prices: dict[str, Decimal]) -> i
     fills, cancelled = d.triggered_stops(mark_prices)
     if not fills and not cancelled:
         return 0
+    booked_count = 0
     async with pool.acquire() as conn:
         for fill in fills:
             info = d.open_orders.get(fill.client_order_id)
             if info is None:
                 continue
             intent = info["intent"]
-            await apply_paper_fill(conn, engine, fill, intent.instance_id, "STOP_MARKET", intent.stop_price)
-            logger.warning("Resting stop %s fired: %s %s %s @ %s (stop %s)", fill.client_order_id, fill.side,
-                           fill.quantity, fill.instrument_id, fill.price, intent.stop_price)
+            booked = await apply_paper_fill(
+                conn, engine, fill, intent.instance_id, "STOP_MARKET", intent.stop_price,
+            )
+            if booked:
+                booked_count += 1
+                logger.warning("Resting stop %s fired: %s %s %s @ %s (stop %s)", fill.client_order_id, fill.side,
+                               fill.quantity, fill.instrument_id, fill.price, intent.stop_price)
         if cancelled:
             await reconcile_working_orders(conn, engine)
-    return len(fills)
+    return booked_count
 
 
 @dataclasses.dataclass
@@ -1404,6 +1540,11 @@ async def match_resting_orders(pool, engine, instrument_id: str, bid: float, ask
         }))
     fills = []
     for route_inst in route_instruments:
+        if (market_of(route_inst) is Market.SPOT_MARGIN
+                and not d.ingress_health.is_fresh(underlying_spot(route_inst), d.node_cache)):
+            # A recent quote arrival after a sequence gap is not safe market data. Leave
+            # the working margin order untouched until continuity is restored.
+            continue
         fills.extend(match_working_orders(
             d.open_orders, route_inst, Decimal(str(bid)), Decimal(str(ask)),
             _size(bid_size), _size(ask_size),
@@ -1419,6 +1560,10 @@ async def match_resting_orders(pool, engine, instrument_id: str, bid: float, ask
             if _entries_blocked(d) and d.is_entry_order(info):
                 d.release_reservation(fill.client_order_id)
                 cancelled.append(fill.client_order_id)
+                continue
+            if (market_of(fill.instrument_id) is Market.SPOT_MARGIN
+                    and not d.ingress_health.is_fresh(underlying_spot(fill.instrument_id), d.node_cache)):
+                # Re-check after waiting for the pool: a gap may have been reported after matching.
                 continue
             qty = d.fillable_quantity(info)
             if qty <= 0:
@@ -1730,7 +1875,11 @@ async def consume_perp_marks(
                     # Resting stops first: a stop the mark reached fires before the liquidation check
                     if fresh and pool is not None and any(engine.dispatcher.is_stop_order(o)
                                                           for o in engine.dispatcher.open_orders.values()):
-                        await fire_resting_stops(pool, engine, fresh)
+                        deferred_margin_stops = engine.__dict__.pop("deferred_margin_stop_instruments", set())
+                        await fire_resting_stops(
+                            pool, engine, {inst: mark for inst, mark in fresh.items()
+                                           if inst not in deferred_margin_stops},
+                        )
                     if fresh and engine.dispatcher.perp_positions:
                         for liq in await engine.process_liquidations(fresh):
                             logger.critical(
@@ -2284,18 +2433,32 @@ async def command_poller(pool, engine, quote_cache=None):
                                     preflight.append((inst, account, int(margin_id), price))
                                 if preflight is None:
                                     await conn.execute(
-                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'NO_FRESH_MARGIN_QUOTE_OR_ACCOUNT', processed_at = now() WHERE command_id = $1",
+                                        """UPDATE execution_commands SET status = 'PENDING', command_outcome = NULL,
+                                           error_message = 'WAITING_FOR_FRESH_MARGIN_QUOTE_OR_ACCOUNT', processed_at = NULL,
+                                           lease_expires_at = now() + INTERVAL '1 second' WHERE command_id = $1""",
                                         row["command_id"],
                                     )
                                     continue
+                                margin_close_deferred = False
                                 for inst, account, margin_id, price in preflight:
                                     effects_applied = True
-                                    await force_close_margin_position(
+                                    closed = await force_close_margin_position(
                                         conn, engine, inst, price, reason="STOP", margin_account_id=margin_id,
                                         idempotency_key=f"MARGIN_STOP:{row['command_id']}:{margin_id}",
                                         client_order_id=f"MARGIN-STOP-{str(row['command_id']).replace('-', '')[:18].upper()}-{margin_id}",
                                         command_id=row["command_id"], now=datetime.datetime.now(datetime.UTC),
                                     )
+                                    if not closed:
+                                        margin_close_deferred = True
+                                        break
+                                if margin_close_deferred:
+                                    await conn.execute(
+                                        """UPDATE execution_commands SET status = 'PENDING', command_outcome = NULL,
+                                           error_message = 'MARGIN_STOP_CLOSE_DEFERRED', processed_at = NULL,
+                                           lease_expires_at = now() + INTERVAL '1 second' WHERE command_id = $1""",
+                                        row["command_id"],
+                                    )
+                                    continue
                             if stop_all:
                                 await conn.execute("UPDATE paper_strategy_instances SET status = $1, updated_at = now() WHERE status IN ('RUNNING','PAUSED')", cmd_type)
                             else:
@@ -2342,7 +2505,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                 if (quote is None or not engine.dispatcher.ingress_health.is_fresh(
                                         spot_inst, engine.dispatcher.node_cache)):
                                     await conn.execute(
-                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'NO_FRESH_MARGIN_QUOTE', processed_at = now() WHERE command_id = $1",
+                                        """UPDATE execution_commands SET status = 'PENDING', command_outcome = NULL,
+                                           error_message = 'WAITING_FOR_FRESH_MARGIN_QUOTE', processed_at = NULL,
+                                           lease_expires_at = now() + INTERVAL '1 second' WHERE command_id = $1""",
                                         row["command_id"],
                                     )
                                     continue
@@ -2355,7 +2520,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                 )
                                 if margin_id is None:
                                     await conn.execute(
-                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'MARGIN_ACCOUNT_NOT_PERSISTED', processed_at = now() WHERE command_id = $1",
+                                        """UPDATE execution_commands SET status = 'PENDING', command_outcome = NULL,
+                                           error_message = 'WAITING_FOR_MARGIN_ACCOUNT_PERSISTENCE', processed_at = NULL,
+                                           lease_expires_at = now() + INTERVAL '1 second' WHERE command_id = $1""",
                                         row["command_id"],
                                     )
                                     continue
@@ -2370,7 +2537,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                 )
                                 if not closed:
                                     await conn.execute(
-                                        "UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1",
+                                        """UPDATE execution_commands SET status = 'PENDING', command_outcome = NULL,
+                                           error_message = 'MARGIN_CLOSE_DEFERRED', processed_at = NULL,
+                                           lease_expires_at = now() + INTERVAL '1 second' WHERE command_id = $1""",
                                         row["command_id"],
                                     )
                                     continue
@@ -2940,7 +3109,12 @@ async def command_poller(pool, engine, quote_cache=None):
                                         order_info["attach_stop"] = intent.stop_loss
                                     fill = None
                                     quote = quote_for_order
-                                    if quote and order_info is not None:
+                                    fresh_for_margin = (
+                                        not is_margin_order or engine.dispatcher.ingress_health.is_fresh(
+                                            underlying_spot(canonical_inst), engine.dispatcher.node_cache,
+                                        )
+                                    )
+                                    if quote and order_info is not None and fresh_for_margin:
                                         fill = match_order(
                                             client_oid, order_info,
                                             Decimal(str(quote.bid_price)), Decimal(str(quote.ask_price)),
@@ -2961,9 +3135,39 @@ async def command_poller(pool, engine, quote_cache=None):
                                         )
                                         continue
                                     if fill:
-                                        await apply_paper_fill(conn, engine, fill, instance_id, order_type, price_dec)
-                                        logger.info("Order %s filled at %s (decision_trace_id=%s)", client_oid, fill.price, trace_id)
+                                        booked = await apply_paper_fill(
+                                            conn, engine, fill, instance_id, order_type, price_dec,
+                                        )
+                                        if booked:
+                                            logger.info("Order %s filled at %s (decision_trace_id=%s)",
+                                                        client_oid, fill.price, trace_id)
+                                        else:
+                                            # Keep the command pending as the durable retry source. Accepted
+                                            # paper_orders are not restored as general limit orders after restart.
+                                            engine.dispatcher.release_reservation(client_oid)
+                                            forget_dispatched(engine, client_oid)
+                                            await conn.execute(
+                                                """UPDATE execution_commands SET status = 'PENDING',
+                                                   command_outcome = NULL, error_message = 'MARGIN_FILL_DEFERRED',
+                                                   processed_at = NULL, lease_expires_at = now() + INTERVAL '1 second'
+                                                   WHERE command_id = $1""",
+                                                row["command_id"],
+                                            )
+                                            continue
                                     else:
+                                        if is_margin_order and intent.reduce_only:
+                                            # A margin exit stays as a retryable command until a fresh, matching
+                                            # quote is available; do not complete it into a row that startup drops.
+                                            engine.dispatcher.release_reservation(client_oid)
+                                            forget_dispatched(engine, client_oid)
+                                            await conn.execute(
+                                                """UPDATE execution_commands SET status = 'PENDING',
+                                                   command_outcome = NULL, error_message = 'WAITING_FOR_MARGIN_EXIT_QUOTE',
+                                                   processed_at = NULL, lease_expires_at = now() + INTERVAL '1 second'
+                                                   WHERE command_id = $1""",
+                                                row["command_id"],
+                                            )
+                                            continue
                                         # Works until a quote reaches it: a non-marketable limit rests at its
                                         # limit; an order without a quote yet takes the first quote.
                                         if quote and order_info is not None:

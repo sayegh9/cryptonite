@@ -30,13 +30,13 @@ def upgrade() -> None:
         sa.Column("id", sa.BigInteger(), sa.Identity(), primary_key=True),
         sa.Column("account_id", sa.String(64), sa.ForeignKey("paper_accounts.account_id"), nullable=False),
         sa.Column("pair", sa.String(32), nullable=False),
-        sa.Column("collateral_usdt", sa.Numeric(38, 18), nullable=False, server_default="0"),
-        sa.Column("base_qty", sa.Numeric(38, 18), nullable=False, server_default="0"),
-        sa.Column("quote_qty", sa.Numeric(38, 18), nullable=False, server_default="0"),
-        sa.Column("borrowed_base", sa.Numeric(38, 18), nullable=False, server_default="0"),
-        sa.Column("borrowed_quote", sa.Numeric(38, 18), nullable=False, server_default="0"),
-        sa.Column("interest_base", sa.Numeric(38, 18), nullable=False, server_default="0"),
-        sa.Column("interest_quote", sa.Numeric(38, 18), nullable=False, server_default="0"),
+        sa.Column("collateral_usdt", sa.Numeric(), nullable=False, server_default="0"),
+        sa.Column("base_qty", sa.Numeric(), nullable=False, server_default="0"),
+        sa.Column("quote_qty", sa.Numeric(), nullable=False, server_default="0"),
+        sa.Column("borrowed_base", sa.Numeric(), nullable=False, server_default="0"),
+        sa.Column("borrowed_quote", sa.Numeric(), nullable=False, server_default="0"),
+        sa.Column("interest_base", sa.Numeric(), nullable=False, server_default="0"),
+        sa.Column("interest_quote", sa.Numeric(), nullable=False, server_default="0"),
         sa.Column("opened_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
         sa.Column("status", sa.String(16), nullable=False, server_default="OPEN"),
@@ -65,9 +65,9 @@ def upgrade() -> None:
         sa.Column("period_start", sa.DateTime(timezone=True), nullable=False),
         sa.Column("period_end", sa.DateTime(timezone=True), nullable=False),
         sa.Column("asset", sa.String(16), nullable=False),
-        sa.Column("principal", sa.Numeric(38, 18), nullable=False),
-        sa.Column("hourly_rate", sa.Numeric(38, 24), nullable=False),
-        sa.Column("amount", sa.Numeric(38, 18), nullable=False),
+        sa.Column("principal", sa.Numeric(), nullable=False),
+        sa.Column("hourly_rate", sa.Numeric(), nullable=False),
+        sa.Column("amount", sa.Numeric(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
         sa.CheckConstraint("period_end > period_start", name="chk_paper_margin_interest_period"),
         sa.CheckConstraint("asset ~ '^[A-Z0-9]{2,15}$'", name="chk_paper_margin_interest_asset"),
@@ -143,7 +143,8 @@ def downgrade() -> None:
             REVOKE SELECT ON TABLE paper_margin_accounts, paper_margin_interest FROM cryptonite_api;
         END IF;
         IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'cryptonite_scanner') THEN
-            REVOKE SELECT ON TABLE ai_mandates, ai_profile_coin_locks, instruments FROM cryptonite_scanner;
+            -- Migration 013 owns the scanner's baseline SELECT on instruments; preserve it on downgrade.
+            REVOKE SELECT ON TABLE ai_mandates, ai_profile_coin_locks FROM cryptonite_scanner;
             REVOKE INSERT ON TABLE ai_profile_decisions FROM cryptonite_scanner;
             REVOKE USAGE, SELECT ON SEQUENCE ai_profile_decisions_id_seq FROM cryptonite_scanner;
         END IF;

@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -525,12 +526,16 @@ class EventBridgeWorker:
         realized_delta = Decimal(str(realized)) if realized is not None else -commission
 
         if snap.get("status") == "OPEN":
+            raw_opened_at = snap.get("opened_at")
+            opened_at = datetime.fromisoformat(raw_opened_at) if raw_opened_at else None
+            if opened_at is not None:
+                opened_at = opened_at.astimezone(UTC)
             await conn.execute(
                 """
                 INSERT INTO paper_margin_accounts (
                     account_id, pair, collateral_usdt, base_qty, quote_qty, borrowed_base, borrowed_quote,
-                    interest_base, interest_quote, status, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN', now())
+                    interest_base, interest_quote, status, opened_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN', COALESCE($10, now()), now())
                 ON CONFLICT (account_id, pair) WHERE status = 'OPEN'
                 DO UPDATE SET collateral_usdt = EXCLUDED.collateral_usdt,
                     base_qty = EXCLUDED.base_qty, quote_qty = EXCLUDED.quote_qty,
@@ -541,7 +546,7 @@ class EventBridgeWorker:
                 account_id, pair, Decimal(str(snap["collateral_usdt"])), Decimal(str(snap["base_qty"])),
                 Decimal(str(snap["quote_qty"])), Decimal(str(snap["borrowed_base"])),
                 Decimal(str(snap["borrowed_quote"])), Decimal(str(snap["interest_base"])),
-                Decimal(str(snap["interest_quote"])),
+                Decimal(str(snap["interest_quote"])), opened_at,
             )
             side = str(snap["side"])
             qty = Decimal(str(snap["quantity"]))

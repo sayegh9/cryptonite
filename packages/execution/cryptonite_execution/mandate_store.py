@@ -180,6 +180,7 @@ async def instance_spot_holdings(conn, instance_id: str) -> dict[str, tuple[Deci
                       / NULLIF(SUM(CASE WHEN side = 'BUY' THEN filled_qty ELSE 0 END), 0) AS avg_px
            FROM paper_orders
            WHERE instance_id = $1 AND filled_qty > 0 AND instrument_id NOT LIKE '%-PERP.%'
+             AND instrument_id NOT LIKE '%-MARGIN.%'
            GROUP BY instrument_id""",
         instance_id,
     )
