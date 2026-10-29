@@ -18,6 +18,7 @@ routing = importlib.import_module("mandate_routing")
 gate = importlib.import_module("gate")
 SPOT = "BTCUSDT.BINANCE"
 PERP = "BTCUSDT-PERP.BINANCE"
+MARGIN = "BTCUSDT-MARGIN.BINANCE"
 NOW = datetime.datetime(2026, 10, 23, 12, tzinfo=datetime.UTC)
 BULL = {"trend_4h": "BULL", "trend_1h": "BULL", "trend_15m": "BULL", "adx": 30,
         "plus_di": 30, "minus_di": 10, "atr_pct": 1, "atr_pct_q90": 2}
@@ -49,17 +50,20 @@ async def h(db_url):
         await close_harness(harness)
 
 
-async def profile(h, *, market="SPOT", level=1, lock=True, **changes):
+async def profile(h, *, market="SPOT", markets=None, level=1, lock=True, **changes):
     """Seed one isolated profile, with coin ownership unless testing the unlocked path."""
-    instrument = PERP if market == "PERP" else SPOT
+    instrument = PERP if market == "PERP" else MARGIN if market == "SPOT_MARGIN" else SPOT
+    markets = markets or [market]
+    direction = changes.pop("direction", "BOTH" if market == "SPOT_MARGIN" else "LONG")
+    max_leverage = changes.pop("max_leverage", 3 if market != "SPOT" else 1)
     mid = await h.pool.fetchval(
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, status,
            autonomy_level, markets, max_leverage, direction, style, allow_perps)
-           VALUES ($1, 10000, ARRAY[$2], 25, 'ACTIVE', $3, ARRAY[$4]::text[], $5, 'LONG', 'SWING', $6) RETURNING id""",
-        f"profile-{uuid.uuid4()}", instrument, level, market, 3 if market != "SPOT" else 1, market == "PERP")
+           VALUES ($1, 10000, ARRAY[$2], 25, 'ACTIVE', $3, $4::text[], $5, $6, 'SWING', $7) RETURNING id""",
+        f"profile-{uuid.uuid4()}", instrument, level, markets, max_leverage, direction, "PERP" in markets)
     if changes:
         for key, value in changes.items():
-            assert key in {"status", "direction", "max_open_positions", "max_debates_per_day", "active_hours_utc", "dry_run"}
+            assert key in {"status", "direction", "max_leverage", "max_open_positions", "max_debates_per_day", "active_hours_utc", "dry_run"}
             await h.pool.execute(f"UPDATE ai_mandates SET {key}=$2 WHERE id=$1", mid, value)
     if lock:
         await h.pool.execute("INSERT INTO ai_profile_coin_locks (base_asset, mandate_id) VALUES ('BTC', $1)", mid)
@@ -71,12 +75,13 @@ async def profile(h, *, market="SPOT", level=1, lock=True, **changes):
     return m
 
 
-async def route(h, mid=None, **kw):
+async def route(h, mid=None, *, recommendation="BUY", stop_loss=57000, take_profit=66000,
+                reference_price=60000, **kw):
     run = uuid.uuid4()
     await h.pool.execute("INSERT INTO debate_runs(id,instrument_id,status,trigger_source) VALUES($1,$2,'RUNNING','test')", run, SPOT)
     async with h.pool.acquire() as conn:
-        result = await routing.route_entry(conn, run, SPOT, "BUY", .8, 2.5, mandate_id=str(mid) if mid else None,
-                                           now=NOW, stop_loss=57000, take_profit=66000, reference_price=60000,
+        result = await routing.route_entry(conn, run, SPOT, recommendation, .8, 2.5, mandate_id=str(mid) if mid else None,
+                                           now=NOW, stop_loss=stop_loss, take_profit=take_profit, reference_price=reference_price,
                                            redis=h.redis, grade_context=BULL, **kw)
     return result, run
 
@@ -148,16 +153,68 @@ async def test_coin_lock_is_refused_before_market_selection(h):
     assert await h.pool.fetchval("SELECT reason FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run) == "COIN_LOCKED"
 
 
-@pytest.mark.parametrize("market,reason", [("SPOT_MARGIN", "SPOT_MARGIN_NOT_AVAILABLE")])
-async def test_unexecutable_market_is_refused(h, market, reason):
-    m = await profile(h, market=market)
-    await h.pool.execute("UPDATE ai_mandates SET direction='BOTH' WHERE id=$1", m.id)
-    run = uuid.uuid4()
-    await h.pool.execute("INSERT INTO debate_runs(id,instrument_id,status,trigger_source) VALUES($1,$2,'RUNNING','test')", run, SPOT)
-    async with h.pool.acquire() as conn:
-        status, _ = await routing.route_entry(conn, run, SPOT, "SELL", .8, 5, mandate_id=str(m.id))
-    assert status == "NO_TRADE"
-    assert await h.pool.fetchval("SELECT reason FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run) == reason
+async def test_spot_margin_route_emits_the_exact_dry_run_plan_for_both_sides(h):
+    markets = ["SPOT", "SPOT_MARGIN"]
+    long_profile = await profile(h, markets=markets, max_leverage=3)
+    (long_status, _), long_run = await route(h, long_profile.id)
+    assert long_status == "PENDING_APPROVAL"
+    long_payload = json.loads(await h.pool.fetchval("SELECT payload FROM ai_approvals WHERE source_ref=$1", str(long_run)))
+    assert long_payload["instrument_id"] == MARGIN
+    assert long_payload["margin_mode"] == "ISOLATED" and long_payload["leverage"] == 3
+    assert long_payload["margin_plan"]["liquidation_price"]
+    assert long_payload["margin"]["borrow_amount"] and long_payload["margin"]["interest_per_hour"]
+
+    await h.pool.execute("UPDATE ai_mandates SET direction='BOTH' WHERE id=$1", long_profile.id)
+    (short_status, _), short_run = await route(
+        h, long_profile.id, recommendation="SELL", stop_loss=63000, take_profit=54000,
+    )
+    assert short_status == "PENDING_APPROVAL", await h.pool.fetchval(
+        "SELECT reason FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", short_run,
+    )
+    short_payload = json.loads(await h.pool.fetchval("SELECT payload FROM ai_approvals WHERE source_ref=$1", str(short_run)))
+    assert short_payload["instrument_id"] == MARGIN and short_payload["margin"]["side"] == "SHORT"
+    assert short_payload["margin"]["borrow_asset"] == "BTC"
+
+
+async def test_margin_market_selection_keeps_one_x_long_on_spot(h):
+    m = await profile(h, markets=["SPOT", "SPOT_MARGIN"], max_leverage=1)
+    (status, _), run = await route(h, m.id)
+    assert status == "PENDING_APPROVAL"
+    payload = json.loads(await h.pool.fetchval("SELECT payload FROM ai_approvals WHERE source_ref=$1", str(run)))
+    assert payload["instrument_id"] == SPOT and "margin_plan" not in payload
+
+
+@pytest.mark.parametrize("level,switch,expected,timeout", [
+    (1, True, "APPROVAL_CREATED", "DENY"),
+    (2, True, "VETO_WINDOW", "PROCEED"),
+    (3, True, "ENQUEUED", None),
+    (2, False, "APPROVAL_CREATED", "DENY"),
+    (3, False, "APPROVAL_CREATED", "DENY"),
+])
+async def test_margin_ask_veto_auto_and_master_switch(h, level, switch, expected, timeout):
+    m = await profile(h, markets=["SPOT_MARGIN"], market="SPOT_MARGIN", level=level, max_leverage=3,
+                      active_hours_utc="08:00-22:00")
+    await h.pool.execute("INSERT INTO system_settings(key,value) VALUES('autotrade.enabled',$1) "
+                         "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value", json.dumps("1" if switch else "0"))
+    (status, _), run = await route(h, m.id)
+    assert status == ("COMPLETED" if expected == "ENQUEUED" else "PENDING_APPROVAL")
+    assert await h.pool.fetchval("SELECT outcome FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run) == expected
+    if timeout is not None:
+        assert await h.pool.fetchval("SELECT timeout_policy FROM ai_approvals WHERE source_ref=$1", str(run)) == timeout
+
+
+async def test_margin_dry_run_auto_routes_a_plan_without_an_approval(h):
+    m = await profile(h, markets=["SPOT_MARGIN"], market="SPOT_MARGIN", level=3, max_leverage=3, dry_run=True)
+    await h.pool.execute("INSERT INTO system_settings(key,value) VALUES('autotrade.enabled','\"1\"') "
+                         "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value")
+    (status, _), run = await route(h, m.id)
+    assert status == "COMPLETED"
+    assert await h.pool.fetchval("SELECT outcome FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run) == "DRY_RUN_ROUTED"
+    command = await h.pool.fetchrow("SELECT payload FROM execution_commands WHERE mandate_id=$1", m.id)
+    payload = json.loads(command["payload"])
+    assert payload["instrument_id"] == MARGIN and payload["margin_plan"]["leverage"] == 3
+
+
 
 
 @pytest.mark.parametrize("market", ["SPOT", "PERP"])
