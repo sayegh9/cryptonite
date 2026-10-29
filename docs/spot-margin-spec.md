@@ -51,24 +51,28 @@ shown as a regular-user limit but does not identify a tier; it must not be treat
 first-tier cap. Its “Risk-Based Liquidation Ratio” field is not the margin-level
 liquidation risk ratio documented in the tier FAQ and is not substituted for it.
 
-| Pair | Public max leverage | Base hourly rate | Quote hourly rate | Public borrow limits (not tier identified) | Tier-1 cap status |
-|---|---:|---:|---:|---|---|
-| BTC/USDT | 10x | BTC 0.00004933% | USDT 0.00065600% | BTC 80; USDT 450,000 | Unverified |
-| ETH/USDT | 10x | ETH 0.00022700% | USDT 0.00065600% | ETH 1,600; USDT 450,000 | Unverified |
-| XRP/USDT | 10x | XRP 0.00039871% | USDT 0.00065600% | XRP 584,000; USDT 450,000 | Unverified |
-| WLD/USDT | 5x | WLD 0.00140158% | USDT 0.00065600% | WLD 66,600; USDT 119,000 | Unverified |
+| Pair | Public max leverage | Call / liquidation level | Base hourly rate | Quote hourly rate | Regular-user displayed borrow limit, not tier-identified |
+|---|---|---|---|---|---|
+| BTC/USDT | 10x — **verified** against public pair data | 1.10 / 1.05 — **verified** by 10x tier FAQ | BTC 0.00004933% — **verified snapshot** | USDT 0.00065600% — **verified snapshot** | BTC 80 — **unverified as tier cap**; USDT 450,000 — **unverified as tier cap** |
+| ETH/USDT | 10x — **verified** against public pair data | 1.10 / 1.05 — **verified** by 10x tier FAQ | ETH 0.00022700% — **verified snapshot** | USDT 0.00065600% — **verified snapshot** | ETH 1,600 — **unverified as tier cap**; USDT 450,000 — **unverified as tier cap** |
+| XRP/USDT | 10x — **verified** against public pair data | 1.10 / 1.05 — **verified** by 10x tier FAQ | XRP 0.00039871% — **verified snapshot** | USDT 0.00065600% — **verified snapshot** | XRP 584,000 — **unverified as tier cap**; USDT 450,000 — **unverified as tier cap** |
+| WLD/USDT | 5x — **verified** against public pair data | 1.19 / 1.15 — **verified** by 5x tier FAQ | WLD 0.00140158% — **verified snapshot** | USDT 0.00065600% — **verified snapshot** | WLD 66,600 — **unverified as tier cap**; USDT 119,000 — **unverified as tier cap** |
 
 The tier FAQ gives shared risk ratios by leverage class: tier 1 at 10x has margin-call
-ratio 1.10 and liquidation risk ratio 1.05; tier 1 at 5x has 1.19 and 1.15. The public
-pair page shows each pair's current maximum leverage, but does not expose whether a pair's
-tier-1 borrow cap matches the public borrow limit. Consequently none of BTCUSDT, ETHUSDT,
-XRPUSDT or WLDUSDT has a complete pair entry under §8.1, and the initial P4 allowlist is
-empty. Entries must fail closed with `MARGIN_PAIR_NOT_SUPPORTED`; exits remain available.
+ratio 1.10 and liquidation risk ratio 1.05; tier 1 at 5x has 1.19 and 1.15. Public pair
+max leverage and FAQ ratios are verified. The displayed borrow limits are verified only
+as public regular-user values, not as tier-identified caps; that cap status remains
+unverified. Under §8.5, those displayed values seed the paper caps with the exact label
+"regular-user displayed limit, not tier-identified". They are conservative paper caps,
+not claims about Binance's tier-1 allowance. If a supported side has no displayed limit,
+its cap is zero and only a borrow on that side is refused with `MARGIN_BORROW_LIMIT`.
+Pairs with no settings row still refuse entries with `MARGIN_PAIR_NOT_SUPPORTED`; exits
+remain available.
 
 ## Settings and pair support
 
 The settings registry is the sole source of runtime defaults, bounds, and risk tiers. For
-every fully sourced pair, P4.0b will register:
+each §8.5 supported pair, P4.0b registers:
 
 - `margin.pair.<PAIR>.max_leverage`
 - `margin.pair.<PAIR>.call_level`
@@ -77,12 +81,15 @@ every fully sourced pair, P4.0b will register:
 - `margin.interest_hourly.<ASSET>` for assets actually used by supported pairs
 - `margin.liquidation_fee_pct`
 
-The published liquidation fee is 2% of liquidated assets. Pair-specific risk settings and
-borrow caps remain absent until the complete tier-1 row can be sourced. Lowering leverage,
-call/liquidation protection levels, borrow caps, or the liquidation fee is risk-reducing
-and free; raising leverage or borrow caps, or lowering protective thresholds/fees, requires
-TOTP. For hourly rates, a higher rate increases accrued liability and is conservative;
-lowering it requires TOTP. Defaults are snapshots and must not be represented as live rates.
+The published liquidation fee is 2% of liquidated assets. BTCUSDT, ETHUSDT and XRPUSDT
+are seeded at 10x with call/liquidation levels 1.10/1.05; WLDUSDT is seeded at 5x with
+1.19/1.15. Pair caps use the regular-user displayed limits in the table above. Any
+unverified cap can be lowered without TOTP; raising it requires TOTP. Lowering leverage,
+call/liquidation protection levels, or the liquidation fee is risk-reducing and free;
+raising leverage or lowering protective thresholds/fees requires TOTP. For hourly rates,
+a higher rate increases accrued liability and is conservative; lowering it requires TOTP.
+Defaults are snapshots and must not be represented as live rates. An unlisted pair has no
+settings row and remains unsupported.
 
 ## Worked accounting examples
 
