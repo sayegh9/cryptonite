@@ -12,6 +12,7 @@ from typing import Any
 
 import asyncpg
 from cryptonite_schemas.identifiers import parse_instrument_id
+from cryptonite_schemas.profile import Market, market_of
 
 from cryptonite_execution.kill_switch import LatchedKillSwitch
 
@@ -175,12 +176,18 @@ async def recompute_total_equity(conn: asyncpg.Connection, account_id: str) -> N
             UPDATE paper_accounts
             SET total_equity = cash_balance + COALESCE((
                 SELECT SUM(CASE
-                    WHEN instrument_id LIKE '%-PERP.%'
-                    THEN (CASE WHEN side = 'SHORT' THEN -1 ELSE 1 END) * quantity * (current_price - entry_price)
-                    ELSE quantity * current_price
+                    WHEN p.instrument_id LIKE '%-PERP.%'
+                    THEN (CASE WHEN p.side = 'SHORT' THEN -1 ELSE 1 END) * p.quantity * (p.current_price - p.entry_price)
+                    WHEN p.instrument_id LIKE '%-MARGIN.%'
+                    THEN COALESCE(m.base_qty, 0) * p.current_price + COALESCE(m.quote_qty, 0)
+                         - (COALESCE(m.borrowed_base, 0) + COALESCE(m.interest_base, 0)) * p.current_price
+                         - COALESCE(m.borrowed_quote, 0) - COALESCE(m.interest_quote, 0)
+                    ELSE p.quantity * p.current_price
                 END)
-                FROM paper_positions
-                WHERE account_id = $1 AND status = 'OPEN'
+                FROM paper_positions p
+                LEFT JOIN paper_margin_accounts m
+                  ON m.account_id = p.account_id AND m.pair = split_part(p.instrument_id, '-', 1) AND m.status = 'OPEN'
+                WHERE p.account_id = $1 AND p.status = 'OPEN'
             ), 0),
                 updated_at = now()
             WHERE account_id = $1;
@@ -291,7 +298,7 @@ class EventBridgeWorker:
                         )
 
                     # 3. If fill, record trade, position, and account settlement
-                    if evt.get("event_type") == "ORDER_FILLED":
+                    if evt.get("event_type") == "ORDER_FILLED" and journal_status.endswith(" 1"):
                         trade_id = f"TRADE-{uuid.uuid4().hex[:12].upper()}"
                         trade_qty = Decimal(str(evt["quantity"]))
                         trade_px = Decimal(str(evt["price"]))
@@ -335,7 +342,11 @@ class EventBridgeWorker:
                             trade_comm,
                         )
 
-                        if parse_instrument_id(instrument_id)[2]:
+                        if market_of(instrument_id) is Market.SPOT_MARGIN:
+                            cash_delta, realized_delta = await self._persist_margin_fill(
+                                conn, evt, account_id, instance_id, instrument_id, trade_px, trade_comm
+                            )
+                        elif parse_instrument_id(instrument_id)[2]:
                             cash_delta, realized_delta = await self._persist_perp_fill(
                                 conn, evt, account_id, instance_id, instrument_id, trade_px, trade_comm
                             )
@@ -493,6 +504,91 @@ class EventBridgeWorker:
             account_id, cash_flow,
         )
         await self._recompute_total_equity(conn, account_id)
+
+    async def _persist_margin_fill(
+        self,
+        conn: asyncpg.Connection,
+        evt: dict[str, Any],
+        account_id: str,
+        instance_id: str,
+        instrument_id: str,
+        fill_px: Decimal,
+        commission: Decimal,
+    ) -> tuple[Decimal, Decimal]:
+        """Persist the margin account, signed position, cash movement and PnL from one fill snapshot."""
+        snap = evt.get("margin_account")
+        if not isinstance(snap, dict) or evt.get("margin_cash_delta") is None:
+            raise ValueError(f"margin fill {evt.get('client_order_id')} has no exact account snapshot/cash delta")
+        pair = instrument_id.split("-", 1)[0].split(".", 1)[0]
+        cash_delta = Decimal(str(evt["margin_cash_delta"]))
+        realized = evt.get("realized_pnl")
+        realized_delta = Decimal(str(realized)) if realized is not None else -commission
+
+        if snap.get("status") == "OPEN":
+            await conn.execute(
+                """
+                INSERT INTO paper_margin_accounts (
+                    account_id, pair, collateral_usdt, base_qty, quote_qty, borrowed_base, borrowed_quote,
+                    interest_base, interest_quote, status, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'OPEN', now())
+                ON CONFLICT (account_id, pair) WHERE status = 'OPEN'
+                DO UPDATE SET collateral_usdt = EXCLUDED.collateral_usdt,
+                    base_qty = EXCLUDED.base_qty, quote_qty = EXCLUDED.quote_qty,
+                    borrowed_base = EXCLUDED.borrowed_base, borrowed_quote = EXCLUDED.borrowed_quote,
+                    interest_base = EXCLUDED.interest_base, interest_quote = EXCLUDED.interest_quote,
+                    updated_at = now();
+                """,
+                account_id, pair, Decimal(str(snap["collateral_usdt"])), Decimal(str(snap["base_qty"])),
+                Decimal(str(snap["quote_qty"])), Decimal(str(snap["borrowed_base"])),
+                Decimal(str(snap["borrowed_quote"])), Decimal(str(snap["interest_base"])),
+                Decimal(str(snap["interest_quote"])),
+            )
+            side = str(snap["side"])
+            qty = Decimal(str(snap["quantity"]))
+            entry = Decimal(str(snap["entry_price"]))
+            current = Decimal(str(snap["current_price"]))
+            unrealized = qty * (current - entry) if side == "LONG" else qty * (entry - current)
+            liquidation = Decimal(str(snap["liquidation_price"])) if snap.get("liquidation_price") is not None else None
+            row = await conn.fetchrow(
+                """SELECT position_id FROM paper_positions
+                   WHERE account_id = $1 AND instance_id = $2 AND instrument_id = $3 AND status = 'OPEN'
+                   FOR UPDATE""",
+                account_id, instance_id, instrument_id,
+            )
+            if row:
+                await conn.execute(
+                    """UPDATE paper_positions SET side = $2, entry_price = $3, quantity = $4, current_price = $5,
+                       unrealized_pnl = $6, realized_pnl = realized_pnl + $7, leverage = $8, margin_mode = 'ISOLATED',
+                       isolated_margin = $9, liquidation_price = $10
+                       WHERE position_id = $1""",
+                    row["position_id"], side, entry, qty, current, unrealized, realized_delta,
+                    int(snap["leverage"]), Decimal(str(snap["isolated_margin"])), liquidation,
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO paper_positions (
+                       position_id, account_id, instance_id, instrument_id, side, entry_price, quantity, current_price,
+                       unrealized_pnl, realized_pnl, leverage, margin_mode, isolated_margin, liquidation_price,
+                       status, opened_at
+                       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'ISOLATED', $12, $13, 'OPEN', now())""",
+                    str(uuid.uuid4()), account_id, instance_id, instrument_id, side, entry, qty, current,
+                    unrealized, realized_delta, int(snap["leverage"]),
+                    Decimal(str(snap["isolated_margin"])), liquidation,
+                )
+        else:
+            await conn.execute(
+                """UPDATE paper_margin_accounts SET status = 'CLOSED', collateral_usdt = 0, base_qty = 0,
+                   quote_qty = 0, borrowed_base = 0, borrowed_quote = 0, interest_base = 0, interest_quote = 0,
+                   updated_at = now() WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'""",
+                account_id, pair,
+            )
+            await conn.execute(
+                """UPDATE paper_positions SET side = 'FLAT', quantity = 0, status = 'CLOSED', closed_at = now(),
+                   current_price = $4, unrealized_pnl = 0, realized_pnl = realized_pnl + $5
+                   WHERE account_id = $1 AND instance_id = $2 AND instrument_id = $3 AND status = 'OPEN'""",
+                account_id, instance_id, instrument_id, fill_px, realized_delta,
+            )
+        return cash_delta, realized_delta
 
     async def _persist_perp_fill(
         self,

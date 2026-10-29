@@ -51,6 +51,10 @@ class MandateOrder:
     def is_perp(self) -> bool:
         return is_perp_instrument(self.instrument_id)
 
+    @property
+    def is_spot_margin(self) -> bool:
+        return market_of(self.instrument_id) is Market.SPOT_MARGIN
+
 
 @dataclass(frozen=True)
 class MandateExposure:
@@ -66,6 +70,8 @@ class MandateExposure:
 def action_class(order: MandateOrder) -> ActionClass:
     """Spot is long-only (the dispatcher rejects spot shorts), so a spot SELL only reduces.
     A perp order reduces only when it is reduce-only."""
+    if order.is_spot_margin:
+        return ActionClass.REDUCE_RISK if order.reduce_only else ActionClass.ADD_RISK
     if order.is_perp:
         return ActionClass.REDUCE_RISK if order.reduce_only else ActionClass.ADD_RISK
     return ActionClass.REDUCE_RISK if order.side.upper() == "SELL" else ActionClass.ADD_RISK
@@ -134,7 +140,7 @@ def check_mandate(
             qty = qty * CONVICTION_MULTIPLIER.get((order.conviction_level or "").upper(), Decimal("1"))
         if qty > exposure.instrument_qty:
             return MandateReject.POSITION_NOT_OWNED
-        if order.is_perp and exposure.instrument_side is not None:
+        if (order.is_perp or order.is_spot_margin) and exposure.instrument_side is not None:
             closing_side = "SELL" if exposure.instrument_side == "LONG" else "BUY"
             if order.side.upper() != closing_side:
                 return MandateReject.POSITION_NOT_OWNED
@@ -154,14 +160,14 @@ def check_mandate(
     if order.is_perp and Market.PERP not in mandate.markets:
         return MandateReject.PERPS_NOT_ALLOWED
     market = market_of(order.instrument_id)
-    if market is Market.SPOT_MARGIN or market not in mandate.markets:
+    if market not in mandate.markets:
         return MandateReject.MARKET_NOT_ALLOWED
     if not allows_side(mandate.direction, "LONG" if order.side.upper() == "BUY" else "SHORT"):
         return MandateReject.DIRECTION_NOT_ALLOWED
-    if order.is_perp:
+    if order.is_perp or order.is_spot_margin:
         if (order.leverage or 1) > min(mandate.max_leverage, MAX_PERP_LEVERAGE_CAP):
             return MandateReject.LEVERAGE_EXCEEDED
-        if (order.margin_mode or "ISOLATED").upper() != "ISOLATED":
+        if order.is_perp and (order.margin_mode or "ISOLATED").upper() != "ISOLATED":
             return MandateReject.MARGIN_MODE_NOT_ALLOWED
     if exposure.other_owner:
         return MandateReject.INSTRUMENT_CONFLICT
