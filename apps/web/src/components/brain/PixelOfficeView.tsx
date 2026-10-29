@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, type CSSProperties, type FormEvent } from "react";
-import { Building2, Cpu, Play, RefreshCw, Sparkles, CheckCircle2, Clock } from "lucide-react";
+import { Building2, Cpu, Play, Sparkles, CheckCircle2, Clock } from "lucide-react";
 import { useDebateStore } from "@/lib/stores/useDebateStore";
 import { useMandateStore } from "@/lib/stores/useMandateStore";
 import { dispatchBrainAsk } from "@/lib/brain/events";
