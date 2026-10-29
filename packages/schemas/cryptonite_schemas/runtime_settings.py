@@ -8,6 +8,7 @@ outside its bounds) keeps the last valid value and is reported as a problem.
 import json
 import math
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
@@ -41,6 +42,40 @@ RUNTIME_BOUNDS: dict[str, Bound] = {
     "autotrade.enabled": Bound(0, 0, 1),
     "autotrade.max_allocated_pct": Bound(90, 10, 100),
 }
+
+
+@dataclass(frozen=True)
+class DecimalBound:
+    """Exact decimal bounds for settings that feed accounting calculations."""
+
+    default: Decimal
+    low: Decimal
+    high: Decimal
+    decimals: int
+
+
+# Binance's public Margin Data values as observed on 2026-10-29. These are percentage
+# points per hour, matching the display (0.0004 means 0.0004%, or Decimal("0.000004")
+# as the rate multiplier). They are snapshots of a dynamic rate, not a live rate feed.
+MARGIN_INTEREST_KEYS = {
+    "BTC": "margin.interest_hourly.BTC",
+    "ETH": "margin.interest_hourly.ETH",
+    "XRP": "margin.interest_hourly.XRP",
+    "WLD": "margin.interest_hourly.WLD",
+    "USDT": "margin.interest_hourly.USDT",
+}
+MARGIN_SETTING_BOUNDS: dict[str, DecimalBound] = {
+    MARGIN_INTEREST_KEYS["BTC"]: DecimalBound(Decimal("0.00004933"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["ETH"]: DecimalBound(Decimal("0.00022700"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["XRP"]: DecimalBound(Decimal("0.00039871"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["WLD"]: DecimalBound(Decimal("0.00140158"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["USDT"]: DecimalBound(Decimal("0.00065600"), Decimal("0"), Decimal("1"), 8),
+    # The liquidation fee is a percentage of liquidated assets, as documented by Binance.
+    "margin.liquidation_fee_pct": DecimalBound(Decimal("2"), Decimal("0"), Decimal("5"), 2),
+}
+# Binance requires sign-in to view the current per-pair tier-1 borrow cap. No candidate
+# currently has a complete sourced row, so none is accepted for SPOT_MARGIN entries.
+MARGIN_PAIR_SETTINGS: dict[str, dict[str, Decimal]] = {}
 AUTOTRADE_ENABLED_KEY = "autotrade.enabled"
 AUTOTRADE_MAX_ALLOCATED_KEY = "autotrade.max_allocated_pct"
 GRADE_CEILING_KEYS = {"A": "leverage.grade_ceiling_a", "B": "leverage.grade_ceiling_b", "C": "leverage.grade_ceiling_c"}
@@ -66,6 +101,60 @@ def read_number(raw: Any, bound: Bound, last_good: float) -> tuple[float, str | 
     if not math.isfinite(value) or not bound.low <= value <= bound.high:
         return last_good, f"stored value {raw!r} is outside {bound.low:g}..{bound.high:g}"
     return value, None
+
+
+def read_decimal(raw: Any, bound: DecimalBound, last_good: Decimal) -> tuple[Decimal, str | None]:
+    """Read a bounded setting without passing through binary floating-point."""
+    if raw is None:
+        return bound.default, None
+    try:
+        value = json.loads(raw) if isinstance(raw, str) and raw.strip().startswith('"') else raw
+        parsed = Decimal(str(value).strip())
+    except (TypeError, ValueError, InvalidOperation, json.JSONDecodeError):
+        return last_good, f"stored value {raw!r} is not a decimal number"
+    if not parsed.is_finite() or not bound.low <= parsed <= bound.high:
+        return last_good, f"stored value {raw!r} is outside {bound.low}..{bound.high}"
+    if parsed != parsed.quantize(Decimal(1).scaleb(-bound.decimals)):
+        return last_good, f"stored value {raw!r} has more than {bound.decimals} decimal places"
+    return parsed, None
+
+
+@dataclass(frozen=True)
+class MarginSettings:
+    """Exact rates and fees the paper margin math applies, keyed by asset."""
+
+    interest_hourly_pct: dict[str, Decimal]
+    liquidation_fee_pct: Decimal
+
+
+def default_margin_settings() -> MarginSettings:
+    """Return the documented 2026-10-29 snapshots for assets and liquidation fee."""
+    rates = {
+        asset: MARGIN_SETTING_BOUNDS[key].default
+        for asset, key in MARGIN_INTEREST_KEYS.items()
+    }
+    return MarginSettings(rates, MARGIN_SETTING_BOUNDS["margin.liquidation_fee_pct"].default)
+
+
+def read_margin_settings(
+    stored: dict[str, Any], last_good: MarginSettings,
+) -> tuple[MarginSettings, list[str]]:
+    """Apply valid exact-decimal margin settings; retain the last valid value on refusal."""
+    problems: list[str] = []
+    rates: dict[str, Decimal] = {}
+    for asset, key in MARGIN_INTEREST_KEYS.items():
+        value, problem = read_decimal(stored.get(key), MARGIN_SETTING_BOUNDS[key],
+                                      last_good.interest_hourly_pct.get(asset,
+                                                                       MARGIN_SETTING_BOUNDS[key].default))
+        if problem:
+            problems.append(f"{key}: {problem}")
+        rates[asset] = value
+    fee_key = "margin.liquidation_fee_pct"
+    fee, problem = read_decimal(stored.get(fee_key), MARGIN_SETTING_BOUNDS[fee_key],
+                                last_good.liquidation_fee_pct)
+    if problem:
+        problems.append(f"{fee_key}: {problem}")
+    return MarginSettings(rates, fee), problems
 
 
 @dataclass(frozen=True)

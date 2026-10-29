@@ -41,7 +41,7 @@ from cryptonite_orchestrator import ops_monitor
 from cryptonite_scanner.models import MAX_ACTIVE_SPECS
 from cryptonite_scanner_service import exit_monitor as em
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS
-from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS
+from cryptonite_schemas.runtime_settings import MARGIN_SETTING_BOUNDS, RUNTIME_BOUNDS
 from fastapi import HTTPException
 
 
@@ -99,7 +99,7 @@ def test_budget_default_is_the_budget_guard_default():
 
 
 def test_only_keys_with_a_write_path_report_writable():
-    assert WRITE_PATHS == {"LLM_DAILY_BUDGET_USD", *SETTING_KEYS, *RUNTIME_BOUNDS}
+    assert WRITE_PATHS == {"LLM_DAILY_BUDGET_USD", *SETTING_KEYS, *RUNTIME_BOUNDS, *MARGIN_SETTING_BOUNDS}
     out = {s.key: entry_view(s, None)["writable"] for s in REGISTRY}
     assert {key for key, writable in out.items() if writable} == WRITE_PATHS
 
