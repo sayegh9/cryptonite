@@ -28,7 +28,6 @@ from cryptonite_schemas.mandate import (
     Mandate,
     canonical_instrument,
     in_active_hours,
-    is_perp_instrument,
     mandate_id_from_instance,
     timeout_policy_for,
 )
