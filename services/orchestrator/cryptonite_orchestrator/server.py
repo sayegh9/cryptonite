@@ -18,7 +18,14 @@ from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.mandate_store import load_mandate, others_spot_holding
 from cryptonite_execution.matching import PaperFill, match_order, match_working_orders
 from cryptonite_execution.profile_log import record_decision
-from cryptonite_execution.risk import OrderIntent
+from cryptonite_execution.risk import OrderIntent, SpotMarginAccountState
+from cryptonite_execution.spot_margin import (
+    account_asset_value,
+    account_liability_value,
+    hourly_rate_from_percent,
+    interest_for_period,
+    next_hour_settlement,
+)
 from cryptonite_execution.stop_ratchet import ratcheted_stop
 from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS as EXIT_SETTING_KEYS
@@ -30,8 +37,10 @@ from cryptonite_schemas.mandate import (
     is_ai_instance,
     mandate_id_from_instance,
 )
+from cryptonite_schemas.profile import Market, base_asset, market_of, underlying_spot
+from cryptonite_schemas.runtime_settings import default_margin_settings, read_margin_settings
 from cryptonite_strategies.registry import STRATEGY_REGISTRY
-from nautilus_trader.model import Bar, BarType, Price, Quantity
+from nautilus_trader.model import Bar, BarType, InstrumentId, Price, Quantity
 from pydantic import ValidationError
 
 from cryptonite_orchestrator.mandate_gate import (
@@ -44,6 +53,7 @@ from cryptonite_orchestrator.mandate_gate import (
     mandate_entry_room,
     mandate_risk_budget,
     plan_perp_entry,
+    plan_spot_margin_entry,
 )
 from cryptonite_orchestrator.mandate_monitor import (
     alert,
@@ -122,6 +132,7 @@ class SimpleQuoteCache:
 DEFAULT_FEE_RATE = Decimal("0.001")
 DEFAULT_PERP_FEE_RATE = Decimal("0.0005")  # Binance USD-M taker (leverage plan 1.6)
 MAX_MATCH_QUOTE_AGE_NS = 5_000_000_000  # a backlog of older quotes never fills working orders
+MARGIN_SETTINGS_RELOAD_INTERVAL_S = 30.0
 
 # Ratchet of AI perps' resting stops (auto-trade plan A4). The trail is the exit monitor's: the same system_settings
 # keys (exit.trail_activate_pct, exit.trail_pct) and the same env defaults, so the operator has one knob.
@@ -209,11 +220,24 @@ async def apply_paper_fill(
     # A perp entry that carries its stop (``stop_loss``) gets a resting stop once it fills (leverage plan 1.4)
     order_info = engine.dispatcher.open_orders.get(fill.client_order_id) or {}
     attach_stop = order_info.get("attach_stop")
-    entry_order = not order_info.get("reduce_only") and (order_info.get("is_perp") or fill.side == "BUY")
+    is_margin = market_of(fill.instrument_id) is Market.SPOT_MARGIN
+    entry_order = not order_info.get("reduce_only") and (
+        order_info.get("is_perp") or order_info.get("is_margin") or fill.side == "BUY"
+    )
     old_pos = getattr(engine.dispatcher, "perp_positions", {}).get(fill.instrument_id)
-    entry_price = old_pos.entry_price if old_pos is not None else None
-    position_side = "SHORT" if old_pos is not None and old_pos.signed_qty < 0 else "LONG"
-    leverage = getattr(order_info.get("intent"), "leverage", None) or getattr(old_pos, "leverage", 1)
+    old_margin = getattr(engine.dispatcher, "margin_accounts", {}).get(fill.instrument_id)
+    entry_price = (old_margin.entry_price if old_margin is not None else
+                   old_pos.entry_price if old_pos is not None else None)
+    position_side = (old_margin.side if old_margin is not None else
+                     "SHORT" if old_pos is not None and old_pos.signed_qty < 0 else "LONG")
+    leverage = (getattr(order_info.get("intent"), "leverage", None)
+                or getattr(old_margin, "leverage", None) or getattr(old_pos, "leverage", 1))
+    margin_details = None
+    if is_margin and old_margin is not None:
+        margin_details = {
+            "borrowed": {"base": str(old_margin.borrowed_base), "quote": str(old_margin.borrowed_quote)},
+            "interest": {"base": str(old_margin.interest_base), "quote": str(old_margin.interest_quote)},
+        }
     stops_before = set(engine.dispatcher.resting_stops(fill.instrument_id)) if hasattr(
         engine.dispatcher, "resting_stops") else set()
     realized = engine.dispatcher.handle_fill(
@@ -225,7 +249,7 @@ async def apply_paper_fill(
         instrument_id=fill.instrument_id,
     )
     acc_id = getattr(engine, "account_id", ACCOUNT_ID)
-    engine.bridge.enqueue_event({
+    fill_event = {
         "event_type": "ORDER_FILLED",
         "event_version": 1,
         "client_order_id": fill.client_order_id,
@@ -243,7 +267,17 @@ async def apply_paper_fill(
         "status": "FILLED",
         "occurred_at_ns": time.time_ns(),
         **engine.dispatcher.fill_event_fields(fill.instrument_id, realized, fill.price),
-    })
+    }
+    if is_margin:
+        fill_event["idempotency_key"] = f"MARGIN_FILL:{acc_id}:{fill.client_order_id}"
+    engine.bridge.enqueue_event(fill_event)
+    if is_margin and entry_order:
+        account = engine.dispatcher.margin_accounts.get(fill.instrument_id)
+        if account is not None:
+            margin_details = {
+                "borrowed": {"base": str(account.borrowed_base), "quote": str(account.borrowed_quote)},
+                "interest": {"base": str(account.interest_base), "quote": str(account.interest_quote)},
+            }
     try:
         # Savepoint: inside the poller's claim transaction a failed statement would otherwise abort
         # the whole transaction, roll back the claim, and let a retry fill the order a second time
@@ -260,6 +294,7 @@ async def apply_paper_fill(
                 realized=realized, commission=comm, client_order_id=fill.client_order_id,
                 command_id=dispatched_by(engine, fill.client_order_id),
                 reason="STOP" if order_type == "STOP_MARKET" else None,
+                margin_details=margin_details,
             )
     except Exception as e:  # the bridge event above still records the fill
         logger.error("paper_orders upsert failed for %s (bridge will record it): %s", fill.client_order_id, e)
@@ -282,7 +317,8 @@ async def record_profile_trade(conn, engine, owner: str, instrument_id: str, sid
                                entry_price: Decimal | None = None, leverage: int = 1,
                                stop: Decimal | None = None, realized: Decimal | None = None,
                                commission: Decimal = Decimal("0"), command_id=None, reason: str | None = None,
-                               client_order_id: str | None = None) -> None:
+                               client_order_id: str | None = None,
+                               margin_details: dict[str, dict[str, str]] | None = None) -> None:
     """ADR 0011/P1.8 trade contract, in the caller's fill transaction; never notify or block a fill.
 
     The instrument is the decision row's column. Entry stop and execution mode are captured at fill; an exit
@@ -293,7 +329,10 @@ async def record_profile_trade(conn, engine, owner: str, instrument_id: str, sid
         return
     try:
         async with _savepoint(conn):
-            perp = "-PERP." in instrument_id
+            market = market_of(instrument_id)
+            perp = market is Market.PERP
+            margin = market is Market.SPOT_MARGIN
+            details = margin_details or {}
             if entry:
                 command = None
                 if command_id is not None:
@@ -323,8 +362,10 @@ async def record_profile_trade(conn, engine, owner: str, instrument_id: str, sid
                         mode = "ASK"
                 await record_decision(conn, mid, "FILL", "FILLED", instrument_id=instrument_id,
                                       command_id=command_id, side="LONG" if side == "BUY" else "SHORT",
-                                      market="PERP" if perp else "SPOT", price=price, qty=qty,
-                                      leverage=leverage, stop=stop, mode=mode)
+                                      market=market.value, price=price, qty=qty,
+                                      leverage=leverage, stop=stop, mode=mode,
+                                      **({"borrowed": details.get("borrowed", {}),
+                                          "interest": details.get("interest", {})} if margin else {}))
                 return
             previous = await conn.fetchrow(
                 """SELECT detail FROM ai_profile_decisions WHERE mandate_id = $1 AND instrument_id = $2
@@ -357,9 +398,9 @@ async def record_profile_trade(conn, engine, owner: str, instrument_id: str, sid
                     entry_price = holdings.get(instrument_id, (None, None))[1]
             entry_price = Decimal(str(entry_price)) if entry_price else None
             gross = realized
-            if not perp and entry_price is not None:
+            if not (perp or margin) and entry_price is not None:
                 gross = (price - entry_price) * qty
-            pnl = Decimal(str(gross)) - commission if gross is not None else None
+            pnl = (Decimal(str(gross)) if margin else Decimal(str(gross)) - commission) if gross is not None else None
             original_stop = Decimal(str(detail["stop"])) if detail.get("stop") is not None else None
             risk = abs(entry_price - original_stop) * qty if entry_price is not None and original_stop is not None else None
             outcome = {"HARD_STOP": "STOP", "STRUCTURAL_STOP": "STOP", "TRAILING_STOP": "TRAIL",
@@ -373,11 +414,466 @@ async def record_profile_trade(conn, engine, owner: str, instrument_id: str, sid
                     outcome = {"TAKE_PROFIT_1": "TP1", "TRAILING_STOP": "TRAIL", "STRUCTURAL_STOP": "STOP",
                                "HARD_STOP": "STOP", "TAKE_PROFIT": "TP"}.get(raw, raw) or outcome
             await record_decision(conn, mid, "EXIT", outcome, instrument_id=instrument_id, command_id=command_id,
-                                  side=position_side if perp else "LONG", market="PERP" if perp else "SPOT",
+                                  side=position_side if (perp or margin) else "LONG", market=market.value,
                                   price=price, qty=qty, realized_pnl=pnl,
-                                  r_multiple=pnl / risk if pnl is not None and risk else None)
+                                  r_multiple=pnl / risk if pnl is not None and risk else None,
+                                  **({"borrowed": details.get("borrowed", {}),
+                                      "interest": details.get("interest", {})} if margin else {}))
     except Exception as exc:
         logger.warning("Profile trade decision not recorded for %s: %s", owner, exc)
+
+
+async def load_margin_runtime_settings(pool, engine, now: float | None = None):
+    """Reload the bounded, exact-Decimal margin settings while retaining the last valid snapshot."""
+    now = time.monotonic() if now is None else now
+    cached_at = getattr(engine, "margin_settings_loaded_at", None)
+    if cached_at is not None and now - cached_at < MARGIN_SETTINGS_RELOAD_INTERVAL_S:
+        return engine.margin_settings
+    last_good = getattr(engine, "margin_settings", None) or default_margin_settings()
+    try:
+        rows = await pool.fetch("SELECT key, value FROM system_settings WHERE key LIKE 'margin.%'")
+        applied, problems = read_margin_settings({row["key"]: row["value"] for row in rows}, last_good)
+        engine.margin_settings = applied
+        engine.dispatcher.margin_pair_settings = applied.pair_settings
+        engine.margin_settings_loaded_at = now
+        for problem in problems:
+            logger.error("Margin setting refused; retaining last valid value: %s", problem)
+    except Exception as exc:
+        logger.warning("Margin settings not reloaded; retaining last valid values: %s", exc)
+        if not hasattr(engine, "margin_settings"):
+            engine.margin_settings = last_good
+            engine.dispatcher.margin_pair_settings = last_good.pair_settings
+        engine.margin_settings_loaded_at = now
+    return engine.margin_settings
+
+
+@contextlib.asynccontextmanager
+async def _acquire_connection(pool_or_conn):
+    """Yield a supplied asyncpg connection or acquire one from its pool."""
+    acquire = getattr(pool_or_conn, "acquire", None)
+    if callable(acquire):
+        async with acquire() as conn:
+            yield conn
+    else:
+        yield pool_or_conn
+
+
+def _decimal_seconds(start: datetime.datetime, end: datetime.datetime) -> Decimal:
+    """Convert an aware datetime interval to Decimal seconds without float conversion."""
+    delta = end - start
+    return (Decimal(delta.days * 86_400 + delta.seconds)
+            + Decimal(delta.microseconds) / Decimal(1_000_000))
+
+
+def _margin_interest_due(
+    *, principal: Decimal, hourly_rate: Decimal, borrowed_at: datetime.datetime,
+    through: datetime.datetime, existing: list[Any], repaid_at: datetime.datetime | None,
+) -> list[tuple[datetime.datetime, datetime.datetime, Decimal, Decimal, Decimal]]:
+    """Return unbooked Binance-style periods, including FAQ-silent repayment proration.
+
+    Settled rows use a full hour at every top-of-hour settlement after the first prorated
+    period. A repayment inside an uncharged hour accrues only through repayment time; the
+    spec marks that FAQ-silent case unverified.
+    """
+    full_hour = datetime.timedelta(hours=1)
+    first_settlement = next_hour_settlement(borrowed_at)
+    known = list(existing)
+    due: list[tuple[datetime.datetime, datetime.datetime, Decimal, Decimal, Decimal]] = []
+    covered_until = max((row["period_end"] for row in known), default=borrowed_at)
+
+    # A charge is due at its settlement boundary. The first interval ends at the next
+    # top-of-hour; subsequent intervals end on later hour boundaries. A persisted early
+    # repayment interval advances coverage, so the remaining principal is charged only for
+    # the time after that repayment.
+    settlement = first_settlement
+    while settlement <= through:
+        if covered_until < settlement:
+            seconds = _decimal_seconds(covered_until, settlement)
+            due.append((covered_until, settlement, principal, hourly_rate,
+                        interest_for_period(principal, hourly_rate, seconds)))
+            covered_until = settlement
+        settlement += full_hour
+
+    # Binance's FAQ does not specify early repayment inside an unsettled interval. Per §8.4,
+    # book the accrued fraction through repayment and let a later settlement charge only the
+    # remaining interval against the then-outstanding principal.
+    if repaid_at is not None and covered_until < repaid_at:
+        seconds = _decimal_seconds(covered_until, repaid_at)
+        due.append((covered_until, repaid_at, principal, hourly_rate,
+                    interest_for_period(principal, hourly_rate, seconds)))
+    return due
+
+
+def _margin_interest_lock(engine, instrument_id: str) -> asyncio.Lock:
+    locks = engine.__dict__.setdefault("margin_interest_locks", {})
+    return locks.setdefault(instrument_id, asyncio.Lock())
+
+
+async def accrue_margin_interest_once(
+    pool, engine, now: datetime.datetime | None = None, *, repaid_instrument_id: str | None = None,
+) -> int:
+    """Book due isolated-margin interest once and update exact outstanding liabilities.
+
+    The unique ``(margin_account_id, period_end, asset)`` constraint is the durable
+    idempotency boundary. A row lock serializes concurrent monitor passes; the in-memory
+    liability changes only for rows inserted by this pass.
+    """
+    now = now or datetime.datetime.now(datetime.UTC)
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("interest accrual time must be timezone-aware")
+    now = now.astimezone(datetime.UTC)
+    settings = await load_margin_runtime_settings(pool, engine)
+    booked = 0
+
+    for instrument_id, account in list(engine.dispatcher.margin_accounts.items()):
+        if repaid_instrument_id is not None and instrument_id != repaid_instrument_id:
+            continue
+        async with _margin_interest_lock(engine, instrument_id):
+            pair = underlying_spot(instrument_id).split(".", 1)[0]
+            base = base_asset(instrument_id)
+            totals = {base: Decimal("0"), "USDT": Decimal("0")}
+            db_id = None
+            async with _acquire_connection(pool) as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        """SELECT id, pair, opened_at, base_qty, quote_qty, borrowed_base, borrowed_quote,
+                                  interest_base, interest_quote
+                           FROM paper_margin_accounts
+                           WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'
+                           FOR UPDATE""",
+                        engine.account_id, pair,
+                    )
+                    if row is None:
+                        continue  # a just-opened fill is still waiting for EventBridge persistence
+                    db_values = (
+                        Decimal(str(row["base_qty"])), Decimal(str(row["quote_qty"])),
+                        Decimal(str(row["borrowed_base"])), Decimal(str(row["borrowed_quote"])),
+                        Decimal(str(row["interest_base"])), Decimal(str(row["interest_quote"])),
+                    )
+                    memory_values = (
+                        account.base_qty, account.quote_qty, account.borrowed_base, account.borrowed_quote,
+                        account.interest_base, account.interest_quote,
+                    )
+                    if db_values != memory_values:
+                        # A fill snapshot is queued but not yet projected; wait for it instead of accruing against
+                        # mismatched principal or letting the later snapshot overwrite a newer interest balance.
+                        continue
+                    db_id = row["id"]
+                    for asset, principal in ((base, account.borrowed_base), ("USDT", account.borrowed_quote)):
+                        if principal <= 0:
+                            continue
+                        percent = settings.interest_hourly_pct.get(asset, Decimal("0"))
+                        rate = hourly_rate_from_percent(percent)
+                        existing = await conn.fetch(
+                            """SELECT period_start, period_end, principal, hourly_rate, amount
+                               FROM paper_margin_interest WHERE margin_account_id = $1 AND asset = $2
+                               ORDER BY period_end""",
+                            db_id, asset,
+                        )
+                        due = _margin_interest_due(
+                            principal=principal, hourly_rate=rate, borrowed_at=row["opened_at"], through=now,
+                            existing=existing,
+                            repaid_at=now if repaid_instrument_id == instrument_id else None,
+                        )
+                        for period_start, period_end, amount_principal, hourly_rate, amount in due:
+                            inserted = await conn.fetchrow(
+                                """INSERT INTO paper_margin_interest
+                                       (margin_account_id, period_start, period_end, asset, principal, hourly_rate, amount)
+                                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                                   ON CONFLICT (margin_account_id, period_end, asset) DO NOTHING
+                                   RETURNING id, amount""",
+                                db_id, period_start, period_end, asset, amount_principal, hourly_rate, amount,
+                            )
+                            if inserted is not None:
+                                totals[asset] += Decimal(str(inserted["amount"]))
+                                booked += 1
+                    if totals[base] or totals["USDT"]:
+                        await conn.execute(
+                            """UPDATE paper_margin_accounts
+                               SET interest_base = interest_base + $2, interest_quote = interest_quote + $3,
+                                   updated_at = now()
+                               WHERE id = $1 AND status = 'OPEN'""",
+                            db_id, totals[base], totals["USDT"],
+                        )
+            if db_id is not None and (totals[base] or totals["USDT"]):
+                current = engine.dispatcher.margin_accounts.get(instrument_id)
+                if current is account:
+                    account.interest_base += totals[base]
+                    account.interest_quote += totals["USDT"]
+    return booked
+
+
+def _fresh_margin_prices(engine) -> dict[str, Decimal]:
+    """Return adverse-side spot prices for fresh open margin accounts, keyed by underlying spot id."""
+    dispatcher = engine.dispatcher
+    prices: dict[str, Decimal] = {}
+    for instrument_id, account in list(dispatcher.margin_accounts.items()):
+        spot_id = underlying_spot(instrument_id)
+        if not dispatcher.ingress_health.is_fresh(spot_id, dispatcher.node_cache):
+            continue
+        quote = dispatcher.node_cache.quote(InstrumentId.from_str(spot_id)) if dispatcher.node_cache else None
+        if quote is None:
+            continue
+        price = Decimal(str(quote.bid_price if account.side == "LONG" else quote.ask_price))
+        if price.is_finite() and price > 0:
+            prices[spot_id] = price
+            dispatcher.mark_prices[spot_id] = price
+    return prices
+
+
+def _margin_monitor_lock(engine, instrument_id: str) -> asyncio.Lock:
+    locks = engine.__dict__.setdefault("margin_monitor_locks", {})
+    return locks.setdefault(instrument_id, asyncio.Lock())
+
+
+async def _queue_margin_buffer_close(pool, engine, instrument_id: str, margin_account_id: int,
+                                     account: SpotMarginAccountState) -> bool:
+    """Persist one reduce-only proximity close command per isolated account."""
+    key = f"margin-buffer-close:{margin_account_id}"
+    async with _acquire_connection(pool) as conn:
+        command = await conn.fetchrow("SELECT status FROM execution_commands WHERE idempotency_key = $1", key)
+        if command is not None:
+            return False
+        command_id = uuid.uuid4()
+        payload = {
+            "instrument_id": instrument_id, "reason": "LIQUIDATION_PROXIMITY",
+            "position_side": account.side, "quantity": str(abs(account.position_qty)), "reduce_only": True,
+        }
+        await conn.execute(
+            """INSERT INTO execution_commands
+                   (command_id, idempotency_key, command_type, target_instance_id, requester_id,
+                    payload, status, environment, account_id)
+               VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:orchestrator', $4::jsonb, 'PENDING', 'PAPER', $5)
+               ON CONFLICT (idempotency_key) DO NOTHING""",
+            command_id, key, account.instance_id, json.dumps(payload), engine.account_id,
+        )
+    return True
+
+
+async def force_close_margin_position(
+    pool_or_conn, engine, instrument_id: str, price: Decimal, *, reason: str,
+    liquidation: bool = False, liquidation_fee_pct: Decimal | None = None,
+    margin_account_id: int | None = None, margin_level: Decimal | None = None,
+    idempotency_key: str | None = None, client_order_id: str | None = None,
+    quantity: Decimal | None = None, command_id=None, now: datetime.datetime | None = None,
+    redis=None,
+) -> bool:
+    """Flatten an isolated account, persist an idempotent bridge fill and log its profile EXIT."""
+    account = engine.dispatcher.margin_accounts.get(instrument_id)
+    if account is None or account.position_qty == 0:
+        return False
+    now = now or datetime.datetime.now(datetime.UTC)
+    await accrue_margin_interest_once(
+        pool_or_conn, engine, now=now, repaid_instrument_id=instrument_id,
+    )
+    account = engine.dispatcher.margin_accounts.get(instrument_id)
+    if account is None or account.position_qty == 0:
+        return False
+    pair = underlying_spot(instrument_id).split(".", 1)[0]
+    if margin_account_id is None:
+        async with _acquire_connection(pool_or_conn) as conn:
+            margin_account_id = await conn.fetchval(
+                "SELECT id FROM paper_margin_accounts WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'",
+                engine.account_id, pair,
+            )
+    before = dataclasses.replace(account)
+    quantity = abs(account.position_qty) if quantity is None else min(abs(account.position_qty), quantity)
+    if quantity <= 0:
+        return False
+    ratio = quantity / abs(account.position_qty)
+    assets = account_asset_value(account.base_qty * ratio, account.quote_qty * ratio, price)
+    fee = (assets * (Decimal(str(liquidation_fee_pct)) / Decimal("100")) if liquidation
+           else quantity * price * fee_rate_for(engine.dispatcher, instrument_id))
+    client_order_id = client_order_id or (
+        f"LIQ-MARGIN-{margin_account_id}" if liquidation and margin_account_id is not None
+        else f"MARGIN-CLOSE-{uuid.uuid4().hex[:12].upper()}"
+    )
+    result = engine.dispatcher.flatten_margin_position(
+        instrument_id, price, fee, client_order_id, quantity=quantity,
+    )
+    if result is None:
+        return False
+    fill_side, fill_qty, realized = result
+    key = idempotency_key or (
+        f"MARGIN_LIQUIDATION:{engine.account_id}:{margin_account_id}"
+        if liquidation and margin_account_id is not None else f"MARGIN_CLOSE:{engine.account_id}:{client_order_id}"
+    )
+    event = {
+        "event_type": "ORDER_FILLED", "event_version": 1, "client_order_id": client_order_id,
+        "native_event_id": key, "idempotency_key": key, "account_id": engine.account_id,
+        "instance_id": before.instance_id, "instrument_id": instrument_id, "side": fill_side,
+        "order_type": "MARKET", "price": str(price), "quantity": str(fill_qty),
+        "commission": str(fee), "filled_qty": str(fill_qty), "avg_fill_price": str(price),
+        "status": "FILLED", "occurred_at_ns": time.time_ns(),
+        "liquidation": liquidation,
+        "payload": {
+            "type": "margin.liquidation" if liquidation else "margin.close", "reason": reason,
+            "margin_account_id": margin_account_id, "margin_level": str(margin_level) if margin_level is not None else None,
+            "liquidation_fee": str(fee) if liquidation else "0",
+            "borrowed_base": str(before.borrowed_base), "borrowed_quote": str(before.borrowed_quote),
+            "interest_base": str(before.interest_base), "interest_quote": str(before.interest_quote),
+        },
+        **engine.dispatcher.fill_event_fields(instrument_id, realized, price),
+    }
+    if not engine.bridge.enqueue_event(event):
+        logger.critical("Margin close %s flattened in memory but EventBridge rejected persistence", client_order_id)
+    margin_details = {
+        "borrowed": {"base": str(before.borrowed_base), "quote": str(before.borrowed_quote)},
+        "interest": {"base": str(before.interest_base), "quote": str(before.interest_quote)},
+    }
+    async with _acquire_connection(pool_or_conn) as conn:
+        await record_profile_trade(
+            conn, engine, before.instance_id, instrument_id, fill_side, fill_qty, price,
+            entry=False, position_side=before.side, entry_price=before.entry_price,
+            leverage=before.leverage, realized=realized, commission=fee, reason=reason,
+            client_order_id=client_order_id, margin_details=margin_details, command_id=command_id,
+        )
+        await reconcile_working_orders(conn, engine)
+        if liquidation:
+            await alert(
+                conn, redis, "MARGIN_LIQUIDATION",
+                f"Isolated margin position liquidated: {instrument_id} at {price}",
+                {"account_id": engine.account_id, "instrument_id": instrument_id,
+                 "margin_account_id": margin_account_id, "margin_level": str(margin_level),
+                 "fee": str(fee), "side": before.side, "quantity": str(fill_qty)},
+                dedupe_key=f"margin-liquidation:{margin_account_id}",
+            )
+    if liquidation and redis is not None:
+        try:
+            await redis.publish("channel:margin_liquidations", json.dumps(event["payload"], default=str))
+        except Exception as exc:
+            logger.error("Margin liquidation event %s could not be published: %s", client_order_id, exc)
+    return True
+
+
+async def margin_risk_monitor_once(pool, engine, redis=None, now: datetime.datetime | None = None) -> int:
+    """Accrue margin interest, restore/fire spot stops, alert at call, and close at buffer/liquidation levels."""
+    now = now or datetime.datetime.now(datetime.UTC)
+    settings = await load_margin_runtime_settings(pool, engine)
+    await accrue_margin_interest_once(pool, engine, now=now)
+    prices = _fresh_margin_prices(engine)
+    if prices and getattr(engine, "pending_stop_restores", None):
+        await restore_pending_stops(pool, engine)
+
+    # Resolve liquidation before evaluating stops. A gap through both a stop and liquidation
+    # must be booked as liquidation (with its clearance fee), not as an unbounded stop fill.
+    levels = settings.pair_settings
+    for instrument_id in list(engine.dispatcher.margin_accounts):
+        spot_id = underlying_spot(instrument_id)
+        price = prices.get(spot_id)
+        account = engine.dispatcher.margin_accounts.get(instrument_id)
+        config = levels.get(spot_id.split(".", 1)[0])
+        if price is None or account is None or config is None:
+            continue
+        liability = account_liability_value(
+            account.borrowed_base, account.borrowed_quote, account.interest_base, account.interest_quote, price,
+        )
+        if liability <= 0:
+            continue
+        asset_value = account_asset_value(account.base_qty, account.quote_qty, price)
+        margin_level = asset_value / liability
+        margin_id = await pool.fetchval(
+            "SELECT id FROM paper_margin_accounts WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'",
+            engine.account_id, spot_id.split(".", 1)[0],
+        )
+        if margin_id is None:
+            continue
+        if engine.kill_switch.is_latched or margin_level <= config["liquidation_level"]:
+            reason = "KILL_SWITCH" if engine.kill_switch.is_latched else "LIQUIDATION"
+            closed = await force_close_margin_position(
+                pool, engine, instrument_id, price, reason=reason,
+                liquidation=reason == "LIQUIDATION",
+                liquidation_fee_pct=settings.liquidation_fee_pct if reason == "LIQUIDATION" else None,
+                margin_account_id=int(margin_id), margin_level=margin_level, now=now, redis=redis,
+                idempotency_key=(f"MARGIN_KILL_SWITCH:{engine.account_id}:{margin_id}" if reason == "KILL_SWITCH"
+                                 else None),
+                client_order_id=f"MARGIN-{reason}-{margin_id}",
+            )
+            if closed:
+                engine.__dict__.setdefault("margin_call_episodes", set()).discard(int(margin_id))
+    if prices and any(engine.dispatcher.is_stop_order(order)
+                      for order in engine.dispatcher.open_orders.values()):
+        await fire_resting_stops(pool, engine, prices)
+
+    active_episodes = engine.__dict__.setdefault("margin_call_episodes", set())
+    alerted = 0
+    for instrument_id in list(engine.dispatcher.margin_accounts):
+        spot_id = underlying_spot(instrument_id)
+        price = prices.get(spot_id)
+        if price is None:
+            continue
+        async with _margin_monitor_lock(engine, instrument_id):
+            account = engine.dispatcher.margin_accounts.get(instrument_id)
+            if account is None:
+                continue
+            pair = spot_id.split(".", 1)[0]
+            config = levels.get(pair)
+            if config is None:
+                logger.error("Open margin account %s has no pair settings; monitor refuses to infer thresholds",
+                             instrument_id)
+                continue
+            liability = account_liability_value(
+                account.borrowed_base, account.borrowed_quote, account.interest_base, account.interest_quote, price,
+            )
+            if liability <= 0:
+                continue
+            asset_value = account_asset_value(account.base_qty, account.quote_qty, price)
+            margin_level = asset_value / liability
+            account_id = await pool.fetchval(
+                "SELECT id FROM paper_margin_accounts WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'",
+                engine.account_id, pair,
+            )
+            if account_id is None:
+                continue  # the opening fill has not reached the durable projection yet
+            call_level = config["call_level"]
+            liquidation_level = config["liquidation_level"]
+            buffer_level = liquidation_level + (call_level - liquidation_level) / Decimal("2")
+            episode = int(account_id)
+            if engine.kill_switch.is_latched:
+                await force_close_margin_position(
+                    pool, engine, instrument_id, price, reason="KILL_SWITCH",
+                    margin_account_id=int(account_id), now=now, redis=redis,
+                    idempotency_key=f"MARGIN_KILL_SWITCH:{engine.account_id}:{account_id}",
+                    client_order_id=f"MARGIN-KILL-{account_id}",
+                )
+                active_episodes.discard(episode)
+                continue
+            if margin_level > call_level:
+                active_episodes.discard(episode)
+                continue
+            if episode not in active_episodes:
+                async with _acquire_connection(pool) as conn:
+                    await alert(
+                        conn, redis, "MARGIN_CALL",
+                        f"Isolated margin call: {instrument_id} at level {margin_level}",
+                        {"account_id": engine.account_id, "instrument_id": instrument_id,
+                         "margin_account_id": account_id, "margin_level": str(margin_level),
+                         "call_level": str(call_level), "liquidation_level": str(liquidation_level),
+                         "side": account.side},
+                        dedupe_key=f"margin-call:{account_id}",
+                    )
+                active_episodes.add(episode)
+                alerted += 1
+            if margin_level <= liquidation_level:
+                if await force_close_margin_position(
+                    pool, engine, instrument_id, price, reason="LIQUIDATION", liquidation=True,
+                    liquidation_fee_pct=settings.liquidation_fee_pct, margin_account_id=int(account_id),
+                    margin_level=margin_level, now=now, redis=redis,
+                ):
+                    active_episodes.discard(episode)
+                continue
+            if margin_level <= buffer_level:
+                await _queue_margin_buffer_close(pool, engine, instrument_id, int(account_id), account)
+    if prices and redis is not None and (
+            getattr(engine, "stop_ratchet", None)
+            or any(engine.dispatcher.is_stop_order(o) for o in engine.dispatcher.open_orders.values())):
+        try:
+            await asyncio.wait_for(ratchet_resting_stops(pool, engine, redis, prices), STOP_RATCHET_TIMEOUT_S)
+        except TimeoutError:
+            logger.error("Margin stop ratchet pass timed out after %ss; skipped", STOP_RATCHET_TIMEOUT_S)
+        except Exception as exc:
+            logger.error("Margin stop ratchet pass failed: %s", exc)
+    return alerted
 
 
 def fee_rate_for(dispatcher, instrument_id: str) -> Decimal:
@@ -389,7 +885,7 @@ def fee_rate_for(dispatcher, instrument_id: str) -> Decimal:
 
 async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Decimal, instance_id: str,
                               refusal: dict | None = None) -> bool:
-    """Protect the filled perp position with a resting reduce-only stop (it replaces the owner's earlier one).
+    """Protect a filled perp or isolated-margin position with a resting reduce-only stop.
 
     Never loosens a stop that already rests: when the owner already has a stop on the instrument (the position grew,
     or the ratchet trailed it), the stop placed is the tighter of the two, ``max`` for a long and ``min`` for a short.
@@ -402,15 +898,23 @@ async def attach_resting_stop(conn, engine, instrument_id: str, stop_price: Deci
     the backup. ``refusal``, when given, receives the dispatcher's reason under ``"reason"``."""
     d = engine.dispatcher
     pos = d.perp_positions.get(instrument_id)
-    if pos is not None and pos.signed_qty != 0:
+    margin = d.margin_accounts.get(instrument_id)
+    if margin is not None and margin.position_qty != 0:
+        long = margin.side == "LONG"
+        quantity = abs(margin.position_qty)
+    elif pos is not None and pos.signed_qty != 0:
         long = pos.signed_qty > 0
+        quantity = abs(pos.signed_qty)
+    else:
+        return False
+    if quantity > 0:
         resting = {cid: o for cid, o in d.resting_stops(instrument_id, instance_id).items()
                    if o["intent"].stop_price is not None and o["side"] == ("SELL" if long else "BUY")}
         if resting:
             prices = [o["intent"].stop_price for o in resting.values()]
             tightest = max(prices) if long else min(prices)
             if (tightest > stop_price) if long else (tightest < stop_price):
-                if len(resting) == 1 and next(iter(resting.values()))["quantity"] >= abs(pos.signed_qty):
+                if len(resting) == 1 and next(iter(resting.values()))["quantity"] >= quantity:
                     logger.info("Resting stop for %s (%s): the resting %s is tighter than the new %s and covers the "
                                 "position; kept", instrument_id, instance_id, tightest, stop_price)
                     return True
@@ -466,35 +970,43 @@ async def record_resting_stop(conn, engine, client_oid: str, instrument_id: str,
 
 
 async def load_stop_restores(pool, engine) -> int:
-    """After a restart, the resting stops of open perp positions to place again (they live in memory only).
+    """After a restart, restore resting stops for open perp and margin positions.
 
-    Per open perp position: its newest ACCEPTED ``STOP_MARKET`` row (kept, same client id), else the ``stop_loss`` its
-    entry order carried (a new row). They are placed on the first mark pass (``restore_pending_stops``): the
+    Per open position: its newest ACCEPTED ``STOP_MARKET`` row (kept, same client id), else the ``stop_loss`` its
+    entry order carried (a new row). Margin stops use the underlying spot instrument's quote. They are placed on the
+    first fresh mark pass (``restore_pending_stops``): the
     dispatcher needs a mark. Until then ``reconcile_working_orders`` leaves their rows ACCEPTED."""
     d = engine.dispatcher
     pending: dict[str, tuple[str, Decimal, str, bool]] = {}
     account = getattr(engine, "account_id", ACCOUNT_ID)
+    positions = [
+        (inst, pos.instance_id)
+        for inst, pos in d.perp_positions.items() if pos.signed_qty != 0
+    ] + [
+        (inst, pos.instance_id)
+        for inst, pos in d.margin_accounts.items() if pos.position_qty != 0
+    ]
     async with pool.acquire() as conn:
-        for inst, pos in d.perp_positions.items():
-            if pos.signed_qty == 0:
+        for inst, owner in positions:
+            if owner is None:
                 continue
             row = await conn.fetchrow(
                 """SELECT client_order_id, price FROM paper_orders
                    WHERE account_id = $1 AND instrument_id = $2 AND instance_id = $3 AND order_type = 'STOP_MARKET'
-                     AND status = 'ACCEPTED' ORDER BY created_at DESC LIMIT 1""", account, inst, pos.instance_id)
+                     AND status = 'ACCEPTED' ORDER BY created_at DESC LIMIT 1""", account, inst, owner)
             if row is not None and row["price"]:
-                pending[row["client_order_id"]] = (inst, Decimal(str(row["price"])), pos.instance_id, False)
+                pending[row["client_order_id"]] = (inst, Decimal(str(row["price"])), owner, False)
                 continue
             stop = await conn.fetchval(
                 """SELECT payload->>'stop_loss' FROM execution_commands
                    WHERE target_instance_id = $1 AND command_type = 'SUBMIT_ORDER' AND status = 'COMPLETED'
                      AND payload->>'instrument_id' = $2 AND payload->>'stop_loss' IS NOT NULL
-                   ORDER BY created_at DESC LIMIT 1""", pos.instance_id, inst)
+                   ORDER BY created_at DESC LIMIT 1""", owner, inst)
             if stop:
-                pending[f"STOP-{uuid.uuid4().hex[:12].upper()}"] = (inst, Decimal(str(stop)), pos.instance_id, True)
+                pending[f"STOP-{uuid.uuid4().hex[:12].upper()}"] = (inst, Decimal(str(stop)), owner, True)
             else:
-                logger.warning("Open perp %s (%s) has no stop to restore; the exit monitor's stops remain", inst,
-                               pos.instance_id)
+                logger.warning("Open position %s (%s) has no stop to restore; the exit monitor remains the backup",
+                               inst, owner)
     engine.pending_stop_restores = pending
     if pending:
         logger.info("Resting stops to restore on the first mark pass: %s", sorted(pending))
@@ -518,16 +1030,19 @@ async def restore_pending_stops(pool, engine) -> int:
     placed = 0
     for cid, entry in list(pending.items()):
         inst, stop, owner, new_row = entry
-        if d.mark_prices.get(inst) is None:
+        is_margin = market_of(inst) is Market.SPOT_MARGIN
+        mark_id = underlying_spot(inst) if is_margin else inst
+        if d.mark_prices.get(mark_id) is None:
             continue  # no mark yet: next pass
         pending.pop(cid)
         pos = d.perp_positions.get(inst)
-        if pos is None or pos.signed_qty == 0:
+        margin = d.margin_accounts.get(inst) if is_margin else None
+        if ((pos is None or pos.signed_qty == 0) and (margin is None or margin.position_qty == 0)):
             deferred.pop(cid, None)
             continue
         async with pool.acquire() as conn:
             refusal: dict = {}
-            if not d.ingress_health.is_fresh(inst, d.node_cache):  # no await until the placement below
+            if not d.ingress_health.is_fresh(mark_id, d.node_cache):  # no await until the placement below
                 ok, reason = False, "DATA_STALE_OR_DISCONTINUOUS"
             elif new_row:
                 ok = await attach_resting_stop(conn, engine, inst, stop, owner, refusal)
@@ -559,13 +1074,18 @@ async def restore_pending_stops(pool, engine) -> int:
                 continue
             logger.critical("Resting stop for %s (%s) at %s could not be restored (%s): closing the position",
                             inst, owner, stop, reason)
+            close_payload = {
+                "instrument_id": inst, "reason": "STOP_NOT_RESTORED", "stop_price": str(stop),
+                **({"position_side": margin.side, "quantity": str(abs(margin.position_qty)),
+                    "reduce_only": True} if margin is not None else {}),
+            }
             await conn.execute(
                 """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
                        requester_id, payload, status, environment, account_id)
                    VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:orchestrator', $4::jsonb, 'PENDING', 'PAPER', $5)
                    ON CONFLICT (idempotency_key) DO NOTHING""",
                 uuid.uuid4(), f"restore-stop:{cid}", owner,
-                json.dumps({"instrument_id": inst, "reason": "STOP_NOT_RESTORED", "stop_price": str(stop)}),
+                json.dumps(close_payload),
                 getattr(engine, "account_id", ACCOUNT_ID),
             )
             await reconcile_working_orders(conn, engine)
@@ -649,8 +1169,7 @@ async def ratchet_thresholds(pool, engine, now: float, owner: str | None = None)
 
 
 async def price_tick(pool, engine, instrument_id: str, now: float) -> Decimal | None:
-    """The instrument's price increment from ``instruments``: the perp's own row, else its spot sibling's (the
-    ingest records spot instruments only). None when neither is known (looked up again later)."""
+    """Read the instrument's price increment or fall back to its spot underlying."""
     ticks = getattr(engine, "price_ticks", None)
     if ticks is None:
         ticks = engine.price_ticks = {}
@@ -658,7 +1177,8 @@ async def price_tick(pool, engine, instrument_id: str, now: float) -> Decimal | 
         tick, at = ticks[instrument_id]
         if tick is not None or now - at < STOP_RATCHET_TICK_RETRY_S:
             return tick
-    spot = instrument_id.replace("-PERP.", ".", 1)
+    spot = (underlying_spot(instrument_id) if market_of(instrument_id) is Market.SPOT_MARGIN
+            else instrument_id.replace("-PERP.", ".", 1))
     tick = None
     try:
         async with pool.acquire() as conn:
@@ -733,8 +1253,12 @@ async def drop_closed_ratchet_states(redis, engine) -> int:
     dropped = 0
     for inst, st in list(states.items()):
         pos = d.perp_positions.get(inst)
-        if (pos is not None and pos.signed_qty != 0 and pos.instance_id == st.instance_id
-                and d.resting_stops(inst, st.instance_id)):
+        margin = d.margin_accounts.get(inst)
+        still_open = (
+            pos is not None and pos.signed_qty != 0 and pos.instance_id == st.instance_id
+            or margin is not None and margin.position_qty != 0 and margin.instance_id == st.instance_id
+        )
+        if still_open and d.resting_stops(inst, st.instance_id):
             continue
         states.pop(inst, None)
         dropped += 1
@@ -748,43 +1272,58 @@ async def drop_closed_ratchet_states(redis, engine) -> int:
 
 async def ratchet_resting_stops(pool, engine, redis, mark_prices: dict[str, Decimal],
                                 now: float | None = None) -> int:
-    """Trail the resting stops of AI-owned perp positions behind the best mark since entry (auto-trade plan A4).
+    """Trail AI-owned perp and isolated-margin stops behind the best mark since entry.
 
     Armed once the best mark is ``exit.trail_activate_pct`` in the position's favour, or at once when the owner's
     mandate met its daily target. A long's stop goes to best x (1 - exit.trail_pct/100), a short's to
     best x (1 + ...), on the tick, only tighter, at least a tick, at most once per STOP_RATCHET_MIN_INTERVAL_S,
     never at or through the mark. A move is ``place_resting_stop`` with a new client id: the new stop is placed and
     the old one released in one synchronous call (the old one is kept if the new one is refused), then the new row
-    is written ACCEPTED and the old one CANCELED, so a restart restores the new price. Spot and manual positions are
-    not touched. Run after ``fire_resting_stops`` on the same mark pass. Returns the number of stops moved."""
+    is written ACCEPTED and the old one CANCELED, so a restart restores the new price. Plain spot and manual
+    positions are not touched. Margin stops use their underlying spot quote. Run after ``fire_resting_stops`` on the
+    same mark pass. Returns the number of stops moved."""
     d = engine.dispatcher
     now = time.monotonic() if now is None else now
     await drop_closed_ratchet_states(redis, engine)
     stops = [(cid, info["instrument_id"], info.get("instance_id")) for cid, info in d.open_orders.items()
              if d.is_stop_order(info) and is_ai_instance(info.get("instance_id"))
-             and info["instrument_id"] in mark_prices]
+             and (info["instrument_id"] in mark_prices
+                  or market_of(info["instrument_id"]) is Market.SPOT_MARGIN
+                  and underlying_spot(info["instrument_id"]) in mark_prices)]
     if not stops:
         return 0
     moved = 0
     for cid, inst, owner in stops:
         pos = d.perp_positions.get(inst)
-        if pos is None or pos.signed_qty == 0 or pos.instance_id != owner:
+        margin = d.margin_accounts.get(inst) if market_of(inst) is Market.SPOT_MARGIN else None
+        if margin is not None and margin.position_qty != 0 and margin.instance_id == owner:
+            long, entry = margin.side == "LONG", margin.entry_price
+        elif pos is not None and pos.signed_qty != 0 and pos.instance_id == owner:
+            long, entry = pos.signed_qty > 0, pos.entry_price
+        else:
             continue
         t = await ratchet_thresholds(pool, engine, now, owner)
-        long, mark = pos.signed_qty > 0, mark_prices[inst]
-        st = await ratchet_state(redis, engine, inst, owner, long, pos.entry_price, mark)
+        mark_id = underlying_spot(inst) if margin is not None else inst
+        mark = mark_prices.get(mark_id)
+        if mark is None:
+            continue
+        st = await ratchet_state(redis, engine, inst, owner, long, entry, mark)
         if st.last_move is not None and now - st.last_move < STOP_RATCHET_MIN_INTERVAL_S:
             continue
         tick = await price_tick(pool, engine, inst, now)
         met = await target_met(redis, owner)
         if tick is None:
             continue
-        # Read the stop and the position again after the awaits above, and move it without another await between
+        # Read the stop and position again after the awaits above, and move it without another await between.
         info, pos = d.open_orders.get(cid), d.perp_positions.get(inst)
-        if info is None or pos is None or pos.signed_qty == 0 or (pos.signed_qty > 0) != long:
+        margin = d.margin_accounts.get(inst) if market_of(inst) is Market.SPOT_MARGIN else None
+        live_qty = margin.position_qty if margin is not None else pos.signed_qty if pos is not None else Decimal("0")
+        live_owner = margin.instance_id if margin is not None else pos.instance_id if pos is not None else None
+        live_entry = margin.entry_price if margin is not None else pos.entry_price if pos is not None else None
+        if info is None or live_qty == 0 or live_owner != owner or ((live_qty > 0) != long):
             continue
         old = info["intent"].stop_price
-        new = ratcheted_stop(long=long, entry=pos.entry_price, best=st.best, mark=mark, current_stop=old,
+        new = ratcheted_stop(long=long, entry=live_entry, best=st.best, mark=mark, current_stop=old,
                              trail_activate_pct=Decimal(str(t.trail_activate_pct)),
                              trail_pct=Decimal(str(t.trail_pct)), tick=tick, target_met=met)
         if new is None:
@@ -856,8 +1395,19 @@ async def match_resting_orders(pool, engine, instrument_id: str, bid: float, ask
     sizes, when the feed sends them, let large taker fills pay price impact)."""
     d = engine.dispatcher
     cancelled = cancel_entries_if_latched(d)
-    fills = match_working_orders(d.open_orders, instrument_id, Decimal(str(bid)), Decimal(str(ask)),
-                                 _size(bid_size), _size(ask_size))
+    quote_instrument = to_canonical_instrument(instrument_id)
+    route_instruments = [quote_instrument]
+    if market_of(quote_instrument) is Market.SPOT:
+        route_instruments.extend(sorted({
+            info["instrument_id"] for info in d.open_orders.values()
+            if info.get("is_margin") and underlying_spot(info["instrument_id"]) == quote_instrument
+        }))
+    fills = []
+    for route_inst in route_instruments:
+        fills.extend(match_working_orders(
+            d.open_orders, route_inst, Decimal(str(bid)), Decimal(str(ask)),
+            _size(bid_size), _size(ask_size),
+        ))
     if not fills and not cancelled:
         return
     async with pool.acquire() as conn:
@@ -1162,6 +1712,18 @@ async def consume_perp_marks(
                 if now - last_check >= liquidation_interval_s:
                     last_check = now
                     fresh = engine.dispatcher.fresh_mark_prices()
+                    # Isolated margin trades spot instruments, so its risk and stop loop must run even when the
+                    # separate perpetual mark feed is quiet. The monitor itself filters stale spot quotes.
+                    if pool is not None:
+                        try:
+                            await asyncio.wait_for(
+                                margin_risk_monitor_once(pool, engine, redis),
+                                max(STOP_RATCHET_TIMEOUT_S, liquidation_interval_s),
+                            )
+                        except TimeoutError:
+                            logger.error("Margin risk monitor timed out; skipped this pass")
+                        except Exception as exc:
+                            logger.error("Margin risk monitor failed: %s", exc)
                     # Stops lost with a restart are placed again first, once their mark is known
                     if fresh and pool is not None and getattr(engine, "pending_stop_restores", None):
                         await restore_pending_stops(pool, engine)
@@ -1696,9 +2258,51 @@ async def command_poller(pool, engine, quote_cache=None):
                             )
                             await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
                         elif cmd_type in ("STOP", "PAUSE"):
-                            await conn.execute("UPDATE paper_strategy_instances SET status = $2, updated_at = now() WHERE instance_id = $1", target, cmd_type)
+                            stop_all = cmd_type == "STOP" and target in (None, "all", "*")
+                            if cmd_type == "STOP":
+                                margin_targets = [
+                                    (inst, account) for inst, account in engine.dispatcher.margin_accounts.items()
+                                    if stop_all or account.instance_id == target
+                                ]
+                                preflight = []
+                                for inst, account in margin_targets:
+                                    spot_inst = underlying_spot(inst)
+                                    quote = quote_cache.quote(spot_inst)
+                                    if (quote is None or not engine.dispatcher.ingress_health.is_fresh(
+                                            spot_inst, engine.dispatcher.node_cache)):
+                                        preflight = None
+                                        break
+                                    pair = spot_inst.split(".", 1)[0]
+                                    margin_id = await conn.fetchval(
+                                        "SELECT id FROM paper_margin_accounts WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'",
+                                        acc_id, pair,
+                                    )
+                                    if margin_id is None:
+                                        preflight = None
+                                        break
+                                    price = Decimal(str(quote.bid_price if account.side == "LONG" else quote.ask_price))
+                                    preflight.append((inst, account, int(margin_id), price))
+                                if preflight is None:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'NO_FRESH_MARGIN_QUOTE_OR_ACCOUNT', processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                    )
+                                    continue
+                                for inst, account, margin_id, price in preflight:
+                                    effects_applied = True
+                                    await force_close_margin_position(
+                                        conn, engine, inst, price, reason="STOP", margin_account_id=margin_id,
+                                        idempotency_key=f"MARGIN_STOP:{row['command_id']}:{margin_id}",
+                                        client_order_id=f"MARGIN-STOP-{str(row['command_id']).replace('-', '')[:18].upper()}-{margin_id}",
+                                        command_id=row["command_id"], now=datetime.datetime.now(datetime.UTC),
+                                    )
+                            if stop_all:
+                                await conn.execute("UPDATE paper_strategy_instances SET status = $1, updated_at = now() WHERE status IN ('RUNNING','PAUSED')", cmd_type)
+                            else:
+                                await conn.execute("UPDATE paper_strategy_instances SET status = $2, updated_at = now() WHERE instance_id = $1", target, cmd_type)
                             effects_applied = True
-                            engine.mailbox.push({"command_type": cmd_type, "target_instance_id": target})
+                            engine.mailbox.push({"command_type": cmd_type,
+                                                 "target_instance_id": None if stop_all else target})
                             engine.process_mailbox_commands()
                             await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
                         elif cmd_type == "RESUME":
@@ -1707,6 +2311,74 @@ async def command_poller(pool, engine, quote_cache=None):
                         elif cmd_type == "CLOSE_POSITION":
                             inst_raw = payload.get("instrument_id", "")
                             canonical_inst = to_canonical_instrument(inst_raw) if inst_raw else ""
+                            margin_account = engine.dispatcher.margin_accounts.get(canonical_inst)
+                            if margin_account is not None:
+                                requested_side = str(payload.get("position_side") or "").upper()
+                                if requested_side in ("LONG", "SHORT") and requested_side != margin_account.side:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                    )
+                                    continue
+                                if target and margin_account.instance_id != target:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'CLOSE_NOT_OWNED', processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                    )
+                                    continue
+                                try:
+                                    requested_qty = (Decimal(str(payload["quantity"]))
+                                                     if payload.get("quantity") else abs(margin_account.position_qty))
+                                except (InvalidOperation, TypeError, ValueError):
+                                    requested_qty = Decimal("0")
+                                if not requested_qty.is_finite() or requested_qty <= 0:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'INVALID_CLOSE_QUANTITY', processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                    )
+                                    continue
+                                spot_inst = underlying_spot(canonical_inst)
+                                quote = quote_cache.quote(spot_inst)
+                                if (quote is None or not engine.dispatcher.ingress_health.is_fresh(
+                                        spot_inst, engine.dispatcher.node_cache)):
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'NO_FRESH_MARGIN_QUOTE', processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                    )
+                                    continue
+                                fill_px = Decimal(str(quote.bid_price if margin_account.side == "LONG"
+                                                      else quote.ask_price))
+                                pair = spot_inst.split(".", 1)[0]
+                                margin_id = await conn.fetchval(
+                                    "SELECT id FROM paper_margin_accounts WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'",
+                                    acc_id, pair,
+                                )
+                                if margin_id is None:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = 'MARGIN_ACCOUNT_NOT_PERSISTED', processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                    )
+                                    continue
+                                effects_applied = True
+                                closed = await force_close_margin_position(
+                                    conn, engine, canonical_inst, fill_px,
+                                    reason=payload.get("reason") or "MANUAL", margin_account_id=int(margin_id),
+                                    idempotency_key=f"MARGIN_CLOSE_COMMAND:{row['command_id']}",
+                                    client_order_id=f"MARGIN-CLOSE-{str(row['command_id']).replace('-', '')[:20].upper()}",
+                                    quantity=min(requested_qty, abs(margin_account.position_qty)),
+                                    command_id=row["command_id"], now=datetime.datetime.now(datetime.UTC),
+                                )
+                                if not closed:
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1",
+                                        row["command_id"],
+                                    )
+                                    continue
+                                await conn.execute(
+                                    "UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1",
+                                    row["command_id"],
+                                )
+                                continue
                             # A close with a quantity closes only the target's own holding (a stop on an instrument
                             # another owner shares): only the target's working orders go with it
                             owner_scoped = bool(payload.get("quantity")) and target is not None
@@ -1862,9 +2534,42 @@ async def command_poller(pool, engine, quote_cache=None):
                             # Latch the in-memory switch the dispatcher checks, then persist it (row + audit)
                             reason = payload.get("reason") or "Manual UI Kill Switch"
                             actor = payload.get("operator") or row.get("requester_id") or "web-ui"
+                            # Close every margin position with a fresh underlying spot quote before the engine
+                            # processes the latch. Any stale-quote account is kept intact with its reduce-only stop;
+                            # the periodic margin monitor closes it as soon as fresh data resumes.
+                            for inst, account in list(engine.dispatcher.margin_accounts.items()):
+                                spot_inst = underlying_spot(inst)
+                                quote = quote_cache.quote(spot_inst)
+                                if (quote is None or not engine.dispatcher.ingress_health.is_fresh(
+                                        spot_inst, engine.dispatcher.node_cache)):
+                                    continue
+                                pair = spot_inst.split(".", 1)[0]
+                                margin_id = await conn.fetchval(
+                                    "SELECT id FROM paper_margin_accounts WHERE account_id = $1 AND pair = $2 AND status = 'OPEN'",
+                                    acc_id, pair,
+                                )
+                                if margin_id is None:
+                                    continue
+                                price = Decimal(str(quote.bid_price if account.side == "LONG" else quote.ask_price))
+                                effects_applied = True
+                                await force_close_margin_position(
+                                    conn, engine, inst, price, reason="KILL_SWITCH", margin_account_id=int(margin_id),
+                                    idempotency_key=f"MARGIN_KILL:{row['command_id']}:{margin_id}",
+                                    client_order_id=f"MARGIN-KILL-{str(row['command_id']).replace('-', '')[:18].upper()}-{margin_id}",
+                                    command_id=row["command_id"], now=datetime.datetime.now(datetime.UTC),
+                                )
                             effects_applied = True
-                            engine.mailbox.push({"command_type": "TRIP_KILL_SWITCH", "requester_id": actor, "payload": {"reason": reason}})
-                            engine.process_mailbox_commands()
+                            # The engine has an older synchronous emergency close for any in-memory margin rows.
+                            # Keep only still-open (stale-feed) accounts out of that memory-only path so the
+                            # durable bridge close above remains authoritative and stale ones keep their liability.
+                            retained_margins = engine.dispatcher.margin_accounts
+                            engine.dispatcher.margin_accounts = {}
+                            try:
+                                engine.mailbox.push({"command_type": "TRIP_KILL_SWITCH", "requester_id": actor,
+                                                     "payload": {"reason": reason}})
+                                engine.process_mailbox_commands()
+                            finally:
+                                engine.dispatcher.margin_accounts = retained_margins
                             await conn.fetchval("SELECT trip_execution_kill_switch($1, $2, $3, $4)", "PAPER", acc_id, reason, actor)
                             await conn.execute("UPDATE execution_commands SET status = 'COMPLETED', command_outcome = 'SUCCESS', processed_at = now() WHERE command_id = $1", row["command_id"])
                         elif cmd_type in ("RESET_SWITCH", "KILL_SWITCH_RESET_REQUEST"):
@@ -1924,12 +2629,16 @@ async def command_poller(pool, engine, quote_cache=None):
                                 mandate = await load_mandate(conn, mandate_ref)
 
                             # Determine quantity
-                            is_perp_order = canonical_inst.split(".")[0].endswith("-PERP")
+                            is_perp_order = market_of(canonical_inst) is Market.PERP
+                            is_margin_order = market_of(canonical_inst) is Market.SPOT_MARGIN
+                            quote_instrument = underlying_spot(canonical_inst) if is_margin_order else canonical_inst
+                            quote_for_order = quote_cache.quote(quote_instrument)
                             perp_entry = is_perp_order and not payload.get("reduce_only")
+                            margin_entry = is_margin_order and not payload.get("reduce_only")
                             planned_leverage = None
                             sizing_plan = None
                             qty_val = Decimal(str(payload["quantity"])) if payload.get("quantity") else None
-                            if qty_val and mandate is not None and perp_entry:
+                            if qty_val and mandate is not None and (perp_entry or margin_entry):
                                 # A mandate perp entry with its own quantity is not re-sized, but it is still held to
                                 # its setup grade's ceiling (ungraded: grade C), as a plan-sized entry is
                                 ceiling = grade_ceiling(payload, getattr(engine, "grade_ceilings", None))
@@ -1946,7 +2655,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                 # plan_leveraged_order to the mandate's room and risk budget (the allocation is the
                                 # margin); the mandate gate and the dispatcher check it with the same valuation
                                 plan = await plan_perp_entry(conn, engine, mandate, canonical_inst, side, payload,
-                                                             quote_cache.quote(canonical_inst))
+                                                             quote_for_order)
                                 if not plan.ok:
                                     logger.info("AI perp entry %s not placed: %s", row["command_id"], plan.reject)
                                     await conn.execute(
@@ -1959,9 +2668,26 @@ async def command_poller(pool, engine, quote_cache=None):
                                 logger.info("AI perp entry %s sized: %s %s %s at %sx (%s), margin %s, loss at stop %s",
                                             row["command_id"], side, qty_val, canonical_inst, plan.leverage,
                                             plan.binding_ceiling, plan.margin_usd, plan.loss_at_stop_usd)
+                            if not qty_val and mandate is not None and margin_entry:
+                                await load_margin_runtime_settings(conn, engine)
+                                plan = await plan_spot_margin_entry(
+                                    conn, engine, mandate, canonical_inst, side, payload, quote_for_order,
+                                )
+                                if not plan.ok:
+                                    logger.info("AI margin entry %s not placed: %s", row["command_id"], plan.reject)
+                                    await conn.execute(
+                                        "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
+                                        row["command_id"], f"{plan.reject}: spot-margin sizing",
+                                    )
+                                    continue
+                                qty_val, planned_leverage = plan.quantity, plan.leverage
+                                sizing_plan = plan.as_dict()
+                                logger.info("AI margin entry %s sized: %s %s %s at %sx; notional %s, liquidation %s",
+                                            row["command_id"], side, qty_val, canonical_inst, plan.leverage,
+                                            plan.notional_usd, plan.liquidation_price)
                             if not qty_val:
                                 alloc_pct = Decimal(str(payload.get("allocation_pct", 5.0)))
-                                quote = quote_cache.quote(canonical_inst)
+                                quote = quote_for_order
                                 if not quote:
                                     await conn.execute(
                                         "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
@@ -1973,7 +2699,8 @@ async def command_poller(pool, engine, quote_cache=None):
                                 base = mandate.capital_budget_usd if mandate is not None else engine.dispatcher.cash_balance
                                 notional = base * (alloc_pct / Decimal("100.0"))
                                 qty_val = max(Decimal("0.0001"), notional / mark_px)
-                                if mandate is not None and not is_perp_order and side == "BUY" and not payload.get("reduce_only"):
+                                if (mandate is not None and not is_perp_order and not is_margin_order
+                                        and side == "BUY" and not payload.get("reduce_only")):
                                     # An entry adds to what the mandate already holds: size it down to the
                                     # room left under its position limit and budget (an approval is an upper
                                     # bound), so it passes the mandate check instead of being refused as a breach
@@ -2009,11 +2736,12 @@ async def command_poller(pool, engine, quote_cache=None):
                             if mandate is not None:
                                 instance_id = mandate.instance_id
                             profile_spot_entry = bool(
-                                ai_order and mandate is not None and not is_perp_order
+                                ai_order and mandate is not None and not is_perp_order and not is_margin_order
                                 and side == "BUY" and not payload.get("reduce_only")
                             )
+                            profile_margin_entry = bool(ai_order and mandate is not None and margin_entry)
                             structural_stop = None
-                            if profile_spot_entry:
+                            if profile_spot_entry or profile_margin_entry:
                                 raw_stop = payload.get("proposed_stop_loss") or payload.get("stop_loss")
                                 try:
                                     structural_stop = Decimal(str(raw_stop)) if raw_stop is not None else None
@@ -2031,23 +2759,24 @@ async def command_poller(pool, engine, quote_cache=None):
                                     order_type=order_type,
                                     quantity=qty_dec,
                                     price=price_dec,
-                                    # Perp attributes; the dispatcher defaults leverage to 1 and CROSS,
-                                    # and rejects them on spot instruments
+                                    # Perp and isolated-margin leverage are explicit; plain spot rejects leverage.
                                     leverage=planned_leverage or payload.get("leverage"),
                                     # mandate perps are ISOLATED (ADR 0009 D5): the default is explicit, a CROSS
                                     # request is refused by the mandate check
                                     margin_mode=payload.get("margin_mode") or (
-                                        "ISOLATED" if mandate is not None and is_perp_order else None),
+                                        "ISOLATED" if is_margin_order or mandate is not None and is_perp_order else None),
                                     reduce_only=payload.get("reduce_only") or False,
                                     # Spot entry protection is an exit-monitor structural level, never a resting
                                     # STOP_MARKET trigger on its MARKET/LIMIT entry.
-                                    stop_price=(None if profile_spot_entry else
+                                    stop_price=(None if profile_spot_entry or profile_margin_entry else
                                                 Decimal(str(payload["stop_price"])) if payload.get("stop_price") else None),
-                                    # a perp entry carries its stop; an AI one must (leverage plan 2.3)
-                                    stop_loss=(structural_stop if profile_spot_entry else
-                                               Decimal(str(payload["stop_loss"])) if perp_entry and payload.get("stop_loss") else None),
-                                    require_stop=bool(ai_order and (perp_entry or profile_spot_entry)),
-                                    risk_budget_usd=mandate_risk_budget(mandate) if mandate is not None and perp_entry else None,
+                                    # Leveraged entries carry their structural stop at fill.
+                                    stop_loss=(structural_stop if profile_spot_entry or profile_margin_entry else
+                                               Decimal(str(payload["stop_loss"])) if (perp_entry or margin_entry)
+                                               and payload.get("stop_loss") else None),
+                                    require_stop=bool(ai_order and (perp_entry or profile_spot_entry or profile_margin_entry)),
+                                    risk_budget_usd=mandate_risk_budget(mandate) if mandate is not None
+                                    and (perp_entry or margin_entry) else None,
                                 )
                             except ValidationError as e:
                                 await conn.execute(
@@ -2078,7 +2807,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                     )
                                 continue
 
-                            if not ai_order and side == "SELL" and "-PERP." not in canonical_inst:
+                            if not ai_order and side == "SELL" and not is_margin_order and not is_perp_order:
                                 # The dispatcher holds one account-level quantity per instrument, so it would let
                                 # a manual SELL sell an AI mandate's coins; the bridge then books the SELL on no
                                 # position row and the mandate's next stop finds nothing left to sell (WLD
@@ -2097,7 +2826,7 @@ async def command_poller(pool, engine, quote_cache=None):
 
                             if ai_order:
                                 mandate_reject = await gate_ai_order(
-                                    conn, engine, row, payload, intent, mandate, quote_cache.quote(canonical_inst),
+                                    conn, engine, row, payload, intent, mandate, quote_for_order,
                                     system_sized=not payload.get("quantity"),
                                 )
                                 if mandate_reject:
@@ -2106,9 +2835,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                         row["command_id"], mandate_reject,
                                     )
                                     continue
-                                if profile_spot_entry:
-                                    # The exit monitor reads the persisted command payload, including for a
-                                    # direct AI command that supplied stop_loss without proposed_stop_loss.
+                                if profile_spot_entry or profile_margin_entry:
+                                    # The profile monitor reads the persisted structural stop, even when the
+                                    # command supplied stop_loss instead of proposed_stop_loss.
                                     payload["proposed_stop_loss"] = str(structural_stop)
                                     await conn.execute(
                                         "UPDATE execution_commands SET payload = payload || "
@@ -2127,7 +2856,8 @@ async def command_poller(pool, engine, quote_cache=None):
                                         )
                                         continue
                                     effective_mode = {1: "ASK", 2: "VETO", 3: "AUTO"}[int(mandate.autonomy_level)]
-                                    if (perp_entry or profile_spot_entry) and not await fresh_autotrade_switch_on(conn):
+                                    if (perp_entry or profile_spot_entry or profile_margin_entry) \
+                                            and not await fresh_autotrade_switch_on(conn):
                                         effective_mode = "ASK"
                                     # Persist the mode that authorized this order. A delayed fill can arrive after
                                     # the mandate or global switch changes, but its FILL audit must describe this
@@ -2138,13 +2868,15 @@ async def command_poller(pool, engine, quote_cache=None):
                                     )
 
                             if ai_order and mandate is not None and mandate.dry_run and (
-                                    perp_entry or (not is_perp_order and side == "BUY" and not intent.reduce_only)):
+                                    perp_entry or profile_margin_entry
+                                    or (not is_perp_order and not is_margin_order
+                                        and side == "BUY" and not intent.reduce_only)):
                                 # ADR 0011 D-P1-4: complete normal sizing and the mandate gates, then persist the
                                 # exact intended order without creating any dispatcher reservation or order.
                                 if sizing_plan is None:
                                     room, ref, _ = await mandate_entry_room(
                                         conn, engine, mandate, canonical_inst, side, price_dec,
-                                        quote_cache.quote(canonical_inst), order_type)
+                                            quote_for_order, order_type)
                                     sizing_plan = {"instrument_id": canonical_inst, "side": side,
                                                    "quantity": str(qty_dec), "entry_price": str(ref),
                                                    "room_quantity": str(room), "leverage": intent.leverage or 1,
@@ -2190,7 +2922,7 @@ async def command_poller(pool, engine, quote_cache=None):
                                     quote = quote_cache.quote(canonical_inst)
                                     order_info = engine.dispatcher.open_orders.get(client_oid)
                                     if (mandate is not None and not intent.reduce_only
-                                            and (is_perp_order or side == "BUY")):
+                                            and (is_perp_order or is_margin_order or side == "BUY")):
                                         # The dispatcher has already computed the exact cash or initial-margin
                                         # reservation, including its price buffers and fee. Persist it with the
                                         # command so another process can claim the profile budget after restart.
@@ -2203,16 +2935,19 @@ async def command_poller(pool, engine, quote_cache=None):
                                                WHERE command_id = $1""",
                                             row["command_id"], profile_reserve,
                                         )
-                                    if order_info is not None and order_info.get("is_perp") and intent.stop_loss is not None:
+                                    if order_info is not None and (order_info.get("is_perp") or order_info.get("is_margin")) \
+                                            and intent.stop_loss is not None:
                                         order_info["attach_stop"] = intent.stop_loss
                                     fill = None
+                                    quote = quote_for_order
                                     if quote and order_info is not None:
                                         fill = match_order(
                                             client_oid, order_info,
                                             Decimal(str(quote.bid_price)), Decimal(str(quote.ask_price)),
                                             *((quote.bid_size, quote.ask_size) if getattr(quote, "sizes_known", False) else (None, None)),
                                         )
-                                    if fill and profile_spot_entry and fill.price <= structural_stop:
+                                    if fill and (profile_spot_entry or profile_margin_entry) and (
+                                            fill.price <= structural_stop if side == "BUY" else fill.price >= structural_stop):
                                         # A marketable BUY limit can improve below its submitted limit. Its
                                         # structural stop must remain below the actual fill, not just the limit.
                                         engine.dispatcher.release_reservation(client_oid)
@@ -2319,7 +3054,7 @@ async def profile_decision_retention(pool) -> None:
 
 
 async def rehydrate_dispatcher_state(pool, engine):
-    """Load cash, spot positions, and perp positions from Postgres into the dispatcher."""
+    """Load cash, spot holdings, perp positions and isolated margin accounts from Postgres."""
     try:
         acc_row = await pool.fetchrow("SELECT cash_balance FROM paper_accounts WHERE account_id = $1", engine.account_id)
         if acc_row:
@@ -2328,7 +3063,7 @@ async def rehydrate_dispatcher_state(pool, engine):
     
         pos_rows = await pool.fetch(
             "SELECT instrument_id, quantity FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' "
-            "AND instrument_id NOT LIKE '%-PERP.%'",
+            "AND instrument_id NOT LIKE '%-PERP.%' AND instrument_id NOT LIKE '%-MARGIN.%'",
             engine.account_id,
         )
         # Several OPEN rows can share one instrument (e.g. a manual position and a mandate-owned one).
@@ -2359,6 +3094,49 @@ async def rehydrate_dispatcher_state(pool, engine):
         logger.info("Rehydrated %d open perp positions from database", len(perp_rows))
     except Exception as e:
         logger.warning("Error rehydrating perp positions: %s", e)
+
+    # Margin rows have their own isolated inventory and liability; never treat their signed position quantity as a
+    # plain spot holding. The account row contains exact balances while paper_positions owns entry/side/profile.
+    try:
+        last_good = getattr(engine, "margin_settings", None) or default_margin_settings()
+        settings_rows = await pool.fetch("SELECT key, value FROM system_settings WHERE key LIKE 'margin.%'")
+        margin_settings, problems = read_margin_settings(
+            {row["key"]: row["value"] for row in settings_rows}, last_good,
+        )
+        engine.margin_settings = margin_settings
+        engine.dispatcher.margin_pair_settings = margin_settings.pair_settings
+        for problem in problems:
+            logger.error("Margin setting refused; retaining last valid value: %s", problem)
+    except Exception as e:
+        logger.warning("Margin settings not reloaded; retaining defaults/last valid values: %s", e)
+
+    try:
+        margin_rows = await pool.fetch(
+            """SELECT m.pair, m.base_qty, m.quote_qty, m.borrowed_base, m.borrowed_quote,
+                      m.interest_base, m.interest_quote, m.collateral_usdt,
+                      p.side, p.entry_price, p.leverage, p.instance_id
+               FROM paper_margin_accounts m
+               JOIN paper_positions p
+                 ON p.account_id = m.account_id
+                AND p.instrument_id = m.pair || '-MARGIN.BINANCE'
+                AND p.status = 'OPEN'
+               WHERE m.account_id = $1 AND m.status = 'OPEN'""",
+            engine.account_id,
+        )
+        for row in margin_rows:
+            instrument_id = f"{row['pair']}-MARGIN.BINANCE"
+            engine.dispatcher.margin_accounts[instrument_id] = SpotMarginAccountState(
+                side=row["side"], base_qty=Decimal(str(row["base_qty"])),
+                quote_qty=Decimal(str(row["quote_qty"])), borrowed_base=Decimal(str(row["borrowed_base"])),
+                borrowed_quote=Decimal(str(row["borrowed_quote"])), interest_base=Decimal(str(row["interest_base"])),
+                interest_quote=Decimal(str(row["interest_quote"])), collateral_usdt=Decimal(str(row["collateral_usdt"])),
+                entry_price=Decimal(str(row["entry_price"])), leverage=int(row["leverage"]),
+                instance_id=row["instance_id"],
+            )
+        if margin_rows:
+            logger.info("Rehydrated %d isolated margin accounts from database", len(margin_rows))
+    except Exception as e:
+        logger.warning("Error rehydrating isolated margin accounts: %s", e)
 
     # Fail closed across restarts: a latched PAPER kill switch stays latched
     try:
