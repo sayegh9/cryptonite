@@ -35,7 +35,6 @@ import type {
   DebateVerdict,
   OrderCardWidget,
   PriceChartWidget,
-  SwingCandidateItem,
   SwingRadarWidget,
   TearsheetWidget,
 } from "@/lib/brain/types";

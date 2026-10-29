@@ -32,7 +32,8 @@ END = 1_791_201_600 * 10**9
 async def scanner(monkeypatch):
     """Real isolated Postgres, deterministic lake, matching engine, and a captured Redis queue."""
     url = os.environ["DATABASE_URL"]
-    assert "cryptonite_ci_" in url
+    db_name = url.rsplit("/", 1)[-1].split("?", 1)[0]
+    assert db_name == "cryptonite_ci" or db_name.startswith("cryptonite_ci_"), "throwaway CI database only"
     pool = await asyncpg.create_pool(url, min_size=1, max_size=3)
     await pool.execute("TRUNCATE ai_mandates, instruments, scan_specs CASCADE")
     await pool.execute("TRUNCATE execution_commands CASCADE")
