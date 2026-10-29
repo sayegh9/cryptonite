@@ -523,7 +523,9 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
         if price is None:
             continue
         ai_owner = r["owner"] == AI_INSTANCE or r["owner"].startswith("AI_MANDATE_")
-        ai_owned = ai_owner and (r["n_owners"] == 1 or market not in (Market.PERP, Market.SPOT_MARGIN))
+        ai_owned = ai_owner and (
+            market not in (Market.PERP, Market.SPOT_MARGIN) or r["n_owners"] == 1
+        )
         margin_level = margin_call_level = margin_liquidation_level = None
         if market is Market.SPOT_MARGIN:
             pair = symbol_of(inst)

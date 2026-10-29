@@ -22,7 +22,7 @@ from decimal import Decimal
 import asyncpg
 import pytest
 import redis.asyncio as aioredis
-from connections import DB_URL, REDIS_URL
+from connections import REDIS_URL
 from cryptonite_execution.bridge import EventBridgeWorker
 from cryptonite_execution.engine import PaperTradingEngine
 from cryptonite_execution.risk import OrderIntent
@@ -33,15 +33,23 @@ from cryptonite_schemas.identifiers import (
     to_nautilus_instrument_id,
     to_spot_instrument_id,
 )
+from migrated_db import migrated_database
 from nautilus_trader.model import Bar, Price, Quantity, QuoteTick
 
 
+@pytest.fixture
+def full_stack_database():
+    """Run the integration test against a disposable database at the current schema head."""
+    with migrated_database("cryptonite_full_stack") as database_url:
+        yield database_url
+
+
 @pytest.mark.asyncio
-async def test_full_stack_paper_trading_e2e():
+async def test_full_stack_paper_trading_e2e(full_stack_database):
     # 0. Enforce Nautilus version lock
     assert_version_locked()
 
-    pool = await asyncpg.create_pool(dsn=DB_URL, min_size=2, max_size=5)
+    pool = await asyncpg.create_pool(dsn=full_stack_database, min_size=2, max_size=5)
     r_client = aioredis.from_url(REDIS_URL, decode_responses=False)
     # Isolate this pipeline's outbox delivery from older pending CI events.
     await pool.execute("DELETE FROM outbox_events WHERE status = 'PENDING'")
@@ -380,7 +388,7 @@ async def test_full_stack_paper_trading_e2e():
 
     # 8. Outbox Relay draining to Redis (drain if not already drained by background daemon)
     if outbox_row["status"] == "PENDING":
-        relay = OutboxRelay(database_url=DB_URL, redis_url=REDIS_URL, batch_size=10)
+        relay = OutboxRelay(database_url=full_stack_database, redis_url=REDIS_URL, batch_size=10)
         relay.pool = pool
         relay.redis = r_client
         relayed_cnt = await relay.process_batch_once()
