@@ -353,6 +353,9 @@ async def test_preset_stats_computes_quality_labels_on_server(h):
         expected = "thin" if row["trades"] < 20 else "negative" if row["avg_r"] < 0 else "ok"
         assert row["quality"] == expected
     assert {row["quality"] for row in document["results"]} == {"thin", "negative", "ok"}
+    assert document["preset_ids"]["SWING:SHORT"] == [
+        "swing-trend-pullback-short-1h", "swing-squeeze-breakdown-short-1h", "swing-sniper-pullback-short-15m"]
+    assert len(document["preset_ids"]["INTRADAY:BOTH"]) == 6
 
 
 async def test_estimate_reports_not_in_feed_and_existing_onboarding_action(h):

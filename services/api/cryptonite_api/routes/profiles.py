@@ -22,7 +22,7 @@ from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, r
 from cryptonite_execution import profile_lifecycle
 from cryptonite_schemas.mandate import mandate_instance_id
 from cryptonite_schemas.marks import read_live_quote, resolve_quote_price
-from cryptonite_schemas.profile import Market, market_of, underlying_spot
+from cryptonite_schemas.profile import Direction, Market, Style, market_of, preset_ids_for, underlying_spot
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
@@ -502,8 +502,12 @@ def _preset_document() -> dict[str, Any]:
 
 @router.get("/presets/stats")
 async def preset_stats(auth: dict[str, Any] = Depends(require_operator)) -> dict[str, Any]:
-    """Serve the immutable scanner replay and assign the three UI quality labels on the server."""
-    return _preset_document()
+    """Serve the immutable scanner replay and assign the three UI quality labels on the server.
+
+    ``preset_ids`` is ``preset_ids_for(style, direction)`` for every pair, so the wizard never copies the mapping."""
+    preset_ids = {f"{style.value}:{direction.value}": list(preset_ids_for(style, direction))
+                  for style in Style for direction in Direction}
+    return {**_preset_document(), "preset_ids": preset_ids}
 
 
 def _requested_coins(coins: str) -> list[str]:
