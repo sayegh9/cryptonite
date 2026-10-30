@@ -2,8 +2,10 @@
 
 Reads the staging DB (``docker exec stg_postgres psql``) and the staging container logs for a window
 and prints per-service error counts, ``ai_profile_decisions`` per stage/outcome, command counts
-(including dry-run mandates) and restart counts. Exits 1 when any service logged an error/traceback,
-a container restarted or was OOM-killed, so a deploy script can gate on it. Exit 2: staging not found.
+(including dry-run mandates) and restart counts. Exits 1 when any service logged an unrecognized
+error/traceback, a container restarted or was OOM-killed, so a deploy script can gate on it. The
+known fail-closed SOL/BNB precision messages documented in the P4 plan are reported separately.
+Exit 2: staging not found.
 
     uv run python scripts/staging_soak_report.py [--hours 24] [--json]
 
@@ -23,9 +25,20 @@ PG = "stg_postgres"
 # Match log severity, not words inside a WARNING message (for example a recovered
 # WebSocket close reason containing "internal error"). Tracebacks still fail the soak.
 ERROR_RE = re.compile(
-    r"Traceback \(most recent call last\)|\[(?:ERROR|CRITICAL|FATAL)\]|\b(?:ERROR|CRITICAL|FATAL):|Unhandled exception",
+    r"Traceback \(most recent call last\)|\[(?:ERROR|CRITICAL|FATAL)\]|"
+    r"(?:\[\d+\]\s+|^\s*)(?:ERROR|CRITICAL|FATAL):|Unhandled exception",
     re.IGNORECASE,
 )
+KNOWN_SCANNER_PRECISION_NOISE_RE = re.compile(
+    r"\[ERROR\] cryptonite\.scanner\.engine: Missing or invalid price_precision for instrument "
+    r"(?:BNBUSDT|SOLUSDT)\.BINANCE \(value=None\)\. Failing closed\.",
+    re.IGNORECASE,
+)
+
+
+def is_known_scanner_precision_noise(line: str) -> bool:
+    """Match only the documented, fail-closed SOL/BNB metadata messages from the P4 baseline."""
+    return KNOWN_SCANNER_PRECISION_NOISE_RE.search(line) is not None
 
 
 def _run(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -37,13 +50,15 @@ def containers() -> list[str]:
     return sorted(n for n in out.stdout.split() if n.startswith("stg_"))
 
 
-def log_errors(name: str, hours: float) -> tuple[int, int, list[str]]:
-    """(error lines, traceback count, up to 3 sample lines) for one container."""
+def log_errors(name: str, hours: float) -> tuple[int, int, list[str], int, list[str]]:
+    """Return fatal errors, tracebacks, samples, and separately reported known fail-closed noise."""
     res = _run(["docker", "logs", "--since", f"{int(hours * 60)}m", name])
     lines = (res.stdout + "\n" + res.stderr).splitlines()
-    errors = [ln for ln in lines if ERROR_RE.search(ln)]
+    error_lines = [ln for ln in lines if ERROR_RE.search(ln)]
+    known_noise = [ln for ln in error_lines if is_known_scanner_precision_noise(ln)]
+    errors = [ln for ln in error_lines if not is_known_scanner_precision_noise(ln)]
     tracebacks = sum(1 for ln in lines if "Traceback (most recent call last)" in ln)
-    return len(errors), tracebacks, [e[:200] for e in errors[:3]]
+    return len(errors), tracebacks, [e[:200] for e in errors[:3]], len(known_noise), [e[:200] for e in known_noise[:3]]
 
 
 def restart_info(name: str) -> tuple[int, bool]:
@@ -72,14 +87,30 @@ def main() -> int:
         return 2
 
     window = f"{args.hours:g} hours"
-    report: dict = {"window_hours": args.hours, "services": {}, "decisions": None, "commands": None, "dry_run_commands": None}
+    report: dict = {
+        "window_hours": args.hours,
+        "services": {},
+        "decisions": None,
+        "commands": None,
+        "dry_run_commands": None,
+    }
     total_errors = 0
+    total_known_noise = 0
     bad_restarts = 0
     for n in names:
-        errs, tbs, sample = log_errors(n, args.hours)
+        errs, tbs, sample, known_count, known_sample = log_errors(n, args.hours)
         restarts, oom = restart_info(n)
-        report["services"][n] = {"error_lines": errs, "tracebacks": tbs, "restarts": restarts, "oom_killed": oom, "sample": sample}
+        report["services"][n] = {
+            "error_lines": errs,
+            "tracebacks": tbs,
+            "restarts": restarts,
+            "oom_killed": oom,
+            "sample": sample,
+            "known_fail_closed_precision_lines": known_count,
+            "known_fail_closed_precision_sample": known_sample,
+        }
         total_errors += errs
+        total_known_noise += known_count
         bad_restarts += restarts + (1 if oom else 0)
 
     interval = f"now() - interval '{window}'"
@@ -93,6 +124,7 @@ def main() -> int:
     )
     report["dry_run_commands"] = None if dry is None else [{"type": r[0], "status": r[1], "count": int(r[2])} for r in dry]
     report["total_errors"] = total_errors
+    report["known_fail_closed_precision_lines"] = total_known_noise
     report["restarts_or_oom"] = bad_restarts
     report["pass"] = total_errors == 0 and bad_restarts == 0
 
@@ -100,11 +132,16 @@ def main() -> int:
         print(json.dumps(report, indent=2))
     else:
         print(f"Staging soak report, last {window}")
-        print(f"{'service':<24}{'errors':>8}{'tracebacks':>12}{'restarts':>10}  oom")
+        print(f"{'service':<24}{'errors':>8}{'tracebacks':>12}{'restarts':>10}{'known_precision':>18}  oom")
         for n, s in report["services"].items():
-            print(f"{n:<24}{s['error_lines']:>8}{s['tracebacks']:>12}{s['restarts']:>10}  {'YES' if s['oom_killed'] else '-'}")
+            print(
+                f"{n:<24}{s['error_lines']:>8}{s['tracebacks']:>12}{s['restarts']:>10}"
+                f"{s['known_fail_closed_precision_lines']:>18}  {'YES' if s['oom_killed'] else '-'}"
+            )
             for line in s["sample"]:
                 print(f"    | {line}")
+            for line in s["known_fail_closed_precision_sample"]:
+                print(f"    | known fail-closed baseline: {line}")
         for title, key in (("ai_profile_decisions by stage/outcome", "decisions"), ("execution_commands by type/status", "commands"),
                            ("dry-run mandate commands by type/status", "dry_run_commands")):
             rows = report[key]
@@ -117,7 +154,10 @@ def main() -> int:
                 for r in rows:
                     label = f"{r.get('stage', r.get('type'))}/{r.get('outcome', r.get('status'))}"
                     print(f"  {label:<40}{r['count']:>8}")
-        print(f"\nTOTAL error lines: {total_errors}   restarts+OOM: {bad_restarts}   => {'PASS' if report['pass'] else 'FAIL'}")
+        print(
+            f"\nTOTAL error lines: {total_errors}   known fail-closed precision lines: {total_known_noise}"
+            f"   restarts+OOM: {bad_restarts}   => {'PASS' if report['pass'] else 'FAIL'}"
+        )
     return 0 if report["pass"] else 1
 
 

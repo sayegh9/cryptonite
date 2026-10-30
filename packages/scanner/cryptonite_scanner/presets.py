@@ -135,16 +135,32 @@ PRESET_MACD_MOMENTUM = ScanSpecCreate(
 PRESET_SCALP_MULTI_TF = ScanSpecCreate(
     slug="scalp-multi-tf",
     name="Execution Strategist Multi-TF",
-    description="Captures 15m, 1H and 4H bar close states for the Execution Strategist Engine.",
+    description="Scans 15m pullback recoveries aligned with the 1h uptrend.",
     universe=UniverseConfig(
         instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
         timeframes=["15m", "1h", "4h"],  # no 1d (review-plan Q8, A1a M2: a 300-day lookback per event)
     ),
     rules=[
         RuleGroup(
-            category="universe",
+            category="trend",
             logic="AND",
-            conditions=[],  # Unconditional capture - engine handles the logic
+            conditions=[
+                RuleCondition(field="htf_close", operator=RuleOperator.GT, value="htf_ema_50", lookback=0),
+                RuleCondition(field="ema_20", operator=RuleOperator.GT, value="ema_50", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[RuleCondition(field="rsi", operator=RuleOperator.CROSS_ABOVE, value=40.0, lookback=1)],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.GT, value="ema_20", lookback=0),
+                RuleCondition(field="close", operator=RuleOperator.GT, value="open", lookback=0),
+            ],
         ),
     ],
     risk=RiskConfig(stop_loss_atr_mult=0.5, take_profit_atr_mult=2.0, risk_reward_ratio=2.0),
@@ -153,7 +169,7 @@ PRESET_SCALP_MULTI_TF = ScanSpecCreate(
 PRESET_SCALP_MULTI_TF_SHORT = ScanSpecCreate(
     slug="scalp-multi-tf-short",
     name="Execution Strategist Multi-TF Short",
-    description="Captures 15m, 1H and 4H bar close states for the Execution Strategist Engine in a downtrend.",
+    description="Scans 15m pullback rejections aligned with the 1h downtrend.",
     universe=UniverseConfig(
         instrument_ids=["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"],
         timeframes=["15m", "1h", "4h"],
@@ -162,7 +178,23 @@ PRESET_SCALP_MULTI_TF_SHORT = ScanSpecCreate(
         RuleGroup(
             category="trend",
             logic="AND",
-            conditions=[RuleCondition(field="close", operator=RuleOperator.LT, value="ema_50", lookback=0)],
+            conditions=[
+                RuleCondition(field="htf_close", operator=RuleOperator.LT, value="htf_ema_50", lookback=0),
+                RuleCondition(field="ema_20", operator=RuleOperator.LT, value="ema_50", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[RuleCondition(field="rsi", operator=RuleOperator.CROSS_BELOW, value=60.0, lookback=1)],
+        ),
+        RuleGroup(
+            category="confirmation",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.LT, value="ema_20", lookback=0),
+                RuleCondition(field="close", operator=RuleOperator.LT, value="open", lookback=0),
+            ],
         ),
     ],
     risk=RiskConfig(direction="SHORT", stop_loss_atr_mult=0.5, take_profit_atr_mult=2.0, risk_reward_ratio=2.0),

@@ -139,7 +139,6 @@ async def test_dry_run_close_runs_and_logs_the_reason_with_unknown_entry_risk(re
 
 @pytest.mark.parametrize("instrument,markets,side,direction,code", [
     (SPOT, ["PERP"], "BUY", "LONG", "MANDATE_MARKET_NOT_ALLOWED"),
-    (MARGIN, ["SPOT_MARGIN"], "BUY", "LONG", "MANDATE_MARKET_NOT_ALLOWED"),
     (PERP, ["PERP"], "SELL", "LONG", "MANDATE_DIRECTION_NOT_ALLOWED"),
     (PERP, ["PERP"], "BUY", "SHORT", "MANDATE_DIRECTION_NOT_ALLOWED"),
 ])
@@ -855,15 +854,20 @@ async def test_retention_deletes_only_older_than_90_days_in_bounded_batches(h):
 
 
 @pytest.mark.parametrize("method", ["post", "patch"])
-async def test_api_refuses_margin_before_spending_totp(h, method):
+async def test_api_accepts_margin_after_totp_and_requires_it_for_the_added_market(h, method):
     m = await h.mandate(status="STOPPED")
     url = "/api/v1/ai/mandates" + (f"/{m.id}" if method == "patch" else "")
-    body = {"markets": ["SPOT_MARGIN"]}
+    body = {"markets": ["SPOT", "SPOT_MARGIN"]}
     if method == "post":
-        body.update(name="margin-rejected", capital_budget_usd="1000", instruments=[SPOT], max_position_pct="25")
+        body.update(name="margin-enabled", capital_budget_usd="1000", instruments=[SPOT], max_position_pct="25")
     async with h.client() as client:
+        without_totp = await client.request(method.upper(), url, json=body, headers=h.headers)
+        assert without_totp.status_code == 401 and without_totp.json()["detail"].startswith("TOTP_REQUIRED")
+        body["totp_code"] = h.totp.now()
         response = await client.request(method.upper(), url, json=body, headers=h.headers)
-    assert response.status_code == 422 and response.json()["detail"] == "MARGIN_NOT_AVAILABLE"
+    assert response.status_code == (201 if method == "post" else 200), response.text
+    assert "SPOT_MARGIN" in response.json()["markets"]
+    assert await h.pool.fetchval("SELECT count(*) FROM ai_mandates WHERE markets @> ARRAY['SPOT_MARGIN']::text[]") >= 1
 
 
 async def test_real_reservations_are_scoped_to_the_owning_profile_and_counted_once(h):

@@ -28,6 +28,8 @@ import math
 from collections.abc import Iterable, Mapping
 from decimal import Decimal
 
+from cryptonite_schemas.profile import symbol_of
+
 from cryptonite_execution.risk_limits import DEFAULT_CROSS_MANDATE_EXPOSURE_PCT
 
 CROSS_MANDATE_EXPOSURE = "CROSS_MANDATE_EXPOSURE"
@@ -49,7 +51,7 @@ __all__ = [
 def beta_symbol(instrument_id: str) -> str:
     """The lake symbol whose returns stand for an instrument: ``ETHUSDT.BINANCE`` and
     ``ETHUSDT-PERP.BINANCE`` -> ``ETHUSDT``."""
-    return instrument_id.split(".")[0].upper().removesuffix("-PERP")
+    return symbol_of(instrument_id)
 
 
 def _hourly_returns(closes: Iterable[tuple[int, float]], bar_ns: int) -> dict[int, float]:

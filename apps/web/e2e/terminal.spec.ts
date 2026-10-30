@@ -155,7 +155,7 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
     await page.goto("/?ws=terminal");
 
     // Verify Title and Header Branding
-    await expect(page.getByText("CRYPTONITE", { exact: true })).toBeVisible();
+    await expect(page.getByRole("img", { name: "Cryptonite" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Terminal" })).toBeVisible();
     // G1: the mode banner is computed (backend not stubbed here, so it says unknown), never hardcoded
     await expect(page.locator("header").getByTestId("mode-banner")).toContainText("PAPER ·");

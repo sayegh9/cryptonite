@@ -22,7 +22,11 @@ from cryptonite_schemas.exit_thresholds import (
     ExitThresholds,
     violations,
 )
-from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS
+from cryptonite_schemas.runtime_settings import (
+    MARGIN_PAIR_SETTINGS,
+    MARGIN_SETTING_BOUNDS,
+    RUNTIME_BOUNDS,
+)
 
 
 class Tier(StrEnum):
@@ -51,7 +55,7 @@ WRITABLE_TIERS = frozenset({Tier.T_L, Tier.TOTP, Tier.SESSION})
 SERVICE_STORE = "env"  # values read from the environment at import, outside the API
 SYSTEM_STORE = "system_settings"
 # Keys with a write endpoint. Everything else stays read-only until its write path exists.
-WRITE_PATHS = frozenset({"LLM_DAILY_BUDGET_USD", *SETTING_KEYS, *RUNTIME_BOUNDS})
+WRITE_PATHS = frozenset({"LLM_DAILY_BUDGET_USD", *SETTING_KEYS, *RUNTIME_BOUNDS, *MARGIN_SETTING_BOUNDS})
 EXIT_MONITOR_HEARTBEAT = "exit_monitor:heartbeat"  # the monitor publishes the set it applies here
 
 
@@ -121,6 +125,30 @@ def _runtime_setting(key: str, label: str, tier: Tier, adr: str, note: str,
     bound = RUNTIME_BOUNDS[key]
     return Setting(key, label, int(bound.default), int(bound.low), int(bound.high), Apply.HOT, tier, adr,
                    SYSTEM_STORE, note, decimals=0, tighter=tighter, choices=choices)
+
+
+def _margin_setting(key: str, label: str, note: str, *, tighter: Tighter = Tighter.LOWER) -> Setting:
+    """An exact-decimal margin setting read by the paper margin math at runtime."""
+    bound = MARGIN_SETTING_BOUNDS[key]
+    return Setting(key, label, bound.default, bound.low, bound.high, Apply.HOT, Tier.T_L, "P4.0b",
+                   SYSTEM_STORE, note, decimals=bound.decimals, tighter=tighter)
+
+
+def _margin_pair_setting(pair: str, field: str) -> Setting:
+    """Register a pair-specific margin value with its protective change direction."""
+    key = f"margin.pair.{pair}.{field}"
+    if field.startswith("max_borrow_"):
+        asset = field.removeprefix("max_borrow_")
+        label = f"{pair} maximum borrow, {asset}"
+        note = "regular-user displayed limit, not tier-identified; unverified cap may be lowered freely, raising it needs TOTP"
+        tighter = Tighter.LOWER
+    elif field == "max_leverage":
+        label, note, tighter = f"{pair} maximum leverage (x)", "verified against public Binance isolated-pair data; lowering is stricter", Tighter.LOWER
+    else:
+        label = f"{pair} {field.replace('_', ' ')}"
+        note = "verified against Binance's leverage-tier FAQ; raising this trigger is stricter"
+        tighter = Tighter.HIGHER
+    return _margin_setting(key, label, note, tighter=tighter)
 
 
 def _exit_setting(key: str, label: str, default: Decimal | int | float, field: str, note: str) -> Setting:
@@ -201,6 +229,26 @@ REGISTRY: tuple[Setting, ...] = (
                      Tier.T_L, "0011",
                      "the budgets of the Active, Paused and Stopping profiles add up to at most this share of account "
                      "equity (checked at Start); raising it needs TOTP"),
+    *(
+        _margin_setting(key, f"Hourly margin interest rate, {asset} (%/hour)",
+                        "snapshot of Binance's dynamic rate on 2026-10-29; the higher modeled rate is conservative, "
+                        "so lowering it requires TOTP",
+                        tighter=Tighter.HIGHER)
+        for asset, key in {
+            "BTC": "margin.interest_hourly.BTC",
+            "ETH": "margin.interest_hourly.ETH",
+            "XRP": "margin.interest_hourly.XRP",
+            "WLD": "margin.interest_hourly.WLD",
+            "USDT": "margin.interest_hourly.USDT",
+        }.items()
+    ),
+    *(
+        _margin_pair_setting(pair, field)
+        for pair, fields in MARGIN_PAIR_SETTINGS.items()
+        for field in fields
+    ),
+    _margin_setting("margin.liquidation_fee_pct", "Margin liquidation fee (%)",
+                    "Binance fee on liquidated assets; lowering the fee is risk-reducing and free"),
     Setting("guard.mandate_max_leverage", "Mandate leverage ceiling (x)", 10, None, None, Apply.DEPLOY, Tier.FIXED,
             "0009", "migration 048: chk_ai_mandates_leverage", "each mandate's own maximum (default 3x) sits under it"),
     Setting("guard.account_max_leverage", "Account leverage maximum (x)", 10, None, None, Apply.DEPLOY, Tier.FIXED,
@@ -252,7 +300,7 @@ def current_values(stored: Mapping[str, Any], row: Any) -> dict[str, Any]:
     values: dict[str, Any] = {}
     budget = stored.get("LLM_DAILY_BUDGET_USD")
     values["LLM_DAILY_BUDGET_USD"] = None if budget is None else str(parse_cap(budget, DEFAULT_DAILY_CAP_USD))
-    for key in (*SETTING_KEYS, *RUNTIME_BOUNDS):
+    for key in (*SETTING_KEYS, *RUNTIME_BOUNDS, *MARGIN_SETTING_BOUNDS):
         values[key] = stored_text(stored.get(key))
     effective_limits = effective(RiskLimitValues.from_row(row)).as_dict()
     for key, field in _RISK_KEYS.items():

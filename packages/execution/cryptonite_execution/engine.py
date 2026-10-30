@@ -5,33 +5,27 @@ import json
 import logging
 import threading
 import time
+import uuid
 from decimal import Decimal
 from typing import Any
 
 import asyncpg
+from cryptonite_schemas.profile import underlying_spot
+from nautilus_trader.live import LiveNode
+from nautilus_trader.model import (
+    Bar,
+    InstrumentId,
+    TraderId,
+)
+
 from cryptonite_execution.bridge import EventBridge, IntegritySupervisor
 from cryptonite_execution.derivatives import FundingPaymentEvent, LiquidationEvent
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch
 from cryptonite_execution.mailbox import NodeCommandMailbox
-from cryptonite_execution.risk import GuardedOrderDispatcher, OrderIntent
+from cryptonite_execution.risk import GuardedOrderDispatcher
 from cryptonite_execution.router import GateOwnedBarRouter
 from cryptonite_execution.version_lock import assert_version_locked
-from nautilus_trader.config import LiveDataEngineConfig, MessageBusConfig
-from nautilus_trader.infrastructure import (
-    RedisCacheConfig,
-    RedisCacheDatabase,
-    RedisMessageBusConfig,
-    RedisMessageBusFactory,
-)
-from nautilus_trader.live import LiveNode
-from nautilus_trader.model import (
-    Bar,
-    ClientId,
-    InstrumentId,
-    QuoteTick,
-    TraderId,
-)
 
 logger = logging.getLogger("cryptonite.execution.engine")
 
@@ -314,6 +308,18 @@ class PaperTradingEngine:
                         inst_id, Decimal(str(price)), Decimal("0"), "FLATTEN-EMERGENCY"
                     )
                     logger.info("Flattened perp position %s: reduce-only (side, qty, pnl)=%s at %s", inst_id, closed, price)
+                elif self.dispatcher.get_margin_position_qty(inst_id) != 0:
+                    price = payload.get("price") or cmd.get("price")
+                    if price is None and self.dispatcher.node_cache:
+                        account = self.dispatcher.margin_accounts[inst_id]
+                        quote = self.dispatcher.node_cache.quote(InstrumentId.from_str(underlying_spot(inst_id)))
+                        price = quote.bid_price if account.side == "LONG" else quote.ask_price
+                    if price is not None:
+                        closed = self.dispatcher.flatten_margin_position(
+                            inst_id, Decimal(str(price)), Decimal("0"), "FLATTEN-EMERGENCY"
+                        )
+                        logger.info("Flattened margin position %s: reduce-only (side, qty, pnl)=%s at %s",
+                                    inst_id, closed, price)
 
             elif cmd_type == "TRIP_KILL_SWITCH":
                 payload = cmd.get("payload", {})
@@ -329,6 +335,18 @@ class PaperTradingEngine:
                 to_cancel = [cid for cid, o in self.dispatcher.open_orders.items() if self.dispatcher.is_entry_order(o)]
                 for cid in to_cancel:
                     self.dispatcher.release_reservation(cid)
+                for inst_id, account in list(self.dispatcher.margin_accounts.items()):
+                    try:
+                        quote = self.dispatcher.node_cache.quote(InstrumentId.from_str(underlying_spot(inst_id))) \
+                            if self.dispatcher.node_cache else None
+                        if quote is None:
+                            continue
+                        price = Decimal(str(quote.bid_price if account.side == "LONG" else quote.ask_price))
+                        qty = abs(account.position_qty)
+                        fee = qty * price * self.dispatcher.taker_fee
+                        self.dispatcher.flatten_margin_position(inst_id, price, fee, f"KILL-MARGIN-{uuid.uuid4().hex[:8]}")
+                    except Exception as exc:
+                        logger.error("Could not flatten isolated margin position %s after kill switch: %s", inst_id, exc)
                 logger.critical("Kill switch latched by %s: %s (cancelled %d working entry orders)", latched_by, reason, len(to_cancel))
 
             elif cmd_type == "RESET_SWITCH":

@@ -28,7 +28,7 @@ LONG_PRESET_SNAPSHOT_SHA256 = {
     "trend-pullback": "aab091495aff64cbb8a1c3e68d398208163b7290676fb5992372b16f8244d648",
     "bollinger-breakout": "592247b3ca71a50bd035c230a8acb48c064de33c308d5c8fc301907db439a704",
     "macd-momentum-shift": "e60ee5d29da71eb5bcc1757482031fa165fdb947669812197c3d78785f68ffd7",
-    "scalp-multi-tf": "6069a57f8af01f4d89e0ad70e1a0226602d05c447fbe49a95f767e8576792bbc",
+    "scalp-multi-tf": "c0c4cf5e48a27ebebfd580eb6ee19838ffa8a478d80d5b2fc4597a0211eae9a4",
     "swing-trend-pullback-1h": "20009e67ef5d824c8d46901fca3e3106bcd5034c8621659b173c792008452d83",
     "swing-sniper-pullback-15m": "747c4f50ed6127c38acc567e040baa851643433d061d0df850b7d9505e989733",
     "swing-squeeze-breakout-1h": "730d9adaaf71034e6424bba5154f6379ddf5730b255dda970d49fcb0ea9c28e2",

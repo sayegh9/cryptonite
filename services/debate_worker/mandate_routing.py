@@ -8,7 +8,16 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from cryptonite_execution import profile_lifecycle
+from cryptonite_execution.leverage import (
+    ACCOUNT_EXPOSURE_CAP,
+    ACCOUNT_MAX_LEVERAGE,
+    DEFAULT_FEE_ROUND_TRIP,
+    DEFAULT_SLIPPAGE_ALLOWANCE,
+    LeverageLimits,
+    plan_spot_margin_order,
+)
 from cryptonite_execution.profile_log import record_decision
+from cryptonite_execution.spot_margin import size_margin_borrow
 from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.mandate import (
     DEFAULT_APPROVAL_TTL_S,
@@ -19,7 +28,6 @@ from cryptonite_schemas.mandate import (
     Mandate,
     canonical_instrument,
     in_active_hours,
-    is_perp_instrument,
     mandate_id_from_instance,
     timeout_policy_for,
 )
@@ -30,8 +38,11 @@ from cryptonite_schemas.profile import (
     allows_side,
     base_asset,
     instrument_for,
+    market_of,
     select_market,
+    symbol_of,
 )
+from cryptonite_schemas.runtime_settings import default_margin_settings, read_margin_settings
 from cryptonite_schemas.session import (
     SESSION_COLUMNS,
     SessionVerdict,
@@ -101,8 +112,6 @@ async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: 
     if market is None:
         return "NO_MARKET", instrument_id
     instrument = instrument_for(instrument_id, market)
-    if market is Market.SPOT_MARGIN:
-        return "SPOT_MARGIN_NOT_AVAILABLE", instrument
     return None, instrument
 
 
@@ -116,6 +125,10 @@ async def reduction_instrument(conn, mandate: Mandate, instrument_id: str, side:
     held_side, held = await perp_position(conn, mandate, perp)
     if held > 0 and held_side != ("LONG" if side == "BUY" else "SHORT"):
         return perp
+    margin = instrument_for(instrument_id, Market.SPOT_MARGIN)
+    held_side, held = await perp_position(conn, mandate, margin)
+    if held > 0 and held_side != ("LONG" if side == "BUY" else "SHORT"):
+        return margin
     return None
 
 
@@ -388,6 +401,88 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
     return ActionClass.ADD_RISK, payload, summary
 
 
+async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str, side: str,
+                             base: dict[str, Any], conviction: float, allocation_pct: float, *,
+                             now: datetime.datetime, marks: dict[str, LiveMark] | None,
+                             stop_loss: float | None, take_profit: float | None,
+                             reference_price: float | None) -> tuple[ActionClass, dict[str, Any], str] | tuple[str, Mandate]:
+    """Create a fail-closed margin plan for the approval payload using the runtime pair settings."""
+    long = side == "BUY"
+    held_side, held = await perp_position(conn, mandate, instrument)
+    held = held.normalize()
+    if held > 0 and held_side != ("LONG" if long else "SHORT"):
+        payload = {**base, "quantity": format(held, "f"), "reduce_only": True,
+                   "reason": "DEBATE_REDUCE", "position_side": held_side}
+        return (ActionClass.REDUCE_RISK, payload,
+                f"{side} {instrument} reduce-only {held:g} (closes the mandate's {held_side}) · conviction {conviction:.2f}")
+    try:
+        entry = Decimal(str(reference_price))
+        stop = Decimal(str(stop_loss))
+        target = Decimal(str(take_profit))
+    except (InvalidOperation, TypeError, ValueError):
+        return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+    if not all(x.is_finite() and x > 0 for x in (entry, stop, target)):
+        return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+    if not (stop < entry < target if long else target < entry < stop):
+        return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+    if reason := await entry_filter_reason(conn, mandate, conviction, now=now, reference_price=float(entry),
+                                           stop_loss=float(stop), take_profit=float(target), side=side):
+        return await _no_trade(conn, run_id, instrument, mandate, reason)
+    room_pct = await entry_room_pct(conn, mandate, instrument, marks)
+    if room_pct < MIN_MANDATE_ENTRY_PCT:
+        return await _no_trade(conn, run_id, instrument, mandate, "MANDATE_POSITION_LIMIT_REACHED")
+    settings_rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key LIKE 'margin.%'")
+    settings, problems = read_margin_settings({r["key"]: r["value"] for r in settings_rows},
+                                              default_margin_settings())
+    for problem in problems:
+        logger.warning("Margin setting refused in route plan; using its last-good default: %s", problem)
+    equity_raw = await conn.fetchval("SELECT total_equity FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID)
+    if equity_raw is None or Decimal(str(equity_raw)) <= 0:
+        return await _no_trade(conn, run_id, instrument, mandate, "NON_POSITIVE_EQUITY")
+    equity = Decimal(str(equity_raw))
+    budget = mandate.capital_budget_usd
+    requested_margin = budget * Decimal(str(allocation_pct)) / Decimal("100")
+    max_notional = min(budget * room_pct / Decimal("100"), equity * ACCOUNT_EXPOSURE_CAP)
+    limits = LeverageLimits(
+        risk_budget_usd=budget * mandate.max_risk_per_trade_pct / Decimal("100"),
+        max_notional_usd=max_notional,
+        max_leverage=min(mandate.max_leverage, ACCOUNT_MAX_LEVERAGE),
+        slippage_pct=DEFAULT_SLIPPAGE_ALLOWANCE,
+        fee_pct=DEFAULT_FEE_ROUND_TRIP,
+        min_notional_usd=equity * Decimal("0.01"),
+    )
+    plan = plan_spot_margin_order(
+        instrument, side, entry, stop, requested_margin, limits,
+        requested_leverage=mandate.max_leverage, pair_settings=settings.pair_settings.get(symbol_of(instrument)),
+        base_asset=base_asset(instrument), budget_usd=budget, shrink_margin_to_fit=True,
+    )
+    if not plan.ok:
+        return await _no_trade(conn, run_id, instrument, mandate,
+                               f"{plan.reject}: margin dry run does not allow an order")
+    size = size_margin_borrow("LONG" if long else "SHORT", plan.margin_usd, entry, Decimal(plan.leverage))
+    asset = "USDT" if long else base_asset(instrument)
+    borrowed = size.borrowed_quote if long else size.borrowed_base
+    hourly_rate_pct = settings.interest_hourly_pct.get(asset, Decimal("0"))
+    interest_per_hour = borrowed * hourly_rate_pct / Decimal("100")
+    margin_pct = (plan.margin_usd / budget * Decimal("100")).quantize(Decimal("0.01"))
+    plan_payload = plan.as_dict()
+    margin_fields = {
+        "side": "LONG" if long else "SHORT", "leverage": plan.leverage,
+        "liquidation_price": str(plan.liquidation_price), "loss_at_stop_usd": str(plan.loss_at_stop_usd),
+        "borrow_asset": asset, "borrow_amount": str(borrowed), "interest_per_hour": str(interest_per_hour),
+    }
+    payload = {
+        **base, "allocation_pct": float(margin_pct), "stop_loss": float(stop), "take_profit": float(target),
+        "margin_mode": "ISOLATED", "leverage": plan.leverage, "margin_plan": plan_payload,
+        "margin": margin_fields,
+    }
+    summary = (f"{margin_fields['side']} {instrument} MARKET ISOLATED, dry run {plan.leverage}x, "
+               f"margin {margin_pct}% of mandate (${plan.margin_usd:,.2f}) · stop {stop} · target {target} · "
+               f"loss at stop ${plan.loss_at_stop_usd:,.2f} · liq {plan.liquidation_price} · "
+               f"borrow {borrowed} {asset} · interest/hour {interest_per_hour} · conviction {conviction:.2f}")
+    return ActionClass.ADD_RISK, payload, summary
+
+
 async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendation: str, conviction: float,
                       allocation_pct: float, *, mandate_id: str | None = None,
                       now: datetime.datetime | None = None,
@@ -418,7 +513,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side)
         if reason:
             return await _no_trade(conn, run_id, instrument, mandate, reason)
-    if side == "BUY" and not is_perp_instrument(instrument):
+    routed_market = market_of(instrument)
+    if routed_market is Market.SPOT and side == "BUY":
         # A profile spot entry must have the structural stop used by the exit monitor.
         # Refuse before creating an ASK/VETO approval, including Brain and Inbox debates.
         try:
@@ -427,6 +523,15 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         except (InvalidOperation, TypeError, ValueError):
             return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
         if not entry.is_finite() or not stop.is_finite() or entry <= 0 or stop <= 0 or stop >= entry:
+            return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+    elif routed_market is Market.SPOT_MARGIN:
+        try:
+            entry = Decimal(str(reference_price))
+            stop = Decimal(str(stop_loss))
+        except (InvalidOperation, TypeError, ValueError):
+            return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+        if (not entry.is_finite() or not stop.is_finite() or entry <= 0 or stop <= 0
+                or (side == "BUY" and stop >= entry) or (side == "SELL" and stop <= entry)):
             return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
     base = {"instrument_id": instrument, "side": side, "order_type": "MARKET",
             "recommendation": recommendation, "conviction_score": conviction, "source": "debate", "run_id": str(run_id)}
@@ -439,10 +544,19 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     if take_profit is not None and float(take_profit) > 0:
         base["proposed_take_profit"] = float(take_profit)
         base["take_profit"] = float(take_profit)
-    if is_perp_instrument(instrument):
+    market = market_of(instrument)
+    if market is Market.PERP:
         routed = await _route_perp(conn, run_id, mandate, instrument, side, base, conviction, allocation_pct, now=now,
                                    redis=redis, marks=marks, stop_loss=stop_loss, take_profit=take_profit,
                                    reference_price=reference_price, grade_context=grade_context)
+        if len(routed) == 2:
+            return routed
+        action, payload, summary = routed
+    elif market is Market.SPOT_MARGIN:
+        routed = await _route_spot_margin(
+            conn, run_id, mandate, instrument, side, base, conviction, allocation_pct, now=now,
+            marks=marks, stop_loss=stop_loss, take_profit=take_profit, reference_price=reference_price,
+        )
         if len(routed) == 2:
             return routed
         action, payload, summary = routed
@@ -477,7 +591,7 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
             mandate = mandate.model_copy(update={"autonomy_level": AutonomyLevel.L1})
     # A perp reduction closes the mandate's own position (capped to what is live at execution); every other order is a
     # SUBMIT_ORDER
-    command_type = "CLOSE_POSITION" if action is ActionClass.REDUCE_RISK and is_perp_instrument(instrument) else "SUBMIT_ORDER"
+    command_type = "CLOSE_POSITION" if action is ActionClass.REDUCE_RISK and market in (Market.PERP, Market.SPOT_MARGIN) else "SUBMIT_ORDER"
     if action is ActionClass.REDUCE_RISK and mandate.autonomy_level >= AutonomyLevel.L2:
         await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")
         await record_decision(conn, mandate.id, "ROUTE", "ENQUEUED", instrument_id=instrument, run_id=run_id)

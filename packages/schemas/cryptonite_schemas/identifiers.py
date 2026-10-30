@@ -33,28 +33,37 @@ class PerpInstrumentId(NamedTuple):
 
 def to_spot_instrument_id(raw_symbol: str, venue: str = DEFAULT_VENUE) -> str:
     """Format a spot instrument ID, e.g. BTCUSDT -> BTCUSDT.BINANCE."""
-    clean = raw_symbol.upper().replace(".BINANCE", "").replace("-PERP", "")
+    clean = raw_symbol.upper().replace(".BINANCE", "").replace("-PERP", "").replace("-MARGIN", "")
     return f"{clean}.{venue.upper()}"
 
 
 def to_perp_instrument_id(raw_symbol: str, venue: str = DEFAULT_VENUE) -> str:
     """Format a USD-M perp instrument ID, e.g. BTCUSDT -> BTCUSDT-PERP.BINANCE."""
-    clean = raw_symbol.upper().replace(".BINANCE", "").replace("-PERP", "")
+    clean = raw_symbol.upper().replace(".BINANCE", "").replace("-PERP", "").replace("-MARGIN", "")
     return f"{clean}-PERP.{venue.upper()}"
 
 
+def to_margin_instrument_id(raw_symbol: str, venue: str = DEFAULT_VENUE) -> str:
+    """Format an isolated spot-margin instrument ID, e.g. BTCUSDT-MARGIN.BINANCE."""
+    clean = raw_symbol.upper().replace(".BINANCE", "").replace("-PERP", "").replace("-MARGIN", "")
+    return f"{clean}-MARGIN.{venue.upper()}"
+
+
 def parse_instrument_id(instrument_id_str: str) -> tuple[str, str, bool]:
-    """Parse instrument string into (symbol, venue, is_perp).
+    """Parse instrument string into (underlying symbol, venue, is_perp).
     
     Examples:
         'BTCUSDT.BINANCE' -> ('BTCUSDT', 'BINANCE', False)
         'BTCUSDT-PERP.BINANCE' -> ('BTCUSDT', 'BINANCE', True)
+        'BTCUSDT-MARGIN.BINANCE' -> ('BTCUSDT', 'BINANCE', False)
     """
     if "." not in instrument_id_str:
         return instrument_id_str, DEFAULT_VENUE, False
     symbol_part, venue_part = instrument_id_str.split(".", 1)
     if symbol_part.endswith("-PERP"):
         return symbol_part[:-5], venue_part, True
+    if symbol_part.endswith("-MARGIN"):
+        return symbol_part[:-7], venue_part, False
     return symbol_part, venue_part, False
 
 

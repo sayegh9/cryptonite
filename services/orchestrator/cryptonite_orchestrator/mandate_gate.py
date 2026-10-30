@@ -26,6 +26,7 @@ from cryptonite_execution.leverage import (
     LeveragePlan,
     check_leveraged_order,
     plan_leveraged_order,
+    plan_spot_margin_order,
 )
 from cryptonite_execution.mandate_store import (
     instance_spot_holdings,
@@ -51,7 +52,7 @@ from cryptonite_schemas.mandate import (
     MandateReject,
     is_ai_instance,
 )
-from cryptonite_schemas.profile import Market, base_asset, market_of
+from cryptonite_schemas.profile import Market, base_asset, market_of, underlying_spot
 from cryptonite_schemas.session import SessionVerdict
 
 logger = logging.getLogger("cryptonite.orchestrator.mandates")
@@ -143,12 +144,31 @@ async def mandate_exposure(conn, engine, mandate: Mandate, instrument_id: str, r
                 inst_usd += value
                 inst_qty += abs(pos.signed_qty)
                 inst_side = "LONG" if pos.signed_qty > 0 else "SHORT"
-    other_owner = bool(await conn.fetchval(
+    memory_other_owner = False
+    for inst, account in getattr(d, "margin_accounts", {}).items():
+        qty = abs(account.position_qty)
+        if qty <= 0:
+            continue
+        spot_inst = underlying_spot(inst)
+        px = Decimal(str(ref_prices.get(inst) or ref_prices.get(spot_inst)
+                         or d.mark_prices.get(spot_inst) or account.entry_price))
+        value = qty * px
+        if account.instance_id == mandate.instance_id:
+            gross += value
+            if same_instrument(inst, instrument_id):
+                inst_usd += value
+                inst_qty += qty
+                inst_side = account.side
+        elif same_instrument(inst, instrument_id):
+            memory_other_owner = True
+    other_owner = memory_other_owner or bool(await conn.fetchval(
         """SELECT 1 FROM paper_positions WHERE account_id = $1 AND status = 'OPEN' AND quantity > 0
            AND instrument_id = $2 AND instance_id <> $3 LIMIT 1""",
         account_id, instrument_id, mandate.instance_id))
     for info in getattr(d, "open_orders", {}).values():
-        entry = not info.get("reduce_only") and (info.get("is_perp") or info.get("side") == "BUY")
+        entry = not info.get("reduce_only") and (
+            info.get("is_perp") or info.get("is_margin") or info.get("side") == "BUY"
+        )
         if info.get("instance_id") == mandate.instance_id:
             if entry:
                 notional = Decimal(str(info.get("reserved_notional") or 0))
@@ -247,6 +267,40 @@ async def plan_perp_entry(conn, engine, mandate: Mandate, instrument_id: str, si
     requested = int(payload["leverage"]) if payload.get("leverage") else None
     return plan_leveraged_order(instrument_id, side, entry, stop, margin, limits, requested_leverage=requested,
                                 budget_usd=mandate.capital_budget_usd, shrink_margin_to_fit=True)
+
+
+async def plan_spot_margin_entry(conn, engine, mandate: Mandate, instrument_id: str, side: str, payload: dict,
+                                 quote) -> LeveragePlan:
+    """Size an isolated spot-margin entry to the mandate's room and 25% account clamp."""
+    order_type = str(payload.get("order_type", "MARKET")).upper()
+    limit_px = Decimal(str(payload["price"])) if payload.get("price") else None
+    entry = mandate_ref_price(limit_px, side, quote)
+    stop = Decimal(str(payload["stop_loss"])) if payload.get("stop_loss") else None
+    margin = mandate.capital_budget_usd * Decimal(str(payload.get("allocation_pct", 5.0))) / Decimal("100")
+    if entry is None:
+        return LeveragePlan(instrument_id, side, "NO_MARK_PRICE", 0, payload.get("leverage"), 0, None, False)
+    room_qty, _, _ = await mandate_entry_room(conn, engine, mandate, instrument_id, side, limit_px, quote, order_type)
+    d = engine.dispatcher
+    held = abs(d.get_position_qty(instrument_id)) * entry if hasattr(d, "get_position_qty") else Decimal("0")
+    equity = d.portfolio_equity()
+    max_notional = max(Decimal("0"), min(room_qty * entry, ACCOUNT_EXPOSURE_CAP * equity - held)) * PERP_SIZING_MARGIN
+    pair = instrument_id.split("-", 1)[0].split(".", 1)[0].upper()
+    runtime_pairs = getattr(getattr(engine, "margin_settings", None), "pair_settings", None)
+    pair_settings = runtime_pairs.get(pair, {}) if runtime_pairs is not None else None
+    limits = LeverageLimits(
+        risk_budget_usd=mandate_risk_budget(mandate) * PERP_SIZING_MARGIN,
+        max_notional_usd=max_notional,
+        max_leverage=mandate.max_leverage,
+        slippage_pct=getattr(d, "slippage_allowance_pct", DEFAULT_SLIPPAGE_ALLOWANCE) + PERP_SIZING_EXTRA_SLIPPAGE,
+        fee_pct=getattr(d, "spot_taker_fee", Decimal("0.001")),
+        min_notional_usd=getattr(d, "min_order_equity_pct", Decimal("0")) * equity / PERP_SIZING_MARGIN,
+    )
+    requested = int(payload["leverage"]) if payload.get("leverage") else None
+    return plan_spot_margin_order(
+        instrument_id, side, entry, stop, margin, limits, requested_leverage=requested,
+        pair_settings=pair_settings, base_asset=base_asset(instrument_id), budget_usd=mandate.capital_budget_usd,
+        shrink_margin_to_fit=True,
+    )
 
 
 def perp_entry_reject(engine, mandate: Mandate, intent) -> str | None:
@@ -398,11 +452,13 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
     used = sum((cost for cost in (await instance_spot_cost_basis(conn, mandate.instance_id)).values()), Decimal("0"))
     used += sum((pos.initial_margin for pos in getattr(d, "perp_positions", {}).values()
                  if getattr(pos, "instance_id", None) == mandate.instance_id and pos.signed_qty != 0), Decimal("0"))
+    used += sum((account.collateral_usdt for account in getattr(d, "margin_accounts", {}).values()
+                 if account.instance_id == mandate.instance_id and account.position_qty != 0), Decimal("0"))
     working_ids = []
     for cid, info in getattr(d, "open_orders", {}).items():
         if info.get("instance_id") != mandate.instance_id or info.get("reduce_only"):
             continue
-        if info.get("is_perp") or info.get("side") == "BUY":
+        if info.get("is_perp") or info.get("is_margin") or info.get("side") == "BUY":
             working_ids.append(cid)
             used += Decimal(str(info.get("reserved_notional") or 0))
     durable_working = await conn.fetchval(
@@ -411,6 +467,11 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
                          (p.quantity - p.filled_qty) / NULLIF(p.quantity, 0) *
                          (c.payload->>'profile_cash_reserve_usd')::numeric
                     WHEN COALESCE(p.price, p.avg_fill_price) IS NULL THEN $3::numeric
+                    WHEN p.instrument_id LIKE '%-MARGIN.%' THEN
+                         COALESCE(NULLIF(c.payload->'margin_plan'->>'margin_usd', '')::numeric,
+                           (p.quantity - p.filled_qty) * COALESCE(p.price, p.avg_fill_price, 0) /
+                             GREATEST(COALESCE(NULLIF(c.payload->>'leverage', '')::numeric, 1)
+                               - CASE WHEN p.side = 'SELL' THEN 1 ELSE 0 END, 1)) * 1.001
                     ELSE (p.quantity - p.filled_qty) * COALESCE(p.price, p.avg_fill_price, 0) *
                          CASE WHEN p.instrument_id LIKE '%-PERP.%' THEN
                              1 / GREATEST(COALESCE(NULLIF(c.payload->>'leverage', '')::numeric, 1), 1) + 0.0005
@@ -424,7 +485,7 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
                  'MANUAL-' || upper(substr(replace(c.command_id::text, '-', ''), 1, 12)))
            WHERE p.instance_id = $1 AND p.status IN ('PENDING', 'SUBMITTED', 'ACCEPTED')
              AND p.filled_qty < p.quantity AND p.order_type <> 'STOP_MARKET'
-             AND (p.side = 'BUY' OR p.instrument_id LIKE '%-PERP.%')
+             AND (p.side = 'BUY' OR p.instrument_id LIKE '%-PERP.%' OR p.instrument_id LIKE '%-MARGIN.%')
              AND COALESCE(c.payload->>'reduce_only', 'false') <> 'true'
              AND NOT EXISTS (
                  SELECT 1 FROM execution_reservations r
@@ -446,7 +507,14 @@ async def profile_cash_reject(conn, engine, mandate: Mandate, order: MandateOrde
     if notional is None:
         return None  # the mandate and dispatcher refuse an entry without a usable price
     fee = getattr(d, "perp_taker_fee", Decimal("0.0005")) if order.is_perp else getattr(d, "taker_fee", Decimal("0.001"))
-    needed = notional / Decimal(order.leverage or 1) if order.is_perp else notional
+    if order.is_perp:
+        needed = notional / Decimal(order.leverage or 1)
+    elif order.is_spot_margin:
+        leverage = int(order.leverage or 1)
+        divisor = max(1, leverage - (1 if order.side.upper() == "SELL" else 0))
+        needed = notional / Decimal(divisor)
+    else:
+        needed = notional
     needed += notional * fee
     # A single instruction larger than the profile's entire budget remains a mandate breach. This refusal
     # covers otherwise affordable entries that no longer fit because existing holdings/orders consumed cash.
@@ -461,6 +529,7 @@ async def instance_spot_cost_basis(conn, instance_id: str) -> dict[str, Decimal]
         """SELECT instrument_id, side, filled_qty, COALESCE(avg_fill_price, price, 0) AS fill_price
            FROM paper_orders
            WHERE instance_id = $1 AND filled_qty > 0 AND instrument_id NOT LIKE '%-PERP.%'
+             AND instrument_id NOT LIKE '%-MARGIN.%'
            ORDER BY created_at, updated_at, client_order_id""",
         instance_id,
     )

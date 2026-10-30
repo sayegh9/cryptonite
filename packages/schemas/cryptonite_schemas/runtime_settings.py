@@ -8,6 +8,7 @@ outside its bounds) keeps the last valid value and is reported as a problem.
 import json
 import math
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
@@ -41,6 +42,91 @@ RUNTIME_BOUNDS: dict[str, Bound] = {
     "autotrade.enabled": Bound(0, 0, 1),
     "autotrade.max_allocated_pct": Bound(90, 10, 100),
 }
+
+
+@dataclass(frozen=True)
+class DecimalBound:
+    """Exact decimal bounds for settings that feed accounting calculations."""
+
+    default: Decimal
+    low: Decimal
+    high: Decimal
+    decimals: int
+
+
+# Binance's public Margin Data values as observed on 2026-10-29. These are percentage
+# points per hour, matching the display (0.0004 means 0.0004%, or Decimal("0.000004")
+# as the rate multiplier). They are snapshots of a dynamic rate, not a live rate feed.
+MARGIN_INTEREST_KEYS = {
+    "BTC": "margin.interest_hourly.BTC",
+    "ETH": "margin.interest_hourly.ETH",
+    "XRP": "margin.interest_hourly.XRP",
+    "WLD": "margin.interest_hourly.WLD",
+    "USDT": "margin.interest_hourly.USDT",
+}
+MARGIN_SETTING_BOUNDS: dict[str, DecimalBound] = {
+    MARGIN_INTEREST_KEYS["BTC"]: DecimalBound(Decimal("0.00004933"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["ETH"]: DecimalBound(Decimal("0.00022700"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["XRP"]: DecimalBound(Decimal("0.00039871"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["WLD"]: DecimalBound(Decimal("0.00140158"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["USDT"]: DecimalBound(Decimal("0.00065600"), Decimal("0"), Decimal("1"), 8),
+    # The liquidation fee is a percentage of liquidated assets, as documented by Binance.
+    "margin.liquidation_fee_pct": DecimalBound(Decimal("2"), Decimal("0"), Decimal("5"), 2),
+}
+# Pair values are settings so planning and margin math share the same source. Leverage
+# and risk ratios are verified against Binance's public pair data and tier FAQ; the
+# displayed borrow limits are unverified as tier caps and may only be loosened with TOTP.
+# A missing asset limit is represented by an explicit zero cap for that side.
+MARGIN_PAIR_SETTINGS: dict[str, dict[str, Decimal]] = {
+    "BTCUSDT": {
+        "max_leverage": Decimal("10"), "call_level": Decimal("1.10"),
+        "liquidation_level": Decimal("1.05"), "max_borrow_BTC": Decimal("80"),
+        "max_borrow_USDT": Decimal("450000"),
+    },
+    "ETHUSDT": {
+        "max_leverage": Decimal("10"), "call_level": Decimal("1.10"),
+        "liquidation_level": Decimal("1.05"), "max_borrow_ETH": Decimal("1600"),
+        "max_borrow_USDT": Decimal("450000"),
+    },
+    "XRPUSDT": {
+        "max_leverage": Decimal("10"), "call_level": Decimal("1.10"),
+        "liquidation_level": Decimal("1.05"), "max_borrow_XRP": Decimal("584000"),
+        "max_borrow_USDT": Decimal("450000"),
+    },
+    "WLDUSDT": {
+        "max_leverage": Decimal("5"), "call_level": Decimal("1.19"),
+        "liquidation_level": Decimal("1.15"), "max_borrow_WLD": Decimal("66600"),
+        "max_borrow_USDT": Decimal("119000"),
+    },
+}
+
+
+def _pair_setting_bounds() -> dict[str, DecimalBound]:
+    """Build bounded, exact-decimal settings for the supported pair rows."""
+    bounds: dict[str, DecimalBound] = {}
+    for pair, values in MARGIN_PAIR_SETTINGS.items():
+        for field, default in values.items():
+            if field == "max_leverage":
+                low, decimals = Decimal("1"), 0
+            elif field == "call_level":
+                low, decimals = Decimal("1"), 2
+            elif field == "liquidation_level":
+                low, decimals = Decimal("1"), 2
+            else:
+                low, decimals = Decimal("0"), 8
+            if field in {"call_level", "liquidation_level"}:
+                high = Decimal("2")
+            elif field.startswith("max_borrow_"):
+                # The displayed value is the default. A bounded, risk-adding increase
+                # is available only through the registry's TOTP-gated loosening path.
+                high = default * Decimal("2")
+            else:
+                high = default
+            bounds[f"margin.pair.{pair}.{field}"] = DecimalBound(default, low, high, decimals)
+    return bounds
+
+
+MARGIN_SETTING_BOUNDS.update(_pair_setting_bounds())
 AUTOTRADE_ENABLED_KEY = "autotrade.enabled"
 AUTOTRADE_MAX_ALLOCATED_KEY = "autotrade.max_allocated_pct"
 GRADE_CEILING_KEYS = {"A": "leverage.grade_ceiling_a", "B": "leverage.grade_ceiling_b", "C": "leverage.grade_ceiling_c"}
@@ -66,6 +152,74 @@ def read_number(raw: Any, bound: Bound, last_good: float) -> tuple[float, str | 
     if not math.isfinite(value) or not bound.low <= value <= bound.high:
         return last_good, f"stored value {raw!r} is outside {bound.low:g}..{bound.high:g}"
     return value, None
+
+
+def read_decimal(raw: Any, bound: DecimalBound, last_good: Decimal) -> tuple[Decimal, str | None]:
+    """Read a bounded setting without passing through binary floating-point."""
+    if raw is None:
+        return bound.default, None
+    try:
+        value = json.loads(raw) if isinstance(raw, str) and raw.strip().startswith('"') else raw
+        parsed = Decimal(str(value).strip())
+    except (TypeError, ValueError, InvalidOperation, json.JSONDecodeError):
+        return last_good, f"stored value {raw!r} is not a decimal number"
+    if not parsed.is_finite() or not bound.low <= parsed <= bound.high:
+        return last_good, f"stored value {raw!r} is outside {bound.low}..{bound.high}"
+    if parsed != parsed.quantize(Decimal(1).scaleb(-bound.decimals)):
+        return last_good, f"stored value {raw!r} has more than {bound.decimals} decimal places"
+    return parsed, None
+
+
+@dataclass(frozen=True)
+class MarginSettings:
+    """Exact rates, fees and supported pair risk settings used by paper margin."""
+
+    interest_hourly_pct: dict[str, Decimal]
+    liquidation_fee_pct: Decimal
+    pair_settings: dict[str, dict[str, Decimal]]
+
+
+def default_margin_settings() -> MarginSettings:
+    """Return the documented 2026-10-29 snapshots for assets and liquidation fee."""
+    rates = {
+        asset: MARGIN_SETTING_BOUNDS[key].default
+        for asset, key in MARGIN_INTEREST_KEYS.items()
+    }
+    pairs = {pair: dict(values) for pair, values in MARGIN_PAIR_SETTINGS.items()}
+    return MarginSettings(rates, MARGIN_SETTING_BOUNDS["margin.liquidation_fee_pct"].default, pairs)
+
+
+def read_margin_settings(
+    stored: dict[str, Any], last_good: MarginSettings,
+) -> tuple[MarginSettings, list[str]]:
+    """Apply valid exact-decimal margin settings; retain the last valid value on refusal."""
+    problems: list[str] = []
+    rates: dict[str, Decimal] = {}
+    for asset, key in MARGIN_INTEREST_KEYS.items():
+        value, problem = read_decimal(stored.get(key), MARGIN_SETTING_BOUNDS[key],
+                                      last_good.interest_hourly_pct.get(asset,
+                                                                       MARGIN_SETTING_BOUNDS[key].default))
+        if problem:
+            problems.append(f"{key}: {problem}")
+        rates[asset] = value
+    fee_key = "margin.liquidation_fee_pct"
+    fee, problem = read_decimal(stored.get(fee_key), MARGIN_SETTING_BOUNDS[fee_key],
+                                last_good.liquidation_fee_pct)
+    if problem:
+        problems.append(f"{fee_key}: {problem}")
+    pairs: dict[str, dict[str, Decimal]] = {}
+    for pair, defaults in MARGIN_PAIR_SETTINGS.items():
+        pair_values: dict[str, Decimal] = {}
+        for field, default in defaults.items():
+            key = f"margin.pair.{pair}.{field}"
+            bound = MARGIN_SETTING_BOUNDS[key]
+            last_good_value = last_good.pair_settings.get(pair, {}).get(field, default)
+            value, problem = read_decimal(stored.get(key), bound, last_good_value)
+            if problem:
+                problems.append(f"{key}: {problem}")
+            pair_values[field] = value
+        pairs[pair] = pair_values
+    return MarginSettings(rates, fee, pairs), problems
 
 
 @dataclass(frozen=True)

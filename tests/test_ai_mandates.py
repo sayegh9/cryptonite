@@ -112,10 +112,9 @@ def test_spot_market_and_direction_defenses_are_refusals_not_breaches():
     assert reject_direction not in BREACH_CODES
 
     margin = mandate(instruments=["BTCUSDT-MARGIN"], markets=["SPOT_MARGIN"])
-    reject_margin = check_mandate(margin, buy(inst="BTCUSDT-MARGIN.BINANCE"), MandateExposure(),
-                                  approval_ok=True, autotrade_on=True)
-    assert reject_margin is MandateReject.MARKET_NOT_ALLOWED
-    assert reject_margin not in BREACH_CODES
+    allow_margin = check_mandate(margin, buy(inst="BTCUSDT-MARGIN.BINANCE"), MandateExposure(),
+                                 approval_ok=True, autotrade_on=True)
+    assert allow_margin is None
 
 
 @pytest.mark.parametrize("status", [MandateStatus.HALTED, MandateStatus.PAUSED, MandateStatus.ARCHIVED])

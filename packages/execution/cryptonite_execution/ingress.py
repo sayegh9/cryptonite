@@ -4,6 +4,7 @@ import logging
 import time
 from typing import Any
 
+from cryptonite_schemas.profile import Market, market_of, underlying_spot
 from nautilus_trader.model import InstrumentId
 
 logger = logging.getLogger("cryptonite.execution.ingress")
@@ -63,7 +64,8 @@ class IngressHealthMonitor:
         max_delta_ns = int(self.max_staleness_s * 1e9)
 
         # Condition 1: Health telemetry is continuous and recent
-        health = self._health.get(instrument_id)
+        quote_instrument_id = underlying_spot(instrument_id) if market_of(instrument_id) is Market.SPOT_MARGIN else instrument_id
+        health = self._health.get(quote_instrument_id)
         if not health:
             return False
 
@@ -78,7 +80,7 @@ class IngressHealthMonitor:
             return False
 
         try:
-            inst = InstrumentId.from_str(instrument_id)
+            inst = InstrumentId.from_str(quote_instrument_id)
             quote = node_cache.quote(inst)
         except Exception:
             return False
