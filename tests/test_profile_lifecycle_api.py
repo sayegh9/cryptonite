@@ -4,6 +4,7 @@ the coin-lock refusal of the Brain card and the mandate check."""
 
 import asyncio
 import hashlib
+import json
 import time
 import uuid
 from decimal import Decimal
@@ -14,6 +15,7 @@ from cryptonite_execution import profile_lifecycle as pl
 from cryptonite_execution.mandate_store import load_mandate
 from cryptonite_execution.mandates import MandateExposure, MandateOrder, check_mandate
 from cryptonite_schemas.mandate import Mandate, MandateReject, MandateStatus
+from cryptonite_schemas.marks import quote_tick_key
 from cryptonite_schemas.profile import ExecutionMode, Market
 from migrated_db import migrated_database
 from test_brain_card_preflight import (  # noqa: F401  (the Brain session worker double)
@@ -40,6 +42,9 @@ def db_url():
 @pytest.fixture
 async def h(db_url):
     harness = await make_harness(db_url)
+    await harness.redis.set(quote_tick_key(BTC), json.dumps({
+        "instrument_id": BTC, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns(),
+    }), ex=60)
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("DELETE FROM ai_profile_coin_locks")
     await harness.pool.execute("DELETE FROM system_settings WHERE key LIKE 'autotrade.%'")

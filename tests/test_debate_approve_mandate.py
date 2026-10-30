@@ -8,11 +8,13 @@ database and the Redis at REDIS_URL, as test_debate_mandate_routing does.
 """
 
 import json
+import time
 import uuid
 
 import pytest
 from ai_api_harness import close_harness, make_harness
 from cryptonite_execution.mandate_store import load_mandate
+from cryptonite_schemas.marks import quote_tick_key
 from migrated_db import migrated_database
 
 BTC = "BTCUSDT.BINANCE"
@@ -38,9 +40,15 @@ async def h(db_url):
     await harness.pool.execute("UPDATE paper_accounts SET total_equity = 99800")
     await harness.redis.set("market:24h:ETHUSDT", json.dumps({"last_price": 2500}), ex=60)
     await harness.redis.set("market:24h:BTCUSDT", json.dumps({"last_price": 50000}), ex=60)
+    for instrument, mid in ((ETH, 2500), (BTC, 50000)):
+        await harness.redis.set(quote_tick_key(instrument), json.dumps({
+            "instrument_id": instrument, "bid_price": str(mid - 1), "ask_price": str(mid + 1),
+            "arrival_ns": time.time_ns(),
+        }), ex=60)
     try:
         yield harness
     finally:
+        await harness.redis.delete(quote_tick_key(ETH), quote_tick_key(BTC))
         await close_harness(harness)
 
 
@@ -64,9 +72,29 @@ async def debate(h, instrument: str = ETH, *, recommendation: str = "BUY", alloc
                  mandate_id: uuid.UUID | None = None) -> uuid.UUID:
     """A finished debate waiting for the operator, as the debate worker leaves one outside any single mandate."""
     run_id = uuid.uuid4()
+    spec_id, version_id, scan_id, candidate_id = (uuid.uuid4() for _ in range(4))
+    price = 50000 if instrument == BTC else 2500
+    await h.pool.execute("INSERT INTO scan_specs (id, slug, name) VALUES ($1, $2, $3)",
+                         spec_id, f"h1-mandate-{spec_id.hex}", "H1 mandate test")
     await h.pool.execute(
-        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, mandate_id)
-           VALUES ($1, $2, 'PENDING_APPROVAL', 'test', $3)""", run_id, instrument, mandate_id)
+        """INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+           VALUES ($1, $2, 1, 'h1-mandate-test', '{}'::jsonb, '[]'::jsonb)""", version_id, spec_id)
+    await h.pool.execute("UPDATE scan_specs SET active_version_id = $2 WHERE id = $1", spec_id, version_id)
+    await h.pool.execute(
+        """INSERT INTO scan_runs (id, spec_version_id, spec_hash, scanner_version, indicator_version,
+               input_watermark_ns, source_partitions, source_partition_checksums, trigger_reason)
+           VALUES ($1, $2, 'h1-mandate-test', 'test', 'test', 1, '{}'::jsonb, '{}'::jsonb, 'MANUAL')""",
+        scan_id, version_id)
+    await h.pool.execute(
+        """INSERT INTO signal_candidates (id, scan_run_id, spec_version_id, instrument_id, timeframe,
+               bar_open_ns, bar_close_inclusive_ns, interval_end_exclusive_ns, matched_rules, metrics,
+               suggested_entry, suggested_stop, suggested_target)
+           VALUES ($1, $2, $3, $4, '1h', 1, 2, 3, '[]'::jsonb,
+                   '{"stop_type":"atr_fixed","stop_distance":100}'::jsonb, $5, $6, $7)""",
+        candidate_id, scan_id, version_id, instrument, price, price * 0.95, price * 1.04)
+    await h.pool.execute(
+        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, candidate_id, mandate_id)
+           VALUES ($1, $2, 'PENDING_APPROVAL', 'test', $3, $4)""", run_id, instrument, candidate_id, mandate_id)
     await h.pool.execute(
         """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning)
            VALUES ($1, $2, $3, 0.7, $4, 'r')""", run_id, instrument, recommendation, allocation_pct)

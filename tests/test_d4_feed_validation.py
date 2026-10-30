@@ -12,6 +12,7 @@ Runs on a throwaway migrated database (``cryptonite_ci_d4_*``) and the Redis at 
 import asyncio
 import json
 import re
+import time
 import uuid
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -21,6 +22,7 @@ import pytest
 from ai_api_harness import close_harness, make_harness
 from cryptonite_orchestrator.server import SimpleQuoteCache, command_poller
 from cryptonite_orchestrator.source_hash import instance_source_hash
+from cryptonite_schemas.marks import quote_tick_key
 from cryptonite_schemas.universe import (
     INGEST_UNIVERSE_KEY,
     UNIVERSE_TTL_S,
@@ -104,6 +106,9 @@ async def h(db_url, monkeypatch):
     monkeypatch.setenv("ALLOW_DEV_TOTP", "true")  # 000000 in DEV, as in test_autonomy
     monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "true")
     harness = await make_harness(db_url)
+    await harness.redis.set(quote_tick_key(BTC), json.dumps({
+        "instrument_id": BTC, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns(),
+    }), ex=60)
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_positions CASCADE")
     try:
@@ -115,6 +120,29 @@ async def h(db_url, monkeypatch):
 def mandate_body(*instruments: str) -> dict:
     return {"name": f"d4-{uuid.uuid4().hex[:6]}", "capital_budget_usd": "5000", "instruments": list(instruments),
             "max_position_pct": "10", "totp_code": "000000"}
+
+
+async def candidate_with_stop(h, instrument: str, *, entry: Decimal, stop: Decimal, target: Decimal) -> uuid.UUID:
+    """A debate candidate with the structural stop the approval route now requires."""
+    spec_id, version_id, scan_id, candidate_id = (uuid.uuid4() for _ in range(4))
+    await h.pool.execute("INSERT INTO scan_specs (id, slug, name) VALUES ($1, $2, $3)",
+                         spec_id, f"d4-{spec_id.hex}", "D4 feed test")
+    await h.pool.execute(
+        """INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+           VALUES ($1, $2, 1, 'd4-test', '{}'::jsonb, '[]'::jsonb)""", version_id, spec_id)
+    await h.pool.execute("UPDATE scan_specs SET active_version_id = $2 WHERE id = $1", spec_id, version_id)
+    await h.pool.execute(
+        """INSERT INTO scan_runs (id, spec_version_id, spec_hash, scanner_version, indicator_version,
+               input_watermark_ns, source_partitions, source_partition_checksums, trigger_reason)
+           VALUES ($1, $2, 'd4-test', 'test', 'test', 1, '{}'::jsonb, '{}'::jsonb, 'MANUAL')""",
+        scan_id, version_id)
+    await h.pool.execute(
+        """INSERT INTO signal_candidates (id, scan_run_id, spec_version_id, instrument_id, timeframe,
+               bar_open_ns, bar_close_inclusive_ns, interval_end_exclusive_ns, matched_rules, metrics,
+               suggested_entry, suggested_stop, suggested_target)
+           VALUES ($1, $2, $3, $4, '1h', 1, 2, 3, '[]'::jsonb, '{}', $5, $6, $7)""",
+        candidate_id, scan_id, version_id, instrument, entry, stop, target)
+    return candidate_id
 
 
 async def test_mandate_on_an_unfed_symbol_is_422_and_nothing_is_written(h):
@@ -289,8 +317,11 @@ async def test_concurrent_approvals_of_one_brain_decision_give_one_order(h, brai
 async def test_a_debate_approved_twice_at_once_gives_one_order(h):
     await h.mandate(level=1, instruments=(BTC,))
     run_id = uuid.uuid4()
-    await h.pool.execute("INSERT INTO debate_runs (id, instrument_id, status, trigger_source) VALUES ($1, $2, 'PENDING_APPROVAL', 'test')",
-                         run_id, BTC)
+    candidate_id = await candidate_with_stop(h, BTC, entry=Decimal("50000"), stop=Decimal("49000"),
+                                              target=Decimal("62000"))
+    await h.pool.execute(
+        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, candidate_id)
+           VALUES ($1, $2, 'PENDING_APPROVAL', 'test', $3)""", run_id, BTC, candidate_id)
     await h.pool.execute(
         """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning)
            VALUES ($1, $2, 'BUY', 0.7, 5, 'r')""", run_id, BTC)

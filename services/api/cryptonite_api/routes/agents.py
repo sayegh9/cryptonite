@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Literal
 
 import httpx
+from cryptonite_api.entry_stops import entry_requires_stop, resolve_entry_stop
 from cryptonite_api.mandate_choice import (
     choose_mandate_remedy,
     entry_filter_detail,
@@ -40,6 +41,7 @@ from cryptonite_schemas.mandate import (
     is_perp_instrument,
 )
 from cryptonite_schemas.marks import read_marks
+from cryptonite_schemas.profile import Market, market_of
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -290,11 +292,19 @@ def _run_uuid(run_id: str) -> uuid.UUID:
 
 async def _load_debate(pool, run_uuid: uuid.UUID):
     async with pool.acquire() as conn:
-        run = await conn.fetchrow("SELECT status, decision_trace_id, mandate_id FROM debate_runs WHERE id = $1", run_uuid)
+        run = await conn.fetchrow(
+            """SELECT r.status, r.decision_trace_id, r.mandate_id, r.candidate_id,
+                      c.suggested_stop AS candidate_stop
+               FROM debate_runs r
+               LEFT JOIN signal_candidates c ON c.id = r.candidate_id
+               WHERE r.id = $1""",
+            run_uuid,
+        )
         if not run:
             raise HTTPException(status_code=404, detail="Debate run not found")
         decision = await conn.fetchrow(
-            "SELECT instrument_id, recommendation, conviction_score, allocation_pct FROM portfolio_decisions WHERE run_id = $1",
+            """SELECT instrument_id, recommendation, conviction_score, allocation_pct, decision_price
+               FROM portfolio_decisions WHERE run_id = $1""",
             run_uuid)
         if not decision:
             raise HTTPException(status_code=404, detail="No portfolio decision found for this debate run")
@@ -390,6 +400,60 @@ async def _pending_perp_approval(pool, run_uuid: uuid.UUID) -> uuid.UUID | None:
     return row["id"] if row and row["instrument_id"] and is_perp_instrument(row["instrument_id"]) else None
 
 
+async def _pending_debate_approval(pool, run_uuid: uuid.UUID):
+    """Return the pending worker approval that Inbox approve would decide, with decoded JSON payload."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT id, action_class, command_type, payload FROM ai_approvals
+               WHERE source = 'debate' AND source_ref = $1 AND status = 'PENDING'""", str(run_uuid))
+    if row is None:
+        return None
+    payload = row["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    return {**dict(row), "payload": payload}
+
+
+async def _preflight_debate_stop(request: Request, run, decision, *, pending=None,
+                                 order_type: str = "LIMIT", limit_price=None,
+                                 stop_loss_pct=None) -> Decimal | None:
+    """Apply the same entry-stop check to the Inbox dry run and the order approve will queue or decide."""
+    instrument_id = decision["instrument_id"]
+    side = order_side(decision["recommendation"])
+    explicit_stop = run["candidate_stop"]
+    if pending and pending["command_type"] == "SUBMIT_ORDER":
+        payload = pending["payload"]
+        instrument_id = payload["instrument_id"]
+        side = payload["side"]
+        if not entry_requires_stop(instrument_id, side, reduce_only=bool(payload.get("reduce_only"))):
+            return None
+        explicit_stop = (payload.get("proposed_stop_loss") if market_of(instrument_id) is Market.SPOT
+                         else payload.get("stop_loss") or payload.get("proposed_stop_loss"))
+        stop_loss_pct = payload.get("stop_loss_pct")
+        order_type = payload.get("order_type", "MARKET")
+        limit_price = payload.get("price") if str(order_type).upper() == "LIMIT" else None
+    elif pending is None:
+        if not entry_requires_stop(instrument_id, side):
+            return None
+    else:
+        return None
+    if not pending and str(order_type).upper() == "LIMIT" and limit_price is None:
+        symbol = instrument_id.split(".")[0].upper()
+        limit_price = await _fetch_decision_price(_get_redis(request), symbol)
+        if not limit_price:
+            raise HTTPException(status_code=503, detail="Could not fetch live price for sizing.")
+
+    return await resolve_entry_stop(
+        request.app.state.pool,
+        _get_redis(request),
+        instrument_id,
+        side,
+        explicit_stop=explicit_stop,
+        stop_loss_pct=stop_loss_pct,
+        order_reference=limit_price if str(order_type).upper() == "LIMIT" else None,
+    )
+
+
 def _mandate_view(m: Mandate) -> dict:
     return {"id": str(m.id), "name": m.name, "autonomy_level": int(m.autonomy_level),
             "capital_budget_usd": float(m.capital_budget_usd), "max_position_pct": float(m.max_position_pct)}
@@ -409,6 +473,8 @@ async def debate_sizing(run_id: str, request: Request, mandate_id: uuid.UUID | N
         return {"ok": False, "code": "PERP_APPROVAL_IN_QUEUE", "detail": PERP_APPROVAL_IN_QUEUE, "remedy": None}
     try:
         plan = await _plan_debate(request, run, decision, mandate_id, allocation_pct)
+        pending = await _pending_debate_approval(request.app.state.pool, run_uuid)
+        await _preflight_debate_stop(request, run, decision, pending=pending)
     except HTTPException as e:
         detail = str(e.detail)
         code, sep, _ = detail.partition(":")
@@ -480,27 +546,41 @@ async def approve_debate(
         if overrides.stop_loss_pct is not None:
             payload["stop_loss_pct"] = overrides.stop_loss_pct
 
-    if side == "SELL":
+    if side == "SELL" and market_of(decision["instrument_id"]) is Market.SPOT:
         payload.update(quantity=float(plan.held), order_type="MARKET")
         payload.pop("price", None)
         payload.pop("allocation_pct", None)
         summary = f"Debate verdict: SELL {decision['instrument_id']} the whole holding of {plan.held:g} in mandate {mandate.name}"
     else:
-        summary = (f"Debate verdict: BUY {decision['instrument_id']} at {float(plan.allocation):g}% of mandate "
+        summary = (f"Debate verdict: {side} {decision['instrument_id']} at {float(plan.allocation):g}% of mandate "
                    f"{mandate.name} (${plan.budget:,.0f})")
 
     # The debate worker may already have opened an approval for this run (mandate L1/L2, A5.7):
     # approving it here decides that approval, so the run never gets a second order.
     async with pool.acquire() as conn:
-        pending_id = await conn.fetchval(
-            "SELECT id FROM ai_approvals WHERE source = 'debate' AND source_ref = $1 AND status = 'PENDING'", str(run_uuid))
-        if pending_id is not None:
+        pending = await conn.fetchrow(
+            """SELECT id, action_class, command_type, payload FROM ai_approvals
+               WHERE source = 'debate' AND source_ref = $1 AND status = 'PENDING'""", str(run_uuid))
+        if pending is not None:
+            pending_payload = pending["payload"]
+            if isinstance(pending_payload, str):
+                pending_payload = json.loads(pending_payload)
+            pending_data = {**dict(pending), "payload": pending_payload}
+            await _preflight_debate_stop(request, run, decision, pending=pending_data)
             try:
-                d = await decide_approval(conn, pending_id, True, via="web", decided_by="operator:debate_approval")
+                d = await decide_approval(conn, pending["id"], True, via="web", decided_by="operator:debate_approval")
             except ApprovalConflict as e:
                 raise HTTPException(status_code=409, detail=f"The debate's approval is {e.status}")
             return {"status": "approved", "run_id": str(run_id), "approval_id": str(d.approval_id),
                     "command_id": str(d.command_id) if d.command_id else None}
+
+    if entry_requires_stop(decision["instrument_id"], side):
+        structural_stop = await _preflight_debate_stop(
+            request, run, decision, order_type=payload["order_type"], limit_price=payload.get("price"),
+            stop_loss_pct=payload.get("stop_loss_pct"))
+        payload["proposed_stop_loss"] = format(structural_stop, "f")
+        if market_of(decision["instrument_id"]) is not Market.SPOT:
+            payload["stop_loss"] = format(structural_stop, "f")
 
     # Mark the run decided and enqueue its order atomically, so a run is never
     # COMPLETED without an order (or approved twice by concurrent requests).

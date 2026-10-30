@@ -8,11 +8,13 @@ Runs on a throwaway migrated database (``cryptonite_ci_stop_*``) and the Redis a
 """
 
 import json
+import time
 import uuid
 
 import httpx
 import pytest
 from ai_api_harness import close_harness, make_harness
+from cryptonite_schemas.marks import quote_tick_key
 from migrated_db import migrated_database
 from test_ai_approvals import run_poller
 
@@ -34,9 +36,13 @@ async def h(db_url, monkeypatch):
     await harness.pool.execute("UPDATE paper_accounts SET total_equity = 1000000")  # ADR 0011 D11: create runs Start under the cap
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_positions CASCADE")
+    await harness.redis.set(quote_tick_key(BTC), json.dumps({
+        "instrument_id": BTC, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns(),
+    }), ex=60)
     try:
         yield harness
     finally:
+        await harness.redis.delete(quote_tick_key(BTC))
         await close_harness(harness)
 
 

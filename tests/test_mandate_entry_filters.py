@@ -7,12 +7,14 @@ Runs on a throwaway migrated database and the Redis at REDIS_URL, as test_brain_
 import importlib.util
 import json
 import sys
+import time
 import uuid
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from ai_api_harness import close_harness, make_harness
+from cryptonite_schemas.marks import quote_tick_key
 from migrated_db import migrated_database
 from test_brain_card_preflight import (  # noqa: F401
     approve,
@@ -52,6 +54,9 @@ async def h(db_url, monkeypatch):
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_orders, "
                                "paper_positions, ai_mandate_daily_sessions CASCADE")
+    await harness.redis.set(quote_tick_key(BTC), json.dumps({
+        "instrument_id": BTC, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns(),
+    }), ex=60)
     from cryptonite_execution import profile_lifecycle
     from cryptonite_schemas.profile import base_asset
     await harness.pool.execute("DELETE FROM ai_profile_coin_locks")
@@ -71,6 +76,7 @@ async def h(db_url, monkeypatch):
     try:
         yield harness
     finally:
+        await harness.redis.delete(quote_tick_key(BTC))
         await close_harness(harness)
 
 
@@ -213,8 +219,8 @@ async def test_a_card_with_the_stop_on_the_wrong_side_is_refused(h, worker):  # 
     m = await h.mandate(instruments=(BTC,))
     await limits(h, m, min_rr="2.0")
     worker.card.update(order_type="LIMIT", limit_price=60000.0, stop_loss=62000.0, take_profit=66000.0)  # a BUY
-    body = await assert_refused_like_approve(h, worker, code="MANDATE_MIN_RR")
-    assert "stop/target on the wrong side" in body["detail"]
+    body = await assert_refused_like_approve(h, worker, code="STOP_REQUIRED")
+    assert "not on the protective side" in body["detail"]
 
 
 async def test_a_card_below_the_reward_risk_minimum_is_refused(h, worker):  # noqa: F811
