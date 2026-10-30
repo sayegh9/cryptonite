@@ -11,19 +11,10 @@ from typing import Any
 
 import asyncpg
 from cryptonite_schemas.profile import underlying_spot
-from nautilus_trader.config import LiveDataEngineConfig, MessageBusConfig
-from nautilus_trader.infrastructure import (
-    RedisCacheConfig,
-    RedisCacheDatabase,
-    RedisMessageBusConfig,
-    RedisMessageBusFactory,
-)
 from nautilus_trader.live import LiveNode
 from nautilus_trader.model import (
     Bar,
-    ClientId,
     InstrumentId,
-    QuoteTick,
     TraderId,
 )
 
@@ -32,7 +23,7 @@ from cryptonite_execution.derivatives import FundingPaymentEvent, LiquidationEve
 from cryptonite_execution.ingress import IngressHealthMonitor
 from cryptonite_execution.kill_switch import LatchedKillSwitch
 from cryptonite_execution.mailbox import NodeCommandMailbox
-from cryptonite_execution.risk import GuardedOrderDispatcher, OrderIntent
+from cryptonite_execution.risk import GuardedOrderDispatcher
 from cryptonite_execution.router import GateOwnedBarRouter
 from cryptonite_execution.version_lock import assert_version_locked
 
