@@ -21,8 +21,11 @@ from typing import Any
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution import profile_lifecycle
 from cryptonite_schemas.mandate import mandate_instance_id
+from cryptonite_schemas.marks import read_live_quote, resolve_quote_price
+from cryptonite_schemas.profile import Market, market_of, underlying_spot
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
 logger = logging.getLogger("cryptonite.api.profiles")
 
@@ -109,14 +112,20 @@ def _decode_cursor(cursor: str) -> tuple[dt.datetime, int]:
         raise HTTPException(status_code=422, detail="Invalid decision cursor") from exc
 
 
+class StopAllIn(BaseModel):
+    close: bool = False
+
+
 @router.post("/stop-all", dependencies=OPERATOR_WRITE)
-async def stop_all(request: Request, auth: dict[str, Any] = Depends(require_human_operator)) -> dict[str, Any]:
+async def stop_all(request: Request, req: StopAllIn | None = None,
+                   auth: dict[str, Any] = Depends(require_human_operator)) -> dict[str, Any]:
     """Stop each currently ACTIVE or PAUSED profile independently, preserving per-profile failures.
 
-    The operation uses the existing lifecycle implementation with its default ``close=False`` semantics:
-    no new entries are accepted and any open position continues through its configured exits. Each selected
+    By default (``close=False``) no new entries are accepted and any open position continues on its own
+    exits; ``close=True`` also queues reduce-only closes, exactly as the single-profile stop. Each selected
     profile has its own transaction so one refusal cannot roll back a different profile's stop.
     """
+    close = bool(req and req.close)
     pool = request.app.state.pool
     async with pool.acquire() as conn:
         candidates = await conn.fetch(
@@ -139,7 +148,7 @@ async def stop_all(request: Request, auth: dict[str, Any] = Depends(require_huma
                         result.update(status=row["status"], outcome="SKIPPED_STATUS_CHANGED")
                     else:
                         stopped = await profile_lifecycle.stop(
-                            conn, profile_id, actor=str(auth.get("username") or auth["user_id"]), close=False
+                            conn, profile_id, actor=str(auth.get("username") or auth["user_id"]), close=close
                         )
                         result.update(status=stopped.status.value, outcome="STOP_REQUESTED")
             except profile_lifecycle.LifecycleError as exc:
@@ -152,6 +161,7 @@ async def stop_all(request: Request, auth: dict[str, Any] = Depends(require_huma
     requested = sum(result.get("outcome") == "STOP_REQUESTED" for result in results)
     refused = sum(result.get("outcome") in {"REFUSED", "ERROR"} for result in results)
     return {
+        "close": close,
         "selected_count": len(candidates),
         "requested_count": requested,
         "refused_count": refused,
@@ -229,6 +239,7 @@ async def profile_summary(
             profile_id, now - dt.timedelta(hours=24),
         ) or 0)
         switch = (await profile_lifecycle.load_settings(conn)).enabled
+    quotes = await _quote_freshness(_redis(request), list(profile["instruments"] or []))
 
     realized = _decimal(closed["realized_pnl"] if closed else 0)
     unrealized = _decimal(open_positions["unrealized"] if open_positions else 0)
@@ -240,14 +251,16 @@ async def profile_summary(
     target = budget * target_pct / Decimal("100") if target_pct is not None else None
     latest_at = latest["ts"] if latest else None
     age_s = max(0.0, (now - latest_at).total_seconds()) if latest_at else None
-    freshness_points = 40 if age_s is not None and age_s <= 3600 else 20 if age_s is not None and age_s <= 21600 else 0
+    fresh_count = sum(1 for q in quotes if q["fresh"])
+    freshness_points = 40 if quotes and fresh_count == len(quotes) else 20 if fresh_count else 0
     recent_error_points = max(0, 30 - 10 * failed_runs)
     breaker_reason = profile["halted_reason"] or (
         profile["paused_reason"] if (profile["paused_reason"] or "").startswith("BREAKER_") else None
     )
     breaker_active = bool(breaker_reason)
     breaker_points = 0 if breaker_active else 30
-    health_score = max(0, min(100, freshness_points + recent_error_points + breaker_points))
+    running = profile["status"] not in ("STOPPED", "ARCHIVED")
+    health_score = max(0, min(100, freshness_points + recent_error_points + breaker_points)) if running else None
     # The monitor's daily-session value is the canonical equity-change P&L (including costs); the component
     # values remain available for transparency. Before the monitor's first sample, use the explicit components.
     pnl = _decimal(session["last_pnl"]) if session and session["last_pnl"] is not None else calculated_pnl
@@ -273,13 +286,15 @@ async def profile_summary(
         "dry_run": bool(profile["dry_run"]),
         "mode": {"level": autonomy_level, "label": mode_label},
         "master_switch": "ON" if switch else "OFF",
+        "last_decision_at": _iso(latest_at),
+        "last_decision_age_seconds": round(age_s, 1) if age_s is not None else None,
         "health_score": {
             "score": health_score,
+            "running": running,
             "components": {
-                "freshness": {"points": freshness_points, "latest_decision_at": _iso(latest_at),
-                              "age_seconds": round(age_s, 1) if age_s is not None else None,
-                              "thresholds": {"40_points_within_seconds": 3600,
-                                             "20_points_within_seconds": 21600}},
+                "freshness": {"points": freshness_points, "fresh_instruments": fresh_count,
+                              "instruments": quotes,
+                              "rule": "40 when every instrument's live quote is fresh, 20 when some are, 0 when none"},
                 "recent_failures": {"points": recent_error_points, "failed_debates_24h": failed_runs,
                                     "deduction_per_failed_debate": 10, "base_points": 30, "floor": 0,
                                     "source": "debate_runs.status=FAILED joined through the profile's GATE/ACCEPTED decision run_id"},
@@ -288,6 +303,24 @@ async def profile_summary(
             },
         },
     }
+
+
+def _redis(request: Request) -> Any:
+    return getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
+
+
+async def _quote_freshness(redis: Any, instruments: list[str]) -> list[dict[str, Any]]:
+    """Live-quote freshness of each profile instrument; a spot-margin instrument is priced from its spot quote."""
+    out = []
+    for instrument in instruments:
+        try:
+            source = underlying_spot(instrument) if market_of(instrument) is Market.SPOT_MARGIN else instrument
+        except ValueError:
+            source = instrument
+        price = resolve_quote_price(source, await read_live_quote(redis, source))
+        out.append({"instrument_id": instrument, "fresh": price.price is not None,
+                    "age_seconds": round(price.age_s, 1) if price.age_s is not None else None})
+    return out
 
 
 def _range_start(range_name: str, now: dt.datetime) -> dt.datetime | None:

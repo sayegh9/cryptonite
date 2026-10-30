@@ -11,6 +11,7 @@ from decimal import Decimal
 import pytest
 from ai_api_harness import close_harness, make_harness
 from cryptonite_schemas.mandate import mandate_instance_id
+from cryptonite_schemas.marks import quote_tick_key
 from migrated_db import migrated_database
 
 D = Decimal
@@ -37,6 +38,13 @@ async def h(db_url):
         yield harness
     finally:
         await close_harness(harness)
+
+
+async def put_quote(h, instrument_id, *, age_s=0.0):
+    arrival_ns = int((dt.datetime.now(UTC).timestamp() - age_s) * 1e9)
+    await h.redis.set(quote_tick_key(instrument_id), json.dumps({
+        "instrument_id": instrument_id, "bid_price": "100", "ask_price": "100.1",
+        "bid_size": "1", "ask_size": "1", "arrival_ns": arrival_ns}), ex=60)
 
 
 async def new_profile(h, *, status="ACTIVE", instruments=(MARGIN,), budget=1000):
@@ -67,6 +75,7 @@ async def test_decisions_summary_and_performance_response_shapes(h):
            VALUES ($1, $2, 'GATE', 'ACCEPTED', 'eligible', '{\"source\":\"test\"}'::jsonb)""",
         profile.id, MARGIN,
     )
+    await put_quote(h, "BTCUSDT.BINANCE")  # a spot-margin instrument is priced from its spot quote
     async with h.client() as client:
         decisions = await client.get(f"{BASE}/{profile.id}/decisions")
         summary = await client.get(f"{BASE}/{profile.id}/summary")
@@ -83,6 +92,9 @@ async def test_decisions_summary_and_performance_response_shapes(h):
     components = summary_body["health_score"]["components"]
     assert set(components) == {"freshness", "recent_failures", "breaker"}
     assert components["freshness"]["points"] == 40
+    assert components["freshness"]["instruments"] == [{"instrument_id": MARGIN, "fresh": True,
+                                                       "age_seconds": components["freshness"]["instruments"][0]["age_seconds"]}]
+    assert summary_body["last_decision_at"] is not None
     assert components["recent_failures"]["points"] == 30
     assert components["breaker"]["points"] == 30
     assert summary_body["health_score"]["score"] == 100
@@ -149,6 +161,41 @@ async def test_stop_all_requires_csrf_and_only_stops_active_or_paused(h):
         "SELECT count(*) FROM paper_positions WHERE instance_id=$1 AND status='OPEN'",
         mandate_instance_id(active.id),
     ) == 1
+    assert result["close"] is False
+    assert await h.pool.fetchval(
+        "SELECT count(*) FROM execution_commands WHERE mandate_id=$1 AND command_type='CLOSE_POSITION'", active.id) == 0
+
+
+async def test_stop_all_with_close_queues_reduce_only_closes(h):
+    active = await new_profile(h, status="ACTIVE")
+    await h.pool.execute(
+        """INSERT INTO paper_positions (position_id, account_id, instance_id, instrument_id, side,
+               entry_price, quantity, current_price, unrealized_pnl, status, opened_at, leverage, margin_mode)
+           VALUES ($1, $2, $3, $4, 'LONG', 100, 1, 101, 1, 'OPEN', now(), 2, 'ISOLATED')""",
+        str(uuid.uuid4()), ACCOUNT, mandate_instance_id(active.id), MARGIN,
+    )
+    async with h.client() as client:
+        response = await client.post(f"{BASE}/stop-all", headers=h.headers, json={"close": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["close"] is True and body["requested_count"] == 1
+    assert await h.pool.fetchval(
+        "SELECT count(*) FROM execution_commands WHERE mandate_id=$1 AND command_type='CLOSE_POSITION'", active.id) == 1
+
+
+async def test_summary_freshness_scores_live_quotes_and_stopped_profiles_have_no_score(h):
+    profile = await new_profile(h, instruments=("BTCUSDT.BINANCE", "ETHUSDT.BINANCE"))
+    await put_quote(h, "BTCUSDT.BINANCE")
+    await put_quote(h, "ETHUSDT.BINANCE", age_s=120)
+    stopped = await new_profile(h, status="STOPPED", instruments=("XRPUSDT.BINANCE",))
+    async with h.client() as client:
+        summary = (await client.get(f"{BASE}/{profile.id}/summary")).json()
+        stopped_summary = (await client.get(f"{BASE}/{stopped.id}/summary")).json()
+    freshness = summary["health_score"]["components"]["freshness"]
+    assert freshness["points"] == 20 and freshness["fresh_instruments"] == 1
+    assert summary["health_score"]["score"] == 80
+    assert stopped_summary["health_score"]["score"] is None
+    assert stopped_summary["health_score"]["running"] is False
 
 
 async def _insert_exit_fill(h, profile, *, r_multiple, realized_pnl, order_suffix):
