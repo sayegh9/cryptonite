@@ -594,6 +594,7 @@ async def estimate(
                FROM run_cost""",
             since, now,
         )
+        switch = (await profile_lifecycle.load_settings(conn)).enabled
 
     candidate_runs = int(metrics["candidate_runs"] or 0)
     candidates = int(metrics["candidates"] or 0)
@@ -620,6 +621,7 @@ async def estimate(
     )
     return {
         "coins": requested,
+        "master_switch": "ON" if switch else "OFF",
         "style": style,
         "direction": direction,
         "feed": {"ingest_max_symbols": max_symbols, "coins_in_feed": fed,

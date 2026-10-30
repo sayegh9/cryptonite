@@ -382,6 +382,7 @@ async def test_estimate_reports_not_in_feed_and_existing_onboarding_action(h):
                               "body": {"symbol": "DOGEUSDT"}},
     }]
     assert body["estimate"]["debates_per_day"] == "3"
+    assert body["master_switch"] == "OFF"
     assert body["estimate"]["llm_usd_per_day"] is not None
     assert "last 7 UTC days" in body["estimate"]["method"]
     assert "observed coin" in body["estimate"]["method"]
