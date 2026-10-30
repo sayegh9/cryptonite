@@ -22,7 +22,7 @@ Navigation adds `autotrade` with views `list`, `new`, and `profile`. Keep `DEFAU
 | Health | Score `0–100` plus the three component scores and “Updated … ago”. No color-only meaning; pair color with text. |
 | P&L | Label currency and period. Distinguish realized and unrealized values; use the API's daily-loss target and progress. |
 | Missing data | Use **Unavailable** with a retry or reason. Never show zero for missing/unavailable data. |
-| Unknown R | Exclude null R from average R and report `Avg R over N of M trades`; show unknown-R count. |
+| Unknown R | Exclude null R from average R and report `Avg R over N of M audited exits`; show unknown-R count within audited exits and the profile fill count separately. Never imply audited outcomes cover every fill. |
 
 ## List view
 
@@ -146,7 +146,7 @@ Current decision writers do not emit an `ERROR` or `FAILED` `ai_profile_decision
 
 ### Performance
 
-Use `GET /ai/profiles/{id}/performance?range=7d|30d|all`. Include equity curve from `ai_mandate_equity`, tagged profile fills, win rate, average R, fees, funding, `paper_margin_interest`, max drawdown, and the count of R-unknown trades. Display **Avg R over {known} of {total} trades**. Offer ranges **7 days**, **30 days**, **All time**. Keep currency, period, and paper/live context beside every metric. Empty: **No closed trades in this period.** Error: **Performance unavailable.** / **Retry**.
+Use `GET /ai/profiles/{id}/performance?range=7d|30d|all`. Include the equity curve from `ai_mandate_equity`, all tagged profile fills, audited exit outcomes, win rate, average R, fees, funding, `paper_margin_interest`, max drawdown, and the R-unknown count. The API lists all fills but cannot durably attribute every close fill to an EXIT decision; show its `outcome_coverage` note with the outcome metrics. These metrics are explicitly scoped to EXIT audit decisions and must not be presented as complete fill outcomes. Display **Avg R over {known} of {total} audited exits** and show the fill count separately. Offer ranges **7 days**, **30 days**, **All time**. Keep currency, period, and paper/live context beside every metric. If there are no fills, show **No profile fills in this period.** Error: **Performance unavailable.** / **Retry**.
 
 ### Positions
 
