@@ -106,7 +106,8 @@ export const parseCoins = (text: string) =>
     new Set(
       text
         .split(/[\s,]+/)
-        .map((c) => c.trim().toUpperCase().replace(/\.BINANCE$/, ""))
+        // a coin, not an instrument: the markets choose -MARGIN / -PERP
+        .map((c) => c.trim().toUpperCase().replace(/\.BINANCE$/, "").replace(/-(PERP|MARGIN)$/, ""))
         .filter(Boolean),
     ),
   );

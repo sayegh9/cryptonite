@@ -18,6 +18,7 @@ from decimal import Decimal
 from importlib.resources import files
 from typing import Any
 
+from cryptonite_api.routes.ai import _publish_updated
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution import profile_lifecycle
 from cryptonite_schemas.mandate import mandate_instance_id
@@ -43,6 +44,7 @@ _COIN_RE = re.compile(r"^[A-Z0-9]{2,24}$")
 _CURSOR_SEP = "."
 _CURSOR_MAX_LENGTH = 256
 _MAX_DECISION_ID = 2**63 - 1
+_MAX_FILLS_RETURNED = 500
 _DECISION_COLUMNS = "id, mandate_id, ts, instrument_id, stage, outcome, reason, detail, run_id, command_id"
 
 
@@ -165,6 +167,9 @@ async def stop_all(request: Request, req: StopAllIn | None = None,
                 result.update(status="UNCHANGED", outcome="ERROR", error="PROFILE_STOP_FAILED")
         results.append(result)
 
+    for result in results:
+        if result.get("outcome") == "STOP_REQUESTED":
+            await _publish_updated(request, uuid.UUID(result["id"]), "stopped")
     requested = sum(result.get("outcome") == "STOP_REQUESTED" for result in results)
     refused = sum(result.get("outcome") in {"REFUSED", "ERROR"} for result in results)
     return {
@@ -462,11 +467,14 @@ async def profile_performance(
         "fee": _decimal_text(row["commission"]), "fee_currency": row["commission_currency"] or "UNKNOWN",
         "executed_at": _iso(row["executed_at"]),
     } for row in fills]
+    fill_count = len(fills_view)
+    fills_view = fills_view[-_MAX_FILLS_RETURNED:]  # the newest; every count and total above uses all of them
     margin_interest_by_asset = {row["asset"]: _decimal_text(row["amount"]) for row in margin_interest_rows}
     valid_pnl_count = len(realized_values)
     return {
         "profile_id": str(profile_id), "range": range, "equity_curve": curve,
-        "equity_curve_sampled": curve_sampled, "fills": fills_view, "exit_outcomes": exit_rows,
+        "equity_curve_sampled": curve_sampled, "fills": fills_view, "fills_truncated": fill_count > len(fills_view),
+        "exit_outcomes": exit_rows,
         "stats": {
             "audited_exit_count": len(exit_rows), "audited_wins": wins,
             "audited_win_rate": _decimal_text(Decimal(wins) / valid_pnl_count) if valid_pnl_count else None,
@@ -475,7 +483,7 @@ async def profile_performance(
             "outcome_coverage": {
                 "scope": "EXIT audit decisions only",
                 "complete": False,
-                "profile_fill_count": len(fills_view),
+                "profile_fill_count": fill_count,
                 "audited_exit_count": len(exit_rows),
                 "note": (
                     "All profile-owned fills are listed separately. Some close paths do not persist a durable "

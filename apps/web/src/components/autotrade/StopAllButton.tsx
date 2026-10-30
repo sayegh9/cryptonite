@@ -7,6 +7,7 @@ import type { ApiError, Profile, StopAllResult } from "@/lib/autotrade/types";
 import { useAutoTradeStore } from "@/lib/stores/useAutoTradeStore";
 import { btnSecondary, ConfirmDialog } from "./Dialogs";
 
+const plural = (n: number) => `${n} profile${n === 1 ? "" : "s"}`;
 const OUTCOME: Record<string, string> = {
   STOP_REQUESTED: "Stopped",
   SKIPPED_STATUS_CHANGED: "Already stopping",
@@ -52,7 +53,7 @@ export function StopAllButton({ profiles }: { profiles: Profile[] }) {
       <ConfirmDialog
         open={open}
         title="Stop all profiles?"
-        body={`This stops new entries on ${n} running or paused profile${n === 1 ? "" : "s"}. Open positions stay open and close on their own stops and targets, unless you choose to close them now. The master switch is unchanged.`}
+        body={`This stops new entries on ${n} running or paused profile${n === 1 ? "" : "s"}. Open positions stay open and close on their own stops and targets, unless you choose to close them now. The master switch is unchanged. Halted profiles are already reduce-only and are not included.`}
         checkboxLabel="Also close open positions now"
         confirmLabel={`Stop ${n} profile${n === 1 ? "" : "s"}`}
         danger
@@ -72,8 +73,8 @@ export function StopAllButton({ profiles }: { profiles: Profile[] }) {
             const tail = close ? "Closing open positions now." : "Open positions will close on their stops and targets.";
             const msg =
               r.refused_count > 0
-                ? `${r.requested_count} profiles stopped; ${r.refused_count} couldn't be stopped. Review the results and retry the remaining profiles.`
-                : `Stop requested for ${r.requested_count} profiles. ${tail}`;
+                ? `${plural(r.requested_count)} stopped; ${r.refused_count} couldn't be stopped. Review the results and retry the remaining profiles.`
+                : `Stop requested for ${plural(r.requested_count)}. ${tail}`;
             setAnnounce(msg);
             if (r.refused_count > 0) toast.warning(msg);
             else {

@@ -43,6 +43,8 @@ export function errorCopy(err: ApiError, mode?: ExecutionMode): string {
     case "TOTP_REQUIRED":
     case "TOTP_REUSED":
       return "That code wasn't accepted. Check the current code in your authenticator app and try again.";
+    case "TOTP_LOCKED":
+      return "Too many wrong codes. Try again in 15 minutes.";
     case "COIN_LOCKED":
       return err.message.replace(/; pause or stop it first$/, ".");
     case "MANDATE_PAUSED":

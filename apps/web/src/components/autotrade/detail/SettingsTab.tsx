@@ -103,7 +103,7 @@ export function SettingsTab({ profile: p }: { profile: Profile }) {
       return { instruments: coins.flatMap((c) => markets.map((m) => `${c}${suffix[m]}.BINANCE`)), markets, allow_perps: markets.includes("PERP") };
     }
     if (row.kind === "bool") return { [row.key]: value === "true" };
-    if (row.clearable && value.trim() === "") return { clear_limits: [row.key] };
+    if (row.clearable && value.trim() === "") return row.value(p) === "" ? {} : { clear_limits: [row.key] };
     if (row.kind === "number") return { [row.key]: INT_KEYS.has(row.key) ? Number(value) : value.trim() };
     return { [row.key]: value };
   };

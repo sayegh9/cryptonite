@@ -97,6 +97,7 @@ function PerformanceBody({ data }: { data: ProfilePerformance }) {
       <p className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 text-xs text-zinc-300">
         Outcome metrics cover {s.outcome_coverage.scope.toLowerCase()}: {s.outcome_coverage.note}
       </p>
+      {data.fills_truncated && <p className="text-2xs text-zinc-500">Showing the newest {data.fills.length} of {s.outcome_coverage.profile_fill_count} fills.</p>}
       {data.fills.length === 0 ? (
         <p className="text-sm text-zinc-400">No profile fills in this period.</p>
       ) : (

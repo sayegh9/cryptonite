@@ -110,6 +110,25 @@ test.describe("Auto-Trade", () => {
     expect(create.body.instruments).toEqual(["ETHUSDT-MARGIN.BINANCE", "ETHUSDT-PERP.BINANCE", "BTCUSDT-MARGIN.BINANCE", "BTCUSDT-PERP.BINANCE"]);
   });
 
+  test("wizard: a Veto window profile is created in Ask me, then raised with a second code", async ({ page }) => {
+    const be = await mockAutoTrade(page, { profiles: [] });
+    await page.goto("/?ws=autotrade&view=new");
+    await page.getByLabel("Profile name").fill("Veto ETH");
+    await page.getByLabel("Coins").fill("ETHUSDT");
+    for (let i = 0; i < 3; i++) await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("radio", { name: /Veto window/ }).check();
+    await page.getByRole("button", { name: "Create and start" }).click();
+    const totp = page.getByRole("dialog", { name: "Confirm this risk change" });
+    await totp.getByLabel("TOTP code").fill(VALID_TOTP);
+    await totp.getByRole("button", { name: "Confirm and start" }).click();
+    await expect(totp).toContainText("Switching Veto ETH to Veto window");
+    await totp.getByLabel("TOTP code").fill(VALID_TOTP);
+    await totp.getByRole("button", { name: "Confirm mode" }).click();
+    await expect(page).toHaveURL(/view=profile&id=cccccccc/);
+    const confirm = be.writes.find((w) => w.path.endsWith("/autonomy/confirm"))!;
+    expect(confirm.body).toEqual({ level: 2, totp_code: VALID_TOTP });
+  });
+
   test("wizard: validation, a locked coin, a coin outside the feed and the switch-off warning", async ({ page }) => {
     await mockAutoTrade(page);
     await page.goto("/?ws=autotrade&view=new");

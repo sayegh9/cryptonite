@@ -13,6 +13,8 @@ import { ReplayStats } from "./ReplayStats";
 
 const STEPS = ["Markets and capital", "Style and direction", "Risk and leverage", "Mode and review"] as const;
 const LOCK_HOLDING = new Set(["ACTIVE", "PAUSED", "HALTED", "STOPPING"]);
+/** The mode change that follows a create: the draft is cleared by then, so the chosen mode travels with it */
+type ModeStep = { id: string; name: string; mode: ExecutionMode };
 type Errors = Partial<Record<keyof ProfileDraft | "coins", string>>;
 const input = "w-full rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-2 text-sm text-zinc-100 aria-[invalid=true]:border-red-500";
 
@@ -101,7 +103,7 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
   const [formError, setFormError] = useState<string | null>(null);
   const [coinText, setCoinText] = useState(draft.coins.join(", "));
   const [discardOpen, setDiscardOpen] = useState(false);
-  const [totp, setTotp] = useState<null | "create" | { id: string; name: string }>(null);
+  const [totp, setTotp] = useState<null | "create" | ModeStep>(null);
   const [totpError, setTotpError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -146,7 +148,8 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
 
   const apiFail = (err: ApiError) => {
     if (err.fields) {
-      setErrors(err.fields as Errors);
+      const { instruments, ...rest } = err.fields;
+      setErrors({ ...rest, ...(instruments ? { coins: instruments } : {}) } as Errors);
       const stepOf = (k: string) => (["name", "instruments", "markets", "capital_budget_usd"].includes(k) ? 0 : ["style", "direction"].includes(k) ? 1 : k === "dry_run" ? 3 : 2);
       setStep(stepOf(Object.keys(err.fields)[0]));
     }
@@ -169,7 +172,7 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
       if (snapshot.mode !== "ASK") {
         // A new profile starts in Ask me (ADR 0011); raising the mode is its own risk change and needs the next code
         toast.success(`Profile started in Ask me${snapshot.dry_run ? " and dry run" : ""}.`);
-        setTotp({ id: created.id, name: created.name });
+        setTotp({ id: created.id, name: created.name, mode: snapshot.mode });
         return;
       }
       toast.success(snapshot.dry_run ? "Profile started in dry run." : "Profile started.");
@@ -186,19 +189,19 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
     }
   };
 
-  const raiseMode = async (target: { id: string; name: string }, code: string) => {
+  const raiseMode = async (target: ModeStep, code: string) => {
     setPending(true);
     setTotpError(null);
     try {
-      await store.setMode(target.id, modeAfterCreate.current, code);
-      toast.success(`${target.name} is now in ${MODE_LABEL[modeAfterCreate.current]}.`);
+      await store.setMode(target.id, target.mode, code);
+      toast.success(`${target.name} is now in ${MODE_LABEL[target.mode]}.`);
       setTotp(null);
       onCreated(target.id);
     } catch (e) {
       const err = e as ApiError;
       if (isTotpError(err)) setTotpError(errorCopy(err));
       else {
-        toast.error(`${target.name} stays in Ask me: ${errorCopy(err, modeAfterCreate.current)}`);
+        toast.error(`${target.name} stays in Ask me: ${errorCopy(err, target.mode)}`);
         setTotp(null);
         onCreated(target.id);
       }
@@ -206,9 +209,6 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
       setPending(false);
     }
   };
-  // The draft is cleared once the profile exists; remember the mode the operator chose for the second step
-  const modeAfterCreate = useRef<ExecutionMode>(draft.mode);
-  if (totp === null || totp === "create") modeAfterCreate.current = draft.mode;
 
   const err = (k: keyof Errors) => errors[k];
   const aria = (k: string, help = false) => ({
@@ -501,7 +501,7 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
       />
       <TotpDialog
         open={totp !== null}
-        change={totp === "create" ? `Creating ${draft.name || "this profile"}` : `Switching ${typeof totp === "object" && totp ? totp.name : ""} to ${MODE_LABEL[modeAfterCreate.current]}`}
+        change={totp === "create" ? `Creating ${draft.name || "this profile"}` : `Switching ${typeof totp === "object" && totp ? `${totp.name} to ${MODE_LABEL[totp.mode]}` : ""}`}
         confirmLabel={totp === "create" ? "Confirm and start" : "Confirm mode"}
         pending={pending}
         error={totpError}

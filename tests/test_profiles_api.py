@@ -412,3 +412,34 @@ async def test_summary_recent_failures_require_profile_accepted_gate_attribution
     recent = response.json()["health_score"]["components"]["recent_failures"]
     assert recent["failed_debates_24h"] == 1
     assert recent["points"] == 20
+
+
+async def test_a_change_sent_without_a_code_does_not_spend_the_totp_lockout(h):
+    """The Auto-Trade editor sends a change without a code first; six such probes must not lock the operator out."""
+    profile = await new_profile(h, instruments=("BTCUSDT.BINANCE",))
+    await h.redis.delete(f"ai:totp_failures:user:{h.operator_id}")
+    async with h.client() as client:
+        for budget in range(1001, 1007):  # a larger budget adds risk, so each needs a code
+            response = await client.patch(f"/api/v1/ai/mandates/{profile.id}", headers=h.headers,
+                                          json={"capital_budget_usd": str(budget)})
+            assert response.status_code == 401
+            assert response.json()["detail"].startswith("TOTP_REQUIRED")
+    assert await h.redis.get(f"ai:totp_failures:user:{h.operator_id}") is None
+
+
+async def test_stop_all_announces_each_stopped_profile(h):
+    profile = await new_profile(h, status="ACTIVE")
+    pubsub = h.redis.pubsub()
+    await pubsub.subscribe("channel:system_alerts")
+    try:
+        async with h.client() as client:
+            assert (await client.post(f"{BASE}/stop-all", headers=h.headers)).status_code == 200
+        messages = []
+        for _ in range(20):
+            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.2)
+            if message:
+                messages.append(json.loads(message["data"]))
+    finally:
+        await pubsub.unsubscribe()
+        await pubsub.aclose()
+    assert {"type": "mandate_updated", "mandate_id": str(profile.id), "change": "stopped"} in messages

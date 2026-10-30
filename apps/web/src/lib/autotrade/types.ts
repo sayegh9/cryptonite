@@ -94,6 +94,8 @@ export interface ProfilePerformance {
   range: PerformanceRange;
   equity_curve: { ts: string; equity: string | null; hwm: string | null; drawdown_pct: string | null }[];
   equity_curve_sampled: boolean;
+  /** Only the newest fills are listed; counts and totals cover all of them */
+  fills_truncated?: boolean;
   fills: {
     trade_id: string;
     instrument_id: string;

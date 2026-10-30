@@ -194,7 +194,13 @@ export async function mockAutoTrade(page: Page, opts: { profiles?: ReturnType<ty
       for (const p of eligible) p.status = "STOPPING";
       return json(route, { close: !!body.close, selected_count: eligible.length, requested_count: eligible.length, refused_count: 0, profiles: eligible.map((p) => ({ id: p.id, status: "STOPPING", outcome: "STOP_REQUESTED" })) });
     }
-    if (method === "POST" && (m = path.match(/^\/mandates\/([^/]+)\/autonomy\/confirm$/))) return json(route, { detail: "AUTOTRADE_DISABLED: the auto-trade master switch is off; the mode cannot be raised above Ask me" }, 409);
+    if (method === "POST" && (m = path.match(/^\/mandates\/([^/]+)\/autonomy\/confirm$/))) {
+      if (body.totp_code !== VALID_TOTP) return json(route, { detail: "TOTP_REQUIRED: enter your current TOTP code" }, 401);
+      const p = byId(m[1])!;
+      p.autonomy_level = body.level as number;
+      p.execution_mode = ({ 1: "ASK", 2: "VETO", 3: "AUTO" } as Record<number, string>)[body.level as number];
+      return json(route, { mandate_id: p.id, level: body.level });
+    }
     if (method === "GET" && path.startsWith("/approvals")) return json(route, { now: new Date().toISOString(), approvals: [] });
     if (method === "GET" && path === "/status")
       return json(route, { kill_switch: { latched: false }, halted_mandates: [], account: null, exit_monitor_up: true, notifier_up: true, budget_alert: false, degraded: [] });
