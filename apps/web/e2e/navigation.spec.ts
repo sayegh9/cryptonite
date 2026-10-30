@@ -14,7 +14,7 @@ test.describe("Workstation navigation", () => {
     for (const group of ["Trade", "Research", "AI", "System"]) {
       await expect(nav.getByRole("group", { name: group, exact: true })).toBeVisible();
     }
-    await expect(nav.getByRole("group", { name: "AI", exact: true }).getByRole("button")).toHaveText(["AI Brain", "Mission Control"]);
+    await expect(nav.getByRole("group", { name: "AI", exact: true }).getByRole("button")).toHaveText(["AI Brain", "Mission Control", "Auto-Trade"]);
     await expect(nav.getByRole("button", { name: "Mission Control", exact: true })).toHaveAttribute("aria-current", "page");
   });
 

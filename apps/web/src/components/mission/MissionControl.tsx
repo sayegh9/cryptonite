@@ -18,7 +18,7 @@ import { dispatchSwitchWorkspace } from "@/lib/navigation";
 
 const VIEWS: { id: MissionView; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "mandates", label: "Mandate editor" },
+  { id: "mandates", label: "Profiles" },
   { id: "autonomy", label: "Autonomy & Evals" },
 ];
 
@@ -26,7 +26,7 @@ let hydrated = false;
 
 /**
  * Mission Control (blueprint §7.1): mandates, the approval queue with countdowns, halted and degraded
- * states, one PAPER kill switch; plus the Mandate editor and Autonomy & Evals views.
+ * states, one PAPER kill switch; plus a pointer to Auto-Trade (profiles) and Autonomy & Evals views.
  */
 export function MissionControl({ isActive }: { isActive: boolean }) {
   const { view, mandates, mandatesOk, approvals, status, loaded, error, refresh } = useMandateStore();
