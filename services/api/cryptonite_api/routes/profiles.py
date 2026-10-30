@@ -22,7 +22,14 @@ from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, r
 from cryptonite_execution import profile_lifecycle
 from cryptonite_schemas.mandate import mandate_instance_id
 from cryptonite_schemas.marks import read_live_quote, resolve_quote_price
-from cryptonite_schemas.profile import Direction, Market, Style, market_of, preset_ids_for, underlying_spot
+from cryptonite_schemas.profile import (
+    Direction,
+    Market,
+    Style,
+    market_of,
+    preset_ids_for,
+    underlying_spot,
+)
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
