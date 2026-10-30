@@ -169,7 +169,7 @@ breaker = 30 if clear, 0 if active
 health = clamp(freshness + recent_errors + breaker, 0, 100)
 ```
 
-The qualifying persisted error source is `debate_runs.status = 'FAILED'` scoped by its durable `mandate_id` to this profile, in the last 24 hours. Count at most one error per failed run; `NO_TRADE`, `GATE_REFUSED`, `REJECTED`, and other ordinary refusals are not errors. `debate_runs.mandate_id` is durable and set by the profile routing flow; if a failed run has no mandate ID, it cannot be attributed to a profile and is not counted. Do not infer errors from missing decisions or failed audit inserts. Show the breakdown as **Freshness {N}/40**, **Recent errors {N}/30**, **Breaker {N}/30**, and the profile's active breaker reason. If the API cannot return profile-scoped failed runs, show score unavailable rather than substituting a different error source.
+The qualifying persisted error source is a `debate_runs.status = 'FAILED'` row from the last 24 hours joined by `run_id` to that profile's `ai_profile_decisions` row with `stage = 'GATE'` and `outcome = 'ACCEPTED'`. This accepted-gate row is written before model work and carries the profile's `mandate_id`; the failed debate row itself may not retain that ID. Count at most one failure per linked run. Ordinary policy outcomes such as `NO_TRADE`, `GATE: REFUSED`, and `REJECTED` are not errors. A failed run without a linked accepted-gate decision cannot be attributed to a profile and is not counted. Do not infer errors from missing decisions or failed audit inserts. Show the breakdown as **Freshness {N}/40**, **Recent failures {N}/30**, **Breaker {N}/30**, and the profile's active breaker reason. If the API cannot return these profile-scoped failed runs, show score unavailable rather than substituting a different error source.
 
 ## Four field presets
 
@@ -259,5 +259,5 @@ P2.1 is responsible for the concrete API response types. Keep those types in the
 
 - Empty/loading/error/stale/list-card states, all four wizard steps and validation, detail tabs, Stop all, and TOTP are specified with copy.
 - Presets map to the real schema fields and call `preset_ids_for(style, direction)`; replay values/warnings and the thin/missing cases are present.
-- Health score uses the agreed formula and only profile-scoped `debate_runs.status='FAILED'` as recent errors; ordinary refusals are excluded.
+- Health score uses the agreed formula and only `FAILED` debate runs linked to a profile's accepted GATE decision as recent failures; ordinary refusals are excluded.
 - Keyboard flow, 1440px and 390px layouts, store actions/selectors, API boundaries, polling and live-vs-paper behavior are implementable without new UI or trading policy.
