@@ -23,6 +23,7 @@ import { AIBrainWorkspace } from "@/components/brain/AIBrainWorkspace";
 import { DecisionTraceDrawer } from "@/components/brain/DecisionTraceDrawer";
 import { GovernanceConsole } from "@/components/GovernanceConsole";
 import { MissionControl } from "@/components/mission/MissionControl";
+import { AutoTradeWorkspace } from "@/components/autotrade/AutoTradeWorkspace";
 import { ModeBanner } from "@/components/mission/ModeBanner";
 import { StaleBuildBanner } from "@/components/StaleBuildBanner";
 import { WorkspaceNav } from "@/components/WorkspaceNav";
@@ -64,14 +65,14 @@ function Workstation() {
   const searchParams = useSearchParams();
   const workspaceMode: WorkspaceMode = parseWorkspace(searchParams.get("ws")) ?? DEFAULT_WORKSPACE;
   const urlView = parseView(workspaceMode, searchParams.get("view"));
-  const navigate = useCallback((mode: WorkspaceMode, view?: string | null) => {
+  const navigate = useCallback((mode: WorkspaceMode, view?: string | null, id?: string | null) => {
     // Workspaces with sub-views always carry one, so Back restores the exact view
     if (!view && mode === "debates") {
       const wv = useBrainStore.getState().workspaceView;
       view = wv === "debates" ? "debates" : wv === "pixel-office" ? "pixel-office" : "home";
     }
     if (!view && (mode === "mission" || mode === "governance")) view = useMandateStore.getState().view;
-    const query = buildQuery(mode, view);
+    const query = buildQuery(mode, view, id);
     if (query !== window.location.search) window.history.pushState(null, "", query);
   }, []);
   const setWorkspaceMode = useCallback((mode: WorkspaceMode) => navigate(mode), [navigate]);
@@ -220,7 +221,7 @@ function Workstation() {
     const switchWsHandler = (e: CustomEvent) => {
       const mode = parseWorkspace(e.detail?.mode);
       if (mode) {
-        navigate(mode, typeof e.detail?.view === "string" ? e.detail.view : null);
+        navigate(mode, typeof e.detail?.view === "string" ? e.detail.view : null, typeof e.detail?.id === "string" ? e.detail.id : null);
         if (e.detail?.section) {
           window.dispatchEvent(new CustomEvent("cryptonite:settings-section", { detail: { section: e.detail.section } }));
         }
@@ -445,6 +446,13 @@ function Workstation() {
         {workspaceMode === "mission" && (
           <div className="flex-1 min-h-0 min-w-0">
             <MissionControl isActive />
+          </div>
+        )}
+
+        {/* Auto-Trade: paper profiles — list, create wizard, detail (the only profile editor) */}
+        {workspaceMode === "autotrade" && (
+          <div className="flex-1 min-h-0 min-w-0 overflow-y-auto">
+            <AutoTradeWorkspace />
           </div>
         )}
 

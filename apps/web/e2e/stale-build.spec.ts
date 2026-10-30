@@ -125,7 +125,7 @@ test.describe("Stale build", () => {
     await expect(page.getByTestId("stale-build-banner")).toHaveCount(0);
   });
 
-  test("mission control: a new build disables approving, resuming and saving mandates; veto stays", async ({ page }) => {
+  test("mission control: a new build disables approving and resuming; veto stays", async ({ page }) => {
     const writes: string[] = [];
     await page.route("**/api/v1/ai/status", (route) =>
       route.fulfill({
@@ -172,21 +172,6 @@ test.describe("Stale build", () => {
     await expect(resume.getByRole("button", { name: "Resume" })).toBeDisabled();
     // Enter in the TOTP box does not submit either
     await resume.getByLabel("TOTP").press("Enter");
-
-    // The mandate editor: a new mandate with its TOTP code cannot be created
-    await page.getByRole("tab", { name: "Mandate editor" }).click();
-    const editor = page.getByRole("region", { name: "Mandate editor" });
-    await editor.getByLabel("Mandate", { exact: true }).selectOption("");
-    await editor.getByLabel("Name").fill("Majors");
-    await editor.getByLabel("Instruments (comma separated; a perp is SYMBOL-PERP and needs perps allowed)").fill("BTCUSDT");
-    await editor.getByLabel("TOTP code").fill("654321");
-    const create = editor.getByRole("button", { name: "Create mandate (starts at L1)" });
-    await expect(create).toBeDisabled();
-    await expect(create).toHaveAttribute("title", /reload this tab first/);
-    await editor.getByLabel("TOTP code").press("Enter");
-    // An existing mandate cannot be saved either
-    await editor.getByLabel("Mandate", { exact: true }).selectOption(M1);
-    await expect(editor.getByRole("button", { name: "Save mandate" })).toBeDisabled();
 
     expect(writes).toEqual([]);
   });

@@ -12,6 +12,7 @@ export type WorkspaceMode =
   | "research"
   | "debates"
   | "mission"
+  | "autotrade"
   | "operator"
   | "alerts"
   | "settings";
@@ -30,6 +31,7 @@ const MODES: WorkspaceMode[] = [
   "research",
   "debates",
   "mission",
+  "autotrade",
   "operator",
   "alerts",
   "settings",
@@ -56,14 +58,19 @@ export const VIEWS: Partial<Record<WorkspaceMode, { id: string; label: string }[
     { id: "debates", label: "Debates" },
     { id: "pixel-office", label: "Pixel Office" },
   ],
+  autotrade: [
+    { id: "list", label: "Profiles" },
+    { id: "new", label: "Create profile" },
+    { id: "profile", label: "Profile" },
+  ],
   mission: [
     { id: "overview", label: "Overview" },
-    { id: "mandates", label: "Mandate editor" },
+    { id: "mandates", label: "Profiles" },
     { id: "autonomy", label: "Autonomy & Evals" },
   ],
   governance: [
     { id: "overview", label: "Overview" },
-    { id: "mandates", label: "Mandate editor" },
+    { id: "mandates", label: "Profiles" },
     { id: "approvals", label: "Approval queue" },
     { id: "limits", label: "Risk limits" },
     { id: "reconciliation", label: "Reconciliation" },
@@ -76,10 +83,11 @@ export function parseView(mode: WorkspaceMode, view: string | null | undefined):
   return VIEWS[mode]?.some((v) => v.id === view) ? view : null;
 }
 
-export function buildQuery(mode: WorkspaceMode, view?: string | null): string {
+export function buildQuery(mode: WorkspaceMode, view?: string | null, id?: string | null): string {
   const p = new URLSearchParams();
   p.set("ws", workspaceParam(mode));
   if (view && parseView(mode, view)) p.set("view", view);
+  if (id) p.set("id", id);
   return `?${p.toString()}`;
 }
 
@@ -332,6 +340,12 @@ export const NAV_GROUPS: NavGroup[] = [
         description: "Trading mandates, risk autonomy levels & human-in-the-loop approvals",
         iconName: "Gauge",
       },
+      {
+        mode: "autotrade",
+        label: "Auto-Trade",
+        description: "Create, run and edit paper trading profiles",
+        iconName: "Bot",
+      },
     ],
   },
   {
@@ -371,6 +385,8 @@ export const NAV_GROUPS: NavGroup[] = [
 export interface SwitchWorkspaceDetail {
   mode: WorkspaceMode;
   view?: string;
+  /** The record the view opens (Auto-Trade: a profile id) */
+  id?: string;
   section?: SettingsSection;
 }
 

@@ -24,6 +24,7 @@ import {
   PanelLeftOpen,
   Lock,
   ShieldCheck,
+  Bot,
 } from "lucide-react";
 import { NAV_GROUPS, type NavItem, type WorkspaceMode } from "@/lib/navigation";
 
@@ -46,6 +47,7 @@ const TAB_ICONS: Record<string, React.ComponentType<{ className?: string; "aria-
   Scanner: Search,
   "AI Brain": BrainCircuit,
   "Mission Control": Gauge,
+  "Auto-Trade": Bot,
   Governance: ShieldAlert,
   "Risk & Governance": ShieldAlert,
   Operator: Activity,
@@ -63,7 +65,7 @@ const isPillarActive = (groupId: string, workspaceMode: WorkspaceMode) => {
     return workspaceMode === "strategies" || workspaceMode === "research";
   }
   if (groupId === "ai") {
-    return workspaceMode === "debates" || workspaceMode === "mission";
+    return workspaceMode === "debates" || workspaceMode === "mission" || workspaceMode === "autotrade";
   }
   if (groupId === "system") {
     return workspaceMode === "governance" || workspaceMode === "operator" || workspaceMode === "alerts" || workspaceMode === "settings";

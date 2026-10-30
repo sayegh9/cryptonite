@@ -11,7 +11,7 @@ import { ApprovalQueue } from "./ApprovalQueue";
 import { AutonomyEvals } from "./AutonomyEvals";
 import ShadowPanel from "./ShadowPanel";
 import { MandateCard } from "./MandateCard";
-import { MandateEditor } from "./MandateEditor";
+import { ProfilesMoved } from "./ProfilesMoved";
 import { MissionBanners } from "./MissionBanners";
 import { MissionHealth } from "./MissionHealth";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
@@ -29,7 +29,7 @@ let hydrated = false;
  * states, one PAPER kill switch; plus the Mandate editor and Autonomy & Evals views.
  */
 export function MissionControl({ isActive }: { isActive: boolean }) {
-  const { view, mandates, mandatesOk, approvals, status, loaded, error, refresh, selectedMandateId, selectMandate } = useMandateStore();
+  const { view, mandates, mandatesOk, approvals, status, loaded, error, refresh } = useMandateStore();
 
   useEffect(() => {
     if (!hydrated) {
@@ -111,7 +111,7 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
               )}
               {loaded && mandatesOk === true && mandates.length === 0 && (
                 <p className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4 font-mono text-2xs text-zinc-400">
-                  No mandates. The AI cannot place any order until you create one (Mandate editor); every mandate starts at L1 Copilot.
+                  No mandates. The AI cannot place any order until you create one in Auto-Trade; every mandate starts at L1 Copilot.
                 </p>
               )}
               <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
@@ -133,7 +133,7 @@ export function MissionControl({ isActive }: { isActive: boolean }) {
           </div>
         )}
         {view === "mandates" && (
-          <MandateEditor mandates={mandates} selectedId={selectedMandateId} onSelect={selectMandate} onSaved={reload} />
+          <ProfilesMoved />
         )}
         {view === "autonomy" && (
           <div className="space-y-3">

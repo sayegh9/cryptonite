@@ -39,7 +39,7 @@ import { closePosition, postCommand } from "@/lib/portfolio/actions";
 import { isHeldPosition } from "@/lib/portfolio/metrics";
 
 import { MandateCard } from "@/components/mission/MandateCard";
-import { MandateEditor } from "@/components/mission/MandateEditor";
+import { ProfilesMoved } from "@/components/mission/ProfilesMoved";
 import { ApprovalQueue } from "@/components/mission/ApprovalQueue";
 import { AutonomyEvals } from "@/components/mission/AutonomyEvals";
 import ShadowPanel from "@/components/mission/ShadowPanel";
@@ -175,8 +175,6 @@ export function GovernanceConsole({
     loaded,
     error,
     refresh: refreshMandates,
-    selectedMandateId,
-    selectMandate,
   } = useMandateStore();
 
   // Portfolio state
@@ -761,12 +759,7 @@ export function GovernanceConsole({
               </p>
             </div>
 
-            <MandateEditor
-              mandates={mandates}
-              selectedId={selectedMandateId}
-              onSelect={selectMandate}
-              onSaved={reload}
-            />
+            <ProfilesMoved />
           </div>
         )}
 

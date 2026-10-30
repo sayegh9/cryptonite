@@ -6,6 +6,7 @@ import { pauseMandate, resumeMandate } from "@/lib/mission/client";
 import { dispatchMandateUpdated } from "@/lib/mission/events";
 import type { Mandate, SessionVerdict } from "@/lib/mission/types";
 import { staleMarkText } from "@/lib/mission/marks";
+import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 
 const usd = (v: string | number) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
@@ -243,6 +244,14 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => dispatchSwitchWorkspace({ mode: "autotrade", view: "profile", id: m.id })}
+          aria-label={`Open ${m.name} in Auto-Trade`}
+          className="rounded border border-cyan-700 px-2 py-1 text-2xs font-bold text-cyan-200 hover:bg-cyan-950/40"
+        >
+          Open in Auto-Trade
+        </button>
         {m.status === "ACTIVE" && (
           <button
             type="button"
