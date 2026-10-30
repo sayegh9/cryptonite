@@ -3,7 +3,7 @@ import { test, expect, type Page } from "@playwright/test";
 /**
  * Mission Control (blueprint A5.6) with a mocked /api/v1/ai backend:
  * approve / veto flow with countdowns, halted state with a TOTP resume, degraded banner,
- * the Mandate editor's TOTP rule, and a TOTP-confirmed promotion in Autonomy & Evals.
+ * and a TOTP-confirmed promotion in Autonomy & Evals.
  */
 
 const M1 = "11111111-1111-4111-8111-111111111111";
@@ -394,45 +394,6 @@ test.describe("Mission Control", () => {
     await expect(tile).toContainText("stops blind: XRPUSDT");
   });
 
-  test("mandate editor asks for TOTP only when a change adds risk", async ({ page }) => {
-    const reactErrors = collectReactErrors(page);
-    const calls = await mockBackend(page);
-    await openMissionControl(page);
-    await page.getByRole("tab", { name: "Mandate editor" }).click();
-
-    const editor = page.getByRole("region", { name: "Mandate editor" });
-    // An existing mandate: tightening needs no TOTP, loosening does
-    await editor.getByLabel("Mandate", { exact: true }).selectOption(M1);
-    await expect(editor.getByTestId("mandate-totp")).toHaveCount(0);
-    await editor.getByLabel("Budget (USD)").fill("8000");
-    await expect(editor.getByTestId("mandate-totp")).toHaveCount(0);
-    await editor.getByLabel("Budget (USD)").fill("12000");
-    await expect(editor.getByTestId("mandate-totp")).toContainText("a larger budget");
-    // Perps are an L1 Copilot feature (ADR 0009 D3): open at L1; turning them on from 1x starts at the 3x default and
-    // needs TOTP
-    await editor.getByLabel("Budget (USD)").fill("10000");
-    const perps = editor.getByRole("checkbox", { name: "allow perps" });
-    await expect(perps).toBeEnabled();
-    await perps.check();
-    await expect(editor.getByLabel("Max leverage")).toHaveValue("3");
-    await expect(editor.getByTestId("mandate-totp")).toContainText("perps");
-    await perps.uncheck();
-
-    // A new mandate always needs TOTP and starts at L1
-    await editor.getByLabel("Mandate", { exact: true }).selectOption("");
-    await editor.getByLabel("Name").fill("Majors");
-    await editor.getByLabel("Instruments (comma separated; a perp is SYMBOL-PERP and needs perps allowed)").fill("btcusdt, ETHUSDT");
-    await expect(editor.getByRole("button", { name: "Create mandate (starts at L1)" })).toBeDisabled();
-    await editor.getByLabel("TOTP code").fill("654321");
-    await editor.getByRole("button", { name: "Create mandate (starts at L1)" }).click();
-    await expect.poll(() => calls.creates.length).toBe(1);
-    expect(calls.creates[0].csrf).toBe("csrf-test");
-    expect(calls.creates[0].body).toMatchObject({ name: "Majors", instruments: ["BTCUSDT.BINANCE", "ETHUSDT.BINANCE"], totp_code: "654321" });
-    // A new mandate may start with perps (it starts at L1, ADR 0009 D3); left unticked it is spot only
-    expect(calls.creates[0].body).toMatchObject({ allow_perps: false, max_leverage: 1, max_risk_per_trade_pct: "1" });
-    expect(reactErrors).toEqual([]);
-  });
-
   test("autonomy: gate checklist and a promotion confirmed with TOTP", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     const calls = await mockBackend(page);
@@ -559,61 +520,4 @@ test.describe("Mission Control", () => {
     await expect(page.getByTestId("mission-session-banner")).toContainText("DAILY TARGET MET · Alt-momentum: daily profit target reached: positions are kept");
   });
 
-  test("mandate editor: entry filters and session limits, loosening needs TOTP", async ({ page }) => {
-    const reactErrors = collectReactErrors(page);
-    const current = mandate({ min_conviction: "0.7", min_rr: "2", daily_loss_limit_pct: "3", daily_profit_target_pct: null, profit_lock_pct: "50", session: session() });
-    await mockBackend(page, { mandates: [current] });
-    const edits: any[] = [];
-    await page.route(`**/api/v1/ai/mandates/${M1}`, (route) => {
-      if (route.request().method() !== "PATCH") return route.fallback();
-      edits.push(route.request().postDataJSON());
-      return route.fulfill({ json: current });
-    });
-    await openMissionControl(page);
-    await page.getByRole("tab", { name: "Mandate editor" }).click();
-    const editor = page.getByRole("region", { name: "Mandate editor" });
-    await editor.getByLabel("Mandate", { exact: true }).selectOption(M1);
-    const limits = editor.getByTestId("mandate-session-limits");
-    await expect(limits.getByLabel("Min conviction")).toHaveValue("0.7");
-    await expect(limits.getByLabel("Min R:R")).toHaveValue("2");
-    await expect(limits.getByLabel("Daily loss limit")).toHaveValue("3");
-    await expect(limits.getByLabel("Daily profit target")).toHaveValue("");
-    await expect(limits.getByLabel("Profit lock")).toHaveValue("50");
-    await expect(limits).toContainText("measured from the equity at 00:00 UTC");
-
-    // Tightening (and setting a new target) needs no TOTP
-    await limits.getByLabel("Min conviction").fill("0.8");
-    await limits.getByLabel("Min R:R").fill("2.5");
-    await limits.getByLabel("Daily loss limit").fill("2");
-    await limits.getByLabel("Daily profit target").fill("4");
-    await limits.getByLabel("Profit lock").fill("60");
-    await expect(editor.getByTestId("mandate-totp")).toHaveCount(0);
-    await editor.getByRole("button", { name: "Save mandate" }).click();
-    await expect.poll(() => edits.length).toBe(1);
-    expect(edits[0]).toMatchObject({ min_conviction: "0.8", min_rr: "2.5", daily_loss_limit_pct: "2", daily_profit_target_pct: "4", profit_lock_pct: "60" });
-    expect(edits[0].totp_code).toBeUndefined();
-    expect(edits[0].clear_limits).toBeUndefined();
-
-    // Loosening: each one names itself in the TOTP box
-    await editor.getByLabel("Mandate", { exact: true }).selectOption("");
-    await editor.getByLabel("Mandate", { exact: true }).selectOption(M1);
-    await limits.getByLabel("Min conviction").fill("0.6");
-    await expect(editor.getByTestId("mandate-totp")).toContainText("a lower minimum conviction");
-    await limits.getByLabel("Min conviction").fill("0.7");
-    await limits.getByLabel("Profit lock").fill("40");
-    await expect(editor.getByTestId("mandate-totp")).toContainText("a lower profit lock");
-    await limits.getByLabel("Profit lock").fill("50");
-    await expect(editor.getByTestId("mandate-totp")).toHaveCount(0);
-    // Emptying a set limit switches it off: risk adding, sent as clear_limits with the code
-    await limits.getByLabel("Min R:R").fill("");
-    await limits.getByLabel("Daily loss limit").fill("");
-    await expect(editor.getByTestId("mandate-totp")).toContainText("a lower minimum R:R, a looser daily loss limit");
-    await expect(editor.getByRole("button", { name: "Save mandate" })).toBeDisabled();
-    await editor.getByLabel("TOTP code").fill("246810");
-    await editor.getByRole("button", { name: "Save mandate" }).click();
-    await expect.poll(() => edits.length).toBe(2);
-    expect(edits[1]).toMatchObject({ clear_limits: ["min_rr", "daily_loss_limit_pct"], totp_code: "246810", min_conviction: "0.7" });
-    expect(edits[1].min_rr).toBeUndefined();
-    expect(reactErrors).toEqual([]);
-  });
 });

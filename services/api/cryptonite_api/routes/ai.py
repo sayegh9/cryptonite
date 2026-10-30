@@ -313,6 +313,10 @@ async def checked_totp(request: Request, code: str | None, throttle_key: str, **
     """``verify_totp`` with a lockout: 5 wrong codes in 15 min lock the key out for 15 min (a 6-digit
     code must not be brute-forceable). A correct or reused code is not a failed guess and is not counted.
     Fails closed when Redis is unavailable."""
+    if not code:
+        # No code is not a guess: answering "code required" must not spend the lockout budget (the Auto-Trade editor
+        # sends a change without a code first and asks for one only when the API says the change adds risk)
+        return TotpOutcome.WRONG
     r = _redis(request)
     key = f"ai:totp_failures:{throttle_key}"
     if r is None:

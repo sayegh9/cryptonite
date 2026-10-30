@@ -14,7 +14,7 @@ test.describe("Workstation navigation", () => {
     for (const group of ["Trade", "Research", "AI", "System"]) {
       await expect(nav.getByRole("group", { name: group, exact: true })).toBeVisible();
     }
-    await expect(nav.getByRole("group", { name: "AI", exact: true }).getByRole("button")).toHaveText(["AI Brain", "Mission Control"]);
+    await expect(nav.getByRole("group", { name: "AI", exact: true }).getByRole("button")).toHaveText(["AI Brain", "Mission Control", "Auto-Trade"]);
     await expect(nav.getByRole("button", { name: "Mission Control", exact: true })).toHaveAttribute("aria-current", "page");
   });
 
@@ -47,8 +47,10 @@ test.describe("Workstation navigation", () => {
   test("a deep link opens the named Mission Control view", async ({ page }) => {
     await page.goto("/?ws=mission&view=autonomy");
     await expect(page.getByRole("tab", { name: "Autonomy & Evals" })).toHaveAttribute("aria-selected", "true");
-    await page.getByRole("tab", { name: "Mandate editor" }).click();
+    await page.getByRole("tab", { name: "Profiles" }).click();
     await expect(page).toHaveURL(/ws=mission&view=mandates/);
+    await page.getByRole("button", { name: "Open Auto-Trade" }).click();
+    await expect(page).toHaveURL(/ws=autotrade&view=list/);
   });
 
   test("the command palette lists every view and navigates to it", async ({ page }) => {

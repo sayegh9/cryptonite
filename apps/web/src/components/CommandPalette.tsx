@@ -25,6 +25,7 @@ import {
   Bell,
   Settings,
   Gauge,
+  Bot,
   SlidersHorizontal,
   Cpu,
   ShieldCheck,
@@ -49,6 +50,7 @@ const MODE_ICON: Record<WorkspaceMode, React.ComponentType<{ className?: string;
   research: FlaskConical,
   debates: BrainCircuit,
   mission: Gauge,
+  autotrade: Bot,
   operator: Activity,
   alerts: Bell,
   settings: Settings,
@@ -59,7 +61,7 @@ const PALETTE_GROUPS = NAV_GROUPS.map((g) => ({
   label: g.label,
   entries: g.items.flatMap((item) => {
     const icon = item.view === "scanner" ? Search : MODE_ICON[item.mode];
-    const subViews = item.view ? [] : VIEWS[item.mode]?.filter((v) => v.id !== "scanner") ?? [];
+    const subViews = item.view ? [] : VIEWS[item.mode]?.filter((v) => v.id !== "scanner" && v.id !== "profile") ?? []; // a profile view needs its id
     return [
       { mode: item.mode, view: item.view, label: item.label, icon },
       ...subViews.map((v) => ({ mode: item.mode, view: v.id, label: `${item.label} → ${v.label}`, icon })),
