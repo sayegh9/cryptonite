@@ -122,6 +122,29 @@ def mandate_body(*instruments: str) -> dict:
             "max_position_pct": "10", "totp_code": "000000"}
 
 
+async def candidate_with_stop(h, instrument: str, *, entry: Decimal, stop: Decimal, target: Decimal) -> uuid.UUID:
+    """A debate candidate with the structural stop the approval route now requires."""
+    spec_id, version_id, scan_id, candidate_id = (uuid.uuid4() for _ in range(4))
+    await h.pool.execute("INSERT INTO scan_specs (id, slug, name) VALUES ($1, $2, $3)",
+                         spec_id, f"d4-{spec_id.hex}", "D4 feed test")
+    await h.pool.execute(
+        """INSERT INTO scan_spec_versions (id, spec_id, version_num, spec_hash, universe, rules)
+           VALUES ($1, $2, 1, 'd4-test', '{}'::jsonb, '[]'::jsonb)""", version_id, spec_id)
+    await h.pool.execute("UPDATE scan_specs SET active_version_id = $2 WHERE id = $1", spec_id, version_id)
+    await h.pool.execute(
+        """INSERT INTO scan_runs (id, spec_version_id, spec_hash, scanner_version, indicator_version,
+               input_watermark_ns, source_partitions, source_partition_checksums, trigger_reason)
+           VALUES ($1, $2, 'd4-test', 'test', 'test', 1, '{}'::jsonb, '{}'::jsonb, 'MANUAL')""",
+        scan_id, version_id)
+    await h.pool.execute(
+        """INSERT INTO signal_candidates (id, scan_run_id, spec_version_id, instrument_id, timeframe,
+               bar_open_ns, bar_close_inclusive_ns, interval_end_exclusive_ns, matched_rules, metrics,
+               suggested_entry, suggested_stop, suggested_target)
+           VALUES ($1, $2, $3, $4, '1h', 1, 2, 3, '[]'::jsonb, '{}', $5, $6, $7)""",
+        candidate_id, scan_id, version_id, instrument, entry, stop, target)
+    return candidate_id
+
+
 async def test_mandate_on_an_unfed_symbol_is_422_and_nothing_is_written(h):
     async with h.client() as c:
         res = await c.post("/api/v1/ai/mandates", json=mandate_body("BTCUSDT", "XRPUSDT"), headers=h.headers)
@@ -294,8 +317,11 @@ async def test_concurrent_approvals_of_one_brain_decision_give_one_order(h, brai
 async def test_a_debate_approved_twice_at_once_gives_one_order(h):
     await h.mandate(level=1, instruments=(BTC,))
     run_id = uuid.uuid4()
-    await h.pool.execute("INSERT INTO debate_runs (id, instrument_id, status, trigger_source) VALUES ($1, $2, 'PENDING_APPROVAL', 'test')",
-                         run_id, BTC)
+    candidate_id = await candidate_with_stop(h, BTC, entry=Decimal("50000"), stop=Decimal("49000"),
+                                              target=Decimal("62000"))
+    await h.pool.execute(
+        """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, candidate_id)
+           VALUES ($1, $2, 'PENDING_APPROVAL', 'test', $3)""", run_id, BTC, candidate_id)
     await h.pool.execute(
         """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score, allocation_pct, reasoning)
            VALUES ($1, $2, 'BUY', 0.7, 5, 'r')""", run_id, BTC)

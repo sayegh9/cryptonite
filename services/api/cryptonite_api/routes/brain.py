@@ -43,6 +43,7 @@ from cryptonite_api.leverage_card import (
     card_entry_price,
     card_leverage_plan,
     is_perp_entry,
+    perp_mark,
 )
 from cryptonite_api.mandate_choice import (
     choose_mandate_remedy,
@@ -453,21 +454,6 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
         await require_fed(request, [card["instrument_id"]])
 
     structural_stop = None
-    if entry_requires_stop(card["instrument_id"], card["side"], reduce_only=perp_reduce):
-        stop_pct = card.get("stop_loss_pct")
-        if stop_pct is None:
-            stop_pct = protection.get("stop_loss_pct")
-        structural_stop = await resolve_entry_stop(
-            request.app.state.pool,
-            getattr(getattr(request.app.state, "stream_hub", None), "redis", None),
-            card["instrument_id"],
-            card["side"],
-            explicit_stop=card.get("stop_loss"),
-            stop_loss_pct=stop_pct,
-            order_reference=(card.get("limit_price") if str(card.get("order_type", "")).upper() == "LIMIT" else None),
-        )
-        # The rest of the read-only plan, including R:R checks, must use the exact stop that will be queued.
-        card = {**card, "stop_loss": format(structural_stop, "f")}
 
     # Every AI order trades inside a mandate (A5.1); resolve it before the card is claimed
     pool = request.app.state.pool
@@ -566,6 +552,55 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
                                                      Decimal(str(card.get("quantity") or 0)), "card")
         if conflict is not None:
             raise HTTPException(status_code=409, detail=conflict)
+
+        stop_pct = card.get("stop_loss_pct")
+        if stop_pct is None:
+            stop_pct = protection.get("stop_loss_pct")
+        # A mandate min-R:R requires the card to carry its own stop and target. The exit monitor's
+        # default stop is still used for structural protection, but it is not a submitted RR input.
+        has_stop_source = card.get("stop_loss") is not None or card.get("stop_loss_pct") is not None
+        if mandate.min_rr is not None and not has_stop_source:
+            # Keep the established refusal when this card has no stop to measure. The session and conviction checks
+            # run first inside entry_filter_detail, just as they do for other entries.
+            async with pool.acquire() as conn:
+                refused = await entry_filter_detail(conn, mandate, "card", conviction=card.get("confidence"),
+                                                    take_profit=card.get("take_profit"), side=card["side"],
+                                                    require_inputs=True)
+            if refused is not None:
+                raise HTTPException(status_code=409, detail=refused)
+        else:
+            # Session and conviction refusals do not depend on market data. Preserve those operator-facing reasons
+            # before requiring a fresh quote for stop resolution; R:R is checked below with the resolved stop.
+            pre_stop_mandate = mandate.model_copy(update={"min_rr": None})
+            async with pool.acquire() as conn:
+                refused = await entry_filter_detail(conn, pre_stop_mandate, "card",
+                                                    conviction=card.get("confidence"), side=card["side"],
+                                                    require_inputs=True)
+            if refused is not None:
+                raise HTTPException(status_code=409, detail=refused)
+
+        redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
+        if perp_entry:
+            mark, _ = await perp_mark(redis, card["instrument_id"])
+            if mark is None or not mark.is_finite() or mark <= 0:
+                no_mark_plan = await card_leverage_plan(pool, redis, mandate, card, requested_leverage=leverage)
+                if not no_mark_plan.ok:
+                    raise _PerpRefusal(f"{no_mark_plan.reject}: the {no_mark_plan.binding_ceiling or 'leverage plan'} "
+                                       "allows no order for this card; nothing was queued", no_mark_plan.as_dict())
+
+        if entry_requires_stop(card["instrument_id"], card["side"], reduce_only=perp_reduce):
+            structural_stop = await resolve_entry_stop(
+                pool,
+                redis,
+                card["instrument_id"],
+                card["side"],
+                explicit_stop=card.get("stop_loss"),
+                stop_loss_pct=stop_pct,
+                order_reference=(card.get("limit_price") if str(card.get("order_type", "")).upper() == "LIMIT" else None),
+            )
+            # The rest of the read-only plan, including R:R checks, must use the exact stop that will be queued.
+            card = {**card, "stop_loss": format(structural_stop, "f")}
+
         # ADR 0010: the mandate's daily session, its conviction filter and its R:R filter. A card must carry what a
         # filter the mandate sets measures (a confidence; a stop and a target): without it the entry is refused
         redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)

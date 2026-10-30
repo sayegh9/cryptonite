@@ -106,7 +106,8 @@ async def test_approve_needs_totp_and_queues_leverage_stop_and_isolated(h, worke
     payload = await h.pool.fetchval("SELECT payload FROM execution_commands WHERE command_id = $1::uuid",
                                     res.json()["command_id"])
     payload = json.loads(payload) if isinstance(payload, str) else payload
-    assert (payload["leverage"], payload["stop_loss"], payload["margin_mode"], payload["side"]) == (5, 57000.0, "ISOLATED", "BUY")
+    assert (payload["leverage"], Decimal(str(payload["stop_loss"])), payload["margin_mode"], payload["side"]) == (
+        5, Decimal("57000.0"), "ISOLATED", "BUY")
     assert payload["setup_grade"] == "A" and payload["allocation_pct"] == 2.5
 
 
