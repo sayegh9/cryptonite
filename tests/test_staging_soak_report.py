@@ -14,8 +14,13 @@ def test_soak_error_classifier_keeps_recoverable_warning_out_of_failure_count():
         "2026-10-27 22:20:34 [WARNING] cryptonite.stream: WebSocket disconnected "
         "(sent 1011 (internal error) keepalive ping timeout); reconnecting"
     )
+    lake_warning = (
+        "2026-10-30 01:30:06,955 [WARNING] cryptonite_storage.queries: Lake read failed twice: "
+        "IO Error: Cannot open file; returning no bars"
+    )
 
     assert not ERROR_RE.search(warning)
+    assert not ERROR_RE.search(lake_warning)
     assert ERROR_RE.search("2026-10-27 22:20:34 [ERROR] cryptonite.stream: failed to recover")
     assert ERROR_RE.search("2026-10-27 22:20:34 UTC [123] ERROR: relation missing")
     assert ERROR_RE.search("Traceback (most recent call last):")

@@ -25,7 +25,8 @@ PG = "stg_postgres"
 # Match log severity, not words inside a WARNING message (for example a recovered
 # WebSocket close reason containing "internal error"). Tracebacks still fail the soak.
 ERROR_RE = re.compile(
-    r"Traceback \(most recent call last\)|\[(?:ERROR|CRITICAL|FATAL)\]|\b(?:ERROR|CRITICAL|FATAL):|Unhandled exception",
+    r"Traceback \(most recent call last\)|\[(?:ERROR|CRITICAL|FATAL)\]|"
+    r"(?:\[\d+\]\s+|^\s*)(?:ERROR|CRITICAL|FATAL):|Unhandled exception",
     re.IGNORECASE,
 )
 KNOWN_SCANNER_PRECISION_NOISE_RE = re.compile(
