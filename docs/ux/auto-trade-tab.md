@@ -1,6 +1,6 @@
 # Auto-Trade workspace: UX and implementation contract
 
-Status: P2.0 specification for lead approval
+Status: approved 2026-10-30 with lead amendments A1–A9 (`reports/p2-spec-review.md`), applied below
 
 Scope: Auto-Trade list, profile creation, and profile detail; the P2.1 API owns route implementation.
 
@@ -32,7 +32,7 @@ Navigation adds `autotrade` with views `list`, `new`, and `profile`. Keep `DEFAU
 |---|---|
 | Initial loading | Skeleton rows/cards with accessible status text **Loading profiles…**. Keep the page title **Auto-Trade**. |
 | Empty success | Heading **No profiles yet**. Body **Create a paper profile to set its markets, risk limits, and trading mode.** Primary button **Create profile**. |
-| One or many profiles | Render every profile returned by the API, sorted by most recently updated, newest first as a stable tie-breaker. If stopped or archived profiles are returned, do not hide them by default. |
+| One or many profiles | Render every profile returned by the API, sorted by most recently updated, newest first as a stable tie-breaker. `GET /mandates` never returns ARCHIVED profiles; STOPPED ones are shown. |
 | First-load error | Heading **Profiles unavailable**. Body **We couldn't load your profiles. Check your connection and try again.** Button **Retry**. If operator access is denied, replace the body with **Sign in as an operator to manage profiles.** and offer **Sign in** using the app's existing login flow. |
 | Refresh error with cached data | Keep the last successful data and show **Couldn't refresh profiles. Showing the last loaded data.** Button **Retry**. Include the last successful refresh time. |
 | One failed action | Keep the card state unchanged until API confirmation. Show the API message when safe, otherwise **Couldn't {action} {profile}. Try again.** and **Retry**. |
@@ -47,16 +47,16 @@ Mode/switch copy:
 - Switch off with VETO/AUTO configured: **Auto-trade switch off. New entries require approval.** The persisted profile mode remains visible.
 - Dry run: **Dry run: orders are simulated.** Never describe a dry-run order as a fill.
 - Paused: show the API pause reason, if present, as **Paused: {reason}**; otherwise **Paused**.
-- Stopping with open positions: **Stopping. Existing positions are closing.** Do not imply that positions are already flat.
+- Stopping with open positions: **Stopping: no new entries. {N} open positions run on their exits.** Do not imply that positions are already flat or being closed.
 - Halted: **Halted: {reason}. Review positions before resuming.**
 
-Actions are lifecycle-safe and available only when the API permits them: **Open profile**, **Start**, **Pause**, **Stop**. Start confirmation is titled **Start {PROFILE_NAME}?** and summarizes mode, environment, and dry-run state; buttons **Cancel** and **Start profile**. Pause success: **{PROFILE_NAME} paused. Existing positions remain open.** Stop confirmation is titled **Stop {PROFILE_NAME}?** with body **This stops new entries and requests the normal close process for positions. Positions may take time to close.** Buttons **Cancel** and **Stop profile**. Stop success: **Stop requested. Existing positions may take time to close.** A pause does not imply positions were closed. Stopping is reduce-only through `profile_lifecycle.stop`; do not present it as an instant flatten. A disabled action has a visible explanation and accessible description.
+Actions are lifecycle-safe and available only when the API permits them: **Open profile**, **Start** (STOPPED only), **Resume** (PAUSED, HALTED, STOPPING; `POST /mandates/{id}/resume`, always TOTP), **Pause**, **Stop**, **Archive** (STOPPED, or PAUSED/HALTED when flat). Start confirmation is titled **Start {PROFILE_NAME}?** and summarizes mode, environment, and dry-run state; buttons **Cancel** and **Start profile**. Resume confirmation is titled **Resume {PROFILE_NAME}?**, names the mode, and says **Open positions continue under this profile.**; it always opens the TOTP prompt. Pause success: **{PROFILE_NAME} paused. Existing positions remain open.** Stop confirmation is titled **Stop {PROFILE_NAME}?** with body **No new entries. Open positions stay open and close on their own stops and targets.** and an unchecked checkbox **Also close open positions now** (sends `close=true`; risk-reducing, no TOTP). Buttons **Cancel** and **Stop profile**. Stop success: **Stop requested. Open positions will close on their stops and targets.** or, with the checkbox, **Stop requested. Closing open positions now.** Archive confirmation: **Archive {PROFILE_NAME}?** / **It disappears from the list. Its history is kept.** / **Cancel** / **Archive profile**; no TOTP. A pause does not imply positions were closed. A disabled action has a visible explanation and accessible description.
 
 ### Stop all
 
-Place **Stop all** beside **Create profile**. Enable it only if at least one profile is ACTIVE/RUNNING or PAUSED. On activation, show a modal headed **Stop all profiles?** Copy: **This will stop {N} running or paused profiles. Each profile will close its own positions through its normal exit process. It won't change the master switch.** Buttons: **Cancel** and **Stop {N} profiles**. No TOTP is requested. While pending, disable both buttons and announce **Stopping profiles…**.
+Place **Stop all** beside **Create profile**. Enable it only if at least one profile is ACTIVE/RUNNING or PAUSED. On activation, show a modal headed **Stop all profiles?** Copy: **This stops new entries on {N} running or paused profiles. Open positions stay open and close on their own stops and targets, unless you choose to close them now. The master switch is unchanged.** Checkbox **Also close open positions now**, unchecked by default; it sends `{"close": true}`. Buttons: **Cancel** and **Stop {N} profiles**. No TOTP is requested. While pending, disable both buttons and announce **Stopping profiles…**.
 
-The API returns a result for each eligible profile. Show a result list with **Stopped**, **Already stopping**, or the API-provided failure reason for each profile. Partial success copy: **{S} profiles stopped; {F} couldn't be stopped. Review the results and retry the remaining profiles.** Full success: **Stop requested for {N} profiles. Positions may take time to close.** Do not claim every profile is flat. The request affects only ACTIVE and PAUSED profiles, does not touch the master switch or kill switch, and leaves HALTED/STOPPED/ARCHIVED profiles alone.
+The API returns a result for each eligible profile. Show a result list with **Stopped**, **Already stopping**, or the API-provided failure reason for each profile. Partial success copy: **{S} profiles stopped; {F} couldn't be stopped. Review the results and retry the remaining profiles.** Full success: **Stop requested for {N} profiles. Open positions will close on their stops and targets.** (or **…Closing open positions now.** when the checkbox was set) Do not claim every profile is flat. The request affects only ACTIVE and PAUSED profiles, does not touch the master switch or kill switch, and leaves HALTED/STOPPED/ARCHIVED profiles alone.
 
 ## Create profile wizard
 
@@ -76,7 +76,7 @@ Fields: profile name; coins/instruments; market set (`SPOT`, `SPOT_MARGIN`, `PER
 
 ### Step 2 — Style and direction
 
-Fields: `style` (`SWING`, `INTRADAY`) and `direction` (`LONG`, `SHORT`, `BOTH`). Explain the frame mapping from the schema: SWING uses 1h/4h; INTRADAY uses 15m/1h. Offer field presets as cards with **Use preset**; after applying, show the resulting strategy preset IDs from `preset_ids_for(style, direction)` and per-coin replay stats from `/ai/profiles/presets/stats`. These IDs are informational and are not separate UI-selected strategies. For each coin/preset show trade count, win rate, average R, range if supplied, replay source/generated time, and quality status. Never hide negative or thin results.
+Fields: `style` (`SWING`, `INTRADAY`) and `direction` (`LONG`, `SHORT`, `BOTH`). Explain the frame mapping from the schema: SWING uses 1h/4h; INTRADAY uses 15m/1h. Offer field presets as cards with **Use preset**; after applying, show the resulting strategy preset IDs from `preset_ids_for(style, direction)` and per-coin replay stats from `/ai/profiles/presets/stats`. These IDs are informational and are not separate UI-selected strategies. For each coin/preset show trade count, win rate, average R, range if supplied, replay source/generated time, and quality status. Never hide negative or thin results. Components render only what `/presets/stats` returns; no replay number appears in web source (the table below is context and test-fixture data).
 
 Warnings use these exact templates:
 
@@ -104,7 +104,7 @@ Other presets in the replay are mostly negative. The table is a warning/context,
 
 Fields map directly to `ProfileFields`, with these labels: `max_risk_per_trade_pct` **Risk per trade (%)**; `daily_loss_limit_pct` **Daily loss limit (%)**; `max_drawdown_pct` **Maximum drawdown (%)**; `max_leverage` **Maximum leverage**; `max_open_positions` **Maximum open positions**; `max_debates_per_day` **Maximum debates per day**; `exit_tp_r` **Take profit at (R)**; `exit_tp1_scale_pct` **Take profit 1 scale-out (%)**; `exit_trail_activate_pct` **Activate trailing exit at (%)**; `exit_trail_pct` **Trailing distance (%)**; `exit_max_hold_hours` **Maximum holding time (hours)**; `notify_level` **Notifications** (`All`, `Important only`, `None`); `breaker_max_loss_streak` **Losses before breaker**; `breaker_max_reject_streak` **Rejected entries before breaker**. Defaults follow the schema: risk 1%; blank loss limit uses the backend default `min(3 × risk, max_drawdown)` and the returned value is then shown; drawdown 20%; leverage 1×; positions 3; debates/day 6; TP 2R; TP1 scale 50%; trailing and max hold unset; notifications Important; breaker limits 4 losses and 5 rejects. When changing risk, state **Daily loss limit must be at least risk per trade and no greater than maximum drawdown.**
 
-For SPOT_MARGIN/PERP, show leverage and the backend preview only when returned. Display liquidation price and loss at stop only from that API preview. If preview is unavailable, say **Risk preview unavailable. Review leverage and exit settings before continuing.** Never calculate a browser-side substitute.
+For SPOT_MARGIN/PERP there is no plan-preview route in P2. Explain leverage in plain words from the field values only: **Up to {L}× leverage. Each trade still risks at most {RISK}% of capital at its stop; leverage changes how close liquidation is.** Liquidation price and distance appear per position on the Positions tab from the existing position view. Never calculate liquidation or loss numbers in the browser.
 
 Map schema validation codes to plain copy:
 
@@ -117,22 +117,27 @@ Map schema validation codes to plain copy:
 | `DAILY_LOSS_ABOVE_DRAWDOWN` | **Daily loss limit cannot exceed maximum drawdown.** |
 | `TRAIL_ABOVE_ACTIVATION` | **Trail distance cannot exceed its activation threshold.** |
 | `LIVE_NOT_AVAILABLE` | **Live trading is not available yet. Choose Paper.** |
+| `AUTOTRADE_DISABLED` | **The auto-trade switch is off, so this profile can't start in {MODE}. Choose Ask me, or start it after turning the switch on in Settings.** |
+| `PROFILE_INVALID` | List each returned code with the copy above. |
+| `TOTP_REQUIRED` | Open the TOTP prompt. |
+| 409 coin lock | **{COIN} is used by profile {PROFILE_NAME}.** |
+| 409 `MANDATE_PAUSED` / `MANDATE_HALTED` … already covers | **{PROFILE_NAME} is paused or halted and already covers {COIN}. Resume or edit it instead.** |
 
 ### Step 4 — Mode and review
 
 Mode choices and copy:
 
 - **Ask me** — **Review and approve each new entry.**
-- **Veto window** — **New entries wait for your veto window.**
+- **Veto window** — **New entries are placed after {veto_window_s} seconds unless you veto them.**
 - **Fully automatic** — **New entries can be placed automatically when the auto-trade switch is on.**
 
-Show a complete plain-words summary of all `ProfileFields`, selected coins, feed coverage/estimate status, preset IDs, market, capital, risk limits, exits, notifications, paper environment, and dry-run setting. Initial start recommendation is the checkbox **Start in dry run** (checked by default for a new profile); helper **Simulate orders first. You can turn dry run off later.** Summarize switch-off behavior if the chosen mode is VETO/AUTO: **With the auto-trade switch off, new entries require approval.**
+Show a complete plain-words summary of all `ProfileFields`, selected coins, feed coverage/estimate status, preset IDs, market, capital, risk limits, exits, notifications, paper environment, and dry-run setting. Initial start recommendation is the checkbox **Start in dry run** (checked by default for a new profile); helper **Simulate orders first. You can turn dry run off later.** Read the master switch (`master_switch` from any `/summary`, or the existing autotrade settings read). When it is off and the chosen mode is Veto window or Fully automatic, show before submit: **The auto-trade switch is off, so this profile can't start in {MODE}. Choose Ask me, or create it now and start it after turning the switch on in Settings.**
 
-Final buttons: **Back**, **Save draft**, and **Create and start**. **Save draft** only saves the TOTP-free draft locally; success: **Draft saved on this device.** `Create and start` submits once to the profile creation route, which creates the stopped profile and attempts start through `profile_lifecycle.start`; do not add a second frontend write. On success navigate to detail and show **Profile started in dry run.** or **Profile started.** based on returned state. If creation succeeds but lifecycle start is refused, keep the created profile, show **Profile created, but couldn't start: {reason}. Review the profile and try Start again.**, then navigate to its detail page.
+Final buttons: **Back**, **Save draft**, and **Create and start**. **Save draft** only saves the TOTP-free draft locally; success: **Draft saved on this device.** `POST /mandates` always requires TOTP, so **Create and start** opens the TOTP prompt first, every time, then submits once to the profile creation route, which creates the stopped profile and attempts start through `profile_lifecycle.start`; do not add a second frontend write. The 201 response carries `started` and `start_error {code, detail}`. When `started` is true, navigate to detail and show **Profile started in dry run.** or **Profile started.** When `started` is false, keep the created profile, show **Profile created, but couldn't start: {reason}. Review the profile and try Start again.**, then navigate to its detail page.
 
 ### TOTP prompt
 
-Ask for TOTP when the API identifies a risk-adding operation. This includes creating a profile or starting it in VETO/AUTO; adding markets or instruments; widening direction; raising mode, leverage, capital budget, position size/limit, per-trade risk, or drawdown; increasing debate capacity; loosening breakers, hold limits, conviction/R:R or daily limits; turning dry run off; and any risk-adding edit. Reuse the existing MandateEditor prompt pattern; do not persist, log, or place the code in the draft/store. Prompt title **Confirm this risk change**. Detail: **{CHANGE} increases risk, so it needs your current TOTP code.** Input label **TOTP code**, `autocomplete="one-time-code"`, numeric, six digits. Inline invalid-code copy: **That code wasn't accepted. Check the current code in your authenticator app and try again.** Buttons **Cancel** and **Confirm and start** (or **Save changes** for edits). Disable confirmation until six digits are entered and while the request is pending. Keep the user on the same step after an API refusal.
+Ask for TOTP when the API identifies a risk-adding operation. This includes creating a profile (always); starting it in VETO/AUTO; resuming a paused, halted or stopping profile (always); adding markets or instruments; widening direction; raising mode, leverage, capital budget, position size/limit, per-trade risk, or drawdown; increasing debate capacity; loosening breakers, hold limits, conviction/R:R or daily limits; turning dry run off; and any risk-adding edit. Reuse the existing MandateEditor prompt pattern; do not persist, log, or place the code in the draft/store. Prompt title **Confirm this risk change**. Detail: **{CHANGE} increases risk, so it needs your current TOTP code.** Input label **TOTP code**, `autocomplete="one-time-code"`, numeric, six digits. Inline invalid-code copy: **That code wasn't accepted. Check the current code in your authenticator app and try again.** Buttons **Cancel** and **Confirm and start** (or **Save changes** for edits). Disable confirmation until six digits are entered and while the request is pending. Keep the user on the same step after an API refusal.
 
 ## Profile detail
 
@@ -140,7 +145,7 @@ Header shows profile name, lifecycle, environment, mode/switch, dry-run, health 
 
 ### Timeline
 
-Use `GET /ai/profiles/{id}/decisions?cursor=&limit=`. Page newest first; provide **Load older decisions**. Display timestamp, stage icon plus text (`SCAN`, `GATE`, `DEBATE`, `ROUTE`, `APPROVAL`, `ORDER`, `FILL`, `EXIT`, `LIFECYCLE`, `BREAKER`, `SESSION`), outcome, instrument and reason. Do not make meaning icon-only. Empty: **No decisions yet.** Error: **Timeline unavailable.** / **Retry**.
+Use `GET /ai/profiles/{id}/decisions?cursor=&limit=`. Page newest first; provide **Load older decisions**. Display timestamp, stage icon plus text (`GATE`, `DEBATE`, `ROUTE`, `APPROVAL`, `ORDER`, `FILL`, `EXIT`, `LIFECYCLE`, `BREAKER`, `SESSION`; an unknown stage renders as its text), outcome, instrument and reason. Do not make meaning icon-only. Empty: **No decisions yet.** Error: **Timeline unavailable.** / **Retry**.
 
 Current decision writers do not emit an `ERROR` or `FAILED` `ai_profile_decisions.outcome`. Observed outcomes include `GATE: ACCEPTED|REFUSED`, `DEBATE: BUY|HOLD|SELL|REDUCE|CLOSE`, `ROUTE: NO_TRADE|ENQUEUED|DRY_RUN_ROUTED|APPROVAL_CREATED|VETO_WINDOW`, `ORDER: DRY_RUN`, `FILL: FILLED`, lifecycle `STARTED|PAUSED|STOPPING|STOPPED|ARCHIVED`, breaker `PAUSED`, and `EXIT` values `STOP|TRAIL|TP1|TP|MANUAL` or the supplied exit reason. `GATE: REFUSED` and `ROUTE: NO_TRADE` are policy/risk decisions, not errors; do not mark them red or count them as errors. `record_decision` itself logs a failed audit insert as a warning and returns false, but does not persist that failure as an outcome.
 
@@ -158,18 +163,18 @@ Edit the same `ProfileFields` described in wizard step 3 plus name, coins/market
 
 ### Summary and health score
 
-Use `GET /ai/profiles/{id}/summary` for today's realized plus unrealized P&L, daily loss limit/progress, open-position count, last decision, breaker state/reason, dry-run/mode/master-switch state, and score inputs. Use one formula consistently:
+Use `GET /ai/profiles/{id}/summary` for today's realized plus unrealized P&L, daily loss limit/progress, open-position count, last decision, breaker state/reason, dry-run/mode/master-switch state, and score inputs. The score is computed by the API; the UI displays it. Formula (amendment A4):
 
 ```text
-freshness = 40 if latest profile decision is <= 1 hour old
-            20 if > 1 hour and <= 6 hours old
-             0 otherwise (including no decisions)
+freshness = 40 if every profile instrument's live quote is fresh
+            20 if some are fresh
+             0 if none are (spot-margin instruments use their spot quote)
 recent_errors = max(0, 30 - 10 * qualifying errors in the last 24 hours)
 breaker = 30 if clear, 0 if active
 health = clamp(freshness + recent_errors + breaker, 0, 100)
 ```
 
-The qualifying persisted error source is a `debate_runs.status = 'FAILED'` row from the last 24 hours joined by `run_id` to that profile's `ai_profile_decisions` row with `stage = 'GATE'` and `outcome = 'ACCEPTED'`. This accepted-gate row is written before model work and carries the profile's `mandate_id`; the failed debate row itself may not retain that ID. Count at most one failure per linked run. Ordinary policy outcomes such as `NO_TRADE`, `GATE: REFUSED`, and `REJECTED` are not errors. A failed run without a linked accepted-gate decision cannot be attributed to a profile and is not counted. Do not infer errors from missing decisions or failed audit inserts. Show the breakdown as **Freshness {N}/40**, **Recent failures {N}/30**, **Breaker {N}/30**, and the profile's active breaker reason. If the API cannot return these profile-scoped failed runs, show score unavailable rather than substituting a different error source.
+The qualifying persisted error source is a `debate_runs.status = 'FAILED'` row from the last 24 hours joined by `run_id` to that profile's `ai_profile_decisions` row with `stage = 'GATE'` and `outcome = 'ACCEPTED'`. This accepted-gate row is written before model work and carries the profile's `mandate_id`; the failed debate row itself may not retain that ID. Count at most one failure per linked run. Ordinary policy outcomes such as `NO_TRADE`, `GATE: REFUSED`, and `REJECTED` are not errors. A failed run without a linked accepted-gate decision cannot be attributed to a profile and is not counted. Do not infer errors from missing decisions or failed audit inserts. Show **Last decision {time} ago** as information (unscored). A STOPPED profile returns `score: null`: show **Not running** instead of a score. Show the breakdown as **Market data {N}/40**, **Recent failures {N}/30**, **Breaker {N}/30**, and the profile's active breaker reason. If the API cannot return these profile-scoped failed runs, show score unavailable rather than substituting a different error source.
 
 ## Four field presets
 
