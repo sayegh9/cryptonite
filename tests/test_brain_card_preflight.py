@@ -9,6 +9,7 @@ REDIS_URL, as test_mandate_card_truth does.
 
 import hashlib
 import json
+import time
 import uuid
 from decimal import Decimal
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from ai_api_harness import close_harness, make_harness
 from cryptonite_api.routes import brain as brain_routes
 from cryptonite_api.routes.auth import COOKIE_NAME
 from cryptonite_execution.approvals import record_operator_approval
+from cryptonite_schemas.marks import quote_tick_key
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY
 from migrated_db import migrated_database
 
@@ -37,6 +39,9 @@ def db_url():
 @pytest.fixture
 async def h(db_url):
     harness = await make_harness(db_url)
+    await harness.redis.set(quote_tick_key(BTC), json.dumps({
+        "instrument_id": BTC, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns(),
+    }), ex=60)
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute(
         "TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_orders, paper_positions CASCADE")

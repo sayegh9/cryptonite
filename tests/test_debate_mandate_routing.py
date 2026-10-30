@@ -8,6 +8,7 @@ import datetime
 import importlib.util
 import json
 import sys
+import time
 import uuid
 from functools import wraps
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 import pytest
 from ai_api_harness import close_harness, make_harness
 from cryptonite_execution.approvals import sweep_expired
+from cryptonite_schemas.marks import quote_tick_key
 from migrated_db import migrated_database
 
 WORKER = Path(__file__).resolve().parents[1] / "services" / "debate_worker"
@@ -56,6 +58,9 @@ def db_url():
 @pytest.fixture
 async def h(db_url):
     harness = await make_harness(db_url)
+    await harness.redis.set(quote_tick_key(BTC), json.dumps({
+        "instrument_id": BTC, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns(),
+    }), ex=60)
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_positions CASCADE")
     from cryptonite_execution import profile_lifecycle

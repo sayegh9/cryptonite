@@ -10,6 +10,7 @@
 import asyncio
 import datetime
 import json
+import time
 import uuid
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -32,6 +33,7 @@ from cryptonite_schemas.mandate import (
     in_active_hours,
     timeout_policy_for,
 )
+from cryptonite_schemas.marks import quote_tick_key
 from migrated_db import migrated_database
 from test_orchestrator_perp_wiring import make_engine
 from test_paper_risk_guardrails import make_fresh_dispatcher
@@ -78,6 +80,9 @@ def db_url():
 @pytest.fixture
 async def h(db_url):
     harness = await make_harness(db_url)
+    await harness.redis.set(quote_tick_key(SPOT), json.dumps({
+        "instrument_id": SPOT, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns(),
+    }), ex=60)
     try:
         yield harness
     finally:

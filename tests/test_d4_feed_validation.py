@@ -12,6 +12,7 @@ Runs on a throwaway migrated database (``cryptonite_ci_d4_*``) and the Redis at 
 import asyncio
 import json
 import re
+import time
 import uuid
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -21,6 +22,7 @@ import pytest
 from ai_api_harness import close_harness, make_harness
 from cryptonite_orchestrator.server import SimpleQuoteCache, command_poller
 from cryptonite_orchestrator.source_hash import instance_source_hash
+from cryptonite_schemas.marks import quote_tick_key
 from cryptonite_schemas.universe import (
     INGEST_UNIVERSE_KEY,
     UNIVERSE_TTL_S,
@@ -104,6 +106,9 @@ async def h(db_url, monkeypatch):
     monkeypatch.setenv("ALLOW_DEV_TOTP", "true")  # 000000 in DEV, as in test_autonomy
     monkeypatch.setenv("AI_ALLOW_DEV_TOTP", "true")
     harness = await make_harness(db_url)
+    await harness.redis.set(quote_tick_key(BTC), json.dumps({
+        "instrument_id": BTC, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns(),
+    }), ex=60)
     await harness.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
     await harness.pool.execute("TRUNCATE ai_approvals, notifications_outbox, execution_commands, paper_positions CASCADE")
     try:

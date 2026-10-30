@@ -37,6 +37,7 @@ from cryptonite_api.brain_outcomes import (
     followed_cards,
     followed_debates,
 )
+from cryptonite_api.entry_stops import entry_requires_stop, resolve_entry_stop
 from cryptonite_api.leverage_card import (
     HIGH_LEVERAGE_CONFIRM,
     card_entry_price,
@@ -425,6 +426,7 @@ class CardPlan:
     protection: dict[str, Any]  # the exit monitor's heartbeat: the stops that protect the position
     trace_id: uuid.UUID | None
     source_ref: str  # the approval is recorded under this: "<session>:<card>"
+    structural_stop: Decimal | None = None  # the entry protection written to the command payload
     leverage_plan: dict[str, Any] | None = None  # a perp entry's plan (leverage.py), as the dry run shows it
     perp_reduce: bool = False  # a perp card with reduce_pct: a reduce-only close of the mandate's position
 
@@ -449,6 +451,23 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
     perp_reduce = is_perp_instrument(card["instrument_id"]) and not perp_entry
     if card["side"] != "SELL" or perp_entry:
         await require_fed(request, [card["instrument_id"]])
+
+    structural_stop = None
+    if entry_requires_stop(card["instrument_id"], card["side"], reduce_only=perp_reduce):
+        stop_pct = card.get("stop_loss_pct")
+        if stop_pct is None:
+            stop_pct = protection.get("stop_loss_pct")
+        structural_stop = await resolve_entry_stop(
+            request.app.state.pool,
+            getattr(getattr(request.app.state, "stream_hub", None), "redis", None),
+            card["instrument_id"],
+            card["side"],
+            explicit_stop=card.get("stop_loss"),
+            stop_loss_pct=stop_pct,
+            order_reference=(card.get("limit_price") if str(card.get("order_type", "")).upper() == "LIMIT" else None),
+        )
+        # The rest of the read-only plan, including R:R checks, must use the exact stop that will be queued.
+        card = {**card, "stop_loss": format(structural_stop, "f")}
 
     # Every AI order trades inside a mandate (A5.1); resolve it before the card is claimed
     pool = request.app.state.pool
@@ -580,8 +599,8 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
     summary = _card_summary(card, card["instrument_id"], mandate, allocation, budget, held, lev)
     shown = _card_summary(card, _shown_instrument(card), mandate, allocation, budget, held, lev)
     return CardPlan(mandate=mandate, allocation=allocation, budget=budget, summary=summary, shown=shown, held=held,
-                    protection=protection, trace_id=trace_id, source_ref=source_ref, leverage_plan=leverage_plan,
-                    perp_reduce=perp_reduce)
+                    protection=protection, trace_id=trace_id, source_ref=source_ref, structural_stop=structural_stop,
+                    leverage_plan=leverage_plan, perp_reduce=perp_reduce)
 
 
 def _card_summary(card: dict[str, Any], instrument: str, mandate: Mandate, allocation: Decimal, budget: Decimal,
@@ -643,19 +662,25 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         # (the mandate check and the dispatcher's 1-25% clamp still apply)
         "allocation_pct": float(allocation),
         "source": "brain_order_card", "brain_session_id": str(sid), "brain_card_id": widget_id,
-        "trace_id": card.get("trace_id"), "proposed_stop_loss": card.get("stop_loss"),
+        "trace_id": card.get("trace_id"),
         "proposed_take_profit": card.get("take_profit"), "protection": protection,
         # Stored with the order for scoring (leverage plan 3.3): the system's setup grade sets a perp's leverage
         # ceiling; the model's confidence never does
         "setup_grade": card.get("setup_grade"), "grade_reasons": list(card.get("grade_reasons") or [])[:12],
         "confidence": card.get("confidence"),
     }
+    if plan.structural_stop is not None:
+        stop_text = format(plan.structural_stop, "f")
+        payload.update({"stop_loss": stop_text, "proposed_stop_loss": stop_text})
+    elif card.get("stop_loss") is not None:
+        # Existing protection on an exit is informational; exits do not require a stop.
+        payload["proposed_stop_loss"] = card["stop_loss"]
     if card["order_type"] == "LIMIT":
         payload["price"] = card["limit_price"]
     if lev_plan is not None:
         # The orchestrator sizes it again with the same plan, at most at this leverage; the entry carries its stop,
         # which becomes a resting stop once it fills (ISOLATED only for mandate perps, D5)
-        payload.update({"leverage": lev_plan["leverage"], "stop_loss": card.get("stop_loss"), "margin_mode": "ISOLATED",
+        payload.update({"leverage": lev_plan["leverage"], "margin_mode": "ISOLATED",
                         "leverage_plan": {k: lev_plan[k] for k in ("leverage", "binding_ceiling", "notional_usd",
                                                                    "margin_usd", "liquidation_price",
                                                                    "loss_at_stop_usd")}})
