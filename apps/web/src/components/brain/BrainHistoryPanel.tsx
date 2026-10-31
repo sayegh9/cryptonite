@@ -1,14 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Check, History, Loader2, Pencil, Plus, RefreshCcw, Search, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, History, Loader2, Pencil, Plus, RefreshCcw, Search, Trash2, X } from "lucide-react";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { useSessionStore } from "@/lib/stores/useSessionStore";
-import { BrainHistoryError, listBrainSessions, openBrainSession, updateBrainSession } from "@/lib/brain/client";
+import {
+  BrainHistoryError, deleteArchivedBrainSessions, deleteBrainSession, listBrainSessions, openBrainSession, updateBrainSession,
+} from "@/lib/brain/client";
 import type { BrainSessionSummary } from "@/lib/brain/types";
 
 const PAGE_SIZE = 30;
 const SEARCH_DELAY_MS = 250;
+const ALL_ARCHIVED = "all-archived"; // the confirm target of "Delete all archived"
 
 type Tab = "recent" | "archived";
 type LoadState = "loading" | "ready" | "error" | "signed-out";
@@ -69,6 +72,7 @@ export function BrainHistoryPanel({ onClose, onOpened }: { onClose?: () => void;
   const [editing, setEditing] = useState<{ id: string; title: string } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null); // a session id, or ALL_ARCHIVED
   const request = useRef<AbortController | null>(null);
 
   // Search waits for a pause in typing
@@ -176,6 +180,50 @@ export function BrainHistoryPanel({ onClose, onOpened }: { onClose?: () => void;
       setBusyId(null);
     }
   };
+
+  // Deleting is permanent (O1): the messages go too. Deleting the open conversation starts a new one
+  const remove = async (s: BrainSessionSummary) => {
+    setConfirming(null);
+    setBusyId(s.id);
+    try {
+      await deleteBrainSession(s.id);
+      setItems((prev) => prev.filter((x) => x.id !== s.id));
+      if (s.id === sessionId) newConversation();
+      setNotice(`Deleted "${s.title || "Untitled"}".`);
+    } catch {
+      setNotice("The conversation was not deleted. Try again.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const removeArchived = async () => {
+    setConfirming(null);
+    setBusyId(ALL_ARCHIVED);
+    try {
+      const n = await deleteArchivedBrainSessions();
+      if (sessionId && items.some((x) => x.id === sessionId)) newConversation();
+      setItems([]);
+      setCursor(null);
+      setNotice(n === 1 ? "Deleted 1 archived conversation." : `Deleted ${n} archived conversations.`);
+    } catch {
+      setNotice("The archived conversations were not deleted. Try again.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const confirmLine = (onDelete: () => void, label: string) => (
+    <div role="group" aria-label={label} className="flex items-center gap-2 px-3 py-2 text-2xs" data-testid="brain-history-confirm">
+      <span className="flex-1 text-rose-300">Delete permanently? This can&apos;t be undone.</span>
+      <button type="button" onClick={onDelete} className="rounded border border-rose-800 px-2 py-0.5 text-rose-200 hover:bg-rose-950/60">
+        Delete
+      </button>
+      <button type="button" onClick={() => setConfirming(null)} className="rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 hover:bg-zinc-800">
+        Cancel
+      </button>
+    </div>
+  );
 
   useEffect(() => {
     if (!notice) return;
@@ -299,7 +347,9 @@ export function BrainHistoryPanel({ onClose, onOpened }: { onClose?: () => void;
                         className={`group relative border-l-2 ${current ? "border-cyan-400 bg-zinc-900/80" : "border-transparent hover:bg-zinc-900/50"}`}
                         data-testid="brain-history-row"
                       >
-                        {isEditing ? (
+                        {confirming === s.id ? (
+                          confirmLine(() => void remove(s), `Delete "${s.title || "Untitled"}"`)
+                        ) : isEditing ? (
                           <form
                             className="flex items-center gap-1 px-3 py-2"
                             onSubmit={(e) => {
@@ -332,7 +382,7 @@ export function BrainHistoryPanel({ onClose, onOpened }: { onClose?: () => void;
                               disabled={busy}
                               aria-current={current ? "true" : undefined}
                               title={streaming && !current ? "Wait for the current answer to finish" : undefined}
-                              className="block w-full py-2 pl-3 pr-16 text-left disabled:opacity-60"
+                              className="block w-full py-2 pl-3 pr-24 text-left disabled:opacity-60"
                             >
                               <span className="flex items-baseline justify-between gap-2">
                                 <span className={`truncate text-sm ${current ? "text-zinc-50" : "text-zinc-200"}`}>{s.title || "Untitled"}</span>
@@ -370,6 +420,15 @@ export function BrainHistoryPanel({ onClose, onOpened }: { onClose?: () => void;
                               >
                                 {tab === "recent" ? <Archive className="h-3 w-3" /> : <ArchiveRestore className="h-3 w-3" />}
                               </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => setConfirming(s.id)}
+                                aria-label={`Delete "${s.title || "Untitled"}"`}
+                                className="flex h-6 w-6 items-center justify-center rounded bg-zinc-950/90 text-zinc-500 hover:text-rose-300"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
                             </div>
                           </>
                         )}
@@ -391,6 +450,22 @@ export function BrainHistoryPanel({ onClose, onOpened }: { onClose?: () => void;
                   Show older conversations
                 </button>
               </div>
+            )}
+            {tab === "archived" && (
+              confirming === ALL_ARCHIVED ? (
+                <div className="pt-2">{confirmLine(() => void removeArchived(), "Delete all archived conversations")}</div>
+              ) : (
+                <div className="px-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={busyId === ALL_ARCHIVED}
+                    onClick={() => setConfirming(ALL_ARCHIVED)}
+                    className="flex h-7 w-full items-center justify-center gap-1 rounded border border-rose-900/70 text-2xs text-rose-300 hover:bg-rose-950/40 disabled:opacity-60"
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden="true" /> Delete all archived
+                  </button>
+                </div>
+              )
             )}
             {tab === "archived" && (
               <p className="px-3 pt-3 text-2xs text-zinc-600">Open an archived conversation to read it; sending a message moves it back to Recent.</p>

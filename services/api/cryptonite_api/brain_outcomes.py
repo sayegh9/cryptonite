@@ -53,6 +53,11 @@ async def command_outcome(conn, command_id: str) -> dict[str, Any] | None:
         """SELECT status, quantity, filled_qty, avg_fill_price, price, reject_reason
            FROM paper_orders WHERE client_order_id = $1""", client_order_id(str(cid), payload))
     if order is None:
+        plan = payload.get("dry_run_plan")
+        if cmd["status"] == "COMPLETED" and isinstance(plan, dict):  # a dry-run profile records the order, places none
+            return {"state": "NOT_EXECUTED", "reason": (
+                f"Dry run: profile in dry run, order recorded (qty {plan.get('quantity')} at "
+                f"{plan.get('entry_price')}), not placed")}
         return {"state": "QUEUED"}  # dispatched, not booked yet
     filled = Decimal(str(order["filled_qty"] or 0))
     fill = {"filled_qty": _num(order["filled_qty"]), "avg_fill_price": _num(order["avg_fill_price"])}

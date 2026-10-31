@@ -1278,6 +1278,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
         </p>
       )}
 
+      {pending && widget.setup_grade === "NO_TRADE" && (
+        <p role="alert" className="mt-3 text-2xs text-rose-400" data-testid="order-card-no-trade-warning">
+          Setup grade NO_TRADE: the system would not take this trade. Sized at half the cap; approve only if you mean it.
+        </p>
+      )}
       {pending && !confirming && (
         <div className="mt-3 flex gap-2">
           <button

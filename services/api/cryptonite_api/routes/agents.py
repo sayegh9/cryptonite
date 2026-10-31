@@ -468,7 +468,8 @@ async def debate_sizing(run_id: str, request: Request, mandate_id: uuid.UUID | N
     run_uuid = _run_uuid(run_id)
     run, decision = await _load_debate(request.app.state.pool, run_uuid)
     if run["status"] != "PENDING_APPROVAL":
-        return {"ok": False, "code": "NOT_PENDING", "detail": f"The debate is {run['status']}", "remedy": None}
+        return {"ok": False, "code": "NOT_PENDING", "detail": f"The debate is {run['status']}", "remedy": None,
+                "run_status": run["status"]}  # F4: the inbox moves a stale Pending item to this
     if await _pending_perp_approval(request.app.state.pool, run_uuid) is not None:
         return {"ok": False, "code": "PERP_APPROVAL_IN_QUEUE", "detail": PERP_APPROVAL_IN_QUEUE, "remedy": None}
     try:

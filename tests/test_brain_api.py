@@ -350,6 +350,14 @@ async def test_an_approved_cards_order_maps_to_one_state(command, order, expecte
         assert conn.order_ids == ["AI-6DD7C0EDF5F4"]  # the orchestrator's client order id for an AI command
 
 
+async def test_a_dry_run_command_is_not_executed():
+    cmd = {"status": "COMPLETED", "error_message": None,
+           "payload": json.dumps({"side": "BUY", "dry_run_plan": {"quantity": "0.01", "entry_price": "77573.82"}})}
+    out = await command_outcome(_OutcomeConn(cmd, None), CMD)
+    assert out == {"state": "NOT_EXECUTED",
+                   "reason": "Dry run: profile in dry run, order recorded (qty 0.01 at 77573.82), not placed"}
+
+
 async def test_a_partly_filled_then_cancelled_order_is_a_position():
     out = await command_outcome(_OutcomeConn(_cmd("COMPLETED"), _order("CANCELED", "100", "1.38")), CMD)
     assert out["state"] == "FILLED" and out["filled_qty"] == "100" and "partly filled" in out["reason"]
