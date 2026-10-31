@@ -49,3 +49,10 @@ def test_closed_intraday_bars_produce_sided_levels_and_stale_bars_refuse(monkeyp
         "BTCUSDT", "INTRADAY", "BUY", 2, decision_ns=now + 31 * minute)
     assert (stop, target) == (None, None)
     assert reason == "latest 15m bar is older than two bars"
+
+    # Whole-candle gaps are absent from the resampled frame even though every remaining candle is complete.
+    gapped = bars.filter(~pl.col("bar_open_ns").is_between(start + 600 * minute, start + 614 * minute))
+    monkeypatch.setattr(Lake, "query_bars_df", lambda self, *args, **kwargs: gapped)
+    stop, target, reason = structure.levels_from_lake("BTCUSDT", "INTRADAY", "BUY", 2, decision_ns=now)
+    assert (stop, target) == (None, None)
+    assert reason == "fewer than 200 contiguous 15m bars"

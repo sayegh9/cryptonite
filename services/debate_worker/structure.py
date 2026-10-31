@@ -54,10 +54,17 @@ def levels_from_lake(symbol: str, style: str, side: str, precision: int, *,
         higher = ScannerEngine.enrich_indicators(higher).filter(pl.col("interval_end_exclusive_ns") <= now_ns)
         if decision.is_empty() or higher.is_empty():
             return None, None, "closed decision or higher-timeframe bars are unavailable"
+        # Each aggregate is complete, but an indicator can still span missing whole candles. Keep the
+        # trailing 200 decision bars contiguous so EMA, ATR and Donchian levels describe one live window.
+        ends = decision.tail(200)["interval_end_exclusive_ns"].to_list()
+        if len(ends) < 200 or any(b - a != decision_step_ns for a, b in zip(ends, ends[1:])):
+            return None, None, f"fewer than 200 contiguous {decision_tf} bars"
         row = decision.tail(1).to_dicts()[0]
         age_ns = now_ns - int(row["interval_end_exclusive_ns"])
         if age_ns > 2 * decision_step_ns:
             return None, None, f"latest {decision_tf} bar is older than two bars"
+        if now_ns - int(higher["interval_end_exclusive_ns"][-1]) > 2 * higher_ns:
+            return None, None, f"latest {higher_tf} bar is older than two bars"
         if row.get("ema_200") is None or row.get("atr") is None:
             return None, None, f"fewer than 200 valid {decision_tf} bars"
         config = RiskConfig(direction="LONG" if side == "BUY" else "SHORT")

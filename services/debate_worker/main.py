@@ -661,8 +661,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 )
                 # Autonomous execution exists only inside a profile, in its chosen mode (ADR 0011; there
                 # is no global execution mode any more): L1 approval, L2 veto window, L3 queued.
-                # A scanner debate carries its candidate's structural stop and TP1 (Phase B, B0): the mandate's
-                # R:R and side checks measure them, and a perp entry needs them. Other debates carry none
+                # Scanner debates carry candidate levels; on-demand debates use closed lake bars.
+                # The mandate's R:R and side checks revalidate either source at the final quote.
                 final_status, mandate = await route_entry(
                     conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
                     mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
