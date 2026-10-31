@@ -28,6 +28,12 @@ from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, CallContext, 
 from cryptonite_execution.profile_log import record_decision
 from cryptonite_schemas.debate import normalize_verdict
 from cryptonite_schemas.marks import read_live_quote, read_marks, resolve_quote_price
+from cryptonite_schemas.profile import (
+    PRESET_CATALOG,
+    TradeSide,
+    effective_presets,
+    effective_timeframes,
+)
 from debate_queue import (
     DEBATE_QUEUE,
     EXIT_DEBATE_QUEUE,
@@ -154,12 +160,18 @@ async def debate_levels(pg_pool, gate_profile, payload: dict, instrument_id: str
         profile = gate_profile or await resolve_profile(conn, instrument_id, payload.get("mandate_id"))
     if profile is None:
         return stop_loss, take_profit, "scanner candidate has no usable levels", source
-    return await on_demand_levels(pg_pool, instrument_id, profile.style, recommendation)
+    side = TradeSide.LONG if recommendation == "BUY" else TradeSide.SHORT
+    picks = [s for s in effective_presets(profile.style, profile.direction, profile.strategies)
+             if PRESET_CATALOG[s].side is side]
+    return await on_demand_levels(pg_pool, instrument_id, profile.style, recommendation,
+                                  preset_id=picks[0] if picks else None)
 
 
 def profile_context_block(profile, open_positions: int | None) -> str:
     """Render the fixed profile guidance once; the operator's name is JSON-quoted data."""
-    decision_tf, higher_tf = ("15m", "1h") if profile.style == "INTRADAY" else ("1h", "4h")
+    presets = ", ".join(effective_presets(profile.style, profile.direction, profile.strategies))
+    timeframes = ", ".join(effective_timeframes(profile.style, profile.direction, profile.strategies,
+                                                profile.timeframes))
     count = str(open_positions) if open_positions is not None else "unknown"
     markets = ", ".join(sorted(str(market) for market in profile.markets))
     return (
@@ -169,7 +181,7 @@ def profile_context_block(profile, open_positions: int | None) -> str:
         f"Allowed directions: {profile.direction}\n"
         f"Allowed markets: {markets}\n"
         f"Maximum leverage: {profile.max_leverage}x\n"
-        f"Style and timeframes: {profile.style} ({decision_tf} decision, {higher_tf} higher timeframe)\n"
+        f"Style: {profile.style}; strategies: {presets}; timeframes: {timeframes}\n"
         f"Risk per trade: {profile.max_risk_per_trade_pct}%\n"
         f"Open positions: {count} of {profile.max_open_positions} maximum\n"
         f"Dry run: {'yes' if profile.dry_run else 'no'}\n"

@@ -23,7 +23,8 @@ from cryptonite_schemas.session import (
 from cryptonite_execution.autonomy import Transition
 
 MANDATE_COLUMNS = ("id, name, capital_budget_usd, instruments, max_position_pct, max_drawdown_pct, allow_perps, "
-                   "max_leverage, max_risk_per_trade_pct, strategies, autonomy_level, status, active_hours_utc, veto_window_s, "
+                   "max_leverage, max_risk_per_trade_pct, strategies, timeframes, autonomy_level, status, active_hours_utc, "
+                   "veto_window_s, "
                    "min_conviction, min_rr, daily_loss_limit_pct, daily_profit_target_pct, profit_lock_pct, "
                    "markets, direction, style, environment, max_open_positions, max_debates_per_day, exit_tp_r, "
                    "exit_tp1_scale_pct, exit_trail_activate_pct, exit_trail_pct, exit_max_hold_hours, dry_run, "

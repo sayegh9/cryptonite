@@ -85,6 +85,7 @@ from cryptonite_schemas.profile import (
     NotifyLevel,
     Style,
     default_daily_loss_pct,
+    selection_errors,
 )
 from cryptonite_schemas.session import (
     lock_usd,
@@ -121,6 +122,7 @@ class MandateIn(BaseModel):
     max_leverage: int | None = Field(default=None, ge=1, le=MAX_PERP_LEVERAGE_CAP)
     max_risk_per_trade_pct: Decimal = Field(default=DEFAULT_RISK_PER_TRADE_PCT, gt=0, le=MAX_RISK_PER_TRADE_PCT_CAP)
     strategies: list[str] = Field(default_factory=list, max_length=20)
+    timeframes: list[str] = Field(default_factory=list, max_length=3)
     active_hours_utc: str | None = None
     veto_window_s: int = Field(default=600, ge=60, le=3600)
     # ADR 0010: refuse-only entry filters and daily session limits; unset is off (a perps mandate gets a daily loss
@@ -161,6 +163,7 @@ class MandatePatch(BaseModel):
     max_leverage: int | None = Field(default=None, ge=1, le=MAX_PERP_LEVERAGE_CAP)
     max_risk_per_trade_pct: Decimal | None = Field(default=None, gt=0, le=MAX_RISK_PER_TRADE_PCT_CAP)
     strategies: list[str] | None = Field(default=None, max_length=20)
+    timeframes: list[str] | None = Field(default=None, max_length=3)
     active_hours_utc: str | None = None
     clear_active_hours: bool = False
     veto_window_s: int | None = Field(default=None, ge=60, le=3600)
@@ -445,6 +448,7 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
         "max_position_pct": _dec(m.max_position_pct), "max_drawdown_pct": _dec(m.max_drawdown_pct),
         "allow_perps": m.allow_perps, "max_leverage": m.max_leverage,
         "max_risk_per_trade_pct": _dec(m.max_risk_per_trade_pct), "strategies": m.strategies,
+        "timeframes": m.timeframes,
         "autonomy_level": int(m.autonomy_level), "level_name": level_name(int(m.autonomy_level)), "status": m.status.value,
         "active_hours_utc": m.active_hours_utc, "veto_window_s": m.veto_window_s, "instance_id": m.instance_id,
         "min_conviction": _dec(m.min_conviction), "min_rr": _dec(m.min_rr),
@@ -520,13 +524,19 @@ async def _stopped_mandate_on(conn, instruments: list[str], *, except_id: uuid.U
     return f"MANDATE_{row['status']}: {row['name']} already covers {instrument}; resume or edit it instead"
 
 
+def _check_selection(m: Mandate) -> None:
+    """A strategy or timeframe pick that cannot run is refused when it is written (P3b)."""
+    if errors := selection_errors(m.style, m.direction, m.strategies, m.timeframes):
+        raise HTTPException(status_code=422, detail=", ".join(errors))
+
+
 def _profile_values(m: Mandate) -> tuple[Any, ...]:
     """The profile columns of a validated mandate, in the order the INSERT and UPDATE below list them
     (``markets`` is the truth; ``allow_perps`` is written next to it from the same mandate)."""
     return (sorted(x.value for x in m.markets), m.direction.value, m.style.value, m.environment.value,
             m.max_open_positions, m.max_debates_per_day, m.exit_tp_r, m.exit_tp1_scale_pct,
             m.exit_trail_activate_pct, m.exit_trail_pct, m.exit_max_hold_hours, m.dry_run, m.notify_level.value,
-            m.breaker_max_loss_streak, m.breaker_max_reject_streak)
+            m.breaker_max_loss_streak, m.breaker_max_reject_streak, m.timeframes)
 
 
 @router.post("/mandates", dependencies=OPERATOR_WRITE, status_code=201)
@@ -552,6 +562,7 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
         m = Mandate(id=uuid.uuid4(), **values)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
+    _check_selection(m)
     async with request.app.state.pool.acquire() as conn:
         async with conn.transaction():
             if stopped := await _stopped_mandate_on(conn, m.instruments):
@@ -564,9 +575,10 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
                            daily_profit_target_pct, profit_lock_pct, markets, direction, style, environment,
                            max_open_positions, max_debates_per_day, exit_tp_r, exit_tp1_scale_pct,
                            exit_trail_activate_pct, exit_trail_pct, exit_max_hold_hours, dry_run, notify_level,
-                           breaker_max_loss_streak, breaker_max_reject_streak, status)
+                           breaker_max_loss_streak, breaker_max_reject_streak, timeframes, status)
                        VALUES ($1, $2, $3, $4, $5, $6, $12, $7, $8, $9, $10, $11, $13, $14, $15, $16, $17, $18,
-                               $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, 'STOPPED')""",
+                               $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34,
+                               'STOPPED')""",
                     m.id, m.name, m.capital_budget_usd, m.instruments, m.max_position_pct, m.max_drawdown_pct,
                     m.max_leverage, m.strategies, m.active_hours_utc, m.veto_window_s, actor(auth), m.allow_perps,
                     m.max_risk_per_trade_pct, m.min_conviction, m.min_rr, m.daily_loss_limit_pct,
@@ -634,6 +646,8 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 new = Mandate(**{**base, **patch})
             except ValidationError as e:
                 raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
+            if {"strategies", "timeframes", "style", "direction"} & patch.keys():
+                _check_selection(new)
             if added := sorted(set(new.instruments) - set(old.instruments)):
                 await require_fed(request, added)  # D4: an edit cannot add an un-fed instrument either
                 if stopped := await _stopped_mandate_on(conn, added, except_id=mandate_id):
@@ -661,6 +675,7 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                        max_debates_per_day = $23, exit_tp_r = $24, exit_tp1_scale_pct = $25,
                        exit_trail_activate_pct = $26, exit_trail_pct = $27, exit_max_hold_hours = $28, dry_run = $29,
                        notify_level = $30, breaker_max_loss_streak = $31, breaker_max_reject_streak = $32,
+                       timeframes = $33,
                        -- a new budget is a new baseline: without a rebase a smaller budget reads as a drawdown
                        hwm_rebased_at = CASE WHEN capital_budget_usd <> $3 THEN now() ELSE hwm_rebased_at END,
                        last_dd_demotion_hwm = CASE WHEN capital_budget_usd <> $3 THEN NULL ELSE last_dd_demotion_hwm END

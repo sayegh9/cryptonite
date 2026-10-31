@@ -220,7 +220,8 @@ class Mandate(BaseModel):
     allow_perps: bool = False
     max_leverage: int = Field(default=1, ge=1, le=MAX_PERP_LEVERAGE_CAP)
     max_risk_per_trade_pct: Decimal = Field(default=DEFAULT_RISK_PER_TRADE_PCT, gt=0, le=MAX_RISK_PER_TRADE_PCT_CAP)
-    strategies: list[str] = Field(default_factory=list)
+    strategies: list[str] = Field(default_factory=list)  # profile preset slugs; empty: the style defaults
+    timeframes: list[str] = Field(default_factory=list)  # profile bar timeframes; empty: the style defaults
     autonomy_level: AutonomyLevel = AutonomyLevel.L1
     status: MandateStatus = MandateStatus.ACTIVE
     active_hours_utc: str | None = None
@@ -319,7 +320,8 @@ class Mandate(BaseModel):
             exit_trail_activate_pct=self.exit_trail_activate_pct, exit_trail_pct=self.exit_trail_pct,
             exit_max_hold_hours=self.exit_max_hold_hours, dry_run=self.dry_run, notify_level=self.notify_level,
             breaker_max_loss_streak=self.breaker_max_loss_streak,
-            breaker_max_reject_streak=self.breaker_max_reject_streak)
+            breaker_max_reject_streak=self.breaker_max_reject_streak,
+            strategies=tuple(self.strategies), timeframes=tuple(self.timeframes))
 
     @property
     def execution_mode(self):
@@ -347,7 +349,8 @@ class Mandate(BaseModel):
             instruments=list(r["instruments"] or []), max_position_pct=r["max_position_pct"],
             max_drawdown_pct=r["max_drawdown_pct"], allow_perps=r["allow_perps"], max_leverage=r["max_leverage"],
             max_risk_per_trade_pct=r.get("max_risk_per_trade_pct") or DEFAULT_RISK_PER_TRADE_PCT,
-            strategies=list(r.get("strategies") or []), autonomy_level=AutonomyLevel(int(r["autonomy_level"])),
+            strategies=list(r.get("strategies") or []), timeframes=list(r.get("timeframes") or []),
+            autonomy_level=AutonomyLevel(int(r["autonomy_level"])),
             status=MandateStatus(r["status"]), active_hours_utc=r.get("active_hours_utc"),
             veto_window_s=r.get("veto_window_s") or DEFAULT_VETO_WINDOW_S,
             # ADR 0010: the stored value as it is (NULL stays off); a row read before migration 049 has no columns
@@ -424,7 +427,6 @@ def risk_adding_change(old: Mandate | None, new: Mandate) -> bool:
         or new.max_leverage > old.max_leverage
         or new.max_risk_per_trade_pct > old.max_risk_per_trade_pct
         or bool(set(new.instruments) - set(old.instruments))
-        or bool(set(new.strategies) - set(old.strategies))
         or (new.active_hours_utc or "") != (old.active_hours_utc or "")
         or new.veto_window_s < old.veto_window_s
         or (new.status is MandateStatus.ACTIVE and old.status is not MandateStatus.ACTIVE)

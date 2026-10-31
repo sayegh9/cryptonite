@@ -24,6 +24,9 @@ from cryptonite_execution import profile_lifecycle
 from cryptonite_schemas.mandate import mandate_instance_id
 from cryptonite_schemas.marks import read_live_quote, resolve_quote_price
 from cryptonite_schemas.profile import (
+    PRESET_CATALOG,
+    PROFILE_TIMEFRAMES,
+    STYLE_TIMEFRAMES,
     Direction,
     Market,
     Style,
@@ -539,7 +542,12 @@ async def preset_stats(auth: dict[str, Any] = Depends(require_operator)) -> dict
     ``preset_ids`` is ``preset_ids_for(style, direction)`` for every pair, so the wizard never copies the mapping."""
     preset_ids = {f"{style.value}:{direction.value}": list(preset_ids_for(style, direction))
                   for style in Style for direction in Direction}
-    return {**_preset_document(), "preset_ids": preset_ids}
+    # P3b picker: every selectable preset, the style default timeframes and the selectable ones
+    catalog = {slug: {"side": meta.side.value, "timeframes": list(meta.timeframes)}
+               for slug, meta in PRESET_CATALOG.items()}
+    return {**_preset_document(), "preset_ids": preset_ids, "catalog": catalog,
+            "default_timeframes": {style.value: list(tfs) for style, tfs in STYLE_TIMEFRAMES.items()},
+            "profile_timeframes": list(PROFILE_TIMEFRAMES)}
 
 
 def _requested_coins(coins: str) -> list[str]:
