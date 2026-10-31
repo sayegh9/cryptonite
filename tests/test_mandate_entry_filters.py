@@ -389,3 +389,20 @@ async def test_creating_a_mandate_stores_the_filters(h):
     v = res.json()
     assert (v["min_conviction"], v["min_rr"], v["daily_loss_limit_pct"], v["daily_profit_target_pct"],
             v["profit_lock_pct"]) == ("0.75", "2.5", "2", None, "50")
+
+
+async def test_strategy_and_timeframe_picks_round_trip_and_follow_the_totp_rule(h):
+    """P3b: dropping a preset is free, adding a timeframe needs TOTP, an impossible pick is refused."""
+    m = await h.mandate(level=1)
+    url = f"/api/v1/ai/mandates/{m.id}"
+    async with h.client() as c:
+        narrowed = await c.patch(url, headers=h.headers, json={"strategies": ["swing-trend-pullback-1h"]})
+        assert narrowed.status_code == 200, narrowed.text
+        await h.redis.delete(f"ai:totp_failures:user:{h.operator_id}")
+        wider = await c.patch(url, headers=h.headers, json={"timeframes": ["15m", "1h", "4h"]})
+        assert wider.status_code == 401 and "TOTP_REQUIRED" in wider.text, wider.text
+        wrong = await c.patch(url, headers=h.headers, json={"strategies": ["trend-pullback-short"]})
+        assert wrong.status_code == 422 and "STRATEGY_DIRECTION_MISMATCH" in wrong.text, wrong.text
+        done = await c.patch(url, headers=h.headers, json={"timeframes": ["15m", "1h", "4h"], "totp_code": "000000"})
+    assert done.status_code == 200, done.text
+    assert (done.json()["strategies"], done.json()["timeframes"]) == (["swing-trend-pullback-1h"], ["15m", "1h", "4h"])

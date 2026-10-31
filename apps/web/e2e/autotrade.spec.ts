@@ -78,6 +78,11 @@ test.describe("Auto-Trade", () => {
     await expect(replay).toContainText("Negative replay: -0.63R average R over 49 trades.");
     await expect(replay).toContainText("Thin replay: 3 trades.");
     await expect(replay).toContainText("No replay data for BTCUSDT.");
+    const picker = page.getByTestId("strategy-picker");
+    await expect(picker.getByRole("checkbox", { name: /^trend-pullback-short / })).not.toBeChecked();  // offered, not a default
+    await expect(picker.getByRole("checkbox", { name: /^swing-trend-pullback-1h/ })).toHaveCount(0);  // a long preset
+    await picker.getByRole("checkbox", { name: /swing-sniper-pullback-short-15m/ }).uncheck();
+    await picker.getByRole("checkbox", { name: "15m", exact: true }).check();
     await page.getByRole("button", { name: "Continue" }).press("Enter");
 
     await expect(page.getByRole("heading", { name: /Step 3 of 4/ })).toBeFocused();
@@ -106,6 +111,8 @@ test.describe("Auto-Trade", () => {
       dry_run: true,
       environment: "PAPER",
       totp_code: VALID_TOTP,
+      strategies: ["swing-trend-pullback-short-1h", "swing-squeeze-breakdown-short-1h"],
+      timeframes: ["15m", "1h", "4h"],
     });
     expect(create.body.instruments).toEqual(["ETHUSDT-MARGIN.BINANCE", "ETHUSDT-PERP.BINANCE", "BTCUSDT-MARGIN.BINANCE", "BTCUSDT-PERP.BINANCE"]);
   });

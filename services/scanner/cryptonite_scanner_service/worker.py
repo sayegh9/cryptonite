@@ -40,7 +40,7 @@ from cryptonite_scanner.models import (
 )
 from cryptonite_scanner.presets import preset_by_slug
 from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
-from cryptonite_schemas.profile import STYLE_TIMEFRAMES, preset_ids_for, underlying_spot
+from cryptonite_schemas.profile import effective_presets, effective_timeframes, underlying_spot
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
 BRIEF_TTL_S = 2 * 3600
@@ -550,7 +550,8 @@ class ScannerWorker:
         if self._profiles_cached_at is None or now - self._profiles_cached_at >= 30:
             try:
                 profiles = await self.pool.fetch(
-                    "SELECT id, instruments, style, direction FROM ai_mandates WHERE status = 'ACTIVE' ORDER BY id"
+                    "SELECT id, instruments, style, direction, strategies, timeframes FROM ai_mandates "
+                    "WHERE status = 'ACTIVE' ORDER BY id"
                 )
                 feed = await self.pool.fetch(
                     """SELECT raw_symbol FROM instruments
@@ -610,7 +611,8 @@ class ScannerWorker:
         """
         profiles, feed = await self._profile_scan_context()
         for profile in profiles:
-            if timeframe not in STYLE_TIMEFRAMES[profile["style"]]:
+            if timeframe not in effective_timeframes(profile["style"], profile["direction"],
+                                                     profile["strategies"], profile["timeframes"]):
                 continue
             coins = {underlying_spot(i) for i in profile["instruments"]}
             if instrument_id not in coins:
@@ -619,7 +621,7 @@ class ScannerWorker:
             run_ids = []
             skipped = {"COIN_NOT_IN_FEED": len(coins - feed)}
             if instrument_id in feed:
-                for slug in preset_ids_for(profile["style"], profile["direction"]):
+                for slug in effective_presets(profile["style"], profile["direction"], profile["strategies"]):
                     preset = preset_by_slug(slug)
                     if timeframe not in preset.universe.timeframes:
                         continue

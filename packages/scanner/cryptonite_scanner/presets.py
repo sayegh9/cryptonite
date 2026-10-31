@@ -499,7 +499,7 @@ _PROFILE_PRESETS: dict[str, ScanSpecCreate] = {
 
 
 def preset_by_slug(slug: str) -> ScanSpecCreate:
-    """Resolve one of the twelve ADR 0011 profile presets by its stable slug."""
+    """Resolve a profile preset (``PRESET_CATALOG`` in ``cryptonite_schemas.profile``) by its stable slug."""
     try:
         return _PROFILE_PRESETS[slug]
     except KeyError:

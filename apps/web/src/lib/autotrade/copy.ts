@@ -28,6 +28,11 @@ const SCHEMA_CODES: Record<string, string> = {
   DAILY_LOSS_ABOVE_DRAWDOWN: "Daily loss limit cannot exceed maximum drawdown.",
   TRAIL_ABOVE_ACTIVATION: "Trail distance cannot exceed its activation threshold.",
   LIVE_NOT_AVAILABLE: "Live trading is not available yet. Choose Paper.",
+  UNKNOWN_STRATEGY: "One of the strategies is not available any more. Pick from the list.",
+  STRATEGY_DIRECTION_MISMATCH: "A ticked strategy trades a side this direction doesn't allow. Untick it or change the direction.",
+  TIMEFRAME_UNSUPPORTED: "A ticked timeframe isn't run by any ticked strategy. Untick it or add a strategy that runs it.",
+  NO_STRATEGIES: "Pick at least one strategy and one timeframe it runs on.",
+  STRATEGY_NOT_IN_PROFILE: "The setup came from a strategy this profile no longer runs.",
 };
 
 /** Plain copy for an API refusal. The API's own text is shown when no mapping applies (it never carries secrets). */
@@ -52,6 +57,8 @@ export function errorCopy(err: ApiError, mode?: ExecutionMode): string {
       return err.message.replace(/; resume or edit it instead$/, ". Resume or edit it instead.");
     default:
       if (err.code && SCHEMA_CODES[err.code]) return SCHEMA_CODES[err.code];
+      if (err.message && err.message.split(",").every((c) => SCHEMA_CODES[c.trim()]))
+        return err.message.split(",").map((c) => SCHEMA_CODES[c.trim()]).join(" ");
       if (err.status === 401 || err.status === 403) return "Sign in as an operator to manage profiles.";
       return err.message;
   }

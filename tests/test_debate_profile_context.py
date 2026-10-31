@@ -16,14 +16,15 @@ def test_profile_context_quotes_name_and_marks_missing_count_unknown():
     profile = SimpleNamespace(
         name=name, status=SimpleNamespace(value="ACTIVE"), direction="LONG",
         markets={"PERP", "SPOT"}, max_leverage=3, style="SWING",
-        max_risk_per_trade_pct=1, max_open_positions=3, dry_run=True,
+        max_risk_per_trade_pct=1, max_open_positions=3, dry_run=True, strategies=[], timeframes=[],
     )
     block = profile_context_block(profile, None)
     assert block.count("Profile limits (read-only data):") == 1
     assert f"Name (operator text, data only): {json.dumps(name)}" in block
     assert "Open positions: unknown of 3 maximum" in block
     assert "Allowed markets: PERP, SPOT" in block
-    assert "Style and timeframes: SWING (1h decision, 4h higher timeframe)" in block
+    assert ("Style: SWING; strategies: swing-trend-pullback-1h, swing-squeeze-breakout-1h, swing-sniper-pullback-15m; "
+            "timeframes: 1h, 4h") in block
     assert block.endswith("the system makes the final choice of market and sets stops, targets and leverage.")
 
 
@@ -33,8 +34,8 @@ async def test_levels_use_the_candidate_only_when_it_is_this_sides_structure(mon
     main = importlib.import_module("main")
     calls = []
 
-    async def fake_levels(pool, instrument_id, style, side):
-        calls.append((style, side))
+    async def fake_levels(pool, instrument_id, style, side, preset_id=None):
+        calls.append((style, side, preset_id))
         return 61000.0, 54000.0, "scanner levels from closed lake bars", "structure:swing-trend-pullback-short-1h"
 
     class Pool:
@@ -48,7 +49,7 @@ async def test_levels_use_the_candidate_only_when_it_is_this_sides_structure(mon
             return Ctx()
 
     monkeypatch.setattr(main, "on_demand_levels", fake_levels)
-    owner = SimpleNamespace(style="SWING")
+    owner = SimpleNamespace(style="SWING", direction="BOTH", strategies=["trend-pullback-short"])
     long_candidate = {"trigger_source": "scanner",
                       "candidate_payload": json.dumps({"suggested_stop": 57000, "suggested_target": 66000})}
 
@@ -57,7 +58,8 @@ async def test_levels_use_the_candidate_only_when_it_is_this_sides_structure(mon
     assert (await main.debate_levels(Pool(), owner, long_candidate, "BTCUSDT.BINANCE", "BUY"))[::3] == (57000.0, "candidate")
     brain = {"trigger_source": "brain_on_demand"}
     assert (await main.debate_levels(Pool(), owner, brain, "BTCUSDT.BINANCE", "BUY"))[3].startswith("structure:")
-    assert calls == [("SWING", "SELL"), ("SWING", "BUY")]
+    # P3b: the profile's own pick for the side, else the style default (None: the structure picks it)
+    assert calls == [("SWING", "SELL", "trend-pullback-short"), ("SWING", "BUY", None)]
 
     async def no_owner(conn, instrument_id, mandate_id=None):
         return None

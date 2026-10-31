@@ -64,7 +64,8 @@ async def profile(h, *, market="SPOT", markets=None, level=1, lock=True, **chang
         f"profile-{uuid.uuid4()}", instrument, level, markets, max_leverage, direction, "PERP" in markets)
     if changes:
         for key, value in changes.items():
-            assert key in {"status", "direction", "max_leverage", "max_open_positions", "max_debates_per_day", "active_hours_utc", "dry_run"}
+            assert key in {"status", "direction", "max_leverage", "max_open_positions", "max_debates_per_day", "active_hours_utc", "dry_run",
+                           "strategies", "timeframes"}
             await h.pool.execute(f"UPDATE ai_mandates SET {key}=$2 WHERE id=$1", mid, value)
     if lock:
         await h.pool.execute("INSERT INTO ai_profile_coin_locks (base_asset, mandate_id) VALUES ('BTC', $1)", mid)
@@ -274,6 +275,19 @@ async def test_gate_uses_profile_style_and_logs_its_decision(h, timeframe, allow
     decision = await gate.pre_debate_gate(h.pool, h.redis, payload, None, "a brief", now_s=NOW.timestamp())
     assert (decision.allowed, decision.reason) == (allowed, reason)
     assert await h.pool.fetchval("SELECT reason FROM ai_profile_decisions WHERE mandate_id=$1 AND stage='GATE'", m.id) == reason
+
+
+@pytest.mark.parametrize("candidate,reason", [
+    ({"timeframe": "15m"}, "NO_TRIAGE_GATEWAY"),  # picked, though Swing's defaults are 1h/4h
+    ({"timeframe": "1h"}, "TIMEFRAME_NOT_IN_STYLE"),  # not picked
+    ({"timeframe": "15m", "preset_slug": "trend-pullback"}, "STRATEGY_NOT_IN_PROFILE"),  # removed in flight
+])
+async def test_gate_uses_the_profile_picks(h, candidate, reason):
+    """P3b: picked timeframes replace the style defaults; a profile scan from an unpicked preset is refused."""
+    m = await profile(h, strategies=["scalp-multi-tf"], timeframes=["15m"])
+    payload = {"instrument_id": SPOT, "mandate_id": str(m.id), "candidate_payload": json.dumps(candidate)}
+    decision = await gate.pre_debate_gate(h.pool, h.redis, payload, None, "a brief", now_s=NOW.timestamp())
+    assert decision.reason == reason
 
 
 async def test_global_llm_budget_exhaustion_is_logged(h):

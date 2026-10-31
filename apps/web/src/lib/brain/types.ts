@@ -348,6 +348,9 @@ export interface ProfileProposalSpec {
   breaker_max_reject_streak: number;
   mode: ExecutionMode;
   dry_run: boolean;
+  /** Preset slugs and timeframes; empty: the style defaults (P3b) */
+  strategies?: string[];
+  timeframes?: string[];
 }
 
 export interface ProfileProposalWidget {

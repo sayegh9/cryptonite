@@ -8,6 +8,7 @@ profile field rules. Pure data and pure policy (standard library, pydantic and `
 from collections.abc import Collection, Iterable, Mapping
 from decimal import Decimal
 from enum import StrEnum
+from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -209,6 +210,71 @@ def preset_ids_for(style: Style | str, direction: Direction | str) -> tuple[str,
     return tuple(dict.fromkeys(ids))
 
 
+class PresetMeta(NamedTuple):
+    side: TradeSide
+    timeframes: tuple[str, ...]
+
+
+# Every scanner preset a profile may run (scanner ``_PROFILE_PRESETS``; a parity test pins the two). A new preset
+# becomes selectable by adding it there and here.
+PRESET_CATALOG: Mapping[str, PresetMeta] = {
+    "rsi-oversold-reversal": PresetMeta(TradeSide.LONG, ("15m", "1h")),
+    "trend-pullback": PresetMeta(TradeSide.LONG, ("15m", "1h")),
+    "bollinger-breakout": PresetMeta(TradeSide.LONG, ("15m", "1h")),
+    "macd-momentum-shift": PresetMeta(TradeSide.LONG, ("15m", "1h")),
+    "scalp-multi-tf": PresetMeta(TradeSide.LONG, ("15m", "1h", "4h")),
+    "scalp-multi-tf-short": PresetMeta(TradeSide.SHORT, ("15m", "1h", "4h")),
+    "trend-pullback-short": PresetMeta(TradeSide.SHORT, ("15m", "1h")),
+    "bollinger-breakdown-short": PresetMeta(TradeSide.SHORT, ("15m", "1h")),
+    "swing-trend-pullback-1h": PresetMeta(TradeSide.LONG, ("15m", "1h", "4h")),
+    "swing-trend-pullback-short-1h": PresetMeta(TradeSide.SHORT, ("15m", "1h", "4h")),
+    "swing-sniper-pullback-15m": PresetMeta(TradeSide.LONG, ("15m", "1h", "4h")),
+    "swing-sniper-pullback-short-15m": PresetMeta(TradeSide.SHORT, ("15m", "1h", "4h")),
+    "swing-squeeze-breakout-1h": PresetMeta(TradeSide.LONG, ("15m", "1h", "4h")),
+    "swing-squeeze-breakdown-short-1h": PresetMeta(TradeSide.SHORT, ("15m", "1h", "4h")),
+}
+# The bar timeframes a profile may select: no preset is built for 5m, and 1d needs a 300-day lookback per scan.
+PROFILE_TIMEFRAMES: tuple[str, ...] = ("15m", "1h", "4h")
+
+
+def effective_presets(style: Style | str, direction: Direction | str, strategies: Iterable[str]) -> tuple[str, ...]:
+    """The presets a profile runs: its own picks the direction allows, or the style defaults when it has none.
+    An unknown slug is skipped, so a preset retired later never breaks a stored profile."""
+    picked = tuple(dict.fromkeys(strategies))
+    if not picked:
+        return preset_ids_for(style, direction)
+    return tuple(s for s in picked if s in PRESET_CATALOG and allows_side(direction, PRESET_CATALOG[s].side))
+
+
+def effective_timeframes(style: Style | str, direction: Direction | str, strategies: Iterable[str],
+                         timeframes: Iterable[str]) -> tuple[str, ...]:
+    """The bar timeframes a profile scans: its picks (or the style defaults) that at least one of its presets runs."""
+    wanted = set(timeframes) or set(STYLE_TIMEFRAMES[Style(style)])
+    runnable = {tf for s in effective_presets(style, direction, strategies) for tf in PRESET_CATALOG[s].timeframes}
+    return tuple(tf for tf in PROFILE_TIMEFRAMES if tf in wanted and tf in runnable)
+
+
+def selection_errors(style: Style | str, direction: Direction | str, strategies: Iterable[str],
+                     timeframes: Iterable[str]) -> list[str]:
+    """Stable codes for a strategy or timeframe pick that cannot run; checked when a profile is written."""
+    strategies, timeframes = list(strategies), list(timeframes)
+    errors: list[str] = []
+    if any(s not in PRESET_CATALOG for s in strategies):
+        errors.append("UNKNOWN_STRATEGY")
+    elif any(not allows_side(direction, PRESET_CATALOG[s].side) for s in strategies):
+        errors.append("STRATEGY_DIRECTION_MISMATCH")
+    if any(tf not in PROFILE_TIMEFRAMES for tf in timeframes):
+        errors.append("TIMEFRAME_UNSUPPORTED")
+    elif not errors:
+        presets = effective_presets(style, direction, strategies)
+        runnable = {tf for s in presets for tf in PRESET_CATALOG[s].timeframes}
+        if any(tf not in runnable for tf in timeframes):
+            errors.append("TIMEFRAME_UNSUPPORTED")
+        elif not presets or not effective_timeframes(style, direction, strategies, timeframes):
+            errors.append("NO_STRATEGIES")
+    return errors
+
+
 class ProfileFields(BaseModel):
     """The ``ai_mandates`` columns a profile adds, plus the ones the profile rules read."""
 
@@ -233,6 +299,8 @@ class ProfileFields(BaseModel):
     notify_level: NotifyLevel = NotifyLevel.IMPORTANT
     breaker_max_loss_streak: int = Field(default=4, ge=1, le=50)
     breaker_max_reject_streak: int = Field(default=5, ge=1, le=50)
+    strategies: tuple[str, ...] = ()  # empty: the style defaults
+    timeframes: tuple[str, ...] = ()  # empty: the style defaults
 
 
 def profile_errors(f: ProfileFields, *, running: bool) -> list[str]:
@@ -276,6 +344,14 @@ def risk_adding_profile_change(
         codes.append("MARKET_ADDED")
     if any(allows_side(new.direction, s) and not allows_side(old.direction, s) for s in TradeSide):
         codes.append("DIRECTION_WIDENED")
+    # The picks compared under the new style and direction (their own rules above and below): what runs, not the
+    # stored lists, since an empty list means the style defaults
+    st, dr = new.style, new.direction
+    if set(effective_presets(st, dr, new.strategies)) - set(effective_presets(st, dr, old.strategies)):
+        codes.append("STRATEGY_ADDED")
+    if set(effective_timeframes(st, dr, new.strategies, new.timeframes)) - set(
+            effective_timeframes(st, dr, old.strategies, old.timeframes)):
+        codes.append("TIMEFRAME_ADDED")
     if new.max_leverage > old.max_leverage:
         codes.append("LEVERAGE_RAISED")
     if new.max_open_positions > old.max_open_positions:

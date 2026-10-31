@@ -40,6 +40,8 @@ export interface Mandate {
   /** The loss at the stop one perp trade may take, % of the budget (1 by default, at most 2) */
   max_risk_per_trade_pct?: string;
   strategies: string[];
+  /** Profile bar timeframes; empty: the style defaults (P3b) */
+  timeframes?: string[];
   autonomy_level: 1 | 2 | 3;
   level_name: string;
   status: MandateStatus;

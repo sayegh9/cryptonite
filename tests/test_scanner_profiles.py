@@ -117,6 +117,17 @@ async def test_scanner_profiles_filter_coins_style_direction(scanner, style, dir
     assert {c["risk_config"].direction for c in scanner.calls} == {p.risk.direction for p in expected}
 
 
+async def test_scanner_profile_runs_only_its_picks(scanner):
+    """P3b: picked presets and timeframes replace the style defaults."""
+    mid = await profile(scanner)
+    await scanner.pool.execute("UPDATE ai_mandates SET strategies = $2, timeframes = $3 WHERE id = $1",
+                               mid, ["rsi-oversold-reversal"], ["15m"])
+    await bar(scanner, tf="1h", event="unpicked-timeframe")
+    assert scanner.calls == []
+    await bar(scanner, tf="15m")
+    assert len(scanner.calls) == 1 and scanner.calls[0]["timeframe"] == "15m"
+
+
 async def test_scanner_perps_dry_run_payload_uses_underlying_spot(scanner):
     mid = await profile(scanner, coins=("BTCUSDT-PERP.BINANCE",), direction="SHORT", dry_run=True)
     await bar(scanner)

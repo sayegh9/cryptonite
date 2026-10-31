@@ -126,6 +126,8 @@ export function ProfileProposalCard({ widget }: { widget: ProfileProposalWidget 
       : "This is a proposal. No profile exists yet.";
 
   const detailRows = [
+    ["Strategies", p.strategies?.length ? p.strategies.join(", ") : "Style defaults"],
+    ["Timeframes", p.timeframes?.length ? p.timeframes.join(", ") : "Style defaults"],
     ["Capital budget", fmtUsd(p.capital_budget_usd)],
     ["Risk per trade", `${p.max_risk_per_trade_pct}%`],
     ["Maximum leverage", `${p.max_leverage}×`],

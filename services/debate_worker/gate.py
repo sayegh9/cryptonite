@@ -17,7 +17,7 @@ from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD, BudgetExceed
 from cryptonite_execution.profile_log import record_decision
 from cryptonite_scanner.brief import hard_rejects
 from cryptonite_schemas.debate import TriageDecision
-from cryptonite_schemas.profile import STYLE_TIMEFRAMES
+from cryptonite_schemas.profile import effective_presets, effective_timeframes
 from mandate_routing import resolve_profile
 
 logger = logging.getLogger("debate_worker.gate")
@@ -441,8 +441,12 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     slot_key = None
     cap = 0
     if profile is not None:
-        if timeframe not in STYLE_TIMEFRAMES[profile.style]:
+        if timeframe not in effective_timeframes(profile.style, profile.direction, profile.strategies,
+                                                 profile.timeframes):
             return GateDecision(False, "TIMEFRAME_NOT_IN_STYLE")
+        slug = candidate.get("preset_slug")
+        if slug and slug not in effective_presets(profile.style, profile.direction, profile.strategies):
+            return GateDecision(False, "STRATEGY_NOT_IN_PROFILE")  # removed while the candidate was in flight
         cap = profile.max_debates_per_day
         if gateway is None:
             slot_key = profile_cap_key(profile.id, _utc_now_s())

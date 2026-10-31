@@ -94,7 +94,7 @@ test.describe("Brain profile proposal card", () => {
       allow_perps: true, style: "SWING", direction: "BOTH", environment: "PAPER", max_risk_per_trade_pct: "1",
       max_drawdown_pct: "20", max_leverage: 3, max_open_positions: 3, max_debates_per_day: 6, exit_tp_r: "2",
       exit_tp1_scale_pct: "50", notify_level: "IMPORTANT", breaker_max_loss_streak: 4, breaker_max_reject_streak: 5,
-      dry_run: true, daily_loss_limit_pct: "3", totp_code: VALID_TOTP,
+      dry_run: true, daily_loss_limit_pct: "3", totp_code: VALID_TOTP, strategies: [], timeframes: [],
     });
     await page.setViewportSize({ width: 390, height: 900 });
     await c.scrollIntoViewIfNeeded();

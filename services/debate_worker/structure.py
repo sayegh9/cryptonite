@@ -26,11 +26,12 @@ LOOKBACK_HIGHER_BARS = 230  # 200-bar indicator warm-up plus closed-bar and gap 
 
 def levels_from_lake(symbol: str, style: str, side: str, precision: int, *,
                      decision_ns: int | None = None, lake_path: str | Path | None = None,
+                     preset_id: str | None = None,
                      ) -> tuple[float | None, float | None, str, str | None]:
     """Return (stop, target, diagnostic, source) from fresh, complete closed bars, or no levels.
 
-    ``source`` is ``structure:<preset_id>``: the first preset the profile style runs for this side (D-P3-7),
-    whose risk config the levels use."""
+    ``source`` is ``structure:<preset_id>``: ``preset_id`` when given (the profile's first pick for this side),
+    else the first preset the profile style runs for this side (D-P3-7); the levels use its risk config."""
     try:
         symbol = lake_symbol(symbol)
         if style == "SWING":
@@ -73,7 +74,7 @@ def levels_from_lake(symbol: str, style: str, side: str, precision: int, *,
         if row.get("ema_200") is None or row.get("atr") is None:
             return None, None, f"fewer than 200 valid {decision_tf} bars", None
         direction = "LONG" if side == "BUY" else "SHORT"
-        preset_id = preset_ids_for(style, direction)[0]
+        preset_id = preset_id or preset_ids_for(style, direction)[0]
         config = preset_by_slug(preset_id).risk.model_copy(update={"direction": direction})
         calculated = derive_levels(row, config, direction, precision, higher)
         if calculated is None:
@@ -87,7 +88,7 @@ def levels_from_lake(symbol: str, style: str, side: str, precision: int, *,
         return None, None, "lake level calculation failed", None
 
 
-async def on_demand_levels(pg_pool, instrument_id: str, style: str, side: str,
+async def on_demand_levels(pg_pool, instrument_id: str, style: str, side: str, preset_id: str | None = None,
                            ) -> tuple[float | None, float | None, str, str | None]:
     """Read precision from the instrument registry, then calculate outside the event loop."""
     symbol = instrument_id.split(".", 1)[0].removesuffix("-PERP").removesuffix("-MARGIN")
@@ -99,7 +100,7 @@ async def on_demand_levels(pg_pool, instrument_id: str, style: str, side: str,
             )
         if precision is None:
             return None, None, "instrument price precision is unavailable", None
-        return await asyncio.to_thread(levels_from_lake, symbol, style, side, int(precision))
+        return await asyncio.to_thread(levels_from_lake, symbol, style, side, int(precision), preset_id=preset_id)
     except Exception as exc:
         logger.warning("Could not load instrument precision for %s: %s", instrument_id, exc)
         return None, None, "instrument price precision is unavailable", None
