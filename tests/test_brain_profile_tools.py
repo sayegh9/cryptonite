@@ -1,6 +1,7 @@
 """Focused contract tests for the Brain's view-only profile tools."""
 
 import datetime as dt
+import json
 import uuid
 from decimal import Decimal
 
@@ -72,8 +73,8 @@ def test_lookup_refuses_ambiguous_name_and_explanation_is_code_built(monkeypatch
         return []
 
     monkeypatch.setattr(tools, "_readonly_rows", rows)
-    ambiguous = tools.get_profile.func("duplicate")
-    explained = tools.explain_decision.func("One", "BTCUSDT-PERP.BINANCE")
+    ambiguous = json.loads(tools.get_profile.func("duplicate"))
+    explained = json.loads(tools.explain_decision.func("One", "BTCUSDT-PERP.BINANCE"))
 
     assert ambiguous["status"] == "AMBIGUOUS" and len(ambiguous["candidates"]) == 2
     assert explained["stopped_at"] == "ROUTE"
@@ -107,8 +108,8 @@ def test_list_and_get_report_breaker_state_without_exposing_position_rows(monkey
         raise AssertionError(sql)
 
     monkeypatch.setattr(tools, "_readonly_rows", rows)
-    listed = tools.list_profiles.func()
-    detailed = tools.get_profile.func(str(profile_id))
+    listed = json.loads(tools.list_profiles.func())
+    detailed = json.loads(tools.get_profile.func(str(profile_id)))
 
     assert "1 open positions" in listed["profiles"][0]["line_text"]
     assert "Paused (operator request)" in listed["profiles"][0]["line_text"]
@@ -130,7 +131,7 @@ def test_past_day_summary_keeps_pnl_unavailable(monkeypatch):
         return [{"stage": "EXIT", "outcome": "CLOSED", "ts": dt.datetime.now(dt.UTC)}]
 
     monkeypatch.setattr(tools, "_readonly_rows", rows)
-    result = tools.profile_summary.func("One", yesterday.isoformat())
+    result = json.loads(tools.profile_summary.func("One", yesterday.isoformat()))
 
     assert result["status"] == "OK"
     assert result["counts"]["EXIT"] == {"CLOSED": 1}
