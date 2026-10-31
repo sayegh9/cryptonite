@@ -46,7 +46,7 @@ def test_selection_errors():
 
 
 def _f(**kw) -> ProfileFields:
-    return ProfileFields(markets={"SPOT"}, **kw)
+    return ProfileFields(**{"markets": {"SPOT"}, **kw})
 
 
 def _codes(old: ProfileFields, new: ProfileFields) -> list[str]:
@@ -60,4 +60,5 @@ def test_totp_compares_what_runs_not_the_stored_lists():
     assert "TIMEFRAME_ADDED" in _codes(_f(), _f(timeframes=("15m", "1h", "4h")))
     assert _codes(_f(timeframes=("4h",)), _f(timeframes=("1h", "4h"))) == ["TIMEFRAME_ADDED"]
     assert _codes(_f(timeframes=("1h", "4h")), _f(timeframes=("4h",))) == []
-    assert "STRATEGY_ADDED" in _codes(_f(), _f(style="INTRADAY"))
+    assert _codes(_f(), _f(style="INTRADAY")) == []  # a style change stays a free edit (ADR 0011)
+    assert _codes(_f(), _f(direction="BOTH", markets={"PERP"})) == ["MARKET_ADDED", "DIRECTION_WIDENED"]

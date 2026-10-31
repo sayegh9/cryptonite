@@ -344,12 +344,13 @@ def risk_adding_profile_change(
         codes.append("MARKET_ADDED")
     if any(allows_side(new.direction, s) and not allows_side(old.direction, s) for s in TradeSide):
         codes.append("DIRECTION_WIDENED")
-    # Compare what runs, not the stored lists: an empty list means the style defaults
-    if set(effective_presets(new.style, new.direction, new.strategies)) - set(
-            effective_presets(old.style, old.direction, old.strategies)):
+    # The picks compared under the new style and direction (their own rules above and below): what runs, not the
+    # stored lists, since an empty list means the style defaults
+    st, dr = new.style, new.direction
+    if set(effective_presets(st, dr, new.strategies)) - set(effective_presets(st, dr, old.strategies)):
         codes.append("STRATEGY_ADDED")
-    if set(effective_timeframes(new.style, new.direction, new.strategies, new.timeframes)) - set(
-            effective_timeframes(old.style, old.direction, old.strategies, old.timeframes)):
+    if set(effective_timeframes(st, dr, new.strategies, new.timeframes)) - set(
+            effective_timeframes(st, dr, old.strategies, old.timeframes)):
         codes.append("TIMEFRAME_ADDED")
     if new.max_leverage > old.max_leverage:
         codes.append("LEVERAGE_RAISED")
