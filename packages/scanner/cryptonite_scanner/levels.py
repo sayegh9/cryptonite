@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 import polars as pl
+
 from cryptonite_scanner.models import RiskConfig
 
 
