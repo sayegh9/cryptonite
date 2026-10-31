@@ -103,26 +103,26 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
 
     // 4. Verify Zone 1: Agent Fleet Topology
     await expect(page.locator("text=Agent Fleet Topology")).toBeVisible();
-    await expect(page.locator("text=Lead Orchestrator").first()).toBeVisible();
-    await expect(page.locator("text=Market Data Scout")).toBeVisible();
-    await expect(page.locator("text=Bull / Bear Debaters")).toBeVisible();
-    await expect(page.locator("text=Risk Guardian (CRO)")).toBeVisible();
-    await expect(page.locator("text=Execution Outbox Relay")).toBeVisible();
+    await expect(page.getByText("Portfolio manager").first()).toBeVisible();
+    await expect(page.getByText("Analysts").first()).toBeVisible();
+    await expect(page.getByText("Bull & Bear").first()).toBeVisible();
+    await expect(page.getByText("Risk panel").first()).toBeVisible();
+    await expect(page.getByText("Execution", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("Lead Orchestrator")).toHaveCount(0);
+    await expect(page.getByText("NO HEARTBEAT")).toHaveCount(0);
 
-    // 5. Verify Zone 2: Lead Orchestrator Canvas & Starter Chips
-    await expect(page.locator("text=Lead Orchestrator Canvas")).toBeVisible();
-    await expect(page.locator("text=Welcome to the Cryptonite AI Brain")).toBeVisible();
-    await expect(page.locator("text=Run BTC Consensus Debate")).toBeVisible();
-    await expect(page.locator("text=Audit Capital & Risk")).toBeVisible();
+    // 5. Verify Zone 2: the Brain chat (exactly one mounted, K7)
+    await expect(page.getByTestId("brain-conversation")).toHaveCount(1);
+    await expect(page.locator("#brain-input-compact")).toBeVisible();
+    await expect(page.locator("text=Lead Orchestrator Canvas")).toHaveCount(0);
 
     // 6. Verify Zone 3: Action Inbox
     await expect(page.locator("text=Action & Decision Inbox")).toBeVisible();
     await expect(page.locator("text=Example card · not a real proposal")).toHaveCount(0); // no sample data in the live inbox
 
-    // 7. Test Starter Prompt Chip execution
-    const riskChip = page.locator("button", { hasText: "Audit Capital & Risk" });
-    await riskChip.click();
-    await expect(page.locator("text=Orchestrator Synthesis for")).toBeVisible({ timeout: 5000 });
+    // 7. The symbol chip prefills the Brain input
+    await page.getByTestId("brain-symbol-chip").click();
+    await expect(page.locator("#brain-input-compact")).toHaveValue(/^Context: BTCUSDT 1h\. /);
 
     // 8. Triggering a debate only queues it: no card is invented locally
     const triggerBtn = page.locator("button", { hasText: "⚡ Trigger BTCUSDT Debate" });
@@ -370,9 +370,7 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
     await page.locator("button", { hasText: "AI Brain" }).click();
     await page.getByRole("group", { name: "AI Brain view" }).getByRole("button", { name: "Debates" }).click();
 
-    await page.locator("button", { hasText: "Audit Capital & Risk" }).click();
-    await expect(page.getByTestId("canvas-agent-error")).toContainText("agent unavailable: 500");
-    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(page.getByTestId("brain-conversation")).toHaveCount(1);
     const canvas = page.locator("main");
     await expect(canvas.getByText(/RSI|CRO approved|Setup approved/)).toHaveCount(0);
 
