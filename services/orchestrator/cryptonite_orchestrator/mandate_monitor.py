@@ -674,7 +674,8 @@ async def auto_resume_stale_pause(conn, redis, mandate: Mandate, now: datetime.d
     if not _all_coins_fresh(mandate, now, health):
         await redis.delete(key)
         return
-    await redis.set(key, str(now.timestamp()), nx=True)
+    # The key expires so a window left half-done by a manual resume cannot linger into a later episode
+    await redis.set(key, str(now.timestamp()), nx=True, ex=STALE_RESUME_AFTER_S * 4)
     raw = await redis.get(key)
     try:
         since = float(raw)
@@ -682,30 +683,38 @@ async def auto_resume_stale_pause(conn, redis, mandate: Mandate, now: datetime.d
         return
     if now.timestamp() - since < STALE_RESUME_AFTER_S:
         return
-    last = await conn.fetchrow(
-        """SELECT actor, detail->>'trigger_kind' AS trigger_kind FROM ai_autonomy_events WHERE mandate_id = $1
-           AND kind IN ('PAUSED', 'STARTED', 'RESUMED', 'STOPPING', 'STOPPED', 'HALTED') ORDER BY id DESC LIMIT 1""",
-        mandate.id)
-    if last is None or last['actor'] != 'risk:breaker' or last['trigger_kind'] != 'STALE_DATA':
-        return
-    today = await conn.fetchval(
-        """SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'STARTED'
-           AND actor = 'risk:breaker' AND created_at >= date_trunc('day', $2::timestamptz AT TIME ZONE 'UTC')
-           AT TIME ZONE 'UTC'""", mandate.id, now)
-    if int(today or 0) >= STALE_RESUME_MAX_PER_DAY:
-        return
-    reason = (f"prices fresh again for {STALE_RESUME_AFTER_S // 60} minutes; automatic resume "
-              f"{int(today or 0) + 1} of {STALE_RESUME_MAX_PER_DAY} today")
-    try:
-        await start(conn, mandate.id, actor='risk:breaker', totp_ok=True, settings=await load_settings(conn),
-                    reason=f"breaker resumed the profile: {reason}")
-    except LifecycleError as e:  # e.g. switch off for a Veto/Auto profile: stays paused for the operator
-        logger.info('Profile %s stays paused after its feed recovered: %s', mandate.name, e)
-        return
+    async with conn.transaction():
+        # Re-check under the row lock: a HALT or an operator action between the snapshot and here wins
+        row = await conn.fetchrow('SELECT status, paused_reason FROM ai_mandates WHERE id = $1 FOR UPDATE', mandate.id)
+        if (row is None or row['status'] != MandateStatus.PAUSED.value
+                or not str(row['paused_reason'] or '').startswith('BREAKER_STALE_DATA')):
+            return
+        last = await conn.fetchrow(
+            """SELECT actor, detail->>'trigger_kind' AS trigger_kind FROM ai_autonomy_events WHERE mandate_id = $1
+               AND kind IN ('PAUSED', 'STARTED', 'RESUMED', 'STOPPING', 'STOPPED', 'HALTED') ORDER BY id DESC LIMIT 1""",
+            mandate.id)
+        if last is None or last['actor'] != 'risk:breaker' or last['trigger_kind'] != 'STALE_DATA':
+            return
+        today = int(await conn.fetchval(
+            """SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'STARTED'
+               AND actor = 'risk:breaker' AND created_at >= date_trunc('day', $2::timestamptz AT TIME ZONE 'UTC')
+               AT TIME ZONE 'UTC'""", mandate.id, now) or 0)
+        if today >= STALE_RESUME_MAX_PER_DAY:
+            return
+        reason = (f"prices fresh again for {STALE_RESUME_AFTER_S // 60} minutes; automatic resume "
+                  f"{today + 1} of {STALE_RESUME_MAX_PER_DAY} today")
+        try:
+            resumed = await start(conn, mandate.id, actor='risk:breaker', totp_ok=True,
+                                  settings=await load_settings(conn), reason=f"breaker resumed the profile: {reason}")
+        except LifecycleError as e:  # e.g. switch off for a Veto/Auto profile: stays paused for the operator
+            logger.info('Profile %s stays paused after its feed recovered: %s', mandate.name, e)
+            return
+        if resumed.status is not MandateStatus.ACTIVE:
+            return
+        event_id = await conn.fetchval(
+            """SELECT id FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'STARTED' AND actor = 'risk:breaker'
+               ORDER BY id DESC LIMIT 1""", mandate.id)
     await redis.delete(key)
-    event_id = await conn.fetchval(
-        """SELECT id FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'STARTED' AND actor = 'risk:breaker'
-           ORDER BY id DESC LIMIT 1""", mandate.id)
     await _profile_alert(conn, redis, 'PROFILE_BREAKER_RESUMED',
                          dict(mandate_id=str(mandate.id), mandate=mandate.name, reason=reason),
                          f'profile-breaker-resume:{event_id}')

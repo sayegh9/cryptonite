@@ -178,9 +178,10 @@ export const useAutoTradeStore = create<AutoTradeState>()(
             }));
           } catch (err) {
             const error = api.toApiError(err);
+            // Mark the summaries the store already has as stale; never drop one (a detail page may be showing it)
             set((s) => ({
               summaryById: Object.fromEntries(
-                s.profiles.map((p) => [p.id, { ...(s.summaryById[p.id] ?? idle<ProfileSummary>()), status: "error" as const, error }]),
+                Object.entries(s.summaryById).map(([id, entry]) => [id, { ...entry, status: "error" as const, error }]),
               ),
             }));
           }
