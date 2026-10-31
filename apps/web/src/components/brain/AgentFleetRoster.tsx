@@ -13,8 +13,8 @@ import {
 } from "lucide-react";
 
 
-/** Shown until the agent's HEARTBEAT arrives on the stream: its state is unknown, not "online". */
-const NO_HEARTBEAT = "NO HEARTBEAT";
+/** No heartbeat means the agent is not inside a debate right now: idle. */
+const NO_HEARTBEAT = "Idle";
 const NO_HEARTBEAT_COLOR = "text-zinc-400 bg-zinc-900 border-zinc-800";
 
 interface AgentFleetRosterProps {
@@ -52,77 +52,68 @@ export function AgentFleetRoster({
     else if (live.status === "ERROR") color = "text-rose-400 bg-rose-950/50 border-rose-800/60";
     else if (live.status === "ONLINE") color = "text-emerald-400 bg-emerald-950/50 border-emerald-800/60";
     
-    return { status: live.status, statusColor: color, msg: live.msg };
+    const label = live.status === "PROCESSING" ? "Working" : live.status === "ERROR" ? "Error" : "Idle";
+    return { status: label, statusColor: color, msg: live.msg };
   };
 
   const agents = [
     {
       id: "orchestrator",
-      name: "Lead Orchestrator",
-      title: "Chief AI Copilot",
+      name: "Portfolio manager",
+      title: "Judges each debate",
       icon: BrainCircuit,
       color: "text-cyan-400",
       bgBorder: "border-cyan-500/30 bg-cyan-950/20",
       ...getAgentStatus("orchestrator", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
-      tagline: telemetry["orchestrator"]?.msg || "Single point of contact",
-      desc: "Understands natural language commands, dispatches specialist agents, and synthesizes action briefs.",
-      autonomy: "Advisory & Dispatcher",
-      autonomyColor: "text-cyan-400 border-cyan-800/40 bg-cyan-950/30",
+      tagline: telemetry["orchestrator"]?.msg || "Decides each debate",
+      desc: "Weighs the analysts, the Bull and Bear arguments and the risk panel, then decides whether to propose a trade.",
     },
     {
       id: "scout",
-      name: "Market Data Scout",
-      title: "Microstructure & Flow",
+      name: "Analysts",
+      title: "Market, flow and news",
       icon: Search,
       color: "text-blue-400",
       bgBorder: "border-blue-500/30 bg-blue-950/20",
       ...getAgentStatus("scout", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
-      tagline: telemetry["scout"]?.msg || "Real-time parsing of L1/L2 and funding.",
-      desc: "Connects to WebSocket feeds to monitor order book imbalances, liquidations, and funding rate divergence.",
-      autonomy: "Read-Only",
-      autonomyColor: "text-zinc-400 border-zinc-800/40 bg-zinc-900/50",
+      tagline: telemetry["scout"]?.msg || "Read the market for each debate.",
+      desc: "Summarise price action, order flow and funding for the symbol under debate.",
     },
     {
       id: "debater",
-      name: "Bull / Bear Debaters",
+      name: "Bull & Bear",
       title: "Adversarial Alpha Arena",
       icon: Sparkles,
       color: "text-purple-400",
       bgBorder: "border-purple-500/30 bg-purple-950/20",
       ...getAgentStatus("debater", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
-      tagline: telemetry["debater"]?.msg || "Multi-agent consensus mechanism.",
+      tagline: telemetry["debater"]?.msg || "Argue both sides.",
       desc: "Two specialized models argue opposite sides of every trade proposal. A manager model judges the winner.",
-      autonomy: "Read-Only",
-      autonomyColor: "text-zinc-400 border-zinc-800/40 bg-zinc-900/50",
     },
     {
       id: "cro",
-      name: "Risk Guardian (CRO)",
-      title: "Portfolio Risk & Margin",
+      name: "Risk panel",
+      title: "Portfolio risk and margin",
       icon: ShieldCheck,
       color: "text-amber-400",
       bgBorder: "border-amber-500/30 bg-amber-950/20",
       ...getAgentStatus("cro", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
-      tagline: telemetry["cro"]?.msg || "Enforces capital constraints.",
-      desc: "Hard-vetos any trade that breaches VaR limits, concentration bounds, or drawdown circuits.",
-      autonomy: "Veto Power",
-      autonomyColor: "text-amber-400 border-amber-800/40 bg-amber-950/30",
+      tagline: telemetry["cro"]?.msg || "Reviews risk for each debate.",
+      desc: "Reviews exposure, concentration and drawdown limits before a proposal reaches you.",
     },
     {
       id: "outbox",
-      name: "Execution Outbox Relay",
-      title: "Nautilus Execution Bridge",
+      name: "Execution",
+      title: "Order staging",
       icon: Zap,
       color: "text-emerald-400",
       bgBorder: "border-emerald-500/30 bg-emerald-950/20",
       ...getAgentStatus("outbox", NO_HEARTBEAT, NO_HEARTBEAT_COLOR),
-      tagline: telemetry["outbox"]?.msg || "Rust/Cython integration layer.",
-      desc: "Translates AI JSON decisions into FIX/REST orders. Manages partial fills, TWAP, and latency.",
-      autonomy: "Execution",
-      autonomyColor: "text-emerald-400 border-emerald-800/40 bg-emerald-950/30",
+      tagline: telemetry["outbox"]?.msg || "Stages approved orders.",
+      desc: "Stages approved proposals for the execution engine; the hard risk limits still apply.",
     },
   ];
-  const onlineCount = agents.filter((a) => a.status === "ONLINE").length;
+  const onlineCount = agents.filter((a) => a.status === "Working").length;
 
   return (
     <div className="flex flex-col h-full w-full min-h-0 bg-zinc-950 overflow-hidden">
@@ -136,10 +127,10 @@ export function AgentFleetRoster({
           className={`flex items-center space-x-1 px-1.5 py-0.5 rounded border text-2xs font-mono ${
             onlineCount > 0 ? "bg-emerald-950/50 border-emerald-800/50 text-emerald-400" : "bg-zinc-900 border-zinc-800 text-zinc-400"
           }`}
-          title="Agents that reported ONLINE on the heartbeat stream"
+          title="Agents working inside a debate right now"
         >
           <span className={`w-1.5 h-1.5 rounded-full ${onlineCount > 0 ? "bg-emerald-400" : "bg-zinc-500"}`} />
-          <span>{onlineCount}/{agents.length} reporting</span>
+          <span>{onlineCount}/{agents.length} working</span>
         </div>
       </div>
 
@@ -166,7 +157,7 @@ export function AgentFleetRoster({
               role="button"
               tabIndex={0}
               aria-pressed={isSelected}
-              aria-label={`Chat with ${agent.name}`}
+              aria-label={`Select ${agent.name}`}
               onKeyDown={(e) => {
                 if ((e.key === "Enter" || e.key === " ") && onSelectAgent) {
                   e.preventDefault();
@@ -205,16 +196,9 @@ export function AgentFleetRoster({
                 </span>
               </div>
 
-              <p className="text-2xs text-zinc-400 leading-relaxed mb-2">
+              <p className="text-2xs text-zinc-400 leading-relaxed">
                 {agent.desc}
               </p>
-
-              <div className="flex items-center justify-between pt-1.5 border-t border-zinc-800/60 text-2xs font-mono">
-                <span className="text-zinc-500">Permission:</span>
-                <span className={`px-1.5 py-0.2 rounded border font-semibold ${agent.autonomyColor}`}>
-                  {agent.autonomy}
-                </span>
-              </div>
             </div>
           );
         })}

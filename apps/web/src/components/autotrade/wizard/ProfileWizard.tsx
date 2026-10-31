@@ -409,7 +409,7 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
               {numberField("max_risk_per_trade_pct", "Risk per trade (%)", { min: 0.1, max: 2, step: 0.1 })}
               {numberField("daily_loss_limit_pct", "Daily loss limit (%)", { help: "Leave blank for the default: 3 × risk per trade, capped at maximum drawdown.", placeholder: "default" })}
               {numberField("max_drawdown_pct", "Maximum drawdown (%)", { min: 0.1, max: 20 })}
-              {numberField("max_position_pct", "Maximum position (% of capital)", { min: 1, max: 25, help: "One position's size cap, 1–25%." })}
+              {numberField("max_position_pct", "Maximum position (% of capital)", { min: 1, max: 25, help: "Size for A and B grade setups; C grade uses half. The AI decides whether to trade, not how much." })}
               {numberField("max_leverage", "Maximum leverage", { min: 1, max: 10, step: 1 })}
               {numberField("max_open_positions", "Maximum open positions", { min: 1, max: 20, step: 1 })}
               {numberField("max_debates_per_day", "Maximum debates per day", { min: 0, max: 48, step: 1 })}

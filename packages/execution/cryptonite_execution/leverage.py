@@ -344,7 +344,8 @@ def plan_spot_margin_order(
         max_notional = min(limits.max_notional_usd, limits.risk_budget_usd / cost)
         if max_notional <= 0:
             return refused(LeverageReject.EXPOSURE_LIMIT_REACHED)
-        margin_usd = min(margin_usd, max_notional / exposure_per_margin)
+        # Floor to cents: at the exact risk boundary, Decimal rounding can push the loss a hair over the budget
+        margin_usd = min(margin_usd, (max_notional / exposure_per_margin).quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
     sizing = size_margin_borrow("LONG" if side == "BUY" else "SHORT", margin_usd,
                                 entry_price, Decimal(leverage))

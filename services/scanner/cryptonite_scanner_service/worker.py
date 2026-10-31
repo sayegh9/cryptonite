@@ -736,6 +736,7 @@ class ScannerWorker:
                 trigger_event_id=event_id,
                 watermark_ns=bar_close_ns,
                 bar_timeframe=bar_timeframe,
+                spec_slug=spec["slug"],
             )
 
         # XACK only after database transaction has completed
@@ -834,6 +835,7 @@ class ScannerWorker:
         bar_timeframe: str | None = None,
         mandate_id: UUID | None = None,
         preset_slug: str | None = None,
+        spec_slug: str | None = None,
     ) -> UUID:
         """Core execution logic: loads 1m lake data, resamples, evaluates rules, commits run & candidates."""
         if not self.pool:
@@ -1241,6 +1243,8 @@ class ScannerWorker:
                         if mandate_id is not None:
                             candidate_payload["mandate_id"] = str(mandate_id)
                             candidate_payload["preset_slug"] = preset_slug
+                        elif spec_slug:  # K1: never `preset_slug` on a global candidate (the profile gate refuses it)
+                            candidate_payload["spec_slug"] = spec_slug
 
                         # AI Debate Engine: only a bar that just closed is worth a debate (D1 / F-H2). The
                         # outbox row commits with the candidate; the queue write happens after the commit.

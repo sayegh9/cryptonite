@@ -1,5 +1,6 @@
 """Pair-specific spot-margin sizing uses exact Decimals and refuses unsupported risk."""
 
+from decimal import ROUND_DOWN
 from decimal import Decimal as D
 
 import pytest
@@ -67,9 +68,9 @@ def test_short_shrink_to_fit_uses_short_notional_per_collateral():
         shrink_margin_to_fit=True,
     )
     assert result.ok
-    assert result.margin_usd == D("10") / D("0.104") / D("2")
+    assert result.margin_usd == (D("10") / D("0.104") / D("2")).quantize(D("0.01"), rounding=ROUND_DOWN)  # floored to cents
     assert result.notional_usd == result.margin_usd * D("2")
-    assert result.loss_at_stop_usd == D("10")
+    assert D("9.99") < result.loss_at_stop_usd <= D("10")  # the floored margin keeps the loss within budget
 
 
 def test_unlisted_pair_is_refused_without_a_breach_code():

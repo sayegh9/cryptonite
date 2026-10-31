@@ -220,7 +220,7 @@ async def test_debate_inside_an_l3_mandate_queues_its_order(debate_main, pool, m
         cmd = await pool.fetchrow("SELECT * FROM execution_commands WHERE idempotency_key = $1", f"debate:{run['id']}")
         payload = json.loads(cmd["payload"])
         assert (cmd["command_type"], cmd["requester_id"], cmd["mandate_id"]) == ("SUBMIT_ORDER", "ai:debate_worker", mid)
-        assert (payload["side"], payload["allocation_pct"]) == ("BUY", 5.0)  # the CRO's 6% capped at the mandate's 5%
+        assert (payload["side"], payload["allocation_pct"]) == ("BUY", 2.5)  # grade sizing: below B, half the mandate's 5% cap
     finally:
         await pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED' WHERE id = $1", mid)
 

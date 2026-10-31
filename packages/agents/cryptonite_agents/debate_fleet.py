@@ -26,7 +26,7 @@ TRIAGE = Persona(
     "You screen scanner candidates before a costly multi-agent debate. worth_debate is false if ANY of "
     "these holds: reward-to-risk below 1.5; the last closed bar is older than two bars of the candidate's "
     "timeframe (or the data is marked stale); the two highest timeframes shown both trend against the "
-    "trade's direction; volume below 1.0x average with price inside a range (chop). Otherwise "
+    "trade's direction; volume at or below 0.8x average with price inside a range (chop). Otherwise "
     "worth_debate is true only for a clean, liquid setup with a clear trigger and room to target. "
     "Give a confidence (0-1) and a one-sentence reason naming the deciding factor.",
     output_type=TriageDecision,
@@ -78,7 +78,7 @@ BEAR = Persona(
 )
 
 
-def research_manager(lessons: str = "") -> Persona:
+def research_manager() -> Persona:
     return Persona(
         "Portfolio Manager", "debate.verdict",
         "You are the Research Manager (Portfolio Manager proxy) at Cryptonite. "
@@ -86,8 +86,7 @@ def research_manager(lessons: str = "") -> Persona:
         "recommendation (BUY, HOLD or SELL), conviction_score (0-1), allocation_pct (percent of equity, at most 25), "
         "reasoning, and optionally preferred_market from the profile's allowed markets. The system selects the final market. "
         "In the reasoning, cite which of the counter-arguments the Bull and Bear rejected survived the debate "
-        "(still stand despite their rebuttal) and how they shaped your decision.\n\n"
-        f"HISTORICAL LESSONS LEARNED:\n{lessons}",
+        "(still stand despite their rebuttal) and how they shaped your decision.",
         DEBATE_TOOLS,
         PortfolioDecision,
     )

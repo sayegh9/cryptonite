@@ -71,18 +71,18 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDebate, symbol }: AIBra
           {step === 1 && (
             <div className="space-y-3.5 text-xs sm:text-sm text-zinc-300 leading-relaxed">
               <p>
-                Cryptonite features a fleet of specialized quantitative AI agents. Instead of switching between complex menus, the <strong className="text-cyan-400">Lead Orchestrator</strong> acts as your single point of contact.
+                Chat with the <strong className="text-cyan-400">Brain</strong> here, in plain language. The agents listed on the left run inside each debate; you do not talk to them one by one.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 my-3">
                 <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded-lg text-center">
                   <BrainCircuit className="w-5 h-5 text-cyan-400 mx-auto mb-1.5" />
-                  <div className="font-bold text-xs text-zinc-200">1. Single Prompt</div>
+                  <div className="font-bold text-xs text-zinc-200">1. Ask the Brain</div>
                   <div className="text-2xs text-zinc-400 mt-1 leading-normal">Ask questions or type commands in natural language.</div>
                 </div>
                 <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded-lg text-center">
                   <Search className="w-5 h-5 text-purple-400 mx-auto mb-1.5" />
-                  <div className="font-bold text-xs text-zinc-200">2. Auto-Dispatch</div>
-                  <div className="text-2xs text-zinc-400 mt-1 leading-normal">Specialists gather market data, debate alpha & check risk.</div>
+                  <div className="font-bold text-xs text-zinc-200">2. Debates run</div>
+                  <div className="text-2xs text-zinc-400 mt-1 leading-normal">Analysts, Bull and Bear, and the risk panel work on each setup.</div>
                 </div>
                 <div className="p-3 bg-zinc-900/70 border border-zinc-800 rounded-lg text-center">
                   <ShieldCheck className="w-5 h-5 text-emerald-400 mx-auto mb-1.5" />
@@ -107,21 +107,21 @@ export function AIBrainTourModal({ isOpen, onClose, onRunDebate, symbol }: AIBra
                 <div className="p-2.5 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-between gap-2">
                   <div className="flex items-center space-x-2 flex-none">
                     <span className="w-2 h-2 rounded-full bg-cyan-400 flex-none" />
-                    <span className="text-zinc-200 font-bold">Market Scout</span>
+                    <span className="text-zinc-200 font-bold">Analysts</span>
                   </div>
                   <span className="text-2xs text-zinc-400 truncate text-right">Pulls orderbook depth, funding & volume</span>
                 </div>
                 <div className="p-2.5 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-between gap-2">
                   <div className="flex items-center space-x-2 flex-none">
                     <span className="w-2 h-2 rounded-full bg-purple-400 flex-none" />
-                    <span className="text-zinc-200 font-bold">Bull vs. Bear Debate</span>
+                    <span className="text-zinc-200 font-bold">Bull & Bear</span>
                   </div>
                   <span className="text-2xs text-zinc-400 truncate text-right">Aggressively stress-tests trade thesis</span>
                 </div>
                 <div className="p-2.5 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-between gap-2">
                   <div className="flex items-center space-x-2 flex-none">
                     <span className="w-2 h-2 rounded-full bg-amber-400 flex-none" />
-                    <span className="text-zinc-200 font-bold">Risk Guardian (CRO)</span>
+                    <span className="text-zinc-200 font-bold">Risk panel</span>
                   </div>
                   <span className="text-2xs text-zinc-400 truncate text-right">Enforces max 25% risk & stop-loss bounds</span>
                 </div>

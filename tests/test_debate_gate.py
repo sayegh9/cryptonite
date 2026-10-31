@@ -482,8 +482,8 @@ async def test_merged_risk_panel_replaces_four_calls_with_one(main, pool, monkey
     monkeypatch.setattr(main, "RISK_PANEL_MODE", "merged")
     models = Models()
     await run(main, pool, {"instrument_id": INSTRUMENT, "trigger_source": "user_on_demand"}, models)
-    # 2 analysts (no On-Chain Analyst, R3.2) + bull/bear/bull + (no risk managers) = 5 text calls; PM + merged CRO
-    assert (models.calls["text"], models.calls["pm"], models.calls["cro"]) == (5, 1, 1)
+    # 2 analysts (no On-Chain Analyst, R3.2) + opening + rebuttal (two turns) + (no risk managers) = 4 text calls; PM + merged CRO
+    assert (models.calls["text"], models.calls["pm"], models.calls["cro"]) == (4, 1, 1)
 
 
 

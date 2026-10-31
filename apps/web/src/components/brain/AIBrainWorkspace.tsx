@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { AgentFleetRoster } from "./AgentFleetRoster";
-import { OrchestratorCanvas } from "./OrchestratorCanvas";
+import { BrainConversation } from "./BrainConversation";
 import { ActionInbox } from "./ActionInbox";
 import { AIBrainTourModal } from "./AIBrainTourModal";
 import { useDebateStore } from "@/lib/stores/useDebateStore";
@@ -226,15 +226,28 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
           </aside>
         )}
 
-        {/* Zone 2: Lead Orchestrator Canvas (Center Main Canvas) */}
+        {/* Zone 2: Brain chat (center) */}
         <main className="flex-1 flex flex-col min-h-0 min-w-0 bg-zinc-950 relative">
-          <OrchestratorCanvas
-            selectedAgentId={selectedAgentId}
-            onSelectAgent={setSelectedAgentId}
-            activeSymbol={selectedSymbol || "BTCUSDT"}
-            activeTimeframe="1m"
-            onTriggerDebate={handleTriggerLiveDebate}
-          />
+          {/* K7: only one Brain chat is ever mounted; BrainHome owns it on the Brain tab */}
+          {view === "debates" && (
+            <>
+              {selectedSymbol && (
+                <div className="flex-none flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 text-2xs font-mono text-zinc-400">
+                  <span>Symbol:</span>
+                  <button
+                    type="button"
+                    data-testid="brain-symbol-chip"
+                    onClick={() => useBrainStore.getState().setDraft(`Context: ${selectedSymbol} 1h. `)}
+                    className="px-2 py-0.5 rounded-full border border-cyan-800/60 bg-cyan-950/40 text-cyan-300 hover:bg-cyan-900/60"
+                    title="Add this symbol as context in the Brain input"
+                  >
+                    {selectedSymbol}
+                  </button>
+                </div>
+              )}
+              <BrainConversation compact />
+            </>
+          )}
         </main>
 
         {/* Zone 3: Action & Decision Inbox (Right Rail) */}
