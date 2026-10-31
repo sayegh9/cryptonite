@@ -49,6 +49,9 @@ export const setProfileMode = (id: string, mode: ExecutionMode, totp?: string) =
 
 export const stopAllProfiles = (close: boolean): Promise<StopAllResult> => write("/ai/profiles/stop-all", { close });
 export const getSummary = (id: string, init?: ReadOptions): Promise<ProfileSummary> => fetchApi(`/ai/profiles/${id}/summary`, init);
+/** Every non-archived profile's summary in one request (the list's poll). */
+export const getSummaries = (init?: ReadOptions): Promise<{ as_of: string; summaries: ProfileSummary[] }> =>
+  fetchApi("/ai/profiles/summaries", init);
 export const getDecisions = (id: string, cursor?: string, init?: ReadOptions): Promise<DecisionPage> =>
   fetchApi(`/ai/profiles/${id}/decisions?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, init);
 export const getPerformance = (id: string, range: PerformanceRange, init?: ReadOptions): Promise<ProfilePerformance> =>

@@ -75,6 +75,8 @@ interface AutoTradeState {
   setPerformanceRange(range: PerformanceRange): void;
   loadProfiles(): Promise<void>;
   loadSummary(id: string): Promise<void>;
+  /** All cards' summaries in one request; a failure keeps each card's last good summary, marked stale. */
+  loadSummaries(): Promise<void>;
   loadDetail(id: string): Promise<void>;
   loadDecisions(id: string, opts?: { append?: boolean }): Promise<void>;
   loadPerformance(id: string, range?: PerformanceRange): Promise<void>;
@@ -164,6 +166,25 @@ export const useAutoTradeStore = create<AutoTradeState>()(
           }
         },
         loadSummary: (id) => loadInto("summaryById", id, () => api.getSummary(id, init)),
+        loadSummaries: async () => {
+          try {
+            const { summaries } = await api.getSummaries(init);
+            const now = Date.now();
+            set((s) => ({
+              summaryById: {
+                ...s.summaryById,
+                ...Object.fromEntries(summaries.map((data) => [data.profile_id, { data, status: "ready" as const, error: null, updatedAt: now }])),
+              },
+            }));
+          } catch (err) {
+            const error = api.toApiError(err);
+            set((s) => ({
+              summaryById: Object.fromEntries(
+                s.profiles.map((p) => [p.id, { ...(s.summaryById[p.id] ?? idle<ProfileSummary>()), status: "error" as const, error }]),
+              ),
+            }));
+          }
+        },
         loadDetail: (id) => loadInto("detailById", id, () => api.getProfile(id, init)),
         loadPerformance: (id, range) => loadInto("performanceById", id, () => api.getPerformance(id, range ?? get().performanceRange, init)),
 
