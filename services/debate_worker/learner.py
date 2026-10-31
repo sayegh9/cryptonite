@@ -14,9 +14,9 @@ from pathlib import Path
 
 import asyncpg
 import redis.asyncio as redis
+from candidate_outcomes import label_candidates
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_storage.queries import AnalyticsQueryEngine
-from candidate_outcomes import label_candidates
 from outcomes import label_pending
 from reflection import ReflectionEngine
 
