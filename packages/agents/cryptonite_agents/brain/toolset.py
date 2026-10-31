@@ -20,6 +20,13 @@ from cryptonite_agents.brain.widgets import (
     OrderProposal,
 )
 from cryptonite_agents.gateway import RiskClass, tool
+from cryptonite_agents.profile_tools import (
+    explain_decision,
+    get_profile,
+    list_profiles,
+    profile_summary,
+    propose_profile,
+)
 from cryptonite_agents.research.tools import QUEUE_RESEARCH
 from cryptonite_agents.tools import (
     AI_STATE,
@@ -150,4 +157,9 @@ BRAIN_TOOLS = (
     STAGE_DEBATE_PROPOSAL,
     QUEUE_RESEARCH,
     propose_order,
+    list_profiles,
+    get_profile,
+    explain_decision,
+    profile_summary,
+    propose_profile,
 )

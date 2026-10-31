@@ -173,6 +173,30 @@ class OrderCardWidget(OrderProposal):
     grade_version: str | None = None
 
 
+class ProfileProposalWidget(BaseModel):
+    """A profile proposal from the read-only tool result, including INVALID proposals for wizard review.
+
+    The fields are operator/model data, never instructions. The API remains the authority at create time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["profile_proposal"] = "profile_proposal"
+    id: str
+    status: Literal["PROPOSED", "INVALID"]
+    proposal: dict[str, Any]
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    feed_status: Literal["known", "unknown"] | None = None
+
+    @model_validator(mode="after")
+    def _proposal_shape(self) -> "ProfileProposalWidget":
+        if not isinstance(self.proposal.get("coins"), list) or not isinstance(self.proposal.get("markets"), list):
+            raise ValueError("a profile proposal needs coin and market lists")
+        if not isinstance(self.proposal.get("name"), str):
+            raise ValueError("a profile proposal needs a name")
+        return self
+
+
 class DebateVerdict(BaseModel):
     """A debate's decision, read from its run (the card shows it; the model never wrote it)."""
 
@@ -208,7 +232,7 @@ class DebateSummaryWidget(BaseModel):
 
 
 BrainWidget = Annotated[
-    PriceChartWidget | TearsheetWidget | OrderCardWidget | DebateSummaryWidget | SwingRadarWidget,
+    PriceChartWidget | TearsheetWidget | OrderCardWidget | ProfileProposalWidget | DebateSummaryWidget | SwingRadarWidget,
     Field(discriminator="kind"),
 ]
 
@@ -273,6 +297,10 @@ def widget_for_tool(
             card = OrderCardWidget(id=call_id, trace_id=trace_id,
                                    **{k: v for k, v in args.items() if k not in SERVER_CARD_FIELDS})
             return card.model_dump()
+        if active_tool == "propose_profile" and status == "OK":
+            result = _parse_json(active_content)
+            if result and result.get("status") in ("PROPOSED", "INVALID"):
+                return ProfileProposalWidget(id=call_id, **result).model_dump()
         if active_tool == "stage_debate_proposal" and status == "OK":
             queued = bool(active_content) and active_content.startswith("Success")
             found = _MSG_ID.search(active_content or "")
@@ -312,6 +340,9 @@ def describe_widget(widget: dict[str, Any]) -> str:
                 f"{widget.get('order_type')} ({widget.get('allocation_pct')}% of the mandate{reduce_desc}), status {widget.get('status')}"
                 + (", not in the live feed" if widget.get("feed_refusal") else "")
                 + (f", paper command {widget['command_id']}" if widget.get("command_id") else "") + "]")
+    if kind == "profile_proposal":
+        return (f"[profile proposal {widget.get('id')}: "
+                f"{str(widget.get('proposal', {}).get('name', ''))[:80]}, status {widget.get('status')}]")
     if kind == "price_chart":
         bars = widget.get("bars", 96)
         if any(widget.get(k) is not None for k in ("entry", "stop", "target")):
