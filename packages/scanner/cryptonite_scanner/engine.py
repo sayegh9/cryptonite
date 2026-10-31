@@ -32,6 +32,7 @@ from cryptonite_scanner.models import (
 )
 
 logger = logging.getLogger("cryptonite.scanner.engine")
+_PRECISION_REPORTED: set[str] = set()  # instruments already reported as missing price precision
 
 
 class ScannerEngine:
@@ -81,11 +82,16 @@ class ScannerEngine:
     ) -> list[SignalCandidateRead]:
         """Evaluate rule groups against the DataFrame and produce SignalCandidate records."""
         if price_precision is None or not isinstance(price_precision, int) or price_precision < 0:
-            logger.error(
-                "Missing or invalid price_precision for instrument %s (value=%s). Failing closed.",
-                instrument_id,
-                price_precision,
-            )
+            # Fails closed every time; reported once per instrument and process (a preset universe coin that is not
+            # registered would otherwise log an error for every spec and timeframe of every scan)
+            if instrument_id not in _PRECISION_REPORTED:
+                _PRECISION_REPORTED.add(instrument_id)
+                logger.warning(
+                    "Missing or invalid price_precision for instrument %s (value=%s): no candidates until it is "
+                    "registered. Failing closed.",
+                    instrument_id,
+                    price_precision,
+                )
             return []
 
         if df.is_empty():
