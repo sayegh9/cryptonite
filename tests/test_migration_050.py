@@ -274,12 +274,13 @@ def test_cascade_deletes_locks_and_decisions(db049):
 ])
 def test_downgrade_refusals_then_round_trip(head_per_case, cols, needle):
     url = head_per_case
+    head = _val(url, "SELECT version_num FROM alembic_version")
     _insert(url, name="keeper", instruments=["ETHUSDT.BINANCE"], markets=["SPOT"], daily_loss_limit_pct=3)
     bad = _insert(url, name="blocker", instruments=["BTCUSDT.BINANCE"], **{"markets": ["SPOT"], "daily_loss_limit_pct": 3, **cols})
     down = _alembic(url, "downgrade", "049", check=False)
     assert down.returncode != 0 and "migration 050 downgrade refused" in _out(down) and "blocker" in _out(down)
     assert needle in _out(down)
-    assert _val(url, "SELECT version_num FROM alembic_version") == "052"  # the failed downgrade is atomic
+    assert _val(url, "SELECT version_num FROM alembic_version") == head  # the failed downgrade is atomic
     _run(url, "DELETE FROM ai_mandates WHERE id = $1", bad)
     _alembic(url, "downgrade", "049")
     assert _val(url, "SELECT version_num FROM alembic_version") == "049"

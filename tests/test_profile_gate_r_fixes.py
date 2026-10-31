@@ -254,7 +254,7 @@ async def test_switch_off_stopless_spot_buy_is_refused_before_approval(h, routin
     assert status == "NO_TRADE" and got.id == m.id
     assert await h.pool.fetchval(
         "SELECT reason FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run_id,
-    ) == "STOP_REQUIRED"
+    ) == "NO_STRUCTURE"  # P3 D-P3-7
     assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals WHERE mandate_id=$1", m.id) == 0
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE mandate_id=$1", m.id) == 0
 
