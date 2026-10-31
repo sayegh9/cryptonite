@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect } from "react";
 import { AgentFleetRoster } from "./AgentFleetRoster";
-import { BrainConversation } from "./BrainConversation";
 import { ActionInbox } from "./ActionInbox";
 import { AIBrainTourModal } from "./AIBrainTourModal";
 import { useDebateStore } from "@/lib/stores/useDebateStore";
@@ -245,7 +244,10 @@ export function AIBrainWorkspace({ selectedSymbol, isActive = false }: AIBrainWo
                   </button>
                 </div>
               )}
-              <BrainConversation compact />
+              {/* F2: History, New and Recent/Archived here too; the Brain tab's BrainHome is unmounted meanwhile */}
+              <div className="flex-1 min-h-0 min-w-0 flex">
+                <BrainHome active={isActive} />
+              </div>
             </>
           )}
         </main>

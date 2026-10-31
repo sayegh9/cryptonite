@@ -362,6 +362,22 @@ async def brain_session_update(operator_id: str, session_id: str, request: Reque
     return {"session": session}
 
 
+@app.delete("/api/v1/brain/operators/{operator_id}/sessions/{session_id}")
+async def brain_session_delete(operator_id: str, session_id: str, request: Request):
+    """Delete one of the operator's conversations for good (its messages and summaries go too)."""
+    if not await request.app.state.brain.store.delete_session(session_id, operator_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"deleted": 1}
+
+
+@app.delete("/api/v1/brain/operators/{operator_id}/sessions")
+async def brain_sessions_delete(operator_id: str, request: Request, archived: bool = False):
+    """Delete every archived conversation of the operator (``archived=true`` is required)."""
+    if not archived:
+        raise HTTPException(status_code=422, detail="Only archived conversations can be deleted in bulk")
+    return {"deleted": await request.app.state.brain.store.delete_archived(operator_id)}
+
+
 @app.get("/api/v1/brain/operators/{operator_id}/sessions/{session_id}")
 async def brain_session(operator_id: str, session_id: str, request: Request):
     store = request.app.state.brain.store

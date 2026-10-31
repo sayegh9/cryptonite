@@ -733,7 +733,10 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
             "type": "DEBATE_COMPLETED",
             "run_id": str(run_id),
             "instrument_id": instrument_id,
-            "decision": decision
+            "decision": decision,
+            # the run's written status (the row lock above guarantees the UPDATE landed): a CRO veto turns the
+            # PM's decision into NO_TRADE, so the web must not derive the status from ``decision``
+            "status": final_status,
         }))
 
     except Exception as e:

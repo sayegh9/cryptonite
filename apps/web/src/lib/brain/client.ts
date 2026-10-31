@@ -144,6 +144,27 @@ export async function updateBrainSession(
   return body.session as BrainSessionSummary;
 }
 
+async function deleteBrain(path: string): Promise<number> {
+  const res = await fetch(path, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "X-CSRF-Token": csrf() },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new BrainHistoryError(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`, res.status);
+  return typeof body.deleted === "number" ? body.deleted : 0;
+}
+
+/** Delete a conversation for good, with its messages */
+export async function deleteBrainSession(sessionId: string): Promise<void> {
+  await deleteBrain(`/agent-api/brain/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+/** Delete every archived conversation for good; resolves to how many went */
+export async function deleteArchivedBrainSessions(): Promise<number> {
+  return deleteBrain("/agent-api/brain/sessions?archived=true");
+}
+
 /** What an approved card's order did. The server also records a change in the conversation, so the Brain knows. */
 export async function fetchCardOutcome(sessionId: string, widgetId: string, signal?: AbortSignal): Promise<CardOutcome> {
   const res = await fetch(

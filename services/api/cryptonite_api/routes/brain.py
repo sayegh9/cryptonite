@@ -64,6 +64,7 @@ from cryptonite_execution.mandate_store import (
     resolve_mandate_for,
 )
 from cryptonite_execution.profile_lifecycle import coin_lock_conflict
+from cryptonite_execution.sizing import grade_size_pct
 from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
     MAX_POSITION_PCT_CAP,
@@ -169,12 +170,13 @@ async def brain_stream(req: BrainAskRequest, request: Request, auth: dict = Depe
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-async def _worker_send(method: str, path: str, body: dict[str, Any]) -> Any:
-    """A signed JSON call to the worker for a body-carrying request (the signature covers the body)."""
+async def _worker_send(method: str, path: str, body: dict[str, Any], params: dict[str, str] | None = None) -> Any:
+    """A signed JSON call to the worker for a body-carrying request (the signature covers the path and body, not
+    ``params``)."""
     raw = json.dumps(body).encode()
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.request(method, f"{AGENT_WORKER_URL}{path}", content=raw,
+            resp = await client.request(method, f"{AGENT_WORKER_URL}{path}", content=raw, params=params,
                                         headers=_signed(method, path, raw))
     except httpx.HTTPError as e:
         logger.error("Brain worker unreachable (%s): %s", path, e)
@@ -213,6 +215,21 @@ async def brain_session_patch(sid: uuid.UUID, req: BrainSessionPatch, auth: dict
         raise HTTPException(status_code=422, detail="Nothing to change")
     body = {k: v for k, v in {"title": req.title, "archived": req.archived}.items() if v is not None}
     return await _worker_send("PATCH", f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}", body)
+
+
+@router.delete("/sessions/{sid}", dependencies=OPERATOR_WRITE)
+async def brain_session_delete(sid: uuid.UUID, auth: dict = Depends(require_human_operator)):
+    """Delete a conversation for good, with its messages and summaries."""
+    return await _worker_send("DELETE", f"/api/v1/brain/operators/{operator_id(auth)}/sessions/{sid}", {})
+
+
+@router.delete("/sessions", dependencies=OPERATOR_WRITE)
+async def brain_sessions_delete_archived(archived: bool = False, auth: dict = Depends(require_human_operator)):
+    """Delete every archived conversation for good; returns ``{deleted: n}``."""
+    if not archived:
+        raise HTTPException(status_code=422, detail="Only archived conversations can be deleted in bulk")
+    return await _worker_send("DELETE", f"/api/v1/brain/operators/{operator_id(auth)}/sessions", {},
+                              params={"archived": "true"})
 
 
 async def sync_session_cards(request: Request, op: str, sid: uuid.UUID, session: dict[str, Any] | None = None) -> int:
@@ -620,7 +637,10 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
             raise HTTPException(status_code=409, detail=(
                 f"MANDATE_POSITION_LIMIT_REACHED: mandate {mandate.name} already holds its limit of "
                 f"{mandate.max_position_pct}% in {card['instrument_id']}; nothing was queued"))
-        allocation = min(allocation, room.quantize(Decimal("0.01")))
+        # O2: an entry is sized by its setup grade as a debate entry is (A or B the profile's full max position, C,
+        # NO_TRADE or unknown half), never the model's allocation; a NO_TRADE card stays approvable (the card warns)
+        allocation = Decimal(str(grade_size_pct(card.get("setup_grade"), mandate.max_position_pct,
+                                                room.quantize(Decimal("0.01")))))
     if perp_entry:
         redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
         plan = await card_leverage_plan(pool, redis, mandate, card, requested_leverage=leverage)
@@ -870,7 +890,9 @@ async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request,
         remedy = await _card_remedy(request, card, code, mandate_id)
         return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate, "remedy": remedy,
                 "leverage_plan": getattr(e, "leverage_plan", None), "needs_totp": is_perp_entry(card)}
-    requested = Decimal(str(card["allocation_pct"]))
+    # An entry asks its grade size (O2); what the room left cut it from is that, not the model's allocation
+    max_pct = plan.mandate.max_position_pct
+    requested = Decimal(str(grade_size_pct(card.get("setup_grade"), max_pct, max_pct)))
     if plan.leverage_plan is not None:
         lp = plan.leverage_plan
         asked = leverage if leverage is not None else card.get("leverage")

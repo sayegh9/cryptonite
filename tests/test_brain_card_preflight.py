@@ -263,7 +263,11 @@ async def test_a_sell_with_two_stopped_holders_is_ambiguous(h, worker):
 
 # --- Cards that would queue: preflight says the size and the summary approve then uses -----------------------------
 
-async def test_a_buy_that_would_size_is_ok_and_approve_queues_that_size(h, worker):
+@pytest.mark.parametrize("grade, pct, usd", [("B", "25.0", "2,500"), ("NO_TRADE", "12.5", "1,250"), (None, "12.5", "1,250")])
+async def test_a_buy_that_would_size_is_ok_and_approve_queues_that_size(h, worker, grade, pct, usd):
+    """O2: the card is sized by its setup grade (A/B the mandate's full 25%, C, NO_TRADE or none half), not the
+    model's 5%; a NO_TRADE card stays approvable."""
+    worker.card["setup_grade"] = grade
     name = f"core-{uuid.uuid4().hex[:6]}"
     m = await h.mandate(instruments=(BTC,), name=name)
     sid = uuid.uuid4()
@@ -272,8 +276,8 @@ async def test_a_buy_that_would_size_is_ok_and_approve_queues_that_size(h, worke
     assert pre.status_code == 200, pre.text
     body = pre.json()
     assert body == {"ok": True, "mandate": {"id": str(m.id), "name": name, "status": "ACTIVE"}, "side": "BUY",
-                    "allocation_pct": 5.0, "budget_usd": 500.0, "clipped_from_pct": None, "sell_quantity": None,
-                    "summary": f"BUY BTCUSDT.BINANCE MARKET at 5.0% of mandate {name} ($500)"}
+                    "allocation_pct": float(pct), "budget_usd": float(usd.replace(",", "")), "clipped_from_pct": None,
+                    "sell_quantity": None, "summary": f"BUY BTCUSDT.BINANCE MARKET at {pct}% of mandate {name} (${usd})"}
     assert await snapshot(h.pool) == before and worker.notes == [] and worker.card["status"] == "PENDING_APPROVAL"
 
     res = await approve(h, sid)
@@ -303,12 +307,12 @@ async def test_the_approve_notes_name_an_order_card_when_the_stored_instrument_p
 async def test_a_buy_clipped_to_the_room_left_says_so_and_approve_queues_the_clip(h, worker):
     name = f"core-{uuid.uuid4().hex[:6]}"
     m = await h.mandate(instruments=(BTC,), name=name)
-    await hold_position(h.pool, m.instance_id, 0.046)  # $2,300 of the $2,500 limit: 2% left, the card asks 5%
+    await hold_position(h.pool, m.instance_id, 0.046)  # $2,300 of the $2,500 limit: 2% left, the grade asks 12.5%
     sid = uuid.uuid4()
     body = (await ask(h, sid)).json()
-    assert body["ok"] is True and body["allocation_pct"] == 2.0 and body["clipped_from_pct"] == 5.0
+    assert body["ok"] is True and body["allocation_pct"] == 2.0 and body["clipped_from_pct"] == 12.5
     assert body["budget_usd"] == 200.0
-    assert body["summary"] == f"BUY BTCUSDT.BINANCE MARKET at 2.00% of mandate {name} ($200)"
+    assert body["summary"] == f"BUY BTCUSDT.BINANCE MARKET at 2.0% of mandate {name} ($200)"
 
     res = await approve(h, sid)
     assert res.status_code == 200, res.text
@@ -444,7 +448,7 @@ async def test_a_full_position_under_a_low_limit_offers_the_raised_limit_and_the
     assert detail["source"] == source and Decimal(detail["changes"]["max_position_pct"][1]) == 15
 
     pre = (await ask(h, sid)).json()
-    assert pre["ok"] is True and pre["allocation_pct"] == 5.0 and pre["clipped_from_pct"] is None
+    assert pre["ok"] is True and pre["allocation_pct"] == 5.0 and pre["clipped_from_pct"] == 7.5  # O2: no grade asks half the 15% cap; the room left is 5%
     res = await approve(h, sid)
     assert res.status_code == 200, res.text
     [cmd] = await h.pool.fetch("SELECT payload FROM execution_commands")
