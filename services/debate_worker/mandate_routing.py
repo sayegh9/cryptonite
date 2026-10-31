@@ -335,6 +335,24 @@ def perp_setup_grade(side: str, entry: float, stop: float, target: float, contex
                                    funding_rate_8h=funding_rate_8h, **kw)).as_dict()
 
 
+GRADE_SIZE_FACTOR = {"A": 1.0, "B": 1.0, "C": 0.5}
+UNKNOWN_GRADE_FACTOR = 0.5
+
+
+def grade_size_pct(grade: str | None, max_position_pct: float, room: float) -> float:
+    """The entry size, in percent of the mandate: the profile's max position scaled by the setup grade (A or B full, C
+    half, an unknown grade half), never more than the room left. The model's allocation does not size an entry."""
+    return round(min(float(max_position_pct) * GRADE_SIZE_FACTOR.get(str(grade), UNKNOWN_GRADE_FACTOR), float(room)), 2)
+
+
+def _entry_grade(side: str, entry: Any, stop: Any, target: Any, context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``perp_setup_grade`` without funding, or None when the levels are missing (the grade is unknown)."""
+    e, s_, t = _num(entry), _num(stop), _num(target)
+    if not (e and s_ and t):
+        return None
+    return perp_setup_grade(side, e, s_, t, context, None)
+
+
 async def _no_trade(conn, run_id: uuid.UUID, instrument_id: str, mandate: Mandate, reason: str) -> tuple[str, Mandate]:
     logger.info("Debate %s entry on %s refused by mandate %s: %s", run_id, instrument_id, mandate.name, reason)
     await record_decision(conn, mandate.id, "ROUTE", "NO_TRADE", reason.split(":", 1)[0],
@@ -396,7 +414,7 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
     room = await entry_room_pct(conn, mandate, instrument, marks)
     if room < MIN_MANDATE_ENTRY_PCT:
         return await _no_trade(conn, run_id, instrument, mandate, "MANDATE_POSITION_LIMIT_REACHED")
-    alloc = round(min(float(allocation_pct), float(mandate.max_position_pct), float(room)), 2)
+    alloc = grade_size_pct(grade["grade"], mandate.max_position_pct, room)
     # The Brain card's dry run, with the orchestrator's sizing (a margin too large for 1x is cut, not refused)
     from cryptonite_api.leverage_card import card_leverage_plan
 
@@ -410,13 +428,13 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
     # ``leverage``: the dry run's (code, never the model's), the ceiling the operator approved. The orchestrator sizes
     # again at execution with plan_leveraged_order, which clamps a requested leverage to what its ceilings allow now,
     # so the executed leverage is at most this one even when the price moved toward the stop meanwhile
-    payload = {**base, "allocation_pct": alloc, "stop_loss": stop, "margin_mode": "ISOLATED", "leverage": plan.leverage,
-               "setup_grade": grade["grade"], "grade_reasons": grade["reasons"][:12], "grade": grade,
+    payload = {**base, "allocation_pct": alloc, "ai_allocation_pct": float(allocation_pct), "stop_loss": stop,
+               "margin_mode": "ISOLATED", "leverage": plan.leverage, "setup_grade": grade["grade"], "grade_reasons": grade["reasons"][:12], "grade": grade,
                "perp_side": "LONG" if long else "SHORT", "perp_plan": plan.as_dict()}
     loss_pct = f" ({float(plan.loss_at_stop_pct):.2f}% of budget)" if plan.loss_at_stop_pct is not None else ""
     liq = f"{float(plan.liquidation_price):,.2f}" if plan.liquidation_price is not None else "none"
     summary = (f"{payload['perp_side']} {instrument} MARKET ISOLATED, dry run {plan.leverage}x ({plan.binding_ceiling}), "
-               f"margin {alloc:g}% of mandate (${float(plan.margin_usd):,.0f}) · grade {grade['grade']} · stop {stop:g} · "
+               f"margin {alloc:g}% of mandate (${float(plan.margin_usd):,.0f}) · grade {grade['grade']} · size {alloc:g}% · stop {stop:g} · "
                f"target {target:g} · loss at stop ${float(plan.loss_at_stop_usd):,.2f}{loss_pct} · liq {liq} · "
                f"conviction {conviction:.2f}")
     return ActionClass.ADD_RISK, payload, summary
@@ -427,6 +445,7 @@ async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrume
                              now: datetime.datetime, marks: dict[str, LiveMark] | None,
                              stop_loss: float | None, take_profit: float | None,
                              reference_price: float | None,
+                             grade_context: dict[str, Any] | None = None,
                              structure_reason: str | None = None) -> tuple[ActionClass, dict[str, Any], str] | tuple[str, Mandate]:
     """Create a fail-closed margin plan for the approval payload using the runtime pair settings."""
     long = side == "BUY"
@@ -451,9 +470,13 @@ async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrume
     if reason := await entry_filter_reason(conn, mandate, conviction, now=now, reference_price=float(entry),
                                            stop_loss=float(stop), take_profit=float(target), side=side):
         return await _no_trade(conn, run_id, instrument, mandate, reason)
+    grade = perp_setup_grade(side, float(entry), float(stop), float(target), grade_context, None)
+    if grade["grade"] == "NO_TRADE":
+        return await _no_trade(conn, run_id, instrument, mandate, f"setup grade NO_TRADE: {'; '.join(grade['reasons'])}")
     room_pct = await entry_room_pct(conn, mandate, instrument, marks)
     if room_pct < MIN_MANDATE_ENTRY_PCT:
         return await _no_trade(conn, run_id, instrument, mandate, "MANDATE_POSITION_LIMIT_REACHED")
+    sized_pct = grade_size_pct(grade["grade"], mandate.max_position_pct, room_pct)
     settings_rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key LIKE 'margin.%'")
     settings, problems = read_margin_settings({r["key"]: r["value"] for r in settings_rows},
                                               default_margin_settings())
@@ -464,7 +487,7 @@ async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrume
         return await _no_trade(conn, run_id, instrument, mandate, "NON_POSITIVE_EQUITY")
     equity = Decimal(str(equity_raw))
     budget = mandate.capital_budget_usd
-    requested_margin = budget * Decimal(str(allocation_pct)) / Decimal("100")
+    requested_margin = budget * Decimal(str(sized_pct)) / Decimal("100")
     max_notional = min(budget * room_pct / Decimal("100"), equity * ACCOUNT_EXPOSURE_CAP)
     limits = LeverageLimits(
         risk_budget_usd=budget * mandate.max_risk_per_trade_pct / Decimal("100"),
@@ -495,12 +518,13 @@ async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrume
         "borrow_asset": asset, "borrow_amount": str(borrowed), "interest_per_hour": str(interest_per_hour),
     }
     payload = {
-        **base, "allocation_pct": float(margin_pct), "stop_loss": float(stop), "take_profit": float(target),
+        **base, "allocation_pct": float(margin_pct), "ai_allocation_pct": float(allocation_pct),
+        "setup_grade": grade["grade"], "stop_loss": float(stop), "take_profit": float(target),
         "margin_mode": "ISOLATED", "leverage": plan.leverage, "margin_plan": plan_payload,
         "margin": margin_fields,
     }
     summary = (f"{margin_fields['side']} {instrument} MARKET ISOLATED, dry run {plan.leverage}x, "
-               f"margin {margin_pct}% of mandate (${plan.margin_usd:,.2f}) · stop {stop} · target {target} · "
+               f"margin {margin_pct}% of mandate (${plan.margin_usd:,.2f}) · grade {grade['grade']} · size {margin_pct}% · stop {stop} · target {target} · "
                f"loss at stop ${plan.loss_at_stop_usd:,.2f} · liq {plan.liquidation_price} · "
                f"borrow {borrowed} {asset} · interest/hour {interest_per_hour} · conviction {conviction:.2f}")
     return ActionClass.ADD_RISK, payload, summary
@@ -591,7 +615,7 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         routed = await _route_spot_margin(
             conn, run_id, mandate, instrument, side, base, conviction, allocation_pct, now=now,
             marks=marks, stop_loss=stop_loss, take_profit=take_profit, reference_price=reference_price,
-            structure_reason=structure_reason,
+            grade_context=grade_context, structure_reason=structure_reason,
         )
         if len(routed) == 2:
             return routed
@@ -603,10 +627,15 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         room = await entry_room_pct(conn, mandate, instrument, marks)
         if room < MIN_MANDATE_ENTRY_PCT:
             return await _no_trade(conn, run_id, instrument, mandate, "MANDATE_POSITION_LIMIT_REACHED")
-        alloc = round(min(float(allocation_pct), float(mandate.max_position_pct), float(room)), 2)
-        payload = {**base, "allocation_pct": alloc}
+        grade = _entry_grade(side, reference_price, stop_loss, take_profit, grade_context)
+        if grade is not None and grade["grade"] == "NO_TRADE":
+            return await _no_trade(conn, run_id, instrument, mandate, f"setup grade NO_TRADE: {'; '.join(grade['reasons'])}")
+        grade_name = grade["grade"] if grade else "UNKNOWN"
+        alloc = grade_size_pct(grade_name, mandate.max_position_pct, room)
+        payload = {**base, "allocation_pct": alloc, "ai_allocation_pct": float(allocation_pct), "setup_grade": grade_name}
         summary = (f"BUY {base['instrument_id']} {alloc:g}% of mandate "
-                   f"(${float(mandate.capital_budget_usd) * alloc / 100:,.0f}) · conviction {conviction:.2f}")
+                   f"(${float(mandate.capital_budget_usd) * alloc / 100:,.0f}) · grade {grade_name} · size {alloc:g}% "
+                   f"· conviction {conviction:.2f}")
         if mandate.min_rr is not None and not (stop_loss and take_profit):
             payload["filters_skipped"] = [MIN_RR_SKIPPED]
             summary += f" · {MIN_RR_SKIPPED}"

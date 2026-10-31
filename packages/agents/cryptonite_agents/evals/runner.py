@@ -56,7 +56,7 @@ PERSONAS: dict[str, Persona] = {
     "research": RESEARCH,
     "explainer": EXPLAINER,
     "hunter": OPPORTUNITY_HUNTER,
-    "pm": research_manager("No previous lessons yet."),
+    "pm": research_manager(),
     "cro": CHIEF_RISK_OFFICER,
     "exit": EXIT_MANAGER,
     "triage": TRIAGE,
