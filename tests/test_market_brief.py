@@ -45,3 +45,42 @@ def test_brief_is_deterministic_and_tolerates_empty_frames():
     frames = {"1h": frame(), "4h": pl.DataFrame()}
     assert build_brief("X", frames, now=now) == build_brief("X", frames, now=now)
     assert "4h" not in build_brief("X", frames, now=now)
+
+
+def test_candidate_direction_from_preset_side_then_stop_side():
+    from cryptonite_scanner.brief import candidate_direction as d
+
+    assert d({"preset_slug": "trend-pullback-short", "suggested_entry": "10", "suggested_stop": "9"}) == "SHORT"
+    assert d({"spec_slug": "trend-pullback", "suggested_entry": "10", "suggested_stop": "11"}) == "LONG"
+    assert d({"suggested_entry": "10", "suggested_stop": "11"}) == "SHORT"
+    assert d({"suggested_entry": "10", "suggested_stop": "9"}) == "LONG"
+    assert d({"suggested_entry": "10"}) is None and d(None) is None
+
+
+def test_brief_has_direction_grade_and_replay_line():
+    from cryptonite_scanner.brief import brief_data
+
+    cand = {"timeframe": "1h", "spec_slug": "rsi-oversold-reversal", "suggested_entry": "149.8",
+            "suggested_stop": "148.8", "suggested_target": "152.8", "matched_rules": []}
+    frames = {"1h": frame(), "4h": frame()}
+    data = brief_data("BTCUSDT.BINANCE", frames, candidate=cand)
+    assert data["direction"] == "LONG" and data["setup_grade"]["grade"] in ("B", "C", "NO_TRADE")
+    assert len(data["setup_grade"]["reasons"]) <= 4
+    assert data["replay"]["preset"] == "rsi-oversold-reversal" and data["replay"]["trades"] > 0
+    line = next(x for x in build_brief("BTCUSDT.BINANCE", frames, candidate=cand).splitlines() if x.startswith("Direction:"))
+    assert "Setup grade:" in line and "Replay (rsi-oversold-reversal on BTCUSDT):" in line and "R" in line
+    assert "Direction:" not in build_brief("BTCUSDT.BINANCE", frames)  # no candidate, no line
+
+
+def test_timeframes_against_follows_the_direction():
+    from cryptonite_scanner.brief import hard_rejects
+
+    def data(direction, trend):
+        return {"direction": direction, "candidate": {}, "timeframes": [
+            {"timeframe": "1h", "trend": trend}, {"timeframe": "4h", "trend": trend}]}
+
+    assert hard_rejects(data("LONG", "down")) == ["TIMEFRAMES_AGAINST"]
+    assert hard_rejects(data(None, "down")) == ["TIMEFRAMES_AGAINST"]
+    assert hard_rejects(data("LONG", "up")) == []
+    assert hard_rejects(data("SHORT", "up")) == ["TIMEFRAMES_AGAINST"]
+    assert hard_rejects(data("SHORT", "down")) == []

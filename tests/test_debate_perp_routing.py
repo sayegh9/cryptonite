@@ -87,15 +87,15 @@ async def h(db_url, monkeypatch):
         await close_harness(harness)
 
 
-async def perp_mandate(h, *, level: int = 1, max_leverage: int = 3, name: str | None = None):
+async def perp_mandate(h, *, level: int = 1, max_leverage: int = 3, name: str | None = None, max_position_pct: float = 25):
     from cryptonite_execution.mandate_store import load_mandate
     from cryptonite_orchestrator.mandate_gate import ensure_mandate_instance
 
     mid = await h.pool.fetchval(
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level, status,
                allow_perps, max_leverage, direction)
-           VALUES ($1, 10000, ARRAY[$2], 25, $3, 'ACTIVE', true, $4, 'BOTH') RETURNING id""",
-        name or f"Brain {PERP} {uuid.uuid4().hex[:4]}", PERP, level, max_leverage)
+           VALUES ($1, 10000, ARRAY[$2], $5, $3, 'ACTIVE', true, $4, 'BOTH') RETURNING id""",
+        name or f"Brain {PERP} {uuid.uuid4().hex[:4]}", PERP, level, max_leverage, max_position_pct)
     async with h.pool.acquire() as conn:
         m = await load_mandate(conn, mid)
         await ensure_mandate_instance(conn, m, "PAPER-ACCOUNT-001")
@@ -210,17 +210,19 @@ async def test_the_routing_matrix(h, routing, recommendation, held, expected):
 
 
 async def test_the_entry_payload_and_summary_carry_the_dry_run(h, routing):
-    m = await perp_mandate(h)
+    m = await perp_mandate(h, max_position_pct=2.5)
     status, _, run_id = await route(h, routing)
     p = (await approval_of(h, run_id))["payload"]
     plan = p["perp_plan"]
-    # $250 margin; the mandate's 3x binds (grade B allows 5x: liquidity is unknown here, a weak input)
-    assert (plan["leverage"], plan["binding_ceiling"], p["setup_grade"]) == (3, "mandate maximum", "B")
+    # $250 margin = the whole 2.5% room (grade B sizes at the max position), so the exposure ceiling binds at 1x
+    assert (plan["leverage"], plan["binding_ceiling"], p["setup_grade"]) == (1, "exposure", "B")
     assert "liquidity unknown" in p["grade_reasons"]
-    assert D(plan["liquidation_price"]) < D("57000") and D(plan["loss_at_stop_usd"]) > 0
-    assert p["allocation_pct"] == 2.5 and p["mandate_id"] == str(m.id)
+    assert D(plan["loss_at_stop_usd"]) > 0
+    assert p["allocation_pct"] <= 2.5 and p["mandate_id"] == str(m.id)
+    assert p["ai_allocation_pct"] == 2.5
     summary = (await approval_of(h, run_id))["summary"]
-    assert summary.startswith(f"LONG {PERP} MARKET ISOLATED, dry run 3x (mandate maximum)")
+    assert "grade B · size 2.41%" in summary
+    assert summary.startswith(f"LONG {PERP} MARKET ISOLATED, dry run 1x (exposure)")
     assert "grade B" in summary and "loss at stop $" in summary and "% of budget" in summary
     # the Action notification the notifier sends to Telegram
     assert await h.pool.fetchval("SELECT count(*) FROM notifications_outbox WHERE kind = 'APPROVAL'") == 1
@@ -642,10 +644,11 @@ async def test_l3_still_queues_an_entry_without_an_approval(h, routing):
 
 async def test_executed_leverage_is_at_most_the_approved_one_when_the_price_moves_toward_the_stop(h, routing):
     m = await perp_mandate(h, max_leverage=10)
-    _, _, run_id = await route(h, routing, allocation=8.0)  # a large margin: the risk at the stop binds the dry run
-    payload = (await approval_of(h, run_id))["payload"]
+    _, _, run_id = await route(h, routing)
+    # a debate entry is sized at the max position, which leaves the exposure ceiling at 1x; pin an 8% margin and a 2x
+    # approval by hand so the orchestrator's clamp (risk at the stop, 2x at 60,000, higher at 58,500) is what is tested
+    payload = {**(await approval_of(h, run_id))["payload"], "allocation_pct": 8.0, "leverage": 2}
     approved = payload["leverage"]
-    assert approved == payload["perp_plan"]["leverage"] and payload["perp_plan"]["binding_ceiling"] == "risk at stop"
     # at 58,500 the stop (57,000) is closer: the risk ceiling the orchestrator computes now is higher
     uncapped, engine_u = await run_debate_command({k: v for k, v in payload.items() if k != "leverage"}, m,
                                                   "approval:web:operator:u1", mark="58500")
@@ -684,3 +687,27 @@ def _autotrade_switch_on(monkeypatch):
         return True
 
     monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)
+
+
+# --- AI Phase 1 A7: the setup grade sizes the entry, not the model's allocation -----------------------------------------
+
+async def test_grade_sets_the_perp_size_and_the_model_allocation_is_only_recorded(h, routing):
+    await perp_mandate(h, max_position_pct=10)
+    _, _, b_run = await route(h, routing, allocation=1.0)  # grade B: the full max position, whatever the model said
+    b = (await approval_of(h, b_run))["payload"]
+    assert (b["setup_grade"], b["ai_allocation_pct"]) == ("B", 1.0) and b["allocation_pct"] > 1.0
+    assert "grade B · size" in (await approval_of(h, b_run))["summary"]
+
+
+async def test_grade_c_halves_the_perp_size(h, routing):
+    await perp_mandate(h, max_position_pct=10)
+    weak = {**BULL, "adx": 10.0}  # a weak regime on top of the unknown liquidity: two weak inputs = C
+    _, _, run_id = await route(h, routing, allocation=20.0, context=weak)
+    p = (await approval_of(h, run_id))["payload"]
+    assert p["setup_grade"] == "C" and p["allocation_pct"] == 5.0 and p["ai_allocation_pct"] == 20.0
+
+
+async def test_grade_no_trade_refuses_the_perp_entry(h, routing):
+    await perp_mandate(h)
+    status, _, run_id = await route(h, routing, context=BEAR)  # 4h and 1h both against a long
+    assert status == "NO_TRADE" and await approval_of(h, run_id) is None

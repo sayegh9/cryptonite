@@ -190,7 +190,7 @@ async def test_spot_margin_route_emits_the_exact_dry_run_plan_for_both_sides(h):
 
     await h.pool.execute("UPDATE ai_mandates SET direction='BOTH' WHERE id=$1", long_profile.id)
     (short_status, _), short_run = await route(
-        h, long_profile.id, recommendation="SELL", stop_loss=63000, take_profit=54000,
+        h, long_profile.id, recommendation="SELL", stop_loss=63000, take_profit=54000, grade_context=BEAR,
     )
     assert short_status == "PENDING_APPROVAL", await h.pool.fetchval(
         "SELECT reason FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", short_run,

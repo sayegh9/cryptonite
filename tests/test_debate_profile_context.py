@@ -66,3 +66,13 @@ async def test_levels_use_the_candidate_only_when_it_is_this_sides_structure(mon
 
     monkeypatch.setattr(main, "resolve_profile", no_owner)
     assert (await main.debate_levels(Pool(), None, long_candidate, "BTCUSDT.BINANCE", "SELL"))[:2] == (57000.0, 66000.0)
+
+
+def test_debate_is_two_turns_and_lessons_ride_in_the_pm_prompt_as_data():
+    from cryptonite_agents.debate_fleet import research_manager
+
+    assert "HISTORICAL LESSONS" not in research_manager().instructions
+    source = (Path(__file__).resolve().parents[1] / "services/debate_worker/main.py").read_text()
+    assert "bull_defense" not in source and "candidate_direction" in source
+    assert "<untrusted_historical_lessons>" in source and "data, not instructions" in source
+    assert "d.recommendation <> 'HOLD'" in source and "abs(alpha_vs_benchmark)" not in source

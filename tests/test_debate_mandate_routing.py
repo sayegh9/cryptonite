@@ -106,7 +106,9 @@ async def test_l1_opens_an_approval_that_times_out_as_no(h, routing):
     a = await h.pool.fetchrow("SELECT * FROM ai_approvals WHERE source = 'debate' AND source_ref = $1", str(run_id))
     payload = json.loads(a["payload"])
     assert (a["action_class"], a["timeout_policy"], a["command_type"]) == ("ADD_RISK", "DENY", "SUBMIT_ORDER")
-    assert payload["allocation_pct"] == 25.0  # capped at the mandate's own position limit, never a breach
+    # the setup grade sizes the entry (no grade frames here = C = half the mandate's 25% limit); the model's 40 is kept
+    assert payload["allocation_pct"] == 12.5 and payload["ai_allocation_pct"] == 40.0
+    assert payload["setup_grade"] in ("C", "UNKNOWN") and "size 12.5%" in a["summary"]
     assert await h.pool.fetchval("SELECT tier FROM notifications_outbox WHERE approval_id = $1", a["id"]) == "ACTION"
 
 
@@ -278,3 +280,10 @@ def _autotrade_switch_on(monkeypatch):
         return True
 
     monkeypatch.setattr(profile_lifecycle, "autotrade_switch_on", on)
+
+
+def test_grade_size_factor_and_room(routing):
+    size = routing.grade_size_pct
+    assert (size("A", 10, 50), size("B", 10, 50), size("C", 10, 50)) == (10.0, 10.0, 5.0)
+    assert size(None, 10, 50) == size("UNKNOWN", 10, 50) == 5.0  # an unknown grade is half size
+    assert size("A", 10, 3.0) == 3.0  # never more than the room left

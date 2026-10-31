@@ -12,19 +12,38 @@ a model call (remediation R3.1). The rules are the eval labels' rules
 volatility), so a debate routed to a perp mandate is graded in code from the frames the scanner saw (Phase B).
 """
 
+import json
 import math
 import re
 from datetime import UTC, datetime
+from importlib import resources
 from typing import Any
 
 import polars as pl
+from cryptonite_schemas.profile import PRESET_CATALOG
 
-from cryptonite_scanner.setup_grade import grade_context
+from cryptonite_scanner.setup_grade import (
+    GRADE_CONTEXT_KEYS,
+    GradeInputs,
+    grade_context,
+    grade_setup,
+)
 
 LEVEL_LOOKBACK_BARS = 50
 MIN_REWARD_TO_RISK = 1.5
 CHOP_MAX_VOLUME_RATIO = 0.8
 TIMEFRAME_UNIT_S = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def _load_replay() -> dict[tuple[str, str], dict[str, Any]]:
+    try:
+        doc = json.loads(resources.files("cryptonite_scanner").joinpath("data/preset_replay.json").read_text())
+        return {(r["coin"], r["preset"]): r for r in doc.get("results", [])}
+    except Exception:  # the replay is context only; a missing file never fails a brief
+        return {}
+
+
+_REPLAY = _load_replay()
 
 
 def _f(value: Any, digits: int = 2) -> str:
@@ -62,6 +81,35 @@ def _reward_to_risk(entry: Any, stop: Any, target: Any) -> float | None:
         return (float(target) - float(entry)) / risk if risk else None
     except (TypeError, ValueError):
         return None
+
+
+def candidate_direction(candidate: dict[str, Any] | None) -> str | None:
+    """LONG / SHORT for a scanner candidate: the preset's side when its slug is known, else the stop's side of the
+    entry (stop above = SHORT, below = LONG), else None."""
+    if not isinstance(candidate, dict):
+        return None
+    meta = PRESET_CATALOG.get(candidate.get("preset_slug") or candidate.get("spec_slug") or "")
+    if meta is not None:
+        return str(getattr(meta.side, "value", meta.side)).upper()
+    entry, stop = _num(candidate.get("suggested_entry")), _num(candidate.get("suggested_stop"))
+    if entry is None or stop is None or stop == entry:
+        return None
+    return "SHORT" if stop > entry else "LONG"
+
+
+def _setup_grade(direction: str | None, cand: dict[str, Any] | None, ctx: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Scan-time grade from the frames and the levels; funding and liquidity are unknown, so at most B."""
+    if not direction or not cand or not ctx:
+        return None
+    entry, stop, target = _num(cand.get("entry")), _num(cand.get("stop")), _num(cand.get("target"))
+    if None in (entry, stop, target):
+        return None
+    try:
+        kw = {k: ctx.get(k) for k in GRADE_CONTEXT_KEYS}
+        g = grade_setup(GradeInputs(side=direction, entry=entry, stop=stop, target=target, **kw))  # type: ignore[arg-type]
+    except Exception:
+        return None
+    return {"grade": "B" if g.grade == "A" else g.grade, "reasons": list(g.reasons)[:4]}
 
 
 def timeframe_line(timeframe: str, df: pl.DataFrame) -> str | None:
@@ -114,6 +162,18 @@ def build_brief(
             f"Scanner candidate ({candidate.get('timeframe', '?')}): entry {_f(entry)}, stop {_f(stop)}, "
             f"target {_f(target)}, reward-to-risk {_f(rr)}; rules: {', '.join(map(str, candidate.get('matched_rules') or [])) or 'n/a'}"
         )
+    if candidate:
+        facts = brief_data(instrument_id, frames, candidate=candidate)
+        parts = [f"Direction: {facts['direction']}"] if facts["direction"] else []
+        if g := facts["setup_grade"]:
+            parts.append(f"Setup grade: {g['grade']} ({'; '.join(g['reasons'])})")
+        if rp := facts["replay"]:
+            parts.append(
+                f"Replay ({rp['preset']} on {rp['coin']}): {rp['trades']} trades, win {rp['win_rate'] * 100:.0f}%, "
+                f"avg {rp['avg_r']:+.2f}R"
+            )
+        if parts:
+            lines.append(" · ".join(parts))
     if derivatives:
         rate = derivatives.get("funding_rate")
         lines.append(
@@ -181,6 +241,9 @@ def brief_data(
         "candidate": None,
         "derivatives": None,
         "grade_context": None,
+        "direction": candidate_direction(candidate),
+        "setup_grade": None,
+        "replay": None,
     }
     if candidate:
         entry, stop, target = (candidate.get(k) for k in ("suggested_entry", "suggested_stop", "suggested_target"))
@@ -198,6 +261,11 @@ def brief_data(
         data["grade_context"] = grade_context(frames)
     except Exception:
         data["grade_context"] = None
+    data["setup_grade"] = _setup_grade(data["direction"], data["candidate"], data["grade_context"])
+    slug = (candidate or {}).get("preset_slug") or (candidate or {}).get("spec_slug")
+    coin = str(instrument_id).split(".")[0]
+    if row := _REPLAY.get((coin, slug)):
+        data["replay"] = {"coin": coin, "preset": slug, **{k: _num(row.get(k)) for k in ("trades", "win_rate", "avg_r")}}
     return data
 
 
@@ -205,7 +273,8 @@ def hard_rejects(data: dict[str, Any] | None) -> list[str]:
     """The TRIAGE hard rules that ``data`` (``brief_data``) clearly hits, in a fixed order.
 
     - ``REWARD_TO_RISK``: the candidate's reward-to-risk is below 1.5 (negative = stop on the wrong side);
-    - ``TIMEFRAMES_AGAINST``: the two highest timeframes in the brief both trend down (spot is long-only);
+    - ``TIMEFRAMES_AGAINST``: the two highest timeframes in the brief both trend against the candidate's direction
+      (both down for a LONG or an unknown direction, both up for a SHORT);
     - ``CHOP``: on the candidate's timeframe, volume <= 0.8x average with price inside the Bollinger bands.
 
     A rule is applied only when every input it needs is present; missing data never rejects.
@@ -223,7 +292,8 @@ def hard_rejects(data: dict[str, Any] | None) -> list[str]:
     ranked = [(timeframe_seconds(s.get("timeframe")), s.get("trend")) for s in states]
     if len(ranked) >= 2 and all(sec is not None for sec, _ in ranked):
         top = sorted(ranked, key=lambda x: x[0], reverse=True)[:2]
-        if top[0][0] != top[1][0] and all(t == "down" for _, t in top):  # "unknown" trend = missing input
+        against = "up" if data.get("direction") == "SHORT" else "down"
+        if top[0][0] != top[1][0] and all(t == against for _, t in top):  # "unknown" trend = missing input
             hits.append("TIMEFRAMES_AGAINST")
 
     own = [s for s in states if candidate.get("timeframe") and s.get("timeframe") == candidate.get("timeframe")]
