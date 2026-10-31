@@ -29,43 +29,43 @@ export interface PixelTask {
 const PIXEL_AGENTS: PixelAgentDesk[] = [
   {
     id: "orchestrator",
-    name: "Lead Orchestrator",
-    role: "Chief AI Copilot & Mandate Router",
+    name: "Portfolio manager",
+    role: "Judges each debate",
     rank: "Lead",
     color: "#419547",
-    defaultTask: "Synthesizing multi-timeframe swing briefs & routing mandate checks",
+    defaultTask: "Idle: decides when a debate runs",
   },
   {
     id: "scout",
-    name: "Market Data Scout",
-    role: "L1/L2 Microstructure & Kline Ingest",
+    name: "Analysts",
+    role: "Market, flow and news",
     rank: "Senior",
     color: "#38bdf8",
-    defaultTask: "Streaming Binance klines & Polars momentum scan candidates",
+    defaultTask: "Idle: reads the market inside each debate",
   },
   {
     id: "debater",
-    name: "Bull / Bear Debaters",
+    name: "Bull & Bear",
     role: "Adversarial Thesis Arena",
     rank: "Senior",
     color: "#a855f7",
-    defaultTask: "Cross-examining long/short thesis R:R & invalidation levels",
+    defaultTask: "Idle: argues both sides inside each debate",
   },
   {
     id: "cro",
-    name: "Risk Guardian (CRO)",
-    role: "GuardedOrderDispatcher & Drawdown Clamp",
+    name: "Risk panel",
+    role: "Portfolio risk and margin",
     rank: "Lead",
     color: "#f59e0b",
-    defaultTask: "Enforcing 25% max position sizing & daily loss circuit breakers",
+    defaultTask: "Idle: reviews risk inside each debate",
   },
   {
     id: "outbox",
-    name: "Execution Outbox Relay",
-    role: "Transactional Outbox & Paper Engine",
+    name: "Execution",
+    role: "Order staging",
     rank: "Operator",
     color: "#10b981",
-    defaultTask: "Fencing approved orders to PostgreSQL outbox & Redis stream",
+    defaultTask: "Idle: stages approved proposals",
   },
 ];
 
@@ -275,7 +275,7 @@ export function PixelOfficeView({ selectedSymbol = "BTCUSDT", onTriggerDebate }:
                         className={`inline-block h-2 w-2 rounded-full flex-none ${
                           isOnline ? "bg-[#58bd60]" : "bg-zinc-500"
                         }`}
-                        title={live?.status || (isOnline ? "ONLINE" : "READY")}
+                        title={live?.status === "PROCESSING" ? "Working" : live?.status === "ERROR" ? "Error" : "Idle"}
                       />
                     </div>
                     <p className="text-2xs font-mono text-[#58bd60] mt-0.5">{rank} · {agent.role}</p>
