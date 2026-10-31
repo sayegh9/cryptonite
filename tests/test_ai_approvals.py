@@ -335,7 +335,7 @@ async def test_brain_card_approval_records_an_approval_inside_the_mandate(h, bra
     cmd = await h.pool.fetchrow("SELECT * FROM execution_commands WHERE command_id = $1", uuid.UUID(body["command_id"]))
     payload = json.loads(cmd["payload"])
     assert (cmd["idempotency_key"], cmd["target_instance_id"], cmd["mandate_id"]) == (f"brain-card:{sid}:call-1", m.instance_id, m.id)
-    assert payload["approval_id"] == body["approval_id"] and payload["allocation_pct"] == 5.0
+    assert payload["approval_id"] == body["approval_id"] and payload["allocation_pct"] == 12.5  # no setup grade: half the 25% cap (O2)
     appr = await h.pool.fetchrow("SELECT * FROM ai_approvals WHERE id = $1", uuid.UUID(body["approval_id"]))
     assert (appr["status"], appr["decided_via"], appr["source"], appr["command_id"]) == ("APPROVED", "web", "brain_card", cmd["command_id"])
     assert brain_worker["status"] == "APPROVED"

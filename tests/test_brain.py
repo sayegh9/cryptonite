@@ -516,6 +516,18 @@ def test_history_endpoints_page_rename_and_archive():
         unsigned = client.post(search, content=b"{}", headers={"Content-Type": "application/json"})
         assert unsigned.status_code == 401
 
+        def delete(path, params=None):  # signed over the path and body, as the API sends it; the query is not signed
+            return client.request("DELETE", path, params=params, content=b"{}",
+                                  headers=_generate_hmac_headers("DELETE", path, b"{}"))
+
+        assert delete(f"/api/v1/brain/operators/op-2/sessions/{b}").status_code == 404  # another operator's
+        assert delete(f"/api/v1/brain/operators/op-1/sessions/{b}").json() == {"deleted": 1}
+        assert delete(f"/api/v1/brain/operators/op-1/sessions/{b}").status_code == 404
+        bulk = "/api/v1/brain/operators/op-1/sessions"
+        assert delete(bulk).status_code == 422  # only archived conversations go in bulk
+        assert delete(bulk, {"archived": "true"}).json() == {"deleted": 1}  # a, archived above
+        assert [s["id"] for s in post(search, {}).json()["sessions"]] == [c]
+
 
 # --- Migration 024 against a real database -----------------------------------------------------
 
@@ -546,10 +558,31 @@ async def test_session_store_runs_as_the_telemetry_role(db_url):
         assert (await store.latest_summary(sid))["covers_message_id"] == mid
         assert await store.get_session(sid, "op-2") is None
         assert [s["id"] for s in await store.list_sessions("op-1")] == [sid]
-        with pytest.raises(asyncpg.InsufficientPrivilegeError):  # history is never deleted by the service
-            await pool.execute("DELETE FROM ai_messages")
+        # O1 (migration 056): the operator may delete a conversation for good; its messages and summary go with it
+        assert await store.delete_session(sid, "op-2") is False
+        assert await store.delete_session(sid, "op-1") is True
+        assert await store.get_session(sid, "op-1") is None and await store.messages(sid) == []
+        assert await store.latest_summary(sid) is None
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):  # the grant covers the conversation tables only
+            await pool.execute("DELETE FROM ai_decision_traces")
     finally:
         await pool.close()
+
+
+async def test_memory_store_deletes_one_conversation_or_every_archived_one():
+    store = MemorySessionStore()
+    a, b, c = [await store.create_session("op-1", t) for t in ("A", "B", "C")]
+    other = await store.create_session("op-2", "theirs")
+    await store.append_message(a, "user", "hi")
+    await store.save_summary(a, "s", 1)
+    assert await store.delete_session(a, "op-2") is False
+    assert await store.delete_session(a, "op-1") is True
+    assert await store.messages(a) == [] and await store.latest_summary(a) is None
+    await store.update_session(b, "op-1", archived=True)
+    await store.update_session(other, "op-2", archived=True)
+    assert await store.delete_archived("op-1") == 1
+    assert [s["id"] for s in await store.list_sessions("op-1")] == [c]
+    assert await store.get_session(other, "op-2") is not None
 
 
 async def test_history_queries_run_as_the_telemetry_role(db_url):

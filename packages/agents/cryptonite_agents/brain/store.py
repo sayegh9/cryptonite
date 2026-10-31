@@ -18,6 +18,8 @@ class SessionStore(Protocol):
                             archived: bool = False, before: str | None = None) -> list[dict[str, Any]]: ...
     async def update_session(self, session_id: str, operator_id: str, *, title: str | None = None,
                              archived: bool | None = None) -> dict[str, Any] | None: ...
+    async def delete_session(self, session_id: str, operator_id: str) -> bool: ...
+    async def delete_archived(self, operator_id: str) -> int: ...
     async def append_message(self, session_id: str, role: str, content: str,
                              widgets: list[dict[str, Any]] | None = None, trace_id: str | None = None) -> int: ...
     async def messages(self, session_id: str, after_id: int = 0) -> list[dict[str, Any]]: ...
@@ -162,6 +164,19 @@ class PgSessionStore:
             sid, operator_id, title, archived)
         return _session_row(row) if row else None
 
+    async def delete_session(self, session_id: str, operator_id: str) -> bool:
+        """Delete one conversation for good; its messages and summaries go with it (ON DELETE CASCADE, migration 024)."""
+        sid = _valid_uuid(session_id)
+        if sid is None:
+            return False
+        status = await self.pool.execute("DELETE FROM ai_sessions WHERE id = $1 AND operator_id = $2", sid, operator_id)
+        return status.endswith(" 1")
+
+    async def delete_archived(self, operator_id: str) -> int:
+        """Delete every archived conversation of the operator; returns how many went."""
+        status = await self.pool.execute("DELETE FROM ai_sessions WHERE operator_id = $1 AND archived", operator_id)
+        return int(status.rsplit(" ", 1)[-1])
+
     async def append_message(self, session_id: str, role: str, content: str,
                              widgets: list[dict[str, Any]] | None = None, trace_id: str | None = None) -> int:
         sid = uuid.UUID(session_id)
@@ -279,6 +294,21 @@ class MemorySessionStore:
         if archived is not None:
             s["archived"] = archived
         return {k: v for k, v in s.items() if k != "operator_id"}
+
+    async def delete_session(self, session_id: str, operator_id: str) -> bool:
+        s = self.sessions.get(session_id)
+        if not s or s["operator_id"] != operator_id:
+            return False
+        del self.sessions[session_id]
+        self.rows = [r for r in self.rows if r["session_id"] != session_id]
+        self.summaries = [r for r in self.summaries if r["session_id"] != session_id]
+        return True
+
+    async def delete_archived(self, operator_id: str) -> int:
+        gone = [sid for sid, s in self.sessions.items() if s["operator_id"] == operator_id and s["archived"]]
+        for sid in gone:
+            await self.delete_session(sid, operator_id)
+        return len(gone)
 
     async def append_message(self, session_id: str, role: str, content: str,
                              widgets: list[dict[str, Any]] | None = None, trace_id: str | None = None) -> int:

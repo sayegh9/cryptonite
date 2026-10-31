@@ -17,6 +17,7 @@ from cryptonite_execution.leverage import (
     plan_spot_margin_order,
 )
 from cryptonite_execution.profile_log import record_decision
+from cryptonite_execution.sizing import GRADE_SIZE_FACTOR, UNKNOWN_GRADE_FACTOR, grade_size_pct  # noqa: F401  (re-exported)
 from cryptonite_execution.spot_margin import size_margin_borrow
 from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.mandate import (
@@ -333,16 +334,6 @@ def perp_setup_grade(side: str, entry: float, stop: float, target: float, contex
         kw[key] = (value if value in ("BULL", "BEAR", "FLAT") else None) if key.startswith("trend_") else _num(value)
     return grade_setup(GradeInputs(side=side_of(side), entry=float(entry), stop=float(stop), target=float(target),
                                    funding_rate_8h=funding_rate_8h, **kw)).as_dict()
-
-
-GRADE_SIZE_FACTOR = {"A": 1.0, "B": 1.0, "C": 0.5}
-UNKNOWN_GRADE_FACTOR = 0.5
-
-
-def grade_size_pct(grade: str | None, max_position_pct: float, room: float) -> float:
-    """The entry size, in percent of the mandate: the profile's max position scaled by the setup grade (A or B full, C
-    half, an unknown grade half), never more than the room left. The model's allocation does not size an entry."""
-    return round(min(float(max_position_pct) * GRADE_SIZE_FACTOR.get(str(grade), UNKNOWN_GRADE_FACTOR), float(room)), 2)
 
 
 def _entry_grade(side: str, entry: Any, stop: Any, target: Any, context: dict[str, Any] | None) -> dict[str, Any] | None:

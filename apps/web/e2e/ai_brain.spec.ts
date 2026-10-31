@@ -113,8 +113,12 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
 
     // 5. Verify Zone 2: the Brain chat (exactly one mounted, K7)
     await expect(page.getByTestId("brain-conversation")).toHaveCount(1);
-    await expect(page.locator("#brain-input-compact")).toBeVisible();
+    await expect(page.locator("#brain-input")).toBeVisible();
     await expect(page.locator("text=Lead Orchestrator Canvas")).toHaveCount(0);
+    // F2: the Debates view keeps History and New conversation (Brain Home, the only one mounted)
+    await expect(page.getByTestId("brain-home")).toHaveCount(1);
+    await expect(page.getByTestId("brain-home").getByRole("button", { name: "History", exact: true })).toBeVisible();
+    await expect(page.getByTestId("brain-home").getByRole("button", { name: "New", exact: true })).toBeVisible();
 
     // 6. Verify Zone 3: Action Inbox
     await expect(page.locator("text=Action & Decision Inbox")).toBeVisible();
@@ -122,7 +126,7 @@ test.describe("Cryptonite AI Brain Workspace E2E", () => {
 
     // 7. The symbol chip prefills the Brain input
     await page.getByTestId("brain-symbol-chip").click();
-    await expect(page.locator("#brain-input-compact")).toHaveValue(/^Context: BTCUSDT 1h\. /);
+    await expect(page.locator("#brain-input")).toHaveValue(/^Context: BTCUSDT 1h\. /);
 
     // 8. Triggering a debate only queues it: no card is invented locally
     const triggerBtn = page.locator("button", { hasText: "⚡ Trigger BTCUSDT Debate" });

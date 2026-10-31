@@ -38,11 +38,18 @@ const sse = (events: [string, unknown][]) => events.map(([e, d]) => `event: ${e}
 
 async function mockHistory(page: Page, opts: { failList?: boolean } = {}) {
   const rows = fixtures();
-  const calls = { lists: [] as URLSearchParams[], patches: [] as { id: string; body: any; csrf?: string }[], stream: [] as any[] };
+  const calls = { lists: [] as URLSearchParams[], patches: [] as { id: string; body: any; csrf?: string }[], stream: [] as any[],
+    deletes: [] as { url: string; csrf?: string }[] };
   await page.route("**/api/v1/paper/positions*", (route) => route.fulfill({ json: [] }));
   await page.route("**/agent-api/brain/spend", (route) => route.fulfill({ json: { spent_usd: "1.00", cap_usd: "25.00" } }));
   await page.route(/\/agent-api\/brain\/sessions(\?.*)?$/, (route) => {
     const params = new URL(route.request().url()).searchParams;
+    if (route.request().method() === "DELETE") {
+      calls.deletes.push({ url: route.request().url(), csrf: route.request().headers()["x-csrf-token"] });
+      const gone = rows.filter((r) => r.archived);
+      gone.forEach((r) => rows.splice(rows.indexOf(r), 1));
+      return route.fulfill({ json: { deleted: gone.length } });
+    }
     calls.lists.push(params);
     if (opts.failList) return route.fulfill({ status: 503, json: { detail: "Brain unavailable" } });
     const q = (params.get("q") || "").toLowerCase();
@@ -55,6 +62,11 @@ async function mockHistory(page: Page, opts: { failList?: boolean } = {}) {
   await page.route(/\/agent-api\/brain\/sessions\/[0-9a-f-]+$/, (route: Route) => {
     const id = new URL(route.request().url()).pathname.split("/").pop()!;
     const row = rows.find((r) => r.id === id)!;
+    if (route.request().method() === "DELETE") {
+      calls.deletes.push({ url: route.request().url(), csrf: route.request().headers()["x-csrf-token"] });
+      rows.splice(rows.indexOf(row), 1);
+      return route.fulfill({ json: { deleted: 1 } });
+    }
     if (route.request().method() === "PATCH") {
       const body = route.request().postDataJSON();
       calls.patches.push({ id, body, csrf: route.request().headers()["x-csrf-token"] });
@@ -153,6 +165,31 @@ test.describe("Brain conversation history", () => {
     await panel.getByRole("button", { name: 'Restore "Weekly BTC review"' }).click();
     await expect(panel.getByTestId("brain-history-empty")).toContainText("Nothing archived.");
     expect(calls.patches[2]).toEqual({ id: OLD, body: { archived: false }, csrf: "csrf-test" });
+  });
+
+  test("deletes a conversation, and every archived one, only after an inline confirm", async ({ page }) => {
+    const calls = await mockHistory(page);
+    const panel = await openHistory(page);
+
+    await panel.getByRole("button", { name: 'Delete "ETH funding check"' }).click();
+    await expect(panel.getByTestId("brain-history-confirm")).toContainText("Delete permanently? This can't be undone.");
+    await panel.getByRole("button", { name: "Cancel" }).click();
+    expect(calls.deletes).toHaveLength(0);
+
+    await panel.getByRole("button", { name: 'Delete "ETH funding check"' }).click();
+    await panel.getByTestId("brain-history-confirm").getByRole("button", { name: "Delete" }).click();
+    await expect(panel.getByTestId("brain-history-notice")).toHaveText('Deleted "ETH funding check".');
+    await expect(panel.getByTestId("brain-history-row")).toHaveCount(1);
+    expect(calls.deletes[0]).toEqual({ url: expect.stringMatching(new RegExp(`/agent-api/brain/sessions/${TODAY}$`)), csrf: "csrf-test" });
+
+    await panel.getByRole("button", { name: 'Archive "BTC breakout plan"' }).click();
+    await panel.getByRole("tab", { name: "Archived" }).click();
+    await expect(panel.getByTestId("brain-history-row")).toHaveCount(1);
+    await panel.getByRole("button", { name: "Delete all archived" }).click();
+    await panel.getByTestId("brain-history-confirm").getByRole("button", { name: "Delete" }).click();
+    await expect(panel.getByTestId("brain-history-notice")).toHaveText("Deleted 1 archived conversation.");
+    await expect(panel.getByTestId("brain-history-row")).toHaveCount(0);
+    expect(calls.deletes[1].url).toMatch(/\/agent-api\/brain\/sessions\?archived=true$/);
   });
 
   test("History is open by default on a wide screen, and closing it is remembered", async ({ page }) => {

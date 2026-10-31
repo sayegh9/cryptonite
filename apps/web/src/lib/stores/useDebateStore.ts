@@ -67,7 +67,11 @@ export type DebateSizing =
       budget_usd: number;
       sell_quantity: string | null;
     }
-  | { ok: false; code: string; detail: string; remedy: { kind: 'CHOOSE_MANDATE'; candidates: MandateChoice[] } | null };
+  | {
+      ok: false; code: string; detail: string; remedy: { kind: 'CHOOSE_MANDATE'; candidates: MandateChoice[] } | null;
+      /** NOT_PENDING: the run's status on the server (a persisted inbox item may be stale) */
+      run_status?: DebateRun['status'];
+    };
 
 export interface DebateActionError extends Error {
   status?: number;

@@ -269,8 +269,14 @@ export function ActionInbox({ onTriggerDebate, symbol }: ActionInboxProps) {
 
   // What approve would do now, per run awaiting approval: the mandate, its room and the size, or the refusal
   const fetchDebateSizing = useDebateStore((state) => state.fetchDebateSizing);
+  const updateRunStatus = useDebateStore((state) => state.updateStatus);
   const loadSizing = (runId: string) =>
     void fetchDebateSizing(runId).then((s) => {
+      // F4: the persisted inbox may hold a run the server no longer awaits approval for (a CRO veto made it NO_TRADE)
+      if (s && !s.ok && s.code === "NOT_PENDING" && s.run_status && s.run_status !== "PENDING_APPROVAL") {
+        updateRunStatus(runId, "UNKNOWN", s.run_status);
+        return;
+      }
       setSizings((prev) => ({ ...prev, [runId]: s }));
       const candidates = choicesOf(s);
       // Several mandates allow the coin: start on the first that can take the whole order (as the Brain card does)
