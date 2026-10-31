@@ -115,3 +115,36 @@ async def test_an_operator_pause_after_the_breaker_is_never_undone(db_url):
             assert await status(conn, mid) is MandateStatus.PAUSED
     finally:
         await pool.close()
+
+
+@pytest.mark.parametrize("change", ["halted", "operator_resumed"])
+async def test_a_change_after_the_snapshot_wins_over_the_auto_resume(db_url, change):
+    """Gate R: the resume re-checks the row under its lock; a HALT or an operator resume since the snapshot wins,
+    and no 'resumed automatically' alert is sent."""
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        async with pool.acquire() as conn:
+            await seed_paper_account(conn)
+            await conn.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
+            await conn.execute("UPDATE paper_accounts SET total_equity = 1000000, cash_balance = 1000000")
+        mid = (await make_mandate(pool, 1)).id
+        redis = Redis()
+        async with pool.acquire() as conn:
+            await stale_pause(conn, redis, mid, T0)
+            snapshot = await load_mandate(conn, mid)
+            await monitor.auto_resume_stale_pause(conn, redis, snapshot, T0, tick(T0))  # the window starts
+            if change == "halted":
+                await conn.execute("UPDATE ai_mandates SET status = 'HALTED' WHERE id = $1", mid)
+            else:
+                await profile_lifecycle.start(conn, mid, actor="admin", totp_ok=True, settings=None)
+            later = T0 + dt.timedelta(seconds=301)
+            await monitor.auto_resume_stale_pause(conn, redis, snapshot, later, tick(later))
+            assert (await status(conn, mid)).value == ("HALTED" if change == "halted" else "ACTIVE")
+            assert await conn.fetchval(
+                "SELECT count(*) FROM notifications_outbox WHERE kind = 'PROFILE_BREAKER_RESUMED' "
+                "AND payload->>'mandate_id' = $1", str(mid)) == 0
+            assert await conn.fetchval(
+                "SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND actor = 'risk:breaker' "
+                "AND kind = 'STARTED'", mid) == 0
+    finally:
+        await pool.close()
