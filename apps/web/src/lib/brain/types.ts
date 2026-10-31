@@ -5,6 +5,8 @@
  *   session → token* / tool_call* / widget* → done | error
  */
 
+import type { Direction, ExecutionMode, Market, NotifyLevel, Style } from "@/lib/autotrade/types";
+
 export interface PriceChartWidget {
   kind: "price_chart";
   id: string;
@@ -320,12 +322,51 @@ export interface SwingRadarWidget {
   candidates: SwingCandidateItem[];
 }
 
+/** The read-only tool's resolved spec; the API rechecks it when the operator creates a profile. */
+export interface ProfileProposalSpec {
+  name: string;
+  coins: string[];
+  markets: Market[];
+  capital_budget_usd: string;
+  style: Style;
+  direction: Direction;
+  max_position_pct: string;
+  max_leverage: number;
+  max_open_positions: number;
+  max_debates_per_day: number;
+  max_risk_per_trade_pct: string;
+  daily_loss_limit_pct: string;
+  daily_loss_defaulted: boolean;
+  max_drawdown_pct: string;
+  exit_tp_r: string;
+  exit_tp1_scale_pct: string;
+  exit_trail_activate_pct: string | null;
+  exit_trail_pct: string | null;
+  exit_max_hold_hours: number | null;
+  notify_level: NotifyLevel;
+  breaker_max_loss_streak: number;
+  breaker_max_reject_streak: number;
+  mode: ExecutionMode;
+  dry_run: boolean;
+}
+
+export interface ProfileProposalWidget {
+  kind: "profile_proposal";
+  id: string;
+  status: "PROPOSED" | "INVALID";
+  proposal: ProfileProposalSpec;
+  errors: string[];
+  warnings: string[];
+  feed_status?: "known" | "unknown" | null;
+}
+
 export type BrainWidget =
   | PriceChartWidget
   | TearsheetWidget
   | OrderCardWidget
   | DebateSummaryWidget
-  | SwingRadarWidget;
+  | SwingRadarWidget
+  | ProfileProposalWidget;
 
 export type ToolCallStatus = "RUNNING" | "OK" | "DENIED" | "UNKNOWN";
 
