@@ -637,10 +637,16 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
             raise HTTPException(status_code=409, detail=(
                 f"MANDATE_POSITION_LIMIT_REACHED: mandate {mandate.name} already holds its limit of "
                 f"{mandate.max_position_pct}% in {card['instrument_id']}; nothing was queued"))
-        # O2: an entry is sized by its setup grade as a debate entry is (A or B the profile's full max position, C,
-        # NO_TRADE or unknown half), never the model's allocation; a NO_TRADE card stays approvable (the card warns)
-        allocation = Decimal(str(grade_size_pct(card.get("setup_grade"), mandate.max_position_pct,
-                                                room.quantize(Decimal("0.01")))))
+        if perp_entry:
+            # Perps are sized by the leverage plan below (the card's allocation within the risk-at-stop budget); the
+            # setup grade caps their leverage
+            allocation = min(allocation, room.quantize(Decimal("0.01")))
+        else:
+            # O2: a spot or margin entry is sized by its setup grade as a debate entry is (A or B the profile's full
+            # max position, C, NO_TRADE or unknown half), never the model's allocation; a NO_TRADE card stays
+            # approvable (the card warns)
+            allocation = Decimal(str(grade_size_pct(card.get("setup_grade"), mandate.max_position_pct,
+                                                    room.quantize(Decimal("0.01")))))
     if perp_entry:
         redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
         plan = await card_leverage_plan(pool, redis, mandate, card, requested_leverage=leverage)
@@ -890,9 +896,10 @@ async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request,
         remedy = await _card_remedy(request, card, code, mandate_id)
         return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate, "remedy": remedy,
                 "leverage_plan": getattr(e, "leverage_plan", None), "needs_totp": is_perp_entry(card)}
-    # An entry asks its grade size (O2); what the room left cut it from is that, not the model's allocation
+    # A spot or margin entry asks its grade size (O2), so the room left cut it from that; a perp asks its own allocation
     max_pct = plan.mandate.max_position_pct
-    requested = Decimal(str(grade_size_pct(card.get("setup_grade"), max_pct, max_pct)))
+    requested = (Decimal(str(card["allocation_pct"])) if plan.leverage_plan is not None
+                 else Decimal(str(grade_size_pct(card.get("setup_grade"), max_pct, max_pct))))
     if plan.leverage_plan is not None:
         lp = plan.leverage_plan
         asked = leverage if leverage is not None else card.get("leverage")

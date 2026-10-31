@@ -566,3 +566,4 @@ async def test_an_owner_outside_the_mandates_holding_the_instrument_offers_no_ch
     await h.mandate(instruments=(BTC,))
     await hold_position(h.pool, "MANUAL_TRADE", 0.01)
     assert (await refusal(h, worker, "AMBIGUOUS_MANDATE"))["remedy"] is None
+

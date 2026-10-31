@@ -17,7 +17,11 @@ from cryptonite_execution.leverage import (
     plan_spot_margin_order,
 )
 from cryptonite_execution.profile_log import record_decision
-from cryptonite_execution.sizing import GRADE_SIZE_FACTOR, UNKNOWN_GRADE_FACTOR, grade_size_pct  # noqa: F401  (re-exported)
+from cryptonite_execution.sizing import (  # noqa: F401  (re-exported)
+    GRADE_SIZE_FACTOR,
+    UNKNOWN_GRADE_FACTOR,
+    grade_size_pct,
+)
 from cryptonite_execution.spot_margin import size_margin_borrow
 from cryptonite_schemas.debate import verdict_direction
 from cryptonite_schemas.mandate import (
