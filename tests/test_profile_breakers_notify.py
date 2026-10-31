@@ -145,7 +145,8 @@ async def test_daily_once_per_day_and_refusal_digest():
 
 
 @pytest.mark.parametrize('kind,expected', [('PROFILE_FILL', 'SHORT'), ('PROFILE_EXIT', '2R'),
-    ('PROFILE_BREAKER', 'paused'), ('PROFILE_DAILY_SUMMARY', 'P&L')])
+    ('PROFILE_BREAKER', 'paused'), ('PROFILE_BREAKER_RESUMED', 'resumed automatically'),
+    ('PROFILE_DAILY_SUMMARY', 'P&L')])
 def test_profile_render_and_outbox_kind(kind, expected):
     title, body = alert_text(dict(kind=kind, mandate='Alpha', side='SHORT', market='PERP',
         instrument_id='BTCUSDT-PERP.BINANCE', leverage=3, price=100, qty=2, stop=110,
