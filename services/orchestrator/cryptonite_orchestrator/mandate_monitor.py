@@ -45,7 +45,13 @@ from cryptonite_execution.mandate_store import (
     load_mandate,
     load_session,
 )
-from cryptonite_execution.profile_lifecycle import finish_stop, pause
+from cryptonite_execution.profile_lifecycle import (
+    LifecycleError,
+    finish_stop,
+    load_settings,
+    pause,
+    start,
+)
 from cryptonite_execution.profile_log import record_decision
 from cryptonite_schemas.mandate import (
     ACCOUNT_BACKSTOP_DRAWDOWN_PCT,
@@ -421,6 +427,7 @@ async def mandate_monitor_once(engine, pool, redis, quotes=None, now: datetime.d
                 ingress = getattr(engine, "ingress_health", None)
                 health = ingress.get_health_snapshot() if ingress is not None else {}
                 await track_profile_breakers(conn, redis, m, now, health)
+                await auto_resume_stale_pause(conn, redis, m, now, health)
             except Exception as e:
                 logger.error("Profile breaker failed for %s: %s", m.name, e)
             try:
@@ -479,6 +486,8 @@ async def _profile_alert(conn, redis, kind: str, detail: dict, key: str, *, tier
                 f"{detail.get('r_multiple') if detail.get('r_multiple') is not None else 'unknown '}R")
     elif kind == 'PROFILE_BREAKER':
         body = f"Profile paused: {detail.get('reason')}. Exits continue."
+    elif kind == 'PROFILE_BREAKER_RESUMED':
+        body = f"Profile resumed automatically: {detail.get('reason')}."
     else:
         body = (f"{detail.get('day')} · P&L ${detail.get('pnl')} · {detail.get('trades')} trades\n"
                 f"Wins {detail.get('wins')} / losses {detail.get('losses')} · "
@@ -634,6 +643,72 @@ async def track_profile_breakers(conn, redis, mandate: Mandate, now: datetime.da
             break
     # This independent best-effort path can fail repeatedly without reverting the committed PAUSE.
     await notify_profile_breakers(conn, redis)
+
+
+# Operator decision 2026-10-31: a stale-data pause (a feed or Wi-Fi drop) lifts itself once every coin of the profile
+# has been fresh continuously for STALE_RESUME_AFTER_S, at most STALE_RESUME_MAX_PER_DAY times per UTC day. Loss and
+# rejection streak pauses, and any pause the operator made after the breaker's, still need the operator.
+STALE_RESUME_FRESH_S = 120
+STALE_RESUME_AFTER_S = 300
+STALE_RESUME_MAX_PER_DAY = 3
+
+
+def _all_coins_fresh(mandate: Mandate, now: datetime.datetime, health: dict) -> bool:
+    """Every profile coin has an ingress tick at most STALE_RESUME_FRESH_S old (spot health counts for margin)."""
+    for coin in mandate.instruments:
+        data = health.get(coin) or health.get(underlying_spot(coin))
+        if not data or now.timestamp() - int(data['arrival_ts_ns']) / 1e9 > STALE_RESUME_FRESH_S:
+            return False
+    return True
+
+
+async def auto_resume_stale_pause(conn, redis, mandate: Mandate, now: datetime.datetime, health: dict) -> None:
+    """Resume a PAUSED profile whose latest pause is the breaker's STALE_DATA once its feed has recovered.
+
+    The resume is the normal ``start`` (switch, profile rules, capital cap, coin locks), as the breaker
+    (``risk:breaker``) without a TOTP code: it only undoes the system's own pause. Without Redis it never resumes."""
+    if (mandate.status is not MandateStatus.PAUSED or redis is None
+            or not str(mandate.paused_reason or '').startswith('BREAKER_STALE_DATA')):
+        return
+    key = f'profile_breaker:fresh_since:{mandate.id}'
+    if not _all_coins_fresh(mandate, now, health):
+        await redis.delete(key)
+        return
+    await redis.set(key, str(now.timestamp()), nx=True)
+    raw = await redis.get(key)
+    try:
+        since = float(raw)
+    except (TypeError, ValueError):
+        return
+    if now.timestamp() - since < STALE_RESUME_AFTER_S:
+        return
+    last = await conn.fetchrow(
+        """SELECT actor, detail->>'trigger_kind' AS trigger_kind FROM ai_autonomy_events WHERE mandate_id = $1
+           AND kind IN ('PAUSED', 'STARTED', 'RESUMED', 'STOPPING', 'STOPPED', 'HALTED') ORDER BY id DESC LIMIT 1""",
+        mandate.id)
+    if last is None or last['actor'] != 'risk:breaker' or last['trigger_kind'] != 'STALE_DATA':
+        return
+    today = await conn.fetchval(
+        """SELECT count(*) FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'STARTED'
+           AND actor = 'risk:breaker' AND created_at >= date_trunc('day', $2::timestamptz AT TIME ZONE 'UTC')
+           AT TIME ZONE 'UTC'""", mandate.id, now)
+    if int(today or 0) >= STALE_RESUME_MAX_PER_DAY:
+        return
+    reason = (f"prices fresh again for {STALE_RESUME_AFTER_S // 60} minutes; automatic resume "
+              f"{int(today or 0) + 1} of {STALE_RESUME_MAX_PER_DAY} today")
+    try:
+        await start(conn, mandate.id, actor='risk:breaker', totp_ok=True, settings=await load_settings(conn),
+                    reason=f"breaker resumed the profile: {reason}")
+    except LifecycleError as e:  # e.g. switch off for a Veto/Auto profile: stays paused for the operator
+        logger.info('Profile %s stays paused after its feed recovered: %s', mandate.name, e)
+        return
+    await redis.delete(key)
+    event_id = await conn.fetchval(
+        """SELECT id FROM ai_autonomy_events WHERE mandate_id = $1 AND kind = 'STARTED' AND actor = 'risk:breaker'
+           ORDER BY id DESC LIMIT 1""", mandate.id)
+    await _profile_alert(conn, redis, 'PROFILE_BREAKER_RESUMED',
+                         dict(mandate_id=str(mandate.id), mandate=mandate.name, reason=reason),
+                         f'profile-breaker-resume:{event_id}')
 
 
 async def notify_profile_breakers(conn, redis) -> None:

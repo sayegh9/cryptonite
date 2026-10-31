@@ -269,7 +269,7 @@ async def _set_status(conn, m: Mandate, status: MandateStatus, kind_detail: str,
 
 
 async def start(conn, mandate_id: uuid.UUID | str, *, actor: str, totp_ok: bool,
-                settings: Mapping[str, Any] | AutotradeSettings | None) -> Mandate:
+                settings: Mapping[str, Any] | AutotradeSettings | None, reason: str | None = None) -> Mandate:
     """Start (or restart) a profile. One transaction; every refusal is a ``LifecycleError`` and changes nothing.
 
     Order: master switch (Ask is exempt), profile rules, TOTP (above Ask, and for a PAUSED, HALTED or STOPPING profile,
@@ -293,7 +293,7 @@ async def start(conn, mandate_id: uuid.UUID | str, *, actor: str, totp_ok: bool,
         await acquire_locks(conn, m.id, m.instruments)
         t = Transition(AutonomyState(m.autonomy_level, m.status, m.allow_perps),
                        AutonomyState(m.autonomy_level, MandateStatus.ACTIVE, m.allow_perps), "STARTED",
-                       f"operator started the profile ({m.status.value} -> ACTIVE)")
+                       reason or f"operator started the profile ({m.status.value} -> ACTIVE)")
         await apply_transition(conn, m.id, t, actor=actor, detail={"lifecycle": "STARTED", "mode": mode.value,
                                                                     "from": m.status.value})
         await record_decision(conn, m.id, DecisionStage.LIFECYCLE, "STARTED", t.reason, mode=mode.value,

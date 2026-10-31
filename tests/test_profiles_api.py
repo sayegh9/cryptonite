@@ -94,6 +94,7 @@ async def test_create_defaults_daily_loss_only_when_omitted_and_starts(h, risk, 
         f"{BASE}/00000000-0000-0000-0000-000000000001/performance",
         f"{BASE}/presets/stats",
         f"{BASE}/estimate?coins=BTCUSDT&style=SWING&direction=LONG",
+        f"{BASE}/summaries",
     ],
 )
 async def test_every_read_route_requires_an_operator_session(h, path):
@@ -231,6 +232,23 @@ async def test_summary_freshness_scores_live_quotes_and_stopped_profiles_have_no
     assert summary["health_score"]["score"] == 80
     assert stopped_summary["health_score"]["score"] is None
     assert stopped_summary["health_score"]["running"] is False
+
+
+async def test_bulk_summaries_equal_the_single_route_and_skip_archived(h):
+    """One request for the Auto-Trade list: the same summary per profile, archived profiles left out."""
+    await h.pool.execute("UPDATE ai_mandates SET status = 'ARCHIVED'")
+    first = await new_profile(h, instruments=("BTCUSDT.BINANCE",))
+    second = await new_profile(h, status="STOPPED", instruments=("XRPUSDT.BINANCE",))
+    archived = await new_profile(h, status="ARCHIVED", instruments=("ETHUSDT.BINANCE",))
+    await put_quote(h, "BTCUSDT.BINANCE")
+    async with h.client() as client:
+        bulk = (await client.get(f"{BASE}/summaries")).json()["summaries"]
+        single = (await client.get(f"{BASE}/{first.id}/summary")).json()
+    by_id = {row["profile_id"]: row for row in bulk}
+    assert set(by_id) == {str(first.id), str(second.id)} and str(archived.id) not in by_id
+    for key in ("status", "today", "open_positions_count", "breaker", "mode", "master_switch"):
+        assert by_id[str(first.id)][key] == single[key]
+    assert by_id[str(first.id)]["health_score"]["score"] == single["health_score"]["score"]
 
 
 async def _insert_exit_fill(h, profile, *, r_multiple, realized_pnl, order_suffix):

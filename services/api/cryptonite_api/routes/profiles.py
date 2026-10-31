@@ -213,6 +213,18 @@ async def profile_decisions(
             "next_cursor": next_cursor, "has_more": has_more}
 
 
+@router.get("/summaries")
+async def profile_summaries(request: Request, auth: dict[str, Any] = Depends(require_operator)) -> dict[str, Any]:
+    """Every non-archived profile's summary in one request (the Auto-Trade list polls this instead of one per card)."""
+    now = dt.datetime.now(UTC)
+    async with request.app.state.pool.acquire() as conn:
+        ids = [r["id"] for r in await conn.fetch(
+            "SELECT id FROM ai_mandates WHERE status <> 'ARCHIVED' ORDER BY created_at")]
+        switch = (await profile_lifecycle.load_settings(conn)).enabled
+        summaries = [await _summary(conn, _redis(request), profile_id, now, switch) for profile_id in ids]
+    return {"as_of": _iso(now), "summaries": summaries}
+
+
 @router.get("/{profile_id}/summary")
 async def profile_summary(
     profile_id: uuid.UUID,
@@ -221,37 +233,42 @@ async def profile_summary(
 ) -> dict[str, Any]:
     """Return the compact profile card, current daily P&L and explicit health-score components."""
     now = dt.datetime.now(UTC)
-    day_start = dt.datetime.combine(now.date(), dt.time.min, UTC)
     async with request.app.state.pool.acquire() as conn:
-        profile = await _profile(conn, profile_id)
-        latest = await conn.fetchrow(
-            f"""SELECT {_DECISION_COLUMNS} FROM ai_profile_decisions
-                WHERE mandate_id = $1 ORDER BY ts DESC, id DESC LIMIT 1""",
-            profile_id,
-        )
-        closed = await conn.fetchrow(
-            """SELECT COALESCE(sum(COALESCE(NULLIF(detail->>'realized_pnl', '')::numeric, 0)), 0) AS realized_pnl
-               FROM ai_profile_decisions WHERE mandate_id = $1 AND stage = 'EXIT' AND ts >= $2 AND ts < $3""",
-            profile_id, day_start, now,
-        )
-        open_positions = await conn.fetchrow(
-            """SELECT count(*) AS count, COALESCE(sum(COALESCE(unrealized_pnl, 0)), 0) AS unrealized
-               FROM paper_positions WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0""",
-            mandate_instance_id(profile_id),
-        )
-        session = await conn.fetchrow(
-            "SELECT last_pnl FROM ai_mandate_daily_sessions WHERE mandate_id = $1 AND session_date = $2",
-            profile_id, now.date(),
-        )
-        failed_runs = int(await conn.fetchval(
-            """SELECT count(DISTINCT r.id) FROM debate_runs r
-               JOIN ai_profile_decisions d ON d.run_id = r.id AND d.mandate_id = $1
-                    AND d.stage = 'GATE' AND d.outcome = 'ACCEPTED'
-               WHERE r.status = 'FAILED' AND COALESCE(r.completed_at, r.created_at) >= $2""",
-            profile_id, now - dt.timedelta(hours=24),
-        ) or 0)
         switch = (await profile_lifecycle.load_settings(conn)).enabled
-    quotes = await _quote_freshness(_redis(request), list(profile["instruments"] or []))
+        return await _summary(conn, _redis(request), profile_id, now, switch)
+
+
+async def _summary(conn: Any, redis: Any, profile_id: uuid.UUID, now: dt.datetime, switch: bool) -> dict[str, Any]:
+    """One profile's summary; the single and the bulk route share it."""
+    day_start = dt.datetime.combine(now.date(), dt.time.min, UTC)
+    profile = await _profile(conn, profile_id)
+    latest = await conn.fetchrow(
+        f"""SELECT {_DECISION_COLUMNS} FROM ai_profile_decisions
+            WHERE mandate_id = $1 ORDER BY ts DESC, id DESC LIMIT 1""",
+        profile_id,
+    )
+    closed = await conn.fetchrow(
+        """SELECT COALESCE(sum(COALESCE(NULLIF(detail->>'realized_pnl', '')::numeric, 0)), 0) AS realized_pnl
+           FROM ai_profile_decisions WHERE mandate_id = $1 AND stage = 'EXIT' AND ts >= $2 AND ts < $3""",
+        profile_id, day_start, now,
+    )
+    open_positions = await conn.fetchrow(
+        """SELECT count(*) AS count, COALESCE(sum(COALESCE(unrealized_pnl, 0)), 0) AS unrealized
+           FROM paper_positions WHERE instance_id = $1 AND status = 'OPEN' AND quantity > 0""",
+        mandate_instance_id(profile_id),
+    )
+    session = await conn.fetchrow(
+        "SELECT last_pnl FROM ai_mandate_daily_sessions WHERE mandate_id = $1 AND session_date = $2",
+        profile_id, now.date(),
+    )
+    failed_runs = int(await conn.fetchval(
+        """SELECT count(DISTINCT r.id) FROM debate_runs r
+           JOIN ai_profile_decisions d ON d.run_id = r.id AND d.mandate_id = $1
+                AND d.stage = 'GATE' AND d.outcome = 'ACCEPTED'
+           WHERE r.status = 'FAILED' AND COALESCE(r.completed_at, r.created_at) >= $2""",
+        profile_id, now - dt.timedelta(hours=24),
+    ) or 0)
+    quotes = await _quote_freshness(redis, list(profile["instruments"] or []))
 
     realized = _decimal(closed["realized_pnl"] if closed else 0)
     unrealized = _decimal(open_positions["unrealized"] if open_positions else 0)

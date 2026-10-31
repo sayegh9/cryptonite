@@ -52,7 +52,7 @@ export function AutoTradeWorkspace() {
   const tab: ProfileTab = tabParam && TABS.includes(tabParam) ? tabParam : "timeline";
 
   const loadProfiles = useAutoTradeStore((s) => s.loadProfiles);
-  const loadSummary = useAutoTradeStore((s) => s.loadSummary);
+  const loadSummaries = useAutoTradeStore((s) => s.loadSummaries);
   const headingRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -76,8 +76,8 @@ export function AutoTradeWorkspace() {
   // The list (and each card's summary) refreshes every 10 s while visible; other workspaces' writes refresh it at once
   const refreshList = useCallback(async () => {
     await loadProfiles();
-    for (const p of useAutoTradeStore.getState().profiles) void loadSummary(p.id);
-  }, [loadProfiles, loadSummary]);
+    await loadSummaries();
+  }, [loadProfiles, loadSummaries]);
   useVisiblePoll(() => void refreshList(), LIST_POLL_MS, view === "list");
   useEffect(() => {
     const onUpdate = () => void refreshList();

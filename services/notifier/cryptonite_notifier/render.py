@@ -87,6 +87,8 @@ def alert_text(alert: dict[str, Any]) -> tuple[str, str]:
     profile = alert.get("mandate", "Profile")
     if kind == "PROFILE_BREAKER":
         return f"{profile} · breaker", f"Profile paused: {alert.get('reason', '')}. Exits continue."
+    if kind == "PROFILE_BREAKER_RESUMED":
+        return f"{profile} · resumed", f"Profile resumed automatically: {alert.get('reason', '')}."
     if kind == "PROFILE_FILL":
         return f"{profile} · fill", (
             f"{alert.get('side')} {alert.get('market')} {alert.get('instrument_id')} · {alert.get('mode')}\n"

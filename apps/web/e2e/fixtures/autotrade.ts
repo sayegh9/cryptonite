@@ -137,6 +137,8 @@ export async function mockAutoTrade(page: Page, opts: { profiles?: ReturnType<ty
 
     if (method === "GET" && path === "/mandates") return json(route, { mandates: be.profiles });
     if (method === "GET" && (m = path.match(/^\/mandates\/([^/]+)$/))) return byId(m[1]) ? json(route, byId(m[1])) : json(route, { detail: "Mandate not found" }, 404);
+    if (method === "GET" && path === "/profiles/summaries")
+      return json(route, { as_of: "2026-10-30T10:00:00Z", summaries: be.profiles.filter((p) => p.status !== "ARCHIVED").map((p) => summary(p.id, { status: p.status })) });
     if (method === "GET" && (m = path.match(/^\/profiles\/([^/]+)\/summary$/))) return json(route, summary(m[1], { status: byId(m[1])?.status }));
     if (method === "GET" && (m = path.match(/^\/profiles\/([^/]+)\/decisions$/)))
       return json(route, {
