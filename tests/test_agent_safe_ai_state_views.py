@@ -26,6 +26,11 @@ VIEWS = {
         "session_lock_fired_at",
         # migration 050 (ADR 0011): the profile columns
         "environment", "markets", "direction", "style", "max_open_positions", "dry_run", "paused_reason",
+        # migration 053 (P3): profile limits and the open-position count, appended
+        "max_leverage", "max_risk_per_trade_pct", "veto_window_s", "max_debates_per_day",
+        "exit_tp_r", "exit_tp1_scale_pct", "exit_trail_activate_pct", "exit_trail_pct",
+        "exit_max_hold_hours", "notify_level", "breaker_max_loss_streak",
+        "breaker_max_reject_streak", "created_at", "open_positions",
     ],
     "agent_safe_debate_verdicts": [
         "run_id", "instrument_id", "status", "trigger_source", "created_at", "completed_at", "failure_reason",

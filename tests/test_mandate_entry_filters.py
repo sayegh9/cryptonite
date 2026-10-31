@@ -123,7 +123,7 @@ async def test_route_entry_refuses_a_reward_risk_below_the_minimum(h, routing):
     assert [low[0], ok[0], unpriced[0]] == ["NO_TRADE", "PENDING_APPROVAL", "NO_TRADE"]
     assert await h.pool.fetchval(
         "SELECT reason FROM ai_profile_decisions WHERE run_id = $1 AND stage = 'ROUTE'", unpriced_id
-    ) == "STOP_REQUIRED"
+    ) == "NO_STRUCTURE"  # P3 D-P3-7: an unmeasurable spot stop is refused as NO_STRUCTURE
 
 
 async def test_route_entry_refuses_spot_buy_without_a_structural_stop(h, routing):
@@ -135,7 +135,7 @@ async def test_route_entry_refuses_spot_buy_without_a_structural_stop(h, routing
     assert res[0] == "NO_TRADE"
     assert await h.pool.fetchval(
         "SELECT reason FROM ai_profile_decisions WHERE run_id = $1 AND stage = 'ROUTE'", run_id
-    ) == "STOP_REQUIRED"
+    ) == "NO_STRUCTURE"
     assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals") == 0
 
 
