@@ -1,7 +1,7 @@
 """The Phase 1 profile block is exact, bounded, and treats names as data."""
 
-import json
 import importlib
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,3 +25,42 @@ def test_profile_context_quotes_name_and_marks_missing_count_unknown():
     assert "Allowed markets: PERP, SPOT" in block
     assert "Style and timeframes: SWING (1h decision, 4h higher timeframe)" in block
     assert block.endswith("the system makes the final choice of market and sets stops, targets and leverage.")
+
+
+async def test_levels_use_the_candidate_only_when_it_is_this_sides_structure(monkeypatch):
+    """D-P3-7: a verdict against the scanner's setup gets lake levels for its own side; a matching one keeps the
+    candidate's; a coin no profile owns keeps the candidate's levels unchanged."""
+    main = importlib.import_module("main")
+    calls = []
+
+    async def fake_levels(pool, instrument_id, style, side):
+        calls.append((style, side))
+        return 61000.0, 54000.0, "scanner levels from closed lake bars", "structure:swing-trend-pullback-short-1h"
+
+    class Pool:
+        def acquire(self):
+            class Ctx:
+                async def __aenter__(self):
+                    return None
+
+                async def __aexit__(self, *exc):
+                    return False
+            return Ctx()
+
+    monkeypatch.setattr(main, "on_demand_levels", fake_levels)
+    owner = SimpleNamespace(style="SWING")
+    long_candidate = {"trigger_source": "scanner",
+                      "candidate_payload": json.dumps({"suggested_stop": 57000, "suggested_target": 66000})}
+
+    assert await main.debate_levels(Pool(), owner, long_candidate, "BTCUSDT.BINANCE", "SELL") == (
+        61000.0, 54000.0, "scanner levels from closed lake bars", "structure:swing-trend-pullback-short-1h")
+    assert (await main.debate_levels(Pool(), owner, long_candidate, "BTCUSDT.BINANCE", "BUY"))[::3] == (57000.0, "candidate")
+    brain = {"trigger_source": "brain_on_demand"}
+    assert (await main.debate_levels(Pool(), owner, brain, "BTCUSDT.BINANCE", "BUY"))[3].startswith("structure:")
+    assert calls == [("SWING", "SELL"), ("SWING", "BUY")]
+
+    async def no_owner(conn, instrument_id, mandate_id=None):
+        return None
+
+    monkeypatch.setattr(main, "resolve_profile", no_owner)
+    assert (await main.debate_levels(Pool(), None, long_candidate, "BTCUSDT.BINANCE", "SELL"))[:2] == (57000.0, 66000.0)

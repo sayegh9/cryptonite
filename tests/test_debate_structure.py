@@ -41,11 +41,13 @@ def test_closed_intraday_bars_produce_sided_levels_and_stale_bars_refuse(monkeyp
 
     monkeypatch.setattr(structure, "AnalyticsQueryEngine", Lake)
     now = start + 3120 * minute
-    long_stop, long_target, _ = structure.levels_from_lake("BTCUSDT", "INTRADAY", "BUY", 2, decision_ns=now)
-    short_stop, short_target, _ = structure.levels_from_lake("BTCUSDT", "INTRADAY", "SELL", 2, decision_ns=now)
+    long_stop, long_target, _, long_source = structure.levels_from_lake("BTCUSDT", "INTRADAY", "BUY", 2, decision_ns=now)
+    short_stop, short_target, _, short_source = structure.levels_from_lake("BTCUSDT", "INTRADAY", "SELL", 2, decision_ns=now)
+    # D-P3-7: the risk config is the first preset the style runs for that side, and the source names it
+    assert (long_source, short_source) == ("structure:scalp-multi-tf", "structure:scalp-multi-tf-short")
     assert long_stop is not None and long_target is not None and long_stop < long_target
     assert short_stop is not None and short_target is not None and short_stop > short_target
-    stop, target, reason = structure.levels_from_lake(
+    stop, target, reason, _ = structure.levels_from_lake(
         "BTCUSDT", "INTRADAY", "BUY", 2, decision_ns=now + 31 * minute)
     assert (stop, target) == (None, None)
     assert reason == "latest 15m bar is older than two bars"
@@ -53,6 +55,6 @@ def test_closed_intraday_bars_produce_sided_levels_and_stale_bars_refuse(monkeyp
     # Whole-candle gaps are absent from the resampled frame even though every remaining candle is complete.
     gapped = bars.filter(~pl.col("bar_open_ns").is_between(start + 600 * minute, start + 614 * minute))
     monkeypatch.setattr(Lake, "query_bars_df", lambda self, *args, **kwargs: gapped)
-    stop, target, reason = structure.levels_from_lake("BTCUSDT", "INTRADAY", "BUY", 2, decision_ns=now)
+    stop, target, reason, _ = structure.levels_from_lake("BTCUSDT", "INTRADAY", "BUY", 2, decision_ns=now)
     assert (stop, target) == (None, None)
     assert reason == "fewer than 200 contiguous 15m bars"

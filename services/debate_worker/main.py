@@ -132,6 +132,31 @@ def candidate_levels(payload: dict) -> tuple[float | None, float | None]:
     return (stop, target) if stop is not None and target is not None else (None, None)
 
 
+def levels_match_side(stop: float | None, target: float | None, recommendation: str) -> bool:
+    """Whether (stop, target) are a structure for this verdict's side: a long's stop is below its target."""
+    if stop is None or target is None:
+        return False
+    return (stop < target) == (recommendation == "BUY")
+
+
+async def debate_levels(pg_pool, gate_profile, payload: dict, instrument_id: str,
+                        recommendation: str) -> tuple[float | None, float | None, str, str | None]:
+    """D-P3-7: (stop, target, refusal reason, source) for the verdict's side.
+
+    A scanner candidate's levels are used when they are this side's structure. Otherwise (a Brain or Inbox debate,
+    or a verdict against the scanner's setup) a profile-owned coin gets levels from closed lake bars; a coin no
+    profile owns keeps the candidate's levels, as before."""
+    stop_loss, take_profit = candidate_levels(payload)
+    source = "candidate" if stop_loss is not None else None
+    if recommendation == "HOLD" or levels_match_side(stop_loss, take_profit, recommendation):
+        return stop_loss, take_profit, "scanner candidate has no usable levels", source
+    async with pg_pool.acquire() as conn:
+        profile = gate_profile or await resolve_profile(conn, instrument_id, payload.get("mandate_id"))
+    if profile is None:
+        return stop_loss, take_profit, "scanner candidate has no usable levels", source
+    return await on_demand_levels(pg_pool, instrument_id, profile.style, recommendation)
+
+
 def profile_context_block(profile, open_positions: int | None) -> str:
     """Render the fixed profile guidance once; the operator's name is JSON-quoted data."""
     decision_tf, higher_tf = ("15m", "1h") if profile.style == "INTRADAY" else ("1h", "4h")
@@ -517,6 +542,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         # sized at >= 5% escalates to the full fleet, whatever its conviction.
         # Operator-triggered debates always get the full fleet.
         lite = None
+        preferred_market = None  # D-P3-9: the deciding verdict's optional market preference; routing clamps it
         if trigger_source in AUTOMATIC_SOURCES:
             lite_prompt = f"{context_text}\n\nDebate and decide for {instrument_id}."
             lite = (await run_agent(DEBATE_LITE, lite_prompt)).output
@@ -526,6 +552,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 lite = None
             else:
                 decision = lite.recommendation
+                preferred_market = lite.preferred_market
                 if decision != "HOLD" and lite.conviction_score < LITE_MIN_CONVICTION:
                     decision = "HOLD"  # a weak, small verdict is not worth staging
                 conviction = lite.conviction_score
@@ -561,6 +588,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
             pm_prompt = f"Based on the following debate transcript for {instrument_id}, make the final portfolio decision.\n\n{full_transcript}"
             # Validated PortfolioDecision; an invalid or missing verdict fails the run (no HOLD default)
             pm_decision = (await run_agent(pm, pm_prompt)).output
+            preferred_market = pm_decision.preferred_market
             decision = pm_decision.recommendation
             conviction = pm_decision.conviction_score
             allocation = pm_decision.allocation_pct
@@ -597,15 +625,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         marks = await read_marks(redis_client)  # B3: the mandate's room at live marks, not entry prices
         # Scanner candidates carry their own levels. Operator-triggered debates derive fresh levels from
         # closed lake bars using the scanner's calculation; absence stays a NO_STRUCTURE route refusal.
-        stop_loss, take_profit = candidate_levels(payload)
-        structure_reason = "scanner candidate has no usable levels"
-        if trigger_source not in AUTOMATIC_SOURCES and recommendation != "HOLD":
-            async with pg_pool.acquire() as structure_conn:
-                structure_profile = gate.profile or await resolve_profile(
-                    structure_conn, instrument_id, payload.get("mandate_id"))
-            if structure_profile is not None:
-                stop_loss, take_profit, structure_reason = await on_demand_levels(
-                    pg_pool, instrument_id, structure_profile.style, recommendation)
+        stop_loss, take_profit, structure_reason, levels_source = await debate_levels(
+            pg_pool, gate.profile, payload, instrument_id, recommendation)
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 # Durable finalization fence: lock the row FOR UPDATE; only the holder of the current
@@ -667,7 +688,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                     conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
                     mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
                     reference_price=decision_price, stop_loss=stop_loss, take_profit=take_profit,
-                    structure_reason=structure_reason,
+                    structure_reason=structure_reason, levels_source=levels_source,
+                    preferred_market=preferred_market,
                     redis=redis_client, grade_context=(brief_data or {}).get("grade_context"),
                 )
                 await conn.execute(

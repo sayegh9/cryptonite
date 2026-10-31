@@ -22,6 +22,7 @@ MARGIN = "BTCUSDT-MARGIN.BINANCE"
 NOW = datetime.datetime(2026, 10, 23, 12, tzinfo=datetime.UTC)
 BULL = {"trend_4h": "BULL", "trend_1h": "BULL", "trend_15m": "BULL", "adx": 30,
         "plus_di": 30, "minus_di": 10, "atr_pct": 1, "atr_pct_q90": 2}
+BEAR = {**BULL, "trend_4h": "BEAR", "trend_1h": "BEAR", "trend_15m": "BEAR", "plus_di": 10, "minus_di": 30}
 
 
 @pytest.fixture(scope="module")
@@ -76,13 +77,13 @@ async def profile(h, *, market="SPOT", markets=None, level=1, lock=True, **chang
 
 
 async def route(h, mid=None, *, recommendation="BUY", stop_loss=57000, take_profit=66000,
-                reference_price=60000, **kw):
+                reference_price=60000, grade_context=BULL, **kw):
     run = uuid.uuid4()
     await h.pool.execute("INSERT INTO debate_runs(id,instrument_id,status,trigger_source) VALUES($1,$2,'RUNNING','test')", run, SPOT)
     async with h.pool.acquire() as conn:
         result = await routing.route_entry(conn, run, SPOT, recommendation, .8, 2.5, mandate_id=str(mid) if mid else None,
                                            now=NOW, stop_loss=stop_loss, take_profit=take_profit, reference_price=reference_price,
-                                           redis=h.redis, grade_context=BULL, **kw)
+                                           redis=h.redis, grade_context=grade_context, **kw)
     return result, run
 
 
@@ -100,6 +101,35 @@ async def test_entry_without_structure_is_refused_in_each_market(h, market):
     )).startswith("NO_STRUCTURE: ")
     assert await h.pool.fetchval("SELECT count(*) FROM ai_approvals WHERE mandate_id=$1", m.id) == 0
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands WHERE mandate_id=$1", m.id) == 0
+
+
+@pytest.mark.parametrize("direction, expected", [("BOTH", "PENDING_APPROVAL"), ("LONG", "NO_TRADE")])
+async def test_a_sell_verdict_with_short_structure_routes_a_short_only_where_allowed(h, direction, expected):
+    """D-P3-7 case 2: a verdict against a long setup arrives with the short levels code derived for it."""
+    m = await profile(h, market="PERP", direction=direction)
+    (status, _), run = await route(h, m.id, recommendation="SELL", stop_loss=61500, take_profit=54000,
+                                   levels_source="structure:swing-trend-pullback-short-1h", grade_context=BEAR)
+    assert status == expected, await h.pool.fetchval(
+        "SELECT detail->>'explanation' FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run)
+    row = await h.pool.fetchrow(
+        "SELECT reason, detail FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run)
+    if expected == "NO_TRADE":
+        assert row["reason"] == "DIRECTION_NOT_ALLOWED"
+    else:
+        payload = json.loads(await h.pool.fetchval("SELECT payload FROM ai_approvals WHERE source_ref=$1", str(run)))
+        assert payload["perp_side"] == "SHORT" and payload["stop_loss"] == 61500
+        assert json.loads(row["detail"])["levels_source"] == "structure:swing-trend-pullback-short-1h"
+
+
+@pytest.mark.parametrize("suggested, used", [("SPOT_MARGIN", "SPOT_MARGIN"), ("SPOT", "PERP")])
+async def test_a_market_suggestion_is_used_only_inside_the_profile(h, suggested, used):
+    """D-P3-9: a valid suggestion picks among the profile's markets; SPOT for a 3x long is ignored and logged."""
+    m = await profile(h, market="PERP", markets=["PERP", "SPOT_MARGIN"], direction="BOTH")
+    (status, _), run = await route(h, m.id, preferred_market=suggested)
+    assert status == "PENDING_APPROVAL"
+    detail = json.loads(await h.pool.fetchval(
+        "SELECT detail FROM ai_profile_decisions WHERE run_id=$1 AND stage='ROUTE'", run))
+    assert (detail["market_suggested"], detail["market_used"]) == (suggested, used)
 
 
 async def test_spot_entry_carries_structural_stop_without_spot_stop_price(h):

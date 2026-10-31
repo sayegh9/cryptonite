@@ -96,7 +96,25 @@ async def resolve_profile(conn, instrument_id: str, mandate_id: str | None = Non
     return Mandate.from_row(row) if row else None
 
 
-async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: str) -> tuple[str | None, str]:
+def choose_market(side: str, mandate: Mandate, preferred: str | None) -> Market | None:
+    """D-P3-9: the verdict's preferred market when the profile allows it for this side, else ``select_market``.
+
+    SPOT is valid only for a 1x long, exactly as ``select_market`` would allow it."""
+    trade_side = "LONG" if side == "BUY" else "SHORT"
+    selected = select_market(trade_side, mandate.max_leverage, mandate.markets)
+    try:
+        wanted = Market(preferred) if preferred else None
+    except ValueError:
+        return selected
+    if wanted is None or wanted not in {Market(m) for m in mandate.markets}:
+        return selected
+    if wanted is Market.SPOT and not (trade_side == "LONG" and mandate.max_leverage == 1):
+        return selected
+    return wanted
+
+
+async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: str,
+                              preferred_market: str | None = None) -> tuple[str | None, str]:
     """ADR 0011: apply the profile entry refusals in their specified order, then select its market."""
     if mandate.status.value != "ACTIVE":
         return "PROFILE_NOT_RUNNING", instrument_id
@@ -109,7 +127,7 @@ async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: 
         return "MAX_OPEN_POSITIONS", instrument_id
     if await profile_lifecycle.coin_lock_conflict(conn, mandate, instrument_id, "debate"):
         return "COIN_LOCKED", instrument_id
-    market = select_market("LONG" if side == "BUY" else "SHORT", mandate.max_leverage, mandate.markets)
+    market = choose_market(side, mandate, preferred_market)
     if market is None:
         return "NO_MARKET", instrument_id
     instrument = instrument_for(instrument_id, market)
@@ -496,6 +514,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
                       take_profit: float | None = None,
                       reference_price: float | None = None,
                       structure_reason: str | None = None,
+                      levels_source: str | None = None,
+                      preferred_market: str | None = None,
                       redis=None,
                       grade_context: dict[str, Any] | None = None) -> tuple[str, Mandate | None]:
     """Returns (debate_runs status, mandate). ``decision_trace_id`` (R7.4) rides in the command and
@@ -515,10 +535,16 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         return await _no_trade(conn, run_id, instrument_id, mandate, "HOLD")
     instrument = await reduction_instrument(conn, mandate, instrument_id, side)
     if instrument is None:
-        reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side)
+        reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side, preferred_market)
         if reason:
             return await _no_trade(conn, run_id, instrument, mandate, reason)
     routed_market = market_of(instrument)
+    # D-P3-7/9 provenance on the ROUTE row: where the levels came from and the market the verdict asked for
+    route_detail: dict[str, Any] = {"market_used": routed_market.value}
+    if preferred_market:
+        route_detail["market_suggested"] = preferred_market
+    if levels_source:
+        route_detail["levels_source"] = levels_source
     if routed_market is Market.SPOT and side == "BUY":
         # A profile spot entry must have the structural stop used by the exit monitor.
         # Refuse before creating an ASK/VETO approval, including Brain and Inbox debates.
@@ -603,12 +629,13 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     command_type = "CLOSE_POSITION" if action is ActionClass.REDUCE_RISK and market in (Market.PERP, Market.SPOT_MARGIN) else "SUBMIT_ORDER"
     if action is ActionClass.REDUCE_RISK and mandate.autonomy_level >= AutonomyLevel.L2:
         await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")
-        await record_decision(conn, mandate.id, "ROUTE", "ENQUEUED", instrument_id=instrument, run_id=run_id)
+        await record_decision(conn, mandate.id, "ROUTE", "ENQUEUED", instrument_id=instrument, run_id=run_id,
+                              **route_detail)
         return "COMPLETED", mandate
     if timeout_policy_for(action, mandate.autonomy_level, in_active_hours(mandate.active_hours_utc, now)) is None:
         await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")  # ADD_RISK at L3: no approval needed
         await record_decision(conn, mandate.id, "ROUTE", "DRY_RUN_ROUTED" if mandate.dry_run else "ENQUEUED",
-                              instrument_id=instrument, run_id=run_id)
+                              instrument_id=instrument, run_id=run_id, **route_detail)
         return "COMPLETED", mandate
     approval = await _approval(conn, mandate, action, command_type, payload, summary, "debate", run_id, now)
     if approval is None:
@@ -620,7 +647,7 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         logger.warning("Debate %s was already routed (approval %s): returning %s, nothing queued", run_id, existing, status)
         return status, mandate
     outcome = "VETO_WINDOW" if action is ActionClass.ADD_RISK and mandate.autonomy_level == AutonomyLevel.L2 else "APPROVAL_CREATED"
-    await record_decision(conn, mandate.id, "ROUTE", outcome, instrument_id=instrument, run_id=run_id)
+    await record_decision(conn, mandate.id, "ROUTE", outcome, instrument_id=instrument, run_id=run_id, **route_detail)
     return "PENDING_APPROVAL", mandate
 
 
