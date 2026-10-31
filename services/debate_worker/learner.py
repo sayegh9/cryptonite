@@ -14,6 +14,7 @@ from pathlib import Path
 
 import asyncpg
 import redis.asyncio as redis
+from candidate_outcomes import label_candidates
 from cryptonite_agents.gateway import BudgetGuard, Gateway
 from cryptonite_storage.queries import AnalyticsQueryEngine
 from outcomes import label_pending
@@ -38,14 +39,19 @@ async def main() -> None:
     logger.info("Learner running every %ds", INTERVAL_S)
     while True:
         started = time.monotonic()
-        labelled = reflected = 0
+        labelled = reflected = cand_labelled = 0
         try:
             labelled = await label_pending(pool, lake)
+            try:
+                cand_labelled = await label_candidates(pool, lake)
+            except Exception as e:  # candidate labels are best-effort
+                logger.exception("Candidate labelling failed: %s", e)
             reflected = await reflections.process_pending_reflections()
         except Exception as e:  # one bad pass must not stop learning
             logger.exception("Learner pass failed: %s", e)
         try:
             await redis_client.set(HEARTBEAT_KEY, json.dumps({"at": time.time(), "labelled": labelled,
+                                                              "candidates_labelled": cand_labelled,
                                                               "reflections": reflected}), ex=INTERVAL_S * 3)
         except Exception:
             pass
