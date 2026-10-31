@@ -84,6 +84,7 @@ from cryptonite_schemas.profile import (
     Market,
     NotifyLevel,
     Style,
+    default_daily_loss_pct,
 )
 from cryptonite_schemas.session import (
     lock_usd,
@@ -541,7 +542,14 @@ async def create_mandate(req: MandateIn, request: Request, auth: dict = Depends(
             raise HTTPException(status_code=409, detail=stopped)
     await require_totp(request, auth, req.totp_code)
     try:
-        m = Mandate(id=uuid.uuid4(), **req.model_dump(exclude={"totp_code", "source"}, exclude_none=True))
+        values = req.model_dump(exclude={"totp_code", "source"}, exclude_none=True)
+        if "daily_loss_limit_pct" not in req.model_fields_set:
+            # The create form leaves this blank for the ADR 0011 default. Resolve it before the stopped row is
+            # inserted, so the immediate start validates against the same value that is persisted.
+            values["daily_loss_limit_pct"] = default_daily_loss_pct(
+                req.max_risk_per_trade_pct, req.max_drawdown_pct,
+            )
+        m = Mandate(id=uuid.uuid4(), **values)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e.errors()[0]["msg"]))
     async with request.app.state.pool.acquire() as conn:

@@ -52,6 +52,41 @@ async def new_profile(h, *, status="ACTIVE", instruments=(MARGIN,), budget=1000)
 
 
 @pytest.mark.parametrize(
+    ("risk", "drawdown", "daily_loss", "expected"),
+    [
+        ("1", "20", None, D("3")),
+        ("2", "4", None, D("4")),
+        ("1", "20", "2", D("2")),
+    ],
+)
+async def test_create_defaults_daily_loss_only_when_omitted_and_starts(h, risk, drawdown, daily_loss, expected):
+    """Create persists the ADR 0011 default, capped by drawdown, and preserves an explicit limit."""
+    body = {
+        "name": f"daily-loss-{uuid.uuid4().hex[:8]}",
+        "capital_budget_usd": "1000",
+        "instruments": ["BTCUSDT.BINANCE"],
+        "max_position_pct": "10",
+        "max_risk_per_trade_pct": risk,
+        "max_drawdown_pct": drawdown,
+        "totp_code": h.totp.now(),
+    }
+    if daily_loss is not None:
+        body["daily_loss_limit_pct"] = daily_loss
+
+    async with h.client() as client:
+        response = await client.post("/api/v1/ai/mandates", headers=h.headers, json=body)
+
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created["started"] is True and created["start_error"] is None
+    stored = await h.pool.fetchrow(
+        "SELECT daily_loss_limit_pct, status FROM ai_mandates WHERE id = $1", uuid.UUID(created["id"]),
+    )
+    assert stored["daily_loss_limit_pct"] == expected
+    assert stored["status"] == "ACTIVE"
+
+
+@pytest.mark.parametrize(
     "path",
     [
         f"{BASE}/00000000-0000-0000-0000-000000000001/decisions",
