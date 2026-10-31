@@ -19,7 +19,7 @@ def test_proposal_defaults_daily_loss_normalizes_bare_assets_and_reads_only_allo
 
     monkeypatch.setattr(tools, "_readonly_rows", rows)
     monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT", "ETHUSDT"}))
-    result = tools.propose_profile.func({
+    result = tools._propose({
         "name": "BTC ETH swing", "coins": "BTC/ETH", "markets": ["PERP"],
         "style": "SWING", "direction": "BOTH", "max_leverage": 3,
     })
@@ -37,7 +37,7 @@ def test_proposal_invalid_schema_still_returns_card_data_and_unknown_feed(monkey
     """Cross-field errors produce INVALID while an unreadable feed stays an explicit warning."""
     monkeypatch.setattr(tools, "_readonly_rows", lambda *args, **kwargs: [])
     monkeypatch.setattr(tools, "_fed_symbols", lambda: None)
-    result = tools.propose_profile.func({
+    result = tools._propose({
         "name": "Spot short", "coins": ["BTCUSDT"], "markets": ["SPOT"],
         "direction": "SHORT", "max_leverage": 3, "max_risk_per_trade_pct": "2",
         "max_drawdown_pct": "4",
@@ -162,3 +162,24 @@ def test_decision_detail_reaches_the_brain_labelled_and_clipped():
     row = tools._decision_row({"id": 1, "reason_text": "x", "detail_json": {"explanation": "y" * 5000}})
     assert "detail_json" not in row and len(row["detail_text"]) == 1000
     assert row["detail_text"].startswith('{"explanation": "yyy')
+
+
+def test_a_brain_call_renders_a_card_through_the_backends_result_conversion(monkeypatch):
+    """Gate L regression (2026-10-31): the model saw no field names (a free-form spec) and the dict result reached
+    the widget as Python repr, so no card rendered. The tool now has typed fields and returns JSON."""
+    import inspect
+
+    monkeypatch.setattr(tools, "_readonly_rows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT", "ETHUSDT"}))
+    params = inspect.signature(tools.propose_profile.func).parameters
+    required = {n for n, p in params.items() if p.default is inspect.Parameter.empty}
+    assert required == {"name", "coins", "markets", "direction"}
+    assert params["mode"].default == "ASK" and params["dry_run"].default is True
+
+    result = tools.propose_profile.func(name="BTC ETH swing", coins=["BTC", "ETH"], markets=["PERP"],
+                                        direction="BOTH", max_leverage=3)
+    content = result if isinstance(result, str) else str(result)  # pydantic_ai_backend's tool_result conversion
+    widget = widget_for_tool("propose_profile", {}, call_id="call-1", content=content)
+    assert widget is not None and widget["status"] == "PROPOSED", content
+    assert widget["proposal"]["coins"] == ["BTCUSDT", "ETHUSDT"]
+    assert (widget["proposal"]["mode"], widget["proposal"]["dry_run"], widget["proposal"]["max_leverage"]) == ("ASK", True, 3)
