@@ -110,6 +110,14 @@ const PRESET_STATS = {
     "INTRADAY:SHORT": ["scalp-multi-tf-short", "trend-pullback-short", "bollinger-breakdown-short"],
     "INTRADAY:BOTH": ["scalp-multi-tf", "trend-pullback", "bollinger-breakout", "scalp-multi-tf-short", "trend-pullback-short", "bollinger-breakdown-short"],
   },
+  catalog: Object.fromEntries([
+    ...["rsi-oversold-reversal", "trend-pullback", "bollinger-breakout", "macd-momentum-shift"].map((s) => [s, { side: "LONG", timeframes: ["15m", "1h"] }]),
+    ...["trend-pullback-short", "bollinger-breakdown-short"].map((s) => [s, { side: "SHORT", timeframes: ["15m", "1h"] }]),
+    ...["scalp-multi-tf", "swing-trend-pullback-1h", "swing-sniper-pullback-15m", "swing-squeeze-breakout-1h"].map((s) => [s, { side: "LONG", timeframes: ["15m", "1h", "4h"] }]),
+    ...["scalp-multi-tf-short", "swing-trend-pullback-short-1h", "swing-sniper-pullback-short-15m", "swing-squeeze-breakdown-short-1h"].map((s) => [s, { side: "SHORT", timeframes: ["15m", "1h", "4h"] }]),
+  ]),
+  default_timeframes: { SWING: ["1h", "4h"], INTRADAY: ["15m", "1h"] },
+  profile_timeframes: ["15m", "1h", "4h"],
 };
 
 export interface Backend {

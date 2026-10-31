@@ -151,6 +151,12 @@ export interface PresetStats {
   results: PresetStatRow[];
   /** `preset_ids_for(style, direction)` keyed "STYLE:DIRECTION" */
   preset_ids: Record<string, string[]>;
+  /** Every selectable scanner preset (P3b) */
+  catalog: Record<string, { side: "LONG" | "SHORT"; timeframes: string[] }>;
+  /** STYLE_TIMEFRAMES: the timeframes a style scans when the profile picks none */
+  default_timeframes: Record<string, string[]>;
+  /** The timeframes a profile may pick */
+  profile_timeframes: string[];
 }
 
 export interface ProfileEstimate {
@@ -200,6 +206,9 @@ export interface ProfileDraft {
   mode: ExecutionMode;
   dry_run: boolean;
   preset: FieldPreset | null;
+  /** Preset slugs and timeframes; empty: the style defaults */
+  strategies: string[];
+  timeframes: string[];
 }
 
 export type FieldPreset = "conservative-swing" | "leveraged-trend" | "intraday-active" | "short-only-hedge";

@@ -1,15 +1,17 @@
 "use client";
 
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { coinOf, errorCopy, isTotpError, MARKET_LABEL, MODE_LABEL } from "@/lib/autotrade/copy";
+import { picksText, type Picks } from "@/lib/autotrade/picks";
 import { parseCoins } from "@/lib/autotrade/presets";
 import type { ApiError, ExecutionMode, Market, Profile } from "@/lib/autotrade/types";
 import { useAutoTradeStore } from "@/lib/stores/useAutoTradeStore";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 import { btnPrimary, btnSecondary, ConfirmDialog, TotpDialog } from "../Dialogs";
+import { StrategyPicker } from "../wizard/StrategyPicker";
 
-type Kind = "text" | "number" | "select" | "bool" | "markets";
+type Kind = "text" | "number" | "select" | "bool" | "markets" | "picks";
 interface Row {
   key: string;
   label: string;
@@ -36,6 +38,9 @@ const ROWS: Row[] = [
   { key: "capital_budget_usd", label: "Capital budget (USD)", kind: "number", value: (p) => s(p.capital_budget_usd) },
   { key: "style", label: "Style", kind: "select", value: (p) => p.style, options: [{ value: "SWING", label: "Swing (1h/4h)" }, { value: "INTRADAY", label: "Intraday (15m/1h)" }] },
   { key: "direction", label: "Direction", kind: "select", value: (p) => p.direction, options: [{ value: "LONG", label: "Long" }, { value: "SHORT", label: "Short" }, { value: "BOTH", label: "Long and short" }] },
+  { key: "picks", label: "Strategies and timeframes", kind: "picks",
+    value: (p) => JSON.stringify({ strategies: p.strategies ?? [], timeframes: p.timeframes ?? [] }),
+    display: (p) => picksText({ strategies: p.strategies ?? [], timeframes: p.timeframes ?? [] }) },
   { key: "execution_mode", label: "Mode", kind: "select", value: (p) => p.execution_mode, display: (p) => MODE_LABEL[p.execution_mode],
     options: (Object.keys(MODE_LABEL) as ExecutionMode[]).map((m) => ({ value: m, label: MODE_LABEL[m] })) },
   { key: "veto_window_s", label: "Veto window (seconds)", kind: "number", value: (p) => s(p.veto_window_s) },
@@ -76,6 +81,11 @@ export function SettingsTab({ profile: p }: { profile: Profile }) {
   const [totpError, setTotpError] = useState<string | null>(null);
   const [discard, setDiscard] = useState<string | null>(null);
   const uid = useId();
+  const presets = useAutoTradeStore((st) => st.presets);
+  const loadPresetStats = useAutoTradeStore((st) => st.loadPresetStats);
+  useEffect(() => {
+    void loadPresetStats();
+  }, [loadPresetStats]);
 
   const begin = (row: Row, force = false) => {
     const go = () => {
@@ -103,6 +113,7 @@ export function SettingsTab({ profile: p }: { profile: Profile }) {
       return { instruments: coins.flatMap((c) => markets.map((m) => `${c}${suffix[m]}.BINANCE`)), markets, allow_perps: markets.includes("PERP") };
     }
     if (row.kind === "bool") return { [row.key]: value === "true" };
+    if (row.kind === "picks") return { ...(JSON.parse(value) as Picks) };
     if (row.clearable && value.trim() === "") return row.value(p) === "" ? {} : { clear_limits: [row.key] };
     if (row.kind === "number") return { [row.key]: INT_KEYS.has(row.key) ? Number(value) : value.trim() };
     return { [row.key]: value };
@@ -147,6 +158,13 @@ export function SettingsTab({ profile: p }: { profile: Profile }) {
             ))}
           </fieldset>
         </div>
+      );
+    if (row.kind === "picks")
+      return presets.data ? (
+        <StrategyPicker stats={presets.data} style={p.style} direction={p.direction} value={JSON.parse(value) as Picks}
+          onChange={(v) => setValue(JSON.stringify(v))} />
+      ) : (
+        <p role="status" className="text-xs text-zinc-400">{presets.status === "error" ? "Strategy list unavailable." : "Loading strategies…"}</p>
       );
     if (row.kind === "select" || row.kind === "bool") {
       const opts = row.kind === "bool" ? [{ value: "true", label: "On" }, { value: "false", label: "Off" }] : row.options ?? [];

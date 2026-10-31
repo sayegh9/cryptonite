@@ -28,6 +28,8 @@ export const EMPTY_DRAFT: ProfileDraft = {
   mode: "ASK",
   dry_run: true,
   preset: null,
+  strategies: [],
+  timeframes: [],
 };
 
 export const FIELD_PRESETS: { id: FieldPreset; label: string; blurb: string; fields: Partial<ProfileDraft> }[] = [
@@ -62,7 +64,7 @@ export function applyFieldPreset(draft: ProfileDraft, id: FieldPreset): ProfileD
   if (!preset) return draft;
   // Fields a preset does not list go back to the schema defaults, so presets do not leak into each other
   const reset: Partial<ProfileDraft> = { max_debates_per_day: EMPTY_DRAFT.max_debates_per_day, max_drawdown_pct: EMPTY_DRAFT.max_drawdown_pct };
-  return { ...draft, ...reset, ...preset.fields, preset: id };
+  return { ...draft, ...reset, ...preset.fields, preset: id, strategies: [], timeframes: [] };
 }
 
 /** Copy a Brain proposal into the existing persisted wizard draft without changing its risk choices. */
@@ -94,6 +96,8 @@ export function draftFromProposal(p: ProfileProposalSpec): ProfileDraft {
     mode: p.mode,
     dry_run: p.dry_run,
     preset: null,
+    strategies: [...(p.strategies ?? [])],
+    timeframes: [...(p.timeframes ?? [])],
   };
 }
 
@@ -125,6 +129,8 @@ export function createBody(d: ProfileDraft): Record<string, unknown> {
     breaker_max_loss_streak: Number(d.breaker_max_loss_streak),
     breaker_max_reject_streak: Number(d.breaker_max_reject_streak),
     dry_run: d.dry_run,
+    strategies: d.strategies ?? [],
+    timeframes: d.timeframes ?? [],
   };
   for (const k of ["daily_loss_limit_pct", "exit_trail_activate_pct", "exit_trail_pct"] as const) {
     const v = optional(d[k]);

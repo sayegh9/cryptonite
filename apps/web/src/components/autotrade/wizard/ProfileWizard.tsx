@@ -9,7 +9,9 @@ import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { useAutoTradeStore } from "@/lib/stores/useAutoTradeStore";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 import { btnPrimary, btnSecondary, ConfirmDialog, TotpDialog } from "../Dialogs";
+import { effectivePresets, effectiveTimeframes } from "@/lib/autotrade/picks";
 import { ReplayStats } from "./ReplayStats";
+import { StrategyPicker } from "./StrategyPicker";
 
 const STEPS = ["Markets and capital", "Style and direction", "Risk and leverage", "Mode and review"] as const;
 const LOCK_HOLDING = new Set(["ACTIVE", "PAUSED", "HALTED", "STOPPING"]);
@@ -368,7 +370,7 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
               legend="Style"
               name={`${uid}-style`}
               value={draft.style}
-              onChange={(style) => set({ style })}
+              onChange={(style) => set({ style, strategies: [], timeframes: [] })}
               options={[
                 { value: "SWING", label: "Swing", help: "1h and 4h frames." },
                 { value: "INTRADAY", label: "Intraday", help: "15m and 1h frames." },
@@ -379,7 +381,10 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
                 legend="Direction"
                 name={`${uid}-direction`}
                 value={draft.direction}
-                onChange={(direction) => set({ direction })}
+                onChange={(direction) => set({
+                  direction,
+                  strategies: (draft.strategies ?? []).filter((s) => direction === "BOTH" || presets.data?.catalog[s]?.side === direction),
+                })}
                 options={[
                   { value: "LONG", label: "Long" },
                   { value: "SHORT", label: "Short", help: "Needs Spot Margin or Perpetuals." },
@@ -388,7 +393,12 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
               />
               {err("direction") && <p className="mt-1 text-xs text-red-300">{err("direction")}</p>}
             </div>
-            <ReplayStats presets={presets} coins={draft.coins} style={draft.style} direction={draft.direction} />
+            {presets.data && (
+              <StrategyPicker stats={presets.data} style={draft.style} direction={draft.direction}
+                value={{ strategies: draft.strategies ?? [], timeframes: draft.timeframes ?? [] }} onChange={(p) => set(p)} />
+            )}
+            <ReplayStats presets={presets} coins={draft.coins}
+              ids={presets.data ? effectivePresets(presets.data, draft.style, draft.direction, draft.strategies ?? []) : []} />
           </>
         )}
 
@@ -459,7 +469,8 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
                 <span className="block text-xs text-zinc-400">Simulate orders first. You can turn dry run off later.</span>
               </span>
             </label>
-            <Summary draft={draft} estimateText={estimate.data ? `${estimate.data.feed.not_in_feed.length} coin(s) outside the live feed` : "Feed coverage unknown"} presetIds={presets.data?.preset_ids[`${draft.style}:${draft.direction}`] ?? []} />
+            <Summary draft={draft} estimateText={estimate.data ? `${estimate.data.feed.not_in_feed.length} coin(s) outside the live feed` : "Feed coverage unknown"} presetIds={presets.data ? effectivePresets(presets.data, draft.style, draft.direction, draft.strategies ?? []) : []}
+              timeframes={presets.data ? effectiveTimeframes(presets.data, draft.style, draft.direction, { strategies: draft.strategies ?? [], timeframes: draft.timeframes ?? [] }) : []} />
           </>
         )}
 
@@ -517,14 +528,15 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
   );
 }
 
-function Summary({ draft: d, estimateText, presetIds }: { draft: ProfileDraft; estimateText: string; presetIds: string[] }) {
+function Summary({ draft: d, estimateText, presetIds, timeframes }: { draft: ProfileDraft; estimateText: string; presetIds: string[]; timeframes: string[] }) {
   const rows: [string, string][] = [
     ["Name", d.name || "—"],
     ["Coins", d.coins.join(", ") || "—"],
     ["Markets", d.markets.map((m) => MARKET_LABEL[m]).join(", ")],
     ["Capital budget", `$${d.capital_budget_usd}`],
     ["Style and direction", `${d.style === "SWING" ? "Swing" : "Intraday"} · ${d.direction === "BOTH" ? "Long and short" : d.direction === "LONG" ? "Long" : "Short"}`],
-    ["Scanner presets", presetIds.join(", ") || "—"],
+    ["Strategies", `${presetIds.join(", ") || "—"}${d.strategies?.length ? "" : " (style defaults)"}`],
+    ["Timeframes", `${timeframes.join(", ") || "—"}${d.timeframes?.length ? "" : " (style defaults)"}`],
     ["Risk per trade", `${d.max_risk_per_trade_pct}%`],
     ["Daily loss limit", d.daily_loss_limit_pct ? `${d.daily_loss_limit_pct}%` : "Default (3 × risk per trade, capped at maximum drawdown)"],
     ["Maximum drawdown", `${d.max_drawdown_pct}%`],

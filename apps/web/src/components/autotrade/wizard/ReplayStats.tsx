@@ -1,6 +1,6 @@
 "use client";
 
-import type { Direction, PresetStatRow, PresetStats, Style } from "@/lib/autotrade/types";
+import type { PresetStatRow, PresetStats } from "@/lib/autotrade/types";
 import type { Loadable } from "@/lib/stores/useAutoTradeStore";
 
 const pct = (v: number | null | undefined) => (v == null ? "—" : `${(v * 100).toFixed(1)}%`);
@@ -16,19 +16,18 @@ function warning(row: PresetStatRow | undefined, coin: string): { text: string; 
 
 /**
  * Per coin and scanner preset: the replay as the API serves it, with thin and negative results labelled and never hidden.
- * The preset ids come from the API's `preset_ids_for(style, direction)`.
+ * ``ids`` are the presets the profile runs (its picks, or the style defaults).
  */
-export function ReplayStats({ presets, coins, style, direction }: { presets: Loadable<PresetStats>; coins: string[]; style: Style; direction: Direction }) {
+export function ReplayStats({ presets, coins, ids }: { presets: Loadable<PresetStats>; coins: string[]; ids: string[] }) {
   if (presets.status === "error") return <p className="text-xs text-amber-300">Replay stats unavailable. You can continue, but results won&apos;t be shown.</p>;
   const data = presets.data;
   if (!data) return <p role="status" className="text-xs text-zinc-400">Loading replay stats…</p>;
-  const ids = data.preset_ids[`${style}:${direction}`] ?? [];
   if (coins.length === 0) return <p className="text-xs text-zinc-400">Choose coins in step 1 to see their replay results.</p>;
   return (
     <div className="space-y-2" data-testid="replay-stats">
       <p className="text-xs text-zinc-300">
-        This profile runs these scanner presets: <span className="font-mono text-zinc-100">{ids.join(", ")}</span>. They follow from style and
-        direction; they are not chosen separately.
+        Replay results for the ticked strategies: <span className="font-mono text-zinc-100">{ids.join(", ") || "none"}</span>. A losing or
+        thin replay is a warning only.
       </p>
       <div className="overflow-x-auto rounded-lg border border-zinc-800">
         <table className="w-full min-w-[560px] text-left text-xs">
