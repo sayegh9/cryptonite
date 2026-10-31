@@ -144,3 +144,14 @@ def test_proposal_widget_uses_tool_result_not_model_arguments():
     assert widget is not None and widget["kind"] == "profile_proposal"
     assert widget["proposal"]["name"] == "Review me" and widget["status"] == "INVALID"
     assert widget_for_tool("propose_profile", {}, call_id="proposal-2", content=content, status="DENIED") is None
+
+
+def test_brain_has_the_profiles_prompt_section_and_the_five_read_only_tools():
+    """P3.4 static check (no model): the prompt section is present once and the tools are registered as READ."""
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS
+    from cryptonite_agents.brain.toolset import BRAIN_TOOLS
+
+    assert BRAIN_INSTRUCTIONS.count("\nProfiles:\n") == 1
+    assert "Never say a profile is running, trading or paused unless a tool in this turn confirms it." in BRAIN_INSTRUCTIONS
+    names = {getattr(t, "name", getattr(t, "__name__", "")) for t in BRAIN_TOOLS}
+    assert {"list_profiles", "get_profile", "explain_decision", "profile_summary", "propose_profile"} <= names

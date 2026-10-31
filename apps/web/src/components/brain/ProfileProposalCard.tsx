@@ -11,6 +11,13 @@ import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { useAutoTradeStore } from "@/lib/stores/useAutoTradeStore";
 
 type SwitchState = "ON" | "OFF" | "UNKNOWN";
+
+/** The API's start refusal as an ApiError: its detail repeats the code ("COIN_LOCKED: ..."), which the copy drops. */
+function startError(err: CreatedProfile["start_error"]): ApiError {
+  if (!err) return { message: "Start refused." };
+  const prefix = `${err.code}: `;
+  return { code: err.code, message: err.detail.startsWith(prefix) ? err.detail.slice(prefix.length) : err.detail };
+}
 type CodeStep = "create" | "raise" | null;
 
 /** The operator reviews or creates a tool-produced profile through the existing Auto-Trade API. */
@@ -104,7 +111,7 @@ export function ProfileProposalCard({ widget }: { widget: ProfileProposalWidget 
 
   const statusText = created
     ? !created.started
-      ? `Created ${p.name}, but it couldn't start: ${errorCopy({ code: created.start_error?.code, message: created.start_error?.detail ?? "Start refused." })} Review the profile and try Start again.`
+      ? `Created ${p.name}, but it couldn't start: ${errorCopy(startError(created.start_error))} Review the profile and try Start again.`
       : raised
         ? `${p.name} is now in ${MODE_LABEL[p.mode]}.`
         : p.mode !== "ASK" && switchState === "OFF"
