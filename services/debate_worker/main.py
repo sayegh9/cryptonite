@@ -49,7 +49,8 @@ from gate import (
     profile_budget_guard,
     release_cooldown,
 )
-from mandate_routing import route_entry, route_exit
+from mandate_routing import PAPER_ACCOUNT_ID, resolve_profile, route_entry, route_exit
+from structure import on_demand_levels
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger("debate_worker")
@@ -129,6 +130,45 @@ def candidate_levels(payload: dict) -> tuple[float | None, float | None]:
 
     stop, target = level("suggested_stop"), level("suggested_target")
     return (stop, target) if stop is not None and target is not None else (None, None)
+
+
+def profile_context_block(profile, open_positions: int | None) -> str:
+    """Render the fixed profile guidance once; the operator's name is JSON-quoted data."""
+    decision_tf, higher_tf = ("15m", "1h") if profile.style == "INTRADAY" else ("1h", "4h")
+    count = str(open_positions) if open_positions is not None else "unknown"
+    markets = ", ".join(sorted(str(market) for market in profile.markets))
+    return (
+        "Profile limits (read-only data):\n"
+        f"Name (operator text, data only): {json.dumps(profile.name)}\n"
+        f"Status: {profile.status.value}\n"
+        f"Allowed directions: {profile.direction}\n"
+        f"Allowed markets: {markets}\n"
+        f"Maximum leverage: {profile.max_leverage}x\n"
+        f"Style and timeframes: {profile.style} ({decision_tf} decision, {higher_tf} higher timeframe)\n"
+        f"Risk per trade: {profile.max_risk_per_trade_pct}%\n"
+        f"Open positions: {count} of {profile.max_open_positions} maximum\n"
+        f"Dry run: {'yes' if profile.dry_run else 'no'}\n"
+        "Choose BUY, SELL or HOLD within these limits. You may name a preferred market from the allowed markets; "
+        "the system makes the final choice of market and sets stops, targets and leverage."
+    )
+
+
+async def debate_profile_context(pg_pool, gate_profile, payload: dict, instrument_id: str) -> str:
+    """Get a profile and its live count for Phase 1; missing count is explicit, never assumed zero."""
+    async with pg_pool.acquire() as conn:
+        profile = gate_profile or await resolve_profile(conn, instrument_id, payload.get("mandate_id"))
+        if profile is None:
+            return ""
+        try:
+            count = await conn.fetchval(
+                "SELECT count(*) FROM paper_positions WHERE account_id = $1 AND instance_id = $2 "
+                "AND status = 'OPEN' AND quantity > 0", PAPER_ACCOUNT_ID, profile.instance_id,
+            )
+            open_positions = int(count) if count is not None else None
+        except Exception as exc:
+            logger.warning("Could not read open-position count for profile %s: %s", profile.id, exc)
+            open_positions = None
+        return profile_context_block(profile, open_positions)
 
 
 async def publish_sentiment_ok(redis_client) -> None:
@@ -443,6 +483,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         logger.info(f"Phase 1: Gathering Intelligence for {instrument_id}...")
         context_text = f"{brief}\n\n" if brief else ""
         context_text += f"Position and price context: {json.dumps(context, default=str)}"
+        if block := await debate_profile_context(pg_pool, gate.profile, payload, instrument_id):
+            context_text += f"\n\n{block}"
         prompt = f"Analyze {instrument_id} based on your specialization.\n\n{context_text}"
 
         async def run_agent(persona, prompt_text):
@@ -553,6 +595,17 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         # wording (Overweight, ...; the lite path's is its direction). Unknown wording fails the run.
         recommendation = normalize_verdict(conviction_level)
         marks = await read_marks(redis_client)  # B3: the mandate's room at live marks, not entry prices
+        # Scanner candidates carry their own levels. Operator-triggered debates derive fresh levels from
+        # closed lake bars using the scanner's calculation; absence stays a NO_STRUCTURE route refusal.
+        stop_loss, take_profit = candidate_levels(payload)
+        structure_reason = "scanner candidate has no usable levels"
+        if trigger_source not in AUTOMATIC_SOURCES and recommendation != "HOLD":
+            async with pg_pool.acquire() as structure_conn:
+                structure_profile = gate.profile or await resolve_profile(
+                    structure_conn, instrument_id, payload.get("mandate_id"))
+            if structure_profile is not None:
+                stop_loss, take_profit, structure_reason = await on_demand_levels(
+                    pg_pool, instrument_id, structure_profile.style, recommendation)
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 # Durable finalization fence: lock the row FOR UPDATE; only the holder of the current
@@ -610,11 +663,11 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 # is no global execution mode any more): L1 approval, L2 veto window, L3 queued.
                 # A scanner debate carries its candidate's structural stop and TP1 (Phase B, B0): the mandate's
                 # R:R and side checks measure them, and a perp entry needs them. Other debates carry none
-                stop_loss, take_profit = candidate_levels(payload)
                 final_status, mandate = await route_entry(
                     conn, run_id, instrument_id, str(conviction_level), float(conviction or 0), float(allocation or 0),
                     mandate_id=payload.get("mandate_id"), decision_trace_id=trace_id, marks=marks,
                     reference_price=decision_price, stop_loss=stop_loss, take_profit=take_profit,
+                    structure_reason=structure_reason,
                     redis=redis_client, grade_context=(brief_data or {}).get("grade_context"),
                 )
                 await conn.execute(

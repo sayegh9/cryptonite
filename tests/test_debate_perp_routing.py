@@ -241,7 +241,7 @@ async def test_a_perp_entry_without_a_stop_and_target_is_refused(h, routing, cap
         status, mandate, run_id = await route(h, routing, levels={})
     assert status == "NO_TRADE" and mandate is not None
     assert await approval_of(h, run_id) is None
-    assert any("STOP_REQUIRED" in r.message for r in caplog.records)
+    assert any("NO_STRUCTURE" in r.message for r in caplog.records)
 
 
 async def test_a_stop_on_the_wrong_side_of_the_entry_is_refused(h, routing, caplog):
