@@ -22,6 +22,7 @@ import { createMandate, editMandate, resumeMandate } from "@/lib/mission/client"
 import { buildQuery, dispatchSwitchWorkspace } from "@/lib/navigation";
 import { HIGH_LEVERAGE_CONFIRM, usd } from "@/lib/leverage";
 import { PerpPlanPanel } from "@/components/brain/PerpPlanPanel";
+import { ProfileProposalCard } from "@/components/brain/ProfileProposalCard";
 import { isPerpInstrument } from "@/lib/brain/types";
 import type {
   BrainWidget,
@@ -1492,7 +1493,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
               disabled={staleBuild || busy || (needsMandate && !fix) || (!!fix && !fixReady) || (perpEntry && !fix && !perpReady)}
               title={staleBuild ? STALE_BUILD_TITLE : undefined}
               onClick={approve}
-              className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-zinc-950 hover:bg-amber-500 disabled:opacity-50"
+              className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-amber-950 hover:bg-amber-500 disabled:opacity-50"
             >
               {busy
                 ? "Sending…"
@@ -1714,6 +1715,8 @@ export function BrainWidgetView({ widget }: { widget: BrainWidget }) {
       return <DebateSummaryCard widget={widget} />;
     case "swing_radar":
       return <SwingRadarCard w={widget} />;
+    case "profile_proposal":
+      return <ProfileProposalCard widget={widget} />;
     default:
       return null;
   }

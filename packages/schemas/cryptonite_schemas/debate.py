@@ -51,6 +51,7 @@ class PortfolioDecision(BaseModel):
     conviction_score: float = Field(ge=0.0, le=1.0, description="0 = no conviction, 1 = certain")
     allocation_pct: float = Field(ge=0.0, le=MAX_ALLOCATION_PCT, description="Percent of equity, 0-25")
     reasoning: str
+    preferred_market: Literal["SPOT", "SPOT_MARGIN", "PERP"] | None = None
 
 
 class RiskDecision(BaseModel):
@@ -87,3 +88,4 @@ class LiteDebateDecision(BaseModel):
     conviction_score: float = Field(ge=0.0, le=1.0)
     allocation_pct: float = Field(ge=0.0, le=MAX_ALLOCATION_PCT, description="Percent of equity, 0-25")
     reasoning: str
+    preferred_market: Literal["SPOT", "SPOT_MARGIN", "PERP"] | None = None

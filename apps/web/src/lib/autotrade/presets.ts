@@ -1,5 +1,6 @@
 /** The four wizard field presets (spec "Four field presets"): starting values only; every field stays editable. */
 import type { FieldPreset, ProfileDraft } from "./types";
+import type { ProfileProposalSpec } from "@/lib/brain/types";
 
 /** ProfileFields defaults (packages/schemas/cryptonite_schemas/profile.py); the first-start wizard suggests dry run. */
 export const EMPTY_DRAFT: ProfileDraft = {
@@ -62,6 +63,38 @@ export function applyFieldPreset(draft: ProfileDraft, id: FieldPreset): ProfileD
   // Fields a preset does not list go back to the schema defaults, so presets do not leak into each other
   const reset: Partial<ProfileDraft> = { max_debates_per_day: EMPTY_DRAFT.max_debates_per_day, max_drawdown_pct: EMPTY_DRAFT.max_drawdown_pct };
   return { ...draft, ...reset, ...preset.fields, preset: id };
+}
+
+/** Copy a Brain proposal into the existing persisted wizard draft without changing its risk choices. */
+export function draftFromProposal(p: ProfileProposalSpec): ProfileDraft {
+  const text = (value: string | number | null | undefined) => value == null ? "" : String(value);
+  return {
+    ...EMPTY_DRAFT,
+    name: p.name,
+    coins: [...p.coins],
+    markets: [...p.markets],
+    capital_budget_usd: text(p.capital_budget_usd),
+    style: p.style,
+    direction: p.direction,
+    max_position_pct: text(p.max_position_pct),
+    max_leverage: text(p.max_leverage),
+    max_open_positions: text(p.max_open_positions),
+    max_debates_per_day: text(p.max_debates_per_day),
+    max_risk_per_trade_pct: text(p.max_risk_per_trade_pct),
+    daily_loss_limit_pct: text(p.daily_loss_limit_pct),
+    max_drawdown_pct: text(p.max_drawdown_pct),
+    exit_tp_r: text(p.exit_tp_r),
+    exit_tp1_scale_pct: text(p.exit_tp1_scale_pct),
+    exit_trail_activate_pct: text(p.exit_trail_activate_pct),
+    exit_trail_pct: text(p.exit_trail_pct),
+    exit_max_hold_hours: text(p.exit_max_hold_hours),
+    notify_level: p.notify_level,
+    breaker_max_loss_streak: text(p.breaker_max_loss_streak),
+    breaker_max_reject_streak: text(p.breaker_max_reject_streak),
+    mode: p.mode,
+    dry_run: p.dry_run,
+    preset: null,
+  };
 }
 
 const num = (s: string) => s.trim();

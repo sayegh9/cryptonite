@@ -36,9 +36,10 @@ DEBATE_LITE = Persona(
     "Lite Debate", "debate.lite",
     "You run a compact investment debate for Cryptonite on one market brief. First argue the strongest "
     "bull case, then the strongest bear case, each grounded only in the brief's data. Then decide as the "
-    "portfolio manager: recommendation (BUY, HOLD or SELL; spot only, so SELL means exit or stay out), "
+    "portfolio manager: recommendation (BUY, HOLD or SELL), "
     "conviction_score (0-1), allocation_pct (percent of equity, at most 25; 0 for HOLD) and reasoning. "
-    "Prefer HOLD when the data is mixed, stale or thin.",
+    "Prefer HOLD when the data is mixed, stale or thin. You may name a preferred_market from the "
+    "profile's allowed markets; the system selects the final market and structural levels.",
     output_type=LiteDebateDecision,
 )
 
@@ -82,7 +83,8 @@ def research_manager(lessons: str = "") -> Persona:
         "Portfolio Manager", "debate.verdict",
         "You are the Research Manager (Portfolio Manager proxy) at Cryptonite. "
         "You listen to the Bull and Bear debates, and the risk analysts, and make the portfolio decision: "
-        "recommendation (BUY, HOLD or SELL), conviction_score (0-1), allocation_pct (percent of equity, at most 25) and reasoning. "
+        "recommendation (BUY, HOLD or SELL), conviction_score (0-1), allocation_pct (percent of equity, at most 25), "
+        "reasoning, and optionally preferred_market from the profile's allowed markets. The system selects the final market. "
         "In the reasoning, cite which of the counter-arguments the Bull and Bear rejected survived the debate "
         "(still stand despite their rebuttal) and how they shaped your decision.\n\n"
         f"HISTORICAL LESSONS LEARNED:\n{lessons}",

@@ -66,6 +66,7 @@ MIN_RR_SKIPPED = "min_rr skipped: no stop/target"
 # A debate perp entry the routing refuses (NO_TRADE, logged with the reason)
 STOP_REQUIRED = "STOP_REQUIRED"
 NO_SHORT_STRUCTURE = "NO_SHORT_STRUCTURE"
+NO_STRUCTURE = "NO_STRUCTURE"
 
 
 def side_of(recommendation: str) -> str | None:
@@ -95,7 +96,25 @@ async def resolve_profile(conn, instrument_id: str, mandate_id: str | None = Non
     return Mandate.from_row(row) if row else None
 
 
-async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: str) -> tuple[str | None, str]:
+def choose_market(side: str, mandate: Mandate, preferred: str | None) -> Market | None:
+    """D-P3-9: the verdict's preferred market when the profile allows it for this side, else ``select_market``.
+
+    SPOT is valid only for a 1x long, exactly as ``select_market`` would allow it."""
+    trade_side = "LONG" if side == "BUY" else "SHORT"
+    selected = select_market(trade_side, mandate.max_leverage, mandate.markets)
+    try:
+        wanted = Market(preferred) if preferred else None
+    except ValueError:
+        return selected
+    if wanted is None or wanted not in {Market(m) for m in mandate.markets}:
+        return selected
+    if wanted is Market.SPOT and not (trade_side == "LONG" and mandate.max_leverage == 1):
+        return selected
+    return wanted
+
+
+async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: str,
+                              preferred_market: str | None = None) -> tuple[str | None, str]:
     """ADR 0011: apply the profile entry refusals in their specified order, then select its market."""
     if mandate.status.value != "ACTIVE":
         return "PROFILE_NOT_RUNNING", instrument_id
@@ -108,7 +127,7 @@ async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: 
         return "MAX_OPEN_POSITIONS", instrument_id
     if await profile_lifecycle.coin_lock_conflict(conn, mandate, instrument_id, "debate"):
         return "COIN_LOCKED", instrument_id
-    market = select_market("LONG" if side == "BUY" else "SHORT", mandate.max_leverage, mandate.markets)
+    market = choose_market(side, mandate, preferred_market)
     if market is None:
         return "NO_MARKET", instrument_id
     instrument = instrument_for(instrument_id, market)
@@ -326,7 +345,8 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
                       conviction: float, allocation_pct: float, *, now: datetime.datetime, redis,
                       marks: dict[str, LiveMark] | None, stop_loss: float | None, take_profit: float | None,
                       reference_price: float | None,
-                      grade_context: dict[str, Any] | None) -> tuple[ActionClass, dict[str, Any], str] | tuple[str, Mandate]:
+                      grade_context: dict[str, Any] | None,
+                      structure_reason: str | None = None) -> tuple[ActionClass, dict[str, Any], str] | tuple[str, Mandate]:
     """A perp verdict: (action, payload, summary) to approve, or a (NO_TRADE, mandate) result."""
     held_side, held = await perp_position(conn, mandate, instrument)
     held = held.normalize()
@@ -351,7 +371,7 @@ async def _route_perp(conn, run_id: uuid.UUID, mandate: Mandate, instrument: str
     long = side == "BUY"
     if not (stop_loss and take_profit):
         return await _no_trade(conn, run_id, instrument, mandate,
-                         f"{STOP_REQUIRED}: a perp entry needs a structural stop and a target; the debate has none")
+                         f"{NO_STRUCTURE}: {structure_reason or 'no structural stop and target are available for this entry'}")
     stop, target = float(stop_loss), float(take_profit)
     if long != (stop < target):
         if not long:  # the scanner's levels are a long's: no code derives a short's stop and target from them
@@ -405,7 +425,8 @@ async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrume
                              base: dict[str, Any], conviction: float, allocation_pct: float, *,
                              now: datetime.datetime, marks: dict[str, LiveMark] | None,
                              stop_loss: float | None, take_profit: float | None,
-                             reference_price: float | None) -> tuple[ActionClass, dict[str, Any], str] | tuple[str, Mandate]:
+                             reference_price: float | None,
+                             structure_reason: str | None = None) -> tuple[ActionClass, dict[str, Any], str] | tuple[str, Mandate]:
     """Create a fail-closed margin plan for the approval payload using the runtime pair settings."""
     long = side == "BUY"
     held_side, held = await perp_position(conn, mandate, instrument)
@@ -420,7 +441,8 @@ async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrume
         stop = Decimal(str(stop_loss))
         target = Decimal(str(take_profit))
     except (InvalidOperation, TypeError, ValueError):
-        return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+        return await _no_trade(conn, run_id, instrument, mandate,
+                               f"{NO_STRUCTURE}: {structure_reason or 'no structural stop and target are available for this entry'}")
     if not all(x.is_finite() and x > 0 for x in (entry, stop, target)):
         return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
     if not (stop < entry < target if long else target < entry < stop):
@@ -491,6 +513,9 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
                       stop_loss: float | None = None,
                       take_profit: float | None = None,
                       reference_price: float | None = None,
+                      structure_reason: str | None = None,
+                      levels_source: str | None = None,
+                      preferred_market: str | None = None,
                       redis=None,
                       grade_context: dict[str, Any] | None = None) -> tuple[str, Mandate | None]:
     """Returns (debate_runs status, mandate). ``decision_trace_id`` (R7.4) rides in the command and
@@ -510,10 +535,16 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         return await _no_trade(conn, run_id, instrument_id, mandate, "HOLD")
     instrument = await reduction_instrument(conn, mandate, instrument_id, side)
     if instrument is None:
-        reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side)
+        reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side, preferred_market)
         if reason:
             return await _no_trade(conn, run_id, instrument, mandate, reason)
     routed_market = market_of(instrument)
+    # D-P3-7/9 provenance on the ROUTE row: where the levels came from and the market the verdict asked for
+    route_detail: dict[str, Any] = {"market_used": routed_market.value}
+    if preferred_market:
+        route_detail["market_suggested"] = preferred_market
+    if levels_source:
+        route_detail["levels_source"] = levels_source
     if routed_market is Market.SPOT and side == "BUY":
         # A profile spot entry must have the structural stop used by the exit monitor.
         # Refuse before creating an ASK/VETO approval, including Brain and Inbox debates.
@@ -521,7 +552,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
             entry = Decimal(str(reference_price))
             stop = Decimal(str(stop_loss))
         except (InvalidOperation, TypeError, ValueError):
-            return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+            return await _no_trade(conn, run_id, instrument, mandate,
+                                   f"{NO_STRUCTURE}: {structure_reason or 'no structural stop is available for this spot buy'}")
         if not entry.is_finite() or not stop.is_finite() or entry <= 0 or stop <= 0 or stop >= entry:
             return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
     elif routed_market is Market.SPOT_MARGIN:
@@ -529,7 +561,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
             entry = Decimal(str(reference_price))
             stop = Decimal(str(stop_loss))
         except (InvalidOperation, TypeError, ValueError):
-            return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
+            return await _no_trade(conn, run_id, instrument, mandate,
+                                   f"{NO_STRUCTURE}: {structure_reason or 'no structural stop is available for this margin entry'}")
         if (not entry.is_finite() or not stop.is_finite() or entry <= 0 or stop <= 0
                 or (side == "BUY" and stop >= entry) or (side == "SELL" and stop <= entry)):
             return await _no_trade(conn, run_id, instrument, mandate, STOP_REQUIRED)
@@ -548,7 +581,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     if market is Market.PERP:
         routed = await _route_perp(conn, run_id, mandate, instrument, side, base, conviction, allocation_pct, now=now,
                                    redis=redis, marks=marks, stop_loss=stop_loss, take_profit=take_profit,
-                                   reference_price=reference_price, grade_context=grade_context)
+                                   reference_price=reference_price, grade_context=grade_context,
+                                   structure_reason=structure_reason)
         if len(routed) == 2:
             return routed
         action, payload, summary = routed
@@ -556,6 +590,7 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         routed = await _route_spot_margin(
             conn, run_id, mandate, instrument, side, base, conviction, allocation_pct, now=now,
             marks=marks, stop_loss=stop_loss, take_profit=take_profit, reference_price=reference_price,
+            structure_reason=structure_reason,
         )
         if len(routed) == 2:
             return routed
@@ -594,12 +629,13 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     command_type = "CLOSE_POSITION" if action is ActionClass.REDUCE_RISK and market in (Market.PERP, Market.SPOT_MARGIN) else "SUBMIT_ORDER"
     if action is ActionClass.REDUCE_RISK and mandate.autonomy_level >= AutonomyLevel.L2:
         await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")
-        await record_decision(conn, mandate.id, "ROUTE", "ENQUEUED", instrument_id=instrument, run_id=run_id)
+        await record_decision(conn, mandate.id, "ROUTE", "ENQUEUED", instrument_id=instrument, run_id=run_id,
+                              **route_detail)
         return "COMPLETED", mandate
     if timeout_policy_for(action, mandate.autonomy_level, in_active_hours(mandate.active_hours_utc, now)) is None:
         await _enqueue(conn, mandate, command_type, payload, f"debate:{run_id}")  # ADD_RISK at L3: no approval needed
         await record_decision(conn, mandate.id, "ROUTE", "DRY_RUN_ROUTED" if mandate.dry_run else "ENQUEUED",
-                              instrument_id=instrument, run_id=run_id)
+                              instrument_id=instrument, run_id=run_id, **route_detail)
         return "COMPLETED", mandate
     approval = await _approval(conn, mandate, action, command_type, payload, summary, "debate", run_id, now)
     if approval is None:
@@ -611,7 +647,7 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         logger.warning("Debate %s was already routed (approval %s): returning %s, nothing queued", run_id, existing, status)
         return status, mandate
     outcome = "VETO_WINDOW" if action is ActionClass.ADD_RISK and mandate.autonomy_level == AutonomyLevel.L2 else "APPROVAL_CREATED"
-    await record_decision(conn, mandate.id, "ROUTE", outcome, instrument_id=instrument, run_id=run_id)
+    await record_decision(conn, mandate.id, "ROUTE", outcome, instrument_id=instrument, run_id=run_id, **route_detail)
     return "PENDING_APPROVAL", mandate
 
 
