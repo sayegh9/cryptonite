@@ -27,11 +27,11 @@ Example result:
   "profiles": [
     {
       "id": "11111111-1111-4111-8111-111111111111",
-      "line": "BTC ETH swing: Running; Ask me; dry run on; BTCUSDT, ETHUSDT; Perpetuals; Long and short; Swing; today -$12.00 of $30.00 daily loss limit; 1 open position; last ROUTE: APPROVAL_CREATED at 11:42 UTC."
+      "line_text": "BTC ETH swing: Running; Ask me; dry run on; BTCUSDT, ETHUSDT; Perpetuals; Long and short; Swing; today -$12.00 of $30.00 daily loss limit; 1 open position; last ROUTE: APPROVAL_CREATED at 11:42 UTC."
     },
     {
       "id": "22222222-2222-4222-8222-222222222222",
-      "line": "XRP intraday: Paused (breaker: stale feed); Veto window; dry run on; XRPUSDT; Spot; Long; Intraday; today's P&L unavailable; 0 open positions; last BREAKER: PAUSED at 10:05 UTC."
+      "line_text": "XRP intraday: Paused (breaker: stale feed); Veto window; dry run on; XRPUSDT; Spot; Long; Intraday; today's P&L unavailable; 0 open positions; last BREAKER: PAUSED at 10:05 UTC."
     }
   ]
 }
@@ -110,7 +110,7 @@ Example result (one active profile; nullable fields shown explicitly):
       "stage": "ROUTE",
       "outcome": "APPROVAL_CREATED",
       "reason_text": null,
-      "detail_json": {},
+      "detail_text": "{}",
       "run_id": "33333333-3333-4333-8333-333333333333",
       "command_id": null
     }
@@ -139,7 +139,7 @@ Example result:
       "stage": "ROUTE",
       "outcome": "NO_TRADE",
       "reason_text": "NO_STRUCTURE",
-      "detail_json": {"explanation": "NO_STRUCTURE: 1h bars are older than two bars"},
+      "detail_text": "{\"explanation\": \"NO_STRUCTURE: 1h bars are older than two bars\"}",
       "run_id": "44444444-4444-4444-8444-444444444444",
       "verdict": {"recommendation": "BUY", "conviction_score": "0.80", "reasoning_text": "Bull case from the debate"}
     }

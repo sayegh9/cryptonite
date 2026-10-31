@@ -62,8 +62,12 @@ def _profile_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def _decision_row(row: dict[str, Any]) -> dict[str, Any]:
     """Serialize one retained decision without promoting its reason or JSON detail to instructions."""
-    out = {key: _value(value) for key, value in row.items()}
+    out = {key: _value(value) for key, value in row.items() if key != "detail_json"}
     out["reason_text"] = _data_text(row.get("reason_text"))
+    # The detail holds route provenance and refusal text derived from model output: labelled and clipped as data
+    detail = row.get("detail_json")
+    out["detail_text"] = None if detail is None else _data_text(
+        detail if isinstance(detail, str) else json.dumps(_value(detail), default=str), 1000)
     return out
 
 
@@ -144,7 +148,7 @@ def list_profiles() -> dict[str, Any]:
                 f"{', '.join(coins)}; {', '.join(markets.get(m, m) for m in row['markets'])}; "
                 f"{directions.get(row['direction'], row['direction'])}; {row['style'].title()}; {pnl}; "
                 f"{row['open_positions']} open positions; {last_text}.")
-        lines.append({"id": str(row["id"]), "line": line})
+        lines.append({"id": str(row["id"]), "line_text": line})
     return {"status": "OK", "as_of": dt.datetime.now(UTC).isoformat(), "profiles": lines}
 
 

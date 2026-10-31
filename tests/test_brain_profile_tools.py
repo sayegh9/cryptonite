@@ -110,8 +110,8 @@ def test_list_and_get_report_breaker_state_without_exposing_position_rows(monkey
     listed = tools.list_profiles.func()
     detailed = tools.get_profile.func(str(profile_id))
 
-    assert "1 open positions" in listed["profiles"][0]["line"]
-    assert "Paused (operator request)" in listed["profiles"][0]["line"]
+    assert "1 open positions" in listed["profiles"][0]["line_text"]
+    assert "Paused (operator request)" in listed["profiles"][0]["line_text"]
     assert detailed["breaker"]["latest_decision"]["stage"] == "BREAKER"
     assert detailed["breaker"]["reason_text"] == "operator request"
     assert detailed["profile"]["open_positions"] == 1
@@ -155,3 +155,10 @@ def test_brain_has_the_profiles_prompt_section_and_the_five_read_only_tools():
     assert "Never say a profile is running, trading or paused unless a tool in this turn confirms it." in BRAIN_INSTRUCTIONS
     names = {getattr(t, "name", getattr(t, "__name__", "")) for t in BRAIN_TOOLS}
     assert {"list_profiles", "get_profile", "explain_decision", "profile_summary", "propose_profile"} <= names
+
+
+def test_decision_detail_reaches_the_brain_labelled_and_clipped():
+    """Gate R: decision detail (route provenance, refusal text) is `_text` data, at most 1000 characters."""
+    row = tools._decision_row({"id": 1, "reason_text": "x", "detail_json": {"explanation": "y" * 5000}})
+    assert "detail_json" not in row and len(row["detail_text"]) == 1000
+    assert row["detail_text"].startswith('{"explanation": "yyy')
