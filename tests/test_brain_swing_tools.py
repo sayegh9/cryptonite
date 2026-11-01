@@ -89,6 +89,12 @@ def _no_scanner_setups(request, monkeypatch):
         monkeypatch.setattr("cryptonite_agents.tools._readonly_rows", lambda sql: [])
 
 
+@pytest.fixture(autouse=True)
+def _no_rest(monkeypatch):
+    """No test reaches Binance: the REST fallback for coins missing from the lake finds nothing unless a test sets it."""
+    monkeypatch.setattr("cryptonite_agents.tools._spot_klines", lambda *a, **k: (None, "unavailable"))
+
+
 @pytest.fixture
 def scanner_rows(monkeypatch):
     rows: list[dict] = []
@@ -132,7 +138,7 @@ async def test_scan_swing_setups_no_preset_match_returns_empty_with_note(monkeyp
 
     data = json.loads(await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=5))
     assert data["timeframe"] == "1h"
-    assert data["scanned_count"] == len(SWING_LIQUID_12)
+    assert data["scanned_count"] == 1  # only BTC has bars; REST finds nothing for the rest
     assert "as_of" in data
     assert data["candidates"] == []
     assert data["note"].startswith("No preset fired on the liquid universe at 1h, and the scanner found no setup")
@@ -245,7 +251,7 @@ async def test_scan_swing_setups_empty_lake_fallback(monkeypatch):
     raw = await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=5)
     data = json.loads(raw)
     assert data["candidates"] == []
-    assert data["scanned_count"] == len(SWING_LIQUID_12)
+    assert data["scanned_count"] == 0  # a coin with no lake bars and no REST candles is not evaluated
 
 
 @pytest.mark.asyncio
@@ -274,7 +280,45 @@ async def test_scan_swing_setups_empty_lake_rest_fallback(monkeypatch):
     raw = await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=3)
     data = json.loads(raw)
     assert len(data["candidates"]) > 0
-    assert data["candidates"][0]["instrument_id"] in ("BTCUSDT.BINANCE", "ETHUSDT.BINANCE", "SOLUSDT.BINANCE", "XRPUSDT.BINANCE")
+    assert data["candidates"][0]["instrument_id"] in SWING_LIQUID_12
+    assert data["candidates"][0]["in_feed"] is False
+    assert data["scanned_count"] == len(SWING_LIQUID_12)
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_rest_fetches_only_coins_missing_from_lake(monkeypatch):
+    """A coin with fresh lake bars stays on the lake (`in_feed` true); every other listed coin is fetched over REST and
+    flagged `in_feed: false`; a REST failure skips that coin."""
+    lake_inst = SWING_LIQUID_12[0]
+    failing = SWING_LIQUID_12[1].split(".")[0]
+    fetched: set[str] = set()
+    fake_candles = [
+        {"open_time_ms": 1_700_000_000_000 + i * 3_600_000, "close_time_ms": 1_700_000_000_000 + (i + 1) * 3_600_000 - 1,
+         "open": 100.0 + i, "high": 101.0 + i, "low": 99.0 + i, "close": 100.5 + i, "volume": 500.0}
+        for i in range(60)
+    ]
+
+    def klines(sym, interval, limit_val, **kwargs):
+        fetched.add(sym)
+        if sym == failing:
+            return None, "unavailable"
+        return {"symbol": sym, "interval": interval, "candles": fake_candles}, None
+
+    def load_bars(self, symbol, *args, **kwargs):
+        return make_synthetic_1m_bars(num_bars=1500) if symbol == lake_inst.split(".")[0] else pl.DataFrame()
+
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", load_bars)
+    monkeypatch.setattr("cryptonite_agents.tools._spot_klines", klines)
+    monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate())
+
+    data = json.loads(await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=10))
+    assert lake_inst.split(".")[0] not in fetched
+    assert failing in fetched
+    assert data["scanned_count"] == len(SWING_LIQUID_12) - 1
+    flags = {c["instrument_id"]: c["in_feed"] for c in data["candidates"]}
+    assert failing + ".BINANCE" not in flags
+    assert flags[lake_inst] is True
+    assert all(v is False for k, v in flags.items() if k != lake_inst)
 
 
 # -----------------------------------------------------------------------------

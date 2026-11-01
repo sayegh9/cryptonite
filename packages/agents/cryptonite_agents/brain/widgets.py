@@ -51,6 +51,8 @@ class SwingCandidateItem(BaseModel):
     # "live_scan": a preset fired in this scan; "scanner": the system scanner stored it age_minutes ago
     source: Literal["live_scan", "scanner"] = "live_scan"
     age_minutes: int | None = None
+    # False: the coin is outside the live feed (found over REST); approval asks the operator to onboard it first
+    in_feed: bool = True
     # The system's setup grade (leverage plan 3.2); a scan grade reads no funding or liquidity, so it is at most B
     setup_grade: Literal["A", "B", "C", "NO_TRADE"] | None = None
     grade_reasons: list[str] = Field(default_factory=list)

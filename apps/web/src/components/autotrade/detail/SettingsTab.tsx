@@ -9,6 +9,7 @@ import type { ApiError, ExecutionMode, Market, Profile } from "@/lib/autotrade/t
 import { useAutoTradeStore } from "@/lib/stores/useAutoTradeStore";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 import { btnPrimary, btnSecondary, ConfirmDialog, TotpDialog } from "../Dialogs";
+import { FeasibilityNotes } from "../FeasibilityNotes";
 import { StrategyPicker } from "../wizard/StrategyPicker";
 
 type Kind = "text" | "number" | "select" | "bool" | "markets" | "picks";
@@ -193,6 +194,7 @@ export function SettingsTab({ profile: p }: { profile: Profile }) {
       <p className="text-xs text-zinc-400">
         Lowering risk saves directly. A change that gives the AI more room asks for your TOTP code. Environment: Paper (read-only).
       </p>
+      <FeasibilityNotes feasibility={p.feasibility} budget={s(p.capital_budget_usd)} riskPct={s(p.max_risk_per_trade_pct)} />
       <ul className="divide-y divide-zinc-800 rounded-xl border border-zinc-800" aria-label="Profile settings">
         {ROWS.map((row) => (
           <li key={row.key} className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">

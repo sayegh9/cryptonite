@@ -4,11 +4,13 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "rea
 import { toast } from "sonner";
 import { coinOf, errorCopy, isTotpError, MARKET_LABEL, MODE_LABEL } from "@/lib/autotrade/copy";
 import { EMPTY_DRAFT, FIELD_PRESETS, parseCoins } from "@/lib/autotrade/presets";
-import type { ApiError, Direction, ExecutionMode, Market, NotifyLevel, ProfileDraft, Style } from "@/lib/autotrade/types";
+import { getFeasibility } from "@/lib/autotrade/client";
+import type { ApiError, Direction, Feasibility, ExecutionMode, Market, NotifyLevel, ProfileDraft, Style } from "@/lib/autotrade/types";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { useAutoTradeStore } from "@/lib/stores/useAutoTradeStore";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
 import { btnPrimary, btnSecondary, ConfirmDialog, TotpDialog } from "../Dialogs";
+import { FeasibilityNotes } from "../FeasibilityNotes";
 import { effectivePresets, effectiveTimeframes } from "@/lib/autotrade/picks";
 import { ReplayStats } from "./ReplayStats";
 import { StrategyPicker } from "./StrategyPicker";
@@ -135,6 +137,20 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
     profiles.find((p) => LOCK_HOLDING.has(p.status) && p.instruments.some((i) => coinOf(i) === coin)) ?? null;
   const notInFeed = new Set(estimate.data?.feed.not_in_feed.map((x) => x.coin) ?? []);
   const switchOff = estimate.data?.master_switch === "OFF";
+
+  // H3: on the review step, warn when the budget cannot place an order above the minimum (a warning, never a block)
+  const [feasibility, setFeasibility] = useState<Feasibility>();
+  const reviewTimeframes = presets.data ? effectiveTimeframes(presets.data, draft.style, draft.direction, { strategies: draft.strategies ?? [], timeframes: draft.timeframes ?? [] }) : [];
+  useEffect(() => {
+    if (step !== 3) return;
+    let live = true;
+    getFeasibility({ budget: draft.capital_budget_usd, maxPositionPct: draft.max_position_pct, maxRiskPct: draft.max_risk_per_trade_pct, maxLeverage: draft.max_leverage, markets: draft.markets, timeframes: reviewTimeframes })
+      .then((f) => live && setFeasibility(f))
+      .catch(() => live && setFeasibility(undefined));
+    return () => {
+      live = false;
+    };
+  }, [step, draft.capital_budget_usd, draft.max_position_pct, draft.max_risk_per_trade_pct, draft.max_leverage, draft.markets.join(","), reviewTimeframes.join(",")]);
 
   const next = () => {
     const e = validate(step, draft);
@@ -469,6 +485,7 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
                 <span className="block text-xs text-zinc-400">Simulate orders first. You can turn dry run off later.</span>
               </span>
             </label>
+            <FeasibilityNotes feasibility={feasibility} budget={draft.capital_budget_usd} riskPct={draft.max_risk_per_trade_pct} />
             <Summary draft={draft} estimateText={estimate.data ? `${estimate.data.feed.not_in_feed.length} coin(s) outside the live feed` : "Feed coverage unknown"} presetIds={presets.data ? effectivePresets(presets.data, draft.style, draft.direction, draft.strategies ?? []) : []}
               timeframes={presets.data ? effectiveTimeframes(presets.data, draft.style, draft.direction, { strategies: draft.strategies ?? [], timeframes: draft.timeframes ?? [] }) : []} />
           </>
