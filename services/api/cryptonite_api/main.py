@@ -30,6 +30,7 @@ from cryptonite_api.routes import (
     research,
     scanners,
     settings,
+    setups,
     signals,
     strategies,
     ws,
@@ -159,6 +160,7 @@ def create_app() -> FastAPI:
     app.include_router(brain.router)
     app.include_router(ai.router)
     app.include_router(profiles.router)
+    app.include_router(setups.router)
     app.include_router(research.router)
 
     start_time = time.monotonic()
