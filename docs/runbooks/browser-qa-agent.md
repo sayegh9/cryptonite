@@ -245,7 +245,7 @@ exit thresholds, session policy). Check that values show what is applied. Valida
 
 ## 5. Report
 
-Write `qa/report-<YYYY-MM-DD>.md` in the project folder (`~/Documents/projects/cryptonite/qa/`), screenshots in
+Write `qa/report-<YYYY-MM-DD>.md` in the project folder (`~/Documents/projects/cryptonite/qa/`; create it if missing, older runs are in `reports/archive/qa/`), screenshots in
 `qa/<YYYY-MM-DD>/`.
 
 1. **Summary:** counts of PASS / FAIL / BLOCKED / SKIPPED, the critical failures first, AI spend used, and a
