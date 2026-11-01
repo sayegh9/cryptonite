@@ -25,9 +25,6 @@ PROTECTED_WRITES = [
     ("POST", "/api/v1/strategies"),
     ("POST", "/api/v1/instruments/onboard"),
     ("POST", "/api/v1/agents/debates/trigger"),
-    ("POST", "/api/v1/agents/chat"),
-    ("POST", "/api/v1/agents/explain"),
-    ("POST", "/api/v1/agents/strategist"),
     ("POST", "/api/v1/agents/cro"),
     ("POST", "/api/v1/agents/onchain"),
     ("POST", "/api/v1/alerts"),
@@ -236,3 +233,12 @@ def test_machine_tokens_cannot_approve_ai_actions_or_widen_mandates(client, path
     """A5: the agent workers hold an operator-scoped token; approvals need a human operator session."""
     res = _send(client, "POST", path, headers={"X-API-Token": OPERATOR_TOKEN})
     assert res.status_code == 403
+
+
+@pytest.mark.parametrize("path", ["chat", "explain", "strategist"])
+def test_retired_chat_routes_are_gone(client, path):
+    """Phase 2 Track D: the old chat personas moved into the Brain; their routes no longer exist."""
+    client.cookies.clear()
+    client.cookies.set(COOKIE_NAME, OPERATOR_SID)
+    res = client.post(f"/api/v1/agents/{path}", json={"message": "hi"}, headers={"X-CSRF-Token": CSRF})
+    assert res.status_code == 404

@@ -54,7 +54,7 @@ def test_agent_worker_health_bypasses_hmac():
 def test_agent_worker_missing_hmac_headers():
     """Requests to protected agent routes without HMAC headers must be rejected with 401."""
     with TestClient(app) as client:
-        resp = client.post("/api/v1/agents/chat", json={"message": "hello"})
+        resp = client.post("/api/v1/agents/cro", json={"message": "hello"})
         assert resp.status_code == 401
         assert resp.json()["detail"] == "Missing HMAC headers"
 
@@ -65,8 +65,8 @@ def test_agent_worker_expired_hmac_timestamp():
         payload = json.dumps({"message": "test"}).encode("utf-8")
         # 301 seconds in the past
         expired_ts = int(time.time()) - 301
-        headers = _generate_hmac_headers("POST", "/api/v1/agents/chat", payload, ts=expired_ts)
-        resp = client.post("/api/v1/agents/chat", content=payload, headers=headers)
+        headers = _generate_hmac_headers("POST", "/api/v1/agents/cro", payload, ts=expired_ts)
+        resp = client.post("/api/v1/agents/cro", content=payload, headers=headers)
         assert resp.status_code == 401
         assert resp.json()["detail"] == "Timestamp expired"
 
@@ -75,8 +75,8 @@ def test_agent_worker_invalid_hmac_signature():
     """Requests with forged or incorrect signatures must be rejected with 401."""
     with TestClient(app) as client:
         payload = json.dumps({"message": "test"}).encode("utf-8")
-        headers = _generate_hmac_headers("POST", "/api/v1/agents/chat", payload, secret="wrong_secret")
-        resp = client.post("/api/v1/agents/chat", content=payload, headers=headers)
+        headers = _generate_hmac_headers("POST", "/api/v1/agents/cro", payload, secret="wrong_secret")
+        resp = client.post("/api/v1/agents/cro", content=payload, headers=headers)
         assert resp.status_code == 401
         assert resp.json()["detail"] == "Invalid HMAC signature"
 
@@ -146,48 +146,13 @@ def run_worker(path: str, body: dict, reply: str):
     return resp, capture
 
 
-def test_strategist_routes_to_generator_when_keywords_present():
-    resp, capture = run_worker(
-        "/api/v1/agents/strategist",
-        {"message": "Please generate code for a new MACD strategy", "instructions": "Use 1h bars"},
-        "Generated Strategy Code",
-    )
-    assert resp.status_code == 200
-    assert resp.json()["response"] == "Generated Strategy Code"
-    assert "Nautilus Trader strategy developer" in capture.instructions[0]
-    assert "Additional User Instructions: Use 1h bars" in capture.prompts[0]
-    assert "Please generate code for a new MACD strategy" in capture.prompts[0]
-
-
-def test_strategist_routes_to_hunter_when_general_query():
-    resp, capture = run_worker(
-        "/api/v1/agents/strategist", {"message": "What tokens have unusual volume today?"},
-        "Market opportunities identified",
-    )
-    assert resp.status_code == 200
-    assert resp.json()["response"] == "Market opportunities identified"
-    assert "Opportunity Hunter" in capture.instructions[0]
-
-
-def test_explain_backtest_endpoint_formatting():
-    resp, capture = run_worker(
-        "/api/v1/agents/explain", {"backtest_id": "bt-999-xyz", "message": "Why was max drawdown 15%?"},
-        "Tearsheet explanation",
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["response"] == "Tearsheet explanation" and body["trace_id"]
-    assert "Backtest ID: bt-999-xyz" in capture.prompts[0]
-    assert "Query: Why was max drawdown 15%?" in capture.prompts[0]
-
-
 def test_budget_exhaustion_returns_429_not_a_model_call():
     capture = CapturingModel("should not be called")
     with override_model(FLASH, capture.model()), patch("server.config_cache.get_config", AsyncMock(return_value={})):
         with TestClient(app) as client:
             budget = BudgetGuard(default_cap_usd=Decimal("1"))
-            client.portal.call(budget.record, "chat.research", Decimal("5"))
+            client.portal.call(budget.record, "chat.cro", Decimal("5"))
             app.state.gateway = Gateway(budget=budget)
-            resp = post(client, "/api/v1/agents/chat", {"message": "hi"})
+            resp = post(client, "/api/v1/agents/cro", {"message": "hi"})
     assert resp.status_code == 429 and "DAILY_BUDGET" in resp.json()["detail"]
     assert capture.prompts == []

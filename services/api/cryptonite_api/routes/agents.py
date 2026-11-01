@@ -56,17 +56,6 @@ DEBATE_QUEUE_MAXLEN = 10_000  # same cap as the scanner's writer (D1 / F-H2): XA
 BRAIN_DEBATE_DAILY_CAP = int(os.getenv("BRAIN_DEBATE_DAILY_CAP", "6"))
 BRAIN_DEBATE_CAP_TTL_S = 2 * 86400  # a day's counter expires two days after it was last touched
 
-class ChatRequest(BaseModel):
-    message: str
-
-class ExplainRequest(BaseModel):
-    backtest_id: str
-    message: str
-
-class StrategistRequest(BaseModel):
-    message: str
-    instructions: str | None = None
-
 class CRORequest(BaseModel):
     message: str
 
@@ -117,18 +106,6 @@ async def forward_request(path: str, req_body: BaseModel):
     except Exception as e:
         logger.error(f"Failed to forward agent request to {worker_url}: {e}")
         raise HTTPException(status_code=500, detail="Internal agent worker error")
-
-@router.post("/chat", dependencies=OPERATOR_WRITE)
-async def agent_chat(req: ChatRequest, request: Request):
-    return await forward_request("/api/v1/agents/chat", req)
-
-@router.post("/explain", dependencies=OPERATOR_WRITE)
-async def agent_explain(req: ExplainRequest, request: Request):
-    return await forward_request("/api/v1/agents/explain", req)
-
-@router.post("/strategist", dependencies=OPERATOR_WRITE)
-async def agent_strategist(req: StrategistRequest, request: Request):
-    return await forward_request("/api/v1/agents/strategist", req)
 
 @router.post("/cro", dependencies=OPERATOR_WRITE)
 async def agent_cro(req: CRORequest, request: Request):
