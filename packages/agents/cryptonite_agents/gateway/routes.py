@@ -77,6 +77,9 @@ DEFAULT_ROUTES: dict[str, RoleRoute] = {
         RoleRoute("debate.risk", FLASH, priority=_D, max_output_tokens=1200, thinking_budget=512),
         RoleRoute("debate.verdict", PRO, priority=_D, max_output_tokens=4000, thinking_budget=2048),
         RoleRoute("debate.cro", PRO, priority=_D, max_output_tokens=4000, thinking_budget=2048),
+        # Phase 2 policy C: a shadow-only narrow veto (never routes); first to stop on budget, its own small cap
+        RoleRoute("policy.veto", FLASH, priority=_O, max_output_tokens=300, thinking_budget=0,
+                  daily_cap_usd=Decimal("0.50"), timeout_s=30.0),
         # Exit debate: risk reduction, never stopped by budget
         RoleRoute("exit.side", FLASH, priority=_C, max_output_tokens=1500, thinking_budget=512),
         RoleRoute("exit.verdict", PRO, priority=_C, max_output_tokens=4000, thinking_budget=2048),
