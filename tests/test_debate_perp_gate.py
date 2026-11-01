@@ -98,11 +98,11 @@ async def test_no_mandate_at_all_is_unchanged(gate, pool, admin):
 async def test_a_perp_profile_takes_only_its_style_bars(gate, pool, admin):
     await add_mandate(admin, PERP, perps=True)
     redis = CapRedis()
-    for tf in ("15m", "5m"):
-        refused = await ask(gate, pool, redis, tf)
-        assert (refused.allowed, refused.reason) == (False, "TIMEFRAME_NOT_IN_STYLE")
+    refused = await ask(gate, pool, redis, "5m")  # no SWING preset runs on 5m
+    assert (refused.allowed, refused.reason) == (False, "TIMEFRAME_NOT_IN_STYLE")
     assert not any(str(k).startswith("debate:cooldown:") for k in redis.kv)  # refused before the cooldown
     assert (await ask(gate, pool, redis, "1h")).allowed is True
+    assert (await ask(gate, pool, CapRedis(), "15m")).allowed is True  # H4: the 15m swing preset runs on its own bars
 
 
 async def test_the_default_cap_is_6_a_day_per_mandate(gate, pool, admin):
