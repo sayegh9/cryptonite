@@ -1590,7 +1590,7 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
 
       {w.candidates.length === 0 ? (
         <div className="py-3 text-center" data-testid="swing-radar-empty">
-          <p className="text-zinc-400">No swing trade candidates matched the filters.</p>
+          <p className="text-zinc-400">No setup right now: no long or short preset fired, and the scanner found nothing recent.</p>
           <button
             type="button"
             onClick={() => void sendBrainMessage("Inspect 15m and 1h swing setups across liquid symbols and highlight any developing structures")}
@@ -1627,6 +1627,10 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
                       Score {c.score.toFixed(0)}
                     </span>
                   </div>
+                  <span className="text-2xs text-zinc-500" data-testid="swing-radar-source">
+                    {c.preset_slug} · {c.timeframe}
+                    {c.source === "scanner" ? ` · scanner, ${c.age_minutes ?? 0} min ago` : " · live scan"}
+                  </span>
                   <span
                     className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${
                       rrHigh
@@ -1690,7 +1694,9 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
                     data-testid="swing-radar-propose-btn"
                     onClick={() =>
                       void sendBrainMessage(
-                        `Propose a ${c.direction === "LONG" ? "BUY" : "SELL"} swing order for ${c.instrument_id} with stop_loss ${c.stop} and take_profit ${c.target}`
+                        c.direction === "LONG"
+                          ? `Propose a BUY swing order for ${c.instrument_id} with stop_loss ${c.stop} and take_profit ${c.target}`
+                          : `Propose a SELL (short) perp order for ${c.instrument_id.split(".")[0]}-PERP.BINANCE with stop_loss ${c.stop} and take_profit ${c.target}`
                       )
                     }
                     className="flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 text-2xs font-semibold text-emerald-300 hover:border-emerald-400 hover:bg-emerald-500/25 transition-colors"

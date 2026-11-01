@@ -17,6 +17,7 @@ import pytest
 from cryptonite_agents.brain.toolset import BRAIN_TOOLS, show_price_chart
 from cryptonite_agents.brain.widgets import (
     PriceChartWidget,
+    SwingCandidateItem,
     SwingRadarWidget,
     describe_widget,
     widget_for_tool,
@@ -81,6 +82,20 @@ def make_synthetic_1m_bars(
 # 1. scan_swing_setups Tests
 # -----------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _no_scanner_setups(request, monkeypatch):
+    """The scan's database read of recent scanner setups is stubbed out, except in tests that feed it rows."""
+    if "scanner_rows" not in request.fixturenames:
+        monkeypatch.setattr("cryptonite_agents.tools._readonly_rows", lambda sql: [])
+
+
+@pytest.fixture
+def scanner_rows(monkeypatch):
+    rows: list[dict] = []
+    monkeypatch.setattr("cryptonite_agents.tools._readonly_rows", lambda sql: rows)
+    return rows
+
+
 def _fake_evaluate(calls: list[tuple[str, str]] | None = None, side: str = "LONG"):
     """A ScannerEngine.evaluate stand-in that fires on the last bar, with levels 2% / 4% from its close."""
     from types import SimpleNamespace
@@ -120,11 +135,11 @@ async def test_scan_swing_setups_no_preset_match_returns_empty_with_note(monkeyp
     assert data["scanned_count"] == len(SWING_LIQUID_12)
     assert "as_of" in data
     assert data["candidates"] == []
-    assert data["note"] == "No preset fired on the liquid universe at 1h; no setup."
+    assert data["note"].startswith("No preset fired on the liquid universe at 1h, and the scanner found no setup")
 
     data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="4h"))
     assert data["candidates"] == []
-    assert data["note"] == "No preset fired on BTCUSDT at 4h; no setup."
+    assert data["note"].startswith("No preset fired on BTCUSDT at 4h, and the scanner found no setup")
 
 
 @pytest.mark.asyncio
@@ -160,7 +175,8 @@ async def test_scan_swing_setups_real_match_keeps_preset_levels_and_timeframe(mo
     data = json.loads(await scan_swing_setups(symbol="BTCUSDT", preset_slug="all", timeframe="4h", max_results=10))
     assert data["timeframe"] == "4h"  # the requested frame
     # With "all", the 15m preset runs on 15m and the others on the requested frame
-    assert sorted(calls) == sorted([("BTCUSDT.BINANCE", "15m"), ("BTCUSDT.BINANCE", "4h"), ("BTCUSDT.BINANCE", "4h")])
+    # each long preset and its short twin: one 15m sniper and two 4h presets per side
+    assert sorted(calls) == sorted([("BTCUSDT.BINANCE", "15m"), ("BTCUSDT.BINANCE", "4h"), ("BTCUSDT.BINANCE", "4h")] * 2)
     cand = data["candidates"][0]
     expected_tf = {"swing-sniper-pullback-15m": "15m", "swing-trend-pullback-1h": "4h", "swing-squeeze-breakout-1h": "4h"}
     assert cand["timeframe"] == expected_tf[cand["preset_slug"]]
@@ -181,7 +197,8 @@ async def test_scan_swing_setups_short_preset_keeps_its_side(monkeypatch):
     synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
     base = scanner_presets.SWING_PRESETS[0]
     short_preset = base.model_copy(update={"risk": RiskConfig(direction="SHORT", min_risk_reward=1.8)})
-    monkeypatch.setattr(scanner_presets, "SWING_PRESETS", [short_preset])
+    monkeypatch.setattr(scanner_presets, "SWING_PRESETS", [])
+    monkeypatch.setattr(scanner_presets, "SWING_PRESETS_SHORT", [short_preset])
     monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
     monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate(side="SHORT"))
 
@@ -459,7 +476,7 @@ async def test_dot_quote_and_bare_symbol_normalization_in_klines_and_swing_scan(
     swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
     assert swing_out["scanned_count"] == 1
     assert swing_out["candidates"] == []  # no preset fires on these bars, and none is made up
-    assert swing_out["note"] == "No preset fired on MUBARAKUSDT at 1h; no setup."
+    assert swing_out["note"].startswith("No preset fired on MUBARAKUSDT at 1h, and the scanner found no setup")
 
     monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate())
     swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
@@ -550,3 +567,62 @@ async def test_brain_note_updates_redis_when_streaming():
     assert updated_card["command_id"] == "cmd-123"
 
 
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_all_scans_long_and_short_presets(monkeypatch):
+    """'all' runs the short swing presets as well as the long ones, so a downtrend can still show setups."""
+    from cryptonite_scanner.presets import SWING_PRESETS, SWING_PRESETS_SHORT
+
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
+    sides: list[str] = []
+
+    def evaluate(cls, df, rule_groups, risk_config, instrument_id, timeframe, **kwargs):
+        sides.append(risk_config.direction)
+        return []
+
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(evaluate))
+    await scan_swing_setups(symbol="BTCUSDT", timeframe="1h")
+    assert sides.count("SHORT") == len(SWING_PRESETS_SHORT) == 3
+    assert sides.count("LONG") == len(SWING_PRESETS)
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_adds_recent_scanner_setups(monkeypatch, scanner_rows):
+    """A setup the system scanner stored recently joins the result, with its side, source and age."""
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    close = float(synthetic_bars.tail(1)["close"][0])
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(lambda cls, *a, **k: []))
+    scanner_rows.append({
+        "instrument_id": "BTCUSDT.BINANCE", "timeframe": "15m", "preset_slug": "swing-sniper-pullback-short-15m",
+        "suggested_entry": close, "suggested_stop": close * 1.01, "suggested_target": close * 0.98,
+        "matched_rules": '["[TREND] htf_close < htf_ema_50"]', "price": close, "age_minutes": 12,
+    })
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
+    assert "note" not in data
+    cand = data["candidates"][0]
+    assert cand["source"] == "scanner" and cand["age_minutes"] == 12
+    assert cand["direction"] == "SHORT" and cand["preset_slug"] == "swing-sniper-pullback-short-15m"
+    assert cand["timeframe"] == "15m" and cand["rr_ratio"] == 2.0
+    assert cand["matched_rules"] == ["[TREND] htf_close < htf_ema_50"]
+    SwingRadarWidget(candidates=[SwingCandidateItem(**cand)])  # the radar accepts it
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_drops_scanner_setup_when_price_moved(monkeypatch, scanner_rows):
+    """A scanner setup whose entry is more than 2.5% from the live close is stale and left out."""
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    close = float(synthetic_bars.tail(1)["close"][0])
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(lambda cls, *a, **k: []))
+    scanner_rows.append({
+        "instrument_id": "BTCUSDT.BINANCE", "timeframe": "1h", "preset_slug": "trend-pullback",
+        "suggested_entry": close * 0.95, "suggested_stop": close * 0.94, "suggested_target": close * 0.97,
+        "matched_rules": [], "price": close * 0.95, "age_minutes": 200,
+    })
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
+    assert data["candidates"] == [] and "no setup" in data["note"]

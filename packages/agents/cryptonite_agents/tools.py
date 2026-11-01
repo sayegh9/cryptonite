@@ -1710,17 +1710,102 @@ def card_setup_grade(card: dict[str, Any]) -> dict[str, Any] | None:
                                 float(card["take_profit"]))).as_dict()
 
 
+SCANNER_SETUP_WINDOW_H = 4  # scanner setups younger than this join the swing scan
+SCANNER_SETUP_MAX_DRIFT = 0.025  # ...while the price is still within 2.5% of their entry
+
+
+def _swing_score(direction: str, trend_4h: str, trend_1h: str, trend_15m: str) -> float:
+    """A setup's 0-100 score from how far the 4h/1h/15m trends run with its side."""
+    with_trend, against_trend = ("BEAR", "BULL") if direction == "SHORT" else ("BULL", "BEAR")
+    score = 75.0
+    for trend, gain, loss in ((trend_4h, 12.0, 10.0), (trend_1h, 8.0, 8.0), (trend_15m, 5.0, 4.0)):
+        if trend == with_trend:
+            score += gain
+        elif trend == against_trend:
+            score -= loss
+    return float(round(max(0.0, min(100.0, score)), 1))
+
+
+def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The latest setup per instrument, preset and timeframe that the system scanner stored in the last
+    SCANNER_SETUP_WINDOW_H hours, shaped like a swing candidate. Only ``target_inst`` when it is given."""
+    where = f"created_at > now() - interval '{SCANNER_SETUP_WINDOW_H} hours'"
+    if target_inst:
+        where += " AND instrument_id = '" + target_inst.replace("'", "''") + "'"
+    sql = ("SELECT DISTINCT ON (instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug')) "
+           "instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug') AS preset_slug, "
+           "suggested_entry, suggested_stop, suggested_target, matched_rules, metrics->>'price' AS price, "
+           "extract(epoch FROM now() - created_at)::int / 60 AS age_minutes "
+           f"FROM signal_candidates WHERE {where} "
+           "ORDER BY instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug'), created_at DESC "
+           "LIMIT 50")
+    try:
+        rows = _readonly_rows(sql)
+    except Exception as e:
+        logger.warning("Could not read the recent scanner setups; the swing scan shows its own only: %s", e)
+        return []
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        try:
+            entry, stop, target = (float(r["suggested_entry"]), float(r["suggested_stop"]),
+                                   float(r["suggested_target"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+        if entry <= 0 or stop == entry or not r.get("preset_slug"):
+            continue
+        inst = str(r["instrument_id"])
+        frames = frames_by_inst.get(inst) or {}
+        live = frames.get("15m")
+        last_close = float(live.tail(1)["close"][0]) if live is not None and not live.is_empty() else None
+        if last_close and abs(entry - last_close) / last_close > SCANNER_SETUP_MAX_DRIFT:
+            continue  # the price has moved away from the entry: the setup is stale
+        direction = "SHORT" if stop > entry else "LONG"
+        trend_4h, trend_1h, trend_15m = (_classify_tf_trend(frames.get(tf)) for tf in ("4h", "1h", "15m"))
+        rules = r.get("matched_rules")
+        if isinstance(rules, str):
+            try:
+                rules = json.loads(rules)
+            except ValueError:
+                rules = [rules]
+        candidate = {
+            "instrument_id": inst,
+            "preset_slug": str(r["preset_slug"]),
+            "timeframe": str(r["timeframe"]),
+            "score": _swing_score(direction, trend_4h, trend_1h, trend_15m),
+            "direction": direction,
+            "entry": entry,
+            "stop": stop,
+            "target": target,
+            "rr_ratio": round(abs(target - entry) / abs(entry - stop), 2),
+            "trend_4h": trend_4h,
+            "trend_1h": trend_1h,
+            "trend_15m": trend_15m,
+            "matched_rules": [str(x) for x in (rules or [])][:4],
+            "source": "scanner",
+            "age_minutes": int(r.get("age_minutes") or 0),
+        }
+        if frames:
+            candidate.update(_scan_grade(frames, direction, entry, stop, target))
+        out.append(candidate)
+    return out
+
+
 async def scan_swing_setups(
     preset_slug: str = "all",
     timeframe: Literal["15m", "1h", "4h"] = "1h",
     max_results: int = 5,
     symbol: str | None = None,
 ) -> str:
-    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', or 'all') and return the presets that actually fired on a recent bar: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, and the timeframe each preset was evaluated on. An empty `candidates` list (with a `note`) means no preset fired: there is no setup, so do not invent one."""
+    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, or 'all'), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one."""
     import polars as pl
     from cryptonite_scanner.engine import ScannerEngine
     from cryptonite_scanner.models import RiskConfig
-    from cryptonite_scanner.presets import SWING_LIQUID_12, SWING_PRESETS
+    from cryptonite_scanner.presets import (
+        SWING_LIQUID_12,
+        SWING_PRESETS,
+        SWING_PRESETS_SHORT,
+        preset_by_slug,
+    )
     from cryptonite_scanner.resampler import resample_1m_bars
 
     if not hasattr(ScannerEngine, "resample_bars"):
@@ -1728,12 +1813,11 @@ async def scan_swing_setups(
 
     max_results = max(1, min(int(max_results), 10))
 
-    if preset_slug != "all":
-        selected_presets = [p for p in SWING_PRESETS if p.slug == preset_slug]
-        if not selected_presets:
-            selected_presets = list(SWING_PRESETS)
-    else:
-        selected_presets = list(SWING_PRESETS)
+    all_swing = [*SWING_PRESETS, *SWING_PRESETS_SHORT]  # long and short: a downtrend has setups too
+    try:
+        selected_presets = all_swing if preset_slug == "all" else [preset_by_slug(preset_slug)]
+    except KeyError:
+        selected_presets = all_swing
 
     target_inst: str | None = None
     target_sym: str | None = None
@@ -1899,22 +1983,7 @@ async def scan_swing_setups(
                     reward = abs(target - entry)
                     rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
 
-                    with_trend, against_trend = ("BEAR", "BULL") if direction == "SHORT" else ("BULL", "BEAR")
-                    base_score = 75.0
-                    if trend_4h == with_trend:
-                        base_score += 12.0
-                    elif trend_4h == against_trend:
-                        base_score -= 10.0
-                    if trend_1h == with_trend:
-                        base_score += 8.0
-                    elif trend_1h == against_trend:
-                        base_score -= 8.0
-                    if trend_15m == with_trend:
-                        base_score += 5.0
-                    elif trend_15m == against_trend:
-                        base_score -= 4.0
-
-                    score = float(round(max(0.0, min(100.0, base_score)), 1))
+                    score = _swing_score(direction, trend_4h, trend_1h, trend_15m)
                     matched_rules = list(cand.matched_rules[:4])
 
                     candidates.append({
@@ -1931,10 +2000,15 @@ async def scan_swing_setups(
                         "trend_1h": trend_1h,
                         "trend_15m": trend_15m,
                         "matched_rules": matched_rules,
+                        "source": "live_scan",
                         **_scan_grade(frames, direction, entry, stop, target),
                     })
             except Exception as e:
                 logger.debug("Evaluation error for %s on %s: %s", inst, preset.slug, e)
+
+    # The setups the system scanner found recently (profile and global scans), so the Brain and the profiles see the
+    # same real setups. Read-only; a failed read only means none are added.
+    candidates.extend(_recent_scanner_setups(target_inst, frames_by_inst))
 
     # Deduplicate by instrument_id (keep highest-scoring setup per symbol)
     best_by_inst: dict[str, dict[str, Any]] = {}
@@ -1956,7 +2030,8 @@ async def scan_swing_setups(
     }
     if not deduped:
         scope = target_sym or "the liquid universe"
-        result["note"] = f"No preset fired on {scope} at {timeframe}; no setup."
+        result["note"] = (f"No preset fired on {scope} at {timeframe}, and the scanner found no setup in the last "
+                          f"{SCANNER_SETUP_WINDOW_H} hours; no setup.")
     return json.dumps(result)
 
 
