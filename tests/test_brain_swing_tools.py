@@ -102,6 +102,19 @@ def scanner_rows(monkeypatch):
     return rows
 
 
+COVERED = [*SWING_LIQUID_12, "MUBARAKUSDT.BINANCE"]
+
+
+@pytest.fixture(autouse=True)
+def _covered_and_fed(monkeypatch):
+    """H4 item 6: the swing scan covers only fed coins an ACTIVE mandate owns. These tests are about the scan itself,
+    so every coin they use is fed and owned by one BOTH-direction spot + perp mandate."""
+    coins = COVERED
+    scope = {"name": "test", "instruments": coins, "markets": ["SPOT", "PERP"], "direction": "BOTH"}
+    monkeypatch.setattr("cryptonite_agents.tools._active_scopes", lambda: [scope])
+    monkeypatch.setattr("cryptonite_agents.tools._fed_symbols", lambda: frozenset(c.split(".")[0] for c in coins))
+
+
 def _fake_evaluate(calls: list[tuple[str, str]] | None = None, side: str = "LONG"):
     """A ScannerEngine.evaluate stand-in that fires on the last bar, with levels 2% / 4% from its close."""
     from types import SimpleNamespace
@@ -141,11 +154,11 @@ async def test_scan_swing_setups_no_preset_match_returns_empty_with_note(monkeyp
     assert data["scanned_count"] == 1  # only BTC has bars; REST finds nothing for the rest
     assert "as_of" in data
     assert data["candidates"] == []
-    assert data["note"].startswith("No preset fired on the liquid universe at 1h, and the scanner found no setup")
+    assert data["note"].startswith("No routeable setup on the fed coins your ACTIVE mandates cover at 1h")
 
     data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="4h"))
     assert data["candidates"] == []
-    assert data["note"].startswith("No preset fired on BTCUSDT at 4h, and the scanner found no setup")
+    assert data["note"].startswith("No routeable setup on BTCUSDT at 4h")
 
 
 @pytest.mark.asyncio
@@ -281,14 +294,14 @@ async def test_scan_swing_setups_empty_lake_rest_fallback(monkeypatch):
     data = json.loads(raw)
     assert len(data["candidates"]) > 0
     assert data["candidates"][0]["instrument_id"] in SWING_LIQUID_12
-    assert data["candidates"][0]["in_feed"] is False
-    assert data["scanned_count"] == len(SWING_LIQUID_12)
+    assert data["candidates"][0]["in_feed"] is True  # H4: only fed coins are scanned; REST only fills missing bars
+    assert data["scanned_count"] == len(COVERED)  # every fed coin the mandate covers
 
 
 @pytest.mark.asyncio
 async def test_scan_swing_setups_rest_fetches_only_coins_missing_from_lake(monkeypatch):
-    """A coin with fresh lake bars stays on the lake (`in_feed` true); every other listed coin is fetched over REST and
-    flagged `in_feed: false`; a REST failure skips that coin."""
+    """A coin with fresh lake bars stays on the lake; every other fed coin is fetched over REST (still `in_feed`: only
+    fed coins are scanned since H4); a REST failure skips that coin."""
     lake_inst = SWING_LIQUID_12[0]
     failing = SWING_LIQUID_12[1].split(".")[0]
     fetched: set[str] = set()
@@ -314,11 +327,11 @@ async def test_scan_swing_setups_rest_fetches_only_coins_missing_from_lake(monke
     data = json.loads(await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=10))
     assert lake_inst.split(".")[0] not in fetched
     assert failing in fetched
-    assert data["scanned_count"] == len(SWING_LIQUID_12) - 1
+    assert data["scanned_count"] == len(COVERED) - 1
     flags = {c["instrument_id"]: c["in_feed"] for c in data["candidates"]}
     assert failing + ".BINANCE" not in flags
     assert flags[lake_inst] is True
-    assert all(v is False for k, v in flags.items() if k != lake_inst)
+    assert all(flags.values())
 
 
 # -----------------------------------------------------------------------------
@@ -520,7 +533,7 @@ async def test_dot_quote_and_bare_symbol_normalization_in_klines_and_swing_scan(
     swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
     assert swing_out["scanned_count"] == 1
     assert swing_out["candidates"] == []  # no preset fires on these bars, and none is made up
-    assert swing_out["note"].startswith("No preset fired on MUBARAKUSDT at 1h, and the scanner found no setup")
+    assert swing_out["note"].startswith("No routeable setup on MUBARAKUSDT at 1h")
 
     monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate())
     swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
