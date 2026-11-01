@@ -6,6 +6,7 @@ import time
 import uuid
 
 import asyncpg
+import policies
 import redis.asyncio as redis
 from cryptonite_agents import news
 from cryptonite_agents.debate_fleet import (
@@ -224,6 +225,16 @@ def turn_text(output) -> str:
     return output.model_dump_json() if hasattr(output, "model_dump_json") else str(output)
 
 
+async def _recent_lessons(pg_pool):
+    """The 3 most recent reflections, HOLD decisions excluded like the semantic path (a HOLD opened no trade)."""
+    async with pg_pool.acquire() as conn:
+        return await conn.fetch(
+            """SELECT r.lessons_learned FROM reflections r
+               JOIN portfolio_decisions d ON d.run_id = r.run_id
+               WHERE d.recommendation <> 'HOLD'
+               ORDER BY r.created_at DESC LIMIT 3""")
+
+
 async def recall_lessons(pg_pool, gateway: Gateway, context_text: str) -> str:
     """The 3 reflections nearest to this context (pgvector), excluding those of HOLD decisions. Only vectors
     from the model that embedded the query are compared: different embedding models are different spaces."""
@@ -239,12 +250,10 @@ async def recall_lessons(pg_pool, gateway: Gateway, context_text: str) -> str:
                 q_emb_str, model,
             )
         if not lessons:  # nothing embedded with this model yet (e.g. right after a model switch)
-            async with pg_pool.acquire() as conn:
-                lessons = await conn.fetch("SELECT lessons_learned FROM reflections ORDER BY created_at DESC LIMIT 3")
+            lessons = await _recent_lessons(pg_pool)
     except Exception as e:
         logger.error(f"Semantic retrieval failed: {e}")
-        async with pg_pool.acquire() as conn:
-            lessons = await conn.fetch("SELECT lessons_learned FROM reflections ORDER BY created_at DESC LIMIT 3")
+        lessons = await _recent_lessons(pg_pool)
     return "\n- ".join(r["lessons_learned"] for r in lessons) if lessons else "No previous lessons yet."
 
 
@@ -356,7 +365,8 @@ async def record_gate_refusal(pg_pool, redis_client, instrument_id: str, trigger
                     uuid.UUID(trace_id), candidate_id, gate.profile.id if gate and gate.profile else None)
                 if gate and gate.profile:
                     if not await record_decision(conn, gate.profile.id, "GATE", "REFUSED", reason,
-                                                 instrument_id=instrument_id, run_id=run_id):
+                                                 instrument_id=instrument_id, run_id=run_id,
+                                                 candidate_id=candidate_id):
                         raise RuntimeError("GATE refusal audit could not be persisted")
                 if candidate_lease:
                     await candidate_lease.assert_owned()
@@ -467,6 +477,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
             await record_gate_refusal(pg_pool, redis_client, instrument_id, trigger_source, gate.reason, trace_id,
                                       message_ref, consumer, candidate_id=candidate_id, gate=gate, run_id=run_id,
                                       candidate_lease=candidate_lease)
+        # Phase 2 shadow capture: a refusal after policy A (triage, rules, caps) is the live pipeline's SKIP
+        await policies.record_policy_b(pg_pool, candidate_id, *policies.policy_b_for_refusal(gate.reason))
         return
 
     # The unique run insert and GATE audit commit together; only the winning delivery records GATE.
@@ -501,7 +513,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 )
                 if gate.profile:
                     if not await record_decision(conn, gate.profile.id, "GATE", "ACCEPTED", gate.reason,
-                                                 instrument_id=instrument_id, run_id=run_id):
+                                                 instrument_id=instrument_id, run_id=run_id,
+                                                 candidate_id=candidate_id):
                         raise RuntimeError("GATE acceptance audit could not be persisted")
                 if candidate_lease:
                     await candidate_lease.assert_owned()
@@ -696,6 +709,9 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                            WHERE id = $1 AND status = 'RUNNING' AND claim_gen = $2""",
                         run_id, my_generation,
                     )
+                    # Phase 2 shadow capture, in a savepoint of this transaction (never aborts it)
+                    await policies.record_policy(conn, candidate_id, "B", *policies.policy_b_for_refusal("NO_PRICE"),
+                                                 require_a=True)
                     return
                 decision_price = float(final_quoted.price)
                 logger.info(f"Final decision price for {instrument_id}: {final_quoted.price} "
@@ -727,6 +743,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 )
 
         logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level} (decision_trace_id={trace_id})")
+        await policies.record_policy_b(pg_pool, candidate_id, *policies.policy_b_for_route(final_status, recommendation))
         
         # Publish result to websocket channel
         await redis_client.publish(f"channel:debates:{instrument_id}", json.dumps({
@@ -741,6 +758,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
 
     except Exception as e:
         logger.error(f"Debate failed for {instrument_id}: {e} (decision_trace_id={trace_id})")
+        await policies.record_policy_b(pg_pool, candidate_id, *policies.policy_b_for_failure(e))
         await release_cooldown(redis_client, gate.cooldown_key, gate.cooldown_token)
         budget_reason = "AI_BUDGET_EXHAUSTED" if isinstance(e, BudgetExceeded) else None
         profile_failure_reason = e.reason if isinstance(e, ProfileBudgetLockError) else None
@@ -759,7 +777,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                         if (budget_reason or profile_failure_reason) and gate.profile is not None:
                             await record_decision(conn, gate.profile.id, "GATE", "REFUSED",
                                                   budget_reason or profile_failure_reason,
-                                                  instrument_id=instrument_id, run_id=run_id)
+                                                  instrument_id=instrument_id, run_id=run_id,
+                                                  candidate_id=candidate_id)
                         await conn.execute(
                             "UPDATE debate_runs SET status='FAILED',completed_at=now(),failure_reason=$3 "
                             "WHERE id=$1 AND status='RUNNING' AND claim_gen=$2",

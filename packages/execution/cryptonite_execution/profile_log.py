@@ -20,17 +20,27 @@ _INSERT_SQL = (
     "INSERT INTO ai_profile_decisions (mandate_id, instrument_id, stage, outcome, reason, detail, run_id, command_id) "
     "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)"
 )
+# Phase 2 B1: the scanner candidate, when the decision has one (column added by migration 057, no FK)
+_INSERT_WITH_CANDIDATE_SQL = (
+    "INSERT INTO ai_profile_decisions (mandate_id, instrument_id, stage, outcome, reason, detail, run_id, command_id, "
+    "candidate_id) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)"
+)
 _OUTCOME_MAX = 40
 _INSTRUMENT_MAX = 64
 
 
 async def record_decision(conn: Any, mandate_id, stage, outcome: str, reason: str | None = None, *,
-                          instrument_id: str | None = None, run_id=None, command_id=None, **detail) -> bool:
+                          instrument_id: str | None = None, run_id=None, command_id=None, candidate_id=None,
+                          **detail) -> bool:
     """Insert one decision row. Return True on success, False on any failure (never raises)."""
+    try:
+        candidate_id = uuid.UUID(str(candidate_id)) if candidate_id is not None else None
+    except (TypeError, ValueError):
+        candidate_id = None  # a malformed id is left out: it must never cost the decision row itself
     try:
         stage_value = DecisionStage(stage).value
         args = (
-            _INSERT_SQL,
+            _INSERT_SQL if candidate_id is None else _INSERT_WITH_CANDIDATE_SQL,
             uuid.UUID(str(mandate_id)),
             instrument_id[:_INSTRUMENT_MAX] if instrument_id is not None else None,
             stage_value,
@@ -39,7 +49,7 @@ async def record_decision(conn: Any, mandate_id, stage, outcome: str, reason: st
             json.dumps(detail, default=str),
             uuid.UUID(str(run_id)) if run_id is not None else None,
             uuid.UUID(str(command_id)) if command_id is not None else None,
-        )
+        ) + ((candidate_id,) if candidate_id is not None else ())
         # A savepoint: a failed INSERT inside the caller's transaction must not abort that transaction (Postgres
         # rejects every later statement of an aborted transaction, which would block the trade being logged)
         transaction = getattr(conn, "transaction", None)
