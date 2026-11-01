@@ -24,6 +24,7 @@ import { DecisionTraceDrawer } from "@/components/brain/DecisionTraceDrawer";
 import { GovernanceConsole } from "@/components/GovernanceConsole";
 import { MissionControl } from "@/components/mission/MissionControl";
 import { AutoTradeWorkspace } from "@/components/autotrade/AutoTradeWorkspace";
+import { SetupsPanel } from "@/components/setups/SetupsPanel";
 import { ModeBanner } from "@/components/mission/ModeBanner";
 import { StaleBuildBanner } from "@/components/StaleBuildBanner";
 import { WorkspaceNav } from "@/components/WorkspaceNav";
@@ -453,6 +454,13 @@ function Workstation() {
         {workspaceMode === "autotrade" && (
           <div className="flex-1 min-h-0 min-w-0 overflow-y-auto">
             <AutoTradeWorkspace />
+          </div>
+        )}
+
+        {/* Setups inbox: fresh scanner candidates, read-only */}
+        {workspaceMode === "setups" && (
+          <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
+            <SetupsPanel />
           </div>
         )}
 

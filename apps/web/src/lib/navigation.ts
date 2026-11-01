@@ -13,6 +13,7 @@ export type WorkspaceMode =
   | "debates"
   | "mission"
   | "autotrade"
+  | "setups"
   | "operator"
   | "alerts"
   | "settings";
@@ -32,6 +33,7 @@ const MODES: WorkspaceMode[] = [
   "debates",
   "mission",
   "autotrade",
+  "setups",
   "operator",
   "alerts",
   "settings",
@@ -316,6 +318,13 @@ export const NAV_GROUPS: NavGroup[] = [
         overflow: true,
         description: "Vectorized Polars scanner & candidate momentum signals",
         iconName: "Search",
+      },
+      {
+        mode: "setups",
+        label: "Setups",
+        overflow: true,
+        description: "Fresh scanner candidates with owner, cost in R and funnel trail",
+        iconName: "ListChecks",
       },
     ],
   },

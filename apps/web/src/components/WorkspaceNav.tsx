@@ -25,6 +25,7 @@ import {
   Lock,
   ShieldCheck,
   Bot,
+  ListChecks,
 } from "lucide-react";
 import { NAV_GROUPS, type NavItem, type WorkspaceMode } from "@/lib/navigation";
 
@@ -45,6 +46,7 @@ const TAB_ICONS: Record<string, React.ComponentType<{ className?: string; "aria-
   Strategies: FlaskConical,
   "Strategy Studio": FlaskConical,
   Scanner: Search,
+  Setups: ListChecks,
   "AI Brain": BrainCircuit,
   "Mission Control": Gauge,
   "Auto-Trade": Bot,
@@ -62,7 +64,7 @@ const isPillarActive = (groupId: string, workspaceMode: WorkspaceMode) => {
     return workspaceMode === "trades" || workspaceMode === "terminal" || workspaceMode === "markets" || workspaceMode === "portfolio";
   }
   if (groupId === "research") {
-    return workspaceMode === "strategies" || workspaceMode === "research";
+    return workspaceMode === "strategies" || workspaceMode === "research" || workspaceMode === "setups";
   }
   if (groupId === "ai") {
     return workspaceMode === "debates" || workspaceMode === "mission" || workspaceMode === "autotrade";

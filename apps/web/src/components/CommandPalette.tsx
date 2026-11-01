@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   Key,
   Server,
+  ListChecks,
 } from "lucide-react";
 import {
   dispatchSwitchWorkspace,
@@ -51,6 +52,7 @@ const MODE_ICON: Record<WorkspaceMode, React.ComponentType<{ className?: string;
   debates: BrainCircuit,
   mission: Gauge,
   autotrade: Bot,
+  setups: ListChecks,
   operator: Activity,
   alerts: Bell,
   settings: Settings,
