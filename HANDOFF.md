@@ -1,110 +1,75 @@
 # HANDOFF
 
-Current state of Cryptonite and what is left to do. Main `05e7af2` = Brain upgrade Waves 1–3 (#92, #94, #95),
-the DuckDB security hotfix (#93), and post-Wave-3 fixes (#96, #97), deployed 2026-10-17.
-Earlier handovers, status reports and review plans were removed from the tree on 2026-10-13; they are in git
-history (`git log --all -- docs/HANDOVER-2026-10-06.md` and similar).
-
-## Releases summary (15–17 Oct 2026)
-
-| PR | What | Merged | Migration | Tests | Status |
-|---|---|---|---|---|---|
-| #92 | Wave 1: SOLUSDT card fixes, onboarded symbols persist, gated Brain debates, read-only AI-state views | 15 Oct | 046 | 2,122 · PW 159 | deployed |
-| #93 | Security: DuckDB file read/write holes (model SQL tool, unauthenticated `/api/v1/bars`) | 16 Oct | – | 2,257 | security deployed |
-| #94 | Wave 2: the Brain sees its system, market context, safe degraded mode, truthful order cards | 16 Oct | – | 2,378 · PW 165 | deployed |
-| #95 | Wave 3: card dry run, past lessons, debate follow-through, trusted system events, trade post-mortems | 16 Oct | 047 | 2,672 · PW 194 | deployed |
-| #96 | Derivatives & regime for any Binance symbol; actionable "no trade" answers; range setups | 17 Oct | – | 2,765 | deployed |
-| #97 | Order queue guard: failing commands cannot block queue; stuck-command alerts; conflict dry run; calm context | 17 Oct | – | 2,815 · PW 64 | deployed |
-| Swing (`WS-S0`–`WS-S5`) | AI-First Swing Trading: MTF `htf_*` scanner engine & presets, per-position structural stops & 50% `TP1` scale-out, partial `SELL` (`reduce_pct`), `scan_swing_setups` & `SwingRadarCard`, inline chart Entry/Stop/TP1 overlays, `/swing` chat command, and `ScannerBuilder` v2 ([docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)) | 17 Oct | – | 2,843 · tsc 0 | deployed |
-| Settings & Header (`v2.1`) | 8-category Settings Command Center (Desk Preferences with Light/Dark/System theme & Web Audio chimes, AI Gateway & Shadow Paid toggle, interactive Exit Constraint Gauge, Risk & Guardrails, Scanner/Universe, Alerts, Security with `Tighter.HIGHER` TOTP fix, System Health & Audit trail) and App Header revamp (`⌘K` search, icons, tooltips) | 18 Oct | – | 55 pytest · PW 51 | deployed |
-| Card mandate fix (`fix/card-mandate-remedy`) | A refused BUY card offers the mandate change that fixes it: raise the position limit (to what the order needs, max 25%; the budget only at the cap or when the budget is full), add the coin to an ACTIVE mandate or create one, resume a PAUSED mandate (HALTED stays in Mission Control). Applied with TOTP through the mandate routes, audit event names the card. The inline mandate's limit is an editable field defaulting to 25% (was a hard-coded 10%) | 20 Oct | – | 2,948 · PW 63 | deployed (#100) |
-| Card: choose the mandate (`fix/card-ambiguous-mandate`) | `AMBIGUOUS_MANDATE` (two ACTIVE mandates allow the coin, e.g. "BTC-ETH spot L1" and "3 assets" on BTC) is chosen on the card: each mandate with what the order sizes to in it; the holder of the coin is the only choice; optionally stop the overlap (remove the coin from the others, or pause one that covers only it; no TOTP, it takes room away) | 20 Oct | – | 2,952 · PW 67 | deployed (#101) |
-| Stop failure modes (#102) | The three stop failures the leverage replay found: an AI stop on a coin a manual position shares closes the AI's own quantity (was alert-only); a manual SELL cannot sell a mandate's coins (`SELL_EXCEEDS_OWN_HOLDING`), and a mandate close that sells less than it owns raises CRITICAL `CLOSE_SHORT`; stop and kill-switch commands are claimed ahead of older commands | 20 Oct | – | 2,956 + fix · destructive 2 | deployed 20 Oct (orchestrator, exit_monitor, scanner) |
-| Phantom-sell reconcile (#103) | `scripts/reconcile_phantom_manual_sells.py`: the cash credited by the manual sells that sold mandate coins (BTC 10-05, WLD 10-17 ×2). Applied 20 Oct 20:41 UTC after backup `cryptonite-2026-10-20T2039Z.dump`: −$1,366.64, cash 101,185.94 → 99,819.30, `audit_events` #1 | 20 Oct | – | 9 | applied; merged (#103) |
-| Leverage replay (#104) | Stage 0 of the leverage plan, read-only: [docs/research/leverage-replay-2026-10.md](docs/research/leverage-replay-2026-10.md). No edge yet (−0.39 R over 12 trades), 0 liquidations up to 10x, 4 of 12 stops failed (fixed by #102) | 20 Oct | – | – | merged (#104) |
-| Leverage perps (`feat/leverage-perps`) | Leveraged perpetuals, Stages 1–4 of [docs/leverage-trading-plan.md](docs/leverage-trading-plan.md) under [ADR 0009](docs/adr/0009-leveraged-perpetuals.md): live leverage brackets (read-only key), resting STOP_MARKET on the mark, ISOLATED liquidation buffer, `plan_leveraged_order` (six ceilings), perps at L1 only with TOTP on every entry, 10x cap (was 20x manual / 5x mandate), 1–2% risk per trade, setup grade A/B/C/NO_TRADE, perp order cards with leverage pills, manual ticket preview + attached stop, Mission Control liquidation distance, "Flatten perps". Progress and what was not verified: [docs/leverage-progress.md](docs/leverage-progress.md) | 21 Oct | 048 | 3,305 · PW 227 (8 pre-existing) | deployed 21 Oct (#105) |
-| Inbox debate: choose the mandate, size by its budget (`fix/inbox-debate-mandate`) | A debate two ACTIVE mandates allow (the 21 Oct ETH case: "BTC-ETH spot L1" and "3 assets") is approved in the mandate the operator picks in the Inbox, with the Brain card's picker (#101, now shared: `mandate_choice.py`, `MandateChoice.tsx`); `mandate_id` in the approve overrides is checked (ACTIVE, allows the coin, no other holder). A debate BUY is sized as a share of the mandate's budget, cut to its room, like a Brain card (was % of account equity: "10% ≈ $9,980"); the Inbox reads the new dry run `GET /agents/debates/{id}/sizing` for the label and "Mandate room left" | 21 Oct | – | 3,335 · PW 231 (8 pre-existing) | awaiting merge |
-| Auto-trade Phase A (`feat/auto-trade-phase-a`) | Per-mandate daily sessions and refuse-only entry filters at the mandate's own level, no approval bypass ([ADR 0010](docs/adr/0010-mandate-sessions-and-entry-filters.md)): `min_conviction`, `min_rr`, `daily_loss_limit_pct` (perps default 3 × risk per trade), `daily_profit_target_pct`, `profit_lock_pct` (50%). Daily loss or profit lock flattens the mandate reduce-only with a Critical alert; the target refuses new entries, keeps positions and marks `mandate:session:target_met` for the A4 stop ratchet; all clear 00:00 UTC. Session meter, banners and editor fields in Mission Control. Progress and what was not verified: [docs/auto-trade-progress.md](docs/auto-trade-progress.md) | – | 049 | 3,410 · PW 237 (9 not this branch's) | not deployed (draft PR) |
-| Auto-trade Phase B (`feat/auto-trade-phase-b`) | Debates propose perp trades, still L1 with every entry approved with TOTP ([ADR 0010 Phase B amendment](docs/adr/0010-mandate-sessions-and-entry-filters.md#amendment-auto-trade-phase-b-debates-propose-perp-trades-2026-10-21)): scanner debates carry their candidate's stop and target (min_rr now measures them); a spot verdict no spot mandate takes goes to the single perps mandate on the perpetual; long/short/reduce on perps, structural stop required, long levels never become a short, code-computed setup grade, sized by the card dry run and again by `plan_leveraged_order`; perps-mandate debates only from 1h bars, `debate.perp_mandate_daily_cap` (6); perp fields and TOTP in the approval queue and Telegram. Progress and what was not verified: [docs/auto-trade-progress.md](docs/auto-trade-progress.md#phase-b) | – | – | 3,507 · PW 242 (9 not this branch's) | not deployed (draft PR) |
+Current state of Cryptonite and what is left to do, as of **2026-11-01**. Main `f94b117`, database at Alembic **056**,
+everything on `main` is deployed. Earlier handovers are in git history (`git log -- HANDOFF.md`); plans, reports and
+evidence for each release are in `~/Documents/projects/cryptonite/reports/` (finished ones under `reports/archive/`).
 
 ## What runs now
 
-- **Code:** everything is on `main` (`906c550`); no pull requests are open. CI on GitHub does not run (see Operator items),
-  so every merge was verified locally with the test commands below.
-- **Database:** dev DB `cryptonite` at Alembic `047` (single head on main). `046` adds the read-only `agent_safe_*`
-  views for the Brain; `047` adds the read-only view `agent_safe_trade_timeline` (the trade post-mortem) and two
-  lookup indexes.
-- **Services (Docker Compose, project `infra`):** all running and healthy. `api`, `agent_worker`, `research_worker`,
-  `orchestrator`, `ingest`, `scanner`, `learner`, `debate_worker` ×3, `backtester`, `strategy_sandbox` and `web` run
-  `main`'s code; `exit_monitor`, `derivatives_feed`, `outbox` and `notifier` differ from `main` only in shared
-  package files they do not import. No deploy hold is in force.
-- **Feed:** ingest streams BTCUSDT, ETHUSDT, XRPUSDT and WLDUSDT (1m, 15m, 1h, 4h), with REST gap recovery on
-  start and on spot reconnect (#55), rate-limit handling (#52) and per-instrument price precision in the
-  scanner (#49). XRP and WLD history reaches back to 2026-04-15. Ingest also starts from active onboarded spot
-  instruments with status `TRADING` (cap `INGEST_MAX_SYMBOLS`=12, off with `INGEST_ONBOARDED_FROM_DB=0`). Removing a
-  symbol now also needs `is_active=false` on its `instruments` row. Onboarded symbols that Binance no longer lists
-  for trading are dropped at start.
-- **AI Brain:** conversations are stored and can be searched, reopened and continued, renamed and archived (History
-  column, open by default on wide screens; #82–#84). The Brain can read klines for any Binance symbol (`get_klines`,
-  #46). SELL cards are refused for spot the mandate does not hold (#76, #78). Wave 1: one order card per turn; a held
-  card is answered "Held for approval", which is the expected result, not an error; a broken reply after a card shows
-  MODEL_INCOMPLETE and keeps the card. BUY cards for symbols the feed does not cover offer "Onboard X"; their approval
-  is refused with 422, or 503 while the universe is unknown. SELL is never blocked by the feed. The Brain sees the UTC
-  time. Debates that the Brain or the research chat starts pass the account safety gate and a cap of 6 a day
-  (`BRAIN_DEBATE_DAILY_CAP`). Wave 2: every turn starts with a System state block (mandates, kill switches and the
-  daily-loss latch, pending approvals, feed coverage, exit monitor). The Brain declines cards under the kill switch, the
-  daily-loss latch or a stopped exit monitor, and BUYs on PAUSED or HALTED mandates. It has tools for news, funding,
-  open interest and mark, and the market regime; ticker rows carry `as_of`. `brain.plan` output is capped at 8000 tokens
-  (thinking 4096). A read-only answer from the backup model is labelled `_[degraded: answered by the backup model,
-  read-only]_`. A BUY card on a PAUSED or HALTED mandate is refused with a link to Mission Control before the TOTP code
-  is spent. A used TOTP code is answered `TOTP_REUSED` and does not count toward the lockout. A SELL closes a stopped
-  mandate's holding. `in_feed` and the card feed notes now work (Redis DB 0). Wave 3: an order card shows a dry run
-  before Approve ("Would size to…", "Would sell…", "Would be refused: …"; the button then reads "Approve anyway…"), plus
-  thesis, evidence, invalidation, horizon and confidence, and up to three past lessons for the same instrument from the
-  last 90 days; lessons are never put in the prompt. The dry run does not check the kill switch, so approval still
-  refuses under it. A debate card follows its run to the verdict and the approval, and a Brain debate that the safety
-  gate refuses is recorded as `GATE_REFUSED` ("Not run (safety gate)"). Only server-written `<system_event>` blocks are
-  authoritative for the Brain. A proposal that cannot become a card says why. `/postmortem [SYMBOL]` asks for a trade
-  review, which the Brain reads with `get_trade_timeline`.
-  Post-Wave-3 fixes (#96, #97): derivatives and regime work for any symbol with Binance USD-M (with public API
-  fallback when not in live feed); missing data is neutral; range setups allowed with reward >= 1.5x risk; every
-  "no trade" ends with trigger, stop and target; text after tool call starts a new paragraph; per-turn state no
-  longer dumps ticker list (fixes "Mubarak" bug); order card dry run checks whether another instance holds the instrument.
-  AI-First Swing Trading (`WS-S0`–`WS-S5`, [docs/swing-trading-wave-plan.md](docs/swing-trading-wave-plan.md)):
-  `ScannerEngine.evaluate` joins closed higher-timeframe indicator columns (`htf_*`) via backward `join_asof` with zero
-  lookahead bias; `presets.py` provides 3 gate-aligned MTF swing presets (`swing-trend-pullback-1h`,
-  `swing-sniper-pullback-15m`, `swing-squeeze-breakout-1h`); `ExitMonitor` enforces per-position `STRUCTURAL_STOP` and
-  mechanical 50% scale-out at `TP1` (`REDUCE_TP1` / `TAKE_PROFIT_1`); Brain `SELL` cards support `reduce_pct` (`25`,
-  `50`, `100`); the Brain has `scan_swing_setups` (`SwingRadarCard` with 1-click Chart/Debate/Order actions, plus
-  optional `symbol` parameter with Binance Spot REST fallback and 6-decimal precision for sub-\$0.10 tokens),
-  `show_price_chart` Entry/Stop/Target level lines, the `/swing [SYMBOL]` slash command, and dot-separated quote
-  normalization (`MUBARAK.USDT` / `MUBARAK` $\rightarrow$ `MUBARAKUSDT`) across `get_klines`, `get_live_market_data`,
-  `get_derivatives_context`, `get_market_regime`, and `scan_swing_setups`.
-- **Web:** the 2026-10-12 UI critique is implemented ([docs/ui-ux-critique-2026-10-12.md](docs/ui-ux-critique-2026-10-12.md), #81):
-  unknown states never read as healthy or empty, one session store, one kill-switch poller per account,
-  PAPER and DEMO kill switches told apart. In #97, Pause/Resume/Stop strategy commands are hidden for AI-mandate
-  instances in the UI blotter (Flatten is kept). `BrainWidgets.tsx` renders `SwingRadarCard`, `OrderCard` R:R geometry
-  bars and scale-out badges, and `PriceChartCard` Entry/Stop/TP1 overlays; `ScannerBuilder.tsx` includes 1-click Swing
-  Preset templates and valid `ScanSpecCreate` submission.
-- **Mandates:** `Brain XRPUSDT.BINANCE` is ACTIVE at L1 (created 2026-10-13 from a Brain order card; $10,000
-  budget, 10% position limit, one open XRP position). `BTC-ETH spot L1` and `WLDUSDT.BINANCE` are PAUSED
-  (reduce-only); the older XRP mandate is ARCHIVED. On 2026-10-17 12:04 UTC two poisoned RESUME commands were marked
-  FAILED, unblocking the WLD trailing stop which sold 1,871 WLD at 0.5131. At 12:08 UTC the manual 0.03 BTC position
-  was closed by the operator. Every risk-adding order waits for the operator's approval.
-- **Order outcomes (#86):** an approved Brain card follows its order to WORKING (a resting limit), FILLED or NOT
-  EXECUTED with the reason, and writes the change into the conversation once, so the Brain knows. Whatever path
-  approved it, an approved order that is not executed also sends an INFO notification (Telegram).
-- **Mandate sizing (#86):** sizing and the mandate check value an order at the same price (its limit, else the
-  live ask/bid). If they ever disagree, the order is refused as `MANDATE_SIZING_CONFLICT` and logged as an error,
-  never recorded as the AI's breach. Root cause of the 2026-10-13 18:47 UTC refusal of a limit buy above the ask.
-- **Breaches:** none count. The four on record (#2–#4 from 2026-10-04, #18 from 2026-10-13) were all
-  system-sized and were voided by the operator on 2026-10-13 (`BREACH_VOIDED` events #19–#22, migration 045);
-  the BREACH rows stay in the audit log. Voiding: `scripts/void_mandate_breach.py` (dry run by default), only for
-  breaches the system caused.
-- **DEMO account:** the 10 SUBMIT_ORDER commands from 2026-09-24/25 that never reached Binance were settled on
-  2026-10-13, and all 62 stale DEMO reservations were released (`OPERATOR_ABORTED_UNSENT`). Script and the backup
-  taken before it: `~/backups/cryptonite/settle_demo_unsent-2026-10-13.sql`, `db/cryptonite-2026-10-13T1407Z.dump`.
-  The DEMO kill switch for `BINANCE-SPOT-DEMO` is still latched; the executor is not running.
+- **Code:** `main` `f94b117`, no open pull requests. Every PR runs GitHub Actions (ruff, web, pytest, e2e-smoke,
+  verify) and is merged only when green. Deploys run from `deploy-main/` (detached at `main`), one script per release.
+- **Database:** production `cryptonite` at `056`. P5 (live profiles) will add `057`.
+- **Services:** the whole Compose stack (`infra`) is healthy: `api`, `agent_worker`, `research_worker`, `orchestrator`,
+  `ingest`, `scanner`, `learner`, `debate_worker` ×3, `exit_monitor`, `derivatives_feed`, `outbox`, `notifier`,
+  `backtester`, `strategy_sandbox`, `lake_maintenance`, `sentiment`, `web`, `postgres`, `redis`.
+- **Feed:** BTCUSDT, ETHUSDT, XRPUSDT and WLDUSDT spot and perps (1m, 15m, 1h, 4h), plus onboarded symbols (cap 12).
+- **Auto-Trade profiles** (ADR 0011): the Auto-Trade workspace runs profiles, each with its coins (exclusive coin
+  locks), markets (spot, isolated spot margin, perps), presets and timeframes, mode (Ask or Auto), risk and exits,
+  daily session limits and circuit breakers. Master switch `autotrade.enabled` is **off**. Active profiles:
+  - **BTC/ETH Intraday:** ACTIVE, Ask, **dry run**, long and short, perps and spot, all 14 presets on 15m/1h/4h.
+  - **WLD/XRP Perps Scalp:** ACTIVE, Ask, **dry run**, long and short, perps, default presets.
+  - Both at 10% max position and 1% risk per trade. In dry run an approved order is recorded (`dry_run_plan`) and
+    the card reads "Not executed · Dry run", but no paper order is placed.
+- **Decision pipeline:** scanner candidate → gate (direction-aware timeframe rule, cooldown) → triage → two-turn
+  debate (advocate, then doubter) → PM and risk panel → grade-sized entry (A/B full cap, C half, NO_TRADE refused)
+  → approval (Ask) → orchestrator. Every candidate gets a stop/target outcome label (`candidate_outcomes`, backfill
+  in progress) for the Phase 2 analysis.
+- **AI Brain:** the one chat on both the Brain and Debates views (History, New, Recent/Archived, permanent delete).
+  Swing scan returns only real setups: the long and short swing presets plus the scanner's setups from the last 4 h,
+  each labelled with its preset, timeframe and source. Order cards are sized by setup grade on spot and margin (perp
+  cards keep the leverage plan's size) and warn on NO_TRADE. A saved reply is the text after the last tool call.
+
+## Releases since the last handover (20 Oct – 1 Nov 2026)
+
+| PR | What | Migration |
+|---|---|---|
+| #98, #99 | Lake compaction and bounded DuckDB (host OOM fix); nightly `lake_maintenance`; one live data folder | – |
+| #100, #101, #108 | Brain cards offer the mandate fix when refused, choose the mandate when two allow the coin | – |
+| #102, #103 | Three stop failure modes fixed; phantom manual sells reconciled (−$1,366.64, applied 20 Oct) | – |
+| #104–#106 | Leverage replay (Stage 0); leveraged perpetuals Stages 1–4 (ADR 0009); futures executor steps (not wired) | 048 |
+| #109–#111, #115 | Strategy ids keep their venue; resting perp stops survive restarts; stale tabs reload before approving | – |
+| #112–#114, #116 | Inbox mandate choice; perp stop ratchet; Auto-trade Phase A (sessions, entry filters) and Phase B | 049 |
+| #117, #120, #122, #123 | Full-page Settings; Operator P&L; Vibe-Trading UI redesign; Crystal Candle logo | – |
+| #118 | Auto-Trade Profiles P0: profiles, lifecycle, coin locks, master switch (ADR 0011) | 050 |
+| #121 | P1: profile-aware autotrading with mandate safety | – |
+| #125, #126 | P4 isolated spot margin; H1 approval stops and exit-decision grants | 051, 052 |
+| #127 | P2: Auto-Trade workspace and profile read API | – |
+| #128–#133 | P3 Brain integration (profile tools, proposal card, profile-aware debates), auto-resume, P3b strategy picker | 053, 054 |
+| #134 | AI Phase 1: direction-aware gate, two-turn debate, grade sizing, candidate outcome labels, Brain-only chat | 055 |
+| #135 | H2: dry-run cards, Debates history, conversation delete, stale inbox reconcile, grade-sized Brain cards | 056 |
+| #136 | Brain swing scan: no fabricated setups, named coin only, one reply per turn, no HOLD lessons on cards | – |
+| #137 | Brain swing scan: short presets and the scanner's recent setups | – |
+
+Note on #136: before it, 177 of 179 Swing Radar setups shown in the two weeks to 31 Oct were invented by a fallback
+(always LONG at the live price), and most approved Brain trades in late October came from them. Judge earlier Brain
+trade results with that in mind.
+
+## Open items
+
+1. **Gate L checks (operator):** Phase 1 and H2 in the UI: the brief's direction/grade/replay line, "grade X · size Y%"
+   on entry cards, Debates History/New, conversation delete, the dry-run card text, the swing radar after #137.
+2. **Dry run:** both profiles are in dry run; turn it off per profile (TOTP) to place paper orders.
+3. **Presets:** tick `swing-squeeze-breakdown-short-1h` on WLD/XRP Perps Scalp (the one short preset with a
+   positive replay); consider unticking the losing presets on BTC/ETH Intraday (replay in `reports/preset-replay/`).
+4. **AI Phase 2** (after the outcome backfill finishes, ~14.7k candidates): funnel by realized R, preset pruning,
+   triage and full-debate decisions, a neutral prompt in shadow mode, a Setups panel, removal of the old chat
+   endpoints and `fleet.py` personas, and the `recall_lessons` fallback that still includes HOLD lessons.
+   Plan: `reports/ai-phase1-plan.md` (Phase 2 list) and the expert review in `reports/ai-expert-review/`.
+5. **Optional:** grade sizing for perp Brain cards (they keep the leverage plan's size today).
+6. **P5 live profiles** (migration 057): see `reports/autotrade-profiles-plan.md`; needs Binance keys and the
+   hosting decision (O5).
+7. **Automatic trading volume:** most candidates are refused by triage or the timeframe rule and debates lean HOLD;
+   Phase 2 measures which filters cost winners before any is loosened.
 
 ## Start and stop
 
@@ -135,7 +100,7 @@ docker compose -f infra/docker-compose.yml up -d --no-deps <services>
   container created before this change does not have it: recreate `agent_worker`
   (`up -d --force-recreate --no-deps agent_worker`) to pick it up.
 
-## Test (CI does not run, so run these before merging)
+## Test (CI runs on every PR; run the focused tests locally first)
 
 Python, against the throwaway containers `ci-pg-budget` (:15432) and `ci-redis-budget` (:16379), never the dev DB:
 
@@ -166,79 +131,21 @@ API_ORIGIN=http://127.0.0.1:8999 API_BASE=http://127.0.0.1:8999/api/v1 pnpm buil
 pnpm exec playwright test -c playwright.local.config.ts
 ```
 
-Last full results (2026-10-17, #97): pytest 2815 passed / 0 failed; Playwright 64 passed (on throwaway DBs).
-
-## Operator actions taken (15–20 Oct 2026)
-
-| When (UTC) | Action |
-|---|---|
-| 15 Oct 18:37 | DB backup `cryptonite-2026-10-15T1837Z.dump`; migration 045 → 046; Wave 1 (#92) deployed 18:47 |
-| 16 Oct | Security hotfix (#93) and Wave 2 (#94) deployed; `agent_worker` recreated with `SYSTEM_REDIS_URL` |
-| 16 Oct 12:17 | DB backup `cryptonite-2026-10-16T1217Z.dump`; migration 046 → 047; Wave 3 (#95) deployed |
-| 17 Oct 12:04 | Two poisoned RESUME commands marked FAILED (operator-approved); WLD trailing stop then sold 1,871 WLD at 0.5131 |
-| 17 Oct 12:08 | Manual 0.03 BTC position closed by operator |
-| 17 Oct | #96 and #97 deployed and verified (no poller errors; derivatives and regime live for WLD, XRP, SOL, BTC) |
-| 20 Oct 19:35 | Operator closed every open position (XRP, BTC, ETH; all AI mandates flat) |
-| 20 Oct 20:39 | DB backup `cryptonite-2026-10-20T2039Z.dump`; #102 merged (`871bc34`) |
-| 20 Oct 20:41 | Phantom manual sells reconciled (`--apply`): cash 101,185.94 → 99,819.30, `audit_events` #1 `PHANTOM_SELL_RECONCILED` |
-| 20 Oct 20:44 | #102 deployed: orchestrator (rehydrated cash 99,819.30), exit_monitor, scanner; all healthy |
-| 21 Oct 09:07 | #103, #104, #105 merged (main `60e42ae`); DB backup `cryptonite-2026-10-21T0907Z.dump`; migration 047 → 048 |
-| 21 Oct 09:15 | Leverage release (#105) deployed with `reports/deploy-leverage-release.sh`: all 18 app services rebuilt, all healthy, every Python container = main; perp marks and quotes for BTC, ETH, XRP, WLD, MUBARAK; no read-only key yet (only BTC/ETH perps can open); no mandate has perps on |
+GitHub Actions runs ruff, web, pytest, e2e-smoke and verify on every PR; a PR is merged only when all are green.
 
 ## Operator items (only the operator can do these)
 
-1. **GitHub Actions:** every job fails before it starts because of a billing or spending-limit block on the
-   account. Fix it in GitHub billing; until then CI is local only.
-2. **Admin password:** it was pasted into a chat; change it. TOTP re-enrolment: `scripts/enroll_admin_totp.py`
-   (run inside the api container from your own terminal; it prints the new secret once).
-3. **DEMO kill switch:** reset the `BINANCE-SPOT-DEMO` latch (Operator page) before starting the executor.
-4. **Live checks not yet done:** a SELL refusal in a live Brain chat (calls a paid model); Telegram foreign-chat
-   ignore, veto, and the kill-switch Critical alert on Telegram and ntfy.
-5. **Credentials:** rotate the Redis password (a URL with it appeared in a report).
-6. **Sudo and model work:** `python3.12-dev`; Ollama upgrade (`~/Downloads/ollama-v0.35.1/README-resume.txt`), which
-   also unblocks the certified distilled triage model (import with `scripts/distill_triage_export.py`, about
-   48 GB free needed; then re-run the triage and summarize evals before routing to it; background in
-   [docs/ai-first-program.md](docs/ai-first-program.md)).
-7. **Backups:** nightly DB dumps run; the scheduled restore drill needs three consecutive passes, and a restore from
-   the off-machine copy has not been proven. Keep `~/.config/cryptonite-backup/passphrase` off this machine too.
-8. **Decisions:** whether to resume a mandate (BTC exposure was 9.6% of a 10% limit; manual 0.03 BTC long closed);
-   the WLD mandate and the wider symbol onboarding list; deleting strategy `ai-gen-62f49193` in the UI.
-9. **Live Brain checks (paid model):** the System state block in a Brain reply, and a BUY card on a PAUSED mandate
-   (it must be refused, with the link to Mission Control, before the TOTP code is spent).
-10. **Live Brain checks for Wave 3 (paid model):** a structured order card (thesis, evidence,
-    invalidation), `/postmortem XRP`, and an old debate card from before Wave 3 (it must not read "Debate failed").
-11. **Live check for the card mandate fix:** a BUY card on a coin whose mandate is at its position limit (the
-    2026-10-20 XRP case): the card offers "Fix and approve…", raising the limit needs the TOTP code, and the order
-    then queues at the size the card showed.
-12. **Leverage perps (`feat/leverage-perps`):** verified locally on 21 Oct (see "Local verification" in
-    [docs/leverage-progress.md](docs/leverage-progress.md), including migration 048 up/down on a copy of the live DB).
-    Left for the operator: merge the PR, then run `reports/deploy-leverage-release.sh` (backup, migration 048 through
-    the test runner, rebuild of every running service, health and code checks). For live leverage brackets, mount a
-    **read-only** Binance futures key for the `derivatives_feed` service: `BINANCE_FUTURES_READONLY_API_KEY` and
-    `BINANCE_FUTURES_READONLY_PRIVATE_KEY_PATH` (Ed25519 PEM path inside the container). Without them BTC and ETH use
-    the built-in reference brackets and every other perp entry is refused with `NO_LEVERAGE_BRACKETS`. No mandate has
-    perps on: turning them on is "Allow perps" (TOTP) on a perp card or in the mandate editor, L1 only. Stage 5 (paper
-    validation: at least 30 closed perp trades, expectancy above zero, 0 stop failures) gates any testnet step.
+Carried over from the 17 Oct handover; not re-checked since, except where noted.
 
-## Open items and follow-ups
-
-### Follow-ups
-- A transient error after a compensated effect still retries (pre-existing, pinned by a test).
-- Declare `cryptonite-orchestrator` as a dependency of the API package.
-- The spot klines path ignores `Retry-After` after a 429.
-- Fill lines echo a stored card's instrument without the new format check (low risk).
-- Descoped: trace-id linking, historic stop blind time, semantic lesson recall.
-
-### Next
-- **Wave 4:** score the Brain's cards against outcomes, check its numbers come from tools, Brain shadow comparisons,
-  Mission Control panels, offline model review.
-- **Wave 5:** needs ADR 0008 approved first (operator feed, briefings, chat-set alerts, memory across conversations).
-
-## Waiting on time
-
-- Gate 5: 14 days of L1 paper trading with 0 breaches. The 2026-10-04 breaches were voided on 2026-10-13, so the
-  breach count is 0; the time requirement still applies.
-- L2 candidacy of `BTC-ETH spot L1`: earliest 2026-10-31, needs 30 closed trades (`scripts/gate_status.py`).
+1. **Admin password:** it was pasted into a chat; change it. TOTP re-enrolment: `scripts/enroll_admin_totp.py`.
+2. **DEMO kill switch:** reset the `BINANCE-SPOT-DEMO` latch (Operator page) before starting the executor.
+3. **Credentials:** rotate the Redis password (a URL with it appeared in a report).
+4. **Sudo and model work:** `python3.12-dev`; Ollama upgrade (`~/Downloads/ollama-v0.35.1/README-resume.txt`), which
+   also unblocks the distilled triage model ([docs/ai-first-program.md](docs/ai-first-program.md)).
+5. **Backups:** the scheduled restore drill needs three consecutive passes, and a restore from the off-machine copy
+   has not been proven. Keep `~/.config/cryptonite-backup/passphrase` off this machine too.
+6. **Network:** the Wi-Fi extender still drops the feed (stale-data breaker paused both profiles 1 Nov 04:40–05:00
+   UTC); Ethernet is the real fix. GitHub Actions billing was fixed (CI runs again).
 
 ## Known risks to watch
 
@@ -256,11 +163,12 @@ Last full results (2026-10-17, #97): pytest 2815 passed / 0 failed; Playwright 6
 
 ## Where things are
 
-- `repo/`: the main checkout, on `main`, clean. `deploy-main/`: deploy worktree.
-- Command queue runbook: [docs/runbooks/command-queue.md](docs/runbooks/command-queue.md) (handling stuck, failed, or unknown commands).
-- Browser QA: [docs/runbooks/browser-qa-agent.md](docs/runbooks/browser-qa-agent.md) (instructions for an agent that
-  tests every page, places paper trades and runs a strategy instance; reports go to `~/Documents/projects/cryptonite/qa/`).
-- Backups: `~/backups/cryptonite/` (`db/`, `data/`, `redis/`, `secrets/`, drill logs, `backup.log`); runbook
-  [docs/runbooks/backup.md](docs/runbooks/backup.md).
-- Reference: [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), [docs/ai-first-program.md](docs/ai-first-program.md),
-  [docs/USER_MANUAL.md](docs/USER_MANUAL.md), [docs/adr/](docs/adr/), [docs/runbooks/](docs/runbooks/).
+- `~/Documents/projects/cryptonite/repo/`: the main checkout, on `main`, clean (the launchers run from it).
+  `deploy-main/`: the deploy worktree and the one live data folder. New work goes in a separate worktree
+  (`git worktree add ../wt-<name>`), removed after merge.
+- `~/Documents/projects/cryptonite/reports/`: current plans and the latest deploy scripts; `reports/archive/` holds
+  finished plans and reports, evidence, old deploy scripts and the Oct 14 QA run. See `reports/README.md`.
+- `~/cryptonite-staging-data/`: the staging stack's data and worktrees ([docs/runbooks/staging.md](docs/runbooks/staging.md)).
+- Backups: `~/backups/cryptonite/`; runbook [docs/runbooks/backup.md](docs/runbooks/backup.md).
+- Reference: [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), [docs/adr/](docs/adr/) (0011 = Auto-Trade
+  profiles), [docs/runbooks/](docs/runbooks/), [docs/USER_MANUAL.md](docs/USER_MANUAL.md).

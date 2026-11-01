@@ -37,9 +37,12 @@ for your approval, in the web app or on Telegram with a one-time code.
 
 - **Trade with an AI copilot, keep the final say.** Ask "is there a trade on BTC 4h?"; get the analysis,
   the chart and a sized order proposal. Nothing executes until you approve it.
-- **Run supervised AI trading on paper.** Give the AI a mandate (for example $10,000, BTC and ETH, 10%
-  max position, 20% hard stop). The scanner finds setups, a cheap local model triages them, the debate
-  fleet decides, and risk-adding orders come to your phone for approval.
+- **Run supervised AI trading on paper with Auto-Trade profiles.** A profile is a mandate with a strategy:
+  its coins (each coin belongs to one profile), markets (spot, isolated spot margin, perpetuals), long and/or
+  short presets and timeframes, risk per trade, exits, daily loss and profit limits, circuit breakers, and a
+  mode (Ask: you approve each entry; Auto: inside the limits) or a dry run that records orders without placing
+  them. The scanner finds setups, a cheap model triages them, a two-turn debate decides, entries are sized by
+  setup grade, and risk-adding orders come to your phone for approval. A master switch turns Auto off everywhere.
 - **Let autonomy be earned, not granted.** Mandates start at L1 Copilot. The system proposes a promotion
   only when the gate passes (days at level, closed trades, no breaches, drawdown, return against holding
   BTC, calibrated confidence), and only you can confirm it. Losses demote automatically.
@@ -61,10 +64,12 @@ for your approval, in the web app or on Telegram with a one-time code.
 3. **Pre-debate gate:** deterministic checks first (kill switch, daily loss, headroom, data freshness,
    cooldown), then a **triage** call on a local model (Gemma 4 12B) decides whether a full debate is
    worth paying for.
-4. **Debate:** analysts (market, news sentiment via FinBERT, on-chain), bull vs bear, a risk panel, and a
-   verdict from Gemini Pro. Lessons from similar past decisions are recalled by vector search.
-5. **Mandate routing:** the verdict goes to the owning mandate's autonomy level: an approval at L1, a
-   veto window at L2, direct at L3. No mandate means no order.
+4. **Debate:** analysts (market, news sentiment via FinBERT, on-chain), then a two-turn argument (the case
+   for the setup's direction first, the doubter last), a risk panel, and a verdict from Gemini Pro. Lessons
+   from similar past BUY/SELL decisions are recalled by vector search and passed as untrusted history.
+5. **Profile routing:** the verdict goes to the profile that owns the coin, sized by the setup grade
+   (A/B full position limit, C half, NO_TRADE refused), then to an approval (Ask), or straight on (Auto,
+   when the master switch is on). No owning profile means no order.
 6. **Execution:** an approved order is sized against the mandate budget, checked against the mandate,
    then against `GuardedOrderDispatcher` (the non-bypassable 1–25% equity clamp, daily drawdown circuit
    breaker and kill switch), and written through a transactional outbox to the paper engine.
