@@ -123,13 +123,13 @@ async def test_the_swing_scan_lists_unfed_or_uncovered_coins_as_not_tradeable(mo
     monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT", "ETHUSDT", "XRPUSDT"}))
     monkeypatch.setattr(tools, "DuckDBLakeRepository", Lake)
     monkeypatch.setattr(tools, "_recent_scanner_setups", lambda *_: [])
+    monkeypatch.setattr(tools, "_spot_klines", lambda *a, **k: (None, "offline"))  # H5: discovery is over REST only
     out = json.loads(await tools.scan_swing_setups(symbol="SOLUSDT"))
-    assert out["candidates"] == [] and out["scanned_count"] == 0
-    assert out["not_tradeable"] == [{"instrument_id": "SOLUSDT.BINANCE",
-                                     "reason": "SOLUSDT is not in the live feed: add it to the feed first (Watchlist), "
-                                               "then scan again"}]
+    assert out["candidates"] == [] and out["scanned_count"] == 0 and out["untradeable_setups"] == []
+    assert out["uncovered_coins"] == [{"coin": "SOLUSDT",
+                                       "reason": "SOLUSDT is not in the live feed and no ACTIVE mandate covers it"}]
     out = json.loads(await tools.scan_swing_setups(symbol="XRPUSDT"))
-    assert out["not_tradeable"] == [{"instrument_id": "XRPUSDT.BINANCE", "reason": "no ACTIVE mandate covers XRPUSDT"}]
+    assert out["uncovered_coins"] == [{"coin": "XRPUSDT", "reason": "no ACTIVE mandate covers XRPUSDT"}]
 
 
 # 7. The Setups inbox showed the row's age, not the bar close's, and kept offering candidates the gate refuses.

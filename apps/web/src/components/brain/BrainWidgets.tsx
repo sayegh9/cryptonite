@@ -37,6 +37,7 @@ import type {
   OrderCardWidget,
   PriceChartWidget,
   SwingRadarWidget,
+  UntradeableSetupItem,
   TearsheetWidget,
 } from "@/lib/brain/types";
 
@@ -1561,6 +1562,54 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   );
 }
 
+/** H5: the radar's bar time, e.g. "1 Nov 19:00 UTC". */
+function barTime(iso?: string | null): string {
+  if (!iso) return "bar time unknown";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "bar time unknown";
+  return `${d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })} ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })} UTC`;
+}
+
+export const coverCoinPrompt = (coin: string) =>
+  `Help me cover ${coin}: add it to the feed and to a mandate or profile`;
+
+/** H5: real matches the scan cannot trade yet. No Propose action: the only step offered is covering the coin. */
+function UntradeableSetups({ setups }: { setups: UntradeableSetupItem[] }) {
+  return (
+    <div className="mt-3 border-t border-zinc-800/80 pt-2" data-testid="swing-radar-untradeable">
+      <p className="mb-1.5 text-2xs font-bold uppercase tracking-wider text-amber-300">Informational: not tradeable yet</p>
+      <ul className="space-y-1.5">
+        {setups.map((s, idx) => {
+          const coin = s.instrument_id.split(".")[0];
+          return (
+            <li
+              key={`${s.instrument_id}-${s.preset_slug}-${idx}`}
+              data-testid="swing-radar-untradeable-item"
+              className="rounded border border-zinc-800/80 bg-zinc-900/30 p-2 text-2xs text-zinc-400"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  <span className="font-bold text-zinc-200">{coin}</span> {s.direction} · {s.preset_slug} · {s.timeframe} ·{" "}
+                  {s.rr_ratio.toFixed(2)}R · <span data-testid="swing-radar-untradeable-bar">{barTime(s.bar_close)}</span>
+                </span>
+                <button
+                  type="button"
+                  data-testid="swing-radar-cover-btn"
+                  onClick={() => useBrainStore.getState().setDraft(coverCoinPrompt(coin))}
+                  className="rounded border border-zinc-700 bg-zinc-800/80 px-2 py-0.5 text-2xs text-zinc-200 hover:border-amber-700 hover:text-amber-300 transition-colors"
+                >
+                  Cover this coin
+                </button>
+              </div>
+              <p className="mt-1 text-zinc-500">{s.reason}</p>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
   const trendColor = (trend?: string) => {
     const t = (trend || "").toUpperCase();
@@ -1590,7 +1639,11 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
 
       {w.candidates.length === 0 ? (
         <div className="py-3 text-center" data-testid="swing-radar-empty">
-          <p className="text-zinc-400">No setup right now: no long or short preset fired, and the scanner found nothing recent.</p>
+          <p className="text-zinc-400">
+            {(w.untradeable_setups?.length ?? 0) > 0
+              ? "No tradeable setup right now: nothing fired on a coin a mandate covers."
+              : "No setup right now: no long or short preset fired, and the scanner found nothing recent."}
+          </p>
           <button
             type="button"
             onClick={() => void sendBrainMessage("Inspect 15m and 1h swing setups across liquid symbols and highlight any developing structures")}
@@ -1630,6 +1683,7 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
                   <span className="text-2xs text-zinc-500" data-testid="swing-radar-source">
                     {c.preset_slug} · {c.timeframe}
                     {c.source === "scanner" ? ` · scanner, ${c.age_minutes ?? 0} min ago` : " · live scan"}
+                    {c.bar_close ? ` · bar ${barTime(c.bar_close)}` : ""}
                   </span>
                   <span
                     className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${
@@ -1710,6 +1764,7 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
           })}
         </div>
       )}
+      {(w.untradeable_setups?.length ?? 0) > 0 && <UntradeableSetups setups={w.untradeable_setups ?? []} />}
     </section>
   );
 }

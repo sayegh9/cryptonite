@@ -320,6 +320,35 @@ export interface SwingCandidateItem {
   route?: { mandate: string; market: string; instrument_id: string } | null;
   /** H4: round-trip cost (fees, slippage, perp funding over 24 h) in R. */
   cost_r?: number | null;
+  /** H5: the setup's bar close (ISO UTC). */
+  bar_close?: string | null;
+}
+
+/** H5: a coverage note from the swing scan, never a setup. */
+export interface UncoveredCoinItem {
+  coin: string;
+  reason: string;
+}
+
+/** H5: a real preset match on a coin not fed or not covered (or below 1.5 R:R): informational, never proposed. */
+export interface UntradeableSetupItem {
+  instrument_id: string;
+  preset_slug: string;
+  timeframe: string;
+  direction: "LONG" | "SHORT";
+  entry: number;
+  stop: number;
+  target: number;
+  rr_ratio: number;
+  bar_close?: string | null;
+  source?: "live_scan" | "scanner";
+  reason: string;
+}
+
+export interface ScanRejections {
+  counts: Record<string, number>;
+  by_coin_preset: Array<Record<string, string>>;
+  truncated?: number;
 }
 
 export interface SwingRadarWidget {
@@ -329,6 +358,9 @@ export interface SwingRadarWidget {
   timeframe: string;
   scanned_count: number;
   candidates: SwingCandidateItem[];
+  uncovered_coins?: UncoveredCoinItem[];
+  untradeable_setups?: UntradeableSetupItem[];
+  rejections?: ScanRejections | null;
 }
 
 /** The read-only tool's resolved spec; the API rechecks it when the operator creates a profile. */
