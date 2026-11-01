@@ -96,6 +96,43 @@ def is_fresh_payload(payload: dict[str, Any], now_ns: int) -> bool:
     return bar_ns > 0 and 0 <= age_ns <= bar_ns
 
 
+# H5: what the newest closed bar of each committed-bar evaluation came to, counted per hour in scan_eval_counts.
+EVAL_COUNT_TIMEOUT_S = 2.0
+EVAL_COUNT_SQL = """
+    INSERT INTO scan_eval_counts (bucket_start, instrument_id, timeframe, preset_slug, side, outcome, n)
+    VALUES ($1, $2, $3, $4, $5, $6, 1)
+    ON CONFLICT (bucket_start, instrument_id, timeframe, preset_slug, side, outcome)
+    DO UPDATE SET n = scan_eval_counts.n + 1
+"""
+
+
+def latest_bar_outcome(df: Any, candidates: list[Any], now_ns: int) -> tuple[int, str] | None:
+    """H5: (newest closed bar's close ns, outcome) for one evaluation, or None without a bar close column.
+
+    Only the newest bar counts, never the history ``evaluate`` re-reads. No match on it is ``NO_TRIGGER``; a match
+    whose bar closed more than one bar ago is ``STALE``; a match with reward below ``MIN_RISK_REWARD_RATIO`` times the
+    risk is ``REJECTED_RR``; else ``MATCHED_FRESH``. A count only: the gates below decide as before."""
+    if df is None or df.is_empty() or "bar_close_inclusive_ns" not in df.columns:
+        return None
+    newest = int(df["bar_close_inclusive_ns"].max())
+    on_bar = [c for c in candidates if c.bar_close_inclusive_ns == newest]
+    if not on_bar:
+        return newest, "NO_TRIGGER"
+    if not any(is_fresh(c, now_ns) for c in on_bar):
+        return newest, "STALE"
+    min_rr = Decimal(str(MIN_RISK_REWARD_RATIO))
+    for c in on_bar:
+        risk = abs(c.suggested_entry - c.suggested_stop)
+        if risk > Decimal("0") and abs(c.suggested_target - c.suggested_entry) / risk >= min_rr:
+            return newest, "MATCHED_FRESH"
+    return newest, "REJECTED_RR"
+
+
+def eval_bucket(bar_close_ns: int) -> datetime:
+    """The hour (UTC) a bar close falls in."""
+    return datetime.fromtimestamp(bar_close_ns / 1e9, UTC).replace(minute=0, second=0, microsecond=0)
+
+
 def brief_key_for(instrument_id: str, timeframe: str, bar_close_inclusive_ns: int) -> str:
     return f"brief:{instrument_id}:{timeframe}:{bar_close_inclusive_ns}"
 
@@ -829,6 +866,15 @@ class ScannerWorker:
                 logger.error("Error in job consumer loop: %s", e)
                 await asyncio.sleep(1.0)
 
+    async def _record_eval_counts(self, rows: list[tuple[Any, ...]]) -> None:
+        """H5: upsert the newest-bar outcome counts. Best-effort and bounded: a failed or slow write costs the counts,
+        never the scan."""
+        try:
+            async with asyncio.timeout(EVAL_COUNT_TIMEOUT_S):
+                await self.pool.executemany(EVAL_COUNT_SQL, rows)
+        except Exception as exc:
+            logger.warning("Scan eval counts not recorded (%d rows): %s", len(rows), exc)
+
     async def _execute_scan(
         self,
         spec_version_id: UUID,
@@ -901,6 +947,11 @@ class ScannerWorker:
         max_seen_watermark = watermark_ns or 0
 
         frames_by_inst: dict[str, dict[str, Any]] = {}  # enriched frames, for the market brief
+        # H5: count the newest closed bar of committed-bar scans (profile and global); never history or manual jobs
+        count_evals = trigger_reason == "COMMITTED_BAR_EVENT"
+        eval_counts: list[tuple[Any, ...]] = []
+        count_slug = preset_slug or spec_slug or str(spec_version_id)
+        count_side = str(getattr(risk_config, "direction", None) or "LONG").upper()
         # Only the history the indicators need: EMA-200 plus warm-up on the largest timeframe. Loading the
         # whole lake on every run grew with every backfilled day.
         all_eval_tfs = list(set(target_timeframes + source_timeframes + [HTF_MAP[tf] for tf in target_timeframes if tf in HTF_MAP]))
@@ -994,6 +1045,10 @@ class ScannerWorker:
                     else:
                         raise
                 all_candidates.extend(candidates)
+                if count_evals:
+                    latest = latest_bar_outcome(enriched_df, candidates, time.time_ns())
+                    if latest is not None:
+                        eval_counts.append((eval_bucket(latest[0]), inst, tf, count_slug, count_side, latest[1]))
 
             if inst in frames_by_inst:
                 for extra_tf in source_timeframes:
@@ -1024,7 +1079,8 @@ class ScannerWorker:
             reward = abs(c.suggested_target - c.suggested_entry)
             derived_rr = (reward / risk) if risk > Decimal("0") else Decimal("0")
             if derived_rr < min_rr_dec:
-                logger.info(
+                # H5: a rejection on an old bar (the history re-read on every close) is debug noise
+                (logger.info if is_fresh(c, now_ns) else logger.debug)(
                     "Rejected candidate %s for %s %s at %d: R:R %.4f < %.2f "
                     "(entry=%s, stop=%s [%s], target=%s [%s])",
                     c.id,
@@ -1305,6 +1361,8 @@ class ScannerWorker:
 
         if to_queue:
             await self._publish_debate_candidates(to_queue)
+        if eval_counts:
+            await self._record_eval_counts(eval_counts)
 
         self.executed_runs_count += 1
         logger.info("Executed scan run %s for spec %s: found %d candidates, %d fresh for debate",

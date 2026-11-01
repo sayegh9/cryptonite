@@ -59,6 +59,41 @@ class SwingCandidateItem(BaseModel):
     # H4: where the setup would trade ({mandate, market, instrument_id}) and its round-trip cost in R
     route: dict[str, str] | None = None
     cost_r: float | None = None
+    bar_close: str | None = None  # H5: the setup's bar close (ISO UTC)
+
+
+class UncoveredCoinItem(BaseModel):
+    """H5: a coverage note from the swing scan. Never a setup."""
+
+    model_config = ConfigDict(extra="forbid")
+    coin: str
+    reason: str
+
+
+class UntradeableSetupItem(BaseModel):
+    """H5: a real preset match on a coin not fed or not covered (or below 1.5 R:R): informational, never proposed."""
+
+    model_config = ConfigDict(extra="forbid")
+    instrument_id: str
+    preset_slug: str
+    timeframe: str
+    direction: Literal["LONG", "SHORT"] = "LONG"
+    entry: float
+    stop: float
+    target: float
+    rr_ratio: float
+    bar_close: str | None = None
+    source: Literal["live_scan", "scanner"] = "live_scan"
+    reason: str
+
+
+class ScanRejections(BaseModel):
+    """H5: why each coin x preset gave no candidate on its latest bar (STALE, REJECTED_RR, NO_TRIGGER)."""
+
+    model_config = ConfigDict(extra="forbid")
+    counts: dict[str, int] = Field(default_factory=dict)
+    by_coin_preset: list[dict[str, str]] = Field(default_factory=list)
+    truncated: int = 0
 
 
 class SwingRadarWidget(BaseModel):
@@ -69,6 +104,10 @@ class SwingRadarWidget(BaseModel):
     timeframe: str = "1h"
     scanned_count: int = 0
     candidates: list[SwingCandidateItem] = Field(default_factory=list)
+    # H5: what the tool returned besides the candidates, so the saved widget can be audited
+    uncovered_coins: list[UncoveredCoinItem] = Field(default_factory=list)
+    untradeable_setups: list[UntradeableSetupItem] = Field(default_factory=list)
+    rejections: ScanRejections | None = None
 
 
 class TearsheetWidget(BaseModel):
@@ -332,6 +371,12 @@ def widget_for_tool(
                     timeframe=str(data.get("timeframe") or args.get("timeframe") or "1h"),
                     scanned_count=int(data.get("scanned_count") if data.get("scanned_count") is not None else len(candidates)),
                     candidates=candidates,
+                    uncovered_coins=[UncoveredCoinItem(**i) for i in data.get("uncovered_coins") or []
+                                     if isinstance(i, dict)],
+                    untradeable_setups=[UntradeableSetupItem(**i) for i in data.get("untradeable_setups") or []
+                                        if isinstance(i, dict)],
+                    rejections=(ScanRejections(**data["rejections"]) if isinstance(data.get("rejections"), dict)
+                                else None),
                 )
                 return widget.model_dump()
     except (ValidationError, ValueError, TypeError) as e:

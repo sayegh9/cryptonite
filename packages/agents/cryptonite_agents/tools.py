@@ -1758,6 +1758,7 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
     sql = ("SELECT DISTINCT ON (instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug')) "
            "instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug') AS preset_slug, "
            "suggested_entry, suggested_stop, suggested_target, matched_rules, metrics->>'price' AS price, "
+           "bar_close_inclusive_ns, "
            "extract(epoch FROM now() - created_at)::int / 60 AS age_minutes "
            f"FROM signal_candidates WHERE {where} "
            "ORDER BY instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug'), created_at DESC "
@@ -1806,6 +1807,7 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
             "matched_rules": [str(x) for x in (rules or [])][:4],
             "source": "scanner",
             "age_minutes": int(r.get("age_minutes") or 0),
+            "bar_close": _ns_iso(r.get("bar_close_inclusive_ns")),
         }
         if frames:
             candidate.update(_scan_grade(frames, direction, entry, stop, target))
@@ -1816,6 +1818,31 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
 SCAN_MIN_RR = 1.5  # the gate's triage minimum (brief.MIN_REWARD_TO_RISK): a setup below it is never routed
 _COST_MARKET = {"SPOT": "spot", "PERP": "perp", "SPOT_MARGIN": "margin"}
 NOT_TRADEABLE_LIMIT = 10
+REJECTIONS_LIMIT = 40
+# H5: the coins the swing scan also searches for information only (comma list of symbols); unset: the liquid 12.
+# The settings registry cannot store a string value, so the default lives in the environment.
+DISCOVERY_ENV = "BRAIN_DISCOVERY_COINS"
+
+
+def _ns_iso(ns: Any) -> str | None:
+    """A bar close in ns as an ISO UTC time, or None."""
+    try:
+        return datetime.datetime.fromtimestamp(int(ns) / 1e9, datetime.UTC).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _discovery_coins(default: list[str]) -> list[str]:
+    """H5: the discovery list (``BRAIN_DISCOVERY_COINS``, e.g. 'SOLUSDT,XRPUSDT'), else ``default``. Empty: none."""
+    raw = os.environ.get(DISCOVERY_ENV)
+    if raw is None:
+        return list(default)
+    out = []
+    for part in raw.split(","):
+        sym = part.strip().upper()
+        if sym:
+            out.append(sym if "." in sym else f"{sym}.BINANCE")
+    return out
 
 
 def _active_scopes() -> list[dict[str, Any]] | None:
@@ -1862,7 +1889,7 @@ async def scan_swing_setups(
     max_results: int = 5,
     symbol: str | None = None,
 ) -> str:
-    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, or 'all'), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one."""
+    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, or 'all'), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups. `rejections` counts why each coin and preset gave no candidate on its latest bar."""
     import polars as pl
     from cryptonite_scanner.engine import ScannerEngine
     from cryptonite_scanner.models import RiskConfig
@@ -1894,26 +1921,36 @@ async def scan_swing_setups(
         target_sym = sym_clean
         target_inst = f"{sym_clean}.BINANCE"
 
-    # H4: only coins the live feed records and an ACTIVE mandate covers are scanned; the others are listed as not
-    # tradeable yet, with the reason, instead of being offered as setups no card could route.
+    # H4: only coins the live feed records and an ACTIVE mandate covers are tradeable. H5: `uncovered_coins` holds
+    # the coverage notes (never a setup); the discovery coins outside that set are searched too (over REST), and a
+    # preset match on one is an `untradeable_setups` entry, never a candidate.
     scopes = _active_scopes() or []
     fed = _fed_symbols()
-    not_tradeable: list[dict[str, Any]] = []
+    uncovered_coins: list[dict[str, Any]] = []
+    untradeable_setups: list[dict[str, Any]] = []
     owned = {underlying_spot(i) for m in scopes for i in m.get("instruments") or []}
-    universe = [target_inst] if target_inst else sorted(set(SWING_LIQUID_12) | owned
-                                                        | {f"{s}.BINANCE" for s in fed or ()})
+    discovery = set(_discovery_coins(SWING_LIQUID_12))
+    universe = [target_inst] if target_inst else sorted(discovery | owned | {f"{s}.BINANCE" for s in fed or ()})
     scan_universe = []
+    discovery_universe = []
+    why_uncovered: dict[str, str] = {}
     for inst in universe:
         coin = inst.split(".")[0]
         if fed is not None and coin not in fed:
+            why = (f"{coin} is not in the live feed: add it to the feed first (Watchlist), then scan again"
+                   if inst in owned else f"{coin} is not in the live feed and no ACTIVE mandate covers it")
             if inst in owned or inst == target_inst:  # a coin nobody covers and nobody asked about is not listed
-                not_tradeable.append({"instrument_id": inst, "reason": f"{coin} is not in the live feed: add it to "
-                                      "the feed first (Watchlist), then scan again"})
+                uncovered_coins.append({"coin": coin, "reason": why})
         elif inst not in owned:
+            why = f"no ACTIVE mandate covers {coin}"
             if fed is not None or inst == target_inst:
-                not_tradeable.append({"instrument_id": inst, "reason": f"no ACTIVE mandate covers {coin}"})
+                uncovered_coins.append({"coin": coin, "reason": why})
         else:
             scan_universe.append(inst)
+            continue
+        why_uncovered[inst] = why
+        if inst in discovery or inst == target_inst:
+            discovery_universe.append(inst)
 
     lookback_min = 20160
     now_ns = time.time_ns()
@@ -1952,6 +1989,8 @@ async def scan_swing_setups(
 
     HTF_MAP = {"15m": "1h", "1h": "4h", "4h": "1d"}
     candidates: list[dict[str, Any]] = []
+    # H5: what each coin x preset's latest evaluation came to when it gave no candidate (REJECTED_RR is added below)
+    rejections: list[dict[str, str]] = []
     frames_by_inst: dict[str, dict[str, pl.DataFrame]] = {}
 
     # A fed coin without fresh lake bars yet is fetched over Binance Spot REST (15m/1h/4h, 120 bars), so the scan
@@ -1972,6 +2011,7 @@ async def scan_swing_setups(
         return rest_frames
 
     missing = [inst for inst in scan_universe if inst not in bars_by_inst] if fed is not None else []
+    missing += discovery_universe  # H5: uncovered discovery coins are searched over REST only
     if missing:
         with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
             fetched = list(pool.map(lambda inst: _rest_frames(inst.split(".")[0]), missing))
@@ -2046,6 +2086,9 @@ async def scan_swing_setups(
                     if c.bar_close_inclusive_ns >= min_recent_close_ns
                     and abs(float(c.suggested_entry) - latest_close) / latest_close <= 0.025
                 ]
+                if not fresh_matched:
+                    rejections.append({"coin": inst.split(".")[0], "preset_slug": preset.slug, "timeframe": target_tf,
+                                       "outcome": "STALE" if matched else "NO_TRIGGER"})
                 if fresh_matched:
                     fresh_matched.sort(key=lambda c: c.bar_close_inclusive_ns, reverse=True)
                     cand = fresh_matched[0]
@@ -2077,7 +2120,8 @@ async def scan_swing_setups(
                         "trend_15m": trend_15m,
                         "matched_rules": matched_rules,
                         "source": "live_scan",
-                        "in_feed": True,  # only fed coins are scanned
+                        "bar_close": _ns_iso(cand.bar_close_inclusive_ns),
+                        "in_feed": inst in scan_universe or fed is None or inst.split(".")[0] in fed,
                         **_scan_grade(frames, direction, entry, stop, target, _stored_funding_8h(inst)),
                     })
             except Exception as e:
@@ -2085,9 +2129,9 @@ async def scan_swing_setups(
 
     # The setups the system scanner found recently (profile and global scans), so the Brain and the profiles see the
     # same real setups. Read-only; a failed read only means none are added.
-    candidates.extend({**c, "in_feed": True}
-                      for c in _recent_scanner_setups(target_inst, frames_by_inst)
-                      if c["instrument_id"] in scan_universe)
+    candidates.extend({**c, "in_feed": c["instrument_id"] in scan_universe or fed is None
+                       or c["instrument_id"].split(".")[0] in fed}
+                      for c in _recent_scanner_setups(target_inst, frames_by_inst))
 
     # Every setup must be routeable: a mandate side and market for it, and the reward at least 1.5x the risk. The
     # cost of the round trip is shown in R (fees and slippage, plus funding for a perp, over a 24 h hold).
@@ -2095,11 +2139,20 @@ async def scan_swing_setups(
 
     routeable: list[dict[str, Any]] = []
     for c in candidates:
-        route, why = _setup_route(c["instrument_id"], c["direction"], scopes)
+        inst = c["instrument_id"]
+        if inst in scan_universe:
+            route, why = _setup_route(inst, c["direction"], scopes)
+        else:  # a discovery coin, or a stored scanner match on a coin outside the tradeable set
+            route, why = None, why_uncovered.get(inst) or f"no ACTIVE mandate covers {inst.split('.')[0]}"
+        if c["rr_ratio"] < SCAN_MIN_RR:
+            rejections.append({"coin": inst.split(".")[0], "preset_slug": c["preset_slug"],
+                               "timeframe": c["timeframe"], "outcome": "REJECTED_RR"})
         if route is None or c["rr_ratio"] < SCAN_MIN_RR:
-            not_tradeable.append({"instrument_id": c["instrument_id"], "preset_slug": c["preset_slug"],
-                                  "direction": c["direction"], "rr_ratio": c["rr_ratio"],
-                                  "reason": why or f"reward {c['rr_ratio']}x the risk, below {SCAN_MIN_RR}x"})
+            untradeable_setups.append({
+                "instrument_id": inst, "preset_slug": c["preset_slug"], "timeframe": c["timeframe"],
+                "direction": c["direction"], "entry": c["entry"], "stop": c["stop"], "target": c["target"],
+                "rr_ratio": c["rr_ratio"], "bar_close": c.get("bar_close"), "source": c.get("source", "live_scan"),
+                "reason": why or f"reward {c['rr_ratio']}x the risk, below {SCAN_MIN_RR}x"})
             continue
         cost_r = cost_in_r(c["entry"], c["stop"], round_trip_cost_fraction(_COST_MARKET[route["market"]], 24.0))
         routeable.append({**c, "route": route, "cost_r": None if cost_r is None else round(cost_r, 3)})
@@ -2121,7 +2174,9 @@ async def scan_swing_setups(
         "timeframe": timeframe,
         "candidates": deduped,
         "scanned_count": len(bars_by_inst),
-        "not_tradeable": not_tradeable[:NOT_TRADEABLE_LIMIT],
+        "uncovered_coins": uncovered_coins[:NOT_TRADEABLE_LIMIT],
+        "untradeable_setups": untradeable_setups[:NOT_TRADEABLE_LIMIT],
+        "rejections": _rejection_summary(rejections),
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     if fed is None:
@@ -2130,8 +2185,17 @@ async def scan_swing_setups(
         scope = target_sym or "the fed coins your ACTIVE mandates cover"
         result["note"] = (f"No routeable setup on {scope} at {timeframe} (a preset fired on a covered side with reward "
                           f"at least {SCAN_MIN_RR}x the risk), and none from the scanner in the last "
-                          f"{SCANNER_SETUP_WINDOW_H} hours; no setup. `not_tradeable` lists what was skipped and why.")
+                          f"{SCANNER_SETUP_WINDOW_H} hours; no setup. `uncovered_coins` are coverage notes, not "
+                          "setups; `untradeable_setups` are real matches that cannot be traded yet, with the reason.")
     return json.dumps(result)
+
+
+def _rejection_summary(rows: list[dict[str, str]]) -> dict[str, Any]:
+    """H5: the latest evaluation per coin x preset that gave no tradeable candidate: counts per outcome, and the list."""
+    counts = {"STALE": 0, "REJECTED_RR": 0, "NO_TRIGGER": 0}
+    for r in rows:
+        counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
+    return {"counts": counts, "by_coin_preset": rows[:REJECTIONS_LIMIT], "truncated": max(0, len(rows) - REJECTIONS_LIMIT)}
 
 
 # --- Gateway tool registry (AI-first blueprint A1.5) ---------------------------------------------

@@ -201,6 +201,10 @@ REGISTRY: tuple[Setting, ...] = (
             "on system_settings for the notifier role (a later migration)."),
     Setting("universe.symbols", "Ingested symbols", "", None, None, Apply.RESTART, Tier.R, "onboarding plan",
             SERVICE_STORE, "INGEST_SYMBOLS; changed through onboarding only"),
+    Setting("brain.discovery_coins", "Brain discovery coins", "the liquid 12 (SWING_LIQUID_12)", None, None,
+            Apply.RESTART, Tier.R, "H5", SERVICE_STORE,
+            "BRAIN_DISCOVERY_COINS (comma list); the swing scan also searches these, and a match on an uncovered coin "
+            "is informational only (never proposed). The registry stores numbers only, so it is set in the env"),
     Setting("guard.position_clamp_pct", "Single-order equity clamp (%)", 25, None, None, Apply.DEPLOY, Tier.FIXED, "0004",
             "code: risk_limits.py", "the 25% per-order clamp is an invariant"),
     Setting("guard.account_backstop_pct", "Account backstop drawdown (%)", 20, None, None, Apply.DEPLOY, Tier.FIXED,

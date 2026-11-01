@@ -6,7 +6,8 @@ approval or execution) -> command (an execution command exists) -> fill (a FILL 
 
 Each stage is broken down by profile, direction, preset, timeframe and UTC hour; the candidates that stopped are
 grouped by refusal reason. A cooldown section shows what the candidates refused ``COOLDOWN`` would have earned
-(``candidate_outcomes.net_r_profile`` / ``net_r_preset``). Markdown goes to stdout.
+(``candidate_outcomes.net_r_profile`` / ``net_r_preset``). A fire-rate section (H5) shows what the newest bar of each
+scanner evaluation came to, by coin x preset x side x timeframe, from ``scan_eval_counts``. Markdown goes to stdout.
 
 Usage: DATABASE_URL=postgresql://... python scripts/funnel_report.py --start 2026-11-01 --end 2026-11-08
 (``--end`` is exclusive; dates are UTC; default: the last 7 days).
@@ -64,6 +65,14 @@ SELECT p.policy, p.decision, count(*) AS n, sum(p.cost_usd) AS cost_usd
  GROUP BY p.policy, p.decision ORDER BY p.policy, p.decision
 """
 
+EVAL_OUTCOMES = ("MATCHED_FRESH", "REJECTED_RR", "STALE", "NO_TRIGGER")
+EVAL_COUNTS_SQL = """
+SELECT instrument_id, preset_slug, side, timeframe, outcome, sum(n)::bigint AS n
+  FROM scan_eval_counts
+ WHERE bucket_start >= $1 AND bucket_start < $2
+ GROUP BY instrument_id, preset_slug, side, timeframe, outcome
+"""
+
 
 def classify(row: dict[str, Any]) -> tuple[int, str | None]:
     """(index of the last stage the candidate reached, why it went no further; None for a fill)."""
@@ -101,7 +110,27 @@ def _r(values: list[float]) -> tuple[str, str, str]:
     return f"{total:.2f}", f"{total / len(values):.3f}", f"{100 * wins / len(values):.0f}%"
 
 
-def render(rows: list[dict[str, Any]], policy_rows: list[dict[str, Any]], start: dt.date, end: dt.date) -> str:
+def fire_rate_section(eval_rows: list[dict[str, Any]] | None) -> list[str]:
+    """H5: newest-bar outcomes per coin x preset x side x timeframe; fire rate = MATCHED_FRESH / evaluations."""
+    lines = ["## Preset fire rate (newest bar per evaluation)", ""]
+    if eval_rows is None:
+        return lines + ["scan_eval_counts unavailable (migration 058 not applied).", ""]
+    if not eval_rows:
+        return lines + ["No evaluations counted.", ""]
+    grid: dict[tuple[str, ...], Counter] = defaultdict(Counter)
+    for r in eval_rows:
+        grid[(str(r["instrument_id"]).split(".")[0], r["preset_slug"], r["side"], r["timeframe"])][r["outcome"]] += \
+            int(r["n"])
+    body = []
+    for key, c in sorted(grid.items(), key=lambda kv: (-kv[1]["MATCHED_FRESH"], -sum(kv[1].values()), kv[0])):
+        total = sum(c.values())
+        body.append([*key, total, *(c[o] for o in EVAL_OUTCOMES), f"{100 * c['MATCHED_FRESH'] / total:.1f}%"])
+    return lines + [_table(["coin", "preset", "side", "timeframe", "evaluations", *EVAL_OUTCOMES, "fire rate"], body),
+                    ""]
+
+
+def render(rows: list[dict[str, Any]], policy_rows: list[dict[str, Any]], start: dt.date, end: dt.date,
+           eval_rows: list[dict[str, Any]] | None = None) -> str:
     stages = [(row, *classify(row)) for row in rows]
     n = len(rows)
     lines = [f"# Candidate funnel {start} to {end} (UTC, end exclusive)", "", f"{n} scanner candidates.", ""]
@@ -149,6 +178,7 @@ def render(rows: list[dict[str, Any]], policy_rows: list[dict[str, Any]], start:
     lines += ["## Shadow policies", "", _table(["policy", "decision", "candidates", "cost USD"],
                                                [[p["policy"], p["decision"], p["n"], p["cost_usd"]]
                                                 for p in policy_rows]) if policy_rows else "No policy rows.", ""]
+    lines += fire_rate_section(eval_rows)
     return "\n".join(lines)
 
 
@@ -160,9 +190,15 @@ async def report(dsn: str, start: dt.date, end: dt.date) -> str:
         async with conn.transaction(readonly=True):
             rows = [dict(r) for r in await conn.fetch(CANDIDATES_SQL, lo, hi)]
             policy_rows = [dict(r) for r in await conn.fetch(POLICIES_SQL, lo, hi)]
+        eval_rows: list[dict[str, Any]] | None
+        try:
+            async with conn.transaction(readonly=True):
+                eval_rows = [dict(r) for r in await conn.fetch(EVAL_COUNTS_SQL, lo, hi)]
+        except asyncpg.UndefinedTableError:
+            eval_rows = None
     finally:
         await conn.close()
-    return render(rows, policy_rows, start, end)
+    return render(rows, policy_rows, start, end, eval_rows)
 
 
 def main() -> None:
