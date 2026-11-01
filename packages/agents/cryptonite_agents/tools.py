@@ -17,6 +17,7 @@ from typing import Any, Literal
 import duckdb
 from cryptonite_schemas.identifiers import to_perp_instrument_id
 from cryptonite_schemas.mandate import DEFAULT_PROFIT_LOCK_PCT, canonical_instrument
+from cryptonite_schemas.profile import underlying_spot
 from cryptonite_schemas.session import session_verdict
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from sqlalchemy import create_engine, text
@@ -1588,10 +1589,30 @@ def _frame_trend(df: Any) -> str | None:
     return None if df is None or (hasattr(df, "is_empty") and df.is_empty()) else _classify_tf_trend(df)
 
 
-def _scan_grade(frames: dict[str, Any], direction: str, entry: float, stop: float, target: float) -> dict[str, Any]:
-    """The setup grade of a scan candidate from the frames the scan already has (trends, the 1h regime and volatility).
-    Funding and liquidity are not read here, so a scan grade is at most B; ``grade_setup`` reads them for a card."""
-    from cryptonite_scanner.setup_grade import GradeInputs, regime_trend_inputs, side_of
+def _stored_funding_8h(instrument_id: str) -> float | None:
+    """The funding rate per 8 h the derivatives feed stored for the coin's perpetual (``perp:mark:<SYM>``), or None
+    when the feed does not cover it. A Redis read only: no exchange call in the scan."""
+    from cryptonite_scanner.setup_grade import funding_rate_8h
+
+    try:
+        raw = _redis_get(PERP_MARK_KEY.format(symbol=_feed_symbol(instrument_id)))
+        rate = json.loads(raw).get("funding_rate") if raw else None
+        return funding_rate_8h(float(rate), None) if rate is not None else None
+    except Exception:
+        return None
+
+
+def _scan_grade(frames: dict[str, Any], direction: str, entry: float, stop: float, target: float,
+                funding_8h: float | None = None) -> dict[str, Any]:
+    """The setup grade of a scan candidate from the frames the scan already has (trends, the 1h regime and volatility,
+    the 24 h volume of the 1h bars) and the stored funding. The book spread is not read here, so a scan grade is at
+    most B (an unknown input is neutral, capped at B); ``grade_setup`` reads it for a card."""
+    from cryptonite_scanner.setup_grade import (
+        GradeInputs,
+        regime_trend_inputs,
+        side_of,
+        volume_24h_usd,
+    )
     from cryptonite_scanner.setup_grade import grade_setup as _grade
 
     try:
@@ -1600,7 +1621,8 @@ def _scan_grade(frames: dict[str, Any], direction: str, entry: float, stop: floa
         reg = {}
     g = _grade(GradeInputs(side=side_of(direction), entry=float(entry), stop=float(stop), target=float(target),
                            trend_4h=_frame_trend(frames.get("4h")), trend_1h=_frame_trend(frames.get("1h")),
-                           trend_15m=_frame_trend(frames.get("15m")), **reg))
+                           trend_15m=_frame_trend(frames.get("15m")), funding_rate_8h=funding_8h,
+                           volume_24h_usd=volume_24h_usd(frames.get("1h")), **reg))
     return {"setup_grade": g.grade, "grade_reasons": list(g.reasons)}
 
 
@@ -1791,6 +1813,49 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
     return out
 
 
+SCAN_MIN_RR = 1.5  # the gate's triage minimum (brief.MIN_REWARD_TO_RISK): a setup below it is never routed
+_COST_MARKET = {"SPOT": "spot", "PERP": "perp", "SPOT_MARGIN": "margin"}
+NOT_TRADEABLE_LIMIT = 10
+
+
+def _active_scopes() -> list[dict[str, Any]] | None:
+    """The ACTIVE mandates and profiles (name, instruments, markets, direction) from agent_safe_mandate_health, or
+    None when they cannot be read."""
+    try:
+        return _readonly_rows("SELECT name, instruments, markets, direction FROM agent_safe_mandate_health "
+                              "WHERE status = 'ACTIVE' ORDER BY name, id LIMIT 50")
+    except Exception as e:
+        logger.warning("Could not read the ACTIVE mandates; the swing scan covers no coin: %s", e)
+        return None
+
+
+def _owners(spot_inst: str, scopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [m for m in scopes if any(underlying_spot(i) == spot_inst for i in m.get("instruments") or [])]
+
+
+def _setup_route(spot_inst: str, side: str, scopes: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
+    """Where a scan setup would trade: ({mandate, market, instrument_id}, None) when an ACTIVE mandate owns the coin
+    in a market that allows the setup's side (``allows_side`` and ``select_market``, the profile rules at 1x), else
+    (None, why it is not tradeable yet)."""
+    from cryptonite_schemas.profile import allows_side, instrument_for, select_market
+
+    coin = spot_inst.split(".")[0]
+    owners = _owners(spot_inst, scopes)
+    if not owners:
+        return None, f"no ACTIVE mandate covers {coin}"
+    for m in owners:
+        try:
+            market = select_market(side, 1, m.get("markets") or []) if allows_side(m["direction"], side) else None
+        except ValueError:
+            market = None
+        if market is not None:
+            return {"mandate": m["name"], "market": market.value,
+                    "instrument_id": instrument_for(spot_inst, market)}, None
+    scopes_text = "; ".join(f"{m['name']}: {m['direction']}, {', '.join(m.get('markets') or []) or 'no market'}"
+                            for m in owners)
+    return None, f"no ACTIVE mandate allows a {side.lower()} on {coin} ({scopes_text})"
+
+
 async def scan_swing_setups(
     preset_slug: str = "all",
     timeframe: Literal["15m", "1h", "4h"] = "1h",
@@ -1829,7 +1894,26 @@ async def scan_swing_setups(
         target_sym = sym_clean
         target_inst = f"{sym_clean}.BINANCE"
 
-    scan_universe = [target_inst] if target_inst else list(SWING_LIQUID_12)
+    # H4: only coins the live feed records and an ACTIVE mandate covers are scanned; the others are listed as not
+    # tradeable yet, with the reason, instead of being offered as setups no card could route.
+    scopes = _active_scopes() or []
+    fed = _fed_symbols()
+    not_tradeable: list[dict[str, Any]] = []
+    owned = {underlying_spot(i) for m in scopes for i in m.get("instruments") or []}
+    universe = [target_inst] if target_inst else sorted(set(SWING_LIQUID_12) | owned
+                                                        | {f"{s}.BINANCE" for s in fed or ()})
+    scan_universe = []
+    for inst in universe:
+        coin = inst.split(".")[0]
+        if fed is not None and coin not in fed:
+            if inst in owned or inst == target_inst:  # a coin nobody covers and nobody asked about is not listed
+                not_tradeable.append({"instrument_id": inst, "reason": f"{coin} is not in the live feed: add it to "
+                                      "the feed first (Watchlist), then scan again"})
+        elif inst not in owned:
+            if fed is not None or inst == target_inst:
+                not_tradeable.append({"instrument_id": inst, "reason": f"no ACTIVE mandate covers {coin}"})
+        else:
+            scan_universe.append(inst)
 
     lookback_min = 20160
     now_ns = time.time_ns()
@@ -1870,8 +1954,8 @@ async def scan_swing_setups(
     candidates: list[dict[str, Any]] = []
     frames_by_inst: dict[str, dict[str, pl.DataFrame]] = {}
 
-    # Every coin in the universe that has no fresh lake bars is fetched over Binance Spot REST (15m/1h/4h, 120 bars),
-    # so the scan covers all of them. Those coins are not in the live feed; their candidates say so (`in_feed` false).
+    # A fed coin without fresh lake bars yet is fetched over Binance Spot REST (15m/1h/4h, 120 bars), so the scan
+    # covers every fed coin. With the feed universe unknown, only coins with lake bars are scanned.
     rest_only: set[str] = set()
 
     def _rest_frames(sym_cand: str) -> dict[str, pl.DataFrame]:
@@ -1887,7 +1971,7 @@ async def scan_swing_setups(
                 logger.debug("REST kline fallback failed for %s %s: %s", sym_cand, tf, e)
         return rest_frames
 
-    missing = [inst for inst in scan_universe if inst not in bars_by_inst]
+    missing = [inst for inst in scan_universe if inst not in bars_by_inst] if fed is not None else []
     if missing:
         with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
             fetched = list(pool.map(lambda inst: _rest_frames(inst.split(".")[0]), missing))
@@ -1993,16 +2077,33 @@ async def scan_swing_setups(
                         "trend_15m": trend_15m,
                         "matched_rules": matched_rules,
                         "source": "live_scan",
-                        "in_feed": inst not in rest_only,
-                        **_scan_grade(frames, direction, entry, stop, target),
+                        "in_feed": True,  # only fed coins are scanned
+                        **_scan_grade(frames, direction, entry, stop, target, _stored_funding_8h(inst)),
                     })
             except Exception as e:
                 logger.debug("Evaluation error for %s on %s: %s", inst, preset.slug, e)
 
     # The setups the system scanner found recently (profile and global scans), so the Brain and the profiles see the
     # same real setups. Read-only; a failed read only means none are added.
-    candidates.extend({**c, "in_feed": c["instrument_id"] not in rest_only}
-                      for c in _recent_scanner_setups(target_inst, frames_by_inst))
+    candidates.extend({**c, "in_feed": True}
+                      for c in _recent_scanner_setups(target_inst, frames_by_inst)
+                      if c["instrument_id"] in scan_universe)
+
+    # Every setup must be routeable: a mandate side and market for it, and the reward at least 1.5x the risk. The
+    # cost of the round trip is shown in R (fees and slippage, plus funding for a perp, over a 24 h hold).
+    from cryptonite_scanner.costs import cost_in_r, round_trip_cost_fraction
+
+    routeable: list[dict[str, Any]] = []
+    for c in candidates:
+        route, why = _setup_route(c["instrument_id"], c["direction"], scopes)
+        if route is None or c["rr_ratio"] < SCAN_MIN_RR:
+            not_tradeable.append({"instrument_id": c["instrument_id"], "preset_slug": c["preset_slug"],
+                                  "direction": c["direction"], "rr_ratio": c["rr_ratio"],
+                                  "reason": why or f"reward {c['rr_ratio']}x the risk, below {SCAN_MIN_RR}x"})
+            continue
+        cost_r = cost_in_r(c["entry"], c["stop"], round_trip_cost_fraction(_COST_MARKET[route["market"]], 24.0))
+        routeable.append({**c, "route": route, "cost_r": None if cost_r is None else round(cost_r, 3)})
+    candidates = routeable
 
     # Deduplicate by instrument_id (keep highest-scoring setup per symbol)
     best_by_inst: dict[str, dict[str, Any]] = {}
@@ -2020,12 +2121,16 @@ async def scan_swing_setups(
         "timeframe": timeframe,
         "candidates": deduped,
         "scanned_count": len(bars_by_inst),
+        "not_tradeable": not_tradeable[:NOT_TRADEABLE_LIMIT],
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
     }
+    if fed is None:
+        result["feed_note"] = "The live feed universe could not be read: only coins with lake bars were scanned."
     if not deduped:
-        scope = target_sym or "the liquid universe"
-        result["note"] = (f"No preset fired on {scope} at {timeframe}, and the scanner found no setup in the last "
-                          f"{SCANNER_SETUP_WINDOW_H} hours; no setup.")
+        scope = target_sym or "the fed coins your ACTIVE mandates cover"
+        result["note"] = (f"No routeable setup on {scope} at {timeframe} (a preset fired on a covered side with reward "
+                          f"at least {SCAN_MIN_RR}x the risk), and none from the scanner in the last "
+                          f"{SCANNER_SETUP_WINDOW_H} hours; no setup. `not_tradeable` lists what was skipped and why.")
     return json.dumps(result)
 
 

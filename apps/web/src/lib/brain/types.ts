@@ -316,6 +316,10 @@ export interface SwingCandidateItem {
   age_minutes?: number | null;
   /** false: found over REST for a coin outside the live feed; approval asks to onboard it first. */
   in_feed?: boolean;
+  /** H4: the mandate and market the setup would trade in. */
+  route?: { mandate: string; market: string; instrument_id: string } | null;
+  /** H4: round-trip cost (fees, slippage, perp funding over 24 h) in R. */
+  cost_r?: number | null;
 }
 
 export interface SwingRadarWidget {

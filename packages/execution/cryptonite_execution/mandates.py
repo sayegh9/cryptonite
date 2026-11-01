@@ -156,14 +156,8 @@ def check_mandate(
         return MandateReject.INSTRUMENT_NOT_ALLOWED
     if coin_owner is not None and coin_owner != mandate.id:
         return MandateReject.COIN_LOCKED
-    # ADR 0011/P1: retain the established perp opt-in breach; other market and direction failures are refusals.
-    if order.is_perp and Market.PERP not in mandate.markets:
-        return MandateReject.PERPS_NOT_ALLOWED
-    market = market_of(order.instrument_id)
-    if market not in mandate.markets:
-        return MandateReject.MARKET_NOT_ALLOWED
-    if not allows_side(mandate.direction, "LONG" if order.side.upper() == "BUY" else "SHORT"):
-        return MandateReject.DIRECTION_NOT_ALLOWED
+    if (scope := entry_scope_reject(mandate, order.instrument_id, order.side)) is not None:
+        return scope
     if order.is_perp or order.is_spot_margin:
         if (order.leverage or 1) > min(mandate.max_leverage, MAX_PERP_LEVERAGE_CAP):
             return MandateReject.LEVERAGE_EXCEEDED
@@ -180,6 +174,19 @@ def check_mandate(
         return MandateReject.POSITION_PCT_EXCEEDED
     if (mandate.autonomy_level < AutonomyLevel.L3 or not autotrade_on) and not approval_ok:
         return MandateReject.APPROVAL_REQUIRED
+    return None
+
+
+def entry_scope_reject(mandate: Mandate, instrument_id: str, side: str) -> MandateReject | None:
+    """The market and direction rule of ``check_mandate`` for an entry (BUY = long, SELL = short); the Brain card
+    preflight runs the same rule, so a card the orchestrator would refuse is refused before it is claimed."""
+    # ADR 0011/P1: retain the established perp opt-in breach; other market and direction failures are refusals.
+    if is_perp_instrument(instrument_id) and Market.PERP not in mandate.markets:
+        return MandateReject.PERPS_NOT_ALLOWED
+    if market_of(instrument_id) not in mandate.markets:
+        return MandateReject.MARKET_NOT_ALLOWED
+    if not allows_side(mandate.direction, "LONG" if side.upper() == "BUY" else "SHORT"):
+        return MandateReject.DIRECTION_NOT_ALLOWED
     return None
 
 

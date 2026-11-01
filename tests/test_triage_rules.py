@@ -48,7 +48,9 @@ SNAPSHOT_FULL = (
     "ATR 0.30% of price, volume 0.73x avg, range 64,879.98-66,121.98\n"
     "Scanner candidate (15m): entry 65,000.00, stop 64,700.00, target 65,750.00, reward-to-risk 2.50; "
     "rules: ema_cross, volume_spike\n"
-    "Direction: LONG · Setup grade: C (1 of 3 timeframes aligned; reward 2.5x the risk; regime unknown; volatility unknown)\n"
+    "Direction: LONG · Setup grade: C (1 of 3 timeframes aligned; reward 2.5x the risk; regime, volatility, liquidity "
+    "unknown: neutral, capped at B)\n"  # H4: unknown inputs are neutral; the brief reads the perp funding
+
     "Perp context: mark 65,012.50, funding 0.0100% per interval, open interest 81,234"
 )
 SNAPSHOT_BARE = (

@@ -37,6 +37,10 @@ export interface Setup {
   target: string | null;
   created_at: string | null;
   age_seconds: number;
+  /** Seconds since the candidate's bar closed; the gate refuses it after max(15 min, two bars). */
+  bar_age_seconds: number | null;
+  routeable: boolean;
+  routeable_reason: string | null;
   cost: { cost_r: number | null; cost_model: string; market: string; hold_hours: number };
   profile: { id: string; name: string; status: string; eligible: boolean; reason: string | null } | null;
   eligibility: { eligible: boolean; reason: string | null };

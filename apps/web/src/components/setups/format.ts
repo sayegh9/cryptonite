@@ -19,6 +19,7 @@ const REASONS: Record<string, string> = {
   NO_OWNER: "No profile owns this coin",
   PRESET_NOT_RUN: "The owner does not run this preset",
   TIMEFRAME_NOT_RUN: "The owner does not scan this timeframe",
+  STALE_CANDIDATE: "Its bar closed too long ago: the gate refuses it as stale",
 };
 
 export function reasonText(reason: string | null): string {

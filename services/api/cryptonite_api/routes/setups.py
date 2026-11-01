@@ -35,6 +35,10 @@ UTC = dt.UTC
 DEFAULT_WINDOW_HOURS = 6
 # Carry for the cost estimate when the owning profile sets no max hold (only perps pay carry).
 DEFAULT_HOLD_HOURS = 24.0
+# The debate gate's staleness rule (services/debate_worker/gate.py MIN_STALE_S, TIMEFRAME_S): a candidate whose bar
+# closed longer ago than max(15 min, two bars) is refused STALE_CANDIDATE, so the inbox marks it no longer routeable.
+MIN_STALE_S = 15 * 60
+TIMEFRAME_S = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}
 # Funnel order; LIFECYCLE, BREAKER and SESSION rows are profile-level events, not steps of a candidate.
 FUNNEL_ORDER = ("SCAN", "GATE", "DEBATE", "ROUTE", "APPROVAL", "ORDER", "FILL", "EXIT")
 
@@ -79,6 +83,16 @@ def _eligibility(owner: dict[str, Any] | None, slug: str | None, timeframe: str)
                                              list(owner["timeframes"] or [])):
         return {"eligible": False, "reason": "TIMEFRAME_NOT_RUN"}
     return {"eligible": True, "reason": None}
+
+
+def _routeable(bar_close_ns: int | None, timeframe: str, eligibility: dict[str, Any],
+               now: dt.datetime) -> dict[str, Any]:
+    """The bar-close age and whether the gate would still route the candidate: fresh (the gate's staleness rule) and
+    run by its owner. ``reason`` is STALE_CANDIDATE or the eligibility code when it would not."""
+    bar_age = None if not bar_close_ns else max(0, int(now.timestamp() - int(bar_close_ns) / 1e9))
+    stale = bar_age is not None and bar_age > max(MIN_STALE_S, 2 * TIMEFRAME_S.get(timeframe, 0))
+    reason = "STALE_CANDIDATE" if stale else eligibility["reason"]
+    return {"bar_age_seconds": bar_age, "routeable": not stale and eligibility["eligible"], "routeable_reason": reason}
 
 
 def _cost(direction: str | None, entry: Decimal | None, stop: Decimal | None,
@@ -151,7 +165,7 @@ async def list_setups(
             candidates = await conn.fetch(
                 """SELECT c.id, c.scan_run_id, c.spec_version_id, c.instrument_id, c.timeframe, c.matched_rules,
                           c.metrics, c.suggested_entry, c.suggested_stop, c.suggested_target, c.created_at,
-                          s.slug AS spec_slug
+                          c.bar_close_inclusive_ns, s.slug AS spec_slug
                    FROM signal_candidates c
                    LEFT JOIN scan_spec_versions v ON v.id = c.spec_version_id
                    LEFT JOIN scan_specs s ON s.id = v.spec_id
@@ -186,6 +200,7 @@ async def list_setups(
         direction = _direction(slug, entry, stop)
         owner = owners.get(_owner_base(c["instrument_id"]) or "")
         hold = float(owner["exit_max_hold_hours"]) if owner and owner["exit_max_hold_hours"] else DEFAULT_HOLD_HOURS
+        eligibility = _eligibility(owner, slug, c["timeframe"])
         setups.append({
             "id": str(c["id"]),
             "instrument_id": c["instrument_id"],
@@ -197,12 +212,13 @@ async def list_setups(
             "entry": _text(entry), "stop": _text(stop), "target": _text(target),
             "created_at": _iso(c["created_at"]),
             "age_seconds": max(0, int((now - c["created_at"]).total_seconds())),
+            **_routeable(c["bar_close_inclusive_ns"], c["timeframe"], eligibility, now),
             "cost": _cost(direction, entry, stop, hold),
             "profile": None if owner is None else {
                 "id": str(owner["id"]), "name": owner["name"], "status": owner["status"],
                 **_eligibility(owner, slug, c["timeframe"]),
             },
-            "eligibility": _eligibility(owner, slug, c["timeframe"]),
+            "eligibility": eligibility,
             "funnel": _funnel(decisions.get(c["id"], [])),
             "policies": [_policy(p) for p in policies.get(c["id"], [])],
             "brief": {"matched_rules": _json(c["matched_rules"]) or [], "metrics": metrics},

@@ -63,6 +63,7 @@ from cryptonite_execution.mandate_store import (
     load_mandate,
     resolve_mandate_for,
 )
+from cryptonite_execution.mandates import entry_scope_reject
 from cryptonite_execution.profile_lifecycle import coin_lock_conflict
 from cryptonite_execution.sizing import grade_size_pct
 from cryptonite_schemas.mandate import (
@@ -559,6 +560,14 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
     # An entry only gets the room the mandate has left under its position limit. An exit never does: a perp reduce
     # card closing a short is a BUY, but it is not an entry
     if (card["side"] == "BUY" and not perp_reduce) or perp_entry:
+        # The orchestrator's check_mandate refuses an entry outside the mandate's markets or direction (a short in a
+        # LONG-only mandate): the same rule, here, before the card is claimed
+        if (scope := entry_scope_reject(mandate, card["instrument_id"], card["side"])) is not None:
+            side = "long" if card["side"] == "BUY" else "short"
+            raise HTTPException(status_code=409, detail=(
+                f"{scope.value}: mandate {mandate.name} ({mandate.direction}, markets "
+                f"{', '.join(sorted(getattr(m, "value", m) for m in mandate.markets))}) does not allow a {side} on "
+                f"{card['instrument_id']}; nothing was queued"))
         # Another owner holding the instrument refuses the entry in the orchestrator's gate: refused here too, before
         # sizing and before the card is claimed, so the dry run and approve give the same answer
         async with pool.acquire() as conn:

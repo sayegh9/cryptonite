@@ -53,7 +53,7 @@ def binance(monkeypatch):
 
 def test_grade_setup_reads_every_input_and_returns_the_grade(binance):
     out = json.loads(tools.grade_setup("SOLUSDT", "BUY", 220.0, 214.0, 235.0))
-    assert out["symbol"] == "SOLUSDT" and out["side"] == "BUY" and out["version"] == "setup-grade-v1"
+    assert out["symbol"] == "SOLUSDT" and out["side"] == "BUY" and out["version"] == "setup-grade-v2"
     assert out["grade"] in ("A", "B", "C", "NO_TRADE")
     assert out["rr_ratio"] == 2.5
     inputs = out["inputs"]
@@ -85,8 +85,9 @@ def test_unreadable_inputs_are_weak_never_an_error(monkeypatch):
 
     monkeypatch.setattr(tools, "_fapi_get", fapi)
     out = json.loads(tools.grade_setup("SOLUSDT", "SELL", 220.0, 226.0, 205.0))
-    assert out["grade"] == "C"  # every unknown input is a weak one: never A or B on no data
-    assert "funding unknown" in out["reasons"] and "liquidity unknown" in out["reasons"]
+    assert out["grade"] == "C"  # no trend is known: 0 of 3 timeframes aligned
+    # H4: the unknown inputs are neutral (capped at B), not one weakness each
+    assert "regime, volatility, funding, liquidity unknown: neutral, capped at B" in out["reasons"]
 
 
 def test_invalid_input_is_refused():

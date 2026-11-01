@@ -81,7 +81,7 @@ def test_short_reads_every_input_the_other_way():
 def test_a_stored_grade_recomputes_to_itself():
     g = grade_setup(replace(A_LONG, trend_15m="FLAT"))
     again = grade_setup(GradeInputs(**g.as_dict()["inputs"]))
-    assert again == g and isinstance(again, SetupGrade) and g.version == "setup-grade-v1"
+    assert again == g and isinstance(again, SetupGrade) and g.version == "setup-grade-v2"
 
 
 opt = lambda s: st.one_of(st.none(), s)  # noqa: E731

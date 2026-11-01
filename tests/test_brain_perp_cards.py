@@ -45,9 +45,10 @@ async def h(db_url):
 async def perp_mandate(h, *, allow_perps=True, max_leverage=10, level=1):
     mid = await h.pool.fetchval(
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level, status,
-               allow_perps, max_leverage)
-           VALUES ($1, 10000, ARRAY[$2], 25, $3, 'ACTIVE', $4, $5) RETURNING id""",
-        f"perp-{uuid.uuid4().hex[:6]}", PERP, level, allow_perps, max_leverage)
+               allow_perps, max_leverage, direction)
+           VALUES ($1, 10000, ARRAY[$2], 25, $3, 'ACTIVE', $4, $5, $6) RETURNING id""",
+        f"perp-{uuid.uuid4().hex[:6]}", PERP, level, allow_perps, max_leverage,
+        "BOTH" if allow_perps else "LONG")  # H4: a short card needs a mandate that allows shorts (PERP only)
     from cryptonite_execution.mandate_store import load_mandate
     from cryptonite_orchestrator.mandate_gate import ensure_mandate_instance
 

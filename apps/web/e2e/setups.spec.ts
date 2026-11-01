@@ -10,6 +10,7 @@ const OWNER = "5e700000-0000-4000-8000-0000000000f1";
 
 const base = {
   entry: "100.00", stop: "95.00", target: "110.00", created_at: new Date().toISOString(), age_seconds: 600,
+  bar_age_seconds: 660, routeable: true, routeable_reason: null,
   cost: { cost_r: 0.048, cost_model: "spot-v1", market: "spot", hold_hours: 24 },
   policies: [] as unknown[], brief: { matched_rules: ["rsi<30"], metrics: { rsi: 27.5 } },
 };
@@ -30,13 +31,14 @@ const setups = [
   {
     ...base, id: B, instrument_id: "SOLUSDT.BINANCE", direction: "SHORT", provenance: prov("scalp-multi-tf-short", "15m"),
     entry: "100.00", stop: "105.00", target: "90.00", profile: null,
-    eligibility: { eligible: false, reason: "NO_OWNER" },
+    eligibility: { eligible: false, reason: "NO_OWNER" }, routeable: false, routeable_reason: "NO_OWNER",
     funnel: { furthest_stage: null, outcome: null, reason: null, trail: [] },
   },
   {
     ...base, id: C, instrument_id: "ETHUSDT.BINANCE", direction: "LONG", provenance: prov("swing-trend-pullback-1h"),
     profile: { id: "5e700000-0000-4000-8000-0000000000f2", name: "ETH swing", status: "PAUSED", eligible: false, reason: "PROFILE_PAUSED" },
     eligibility: { eligible: false, reason: "PROFILE_PAUSED" },
+    bar_age_seconds: 9_000, routeable: false, routeable_reason: "STALE_CANDIDATE",
     funnel: { furthest_stage: "GATE", outcome: "REFUSED", reason: "NOT_ACTIVE", trail: [
       { id: 4, stage: "GATE", outcome: "REFUSED", reason: "NOT_ACTIVE", mandate_id: "m", ts: null },
     ] },
@@ -64,6 +66,11 @@ test.describe("Setups inbox", () => {
     await expect(rows.first()).toContainText("0.048");
     await expect(rows.first()).toContainText("DEBATE SKIPPED");
     await expect(rows.nth(1)).toContainText("none");
+    // H4: the age is the bar close's, and a candidate the gate would refuse is marked
+    await expect(rows.first().getByTestId("setup-bar-age")).toHaveText("11m");
+    await expect(rows.nth(2).getByTestId("setup-bar-age")).toContainText("2h 30m");
+    await expect(rows.nth(2).getByTestId("setup-bar-age")).toContainText("no longer routeable");
+    await expect(rows.nth(2).getByTestId("setup-bar-age")).toHaveAttribute("title", /stale/);
     expect(calls[0]).toContain("since=");
   });
 
