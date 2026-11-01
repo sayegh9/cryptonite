@@ -71,7 +71,7 @@ class Seed:
         self.runs: list[uuid.UUID] = []
 
     async def reflection(self, instrument: str, *, alpha: float, lesson: str = "ws3b lesson", outcome: str = "WIN",
-                         created_at: datetime = NOW) -> None:
+                         created_at: datetime = NOW, recommendation: str | None = "BUY") -> None:
         run = uuid.uuid4()
         await self.conn.execute(
             """INSERT INTO debate_runs (id, instrument_id, status, trigger_source, created_at, decision_trace_id)
@@ -79,6 +79,13 @@ class Seed:
             run, instrument, created_at, uuid.uuid4(),
         )
         self.runs.append(run)
+        if recommendation is not None:
+            await self.conn.execute(
+                """INSERT INTO portfolio_decisions (run_id, instrument_id, recommendation, conviction_score,
+                                                   allocation_pct, reasoning, created_at)
+                   VALUES ($1, $2, $3, 0.7, 5, 'ws3b', $4)""",
+                run, instrument, recommendation, created_at,
+            )
         await self.conn.execute(
             """INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, timeframe,
                                        outcome, created_at)
@@ -88,6 +95,7 @@ class Seed:
 
     async def cleanup(self) -> None:
         await self.conn.execute("DELETE FROM reflections WHERE run_id = ANY($1::uuid[])", self.runs)
+        await self.conn.execute("DELETE FROM portfolio_decisions WHERE run_id = ANY($1::uuid[])", self.runs)
         await self.conn.execute("DELETE FROM debate_runs WHERE id = ANY($1::uuid[])", self.runs)
 
 
@@ -104,13 +112,15 @@ async def seed():
 
 # --- card_lessons: which lessons, in which order, in what shape ------------------------------------------------------
 
-async def test_the_three_lessons_with_the_largest_alpha_inside_90_days_are_shown(seed):
+async def test_the_three_lessons_with_the_largest_alpha_inside_the_window_are_shown(seed):
     inst = symbol()
     await seed.reflection(inst, alpha=0.05, lesson="five", created_at=NOW - timedelta(days=1))
     await seed.reflection(inst, alpha=-0.09, lesson="minus nine", outcome="LOSS", created_at=NOW - timedelta(days=2))
     await seed.reflection(inst, alpha=0.01, lesson="one", created_at=NOW - timedelta(days=3))
     await seed.reflection(inst, alpha=0.07, lesson="seven", created_at=NOW - timedelta(days=10))
-    await seed.reflection(inst, alpha=0.20, lesson="inside the window", created_at=NOW - timedelta(days=89))
+    await seed.reflection(inst, alpha=0.20, lesson="inside the window", created_at=NOW - timedelta(days=29))
+    # The decision of a run older than 30 days is not visible to the agent role (agent_safe_debate_verdicts)
+    await seed.reflection(inst, alpha=0.25, lesson="decision not visible", created_at=NOW - timedelta(days=45))
     await seed.reflection(inst, alpha=0.30, lesson="outside the window", created_at=NOW - timedelta(days=91))
 
     got = lessons.card_lessons(inst)
@@ -118,6 +128,16 @@ async def test_the_three_lessons_with_the_largest_alpha_inside_90_days_are_shown
     assert [g["alpha_pct"] for g in got] == [20.0, -9.0, 7.0]  # stored as a fraction, shown as a percent
     assert [g["outcome"] for g in got] == ["WIN", "LOSS", "WIN"]
     assert set(got[0]) == {"lesson_text", "outcome", "alpha_pct", "created_at"}
+
+
+async def test_lessons_of_hold_decisions_are_not_shown(seed):
+    """A HOLD opened no trade: its lesson is left out, as the debate worker's recall_lessons does."""
+    inst = symbol()
+    await seed.reflection(inst, alpha=0.40, lesson="a hold", recommendation="HOLD")
+    await seed.reflection(inst, alpha=0.30, lesson="no decision", recommendation=None)
+    await seed.reflection(inst, alpha=0.02, lesson="a buy", recommendation="BUY")
+    await seed.reflection(inst, alpha=-0.01, lesson="a sell", outcome="LOSS", recommendation="SELL")
+    assert [g["lesson_text"] for g in lessons.card_lessons(inst)] == ["a buy", "a sell"]
 
 
 async def test_the_date_is_the_reflection_time(seed):

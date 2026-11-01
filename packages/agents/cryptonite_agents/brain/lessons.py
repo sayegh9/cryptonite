@@ -15,13 +15,18 @@ logger = logging.getLogger("cryptonite.agents.brain.lessons")
 CARD_LESSONS_LIMIT = 3  # at most this many lessons on one card
 LESSON_WINDOW_DAYS = 90  # only reflections this recent are shown
 
-# The reflection writer stores alpha as a fraction (0.012 is 1.2%), so the card converts it to a percent
+# The reflection writer stores alpha as a fraction (0.012 is 1.2%), so the card converts it to a percent.
+# A HOLD decision opened no trade, so its lesson is left out, as recall_lessons does in the debate worker. The agent
+# role cannot read portfolio_decisions, so the decision comes from agent_safe_debate_verdicts (the latest decision of
+# each run, last 30 days): a reflection without a visible BUY or SELL decision is not shown.
 _LESSONS_SQL = f"""
-    SELECT lessons_learned, outcome, alpha_vs_benchmark, created_at
-    FROM agent_safe_reflections
-    WHERE instrument_id = :instrument_id
-      AND created_at >= now() - interval '{LESSON_WINDOW_DAYS} days'
-    ORDER BY abs(alpha_vs_benchmark) DESC NULLS LAST, created_at DESC
+    SELECT f.lessons_learned, f.outcome, f.alpha_vs_benchmark, f.created_at
+    FROM agent_safe_reflections f
+    JOIN agent_safe_debate_verdicts v ON v.run_id = f.run_id
+    WHERE f.instrument_id = :instrument_id
+      AND v.recommendation <> 'HOLD'
+      AND f.created_at >= now() - interval '{LESSON_WINDOW_DAYS} days'
+    ORDER BY abs(f.alpha_vs_benchmark) DESC NULLS LAST, f.created_at DESC
     LIMIT {CARD_LESSONS_LIMIT}
 """
 

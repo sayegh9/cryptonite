@@ -193,6 +193,15 @@ def _paragraph_break(before: str, token: str) -> str:
     return "\n" * max(0, 2 - have) + token
 
 
+def _final_text(text: list[str], prior_text: list[str]) -> str:
+    """The answer to keep: the text after the last tool call. Each model step can restate the whole answer, so the
+    text from earlier steps is dropped; when the last step wrote nothing, the last step that did write is kept."""
+    tail = "".join(text).strip()
+    if tail:
+        return tail
+    return next((seg.strip() for seg in reversed(prior_text) if seg.strip()), "")
+
+
 @dataclass
 class BrainEvent:
     type: str
@@ -311,7 +320,8 @@ class Brain:
         state_text = await self._system_state()
         prompt = memory.render_prompt(ctx, message, state=state_text)
 
-        text: list[str] = []
+        text: list[str] = []  # the text since the last tool call
+        prior_text: list[str] = []  # the text of each step before it, one entry per step
         widgets: list[dict[str, Any]] = []
         notes: list[str] = []  # what the Brain could not stage, said to the operator in the reply
         calls: dict[str, dict[str, Any]] = {}
@@ -345,7 +355,8 @@ class Brain:
                                 # whitespace-only token passes through unchanged and keeps the wait, so a break the
                                 # model streams in pieces ("\n", then "\nText") never gets a third newline.
                                 if after_tool and ev.text.strip():
-                                    chunk = _paragraph_break("".join(text), ev.text)
+                                    before = "".join(text) or (prior_text[-1] if prior_text else "")
+                                    chunk = _paragraph_break(before, ev.text)
                                     after_tool = False
                                 else:
                                     chunk = ev.text
@@ -353,6 +364,9 @@ class Brain:
                                 yield BrainEvent("token", {"text": chunk})
                             elif ev.kind == "tool_call":
                                 after_tool = True
+                                if text:
+                                    prior_text.append("".join(text))
+                                    text.clear()
                                 call_id = ev.data.get("tool_call_id") or ev.data["tool"]
                                 calls[call_id] = ev.data
                                 yield BrainEvent("tool_call", {"id": call_id, "tool": ev.data["tool"],
@@ -428,7 +442,7 @@ class Brain:
                                     notes.append(no_card_note(args))
                             elif ev.kind == "done" and ev.result is not None:
                                 res = ev.result
-                                content = "".join(text).strip() or str(res.output)
+                                content = _final_text(text, prior_text) or str(res.output)
                                 if degraded:
                                     content = DEGRADED_PREFIX + content
                                 if notes:
@@ -465,7 +479,7 @@ class Brain:
         except InvalidModelOutput as e:
             if order_cards:  # the card the operator sees is real: keep it and say the reply was cut short
                 logger.warning("Brain turn for session %s ended early after an order card was staged: %s", sid, e)
-                await self._keep_partial(sid, text, widgets, trace_id,
+                await self._keep_partial(sid, _final_text(text, prior_text), widgets, trace_id,
                                          note="\n\n_[the model did not finish its reply; the order card above is "
                                               "waiting for your approval]_", degraded=degraded)
                 yield BrainEvent("error", {"code": "MODEL_INCOMPLETE", "message": (
@@ -473,19 +487,19 @@ class Brain:
                     "for your approval.")})
                 return
             logger.error("Brain turn failed for session %s: %s", sid, e)
-            await self._keep_partial(sid, text, widgets, trace_id, degraded=degraded,
+            await self._keep_partial(sid, _final_text(text, prior_text), widgets, trace_id, degraded=degraded,
                                      note="\n\n_[the model failed; answer incomplete]_")
             yield BrainEvent("error", {"code": "MODEL_UNAVAILABLE", "message": str(e)})
             return
         except GatewayError as e:
             logger.error("Brain turn failed for session %s: %s", sid, e)
-            await self._keep_partial(sid, text, widgets, trace_id, degraded=degraded,
+            await self._keep_partial(sid, _final_text(text, prior_text), widgets, trace_id, degraded=degraded,
                                      note="\n\n_[the model failed; answer incomplete]_")
             yield BrainEvent("error", {"code": "MODEL_UNAVAILABLE", "message": str(e)})
             return
         except (GeneratorExit, asyncio.CancelledError):
             if not finished:  # the operator pressed stop: keep what they already saw
-                await asyncio.shield(self._keep_partial(sid, text, widgets, trace_id, note=CANCELLED_NOTE,
+                await asyncio.shield(self._keep_partial(sid, _final_text(text, prior_text), widgets, trace_id, note=CANCELLED_NOTE,
                                                         degraded=degraded))
             raise
 
@@ -494,11 +508,11 @@ class Brain:
         except Exception as e:  # a missed compaction only means a longer prompt next turn
             logger.warning("Session %s compaction skipped: %s", sid, e)
 
-    async def _keep_partial(self, sid: str, text: list[str], widgets: list[dict[str, Any]],
+    async def _keep_partial(self, sid: str, text: str, widgets: list[dict[str, Any]],
                             trace_id: str | None, note: str, degraded: bool = False) -> None:
         if not text and not widgets:
             return
-        content = "".join(text).strip() + note
+        content = text + note
         if degraded:  # a partial read-only answer keeps its label
             content = DEGRADED_PREFIX + content
         if self._redis is not None:
