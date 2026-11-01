@@ -406,3 +406,21 @@ async def test_strategy_and_timeframe_picks_round_trip_and_follow_the_totp_rule(
         done = await c.patch(url, headers=h.headers, json={"timeframes": ["15m", "1h", "4h"], "totp_code": "000000"})
     assert done.status_code == 200, done.text
     assert (done.json()["strategies"], done.json()["timeframes"]) == (["swing-trend-pullback-1h"], ["15m", "1h", "4h"])
+
+
+# --- H3: the order-minimum warnings --------------------------------------------------------------------------------
+
+async def test_the_mandate_views_warn_when_the_budget_cannot_place_a_perp_order(h):
+    await h.pool.execute("UPDATE paper_accounts SET total_equity = 100000")  # the perp minimum is 1% of it: $1,000
+    m = await h.mandate(level=1)
+    await h.pool.execute("UPDATE ai_mandates SET allow_perps = true, markets = ARRAY['SPOT','PERP'], max_leverage = 1 "
+                         "WHERE id = $1", m.id)
+    async with h.client() as c:
+        before = (await c.get(f"/api/v1/ai/mandates/{m.id}")).json()
+        cut = await c.patch(f"/api/v1/ai/mandates/{m.id}", headers=h.headers, json={"capital_budget_usd": "1000"})
+    assert before["warnings"] == [] and before["feasibility"]["perp"]["code"] == "OK"
+    assert cut.status_code == 200, cut.text  # reported, never refused
+    warn = cut.json()["warnings"]
+    assert [(w["market"], w["code"]) for w in warn] == [("perp", "ORDER_MIN_UNREACHABLE")]
+    assert warn[0]["suggested_budget_usd"] >= 4000
+    assert cut.json()["feasibility"]["spot"]["code"] == "OK"

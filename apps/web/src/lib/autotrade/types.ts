@@ -8,8 +8,20 @@ export type NotifyLevel = "ALL" | "IMPORTANT" | "NONE";
 export type ExecutionMode = "ASK" | "VETO" | "AUTO";
 export type ProfileStatus = "ACTIVE" | "PAUSED" | "HALTED" | "STOPPING" | "STOPPED" | "ARCHIVED";
 
+/** H3: whether the budget can place an order above the risk engine's minimum, per market (a warning, never a refusal). */
+export type FeasibilityCode = "OK" | "ORDER_MIN_UNREACHABLE" | "ORDER_MIN_LIKELY_REFUSED";
+export interface MarketFeasibility {
+  max_notional: number;
+  risk_notional: number;
+  min_notional: number;
+  code: FeasibilityCode;
+  suggested_budget_usd: number | null;
+}
+export type Feasibility = Partial<Record<"spot" | "margin" | "perp", MarketFeasibility>>;
+
 /** The mandate view with the ADR 0011 profile fields the API already returns. */
 export interface Profile extends Omit<Mandate, "status"> {
+  feasibility?: Feasibility;
   status: ProfileStatus;
   execution_mode: ExecutionMode;
   markets: Market[];

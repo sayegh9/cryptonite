@@ -60,6 +60,7 @@ from cryptonite_execution.mandate_store import (
     load_session,
     record_event,
 )
+from cryptonite_execution.sizing import entry_feasibility, typical_stop_for
 from cryptonite_schemas import notifier as notifier_contract
 from cryptonite_schemas.mandate import (
     DEFAULT_RISK_PER_TRADE_PCT,
@@ -443,7 +444,16 @@ async def mandate_view(conn, row: Any, marks: dict[str, LiveMark] | None = None)
            WHERE mandate_id = $1 AND kind = 'PROPOSED' AND proposal_status = 'PENDING'""", m.id)
     extra = await conn.fetchrow(
         "SELECT halted_reason, halted_at, level_since, created_at, updated_at FROM ai_mandates WHERE id = $1", m.id)
+    equity_usd = await conn.fetchval("SELECT total_equity FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID)
+    feasibility = entry_feasibility(
+        float(m.capital_budget_usd), float(m.max_position_pct), float(m.max_risk_per_trade_pct), m.max_leverage,
+        sorted(x.value for x in m.markets), float(equity_usd) if equity_usd is not None else None,
+        typical_stop_for(m.timeframes))
     return {
+        # H3: can the budget place an order above the 1%-of-equity minimum; reported, never refused
+        "feasibility": feasibility,
+        "warnings": [{"market": k, "code": v["code"], "suggested_budget_usd": v["suggested_budget_usd"]}
+                     for k, v in feasibility.items() if v["code"] != "OK"],
         "id": str(m.id), "name": m.name, "capital_budget_usd": _dec(m.capital_budget_usd), "instruments": m.instruments,
         "max_position_pct": _dec(m.max_position_pct), "max_drawdown_pct": _dec(m.max_drawdown_pct),
         "allow_perps": m.allow_perps, "max_leverage": m.max_leverage,

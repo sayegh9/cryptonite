@@ -18,9 +18,11 @@ from decimal import Decimal
 from importlib.resources import files
 from typing import Any
 
+from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID
 from cryptonite_api.routes.ai import _publish_updated
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_execution import profile_lifecycle
+from cryptonite_execution.sizing import entry_feasibility, typical_stop_for
 from cryptonite_schemas.mandate import mandate_instance_id
 from cryptonite_schemas.marks import read_live_quote, resolve_quote_price
 from cryptonite_schemas.profile import (
@@ -669,3 +671,27 @@ async def estimate(
                      "mean_llm_usd_per_candidate_run": _decimal_text(mean_cost_per_debate),
                      "method": method},
     }
+
+
+@router.get("/feasibility")
+async def feasibility(
+    request: Request,
+    budget: Decimal = Query(..., gt=0),
+    max_position_pct: Decimal = Query(..., gt=0, le=100),
+    max_risk_pct: Decimal = Query(..., gt=0, le=100),
+    max_leverage: int = Query(1, ge=1, le=125),
+    markets: str = Query(..., min_length=3, max_length=60),
+    timeframes: str = Query("", max_length=40),
+    auth: dict[str, Any] = Depends(require_operator),
+) -> dict[str, Any]:
+    """Whether a draft profile's budget can place an order above the risk engine's minimum (1% of equity for a margin or
+    perp order). A warning only: nothing here refuses a profile. The wizard reads it before the profile exists."""
+    wanted = [m.strip().upper() for m in markets.split(",") if m.strip()]
+    if not wanted or any(m not in {"SPOT", "SPOT_MARGIN", "PERP"} for m in wanted):
+        raise HTTPException(status_code=422, detail="markets must be SPOT, SPOT_MARGIN or PERP")
+    async with request.app.state.pool.acquire() as conn:
+        equity = await conn.fetchval("SELECT total_equity FROM paper_accounts WHERE account_id = $1", PAPER_ACCOUNT_ID)
+    tfs = [t.strip() for t in timeframes.split(",") if t.strip()]
+    return {"feasibility": entry_feasibility(
+        float(budget), float(max_position_pct), float(max_risk_pct), max_leverage, wanted,
+        float(equity) if equity is not None else None, typical_stop_for(tfs))}

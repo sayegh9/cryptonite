@@ -18,6 +18,7 @@ export function profile(over: Record<string, unknown> = {}) {
     max_drawdown_pct: "20",
     allow_perps: true,
     max_leverage: 2,
+    feasibility: { perp: { max_notional: 100, risk_notional: 280, min_notional: 995, code: "ORDER_MIN_UNREACHABLE", suggested_budget_usd: 9950 } },
     max_risk_per_trade_pct: "1",
     strategies: [],
     autonomy_level: 1,
@@ -172,6 +173,12 @@ export async function mockAutoTrade(page: Page, opts: { profiles?: ReturnType<ty
         },
       });
     if (method === "GET" && path === "/profiles/presets/stats") return json(route, PRESET_STATS);
+    if (method === "GET" && path === "/profiles/feasibility") {
+      const budget = Number(url.searchParams.get("budget"));
+      return json(route, { feasibility: { perp: budget < 5000
+        ? { max_notional: budget / 10, risk_notional: 280, min_notional: 995, code: "ORDER_MIN_UNREACHABLE", suggested_budget_usd: 9950 }
+        : { max_notional: budget / 4, risk_notional: 2500, min_notional: 995, code: "OK", suggested_budget_usd: null } } });
+    }
     if (method === "GET" && path === "/profiles/estimate") {
       const coins = (url.searchParams.get("coins") ?? "").split(",").filter(Boolean);
       return json(route, {

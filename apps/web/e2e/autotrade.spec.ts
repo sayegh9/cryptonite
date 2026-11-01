@@ -117,6 +117,23 @@ test.describe("Auto-Trade", () => {
     expect(create.body.instruments).toEqual(["ETHUSDT-MARGIN.BINANCE", "ETHUSDT-PERP.BINANCE", "BTCUSDT-MARGIN.BINANCE", "BTCUSDT-PERP.BINANCE"]);
   });
 
+  test("H3: an amber line says when the budget cannot place a perp order, in the wizard review and in Settings", async ({ page }) => {
+    await mockAutoTrade(page, { profiles: [] });
+    await page.goto("/?ws=autotrade&view=new");
+    await page.getByLabel("Profile name").fill("Small perp");
+    await page.getByLabel("Coins").fill("ETHUSDT");
+    for (let i = 0; i < 3; i++) await page.getByRole("button", { name: "Continue" }).click();
+    const warn = page.getByTestId("feasibility-warning");
+    await expect(warn).toHaveCount(1);
+    await expect(warn).toContainText("Perp entries will be refused");
+    await expect(warn).toContainText("the minimum is $995");
+    await expect(warn).toContainText("Raise the budget to about $9,950 or more.");
+
+    await mockAutoTrade(page);
+    await page.goto(`/?ws=autotrade&view=profile&id=${P1}&tab=settings`);
+    await expect(page.getByTestId("feasibility-warning")).toContainText("Perp entries will be refused");
+  });
+
   test("wizard: a Veto window profile is created in Ask me, then raised with a second code", async ({ page }) => {
     const be = await mockAutoTrade(page, { profiles: [] });
     await page.goto("/?ws=autotrade&view=new");

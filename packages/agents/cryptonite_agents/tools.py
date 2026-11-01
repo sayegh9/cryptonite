@@ -8,6 +8,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -302,7 +303,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 200) -> str:
 
 
 def _spot_klines(clean_symbol: str, interval: str, limit_val: int,
-                 *, max_fetch: int = 500, use_cache: bool = True) -> tuple[dict[str, Any] | None, str | None]:
+                 *, max_fetch: int = 500, use_cache: bool = True, timeout: float = 10.0) -> tuple[dict[str, Any] | None, str | None]:
     """The closed candles of one validated symbol on Binance spot, as get_klines' output dict, or ``(None, error)``.
 
     Shared by get_klines and the regime tool's REST path, which asks for more candles than get_klines allows, so
@@ -353,7 +354,7 @@ def _spot_klines(clean_symbol: str, interval: str, limit_val: int,
             # Fetch slightly extra candles in case the last candle is still open
             fetch_limit = min(limit_val + 2, max_fetch)
             params = {"symbol": clean_symbol, "interval": interval, "limit": fetch_limit}
-            resp = httpx.get("https://api.binance.com/api/v3/klines", params=params, timeout=10.0)
+            resp = httpx.get("https://api.binance.com/api/v3/klines", params=params, timeout=timeout)
 
             # Record the shared-budget weight from every response so the NEXT call pre-flights.
             used_weight_str = resp.headers.get("X-MBX-USED-WEIGHT-1M") or resp.headers.get("x-mbx-used-weight-1m")
@@ -1869,43 +1870,34 @@ async def scan_swing_setups(
     candidates: list[dict[str, Any]] = []
     frames_by_inst: dict[str, dict[str, pl.DataFrame]] = {}
 
-    # If the local DuckDB lake returned no bars for any symbol (or cold lake),
-    # fall back to Binance Spot REST for the primary liquid symbols
-    if not bars_by_inst:
-        fallback_syms = [target_sym] if (target_sym and target_inst) else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
-        for sym_cand in fallback_syms:
-            inst_cand = f"{sym_cand}.BINANCE"
-            rest_frames: dict[str, pl.DataFrame] = {}
-            for tf in ("15m", "1h", "4h"):
-                try:
-                    out, _err = _spot_klines(sym_cand, tf, 120)
-                    if out and out.get("candles"):
-                        enriched = _spot_candles_to_enriched_df(out["candles"], ScannerEngine)
-                        if enriched is not None and not enriched.is_empty():
-                            rest_frames[tf] = enriched
-                except Exception as e:
-                    logger.debug("REST kline fallback failed for %s %s: %s", sym_cand, tf, e)
-            if rest_frames:
-                frames_by_inst[inst_cand] = rest_frames
-                bars_by_inst[inst_cand] = (
-                    rest_frames[timeframe] if timeframe in rest_frames else next(iter(rest_frames.values()))
-                )
-    elif target_inst and target_sym and target_inst not in bars_by_inst:
-        rest_frames = {}
+    # Every coin in the universe that has no fresh lake bars is fetched over Binance Spot REST (15m/1h/4h, 120 bars),
+    # so the scan covers all of them. Those coins are not in the live feed; their candidates say so (`in_feed` false).
+    rest_only: set[str] = set()
+
+    def _rest_frames(sym_cand: str) -> dict[str, pl.DataFrame]:
+        rest_frames: dict[str, pl.DataFrame] = {}
         for tf in ("15m", "1h", "4h"):
             try:
-                out, _err = _spot_klines(target_sym, tf, 120)
+                out, _err = _spot_klines(sym_cand, tf, 120, timeout=5)
                 if out and out.get("candles"):
                     enriched = _spot_candles_to_enriched_df(out["candles"], ScannerEngine)
                     if enriched is not None and not enriched.is_empty():
                         rest_frames[tf] = enriched
             except Exception as e:
-                logger.debug("REST kline fallback failed for %s %s: %s", target_sym, tf, e)
-        if rest_frames:
-            frames_by_inst[target_inst] = rest_frames
-            bars_by_inst[target_inst] = (
-                rest_frames[timeframe] if timeframe in rest_frames else next(iter(rest_frames.values()))
-            )
+                logger.debug("REST kline fallback failed for %s %s: %s", sym_cand, tf, e)
+        return rest_frames
+
+    missing = [inst for inst in scan_universe if inst not in bars_by_inst]
+    if missing:
+        with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+            fetched = list(pool.map(lambda inst: _rest_frames(inst.split(".")[0]), missing))
+        for inst, rest_frames in zip(missing, fetched, strict=True):
+            if rest_frames:
+                frames_by_inst[inst] = rest_frames
+                bars_by_inst[inst] = (
+                    rest_frames[timeframe] if timeframe in rest_frames else next(iter(rest_frames.values()))
+                )
+                rest_only.add(inst)
 
     for inst, df_1m in bars_by_inst.items():
         if inst in frames_by_inst:
@@ -2001,6 +1993,7 @@ async def scan_swing_setups(
                         "trend_15m": trend_15m,
                         "matched_rules": matched_rules,
                         "source": "live_scan",
+                        "in_feed": inst not in rest_only,
                         **_scan_grade(frames, direction, entry, stop, target),
                     })
             except Exception as e:
@@ -2008,7 +2001,8 @@ async def scan_swing_setups(
 
     # The setups the system scanner found recently (profile and global scans), so the Brain and the profiles see the
     # same real setups. Read-only; a failed read only means none are added.
-    candidates.extend(_recent_scanner_setups(target_inst, frames_by_inst))
+    candidates.extend({**c, "in_feed": c["instrument_id"] not in rest_only}
+                      for c in _recent_scanner_setups(target_inst, frames_by_inst))
 
     # Deduplicate by instrument_id (keep highest-scoring setup per symbol)
     best_by_inst: dict[str, dict[str, Any]] = {}
@@ -2025,7 +2019,7 @@ async def scan_swing_setups(
         "preset_slug": preset_slug,
         "timeframe": timeframe,
         "candidates": deduped,
-        "scanned_count": len(scan_universe),
+        "scanned_count": len(bars_by_inst),
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     if not deduped:

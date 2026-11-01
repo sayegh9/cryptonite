@@ -314,6 +314,8 @@ export interface SwingCandidateItem {
   /** "live_scan": a preset fired in this scan; "scanner": the system scanner stored it age_minutes ago. */
   source?: "live_scan" | "scanner";
   age_minutes?: number | null;
+  /** false: found over REST for a coin outside the live feed; approval asks to onboard it first. */
+  in_feed?: boolean;
 }
 
 export interface SwingRadarWidget {

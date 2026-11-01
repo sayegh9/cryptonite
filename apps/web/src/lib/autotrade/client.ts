@@ -5,6 +5,7 @@ import type {
   DecisionPage,
   Direction,
   ExecutionMode,
+  Feasibility,
   PerformanceRange,
   Profile,
   ProfileEstimate,
@@ -62,6 +63,20 @@ export const getEstimate = (coins: string[], style: Style, direction: Direction,
     `/ai/profiles/estimate?coins=${encodeURIComponent(coins.join(","))}&style=${style}&direction=${direction}`,
     init,
   );
+
+/** H3: can this budget place an order above the minimum? (the wizard asks before the profile exists) */
+export const getFeasibility = async (
+  q: { budget: string; maxPositionPct: string; maxRiskPct: string; maxLeverage: string; markets: string[]; timeframes: string[] },
+  init?: ReadOptions,
+): Promise<Feasibility> =>
+  (
+    await fetchApi(
+      `/ai/profiles/feasibility?budget=${encodeURIComponent(q.budget)}&max_position_pct=${encodeURIComponent(q.maxPositionPct)}` +
+        `&max_risk_pct=${encodeURIComponent(q.maxRiskPct)}&max_leverage=${encodeURIComponent(q.maxLeverage)}` +
+        `&markets=${q.markets.join(",")}&timeframes=${q.timeframes.join(",")}`,
+      init,
+    )
+  ).feasibility ?? {};
 
 /** The API's "CODE: text" detail split into a code and the readable rest. */
 export function toApiError(err: unknown): ApiError {
