@@ -477,9 +477,10 @@ async def test_dot_quote_and_bare_symbol_normalization_in_klines_and_swing_scan(
 
 @pytest.mark.asyncio
 async def test_staged_active_card_redis_lookup():
-    from unittest.mock import AsyncMock, MagicMock, patch
-    from cryptonite_api.routes.brain import _get_card, _find_card
     import uuid
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from cryptonite_api.routes.brain import _find_card, _get_card
 
     sid = uuid.uuid4()
     card_id = f"card_test_{uuid.uuid4().hex[:8]}"
@@ -513,6 +514,7 @@ async def test_staged_active_card_redis_lookup():
 @pytest.mark.asyncio
 async def test_brain_note_updates_redis_when_streaming():
     from unittest.mock import AsyncMock, MagicMock
+
     from cryptonite_agents.brain import Brain
 
     fake_store = MagicMock()
