@@ -3,28 +3,28 @@
 import hashlib
 import hmac
 import json
+import sys
 import time
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-import sys
-from pathlib import Path
-
 agent_worker_dir = str(Path(__file__).parent.parent / "services" / "agent_worker")
 if agent_worker_dir not in sys.path:
     sys.path.insert(0, agent_worker_dir)
 
-import server as worker_server  # noqa: F401
-from cryptonite_agents.gateway import BudgetGuard, Gateway
-from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
-from cryptonite_agents.gateway.routes import FLASH, PRO
-from decimal import Decimal
-from pydantic_ai.messages import ModelResponse, TextPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
-from server import ConfigCache, INTERNAL_HMAC_SECRET, app
+from decimal import Decimal  # noqa: E402
+
+import server as worker_server  # noqa: E402, F401
+from cryptonite_agents.gateway import BudgetGuard, Gateway  # noqa: E402
+from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model  # noqa: E402
+from cryptonite_agents.gateway.routes import FLASH, PRO  # noqa: E402
+from pydantic_ai.messages import ModelResponse, TextPart  # noqa: E402
+from pydantic_ai.models.function import AgentInfo, FunctionModel  # noqa: E402
+from server import INTERNAL_HMAC_SECRET, ConfigCache, app  # noqa: E402
 
 
 def _generate_hmac_headers(method: str, path: str, body: bytes, secret: str = INTERNAL_HMAC_SECRET, ts: int | None = None, nonce: str | None = None):
@@ -33,7 +33,7 @@ def _generate_hmac_headers(method: str, path: str, body: bytes, secret: str = IN
     if nonce is None:
         nonce = uuid.uuid4().hex  # server rejects reused nonces as replays
     body_digest = hashlib.sha256(body).hexdigest()
-    msg = f"{method}:{path}:{body_digest}:{ts}:{nonce}".encode("utf-8")
+    msg = f"{method}:{path}:{body_digest}:{ts}:{nonce}".encode()
     sig = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
     return {
         "Content-Type": "application/json",
