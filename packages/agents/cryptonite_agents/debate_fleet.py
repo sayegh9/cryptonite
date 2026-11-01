@@ -3,6 +3,8 @@
 Verdict personas return validated contracts from ``cryptonite_schemas.debate``.
 """
 
+from typing import Literal
+
 from cryptonite_agents.persona import Persona
 from cryptonite_agents.tools import (
     LIVE_MARKET_DATA,
@@ -18,8 +20,19 @@ from cryptonite_schemas.debate import (
     RiskDecision,
     TriageDecision,
 )
+from pydantic import BaseModel, Field
 
 DEBATE_TOOLS = (LIVE_MARKET_DATA, QUERY_POSTGRES, QUERY_PARQUET, SCANNER_CONTEXT)
+
+VetoRedFlag = Literal["NONE", "NO_ROOM_TO_HTF_LEVEL", "CROWDED_FUNDING_OI", "SEVERE_CATALYST"]
+
+
+class VetoDecision(BaseModel):
+    """Phase 2 policy C (shadow only): take the candidate's direction unless a named red flag applies."""
+
+    decision: Literal["TAKE", "SKIP"]
+    red_flag: VetoRedFlag = "NONE"
+    reason: str = Field(max_length=300)
 
 TRIAGE = Persona(
     "Triage", "triage",
@@ -30,6 +43,17 @@ TRIAGE = Persona(
     "worth_debate is true only for a clean, liquid setup with a clear trigger and room to target. "
     "Give a confidence (0-1) and a one-sentence reason naming the deciding factor.",
     output_type=TriageDecision,
+)
+
+NARROW_VETO = Persona(
+    "Narrow Veto", "policy.veto",
+    "You review one scanner candidate whose direction is given. Your default is TAKE in that direction. "
+    "Answer SKIP only when the brief shows one of these named red flags: NO_ROOM_TO_HTF_LEVEL (a higher-timeframe "
+    "level sits before 1.5R of reward from entry, given the stop distance); CROWDED_FUNDING_OI (funding or open "
+    "interest is crowded against the candidate's side); SEVERE_CATALYST (a severe scheduled or breaking catalyst). "
+    "Do not skip for mixed signals, weak momentum or anything else. Return decision, red_flag (NONE when TAKE) and "
+    "a one-sentence reason naming the evidence.",
+    output_type=VetoDecision,
 )
 
 DEBATE_LITE = Persona(

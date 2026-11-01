@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+import policies
 from cryptonite_agents.debate_fleet import TRIAGE
 from cryptonite_agents.gateway import CallContext, Gateway
 from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD, BudgetExceeded, parse_cap
@@ -191,6 +192,16 @@ def decision_trace_id(payload: dict[str, Any]) -> str:
         return str(uuid.uuid4())
 
 
+def payload_candidate_id(payload: dict[str, Any]) -> uuid.UUID | None:
+    """The scanner candidate id in a debate payload, or None (absent or malformed)."""
+    try:
+        candidate = json.loads(payload.get("candidate_payload") or "{}")
+        cid = candidate.get("candidate_id") if isinstance(candidate, dict) else None
+        return uuid.UUID(str(cid)) if cid else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _trace_uuid(payload: dict[str, Any]) -> uuid.UUID | None:
     try:
         return uuid.UUID(str(payload["decision_trace_id"])) if payload.get("decision_trace_id") else None
@@ -213,7 +224,8 @@ async def pre_debate_gate(pg_pool, redis, payload: dict[str, Any], gateway: Gate
         async with pg_pool.acquire() as conn:
             async with conn.transaction():
                 await record_decision(conn, profile.id, "GATE", "ACCEPTED" if decision.allowed else "REFUSED",
-                                      decision.reason, instrument_id=payload["instrument_id"], run_id=run_id)
+                                      decision.reason, instrument_id=payload["instrument_id"], run_id=run_id,
+                                      candidate_id=payload_candidate_id(payload))
 
     await _count(redis, decision.reason)
     trace = payload.get("decision_trace_id")
@@ -468,6 +480,12 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
                 return GateDecision(False, "COOLDOWN")
     elif cid is None or held != cooldown_token:
         return GateDecision(False, "COOLDOWN")
+
+    # Phase 2 shadow capture: the candidate passed the deterministic gate, so policy A is recorded here
+    # (before the rules and triage) and policy C starts in the background. Best-effort; never awaited past A.
+    if cid is not None:
+        await policies.capture_entry_policies(pg_pool, gateway, cid, instrument_id, candidate, brief, brief_data,
+                                              profile_id=profile.id if profile is not None else None)
 
     # Like a model rejection, a rule rejection keeps the cooldown: one decision per setup window
     if (rule := _rule_rejection(brief_data)) is not None:
