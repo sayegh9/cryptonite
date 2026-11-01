@@ -20,7 +20,6 @@ from cryptonite_agents.brain.holdings import ai_spot_holding
 from cryptonite_agents.brain.lessons import card_lessons
 from cryptonite_agents.brain.store import session_cursor
 from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
-from cryptonite_agents.fleet import EXPLAINER, OPPORTUNITY_HUNTER, RESEARCH, STRATEGY_GENERATOR
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
 from cryptonite_agents.persona import Persona
 from cryptonite_agents.tools import ai_state_header, card_setup_grade, system_redis_url
@@ -203,51 +202,6 @@ async def ask(persona: Persona, prompt: str, config: dict | None = None) -> dict
         raise HTTPException(status_code=503, detail=str(e))
     return {"response": result.output, "trace_id": str(result.trace_id), "model": result.model}
 
-
-class ChatRequest(BaseModel):
-    message: str
-    
-class ExplainRequest(BaseModel):
-    backtest_id: str
-    message: str
-
-class StrategistRequest(BaseModel):
-    message: str
-    instructions: str | None = None
-
-@app.post("/api/v1/agents/chat")
-async def chat_with_researcher(request: Request, req: ChatRequest):
-    if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:research"):
-        raise HTTPException(status_code=429, detail="Too many requests")
-    config_override = await config_cache.get_config(app.state.pool, "research")
-    return await ask(RESEARCH, req.message, config_override)
-
-@app.post("/api/v1/agents/strategist")
-async def chat_with_strategist(request: Request, req: StrategistRequest):
-    if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:strategist"):
-        raise HTTPException(status_code=429, detail="Too many requests")
-    msg_lower = req.message.lower()
-    is_generation = (
-        ("code" in msg_lower and any(w in msg_lower for w in ["generate", "create", "write", "build", "new"]))
-        or any(phrase in msg_lower for phrase in ["generate strategy", "create strategy", "write a strategy", "write strategy", "build strategy", "code a strategy", "generate code"])
-        or ("generate" in msg_lower and "strategy" in msg_lower)
-        or ("create" in msg_lower and "strategy" in msg_lower)
-        or ("write" in msg_lower and "strategy" in msg_lower)
-    )
-    persona = STRATEGY_GENERATOR if is_generation else OPPORTUNITY_HUNTER
-    config_override = await config_cache.get_config(app.state.pool, persona.name)
-
-    prompt = req.message
-    if req.instructions:
-        prompt = f"Additional User Instructions: {req.instructions}\n\n{prompt}"
-    return await ask(persona, prompt, config_override)
-
-@app.post("/api/v1/agents/explain")
-async def explain_backtest(request: Request, req: ExplainRequest):
-    if not await llm_rate_limiter.consume(request.app.state.redis, "rate_limit:llm:explain"):
-        raise HTTPException(status_code=429, detail="Too many requests")
-    config_override = await config_cache.get_config(app.state.pool, "explainer")
-    return await ask(EXPLAINER, f"Backtest ID: {req.backtest_id}\nQuery: {req.message}", config_override)
 
 class CRORequest(BaseModel):
     message: str
