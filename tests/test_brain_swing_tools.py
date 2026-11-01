@@ -27,6 +27,7 @@ from cryptonite_agents.tools import (
     DuckDBLakeRepository,
     scan_swing_setups,
 )
+from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.presets import SWING_LIQUID_12
 
 
@@ -80,12 +81,30 @@ def make_synthetic_1m_bars(
 # 1. scan_swing_setups Tests
 # -----------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_scan_swing_setups_returns_valid_json_and_candidates_on_synthetic_trending_bars(monkeypatch):
-    """Verifies that scan_swing_setups produces ranked candidates with MTF trends,
+def _fake_evaluate(calls: list[tuple[str, str]] | None = None, side: str = "LONG"):
+    """A ScannerEngine.evaluate stand-in that fires on the last bar, with levels 2% / 4% from its close."""
+    from types import SimpleNamespace
 
-    valid entry/stop/target geometry, and rr_ratio >= 1.8.
-    """
+    def evaluate(cls, df, rule_groups, risk_config, instrument_id, timeframe, **kwargs):
+        if calls is not None:
+            calls.append((instrument_id, timeframe))
+        last = df.tail(1).to_dicts()[0]
+        close = float(last["close"])
+        sign = -1 if side == "SHORT" else 1
+        return [SimpleNamespace(
+            bar_close_inclusive_ns=int(last["bar_close_inclusive_ns"]),
+            suggested_entry=close,
+            suggested_stop=close * (1 - sign * 0.02),
+            suggested_target=close * (1 + sign * 0.04),
+            matched_rules=["rsi_14 < 40", "close > ema_50"],
+        )]
+
+    return classmethod(evaluate)
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_no_preset_match_returns_empty_with_note(monkeypatch):
+    """Trending bars on which no preset fires give no candidates and a note: nothing is made up from the live close."""
     synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
 
     def fake_load_bars(self, symbol: str, timeframe: str = "1m", start_ns: int | None = None, end_ns: int | None = None):
@@ -94,31 +113,82 @@ async def test_scan_swing_setups_returns_valid_json_and_candidates_on_synthetic_
         return pl.DataFrame()
 
     monkeypatch.setattr(DuckDBLakeRepository, "load_bars", fake_load_bars)
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(lambda cls, *a, **k: []))
 
-    raw_result = await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=5)
-    data = json.loads(raw_result)
-
-    assert data["preset_slug"] == "all"
+    data = json.loads(await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=5))
     assert data["timeframe"] == "1h"
     assert data["scanned_count"] == len(SWING_LIQUID_12)
     assert "as_of" in data
-    assert isinstance(data["candidates"], list)
-    assert len(data["candidates"]) >= 1
+    assert data["candidates"] == []
+    assert data["note"] == "No preset fired on the liquid universe at 1h; no setup."
 
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="4h"))
+    assert data["candidates"] == []
+    assert data["note"] == "No preset fired on BTCUSDT at 4h; no setup."
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_named_symbol_scans_only_that_symbol(monkeypatch):
+    """A named symbol loads and evaluates that instrument alone, and scanned_count says so."""
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    loaded: list[str] = []
+
+    def fake_load_bars(self, symbol: str, timeframe: str = "1m", start_ns: int | None = None, end_ns: int | None = None):
+        loaded.append(symbol)
+        return synthetic_bars  # every symbol has bars: only the named one may be read
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", fake_load_bars)
+    monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate(calls))
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="4h", max_results=5))
+    assert loaded == ["BTCUSDT"]
+    assert data["scanned_count"] == 1
+    assert {inst for inst, _ in calls} == {"BTCUSDT.BINANCE"}
+    assert [c["instrument_id"] for c in data["candidates"]] == ["BTCUSDT.BINANCE"]
+    assert "note" not in data
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_real_match_keeps_preset_levels_and_timeframe(monkeypatch):
+    """A preset that fires gives its own levels and side, labelled with the frame it was evaluated on."""
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate(calls))
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", preset_slug="all", timeframe="4h", max_results=10))
+    assert data["timeframe"] == "4h"  # the requested frame
+    # With "all", the 15m preset runs on 15m and the others on the requested frame
+    assert sorted(calls) == sorted([("BTCUSDT.BINANCE", "15m"), ("BTCUSDT.BINANCE", "4h"), ("BTCUSDT.BINANCE", "4h")])
     cand = data["candidates"][0]
-    assert cand["instrument_id"] == "BTCUSDT.BINANCE"
-    assert cand["timeframe"] == "1h"
+    expected_tf = {"swing-sniper-pullback-15m": "15m", "swing-trend-pullback-1h": "4h", "swing-squeeze-breakout-1h": "4h"}
+    assert cand["timeframe"] == expected_tf[cand["preset_slug"]]
     assert cand["direction"] == "LONG"
-    assert cand["trend_4h"] == "BULL"
-    assert cand["trend_1h"] == "BULL"
-    assert cand["trend_15m"] == "BULL"
-    assert cand["entry"] > 0
-    assert cand["stop"] < cand["entry"]
-    assert cand["target"] > cand["entry"]
-    assert cand["rr_ratio"] >= 1.8
-    assert 0 <= cand["score"] <= 100
-    assert isinstance(cand["matched_rules"], list)
-    assert len(cand["matched_rules"]) <= 4
+    assert cand["stop"] == pytest.approx(cand["entry"] * 0.98, rel=1e-3)
+    assert cand["target"] == pytest.approx(cand["entry"] * 1.04, rel=1e-3)
+    assert cand["rr_ratio"] == pytest.approx(2.0, abs=0.01)
+    assert cand["matched_rules"] == ["rsi_14 < 40", "close > ema_50"]
+    assert not any("volume_ratio >= 0.9" in r for r in cand["matched_rules"])
+
+
+@pytest.mark.asyncio
+async def test_scan_swing_setups_short_preset_keeps_its_side(monkeypatch):
+    """A SHORT preset is reported as SHORT with its own levels, never turned into a LONG."""
+    from cryptonite_scanner import presets as scanner_presets
+    from cryptonite_scanner.models import RiskConfig
+
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    base = scanner_presets.SWING_PRESETS[0]
+    short_preset = base.model_copy(update={"risk": RiskConfig(direction="SHORT", min_risk_reward=1.8)})
+    monkeypatch.setattr(scanner_presets, "SWING_PRESETS", [short_preset])
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
+    monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate(side="SHORT"))
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
+    cand = data["candidates"][0]
+    assert cand["direction"] == "SHORT"
+    assert cand["stop"] > cand["entry"] > cand["target"]
 
 
 @pytest.mark.asyncio
@@ -182,6 +252,7 @@ async def test_scan_swing_setups_empty_lake_rest_fallback(monkeypatch):
         lambda sym, interval, limit_val, **kwargs: ({"symbol": sym, "interval": interval, "candles": fake_candles}, None),
     )
     monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate())
 
     raw = await scan_swing_setups(preset_slug="all", timeframe="1h", max_results=3)
     data = json.loads(raw)
@@ -385,6 +456,12 @@ async def test_dot_quote_and_bare_symbol_normalization_in_klines_and_swing_scan(
     klines_out = json.loads(tools.get_klines("MUBARAK.USDT", "1h", 5))
     assert klines_out["symbol"] == "MUBARAKUSDT"
 
+    swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
+    assert swing_out["scanned_count"] == 1
+    assert swing_out["candidates"] == []  # no preset fires on these bars, and none is made up
+    assert swing_out["note"] == "No preset fired on MUBARAKUSDT at 1h; no setup."
+
+    monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate())
     swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
     assert len(swing_out["candidates"]) == 1
     cand = swing_out["candidates"][0]

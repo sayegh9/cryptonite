@@ -1979,8 +1979,30 @@ async def test_text_that_resumes_after_a_tool_call_starts_a_new_paragraph(steps,
     done = events[-1]
     assert done.type == "done"
     streamed = "".join(ev.data["text"] for ev in events if ev.type == "token")
-    assert streamed == expected == done.data["content"]
-    assert (await store.messages(done.data["session_id"]))[-1]["content"] == expected
+    assert streamed == expected
+    # The kept answer is the text after the last tool call; the stream showed the steps before it as they came
+    final = expected.rsplit("\n\n", 1)[-1]
+    assert done.data["content"] == final
+    assert (await store.messages(done.data["session_id"]))[-1]["content"] == final
+
+
+async def test_an_answer_restated_at_each_step_is_kept_once():
+    """Each model step may restate the whole answer: only the text after the last tool call is kept."""
+    answer = "BTC 4h: no trade. Price is mid-range."
+    store = MemorySessionStore()
+    with override_model(PLANNER, _scripted_steps([answer, TOOL_CALL], [answer, TOOL_CALL], [answer])):
+        events = await collect(_market_data_brain(store).turn("op-1", "Analyze BTCUSDT on the 4h"))
+    done = events[-1]
+    assert done.type == "done" and done.data["content"] == answer
+    assert (await store.messages(done.data["session_id"]))[-1]["content"] == answer
+
+
+async def test_an_empty_last_step_keeps_the_last_step_that_wrote():
+    store = MemorySessionStore()
+    with override_model(PLANNER, _scripted_steps(["Draft.", TOOL_CALL], ["The answer.", TOOL_CALL], ["\n"])):
+        events = await collect(_market_data_brain(store).turn("op-1", "Analyze BTC"))
+    done = events[-1]
+    assert done.type == "done" and done.data["content"] == "The answer."
 
 
 async def test_brain_eval_case_15_reads_the_regime_on_the_timeframe_the_operator_named(monkeypatch):

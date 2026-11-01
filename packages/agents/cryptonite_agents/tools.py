@@ -1716,7 +1716,7 @@ async def scan_swing_setups(
     max_results: int = 5,
     symbol: str | None = None,
 ) -> str:
-    """Scan the liquid universe (or a specific symbol such as 'MUBARAKUSDT' or 'SOLUSDT') on-demand using the multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', or 'all') and return ranked swing trade candidates with 4h/1h/15m trend alignment, ATR-calibrated Entry, Structural Stop, Target (TP1), R:R ratio, and matched rules."""
+    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', or 'all') and return the presets that actually fired on a recent bar: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, and the timeframe each preset was evaluated on. An empty `candidates` list (with a `note`) means no preset fired: there is no setup, so do not invent one."""
     import polars as pl
     from cryptonite_scanner.engine import ScannerEngine
     from cryptonite_scanner.models import RiskConfig
@@ -1744,9 +1744,7 @@ async def scan_swing_setups(
         target_sym = sym_clean
         target_inst = f"{sym_clean}.BINANCE"
 
-    scan_universe = list(SWING_LIQUID_12)
-    if target_inst and target_inst not in scan_universe:
-        scan_universe = [target_inst, *scan_universe]
+    scan_universe = [target_inst] if target_inst else list(SWING_LIQUID_12)
 
     lookback_min = 20160
     now_ns = time.time_ns()
@@ -1851,9 +1849,10 @@ async def scan_swing_setups(
 
         for preset in selected_presets:
             target_tf = "15m" if ("15m" in preset.slug and preset_slug == "all") else timeframe
-            htf_tf = HTF_MAP.get(target_tf, "4h")
-            primary_df = frames.get(target_tf) if frames.get(target_tf) is not None else frames.get(timeframe)
-            htf_df = frames.get(htf_tf)
+            if frames.get(target_tf) is None:
+                target_tf = timeframe  # label the frame actually evaluated
+            primary_df = frames.get(target_tf)
+            htf_df = frames.get(HTF_MAP.get(target_tf, "4h"))
             if primary_df is None or primary_df.is_empty():
                 continue
 
@@ -1862,10 +1861,6 @@ async def scan_swing_setups(
                 latest_close = float(last_row.get("close") or 0.0)
                 if latest_close <= 0:
                     continue
-                latest_atr = float(last_row.get("atr") or 0.0)
-                if latest_atr <= 0:
-                    latest_atr = latest_close * 0.015
-
                 tail_recent = primary_df.tail(6)
                 min_recent_close_ns = (
                     int(tail_recent["bar_close_inclusive_ns"].min())
@@ -1894,27 +1889,29 @@ async def scan_swing_setups(
                 if fresh_matched:
                     fresh_matched.sort(key=lambda c: c.bar_close_inclusive_ns, reverse=True)
                     cand = fresh_matched[0]
-                    direction = "LONG"
-                    entry = round(latest_close, prec)
-                    stop = round(entry - 1.5 * latest_atr, prec)
-                    target = round(entry + 3.0 * latest_atr, prec)
+                    # The preset's own side and levels, not a LONG re-derived from the live close.
+                    direction = (getattr(preset.risk, "direction", "LONG") or "LONG").upper()
+                    entry = round(float(cand.suggested_entry), prec)
+                    stop = round(float(cand.suggested_stop), prec)
+                    target = round(float(cand.suggested_target), prec)
 
                     risk = abs(entry - stop)
                     reward = abs(target - entry)
                     rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
 
+                    with_trend, against_trend = ("BEAR", "BULL") if direction == "SHORT" else ("BULL", "BEAR")
                     base_score = 75.0
-                    if trend_4h == "BULL":
+                    if trend_4h == with_trend:
                         base_score += 12.0
-                    elif trend_4h == "BEAR":
+                    elif trend_4h == against_trend:
                         base_score -= 10.0
-                    if trend_1h == "BULL":
+                    if trend_1h == with_trend:
                         base_score += 8.0
-                    elif trend_1h == "BEAR":
+                    elif trend_1h == against_trend:
                         base_score -= 8.0
-                    if trend_15m == "BULL":
+                    if trend_15m == with_trend:
                         base_score += 5.0
-                    elif trend_15m == "BEAR":
+                    elif trend_15m == against_trend:
                         base_score -= 4.0
 
                     score = float(round(max(0.0, min(100.0, base_score)), 1))
@@ -1939,97 +1936,6 @@ async def scan_swing_setups(
             except Exception as e:
                 logger.debug("Evaluation error for %s on %s: %s", inst, preset.slug, e)
 
-    # Live-bar MTF swing setup evaluation for instruments without an exact 2-bar rule crossover
-    seen_insts = {c["instrument_id"] for c in candidates}
-    for inst, df_1m in bars_by_inst.items():
-        if inst in seen_insts:
-            continue
-        frames = frames_by_inst.get(inst) or {}
-        primary_df = frames.get(timeframe)
-        if primary_df is None:
-            primary_df = frames.get("1h")
-        if primary_df is None:
-            primary_df = frames.get("15m")
-        if primary_df is None or primary_df.is_empty():
-            continue
-        trend_4h = _classify_tf_trend(frames.get("4h"))
-        trend_1h = _classify_tf_trend(frames.get("1h"))
-        trend_15m = _classify_tf_trend(frames.get("15m"))
-
-        last_row = primary_df.tail(1).to_dicts()[0]
-        latest_close = float(last_row.get("close") or 0.0)
-        if latest_close <= 0:
-            continue
-        latest_atr = float(last_row.get("atr") or 0.0)
-        if latest_atr <= 0:
-            latest_atr = latest_close * 0.015
-        rsi_val = float(last_row.get("rsi") or 50.0)
-
-        # Spot mandates only support LONG entries; score trend-continuation vs range-pullback setups at live price
-        direction = "LONG"
-        prec = 6 if latest_close < 0.1 else (4 if latest_close < 10 else 2)
-        entry = round(latest_close, prec)
-        stop = round(entry - 1.5 * latest_atr, prec)
-        target = round(entry + 3.0 * latest_atr, prec)
-        risk = abs(entry - stop)
-        reward = abs(target - entry)
-        rr_ratio = round(reward / risk, 2) if risk > 0 else 2.0
-
-        is_uptrend = trend_4h == "BULL" or trend_1h == "BULL"
-
-        base_score = 68.0
-        if trend_4h == "BULL":
-            base_score += 15.0
-        elif trend_4h == "BEAR":
-            base_score -= 10.0
-        if trend_1h == "BULL":
-            base_score += 10.0
-        elif trend_1h == "BEAR":
-            base_score -= 8.0
-        if trend_15m == "BULL":
-            base_score += 5.0
-        if 32.0 <= rsi_val <= 48.0:
-            base_score += 8.0
-        score = float(round(max(25.0, min(100.0, base_score)), 1))
-
-        if is_uptrend:
-            cand_preset = selected_presets[0].slug if selected_presets else "swing-trend-pullback-1h"
-            matched_rules = [
-                f"[TREND] 4h={trend_4h}, 1h={trend_1h} trend alignment",
-                f"[ENTRY] Live close ({entry}) with 1.5x ATR structural stop ({stop})",
-                f"[TARGET] TP1 ({target}) at {rr_ratio}R",
-                "[CONFIRMATION] volume_ratio >= 0.9",
-            ]
-        else:
-            cand_preset = (
-                preset_slug
-                if preset_slug != "all"
-                else "swing-sniper-pullback-15m"
-            )
-            matched_rules = [
-                f"[RANGE/PULLBACK] RSI ({rsi_val:.1f}) support zone at live close ({entry})",
-                f"[STOP] 1.5x ATR structural stop ({stop})",
-                f"[TARGET] TP1 ({target}) at {rr_ratio}R",
-                "[CONFIRMATION] volume_ratio >= 0.9",
-            ]
-
-        candidates.append({
-            "instrument_id": inst,
-            "preset_slug": cand_preset,
-            "timeframe": timeframe,
-            "score": score,
-            "direction": direction,
-            "entry": entry,
-            "stop": stop,
-            "target": target,
-            "rr_ratio": rr_ratio,
-            "trend_4h": trend_4h,
-            "trend_1h": trend_1h,
-            "trend_15m": trend_15m,
-            "matched_rules": matched_rules,
-            **_scan_grade(frames, direction, entry, stop, target),
-        })
-
     # Deduplicate by instrument_id (keep highest-scoring setup per symbol)
     best_by_inst: dict[str, dict[str, Any]] = {}
     for c in candidates:
@@ -2041,13 +1947,17 @@ async def scan_swing_setups(
     deduped.sort(key=lambda c: (0 if (target_inst and c["instrument_id"] == target_inst) else 1, -c["score"]))
     deduped = deduped[:max_results]
 
-    return json.dumps({
+    result: dict[str, Any] = {
         "preset_slug": preset_slug,
         "timeframe": timeframe,
         "candidates": deduped,
         "scanned_count": len(scan_universe),
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
-    })
+    }
+    if not deduped:
+        scope = target_sym or "the liquid universe"
+        result["note"] = f"No preset fired on {scope} at {timeframe}; no setup."
+    return json.dumps(result)
 
 
 # --- Gateway tool registry (AI-first blueprint A1.5) ---------------------------------------------
