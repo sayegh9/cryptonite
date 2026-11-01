@@ -484,6 +484,13 @@ SWING_PRESETS: list[ScanSpecCreate] = [
     PRESET_SWING_SQUEEZE_BREAKOUT_1H,
 ]
 
+# The short twins of the swing presets, scanned with them by the Brain's swing scan
+SWING_PRESETS_SHORT: list[ScanSpecCreate] = [
+    PRESET_SWING_TREND_PULLBACK_SHORT_1H,
+    PRESET_SWING_SNIPER_PULLBACK_SHORT_15M,
+    PRESET_SWING_SQUEEZE_BREAKDOWN_SHORT_1H,
+]
+
 _PROFILE_PRESETS: dict[str, ScanSpecCreate] = {
     preset.slug: preset for preset in [
         *BUILTIN_PRESETS,

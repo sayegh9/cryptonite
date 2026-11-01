@@ -311,6 +311,9 @@ export interface SwingCandidateItem {
   trend_1h?: string;
   trend_15m?: string;
   matched_rules?: string[];
+  /** "live_scan": a preset fired in this scan; "scanner": the system scanner stored it age_minutes ago. */
+  source?: "live_scan" | "scanner";
+  age_minutes?: number | null;
 }
 
 export interface SwingRadarWidget {
