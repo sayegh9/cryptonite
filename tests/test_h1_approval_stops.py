@@ -68,8 +68,8 @@ async def spot_mandate(h):
 async def perp_mandate(h):
     mid = await h.pool.fetchval(
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level,
-                   status, allow_perps, markets, max_leverage)
-           VALUES ($1, 10000, ARRAY[$2], 25, 1, 'ACTIVE', true, ARRAY['PERP'], 10) RETURNING id""",
+                   status, allow_perps, markets, max_leverage, direction)
+           VALUES ($1, 10000, ARRAY[$2], 25, 1, 'ACTIVE', true, ARRAY['PERP'], 10, 'BOTH') RETURNING id""",
         f"h1-perp-{uuid.uuid4().hex[:6]}", PERP)
     async with h.pool.acquire() as conn:
         mandate = await load_mandate(conn, mid)

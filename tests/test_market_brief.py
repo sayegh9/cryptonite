@@ -65,7 +65,7 @@ def test_brief_has_direction_grade_and_replay_line():
     frames = {"1h": frame(), "4h": frame()}
     data = brief_data("BTCUSDT.BINANCE", frames, candidate=cand)
     assert data["direction"] == "LONG" and data["setup_grade"]["grade"] in ("B", "C", "NO_TRADE")
-    assert len(data["setup_grade"]["reasons"]) <= 4
+    assert len(data["setup_grade"]["reasons"]) <= 5
     assert data["replay"]["preset"] == "rsi-oversold-reversal" and data["replay"]["trades"] > 0
     line = next(x for x in build_brief("BTCUSDT.BINANCE", frames, candidate=cand).splitlines() if x.startswith("Direction:"))
     assert "Setup grade:" in line and "Replay (rsi-oversold-reversal on BTCUSDT):" in line and "R" in line

@@ -22,7 +22,7 @@ def test_catalog_matches_the_scanner_registry():
 def test_empty_picks_follow_the_style():
     assert effective_presets("SWING", "LONG", []) == (
         "swing-trend-pullback-1h", "swing-squeeze-breakout-1h", "swing-sniper-pullback-15m")
-    assert effective_timeframes("SWING", "LONG", [], []) == ("1h", "4h")
+    assert effective_timeframes("SWING", "LONG", [], []) == ("15m", "1h", "4h")  # the 15m sniper runs on 15m
     assert effective_timeframes("INTRADAY", "BOTH", [], []) == ("15m", "1h")
 
 
@@ -57,8 +57,12 @@ def test_totp_compares_what_runs_not_the_stored_lists():
     one = _f(strategies=("swing-trend-pullback-1h",))
     assert _codes(_f(), one) == []  # [] -> [a]: fewer presets
     assert "STRATEGY_ADDED" in _codes(one, _f())  # [a] -> []: the defaults add presets
-    assert "TIMEFRAME_ADDED" in _codes(_f(), _f(timeframes=("15m", "1h", "4h")))
-    assert _codes(_f(timeframes=("4h",)), _f(timeframes=("1h", "4h"))) == ["TIMEFRAME_ADDED"]
-    assert _codes(_f(timeframes=("1h", "4h")), _f(timeframes=("4h",))) == []
+    # H4: the default SWING presets already run 15m (the sniper preset), so picking 15m adds it only where it was not
+    assert "TIMEFRAME_ADDED" in _codes(one, _f(strategies=one.strategies, timeframes=("15m", "1h", "4h")))
+    # a preset named for its timeframe (``-1h``) always runs it, so these use one that is not
+    rsi = ("rsi-oversold-reversal",)
+    assert _codes(_f(strategies=rsi, timeframes=("15m",)), _f(strategies=rsi, timeframes=("15m", "1h"))) == [
+        "TIMEFRAME_ADDED"]
+    assert _codes(_f(strategies=rsi, timeframes=("15m", "1h")), _f(strategies=rsi, timeframes=("15m",))) == []
     assert _codes(_f(), _f(style="INTRADAY")) == []  # a style change stays a free edit (ADR 0011)
     assert _codes(_f(), _f(direction="BOTH", markets={"PERP"})) == ["MARKET_ADDED", "DIRECTION_WIDENED"]

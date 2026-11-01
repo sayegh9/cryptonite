@@ -40,7 +40,12 @@ from cryptonite_scanner.models import (
 )
 from cryptonite_scanner.presets import preset_by_slug
 from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
-from cryptonite_schemas.profile import effective_presets, effective_timeframes, underlying_spot
+from cryptonite_schemas.profile import (
+    effective_presets,
+    effective_timeframes,
+    preset_timeframes,
+    underlying_spot,
+)
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
 BRIEF_TTL_S = 2 * 3600
@@ -621,9 +626,11 @@ class ScannerWorker:
             run_ids = []
             skipped = {"COIN_NOT_IN_FEED": len(coins - feed)}
             if instrument_id in feed:
+                runs = preset_timeframes(profile["style"], profile["direction"], profile["strategies"],
+                                         profile["timeframes"])
                 for slug in effective_presets(profile["style"], profile["direction"], profile["strategies"]):
                     preset = preset_by_slug(slug)
-                    if timeframe not in preset.universe.timeframes:
+                    if timeframe not in preset.universe.timeframes or timeframe not in runs.get(slug, ()):
                         continue
                     version_id, digest, universe, rules = await self._profile_preset_version(slug)
                     run_ids.append(await self._execute_scan(

@@ -1096,10 +1096,13 @@ def test_the_brain_prompt_proposes_only_fed_buys():
     from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
 
     prompt = " ".join(BRAIN_INSTRUCTIONS.split())
-    assert ('Do not propose a BUY for a symbol get_klines reports as in_feed "not_fed": tell the operator to onboard '
-            'it from the Watchlist first. If in_feed is "unknown", you may propose; the card is checked again at '
-            'approval. A SELL that closes a holding never needs the live feed and may close a PAUSED or HALTED '
-            "mandate's holding.") in prompt
+    # H4: a not-fed entry is handled the same for every order type: the card, with "add to the feed first"
+    assert ('An entry on a symbol get_klines reports as in_feed "not_fed" is handled the same for every order type (a '
+            'spot BUY, a perp long or a perp short): you may propose the card, and say it must be added to the feed '
+            'first (the card offers it; approval refuses the entry until the symbol is fed). If in_feed is "unknown", '
+            'you may propose; the card is checked again at approval.') in prompt
+    assert ('present its not_tradeable list as "not tradeable yet" with each reason, never as setups. A SELL that '
+            "closes a holding never needs the live feed and may close a PAUSED or HALTED mandate's holding.") in prompt
     assert 'call show_price_chart only for symbols the ingest feed records (get_klines reports in_feed "fed")' in prompt
 
 
@@ -1300,7 +1303,7 @@ def test_the_brain_prompt_tells_it_the_state_is_a_snapshot_and_names_the_readabl
               "not running. Explain why instead. If the System state shows a gate as unknown, call get_ai_state; the "
               "card is checked again at approval.")
     assert orders in prompt
-    assert prompt.index("4. A full") < prompt.index(orders) < prompt.index('Do not propose a BUY for a symbol')
+    assert prompt.index("4. A full") < prompt.index(orders) < prompt.index('An entry on a symbol get_klines reports')
     assert "always allowed" not in prompt and "is allowed on a PAUSED" not in prompt
 
 
@@ -1317,7 +1320,7 @@ def test_the_brain_prompt_proposes_a_buy_on_a_full_mandate_and_lets_the_card_off
             "the same setup, that it is a second entry and whether you would take it.")
     assert rule in prompt
     assert prompt.index("the card is checked again at approval.") < prompt.index(rule)
-    assert prompt.index(rule) < prompt.index('Do not propose a BUY for a symbol')
+    assert prompt.index(rule) < prompt.index('An entry on a symbol get_klines reports')
     # the no-room fact no longer sits among the refusals, where it read as one
     assert "(approval also refuses a BUY when the mandate has no room left)" not in prompt
 
@@ -1904,7 +1907,7 @@ def test_the_brain_prompt_says_missing_data_is_neutral_and_chop_is_not_an_automa
         ("CHOP is not an automatic no. In a range, look for a defined setup: entry near range support, stop below the "
          "range, target at the range middle or top."),
         ("Measure the risk from the wider of your stop and the exit monitor's hard stop."),
-        ("Propose the setup only when rule 5 allows a card (in_feed is not \"not_fed\", the mandate is not PAUSED or "
+        ("Propose the setup only when rule 5 allows a card (the mandate is not PAUSED or "
          "HALTED, the kill switch and the daily-loss latch are off, and the exit monitor is running) and the reward is "
          "at least 1.5 times that risk (the scanner's rule)."),
         ("An operator's explicit trade request follows rule 5 as before, with the reward-to-risk stated, not refused "

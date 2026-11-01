@@ -268,7 +268,8 @@ async def test_budget_reservation_is_atomic_and_returns_excess_slot(h):
     assert 0 < await h.redis.ttl(key) <= 172800
 
 
-@pytest.mark.parametrize("timeframe,allowed,reason", [("15m", False, "TIMEFRAME_NOT_IN_STYLE"), ("4h", True, "NO_TRIAGE_GATEWAY")])
+# H4: a SWING profile runs its 15m sniper preset on 15m, so 5m is the timeframe outside its style
+@pytest.mark.parametrize("timeframe,allowed,reason", [("5m", False, "TIMEFRAME_NOT_IN_STYLE"), ("4h", True, "NO_TRIAGE_GATEWAY")])
 async def test_gate_uses_profile_style_and_logs_its_decision(h, timeframe, allowed, reason):
     m = await profile(h)
     payload = {"instrument_id": SPOT, "mandate_id": str(m.id), "candidate_payload": json.dumps({"timeframe": timeframe})}
@@ -963,7 +964,7 @@ async def test_tagged_and_coin_locked_global_candidates_have_identical_profile_c
         "ON CONFLICT(key) DO UPDATE SET value='100'"
     )
 
-    timeframe = "15m" if case == "style_timeframe" else "1h"
+    timeframe = "5m" if case == "style_timeframe" else "1h"  # H4: SWING runs 15m (its sniper preset)
     if case == "daily_cap":
         await h.redis.set(gate.profile_cap_key(m.id, NOW.timestamp()), 1, ex=gate.PROFILE_CAP_TTL_S)
     elif case in {"budget_share", "budget_share_accept"}:

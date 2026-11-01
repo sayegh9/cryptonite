@@ -216,7 +216,7 @@ async def test_the_entry_payload_and_summary_carry_the_dry_run(h, routing):
     plan = p["perp_plan"]
     # $250 margin = the whole 2.5% room (grade B sizes at the max position), so the exposure ceiling binds at 1x
     assert (plan["leverage"], plan["binding_ceiling"], p["setup_grade"]) == (1, "exposure", "B")
-    assert "liquidity unknown" in p["grade_reasons"]
+    assert "liquidity unknown: neutral, capped at B" in p["grade_reasons"]
     assert D(plan["loss_at_stop_usd"]) > 0
     assert p["allocation_pct"] <= 2.5 and p["mandate_id"] == str(m.id)
     assert p["ai_allocation_pct"] == 2.5
@@ -701,7 +701,8 @@ async def test_grade_sets_the_perp_size_and_the_model_allocation_is_only_recorde
 
 async def test_grade_c_halves_the_perp_size(h, routing):
     await perp_mandate(h, max_position_pct=10)
-    weak = {**BULL, "adx": 10.0}  # a weak regime on top of the unknown liquidity: two weak inputs = C
+    # H4: an unknown input is neutral (capped at B), so two known weak inputs make a C: no trend and 2 of 3 aligned
+    weak = {**BULL, "adx": 10.0, "trend_15m": "FLAT"}
     _, _, run_id = await route(h, routing, allocation=20.0, context=weak)
     p = (await approval_of(h, run_id))["payload"]
     assert p["setup_grade"] == "C" and p["allocation_pct"] == 5.0 and p["ai_allocation_pct"] == 20.0

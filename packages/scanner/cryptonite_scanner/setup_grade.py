@@ -14,18 +14,19 @@ Six inputs, each read in the trade's direction:
 - volatility: ATR% above the 90th percentile of its trailing 30 days lowers the grade one step;
 - crowding: funding above +0.03% per 8 h on a long (below -0.03% on a short), or open interest down 10% or more over
   24 h, lowers the grade one step;
-- liquidity: a spread above 0.10% or 24 h futures volume below $50m caps the grade at C.
+- liquidity: a spread above 0.10% or 24 h volume below $50m caps the grade at C (either one known is enough to cap).
 
-The grade is A when every input is aligned, B with one weak input, C with more. A missing input is a weak one (it
-cannot be "aligned"), so A needs every input known. Then the volatility and crowding steps (A -> B -> C -> NO_TRADE)
-and the liquidity cap. NO_TRADE (no perp card) when the geometry is wrong, the reward is below 1.0x the risk, or the
+The grade is A when every known input is aligned, B with one weak input, C with more. A missing regime, volatility,
+funding or liquidity input is neutral: it adds no weakness, but it caps the grade at B, so A still needs every input
+known (H4: a scan that cannot see funding or the book was graded C for it alone). Then the volatility and crowding
+steps (A -> B -> C -> NO_TRADE), the liquidity cap and the unknown-input cap. NO_TRADE (no perp card) when the geometry is wrong, the reward is below 1.0x the risk, or the
 4h and the 1h trend both run against the trade.
 """
 
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-GRADE_VERSION = "setup-grade-v1"
+GRADE_VERSION = "setup-grade-v2"  # v2: unknown inputs are neutral, capped at B
 Grade = Literal["A", "B", "C", "NO_TRADE"]
 GRADES: tuple[Grade, ...] = ("A", "B", "C", "NO_TRADE")
 
@@ -101,6 +102,7 @@ def grade_setup(inputs: GradeInputs) -> SetupGrade:
 
     weak = 0
     reasons: list[str] = []
+    unknown: list[str] = []  # neutral inputs: no weakness, but the grade is capped at B
     aligned = [tf for tf, t in trends.items() if t == with_trend]
     if len(aligned) == 3:
         reasons.append("4h, 1h and 15m aligned")
@@ -121,8 +123,7 @@ def grade_setup(inputs: GradeInputs) -> SetupGrade:
         reasons.append(f"reward {rr}x the risk (below {RR_B}x)")
 
     if inputs.adx is None or inputs.plus_di is None or inputs.minus_di is None:
-        weak += 1
-        reasons.append("regime unknown")
+        unknown.append("regime")
     elif inputs.adx < ADX_TREND_MIN:
         weak += 1
         reasons.append(f"no trend (ADX {inputs.adx:.0f})")
@@ -134,25 +135,21 @@ def grade_setup(inputs: GradeInputs) -> SetupGrade:
 
     high_vol = None
     if inputs.atr_pct is None or inputs.atr_pct_q90 is None:
-        weak += 1
-        reasons.append("volatility unknown")
+        unknown.append("volatility")
     else:
         high_vol = inputs.atr_pct > inputs.atr_pct_q90
 
     crowded_funding = None
     if inputs.funding_rate_8h is None:
-        weak += 1
-        reasons.append("funding unknown")
+        unknown.append("funding")
     else:
         crowded_funding = (inputs.funding_rate_8h > CROWDED_FUNDING_8H) if long else (inputs.funding_rate_8h < -CROWDED_FUNDING_8H)
     oi_falling = inputs.oi_change_24h_pct is not None and inputs.oi_change_24h_pct <= OI_DROP_PCT
 
-    thin = None
-    if inputs.spread_pct is None or inputs.volume_24h_usd is None:
-        weak += 1
-        reasons.append("liquidity unknown")
-    else:
-        thin = inputs.spread_pct > THIN_SPREAD_PCT or inputs.volume_24h_usd < THIN_VOLUME_USD
+    thin = ((inputs.spread_pct is not None and inputs.spread_pct > THIN_SPREAD_PCT)
+            or (inputs.volume_24h_usd is not None and inputs.volume_24h_usd < THIN_VOLUME_USD))
+    if not thin and (inputs.spread_pct is None or inputs.volume_24h_usd is None):
+        unknown.append("liquidity")
 
     grade: Grade = "A" if weak == 0 else "B" if weak == 1 else "C"
     if high_vol:
@@ -166,6 +163,10 @@ def grade_setup(inputs: GradeInputs) -> SetupGrade:
         reasons.append("thin book: capped at C")
     elif thin:
         reasons.append("thin book")
+    if unknown:
+        if grade == "A":
+            grade = "B"
+        reasons.append(f"{', '.join(unknown)} unknown: neutral, capped at B")
     return SetupGrade(grade, tuple(reasons), rr, kept)
 
 
@@ -196,19 +197,33 @@ def frame_trend(df) -> str | None:
     return None if df is None or (hasattr(df, "is_empty") and df.is_empty()) else trend_of(df)
 
 
-GRADE_CONTEXT_KEYS = ("trend_4h", "trend_1h", "trend_15m", "atr_pct", "atr_pct_q90", "adx", "plus_di", "minus_di")
+GRADE_CONTEXT_KEYS = ("trend_4h", "trend_1h", "trend_15m", "atr_pct", "atr_pct_q90", "adx", "plus_di", "minus_di",
+                      "volume_24h_usd")
+
+
+def volume_24h_usd(bars_1h) -> float | None:
+    """The 24 h quote volume from stored 1h bars: the sum of close x volume over the last 24 bars. None with fewer
+    bars or an unreadable frame (unknown, never zero: a zero would read as a thin book)."""
+    try:
+        if bars_1h is None or getattr(bars_1h, "height", 0) < 24:
+            return None
+        last = bars_1h.tail(24)
+        total = float((last["close"] * last["volume"]).sum())
+    except Exception:
+        return None
+    return total if total == total and total > 0 else None
 
 
 def grade_context(frames: dict) -> dict[str, Any]:
-    """The grade inputs a scan's own frames give (4h/1h/15m trends, the 1h regime and volatility), JSON-serialisable.
-    Funding, open interest and liquidity are not in the frames: the caller adds what it can read, the rest stays
-    unknown (a weak input). A frame that cannot be read gives None for its inputs."""
+    """The grade inputs a scan's own frames give (4h/1h/15m trends, the 1h regime and volatility, the 24 h volume of
+    the 1h bars), JSON-serialisable. Funding, open interest and the spread are not in the frames: the caller adds what
+    it can read, the rest stays unknown (neutral, capped at B). A frame that cannot be read gives None for its inputs."""
     try:
         reg = regime_trend_inputs(frames.get("1h"))
     except Exception:  # too few or unreadable bars: the regime and volatility are unknown
         reg = dict.fromkeys(("atr_pct", "atr_pct_q90", "adx", "plus_di", "minus_di"))
     return {"trend_4h": frame_trend(frames.get("4h")), "trend_1h": frame_trend(frames.get("1h")),
-            "trend_15m": frame_trend(frames.get("15m")), **reg}
+            "trend_15m": frame_trend(frames.get("15m")), **reg, "volume_24h_usd": volume_24h_usd(frames.get("1h"))}
 
 
 def funding_rate_8h(rate: float | None, interval_hours: float | None) -> float | None:

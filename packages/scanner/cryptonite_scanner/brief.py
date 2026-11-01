@@ -25,6 +25,7 @@ from cryptonite_schemas.profile import PRESET_CATALOG
 from cryptonite_scanner.setup_grade import (
     GRADE_CONTEXT_KEYS,
     GradeInputs,
+    funding_rate_8h,
     grade_context,
     grade_setup,
 )
@@ -97,8 +98,10 @@ def candidate_direction(candidate: dict[str, Any] | None) -> str | None:
     return "SHORT" if stop > entry else "LONG"
 
 
-def _setup_grade(direction: str | None, cand: dict[str, Any] | None, ctx: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Scan-time grade from the frames and the levels; funding and liquidity are unknown, so at most B."""
+def _setup_grade(direction: str | None, cand: dict[str, Any] | None, ctx: dict[str, Any] | None,
+                 derivatives: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Scan-time grade from the frames, the levels and the derivatives feed's funding. The book spread is not read
+    here, so liquidity stays unknown and the grade is at most B (``grade_setup`` caps an unknown input)."""
     if not direction or not cand or not ctx:
         return None
     entry, stop, target = _num(cand.get("entry")), _num(cand.get("stop")), _num(cand.get("target"))
@@ -106,10 +109,12 @@ def _setup_grade(direction: str | None, cand: dict[str, Any] | None, ctx: dict[s
         return None
     try:
         kw = {k: ctx.get(k) for k in GRADE_CONTEXT_KEYS}
-        g = grade_setup(GradeInputs(side=direction, entry=entry, stop=stop, target=target, **kw))  # type: ignore[arg-type]
+        funding = funding_rate_8h(_num((derivatives or {}).get("funding_rate")), None)
+        g = grade_setup(GradeInputs(side=direction, entry=entry, stop=stop, target=target,  # type: ignore[arg-type]
+                                    funding_rate_8h=funding, **kw))
     except Exception:
         return None
-    return {"grade": "B" if g.grade == "A" else g.grade, "reasons": list(g.reasons)[:4]}
+    return {"grade": g.grade, "reasons": list(g.reasons)[:5]}
 
 
 def timeframe_line(timeframe: str, df: pl.DataFrame) -> str | None:
@@ -163,7 +168,7 @@ def build_brief(
             f"target {_f(target)}, reward-to-risk {_f(rr)}; rules: {', '.join(map(str, candidate.get('matched_rules') or [])) or 'n/a'}"
         )
     if candidate:
-        facts = brief_data(instrument_id, frames, candidate=candidate)
+        facts = brief_data(instrument_id, frames, candidate=candidate, derivatives=derivatives)
         parts = [f"Direction: {facts['direction']}"] if facts["direction"] else []
         if g := facts["setup_grade"]:
             parts.append(f"Setup grade: {g['grade']} ({'; '.join(g['reasons'])})")
@@ -261,7 +266,7 @@ def brief_data(
         data["grade_context"] = grade_context(frames)
     except Exception:
         data["grade_context"] = None
-    data["setup_grade"] = _setup_grade(data["direction"], data["candidate"], data["grade_context"])
+    data["setup_grade"] = _setup_grade(data["direction"], data["candidate"], data["grade_context"], data["derivatives"])
     slug = (candidate or {}).get("preset_slug") or (candidate or {}).get("spec_slug")
     coin = str(instrument_id).split(".")[0]
     if row := _REPLAY.get((coin, slug)):

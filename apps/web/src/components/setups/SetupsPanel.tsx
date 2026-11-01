@@ -85,7 +85,7 @@ export function SetupsPanel() {
         <table className="w-full text-sm" aria-label="Setups">
           <thead className="sticky top-0 bg-muted/60 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
             <tr>
-              {["Coin", "Side", "Preset", "TF", "Entry", "Stop", "Target", "Cost R", "Owner", "Stage", "Age"].map((h) => (
+              {["Coin", "Side", "Preset", "TF", "Entry", "Stop", "Target", "Cost R", "Owner", "Stage", "Bar age"].map((h) => (
                 <th key={h} scope="col" className="px-2 py-1.5 font-medium">{h}</th>
               ))}
             </tr>
@@ -116,7 +116,12 @@ export function SetupsPanel() {
                 <td className="px-2 py-1.5">
                   {s.funnel.furthest_stage ? `${s.funnel.furthest_stage} ${s.funnel.outcome ?? ""}` : "—"}
                 </td>
-                <td className="px-2 py-1.5">{formatAge(s.age_seconds)}</td>
+                <td className="px-2 py-1.5" data-testid="setup-bar-age" title={s.routeable ? undefined : reasonText(s.routeable_reason)}>
+                  {formatAge(s.bar_age_seconds ?? s.age_seconds)}
+                  {!s.routeable && (
+                    <span className="ml-1 text-xs text-amber-600 dark:text-amber-400">no longer routeable</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

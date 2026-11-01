@@ -535,7 +535,8 @@ async def test_rule_triage_rejects_without_a_model_call(gate, pool, data, reason
                                               "MARKET BRIEF", brief_data=data)
     assert (decision.allowed, decision.reason) == (False, reason)
     assert sum(models.calls.values()) == 0
-    assert any(k.startswith("debate:cooldown:") for k in redis.kv)  # kept, like a model rejection
+    # H4: the free rule checks run before the cooldown is taken, so a rule rejection leaves the window open
+    assert not any(k.startswith("debate:cooldown:") for k in redis.kv)
     assert any(k.endswith(f":{reason}") and v == 1 for k, v in redis.kv.items())  # counted like other rejections
 
 

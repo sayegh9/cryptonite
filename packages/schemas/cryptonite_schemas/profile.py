@@ -246,12 +246,32 @@ def effective_presets(style: Style | str, direction: Direction | str, strategies
     return tuple(s for s in picked if s in PRESET_CATALOG and allows_side(direction, PRESET_CATALOG[s].side))
 
 
+def own_timeframe(slug: str) -> str | None:
+    """The timeframe a preset's slug names (``swing-sniper-pullback-15m`` -> ``15m``), when it can run on it."""
+    tf = slug.rsplit("-", 1)[-1]
+    meta = PRESET_CATALOG.get(slug)
+    return tf if meta is not None and tf in PROFILE_TIMEFRAMES and tf in meta.timeframes else None
+
+
+def preset_timeframes(style: Style | str, direction: Direction | str, strategies: Iterable[str],
+                      timeframes: Iterable[str]) -> dict[str, tuple[str, ...]]:
+    """Per preset the profile runs, the timeframes it scans: the profile's picks (or the style defaults) the preset
+    supports, plus the preset's own timeframe, so a SWING profile still runs its 15m sniper preset on 15m bars."""
+    wanted = set(timeframes) or set(STYLE_TIMEFRAMES[Style(style)])
+    runs: dict[str, tuple[str, ...]] = {}
+    for slug in effective_presets(style, direction, strategies):
+        tfs = {tf for tf in PRESET_CATALOG[slug].timeframes if tf in wanted}
+        if own := own_timeframe(slug):
+            tfs.add(own)
+        runs[slug] = tuple(tf for tf in PROFILE_TIMEFRAMES if tf in tfs)
+    return runs
+
+
 def effective_timeframes(style: Style | str, direction: Direction | str, strategies: Iterable[str],
                          timeframes: Iterable[str]) -> tuple[str, ...]:
-    """The bar timeframes a profile scans: its picks (or the style defaults) that at least one of its presets runs."""
-    wanted = set(timeframes) or set(STYLE_TIMEFRAMES[Style(style)])
-    runnable = {tf for s in effective_presets(style, direction, strategies) for tf in PRESET_CATALOG[s].timeframes}
-    return tuple(tf for tf in PROFILE_TIMEFRAMES if tf in wanted and tf in runnable)
+    """The bar timeframes a profile scans: every timeframe at least one of its presets runs on."""
+    runs = {tf for tfs in preset_timeframes(style, direction, strategies, timeframes).values() for tf in tfs}
+    return tuple(tf for tf in PROFILE_TIMEFRAMES if tf in runs)
 
 
 def selection_errors(style: Style | str, direction: Direction | str, strategies: Iterable[str],

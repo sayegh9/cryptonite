@@ -248,13 +248,13 @@ def _rule_rejection(brief_data: dict[str, Any] | None) -> str | None:
                     entry, stop, target = map(float, levels)
                 except (TypeError, ValueError, OverflowError):
                     entry = stop = target = 0.0  # malformed structure cannot skip the existing LONG rules
-                if all(math.isfinite(v) for v in (entry, stop, target)) and 0 < target < entry < stop:
-                    # The shared triage rule is LONG-oriented. Mirror only trend direction for a valid SHORT;
-                    # reward:risk and chop inputs stay identical, and incomplete/wrong-side levels never opt in.
-                    data = {**data, "timeframes": [
-                        {**frame, "trend": "down" if frame.get("trend") == "up" else
-                         "up" if frame.get("trend") == "down" else frame.get("trend")}
-                        if isinstance(frame, dict) else frame for frame in data.get("timeframes") or []]}
+                if (all(math.isfinite(v) for v in (entry, stop, target)) and 0 < target < entry < stop
+                        and data.get("direction") is None):
+                    # ``hard_rejects`` is direction-aware: it judges trends against ``direction`` itself. Only a
+                    # payload without one takes it from valid SHORT levels; the trends are never flipped here
+                    # (flipping as well inverted the gate: aligned shorts refused, opposing shorts passed).
+                    # Incomplete or wrong-side levels never opt in, so they keep the LONG rules.
+                    data = {**data, "direction": "SHORT"}
         hits = hard_rejects(data) if data else []
     except Exception as e:  # a bad payload must not block the model path
         logger.warning("Triage rules skipped: %s", e)
@@ -474,11 +474,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
     # candidate waits it out. Unidentified payloads keep the legacy opaque value and the old semantics.
     cooldown_token = f"cid:{cid}" if cid else "1"
     held = await redis.get(cooldown_key)
-    if held is None:
-        if not await redis.set(cooldown_key, cooldown_token, nx=True, ex=COOLDOWN_S):
-            if cid is None or await redis.get(cooldown_key) != cooldown_token:
-                return GateDecision(False, "COOLDOWN")
-    elif cid is None or held != cooldown_token:
+    if held is not None and (cid is None or held != cooldown_token):
         return GateDecision(False, "COOLDOWN")
 
     # Phase 2 shadow capture: the candidate passed the deterministic gate, so policy A is recorded here
@@ -487,9 +483,15 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         await policies.capture_entry_policies(pg_pool, gateway, cid, instrument_id, candidate, brief, brief_data,
                                               profile_id=profile.id if profile is not None else None)
 
-    # Like a model rejection, a rule rejection keeps the cooldown: one decision per setup window
+    # The free rule checks run before the cooldown is taken: a rule rejection costs nothing, so it must not
+    # lock the window against the next (possibly valid) candidate on this instrument and timeframe.
     if (rule := _rule_rejection(brief_data)) is not None:
         return GateDecision(False, rule)
+
+    if held is None:
+        if not await redis.set(cooldown_key, cooldown_token, nx=True, ex=COOLDOWN_S):
+            if cid is None or await redis.get(cooldown_key) != cooldown_token:
+                return GateDecision(False, "COOLDOWN")
 
     if gateway is None:
         if profile is not None:
