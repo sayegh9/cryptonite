@@ -8,7 +8,7 @@ evidence for each release are in `~/Documents/projects/cryptonite/reports/` (fin
 
 - **Code:** `main` `f94b117`, no open pull requests. Every PR runs GitHub Actions (ruff, web, pytest, e2e-smoke,
   verify) and is merged only when green. Deploys run from `deploy-main/` (detached at `main`), one script per release.
-- **Database:** production `cryptonite` at `058`; H6 adds `059` (agent read of scan spec slugs). P5 (live profiles) will add `060`.
+- **Database:** production `cryptonite` at `058`; H6 adds `059` (agent read of scan spec slugs); H7a adds `060` (reflection `kind` WHAT_IF/TRADE + `recall_excluded`). P5 (live profiles) will add `061`.
 - **Services:** the whole Compose stack (`infra`) is healthy: `api`, `agent_worker`, `research_worker`, `orchestrator`,
   `ingest`, `scanner`, `learner`, `debate_worker` ×3, `exit_monitor`, `derivatives_feed`, `outbox`, `notifier`,
   `backtester`, `strategy_sandbox`, `lake_maintenance`, `sentiment`, `web`, `postgres`, `redis`.

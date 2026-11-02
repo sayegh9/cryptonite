@@ -25,6 +25,7 @@ _LESSONS_SQL = f"""
     JOIN agent_safe_debate_verdicts v ON v.run_id = f.run_id
     WHERE f.instrument_id = :instrument_id
       AND v.recommendation <> 'HOLD'
+      AND NOT f.recall_excluded
       AND f.created_at >= now() - interval '{LESSON_WINDOW_DAYS} days'
     ORDER BY abs(f.alpha_vs_benchmark) DESC NULLS LAST, f.created_at DESC
     LIMIT {CARD_LESSONS_LIMIT}

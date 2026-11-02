@@ -24,6 +24,8 @@ from migrated_db import migrated_database, seed_paper_account
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+pytestmark = pytest.mark.usefixtures("complete_lake_bars")  # H7a: full debates need bars
+
 WORKER_DIR = Path(__file__).resolve().parents[1] / "services" / "debate_worker"
 INSTRUMENT = "BTCUSDT.BINANCE"
 
@@ -144,8 +146,11 @@ def scanner_payload(age_s: float = 60, timeframe: str = "1h", brief: bool = True
 class Models:
     """Scripted FunctionModel per model id; records which output contract each call asked for."""
 
-    def __init__(self, triage=True, lite=None):
+    def __init__(self, triage=True, lite=None, pm=None, cro=None, analyst_text="argument"):
         self.calls = Counter()
+        self.pm = pm or {"recommendation": "BUY", "conviction_score": 0.7, "allocation_pct": 8.0, "reasoning": "pm"}
+        self.cro = cro or {"final_allocation_pct": 6.0, "conviction_level": "Overweight", "risk_reasoning": "ok"}
+        self.analyst_text = analyst_text
         self.prompts: dict[str, str] = {}  # the last request each output contract saw
         self.triage = triage
         self.lite = lite or {"bull_case": "b", "bear_case": "r", "recommendation": "BUY",
@@ -155,7 +160,8 @@ class Models:
         def fn(messages, info: AgentInfo):
             if not info.output_tools:
                 self.calls["text"] += 1
-                return ModelResponse(parts=[TextPart("argument")])
+                self.prompts.setdefault("texts", []).append(str(messages))
+                return ModelResponse(parts=[TextPart(self.analyst_text)])
             tool = info.output_tools[0]
             props = tool.parameters_json_schema.get("properties", {})
             if "worth_debate" in props:
@@ -167,11 +173,11 @@ class Models:
             elif "final_allocation_pct" in props:
                 self.calls["cro"] += 1
                 self.prompts["cro"] = str(messages)
-                args = {"final_allocation_pct": 6.0, "conviction_level": "Overweight", "risk_reasoning": "ok"}
+                args = self.cro
             else:
                 self.calls["pm"] += 1
                 self.prompts["pm"] = str(messages)
-                args = {"recommendation": "BUY", "conviction_score": 0.7, "allocation_pct": 8.0, "reasoning": "pm"}
+                args = self.pm
             return ModelResponse(parts=[ToolCallPart(tool.name, args)])
         return FunctionModel(fn)
 
@@ -654,3 +660,65 @@ async def test_sentiment_last_ok_is_published_after_a_tagging_success(main, monk
     monkeypatch.setattr(news, "_last_tag_ok", [1_790_000_000.5])
     await main.publish_sentiment_ok(redis)
     assert redis.kv["sentiment:last_ok"] == 1_790_000_000
+
+
+# --- H7a: operator framing, CRO limits in code, evidence gate ---------------------------------------
+
+OPERATOR = {"instrument_id": INSTRUMENT, "trigger_source": "user_on_demand"}
+
+
+async def _decision(pool, run_id):
+    return await pool.fetchrow("SELECT * FROM portfolio_decisions WHERE run_id = $1", run_id)
+
+
+async def test_an_operator_debate_without_a_candidate_gets_no_side_line(main, pool):
+    """Production 2026-11-02: operator debates were told 'The scanner candidate is a LONG setup'."""
+    models = Models()
+    await run(main, pool, OPERATOR, models)
+    everything = models.prompts["pm"] + models.prompts["cro"] + "".join(models.prompts["texts"])
+    assert "scanner candidate is a" not in everything
+    assert "No scanner candidate; this is an operator-requested assessment of BTCUSDT.BINANCE" in models.prompts["pm"]
+    assert "argue LONG, SHORT or HOLD" in models.prompts["cro"]
+
+
+@pytest.mark.parametrize("mode", ["panel", "merged"])
+@pytest.mark.parametrize("pm, cro, expected", [
+    # the 7fdda565 run: PM HOLD 0.7 / CRO "Buy" 2% was stored as BUY 2% at the PM's 0.70
+    ({"recommendation": "HOLD", "conviction_score": 0.7, "allocation_pct": 0.0},
+     {"final_allocation_pct": 2.0, "conviction_level": "Buy"}, ("HOLD", "Hold", 0.0, 0.7)),
+    ({"recommendation": "BUY", "conviction_score": 0.6, "allocation_pct": 5.0},
+     {"final_allocation_pct": 3.0, "conviction_level": "Sell"}, ("HOLD", "Hold", 0.0, 0.0)),
+    ({"recommendation": "BUY", "conviction_score": 0.6, "allocation_pct": 5.0},
+     {"final_allocation_pct": 8.0, "conviction_level": "Buy"}, ("BUY", "Buy", 5.0, 0.6)),
+])
+async def test_the_cro_cannot_trade_a_hold_reverse_or_size_up(main, pool, monkeypatch, mode, pm, cro, expected):
+    monkeypatch.setattr(main, "RISK_PANEL_MODE", mode)
+    models = Models(pm={**pm, "reasoning": "pm"}, cro={**cro, "risk_reasoning": "cro"})
+    run_row = await run(main, pool, OPERATOR, models)
+    d = await _decision(pool, run_row["id"])
+    assert (d["recommendation"], d["conviction_level"], float(d["allocation_pct"]),
+            float(d["conviction_score"])) == pytest.approx(expected)
+    assert "CRO clamp:" in d["reasoning"]
+
+
+async def test_missing_bars_make_the_debate_non_actionable(main, pool, monkeypatch):
+    from cryptonite_agents import tools
+
+    def empty(instrument_id, timeframe="1h", n=48, now_ns=None):
+        return {"instrument_id": instrument_id, "timeframe": timeframe, "expected": n, "returned": 0, "missing": n,
+                "complete": False, "reason": "no closed 1h bars in the lake", "bars": []}
+
+    monkeypatch.setattr(tools, "recent_bars", empty)
+    models = Models()  # PM BUY 8%, CRO Overweight 6%
+    run_row = await run(main, pool, OPERATOR, models)
+    d = await _decision(pool, run_row["id"])
+    assert (d["recommendation"], float(d["allocation_pct"]), float(d["conviction_score"])) == ("HOLD", 0.0, 0.0)
+    assert "EVIDENCE_INCOMPLETE" in d["reasoning"]
+    assert (run_row["status"], run_row["failure_reason"]) == ("NO_TRADE", "EVIDENCE_INCOMPLETE")
+    assert any("RECENT CLOSED BARS" in t for t in models.prompts["texts"])  # the analyst saw what the lake had
+
+
+async def test_an_empty_market_analysis_makes_the_debate_non_actionable(main, pool):
+    run_row = await run(main, pool, OPERATOR, Models(analyst_text=" "))
+    d = await _decision(pool, run_row["id"])
+    assert d["recommendation"] == "HOLD" and "the Market Analyst returned no analysis" in d["reasoning"]

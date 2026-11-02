@@ -44,6 +44,47 @@ def verdict_direction(value: object) -> Direction | None:
         return None
 
 
+class RiskVerdict(BaseModel):
+    """The verdict stored after the CRO, once ``clamp_risk_verdict`` has applied the PM's limits."""
+
+    recommendation: Direction
+    conviction_level: str
+    allocation_pct: float
+    conviction_score: float
+    clamp_note: str | None = None
+
+
+def clamp_risk_verdict(pm_recommendation: str, pm_conviction: float, pm_allocation: float,
+                       cro_level: str, cro_allocation: float) -> RiskVerdict:
+    """H7a: the CRO can only keep the PM's direction at the same or a smaller allocation, or turn it into HOLD.
+
+    A PM HOLD stays HOLD at 0% (a CRO "Buy" on it is clamped); a CRO direction opposite to the PM's becomes HOLD;
+    an allocation above the PM's is cut to the PM's. ``clamp_note`` says what was clamped (None when nothing was).
+    The stored conviction is the PM's only while the stored direction is the PM's: a HOLD the PM did not choose
+    stores 0.0, so one agent's confidence is never paired with another agent's verdict. Unknown wording raises."""
+    pm_dir = normalize_verdict(pm_recommendation)
+    cro_dir = normalize_verdict(cro_level)
+    pm_alloc = max(0.0, float(pm_allocation or 0.0))
+    alloc = max(0.0, float(cro_allocation or 0.0))
+    note = None
+    if pm_dir == "HOLD" and cro_dir != "HOLD":
+        note = f"CRO {cro_level} {alloc:g}% on a PM HOLD clamped to HOLD 0%"
+        cro_dir, level, alloc = "HOLD", "Hold", 0.0
+    elif cro_dir != "HOLD" and cro_dir != pm_dir:
+        note = f"CRO {cro_level} {alloc:g}% reverses the PM's {pm_dir}: clamped to HOLD 0%"
+        cro_dir, level, alloc = "HOLD", "Hold", 0.0
+    else:
+        level = cro_level
+        if cro_dir == "HOLD":
+            alloc = 0.0
+        elif alloc > pm_alloc:
+            note = f"CRO allocation {alloc:g}% above the PM's {pm_alloc:g}%: clamped to {pm_alloc:g}%"
+            alloc = pm_alloc
+    conviction = float(pm_conviction or 0.0) if cro_dir == pm_dir else 0.0
+    return RiskVerdict(recommendation=cro_dir, conviction_level=level, allocation_pct=alloc,
+                       conviction_score=conviction, clamp_note=note)
+
+
 class PortfolioDecision(BaseModel):
     """Research Manager (PM proxy) verdict after the bull/bear debate."""
 

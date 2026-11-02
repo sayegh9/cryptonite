@@ -24,6 +24,8 @@ from migrated_db import migrated_database
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+pytestmark = pytest.mark.usefixtures("complete_lake_bars")  # H7a: full debates need bars
+
 MAIN = Path(__file__).resolve().parents[1] / "services" / "debate_worker" / "main.py"
 sys.path.insert(0, str(MAIN.parent))  # main.py imports its sibling gate module
 INSTRUMENT = "BTCUSDT.BINANCE"

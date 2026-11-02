@@ -4,6 +4,10 @@ A decision gets one reflection once its 24h outcome is labelled (``outcomes.labe
 signed outcome (BUY profits from a rise; SELL/HOLD, i.e. exit or stay out, from a fall), its alpha
 against BTC over the same window (for BTC itself, the outcome), and a short lesson written by the
 reviewer persona. The lesson is embedded and tagged with its embedding model (A6.4).
+
+H7a: most verdicts never fill (HOLD, refused, vetoed or expired cards). A reflection on a run with no fill is a
+``WHAT_IF`` verdict evaluation: its prompt says no trade was executed and its stored lesson is labelled so. A run with
+a fill gets a ``TRADE`` reflection that sees the fill price and the commission paid.
 """
 
 import datetime
@@ -20,12 +24,34 @@ logger = logging.getLogger(__name__)
 REFLECTION_HORIZON = "24h"
 BENCHMARK = "BTCUSDT"
 BATCH = 5
+WHAT_IF, TRADE = "WHAT_IF", "TRADE"
+WHAT_IF_LABEL = "What-if verdict evaluation (no trade was executed): "
+
+# The run's entry fills: its SUBMIT_ORDER, queued directly (idempotency key ``debate:<run>``) or through its approval
+# card, joined to the paper order by client order id (the default id rule of the executor, as in migration 047).
+# Migration 060 backfills ``reflections.kind`` with the same rule.
+RUN_FILLS_SQL = """
+    SELECT sum(o.filled_qty) AS filled_qty,
+           sum(o.filled_qty * o.avg_fill_price) / NULLIF(sum(o.filled_qty), 0) AS avg_fill_price,
+           sum(t.commission) AS commission
+    FROM execution_commands c
+    JOIN paper_orders o ON o.client_order_id = COALESCE(
+        c.payload->>'client_order_id', 'AI-' || upper(left(replace(c.command_id::text, '-', ''), 12)))
+    LEFT JOIN LATERAL (SELECT sum(pt.commission) AS commission FROM paper_trades pt
+                       WHERE pt.client_order_id = o.client_order_id) t ON TRUE
+    WHERE c.command_type = 'SUBMIT_ORDER' AND o.filled_qty > 0
+      AND (c.idempotency_key = 'debate:' || {run}::text
+           OR c.command_id IN (SELECT a.command_id FROM ai_approvals a
+                               WHERE a.source = 'debate' AND a.source_ref = {run}::text))
+"""
 
 REVIEWER = Persona(
     "Quantitative Reviewer", "reflection",
     "You are the Quantitative Reviewer at Cryptonite. "
-    "Your job is to analyze completed trades, their actual PnL, and their Alpha versus "
-    "the Bitcoin/Ethereum benchmarks. Identify *why* a trade succeeded or failed. "
+    "Your job is to analyze debate verdicts against what the market did next, and their Alpha versus "
+    "the Bitcoin/Ethereum benchmarks. Identify *why* a verdict was right or wrong. The prompt says whether "
+    "a trade was executed: when it says no trade was executed, the verdict is a what-if evaluation and you "
+    "must never describe it as a trade, a position, a fill or realized PnL. "
     "Output exactly one concise paragraph of 'lessons learned' that will be injected into "
     "the Portfolio Manager's prompt in the future.",
 )
@@ -46,11 +72,29 @@ def benchmark_return(query_engine, start: datetime.datetime, horizon: datetime.t
     return last / first - 1 if first else None
 
 
+def reflection_kind(row) -> str:
+    """TRADE when the run's entry filled, else WHAT_IF."""
+    filled = row.get("filled_qty") if hasattr(row, "get") else None
+    return TRADE if filled is not None and float(filled) > 0 else WHAT_IF
+
+
+def _execution_line(row) -> str:
+    if reflection_kind(row) == WHAT_IF:
+        return ("Execution: NO trade was executed for this verdict (no fill). This is a what-if evaluation of the "
+                "verdict only; do not describe it as a trade.\n")
+    price, fee = row.get("avg_fill_price"), row.get("commission")
+    return ("Execution: the entry filled"
+            + (f" at {float(price):g}" if price is not None else "")
+            + f" for {float(row['filled_qty']):g} units"
+            + (f", commission paid {float(fee):g}" if fee is not None else ", commission unknown") + ".\n")
+
+
 def reflection_prompt(row, outcome: float, alpha: float) -> str:
     """The reviewer's prompt for one labelled decision (also used by
     ``scripts/regenerate_inverted_reflections.py``)."""
     return (
         f"Decision for {row['instrument_id']}: {row['recommendation']}\n"
+        + _execution_line(row) +
         f"Original reasoning: {row['reasoning']}\n"
         f"Asset move over the next 24h: {float(row['return_pct']) * 100:+.2f}% "
         f"(best {float(row['mfe']) * 100:+.2f}%, worst {float(row['mae']) * 100:+.2f}%)\n"
@@ -72,11 +116,12 @@ class ReflectionEngine:
     async def process_pending_reflections(self) -> int:
         async with self.pg_pool.acquire() as conn:
             pending = await conn.fetch(
-                """SELECT pd.run_id, pd.instrument_id, pd.recommendation, pd.reasoning, pd.created_at,
-                          o.return_pct, o.mfe, o.mae
+                f"""SELECT pd.run_id, pd.instrument_id, pd.recommendation, pd.reasoning, pd.created_at,
+                          o.return_pct, o.mfe, o.mae, fill.filled_qty, fill.avg_fill_price, fill.commission
                    FROM portfolio_decisions pd
                    JOIN ai_decision_outcomes o ON o.decision_id = pd.id AND o.horizon = $1
                    LEFT JOIN reflections r ON r.run_id = pd.run_id
+                   LEFT JOIN LATERAL ({RUN_FILLS_SQL.format(run="pd.run_id")}) fill ON TRUE
                    WHERE r.id IS NULL
                      -- a verdict with no direction can never be reflected on; it must not hold a batch slot
                      AND upper(btrim(pd.recommendation, $3)) = ANY($4::text[])
@@ -96,7 +141,10 @@ class ReflectionEngine:
                 if bench is None:
                     continue
                 alpha = outcome - signed_outcome(row["recommendation"], bench)
+            kind = reflection_kind(row)
             lesson = str((await REVIEWER.run(self.gateway, reflection_prompt(row, outcome, alpha))).output)
+            if kind == WHAT_IF and not lesson.startswith(WHAT_IF_LABEL):
+                lesson = WHAT_IF_LABEL + lesson  # the label rides in the text the PM recalls, not only in a column
             embedding_str = embedding_model = None
             try:
                 (vector,), embedding_model = await self.gateway.embed_tagged([lesson], kind="document")
@@ -108,10 +156,11 @@ class ReflectionEngine:
             async with self.pg_pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO reflections (run_id, actual_outcome_pnl, alpha_vs_benchmark, lessons_learned, embedding,
-                                                embedding_model, instrument_type, timeframe, outcome)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                                                embedding_model, instrument_type, timeframe, kind, outcome)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
                     row["run_id"], round(outcome, 6), round(alpha, 6), lesson, embedding_str, embedding_model,
-                    row["instrument_id"], REFLECTION_HORIZON, tag)
+                    row["instrument_id"], REFLECTION_HORIZON, kind, tag)
             written += 1
-            logger.info("Reflection for run %s: outcome %+.2f%%, alpha %+.2f%%", row["run_id"], outcome * 100, alpha * 100)
+            logger.info("Reflection (%s) for run %s: outcome %+.2f%%, alpha %+.2f%%", kind, row["run_id"],
+                        outcome * 100, alpha * 100)
         return written
