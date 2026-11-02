@@ -117,6 +117,19 @@ def no_usdm_exchange_info_call(monkeypatch):
 
 
 @pytest.fixture
+def complete_lake_bars(monkeypatch):
+    """H7a: a full debate reads the lake's recent bars and is forced to HOLD when they are incomplete. Tests that
+    drive a full debate without a lake use this to get complete (synthetic) bars."""
+    from cryptonite_agents import tools
+
+    def _complete(instrument_id, timeframe="1h", n=48, now_ns=None):
+        return {"instrument_id": instrument_id, "timeframe": timeframe, "expected": n, "returned": n, "missing": 0,
+                "complete": True, "newest_bar_close": None, "newest_bar_age_minutes": 1.0, "bars": []}
+
+    monkeypatch.setattr(tools, "recent_bars", _complete)
+
+
+@pytest.fixture
 def temp_nautilus_dir():
     with tempfile.TemporaryDirectory() as tmp:
         yield Path(tmp)

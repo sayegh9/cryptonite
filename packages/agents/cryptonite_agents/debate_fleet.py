@@ -11,6 +11,7 @@ from cryptonite_agents.tools import (
     NEWS_SENTIMENT,
     QUERY_PARQUET,
     QUERY_POSTGRES,
+    RECENT_BARS,
     SCANNER_CONTEXT,
 )
 from cryptonite_schemas.debate import (
@@ -22,7 +23,7 @@ from cryptonite_schemas.debate import (
 )
 from pydantic import BaseModel, Field
 
-DEBATE_TOOLS = (LIVE_MARKET_DATA, QUERY_POSTGRES, QUERY_PARQUET, SCANNER_CONTEXT)
+DEBATE_TOOLS = (LIVE_MARKET_DATA, QUERY_POSTGRES, QUERY_PARQUET, SCANNER_CONTEXT, RECENT_BARS)
 
 VetoRedFlag = Literal["NONE", "NO_ROOM_TO_HTF_LEVEL", "CROWDED_FUNDING_OI", "SEVERE_CATALYST"]
 
@@ -71,7 +72,11 @@ MARKET_ANALYST = Persona(
     "Market Analyst", "debate.analyst",
     "You are the Market Analyst for Cryptonite. Your role is to analyze "
     "technical price action, volume profiles, and quantitative momentum. "
-    "Output concise observations without making a final buy/sell call. Also explicitly analyze the provided funding rate and Open Interest (OI) data to assess derivative sentiment.",
+    "Output concise observations without making a final buy/sell call. Also explicitly analyze the provided funding rate and Open Interest (OI) data to assess derivative sentiment. "
+    "The prompt carries the recent closed bars from the analytics lake; call get_recent_bars (instrument, timeframe, "
+    "n) for another timeframe or window. Never write lake file paths or DuckDB SQL for bars. If the bars are empty or "
+    "marked incomplete, say so plainly and do not invent price action. get_scanner_context lists only fresh live "
+    "scanner candidates; when it says none is fresh, there is no scanner setup to cite.",
     DEBATE_TOOLS,
 )
 
@@ -148,7 +153,9 @@ CRO_INSTRUCTIONS = (
     "You are the Chief Risk Officer (CRO). Listen to the Aggressive, Conservative, "
     "and Neutral risk managers regarding the PM's initial decision, then confirm or override it: "
     "final_allocation_pct (percent of equity, at most 25), conviction_level "
-    "(Buy, Overweight, Hold, Underweight or Sell) and risk_reasoning."
+    "(Buy, Overweight, Hold, Underweight or Sell) and risk_reasoning. "
+    "The system enforces the PM's limits: you may keep the PM's direction at the same or a smaller allocation, "
+    "or turn it into Hold; you can never turn a PM HOLD into a trade, reverse its direction or size it up."
 )
 
 CHIEF_RISK_OFFICER = Persona("Chief Risk Officer", "debate.cro", CRO_INSTRUCTIONS, DEBATE_TOOLS, RiskDecision)
@@ -161,7 +168,9 @@ RISK_PANEL = Persona(
     "case for capital preservation and tight stops, and the neutral volatility- and correlation-adjusted "
     "size given current exposure and today's drawdown. Then confirm or override the sizing: "
     "final_allocation_pct (percent of equity, at most 25), conviction_level (Buy, Overweight, Hold, "
-    "Underweight or Sell) and risk_reasoning that names which view prevailed and why.",
+    "Underweight or Sell) and risk_reasoning that names which view prevailed and why. "
+    "The system enforces the PM's limits: you may keep the PM's direction at the same or a smaller allocation, "
+    "or turn it into Hold; you can never turn a PM HOLD into a trade, reverse its direction or size it up.",
     DEBATE_TOOLS,
     RiskDecision,
 )

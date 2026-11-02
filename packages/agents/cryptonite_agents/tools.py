@@ -78,11 +78,141 @@ def query_postgres_readonly(sql: str) -> str:
     except Exception as e:
         return f"Database Error: {e}"
 
+# H7a: the scanner evidence a debate reads. A candidate is fresh while its bar closed at most about 3 bars of its
+# timeframe ago, never more than SCANNER_MAX_AGE_S; only live scans count (scan_runs.trigger_reason). A manual Scanner
+# Studio run or a priming run stores old bars' signals with a new created_at: debates argued over those as if live.
+SCANNER_MAX_AGE_S = 4 * 3600
+SCANNER_FRESH_BARS = 3
+LIVE_SCAN_TRIGGER = "COMMITTED_BAR_EVENT"
+_TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+
+
+def scanner_max_age_s(timeframe: str) -> int:
+    """How old a candidate's bar close may be for a debate to read it: 3 bars of its timeframe, capped at 4 h."""
+    tf_s = _TF_SECONDS.get(str(timeframe or "").lower())
+    return SCANNER_MAX_AGE_S if tf_s is None else min(SCANNER_FRESH_BARS * tf_s, SCANNER_MAX_AGE_S)
+
+
+def _scanner_rows(instrument_id: str) -> list[dict[str, Any]]:
+    inst = instrument_id.strip().upper()
+    venue_id = inst if "." in inst else f"{inst}.BINANCE"
+    return _readonly_rows(
+        """SELECT sc.timeframe, sc.bar_close_inclusive_ns, sc.suggested_entry, sc.suggested_stop,
+                  sc.suggested_target, sc.metrics, sc.created_at, sr.trigger_reason
+           FROM signal_candidates sc
+           LEFT JOIN scan_runs sr ON sr.id = sc.scan_run_id
+           WHERE sc.instrument_id IN (:inst, :venue_id)
+           ORDER BY sc.bar_close_inclusive_ns DESC
+           LIMIT 50""", {"inst": inst, "venue_id": venue_id})
+
+
+def fresh_scanner_candidates(rows: list[dict[str, Any]], now_s: float) -> tuple[list[dict[str, Any]], float | None]:
+    """The live candidates whose bar closed recently enough, newest first, and the age in hours of the newest
+    candidate of any kind (None without one). A row from a non-live scan, or one stored long after its bar closed
+    (no provenance), is historical and never fresh."""
+    from cryptonite_scanner.brief import candidate_direction
+
+    fresh: list[dict[str, Any]] = []
+    newest_h = None
+    for r in rows:
+        close_s = int(r["bar_close_inclusive_ns"]) / 1e9
+        age_s = now_s - close_s
+        newest_h = age_s / 3600 if newest_h is None else min(newest_h, age_s / 3600)
+        max_age = scanner_max_age_s(r["timeframe"])
+        created = r.get("created_at")
+        created_s = created.timestamp() if isinstance(created, datetime.datetime) else None
+        trigger = r.get("trigger_reason")
+        if trigger is not None and trigger != LIVE_SCAN_TRIGGER:
+            continue
+        if created_s is not None and created_s - close_s > max_age:
+            continue  # stored long after its bar closed: a backfill, not a live signal
+        if age_s > max_age:
+            continue
+        metrics = r.get("metrics") if isinstance(r.get("metrics"), dict) else {}
+        side = candidate_direction({**metrics, "suggested_entry": r["suggested_entry"],
+                                    "suggested_stop": r["suggested_stop"]})
+        fresh.append({
+            "timeframe": r["timeframe"], "side": side, "age_minutes": round(age_s / 60, 1),
+            "bar_close": datetime.datetime.fromtimestamp(close_s, tz=datetime.UTC).isoformat(timespec="seconds"),
+            "entry": _json_value(r["suggested_entry"]), "stop": _json_value(r["suggested_stop"]),
+            "target": _json_value(r["suggested_target"]),
+            "source": metrics.get("preset_slug") or metrics.get("spec_slug") or trigger or "scanner",
+        })
+    return fresh, newest_h
+
+
 def get_scanner_context(instrument_id: str) -> str:
-    """Gets the most recent signal candidates from the scanner for the instrument."""
-    inst = instrument_id.replace("'", "''")
-    sql = f"SELECT * FROM signal_candidates WHERE instrument_id = '{inst}' ORDER BY created_at DESC LIMIT 5"
-    return query_postgres_readonly(sql)
+    """Gets the live scanner candidates for the instrument whose bar closed recently (about 3 bars of their
+    timeframe, at most 4 hours): timeframe, side, age, entry/stop/target and source. Says so when none is fresh."""
+    try:
+        rows = _scanner_rows(instrument_id)
+    except Exception as e:
+        return f"Database Error: {e}"
+    fresh, newest_h = fresh_scanner_candidates(rows, time.time())
+    if fresh:
+        return json.dumps({"instrument_id": instrument_id, "fresh_candidates": fresh[:5]}, default=str)
+    newest = "none stored" if newest_h is None else f"newest is {newest_h:.1f} h old"
+    return json.dumps({"instrument_id": instrument_id, "fresh_candidates": [],
+                       "message": f"no fresh scanner candidate for {instrument_id} ({newest})"})
+
+
+RECENT_BARS_MAX = 200
+_BARS_INGEST_GRACE_S = 120  # the lake may trail the clock by a minute or two
+
+
+def recent_bars(instrument_id: str, timeframe: str = "1h", n: int = 48, now_ns: int | None = None) -> dict[str, Any]:
+    """The last ``n`` closed bars of ``timeframe`` resampled from the analytics lake's 1m bars (the resampler
+    ``structure.py`` uses: a window missing any 1m bar is dropped), with the newest bar's age and a completeness
+    flag. Never raises: a lake that cannot be read is an empty, incomplete answer."""
+    from cryptonite_scanner.resampler import TIMEFRAME_MINUTES, resample_1m_bars
+    from cryptonite_storage.queries import AnalyticsQueryEngine, lake_symbol
+
+    tf = str(timeframe or "1h").lower()
+    n = max(1, min(int(n or 48), RECENT_BARS_MAX))
+    base = {"instrument_id": instrument_id, "timeframe": tf, "expected": n, "returned": 0, "missing": n,
+            "complete": False, "newest_bar_close": None, "newest_bar_age_minutes": None, "bars": []}
+    if tf not in TIMEFRAME_MINUTES:
+        return {**base, "reason": f"unsupported timeframe {timeframe!r}"}
+    now_ns = now_ns if now_ns is not None else time.time_ns()
+    step_ns = TIMEFRAME_MINUTES[tf] * 60 * 10**9
+    # The window ends at the last bar that should be closed (and ingested) by now
+    end_ns = (now_ns - _BARS_INGEST_GRACE_S * 10**9) // step_ns * step_ns
+    start_ns = end_ns - n * step_ns
+    try:
+        symbol = lake_symbol(underlying_spot(instrument_id))
+        lake = AnalyticsQueryEngine(Path(os.getenv("ANALYTICS_LAKE_PATH", "/app/data/analytics_lake")))
+        try:
+            bars_1m = lake.query_bars_df(symbol, "1m", start_ns, end_ns)
+        finally:
+            lake._con.close()
+        bars = resample_1m_bars(bars_1m, tf)
+    except Exception:
+        logger.warning("Recent bars unavailable for %s %s", instrument_id, tf, exc_info=True)
+        return {**base, "reason": "lake bars could not be read"}
+    if not bars.is_empty():
+        bars = bars.filter((bars["bar_open_ns"] >= start_ns) & (bars["interval_end_exclusive_ns"] <= end_ns))
+    if bars.is_empty():
+        return {**base, "reason": f"no closed {tf} bars in the lake for the last {n} bars"}
+    rows = bars.sort("bar_open_ns").to_dicts()
+    newest_close_ns = int(rows[-1]["interval_end_exclusive_ns"])
+
+    def iso(ns: int) -> str:
+        return datetime.datetime.fromtimestamp(ns / 1e9, tz=datetime.UTC).isoformat(timespec="seconds")
+
+    missing = n - len(rows)
+    return {**base, "returned": len(rows), "missing": missing, "complete": missing == 0,
+            "newest_bar_close": iso(newest_close_ns),
+            "newest_bar_age_minutes": round((now_ns - newest_close_ns) / 6e10, 1),
+            "bars": [{"close_time": iso(int(r["interval_end_exclusive_ns"])), "open": r["open"], "high": r["high"],
+                      "low": r["low"], "close": r["close"], "volume": r["volume"]} for r in rows]}
+
+
+def get_recent_bars(instrument_id: str, timeframe: str = "1h", n: int = 48) -> str:
+    """Returns the last n closed OHLCV bars (1m, 5m, 15m, 1h or 4h; at most 200) for the instrument from the
+    analytics lake, each with its bar-close time, plus the newest bar's age in minutes and a completeness flag
+    (missing = bars absent from the window). Use this for price action instead of writing lake SQL."""
+    return json.dumps(recent_bars(instrument_id, timeframe, n), default=str)
+
 
 _QUOTE_SUFFIXES = frozenset({"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI"})
 
@@ -2213,6 +2343,7 @@ from cryptonite_agents.news import get_news_sentiment  # noqa: E402
 QUERY_POSTGRES = _register(RiskClass.READ)(query_postgres_readonly)
 QUERY_PARQUET = _register(RiskClass.READ)(query_parquet_duckdb)
 SCANNER_CONTEXT = _register(RiskClass.READ)(get_scanner_context)
+RECENT_BARS = _register(RiskClass.READ)(get_recent_bars)  # H7a: structured lake bars for the Market Analyst
 AI_STATE = _register(RiskClass.READ)(get_ai_state)
 TRADE_TIMELINE = _register(RiskClass.READ)(get_trade_timeline)  # WS-3F: why a trade won or lost, from the 047 view
 LIVE_MARKET_DATA = _register(RiskClass.READ)(get_live_market_data)

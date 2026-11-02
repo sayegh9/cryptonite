@@ -28,6 +28,8 @@ from migrated_db import migrated_database
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+pytestmark = pytest.mark.usefixtures("complete_lake_bars")  # H7a: full debates need bars
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKER_DIR = ROOT / "services" / "debate_worker"
 sys.path.insert(0, str(WORKER_DIR))
