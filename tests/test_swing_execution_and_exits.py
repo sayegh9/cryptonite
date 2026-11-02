@@ -316,6 +316,46 @@ async def test_monitor_once_enqueues_50pct_sell_on_tp1_from_command_payload(db_u
         await pool.close()
 
 
+async def _seed_entry(pool, inst_id: str, side: str, stop: float, take_profit: float | None = None, age_s: int = 0,
+                      instrument: str = BTC):
+    cmd_id = uuid.uuid4()
+    payload = {"instrument_id": instrument, "side": side, "proposed_stop_loss": stop}
+    if take_profit is not None:
+        payload["proposed_take_profit"] = take_profit
+    await pool.execute(
+        """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
+               requester_id, payload, status, environment, account_id, created_at)
+           VALUES ($1, $2, 'SUBMIT_ORDER', $3, 'brain', $4::jsonb, 'COMPLETED', 'PAPER', 'PAPER-ACCOUNT-001',
+                   now() + make_interval(secs => $5))""",
+        cmd_id, f"entry:{cmd_id}", inst_id, json.dumps(payload), age_s,
+    )
+
+
+async def test_adding_to_a_position_never_widens_its_stop(db_url):
+    """Several entries built one position: the tightest entry stop holds (a newer, wider one does not replace
+    it), and the target is the newest one."""
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        inst_id = "AI_MANDATE_00000000000000000000000000000001"
+        await seed_position(pool, inst_id, instrument=BTC, entry_price=100.0, quantity=0.3)
+        await _seed_entry(pool, inst_id, "BUY", stop=96.0, take_profit=110.0, age_s=1)
+        await _seed_entry(pool, inst_id, "BUY", stop=92.0, take_profit=108.0, age_s=2)  # newest, wider stop
+        async with pool.acquire() as conn:
+            [p] = await em.load_positions(conn, MockRedis(), quote_book(99.0, BTC))
+        assert p.stop_price == 96.0 and p.take_profit_price == 108.0
+
+        # a (perp) short keeps the lowest entry stop
+        perp = "BTCUSDT-PERP.BINANCE"
+        await seed_position(pool, inst_id, instrument=perp, entry_price=100.0, quantity=0.3, side="SHORT")
+        await _seed_entry(pool, inst_id, "SELL", stop=103.0, age_s=1, instrument=perp)
+        await _seed_entry(pool, inst_id, "SELL", stop=106.0, age_s=2, instrument=perp)
+        async with pool.acquire() as conn:
+            [p] = await em.load_positions(conn, MockRedis(), quote_book(101.0, perp))
+        assert p.stop_price == 103.0
+    finally:
+        await pool.close()
+
+
 async def test_monitor_once_enqueues_tp1_from_redis_exit_plan_override(db_url):
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
     try:

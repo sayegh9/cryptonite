@@ -565,7 +565,10 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
                 pass
         if stop_price is None or take_profit_price is None:
             try:
-                cmd_row = await conn.fetchrow(
+                # Every entry that built this position (since it opened), newest first. Adding to a position never
+                # widens its stop: the tightest entry stop wins (highest for a long, lowest for a short); the
+                # target is the newest one.
+                cmd_rows = await conn.fetch(
                     """
                     SELECT payload FROM execution_commands
                     WHERE target_instance_id = $1
@@ -573,21 +576,25 @@ async def load_positions(conn, redis_client, quotes: QuoteBook, http: httpx.Asyn
                       AND status = 'COMPLETED'
                       AND (payload->>'proposed_stop_loss' IS NOT NULL OR payload->>'stop_price' IS NOT NULL)
                       AND (payload->>'instrument_id' = $2 OR upper(split_part(payload->>'instrument_id', '.', 1)) = upper(split_part($2, '.', 1)))
+                      AND (payload->>'side' IS NULL OR upper(payload->>'side') = $3)
+                      AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz - interval '2 minutes')
                     ORDER BY created_at DESC, command_id DESC
-                    LIMIT 1
+                    LIMIT 20
                     """,
-                    r["owner"], inst,
+                    r["owner"], inst, "BUY" if r["side"] == "LONG" else "SELL", r["opened_at"],
                 )
-                if cmd_row and cmd_row["payload"]:
+                entry_stops: list[float] = []
+                for cmd_row in cmd_rows:
                     payload = json.loads(cmd_row["payload"]) if isinstance(cmd_row["payload"], str) else cmd_row["payload"]
-                    if stop_price is None:
-                        sl = payload.get("proposed_stop_loss") or payload.get("stop_price")
-                        if sl is not None and float(sl) > 0:
-                            stop_price = float(sl)
+                    sl = payload.get("proposed_stop_loss") or payload.get("stop_price")
+                    if sl is not None and float(sl) > 0:
+                        entry_stops.append(float(sl))
                     if take_profit_price is None:
                         tp = payload.get("proposed_take_profit") or payload.get("take_profit_price") or payload.get("take_profit")
                         if tp is not None and float(tp) > 0:
                             take_profit_price = float(tp)
+                if stop_price is None and entry_stops:
+                    stop_price = max(entry_stops) if r["side"] == "LONG" else min(entry_stops)
             except Exception as e:
                 logger.debug("Failed to lookup entry command stop/target for %s: %s", inst, e)
         opened_ts = int(r["opened_at"].timestamp()) if r["opened_at"] else 0
