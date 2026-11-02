@@ -38,6 +38,9 @@ interface SwingPresetDef {
   conditions: BuilderCondition[];
 }
 
+// The form's operator names; the API (RuleOperator) takes the symbols
+const API_OPERATOR: Record<string, string> = { gt: ">", gte: ">=", lt: "<", lte: "<=" };
+
 const SWING_PRESETS: Record<string, SwingPresetDef> = {
   "swing-trend-pullback-1h": {
     slug: "swing-trend-pullback-1h",
@@ -179,7 +182,7 @@ export function ScannerBuilder({ onCreated }: { onCreated: () => void }) {
         const isNumeric = !isNaN(Number(c.value)) && c.value.trim() !== "";
         groupsMap[c.category].push({
           field: c.field,
-          operator: c.operator,
+          operator: API_OPERATOR[c.operator] ?? c.operator,
           value: isNumeric ? Number(c.value) : c.value.trim(),
           lookback: Number(c.lookback) || (c.operator.includes("cross") ? 1 : 0),
         });
