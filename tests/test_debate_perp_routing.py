@@ -95,7 +95,7 @@ async def perp_mandate(h, *, level: int = 1, max_leverage: int = 3, name: str | 
         """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, max_position_pct, autonomy_level, status,
                allow_perps, max_leverage, direction)
            VALUES ($1, 10000, ARRAY[$2], $5, $3, 'ACTIVE', true, $4, 'BOTH') RETURNING id""",
-        name or f"Brain {PERP} {uuid.uuid4().hex[:4]}", PERP, level, max_leverage, max_position_pct)
+        name or f"Brain {PERP} {uuid.uuid4().hex[:12]}", PERP, level, max_leverage, max_position_pct)
     async with h.pool.acquire() as conn:
         m = await load_mandate(conn, mid)
         await ensure_mandate_instance(conn, m, "PAPER-ACCOUNT-001")

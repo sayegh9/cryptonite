@@ -43,7 +43,7 @@ VIEWS = {
     ],
     "agent_safe_reflections": [
         "id", "run_id", "instrument_id", "timeframe", "volatility_regime", "outcome", "actual_outcome_pnl",
-        "alpha_vs_benchmark", "lessons_learned", "created_at",
+        "alpha_vs_benchmark", "lessons_learned", "created_at", "kind", "recall_excluded",
     ],
     "agent_safe_risk_latches": ["environment", "account_id", "is_latched", "latched_at", "reason"],
     "agent_safe_daily_loss": ["account_id", "utc_trading_day", "daily_realized_pnl", "daily_loss_latched"],
