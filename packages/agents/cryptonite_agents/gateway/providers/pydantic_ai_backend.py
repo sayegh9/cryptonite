@@ -10,7 +10,9 @@ OpenAI-compatible), or any id registered with ``override_model`` (tests).
 import contextlib
 import functools
 import inspect
+import json
 import os
+import re
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -133,8 +135,30 @@ def _settings(model_id: str, max_output_tokens: int | None, thinking_budget: int
     return ModelSettings(**base)
 
 
+# H8: a tool that reports a failure in its result (instead of raising) is traced as ERROR, not OK
+_ERROR_RESULT = re.compile(r"^\s*(?:(?:[\w.-]+ ){1,2}(?:error|refused)\s*:|(?:error|refused|security)\b)", re.IGNORECASE)
+
+
+def tool_result_status(result: Any) -> str:
+    """OK, or ERROR when the result reports a failure: a leading "Error…", "Security Error…", "DuckDB Error…" or
+    "Refused…" text, or a JSON object / dict whose top-level ``error`` key is set or whose ``status`` is ERROR."""
+    if isinstance(result, str):
+        text = result.strip()
+        if text.startswith("{"):
+            try:
+                result = json.loads(text)
+            except ValueError:
+                return "OK"
+        else:
+            return "ERROR" if _ERROR_RESULT.match(text.splitlines()[0] if text else "") else "OK"
+    if isinstance(result, dict) and (result.get("error") or str(result.get("status", "")).upper() == "ERROR"):
+        return "ERROR"
+    return "OK"
+
+
 def _as_tool(spec: ToolSpec, guard: Callable[[ToolSpec], str | None], calls: list[dict[str, Any]]) -> Tool:
-    """Wrap a registry tool: permission guard first, and every call recorded for the trace."""
+    """Wrap a registry tool: permission guard first, and every call recorded for the trace (after it ran, so the
+    status says whether the result reported an error; the result text still goes to the agent unchanged)."""
     func = spec.func
 
     def record(kwargs: dict[str, Any], status: str) -> None:
@@ -146,16 +170,26 @@ def _as_tool(spec: ToolSpec, guard: Callable[[ToolSpec], str | None], calls: lis
             if (denied := guard(spec)) is not None:
                 record(kwargs, "DENIED")
                 return denied
-            record(kwargs, "OK")
-            return await func(*args, **kwargs)
+            try:
+                result = await func(*args, **kwargs)
+            except BaseException:
+                record(kwargs, "ERROR")
+                raise
+            record(kwargs, tool_result_status(result))
+            return result
     else:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             if (denied := guard(spec)) is not None:
                 record(kwargs, "DENIED")
                 return denied
-            record(kwargs, "OK")
-            return func(*args, **kwargs)
+            try:
+                result = func(*args, **kwargs)
+            except BaseException:
+                record(kwargs, "ERROR")
+                raise
+            record(kwargs, tool_result_status(result))
+            return result
 
     return Tool(wrapper, takes_ctx=False, name=spec.name, description=spec.description or None)
 
@@ -215,7 +249,6 @@ _EMBEDDINGGEMMA_PREFIX = {"query": "task: search result | query: ", "document": 
 
 async def _ollama_embed(name: str, texts: Sequence[str], kind: str) -> tuple[list[list[float]], int]:
     import httpx
-
     from cryptonite_agents.gateway.local_tier import ollama_root
 
     if name.startswith("embeddinggemma"):

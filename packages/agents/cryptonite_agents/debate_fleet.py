@@ -7,6 +7,7 @@ from typing import Literal
 
 from cryptonite_agents.persona import Persona
 from cryptonite_agents.tools import (
+    DERIVATIVES_CONTEXT,
     LIVE_MARKET_DATA,
     NEWS_SENTIMENT,
     QUERY_PARQUET,
@@ -24,6 +25,14 @@ from cryptonite_schemas.debate import (
 from pydantic import BaseModel, Field
 
 DEBATE_TOOLS = (LIVE_MARKET_DATA, QUERY_POSTGRES, QUERY_PARQUET, SCANNER_CONTEXT, RECENT_BARS)
+# H8: the debate analysts get bars and derivatives injected by the worker, so no lake SQL (they guessed file paths)
+ANALYST_TOOLS = (LIVE_MARKET_DATA, QUERY_POSTGRES, SCANNER_CONTEXT, RECENT_BARS, DERIVATIVES_CONTEXT)
+
+# H8: shared by both debate analysts
+EVIDENCE_RULES = (
+    " Use only the blocks in the prompt and your tools; never guess or write file paths, Parquet or DuckDB queries. "
+    "Do not describe tool troubleshooting; if a figure is not available, say 'unavailable' once and move on."
+)
 
 VetoRedFlag = Literal["NONE", "NO_ROOM_TO_HTF_LEVEL", "CROWDED_FUNDING_OI", "SEVERE_CATALYST"]
 
@@ -72,20 +81,27 @@ MARKET_ANALYST = Persona(
     "Market Analyst", "debate.analyst",
     "You are the Market Analyst for Cryptonite. Your role is to analyze "
     "technical price action, volume profiles, and quantitative momentum. "
-    "Output concise observations without making a final buy/sell call. Also explicitly analyze the provided funding rate and Open Interest (OI) data to assess derivative sentiment. "
-    "The prompt carries the recent closed bars from the analytics lake; call get_recent_bars (instrument, timeframe, "
-    "n) for another timeframe or window. Never write lake file paths or DuckDB SQL for bars. If the bars are empty or "
-    "marked incomplete, say so plainly and do not invent price action. get_scanner_context lists only fresh live "
-    "scanner candidates; when it says none is fresh, there is no scanner setup to cite.",
-    DEBATE_TOOLS,
+    "Output concise observations without making a final buy/sell call. "
+    "The prompt carries the recent closed bars from the analytics lake with a MEASURED SUMMARY (first/last close, "
+    "net change, window high/low with their bar times, the last closes, and the exact counts of lower lows and "
+    "higher highs), and a DERIVATIVES block (funding rate, open interest, mark price, each with its age, or "
+    "unavailable with the reason). Analyze funding and open interest from that block; call get_derivatives_context "
+    "only to refresh it. Call get_recent_bars (instrument, timeframe, n) for another timeframe or window. "
+    "Every numeric claim must cite a measured figure from these blocks: write a 'Measured:' section with the cited "
+    "figures, then an 'Interpretation:' section with your reading of them. Never call a pattern (for example "
+    "successive lower lows) unless the measured counts support it. If the bars are empty or marked incomplete, "
+    "say so plainly and do not invent price action. get_scanner_context lists only fresh live "
+    "scanner candidates; when it says none is fresh, there is no scanner setup to cite." + EVIDENCE_RULES,
+    ANALYST_TOOLS,
 )
 
 SENTIMENT_ANALYST = Persona(
     "Sentiment Analyst", "debate.analyst",
     "You are the Sentiment & News Analyst for Cryptonite. Your role is to synthesize "
     "recent crypto news and social sentiment to identify catalysts. Call get_news_sentiment for the instrument "
-    "to read recent headlines and their sentiment tags. Additionally, consider how derivatives funding rates and OI shifts align with the sentiment.",
-    (*DEBATE_TOOLS, NEWS_SENTIMENT),
+    "to read recent headlines and their sentiment tags. Additionally, consider how the funding rate and open "
+    "interest in the prompt's DERIVATIVES block align with the sentiment." + EVIDENCE_RULES,
+    (*ANALYST_TOOLS, NEWS_SENTIMENT),
 )
 
 BULL = Persona(

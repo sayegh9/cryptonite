@@ -200,11 +200,38 @@ def recent_bars(instrument_id: str, timeframe: str = "1h", n: int = 48, now_ns: 
         return datetime.datetime.fromtimestamp(ns / 1e9, tz=datetime.UTC).isoformat(timespec="seconds")
 
     missing = n - len(rows)
+    out_bars = [{"close_time": iso(int(r["interval_end_exclusive_ns"])), "open": r["open"], "high": r["high"],
+                 "low": r["low"], "close": r["close"], "volume": r["volume"]} for r in rows]
     return {**base, "returned": len(rows), "missing": missing, "complete": missing == 0,
             "newest_bar_close": iso(newest_close_ns),
             "newest_bar_age_minutes": round((now_ns - newest_close_ns) / 6e10, 1),
-            "bars": [{"close_time": iso(int(r["interval_end_exclusive_ns"])), "open": r["open"], "high": r["high"],
-                      "low": r["low"], "close": r["close"], "volume": r["volume"]} for r in rows]}
+            "summary": bar_summary(out_bars), "bars": out_bars}
+
+
+BAR_SUMMARY_LAST_CLOSES = 5
+
+
+def bar_summary(bars: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """H8: measured figures of a bar window (oldest first), computed exactly so numeric claims can cite them.
+    lower_lows / higher_highs count the bars whose low / high is below / above the previous bar's."""
+    if not bars:
+        return None
+    first, last = float(bars[0]["close"]), float(bars[-1]["close"])
+    hi = max(bars, key=lambda b: float(b["high"]))
+    lo = min(bars, key=lambda b: float(b["low"]))
+    pairs = list(zip(bars, bars[1:]))
+    return {
+        "bars": len(bars),
+        "first_close": first, "first_close_time": bars[0]["close_time"],
+        "last_close": last, "last_close_time": bars[-1]["close_time"],
+        "net_change_pct": round((last - first) / first * 100, 3) if first else None,
+        "window_high": float(hi["high"]), "window_high_bar_close": hi["close_time"],
+        "window_low": float(lo["low"]), "window_low_bar_close": lo["close_time"],
+        "last_closes": [float(b["close"]) for b in bars[-BAR_SUMMARY_LAST_CLOSES:]],
+        "lower_lows": sum(float(b["low"]) < float(a["low"]) for a, b in pairs),
+        "higher_highs": sum(float(b["high"]) > float(a["high"]) for a, b in pairs),
+        "bar_pairs_compared": len(pairs),
+    }
 
 
 def get_recent_bars(instrument_id: str, timeframe: str = "1h", n: int = 48) -> str:
@@ -1520,6 +1547,63 @@ def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
     }
     return json.dumps(out, default=str)
+
+
+DERIVATIVES_FIELDS = ("funding_rate", "open_interest", "mark_price")
+
+
+def _ns_iso(ns: Any) -> str:
+    return datetime.datetime.fromtimestamp(int(ns) / 1e9, tz=datetime.UTC).isoformat(timespec="seconds")
+
+
+def _evidence_field(value: Any, ts_iso: str | None, now_s: float, **extra: Any) -> dict[str, Any]:
+    age = None
+    if ts_iso:
+        age = round(now_s - datetime.datetime.fromisoformat(ts_iso).timestamp(), 1)
+    return {"value": _num(value), "as_of": ts_iso, "age_s": age, **extra}
+
+
+def derivatives_evidence(instrument_id: str, now_s: float | None = None) -> dict[str, Any]:
+    """H8: the debate worker's deterministic derivatives block for the instrument's perpetual, built from
+    get_derivatives_context: funding_rate (the latest settlement, else the rate in force), open_interest and
+    mark_price, each with its timestamp and age, or {"unavailable": reason}. Never raises."""
+    now_s = time.time() if now_s is None else now_s
+    sym = _feed_symbol(underlying_spot(instrument_id))
+    out: dict[str, Any] = {"symbol": sym, "perp_instrument": None, "source": None}
+    try:
+        ctx = json.loads(get_derivatives_context(sym))
+    except Exception as e:
+        logger.warning("Derivatives context unavailable for %s", instrument_id, exc_info=True)
+        reason = f"derivatives context could not be read ({type(e).__name__})"
+        return {**out, **{f: {"unavailable": reason} for f in DERIVATIVES_FIELDS}}
+    if ctx.get("error") or ctx.get("perpetual") is False:
+        reason = ctx.get("error") or ctx.get("note") or "no perpetual"
+        return {**out, **{f: {"unavailable": reason} for f in DERIVATIVES_FIELDS}}
+    note = ctx.get("note") or "not reported by the derivatives source"
+    out["source"] = ctx.get("source")
+    out["perp_instrument"] = to_perp_instrument_id(sym)
+    mark, oi, funding = ctx.get("mark") or {}, ctx.get("open_interest") or {}, ctx.get("funding") or []
+    live = ctx.get("source") == "live feed"
+    # Timestamps: the live feed carries the exchange event time; REST answers carry their own time or fetched_at
+    mark_ts = (_ns_iso(mark["ts_event_ns"]) if live and mark.get("ts_event_ns") else ctx.get("fetched_at"))
+    oi_ts = _ns_iso(oi["ts_event_ns"]) if live and oi.get("ts_event_ns") else oi.get("time")
+
+    def field(compute: Callable[[], dict[str, Any] | None]) -> dict[str, Any]:
+        try:
+            return compute() or {"unavailable": note}
+        except (KeyError, TypeError, ValueError) as e:
+            return {"unavailable": f"malformed derivatives value ({type(e).__name__})"}
+
+    out["funding_rate"] = field(lambda: (
+        _evidence_field(funding[0]["funding_rate"], funding[0]["funding_time"], now_s, kind="last settlement")
+        if funding else
+        _evidence_field(mark["funding_rate"], mark_ts, now_s, kind="rate in force")
+        if mark.get("funding_rate") not in (None, "") else None))
+    out["open_interest"] = field(lambda: _evidence_field(oi["open_interest"], oi_ts, now_s, unit="base asset")
+                                 if oi.get("open_interest") not in (None, "") else None)
+    out["mark_price"] = field(lambda: _evidence_field(mark["mark_price"], mark_ts, now_s)
+                              if mark.get("mark_price") not in (None, "") else None)
+    return out
 
 
 def _lake_regime(sym: str, timeframe: str, bars_needed: int) -> dict[str, Any] | None:
