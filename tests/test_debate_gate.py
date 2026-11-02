@@ -37,6 +37,12 @@ def load(name: str, file: str):
     return module
 
 
+@pytest.fixture(autouse=True)
+def ai_triage_on(monkeypatch):
+    """These tests cover the opt-in AI triage path (DEBATE_AI_TRIAGE=1); H6 turned it off by default."""
+    monkeypatch.setenv("DEBATE_AI_TRIAGE", "1")
+
+
 @pytest.fixture(scope="module")
 def main():
     return load("debate_worker_main_phase2", "main.py")
@@ -140,6 +146,7 @@ class Models:
 
     def __init__(self, triage=True, lite=None):
         self.calls = Counter()
+        self.prompts: dict[str, str] = {}  # the last request each output contract saw
         self.triage = triage
         self.lite = lite or {"bull_case": "b", "bear_case": "r", "recommendation": "BUY",
                              "conviction_score": 0.8, "allocation_pct": 3.0, "reasoning": "small"}
@@ -159,9 +166,11 @@ class Models:
                 args = self.lite
             elif "final_allocation_pct" in props:
                 self.calls["cro"] += 1
+                self.prompts["cro"] = str(messages)
                 args = {"final_allocation_pct": 6.0, "conviction_level": "Overweight", "risk_reasoning": "ok"}
             else:
                 self.calls["pm"] += 1
+                self.prompts["pm"] = str(messages)
                 args = {"recommendation": "BUY", "conviction_score": 0.7, "allocation_pct": 8.0, "reasoning": "pm"}
             return ModelResponse(parts=[ToolCallPart(tool.name, args)])
         return FunctionModel(fn)
@@ -572,6 +581,46 @@ async def test_worker_with_clean_brief_data_still_asks_the_model(main, pool):
     models = Models(triage=False)
     assert await run(main, pool, scanner_payload(timeframe="15m"), models, redis) is None
     assert models.calls == Counter({"triage": 1})
+
+
+async def test_pm_and_cro_see_a_short_candidate_and_the_market_brief(main, pool):
+    """H6 item 1: the PM got only the transcript and argued about a long; it now sees the side and the brief."""
+    models = Models()
+    short = {"instrument_id": INSTRUMENT, "trigger_source": "user_on_demand",
+             "candidate_payload": json.dumps({"suggested_entry": 100, "suggested_stop": 102, "suggested_target": 95})}
+    await run(main, pool, short, models)
+    assert "candidate is a SHORT setup" in models.prompts["pm"] and "recommendation SELL" in models.prompts["pm"]
+    assert "--- MARKET BRIEF ---" in models.prompts["pm"] and "Position and price context" in models.prompts["pm"]
+    assert "candidate is a SHORT setup" in models.prompts["cro"]
+
+
+# --- H6: no AI triage by default ------------------------------------------------------------------
+
+async def test_rules_passed_goes_to_the_debate_without_a_triage_call(gate, pool, monkeypatch):
+    monkeypatch.delenv("DEBATE_AI_TRIAGE")
+    models = Models(triage=False)  # a triage call would refuse: the default path must not make one
+    with override_model(FLASH_LITE, models.model()):
+        decision = await gate.pre_debate_gate(pool, Redis(), scanner_payload(timeframe="15m"), Gateway(),
+                                              "MARKET BRIEF", brief_data=brief_data())
+    assert (decision.allowed, decision.reason) == (True, "RULES_PASSED")
+    assert sum(models.calls.values()) == 0
+
+
+async def test_rule_rejection_still_applies_without_triage(gate, pool, monkeypatch):
+    monkeypatch.delenv("DEBATE_AI_TRIAGE")
+    decision = await gate.pre_debate_gate(pool, Redis(), scanner_payload(timeframe="15m"), Gateway(),
+                                          "MARKET BRIEF", brief_data=brief_data(rr=0.9))
+    assert not decision.allowed and decision.reason.startswith("TRIAGE_RULE_")
+
+
+async def test_worker_with_clean_brief_data_runs_the_lite_debate_directly(main, pool, monkeypatch):
+    monkeypatch.delenv("DEBATE_AI_TRIAGE")
+    redis = Redis("MARKET BRIEF BTCUSDT")
+    redis.kv["brief:k:data"] = json.dumps(brief_data())
+    models = Models(triage=False)
+    run_row = await run(main, pool, scanner_payload(timeframe="15m"), models, redis)
+    assert run_row["status"] == "PENDING_APPROVAL"
+    assert models.calls == Counter({"lite": 1})
 
 
 # --- R3.2 / R7.4 / R7.5 ---------------------------------------------------------------------------

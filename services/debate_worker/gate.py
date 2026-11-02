@@ -5,6 +5,7 @@ import datetime
 import json
 import logging
 import math
+import os
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -30,6 +31,12 @@ MAX_POSITION_PCT = 25.0
 MIN_ENTRY_PCT = 1.0  # the dispatcher's floor: less than this headroom means no entry can be placed
 COOLDOWN_S = 30 * 60
 MIN_STALE_S = 15 * 60
+# H6: the local AI triage misapplied the deterministic rules it was meant to back up (rejected setups the
+# rules had passed), so by default a candidate that passes the rules goes straight to the debate. Set
+# DEBATE_AI_TRIAGE=1 to call the TRIAGE persona again after the rules.
+def ai_triage_enabled() -> bool:
+    return os.getenv("DEBATE_AI_TRIAGE", "0") == "1"
+
 # D1: the scanner's debate outbox can publish a candidate twice (a crash between XADD and marking its row
 # published). Dedupe is the durable run row (debate_runs.candidate_id, partial unique index in migration
 # 039), not a key set before any work: a failure before the run leaves nothing behind, so a PEL retry
@@ -452,6 +459,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
 
     slot_key = None
     cap = 0
+    use_triage = gateway is not None and ai_triage_enabled()
     if profile is not None:
         if timeframe not in effective_timeframes(profile.style, profile.direction, profile.strategies,
                                                  profile.timeframes):
@@ -460,7 +468,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         if slug and slug not in effective_presets(profile.style, profile.direction, profile.strategies):
             return GateDecision(False, "STRATEGY_NOT_IN_PROFILE")  # removed while the candidate was in flight
         cap = profile.max_debates_per_day
-        if gateway is None:
+        if not use_triage:
             slot_key = profile_cap_key(profile.id, _utc_now_s())
             if await _profile_slot_full(redis, slot_key, cap, cid):
                 return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
@@ -478,7 +486,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
         return GateDecision(False, "COOLDOWN")
 
     # Phase 2 shadow capture: the candidate passed the deterministic gate, so policy A is recorded here
-    # (before the rules and triage) and policy C starts in the background. Best-effort; never awaited past A.
+    # (before the rules and any triage) and policy C starts in the background. Best-effort; never awaited past A.
     if cid is not None:
         await policies.capture_entry_policies(pg_pool, gateway, cid, instrument_id, candidate, brief, brief_data,
                                               profile_id=profile.id if profile is not None else None)
@@ -493,13 +501,13 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
             if cid is None or await redis.get(cooldown_key) != cooldown_token:
                 return GateDecision(False, "COOLDOWN")
 
-    if gateway is None:
+    if not use_triage:
         if profile is not None:
             slot_key = profile_cap_key(profile.id, _utc_now_s())
         if slot_key is not None and not await _reserve_profile_slot(redis, slot_key, cap, cid):
             await release_cooldown(redis, cooldown_key, cooldown_token)
             return GateDecision(False, "PROFILE_DEBATE_DAILY_CAP")
-        return GateDecision(True, "NO_TRIAGE_GATEWAY", cooldown_key=cooldown_key, cooldown_token=cooldown_token)
+        return GateDecision(True, "RULES_PASSED", cooldown_key=cooldown_key, cooldown_token=cooldown_token)
     try:
         # The setup's decision_trace_id as the trace parent links triage (and its F2 shadow) to outcomes
         async with profile_budget_guard(pg_pool, redis, profile):
