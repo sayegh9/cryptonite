@@ -1,6 +1,7 @@
 "use client";
 
 import { errorCopy } from "@/lib/autotrade/copy";
+import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { useAutoTradeStore } from "@/lib/stores/useAutoTradeStore";
 import { btnPrimary, btnSecondary } from "./Dialogs";
 import { ProfileCard } from "./ProfileCard";
@@ -14,6 +15,8 @@ export function ProfileList({ onCreate, onOpen }: { onCreate: () => void; onOpen
   const summaries = useAutoTradeStore((s) => s.summaryById);
   const reload = useAutoTradeStore((s) => s.loadProfiles);
   const denied = error?.status === 401 || error?.status === 403;
+  // Every profile summary carries the same account-wide master switch; unknown until one has loaded
+  const masterSwitch = Object.values(summaries).find((x) => x?.data)?.data?.master_switch;
 
   return (
     <section aria-labelledby="autotrade-heading" className="space-y-4">
@@ -26,6 +29,22 @@ export function ProfileList({ onCreate, onOpen }: { onCreate: () => void; onOpen
         </button>
         <StopAllButton profiles={profiles} />
       </header>
+
+      {masterSwitch && (
+        <p className="flex flex-wrap items-center gap-2 text-sm text-zinc-300" data-testid="autotrade-master-switch">
+          <span>
+            Auto-trade switch: <strong className={masterSwitch === "ON" ? "text-emerald-300" : "text-amber-300"}>{masterSwitch === "ON" ? "On" : "Off"}</strong>
+            {masterSwitch === "OFF" && " (Veto window and Fully automatic profiles behave as Ask me)"}
+          </span>
+          <button
+            type="button"
+            className="underline text-cyan-300"
+            onClick={() => dispatchSwitchWorkspace({ mode: "settings", section: "risk" })}
+          >
+            Change in Settings
+          </button>
+        </p>
+      )}
 
       {status === "loading" && updatedAt == null && (
         <div role="status" className="grid grid-cols-1 gap-4 lg:grid-cols-2">

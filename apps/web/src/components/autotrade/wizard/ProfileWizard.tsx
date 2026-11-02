@@ -475,7 +475,7 @@ export function ProfileWizard({ onCancel, onCreated, onOpenProfile }: { onCancel
             {switchOff && draft.mode !== "ASK" && (
               <p role="alert" className="rounded-lg border border-amber-800/60 bg-amber-950/20 p-3 text-xs text-amber-200">
                 The auto-trade switch is off, so this profile can&apos;t start in {MODE_LABEL[draft.mode]}. Choose Ask me, or create it now and start it after
-                turning the switch on in Settings.
+                turning the switch on in Settings → Risk &amp; Guardrails.
               </p>
             )}
             <label className="flex items-start gap-2 text-sm text-zinc-200">
