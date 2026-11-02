@@ -134,7 +134,7 @@ async def assert_exit_monitor_stops(h, instance_id, instrument, price):
 
 async def test_a_spot_long_goes_from_the_gate_to_a_protected_paper_fill(gate, h, monkeypatch):
     decision = await gate_decision(gate, h, GateRedis(), brief("LONG", "up", 50000, 49000, 52000))
-    assert (decision.allowed, decision.reason) == (True, "NO_TRIAGE_GATEWAY")
+    assert (decision.allowed, decision.reason) == (True, "RULES_PASSED")
 
     mandate = await spot_mandate(h)
     await h.pool.execute("""INSERT INTO ai_profile_coin_locks (base_asset, mandate_id) VALUES ('BTC', $1)
@@ -162,7 +162,7 @@ async def test_a_perp_short_goes_from_the_gate_to_a_protected_paper_fill(gate, h
     opposing = await gate_decision(gate, h, redis, brief("SHORT", "up", 50000, 51000, 48000))
     assert (opposing.allowed, opposing.reason) == (False, "TRIAGE_RULE_TIMEFRAMES_AGAINST")
     aligned = await gate_decision(gate, h, redis, brief("SHORT", "down", 50000, 51000, 48000))
-    assert (aligned.allowed, aligned.reason) == (True, "NO_TRIAGE_GATEWAY")
+    assert (aligned.allowed, aligned.reason) == (True, "RULES_PASSED")
 
     await perp_mandate(h)  # PERP, direction BOTH
     await h.redis.set("perp:mark:BTCUSDT", json.dumps({"mark_price": "50000", "funding_rate": "0.0001"}), ex=60)

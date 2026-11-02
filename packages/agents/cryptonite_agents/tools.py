@@ -1752,16 +1752,21 @@ def _swing_score(direction: str, trend_4h: str, trend_1h: str, trend_15m: str) -
 def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """The latest setup per instrument, preset and timeframe that the system scanner stored in the last
     SCANNER_SETUP_WINDOW_H hours, shaped like a swing candidate. Only ``target_inst`` when it is given."""
-    where = f"created_at > now() - interval '{SCANNER_SETUP_WINDOW_H} hours'"
+    where = f"c.created_at > now() - interval '{SCANNER_SETUP_WINDOW_H} hours'"
     if target_inst:
-        where += " AND instrument_id = '" + target_inst.replace("'", "''") + "'"
-    sql = ("SELECT DISTINCT ON (instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug')) "
-           "instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug') AS preset_slug, "
-           "suggested_entry, suggested_stop, suggested_target, matched_rules, metrics->>'price' AS price, "
-           "bar_close_inclusive_ns, "
-           "extract(epoch FROM now() - created_at)::int / 60 AS age_minutes "
-           f"FROM signal_candidates WHERE {where} "
-           "ORDER BY instrument_id, timeframe, coalesce(metrics->>'preset_slug', metrics->>'spec_slug'), created_at DESC "
+        where += " AND c.instrument_id = '" + target_inst.replace("'", "''") + "'"
+    # Global scanner specs put no slug in metrics: the spec's own slug (through its version) fills it in
+    slug = "coalesce(c.metrics->>'preset_slug', c.metrics->>'spec_slug', s.slug)"
+    sql = (f"SELECT DISTINCT ON (c.instrument_id, c.timeframe, {slug}) "
+           f"c.instrument_id, c.timeframe, {slug} AS preset_slug, "
+           "c.suggested_entry, c.suggested_stop, c.suggested_target, c.matched_rules, c.metrics->>'price' AS price, "
+           "c.bar_close_inclusive_ns, "
+           "extract(epoch FROM now() - c.created_at)::int / 60 AS age_minutes "
+           "FROM signal_candidates c "
+           "LEFT JOIN scan_spec_versions v ON v.id = c.spec_version_id "
+           "LEFT JOIN scan_specs s ON s.id = v.spec_id "
+           f"WHERE {where} "
+           f"ORDER BY c.instrument_id, c.timeframe, {slug}, c.created_at DESC "
            "LIMIT 50")
     try:
         rows = _readonly_rows(sql)

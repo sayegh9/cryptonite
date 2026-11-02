@@ -87,12 +87,12 @@ async def test_a_spot_candidate_is_unchanged(gate, pool, admin):
     await add_mandate(admin, INSTRUMENT, perps=False)
     await add_mandate(admin, PERP, perps=True)  # a spot mandate takes the candidate: the perp rules do not apply
     redis = CapRedis()
-    assert (await ask(gate, pool, redis, "15m")).reason == "NO_TRIAGE_GATEWAY"
+    assert (await ask(gate, pool, redis, "15m")).reason == "RULES_PASSED"
     assert any(str(k).startswith("debate_gate:profile:") for k in redis.kv)
 
 
 async def test_no_mandate_at_all_is_unchanged(gate, pool, admin):
-    assert (await ask(gate, pool, CapRedis(), "15m")).reason == "NO_TRIAGE_GATEWAY"
+    assert (await ask(gate, pool, CapRedis(), "15m")).reason == "RULES_PASSED"
 
 
 async def test_a_perp_profile_takes_only_its_style_bars(gate, pool, admin):
@@ -112,7 +112,7 @@ async def test_the_default_cap_is_6_a_day_per_mandate(gate, pool, admin):
     for _ in range(8):
         redis.drop_cooldowns()  # one candidate per setup window: each call here is a new window
         reasons.append((await ask(gate, pool, redis)).reason)
-    assert reasons == ["NO_TRIAGE_GATEWAY"] * 6 + ["PROFILE_DEBATE_DAILY_CAP"] * 2
+    assert reasons == ["RULES_PASSED"] * 6 + ["PROFILE_DEBATE_DAILY_CAP"] * 2
     (key,) = [k for k in redis.kv if str(k).startswith("debate_gate:profile:")]
     assert str(mid) in key and redis.kv[key] == 6
 
@@ -155,6 +155,6 @@ async def test_retired_preference_cannot_change_profile_cadence(gate, pool, admi
     await admin.execute("INSERT INTO system_settings(key,value) VALUES('debate.perp_routing','1') "
                         "ON CONFLICT(key) DO UPDATE SET value='1'")
     try:
-        assert (await ask(gate, pool, CapRedis(), "15m")).reason == "NO_TRIAGE_GATEWAY"
+        assert (await ask(gate, pool, CapRedis(), "15m")).reason == "RULES_PASSED"
     finally:
         await admin.execute("DELETE FROM system_settings WHERE key='debate.perp_routing'")

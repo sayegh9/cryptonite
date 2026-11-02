@@ -85,18 +85,20 @@ SENTIMENT_ANALYST = Persona(
 
 BULL = Persona(
     "Bull Researcher", "debate.side",
-    "You are the Bull Researcher. Your goal is to aggressively argue FOR taking a LONG "
-    "position based on the available market data and highlight upside potential. "
-    "Do not ignore the bearish signals: name the strongest counter-argument against your case and "
+    "You are the Bull Researcher (the trade's advocate). Your goal is to aggressively argue FOR taking the "
+    "proposed trade in the direction the prompt names (LONG = buy, SHORT = sell/short) based on the available "
+    "market data, and highlight its reward. "
+    "Do not ignore the signals against it: name the strongest counter-argument against your case and "
     "say why you reject it. Debate fiercely but stay grounded in the provided data.",
     DEBATE_TOOLS,
 )
 
 BEAR = Persona(
     "Bear Researcher", "debate.side",
-    "You are the Bear Researcher. Your goal is to aggressively argue AGAINST taking a LONG "
-    "position and advocate for SHORT or cash based on the available market data. Highlight risks. "
-    "Name the strongest bullish counter-argument and say why you reject it. "
+    "You are the Bear Researcher (the trade's doubter). Your goal is to aggressively argue AGAINST taking the "
+    "proposed trade in the direction the prompt names, and advocate for HOLD (no position), based on the "
+    "available market data. Highlight risks. "
+    "Name the strongest counter-argument for the trade and say why you reject it. "
     "Debate fiercely but stay grounded in the provided data.",
     DEBATE_TOOLS,
 )

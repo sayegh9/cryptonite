@@ -25,6 +25,12 @@ BULL = {"trend_4h": "BULL", "trend_1h": "BULL", "trend_15m": "BULL", "adx": 30,
 BEAR = {**BULL, "trend_4h": "BEAR", "trend_1h": "BEAR", "trend_15m": "BEAR", "plus_di": 10, "minus_di": 30}
 
 
+@pytest.fixture(autouse=True)
+def ai_triage_on(monkeypatch):
+    """These tests cover the opt-in AI triage path (DEBATE_AI_TRIAGE=1); H6 turned it off by default."""
+    monkeypatch.setenv("DEBATE_AI_TRIAGE", "1")
+
+
 @pytest.fixture(scope="module")
 def db_url():
     with migrated_database("cryptonite_profile_routing") as url:
@@ -269,7 +275,7 @@ async def test_budget_reservation_is_atomic_and_returns_excess_slot(h):
 
 
 # H4: a SWING profile runs its 15m sniper preset on 15m, so 5m is the timeframe outside its style
-@pytest.mark.parametrize("timeframe,allowed,reason", [("5m", False, "TIMEFRAME_NOT_IN_STYLE"), ("4h", True, "NO_TRIAGE_GATEWAY")])
+@pytest.mark.parametrize("timeframe,allowed,reason", [("5m", False, "TIMEFRAME_NOT_IN_STYLE"), ("4h", True, "RULES_PASSED")])
 async def test_gate_uses_profile_style_and_logs_its_decision(h, timeframe, allowed, reason):
     m = await profile(h)
     payload = {"instrument_id": SPOT, "mandate_id": str(m.id), "candidate_payload": json.dumps({"timeframe": timeframe})}
@@ -279,7 +285,7 @@ async def test_gate_uses_profile_style_and_logs_its_decision(h, timeframe, allow
 
 
 @pytest.mark.parametrize("candidate,reason", [
-    ({"timeframe": "15m"}, "NO_TRIAGE_GATEWAY"),  # picked, though Swing's defaults are 1h/4h
+    ({"timeframe": "15m"}, "RULES_PASSED"),  # picked, though Swing's defaults are 1h/4h
     ({"timeframe": "1h"}, "TIMEFRAME_NOT_IN_STYLE"),  # not picked
     ({"timeframe": "15m", "preset_slug": "trend-pullback"}, "STRATEGY_NOT_IN_PROFILE"),  # removed in flight
 ])
