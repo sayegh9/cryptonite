@@ -99,6 +99,8 @@ class IngestUniverse(BaseModel):
         venue = venue or self.venue
         if venue != self.venue:
             return f"{VENUE_NOT_INGESTED}: ingest streams {self.venue} only, not {venue}"
+        if symbol.endswith("-MARGIN"):  # isolated spot margin trades and marks on the spot feed
+            symbol = symbol.removesuffix("-MARGIN")
         if symbol.endswith("-PERP"):
             base = symbol.removesuffix("-PERP")
             if base not in self.perp_symbols:

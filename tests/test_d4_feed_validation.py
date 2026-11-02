@@ -63,6 +63,9 @@ def test_refusal_names_the_reason():
     assert FED.refusal("ETHUSDT-PERP.BINANCE").startswith("PERP_NOT_INGESTED")
     assert FED.refusal("BTCUSDT-PERP.BINANCE", "1m").startswith("PERP_NOT_INGESTED")  # quotes only, no bars
     assert FED.refusal("BTCUSDT.BYBIT").startswith("VENUE_NOT_INGESTED")
+    # isolated spot margin runs on the spot feed: fed when its spot symbol is
+    assert FED.refusal("BTCUSDT-MARGIN.BINANCE") is None and FED.refusal("ethusdt-margin.binance", "1h") is None
+    assert FED.refusal("XRPUSDT-MARGIN.BINANCE").startswith("SYMBOL_NOT_INGESTED: ingest has no feed for XRPUSDT")
 
 
 def test_unknown_or_unreadable_universe_parses_to_none():
