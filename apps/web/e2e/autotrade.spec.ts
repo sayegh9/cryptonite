@@ -19,6 +19,8 @@ test.describe("Auto-Trade", () => {
     await expect(xrp.getByTestId("profile-mode-line")).toHaveText("Paused: BREAKER_LOSS_STREAK");
     await expect(xrp.getByRole("button", { name: "Resume XRP short hedge" })).toBeVisible();
     await expect(btc.getByRole("button", { name: "Pause BTC swing paper" })).toBeVisible();
+    await expect(page.getByTestId("autotrade-master-switch")).toContainText("Auto-trade switch: Off");
+    await expect(page.getByRole("button", { name: "Change in Settings" })).toBeVisible();
   });
 
   test("Stop all stops running and paused profiles, optionally closing positions, without TOTP", async ({ page }) => {

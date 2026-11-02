@@ -35,6 +35,11 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
     "guard.min_order_pct",
   ];
 
+  // ADR 0011: the auto-trade master switch and the capital share running profiles may hold
+  const autotradeEntries = ["autotrade.enabled", "autotrade.max_allocated_pct"]
+    .map((k) => getEntry(k))
+    .filter((e): e is RegistryEntry => Boolean(e));
+
   // ADR 0009: the grade ceilings and the slippage allowance are the operator's; the leverage guardrails are fixed
   const leverageKeys = [
     "leverage.grade_ceiling_a",
@@ -100,6 +105,26 @@ export const RiskGuardrailsSection: React.FC<RiskGuardrailsSectionProps> = ({
 
         <SettingList
           entries={dynamicEntries}
+          allEntries={entries}
+          onSaved={() => void onReload()}
+          highlightedKey={highlightedKey}
+        />
+      </section>
+
+      {/* Part 1b: Auto-trade (ADR 0011) */}
+      <section className="space-y-4" data-testid="autotrade-settings">
+        <div>
+          <h3 className="text-sm font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4" aria-hidden="true" />
+            Auto-trade (ADR 0011)
+          </h3>
+          <p className="text-xs text-zinc-400 mt-0.5">
+            While the master switch is off, profiles in Veto window or Fully automatic behave as Ask me (every entry needs
+            your approval); Ask me profiles are unaffected. Turning it on or raising the cap needs TOTP; off and lower are free.
+          </p>
+        </div>
+        <SettingList
+          entries={autotradeEntries}
           allEntries={entries}
           onSaved={() => void onReload()}
           highlightedKey={highlightedKey}
