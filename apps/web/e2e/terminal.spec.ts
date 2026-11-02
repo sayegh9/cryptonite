@@ -188,6 +188,24 @@ test.describe("Cryptonite Market Terminal & Polars Scanner E2E", () => {
     await expect(page.locator("text=Active:")).toBeVisible();
   });
 
+  test("Scanner Studio saves a loaded swing preset with the API's operator symbols", async ({ page }) => {
+    let posted: { rules: { conditions: { operator: string }[] }[] } | null = null;
+    await page.route("**/api/v1/scanners", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      posted = route.request().postDataJSON();
+      await route.fulfill({ status: 201, contentType: "application/json", body: "{}" });
+    });
+    await page.goto("/?ws=terminal");
+    await page.locator("button:has-text('Create Scanner')").click();
+    await page.getByPlaceholder("e.g. swing-trend-pullback-1h").fill("swing-trend-pullback-1h-v2");
+    await page.locator("button:has-text('SAVE SCANNER SPEC')").click();
+    await expect.poll(() => posted).not.toBeNull();
+    const ops = posted!.rules.flatMap((g) => g.conditions.map((c) => c.operator));
+    expect(ops).toEqual(expect.arrayContaining([">", ">=", "cross_above"]));
+    expect(ops).not.toContain("gt");
+    expect(ops).not.toContain("gte");
+  });
+
   test("runs scanner and triggers View on Chart navigation", async ({ page }) => {
     await page.goto("/?ws=terminal");
 
