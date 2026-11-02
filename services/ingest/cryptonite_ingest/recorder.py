@@ -33,6 +33,7 @@ from nautilus_trader.model import (
 )
 
 from cryptonite_ingest.client import BinanceRestClient
+from cryptonite_ingest.lake_gaps import LakeGapFiller
 from cryptonite_ingest.recovery import GapRecoveryManager
 from cryptonite_ingest.stream import (
     BINANCE_FUTURES_WS_QUOTE_STREAM_URL,
@@ -45,6 +46,7 @@ logger = logging.getLogger("cryptonite.recorder")
 # Raw symbols an onboarded instrument may carry; anything else is skipped when loading from the DB (WS-1A)
 _ONBOARDED_SYMBOL_RE = re.compile(r"[A-Z0-9]{2,20}")
 BINANCE_FUTURES_REST_URL = "https://fapi.binance.com"
+RECONNECT_RECHECK_DELAY_S = 10.0  # after the in-progress minute closes, for its live bar to be committed
 
 
 class IngestRecorder:
@@ -102,6 +104,11 @@ class IngestRecorder:
         self.last_closed_bar_ts: dict[str, int] = {}
         self._recovery_lock = asyncio.Lock()
         self._pending_recovery_symbols: set[str] = set()
+        self._recheck_task: asyncio.Task | None = None
+        self._sweep_task: asyncio.Task | None = None
+        # H7b: fill 1m lake holes of the last INGEST_GAP_SWEEP_HOURS every INGEST_GAP_SWEEP_S (0 = off)
+        self.gap_sweep_s = float(os.getenv("INGEST_GAP_SWEEP_S", "600"))
+        self.gap_sweep_hours = float(os.getenv("INGEST_GAP_SWEEP_HOURS", "6"))
 
     async def initialize(self) -> None:
         """Connect database and initialize coordinator with process lock."""
@@ -404,6 +411,45 @@ class IngestRecorder:
             self.symbols,
         )
         await self.trigger_recovery(self.symbols)
+        if self._recheck_task is None or self._recheck_task.done():
+            self._recheck_task = asyncio.create_task(self._recheck_after_minute_close())
+
+    async def _recheck_after_minute_close(self) -> None:
+        """Run recovery once more just after the minute in progress at the reconnect has closed.
+
+        The first run cannot fetch that minute (still open). Its live bar normally arrives; when it does not, the
+        checkpoint still lags it and this run refetches it from REST. Otherwise it ends at the checkpoint, no REST.
+        """
+        await asyncio.sleep(60 - time.time() % 60 + RECONNECT_RECHECK_DELAY_S)
+        await self.trigger_recovery(self.symbols)
+
+    async def sweep_gaps(self, filler: LakeGapFiller, hours: float, now_ns: int | None = None) -> list:
+        """Fill missing 1m lake bars of every fed symbol over the last ``hours``; logs each fill."""
+        now_ns = now_ns if now_ns is not None else time.time_ns()
+        start_ns = now_ns - int(hours * 3600) * 1_000_000_000
+        results = []
+        for sym in list(self.symbols):
+            meta = self._symbol_metadata.get(sym, {})
+            result = await filler.fill(
+                sym, start_ns, now_ns, meta.get("price_precision", 2), meta.get("size_precision", 6), now_ns=now_ns
+            )
+            if result.missing or result.skipped:
+                logger.warning("Lake gap sweep: %s", result.describe())
+            results.append(result)
+        return results
+
+    async def _gap_sweeper(self) -> None:
+        """Periodic lake gap sweep; doubles its interval (up to an hour) while REST or the lake keeps failing."""
+        filler = LakeGapFiller(self.rest_client, self.analytics_lake_path)
+        delay = self.gap_sweep_s
+        while self._running:
+            await asyncio.sleep(delay)
+            try:
+                await self.sweep_gaps(filler, self.gap_sweep_hours)
+                delay = self.gap_sweep_s
+            except Exception as e:
+                delay = min(delay * 2, 3600.0)
+                logger.warning("Lake gap sweep failed (%s); next sweep in %.0fs", e, delay)
 
     async def trigger_recovery(self, symbols: list[str] | None = None) -> None:
         """Trigger bounded, idempotent gap recovery for specified symbols (or all fed symbols)."""
@@ -564,13 +610,17 @@ class IngestRecorder:
         if self.recovery_manager:
             await self.trigger_recovery(self.symbols)
 
+        if self.gap_sweep_s > 0 and "1m" in self.timeframes:
+            self._sweep_task = asyncio.create_task(self._gap_sweeper())
+
         await ws_task
 
     async def stop(self) -> None:
         """Stop ingestion and release resources."""
         self._running = False
-        if self._universe_task:
-            self._universe_task.cancel()
+        for task in (self._universe_task, self._sweep_task, self._recheck_task):
+            if task:
+                task.cancel()
         if self.stream_client:
             await self.stream_client.stop()
         if self.perp_quote_client:

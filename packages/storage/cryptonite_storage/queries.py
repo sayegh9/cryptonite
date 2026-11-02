@@ -205,6 +205,28 @@ class AnalyticsQueryEngine:
         finally:
             con.close()
 
+    def bar_close_stamps(self, symbol: str, timeframe: str, start_ns: int, end_ns: int) -> set[int]:
+        """The distinct bar close stamps (``ts_event_ns``) in [start_ns, end_ns]; one column, so cheap on memory."""
+        timeframe = lake_timeframe(timeframe)
+        glob_path = self._get_glob_path(symbol, timeframe)
+        query = (
+            f"SELECT DISTINCT ts_event_ns::BIGINT FROM read_parquet('{glob_path}') "
+            f"WHERE ts_event_ns >= {int(start_ns)} AND ts_event_ns <= {int(end_ns)}"
+        )
+        con = self._con.cursor()
+        try:
+            for attempt in (1, 2):  # a file can vanish under compaction between glob and open, as in query_bars_df
+                try:
+                    return {int(r[0]) for r in con.execute(query).fetchall()}
+                except duckdb.IOException as e:
+                    if "No files found" in str(e):
+                        return set()
+                    if attempt == 2:
+                        raise
+            return set()
+        finally:
+            con.close()
+
     def count_bars(self, symbol: str, timeframe: str = "1m") -> int:
         """Count total bars present in the Analytics Lake for a symbol/timeframe."""
         glob_path = self._get_glob_path(symbol, timeframe)

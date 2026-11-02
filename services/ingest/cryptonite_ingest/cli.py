@@ -6,12 +6,14 @@ import os
 import time
 
 import click
+import redis
 from cryptonite_schemas.bar import EnrichedBar
 from cryptonite_schemas.identifiers import (
     to_nautilus_bar_type,
     to_nautilus_instrument_id,
     to_spot_instrument_id,
 )
+from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from cryptonite_storage.analytics_catalog import AnalyticsLakeWriter
 from cryptonite_storage.coordinator import TwoStoreCoordinator
 from cryptonite_storage.nautilus_catalog import NautilusCatalogManager
@@ -247,6 +249,76 @@ def query_cmd(symbol: str, timeframe: str, analytics_dir: str):
     table.add_row("Gaps Detected", str(len(gaps)))
 
     console.print(table)
+
+
+def _fed_symbols(symbols: str) -> list[str]:
+    """--symbols when given; else what the running recorder publishes (onboarded symbols included); else INGEST_SYMBOLS."""
+    if symbols.strip():
+        return [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        try:
+            universe = IngestUniverse.parse(redis.Redis.from_url(redis_url).get(INGEST_UNIVERSE_KEY))
+            if universe and universe.symbols:
+                return list(universe.symbols)
+        except Exception as e:
+            console.print(f"[yellow]Could not read the ingest universe from Redis ({e}); using INGEST_SYMBOLS[/yellow]")
+    return [s.strip().upper() for s in os.getenv("INGEST_SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
+
+
+@cli.command("repair-gaps")
+@click.option("--days", default=10, type=float, help="How many days back to repair")
+@click.option("--symbols", default="", help="Comma-separated symbols (default: every fed symbol)")
+@click.option("--analytics-dir", default=DEFAULT_ANALYTICS_DIR, help="Analytics lake directory")
+def repair_gaps_cmd(days: float, symbols: str, analytics_dir: str):
+    """Fill every missing 1m lake bar of the fed symbols over the last N days from Binance REST (idempotent)."""
+    from cryptonite_ingest.lake_gaps import LakeGapFiller
+
+    async def _run() -> int:
+        sym_list = _fed_symbols(symbols)
+        now_ns = time.time_ns()
+        start_ns = now_ns - int(days * 86400) * 1_000_000_000
+        code = 0
+        async with BinanceRestClient() as client:
+            meta = {m["symbol"]: m for m in await client.get_exchange_info()}
+            filler = LakeGapFiller(client, analytics_dir)
+            for sym in sym_list:
+                if sym not in meta:
+                    console.print(f"[red]{sym}: not in Binance exchangeInfo; skipped[/red]")
+                    code = 1
+                    continue
+                result = await filler.fill(
+                    sym, start_ns, now_ns, meta[sym]["price_precision"], meta[sym]["size_precision"], now_ns=now_ns
+                )
+                console.print(result.describe())
+                if result.skipped:
+                    code = 75  # lake maintenance lock busy: rerun when compaction is done
+        return code
+
+    raise SystemExit(asyncio.run(_run()))
+
+
+@cli.command("check-continuity")
+@click.option("--symbols", default="", help="Comma-separated symbols (default: every fed symbol)")
+@click.option("--styles", default="SWING,INTRADAY", help="Profile styles: SWING (1h/4h), INTRADAY (15m/1h)")
+@click.option("--analytics-dir", default=DEFAULT_ANALYTICS_DIR, help="Analytics lake directory")
+def check_continuity_cmd(symbols: str, styles: str, analytics_dir: str):
+    """Exit non-zero unless every symbol has 200 contiguous, fresh decision bars per style, as debates require."""
+    from cryptonite_ingest.lake_gaps import check_continuity
+
+    failed = 0
+    for sym in _fed_symbols(symbols):
+        for style in [s.strip().upper() for s in styles.split(",") if s.strip()]:
+            r = check_continuity(analytics_dir, sym, style)
+            label = f"{r.symbol} {r.style} ({r.decision_tf} decision / {r.higher_tf} higher)"
+            if r.ok:
+                console.print(f"[green]OK[/green]   {label}")
+            else:
+                failed += 1
+                console.print(f"[red]FAIL[/red] {label}")
+                for problem in r.problems:
+                    console.print(f"       {problem}", markup=False)
+    raise SystemExit(1 if failed else 0)
 
 
 if __name__ == "__main__":

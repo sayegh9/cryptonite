@@ -213,7 +213,10 @@ class GapRecoveryManager:
                     break
                 cur_start_ms = next_start
 
-            # Closed bars the stream received for this stream during the REST fetch
+            # Closed bars the stream received for this stream during the REST fetch. The buffer holds every
+            # closed bar since the previous recovery, most of them committed live long ago: merged in, they made
+            # the batch start before the checkpoint, so commit_batch skipped the whole batch, gap bars included
+            # (H7b: about one lost minute per reconnect). Only bars past the checkpoint belong to the gap.
             buffered_bars = [
                 EnrichedBar.from_binance_raw(
                     raw=k_buf,
@@ -229,6 +232,8 @@ class GapRecoveryManager:
             # A gap that reaches "now" returns the still-open kline; committing it would move the
             # checkpoint past the live bar, and the stream's real closed bar would then be skipped
             raw_klines = [k for k in raw_klines if k.is_closed]
+            if checkpoint_ns is not None:
+                buffered_bars = [b for b in buffered_bars if b.ts_event_ns > checkpoint_ns]
 
             arrival_ns = time.time_ns()
             enriched_bars = [
@@ -242,6 +247,8 @@ class GapRecoveryManager:
                 )
                 for k in raw_klines
             ]
+            if checkpoint_ns is not None:
+                enriched_bars = [b for b in enriched_bars if b.ts_event_ns > checkpoint_ns]
 
             if not enriched_bars and not buffered_bars:
                 continue
@@ -265,7 +272,7 @@ class GapRecoveryManager:
 
             deduped_bars = sorted(all_bars_map.values(), key=lambda b: b.ts_event_ns)
             if deduped_bars:
-                await self.coordinator.commit_batch(
+                batch_id = await self.coordinator.commit_batch(
                     bars=deduped_bars,
                     bar_type=bar_type,
                     venue="BINANCE",
@@ -273,7 +280,15 @@ class GapRecoveryManager:
                     symbol=symbol,
                     timeframe=timeframe,
                 )
-                total_recovered += len(deduped_bars)
+                if batch_id:  # "" = the checkpoint guard skipped it; counting it hid every lost gap
+                    total_recovered += len(deduped_bars)
+                else:
+                    logger.warning(
+                        "Recovery batch of %d bar(s) for %s was not committed (behind the checkpoint); "
+                        "the lake gap sweep fills it",
+                        len(deduped_bars),
+                        bar_id,
+                    )
 
         logger.info("Successfully recovered %d bars for %s", total_recovered, symbol)
         return total_recovered
