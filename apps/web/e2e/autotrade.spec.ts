@@ -234,6 +234,17 @@ test.describe("Auto-Trade", () => {
     ]);
   });
 
+  test("settings: the trading hours window can be set and cleared", async ({ page }) => {
+    const be = await mockAutoTrade(page, { profiles: [profile({ active_hours_utc: "08:00-22:00" })] });
+    await page.goto(`/?ws=autotrade&view=profile&id=${P1}&tab=settings`);
+    const label = "Trading hours (UTC, HH:MM-HH:MM; empty = any time)";
+    await page.getByRole("button", { name: `Edit ${label}` }).click();
+    await page.getByLabel(label).fill("");
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByRole("button", { name: `Edit ${label}` })).toBeVisible();
+    expect(be.writes.map((w) => w.body)).toEqual([{ clear_active_hours: true }]);
+  });
+
   test("Mission Control cards open the profile in Auto-Trade, and its editor tab points there", async ({ page }) => {
     await mockAutoTrade(page, { profiles: [profile()] });
     await page.goto("/?ws=mission&view=overview");

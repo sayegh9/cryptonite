@@ -58,6 +58,8 @@ const ROWS: Row[] = [
   { key: "exit_trail_activate_pct", label: "Activate trailing exit at (%)", kind: "number", value: (p) => s(p.exit_trail_activate_pct), display: (p) => off(p.exit_trail_activate_pct, "%"), clearable: true },
   { key: "exit_trail_pct", label: "Trailing distance (%)", kind: "number", value: (p) => s(p.exit_trail_pct), display: (p) => off(p.exit_trail_pct, "%"), clearable: true },
   { key: "exit_max_hold_hours", label: "Maximum holding time (hours)", kind: "number", value: (p) => s(p.exit_max_hold_hours), display: (p) => off(p.exit_max_hold_hours, " h"), clearable: true },
+  { key: "active_hours_utc", label: "Trading hours (UTC, HH:MM-HH:MM; empty = any time)", kind: "text", value: (p) => s(p.active_hours_utc),
+    display: (p) => p.active_hours_utc ?? "Any time", clearable: true },
   { key: "notify_level", label: "Notifications", kind: "select", value: (p) => p.notify_level, options: NOTIFY },
   { key: "breaker_max_loss_streak", label: "Losses before breaker", kind: "number", value: (p) => s(p.breaker_max_loss_streak) },
   { key: "breaker_max_reject_streak", label: "Rejected entries before breaker", kind: "number", value: (p) => s(p.breaker_max_reject_streak) },
@@ -115,6 +117,8 @@ export function SettingsTab({ profile: p }: { profile: Profile }) {
     }
     if (row.kind === "bool") return { [row.key]: value === "true" };
     if (row.kind === "picks") return { ...(JSON.parse(value) as Picks) };
+    // The hours window has its own clear flag; every other clearable row is a limit
+    if (row.key === "active_hours_utc") return value.trim() === "" ? (row.value(p) === "" ? {} : { clear_active_hours: true }) : { active_hours_utc: value.trim() };
     if (row.clearable && value.trim() === "") return row.value(p) === "" ? {} : { clear_limits: [row.key] };
     if (row.kind === "number") return { [row.key]: INT_KEYS.has(row.key) ? Number(value) : value.trim() };
     return { [row.key]: value };
