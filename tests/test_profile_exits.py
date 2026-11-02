@@ -207,6 +207,12 @@ class ReductionAfterEntryConn(PositionConn):
         order_side = "BUY" if self.side == "LONG" else "SELL"
         return {"payload": f'{{"side":"{order_side}","proposed_stop_loss":"{stop}","instrument_id":"BTCUSDT.BINANCE"}}'}
 
+    async def fetch(self, query, *args):
+        # the entry-stop lookup reads every entry of the position; the later reduction carries no stop
+        if "payload->>'proposed_stop_loss' IS NOT NULL" in query:
+            return [await self.fetchrow(query, *args)]
+        return await super().fetch(query, *args)
+
 
 async def test_load_positions_attaches_cached_profile_settings_and_uses_structural_stop():
     em.clear_profile_exit_cache()
