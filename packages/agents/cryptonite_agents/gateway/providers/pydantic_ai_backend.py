@@ -249,7 +249,6 @@ _EMBEDDINGGEMMA_PREFIX = {"query": "task: search result | query: ", "document": 
 
 async def _ollama_embed(name: str, texts: Sequence[str], kind: str) -> tuple[list[list[float]], int]:
     import httpx
-
     from cryptonite_agents.gateway.local_tier import ollama_root
 
     if name.startswith("embeddinggemma"):
