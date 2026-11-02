@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 
@@ -76,6 +77,19 @@ RISK_PANEL_MODE = os.getenv("DEBATE_RISK_PANEL_MODE", "merged")
 FULL_DEBATE_ANALYSTS = (MARKET_ANALYST, SENTIMENT_ANALYST)
 EVIDENCE_BARS = 48  # H7a: the closed bars of the debate timeframe the worker hands the Market Analyst
 EVIDENCE_INCOMPLETE = "EVIDENCE_INCOMPLETE"
+# H8: a Market Analyst turn spent on tool errors or file paths is not analysis (the d70b8457 acceptance debate)
+_TROUBLESHOOTING = re.compile(
+    r"\.parquet\b|\bduckdb\b|\bfile ?paths?\b|\bpaths?\b[^.\n]{0,40}\b(?:not found|missing|blocked|denied|invalid)"
+    r"|\bsecurity\b[^.\n]{0,40}\b(?:error|block|denied|restrict)|unable to (?:access|read|query|load)"
+    r"|(?:can|could )not (?:access|read|query|load)|permission denied|access denied|\berror:"
+    r"|\btool (?:call )?(?:error|failed|failure)", re.IGNORECASE)
+_UNAVAILABLE_WORDS = re.compile(r"\b(?:unavailable|not available|no data|missing|unknown|could not|unable)\b",
+                                re.IGNORECASE)
+_DERIVATIVE_TERMS = {"funding_rate": re.compile(r"\bfunding\b", re.IGNORECASE),
+                     "open_interest": re.compile(r"\bopen interest\b|\bOI\b")}
+_ANY_DERIVATIVES = re.compile(r"\bderivatives?\b", re.IGNORECASE)
+_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+BAR_FIGURE_TOLERANCE = 0.005  # a cited price within 0.5% of the window's low-high range counts as a bar figure
 SENTIMENT_LAST_OK_KEY = "sentiment:last_ok"  # R7.5: the sentiment service has no Redis access by design
 
 
@@ -226,6 +240,64 @@ async def publish_sentiment_ok(redis_client) -> None:
 def turn_text(output) -> str:
     """Debate turn content: free text as-is, structured verdicts as JSON."""
     return output.model_dump_json() if hasattr(output, "model_dump_json") else str(output)
+
+
+def _numbers(text: str) -> list[float]:
+    out = []
+    for raw in _NUMBER.findall(text):
+        try:
+            out.append(float(raw.replace(",", "")))
+        except ValueError:
+            continue
+    return out
+
+
+def cites_bar_figure(text: str, summary: dict) -> bool:
+    """H8: the text cites at least one measured figure: a price inside the window's low-high range (with
+    BAR_FIGURE_TOLERANCE) or the window's net change %."""
+    lo, hi = float(summary["window_low"]), float(summary["window_high"])
+    net = summary.get("net_change_pct")
+    for x in _numbers(text):
+        if lo * (1 - BAR_FIGURE_TOLERANCE) <= abs(x) <= hi * (1 + BAR_FIGURE_TOLERANCE):
+            return True
+        if net is not None and abs(abs(x) - abs(float(net))) <= max(0.01, 0.02 * abs(float(net))):
+            return True
+    return False
+
+
+def derivatives_reported_unavailable(text: str, derivatives: dict) -> bool:
+    """H8: True when the block had funding and/or open interest, yet the analyst calls every one of them
+    unavailable. A sentence with a figure in it is not an unavailability report; partial availability is fine."""
+    available = {f for f in _DERIVATIVE_TERMS if isinstance(derivatives.get(f), dict) and "value" in derivatives[f]}
+    if not available:
+        return False
+    flagged: set[str] = set()
+    for sentence in re.split(r"\.(?!\d)|[\n;]", text):
+        if not _UNAVAILABLE_WORDS.search(sentence) or re.search(r"\d", sentence):
+            continue
+        if _ANY_DERIVATIVES.search(sentence):
+            flagged |= available
+        flagged |= {f for f, term in _DERIVATIVE_TERMS.items() if term.search(sentence)}
+    return available <= flagged
+
+
+def evidence_gate(bars: dict, derivatives: dict, analyst_text: str) -> str | None:
+    """H7a/H8: the reason the debate is non-actionable (forced HOLD), or None when the market evidence is usable."""
+    if not bars["complete"]:
+        return (f"{EVIDENCE_INCOMPLETE}: {bars['timeframe']} bars incomplete "
+                f"({bars['returned']}/{bars['expected']}, {bars.get('reason') or 'bars missing'})")
+    text = (analyst_text or "").strip()
+    if not text:
+        return f"{EVIDENCE_INCOMPLETE}: the Market Analyst returned no analysis"
+    if _TROUBLESHOOTING.search(text):
+        return f"{EVIDENCE_INCOMPLETE}: the Market Analyst reported tool errors or troubleshooting, not analysis"
+    summary = bars.get("summary") or agent_tools.bar_summary(bars.get("bars") or [])
+    if summary and not cites_bar_figure(text, summary):
+        return f"{EVIDENCE_INCOMPLETE}: the Market Analyst cited no measured figure from the bars block"
+    if derivatives_reported_unavailable(text, derivatives or {}):
+        return (f"{EVIDENCE_INCOMPLETE}: the Market Analyst reported funding and open interest unavailable "
+                "although the derivatives block had them")
+    return None
 
 
 async def _recent_lessons(pg_pool):
@@ -594,16 +666,21 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         if lite is None:
             analysts = FULL_DEBATE_ANALYSTS
             bars_tf = str(payload.get("timeframe") or "1h").lower()
-            bars = await asyncio.to_thread(agent_tools.recent_bars, instrument_id,
-                                           bars_tf if bars_tf in ("15m", "1h", "4h") else "1h", EVIDENCE_BARS)
-            bars_block = f"--- RECENT CLOSED BARS (analytics lake) ---\n{json.dumps(bars, default=str)}"
+            bars, derivatives = await asyncio.gather(
+                asyncio.to_thread(agent_tools.recent_bars, instrument_id,
+                                  bars_tf if bars_tf in ("15m", "1h", "4h") else "1h", EVIDENCE_BARS),
+                asyncio.to_thread(agent_tools.derivatives_evidence, instrument_id))
+            bars_block = (f"--- MEASURED BAR SUMMARY (computed exactly from the bars below) ---\n"
+                          f"{json.dumps(bars.get('summary'), default=str)}\n\n"
+                          f"--- RECENT CLOSED BARS (analytics lake) ---\n{json.dumps(bars, default=str)}")
+            # H8: funding, open interest and mark price fetched here, so no analyst guesses a lake path for them
+            derivatives_block = ("--- DERIVATIVES (perpetual; fetched by the system, each with its age) ---\n"
+                                 f"{json.dumps(derivatives, default=str)}")
             results = await _gather_cancel_on_error(*(
-                run_agent(a, f"{prompt}\n\n{bars_block}" if a is MARKET_ANALYST else prompt) for a in analysts))
-            if not bars["complete"]:
-                evidence_reason = (f"{EVIDENCE_INCOMPLETE}: {bars['timeframe']} bars incomplete "
-                                   f"({bars['returned']}/{bars['expected']}, {bars.get('reason') or 'bars missing'})")
-            elif not turn_text(results[analysts.index(MARKET_ANALYST)].output).strip():
-                evidence_reason = f"{EVIDENCE_INCOMPLETE}: the Market Analyst returned no analysis"
+                run_agent(a, f"{prompt}\n\n{bars_block}\n\n{derivatives_block}" if a is MARKET_ANALYST
+                          else f"{prompt}\n\n{derivatives_block}") for a in analysts))
+            evidence_reason = evidence_gate(bars, derivatives,
+                                            turn_text(results[analysts.index(MARKET_ANALYST)].output))
             await publish_sentiment_ok(redis_client)
             intel_dossier = "\n\n".join(section(a, r) for a, r in zip(analysts, results))
 
@@ -633,9 +710,17 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 side_line = (
                     f"No scanner candidate; this is an operator-requested assessment of {instrument_id}: argue LONG, "
                     "SHORT or HOLD on the evidence. BUY opens a long; SELL opens a short where the mandate allows "
-                    "short/PERP; HOLD takes no position."
+                    "short/PERP; HOLD takes no position. The Bull names the direction the measured evidence favours "
+                    "and argues for it; the Bear argues for HOLD. If you take a SHORT case, the recommendation is SELL "
+                    "where the mandate allows short/PERP; a LONG case is BUY; HOLD means no trade."
                 )
-                open_ask = f"{side_line}\nMake the strongest directional case (LONG or SHORT, name it) the evidence supports. "
+                # H8: the advocate picks the side the measured evidence favours (a falling market gets a SHORT case)
+                open_ask = (
+                    f"{side_line}\nMeasured bar summary: {json.dumps(bars.get('summary'), default=str)}\n"
+                    "First state, on its own line as 'Direction: LONG' or 'Direction: SHORT', which direction the "
+                    "measured evidence (net change, window high/low, lower lows vs higher highs, derivatives) favours, "
+                    "then argue for taking that trade. A SHORT is taken with SELL (open a short). "
+                )
             open_prompt = (
                 f"Here is the intel dossier for {instrument_id}:\n{intel_dossier}{custom_thesis_inject}\n{open_ask}"
                 "If a specific strategy evaluation is required above, ground your case in its backtest metrics."
