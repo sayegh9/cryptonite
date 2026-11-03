@@ -601,49 +601,83 @@ def close_payload(pos: Position, reason: str) -> dict:
     return payload
 
 
+TP1_MAX_ATTEMPTS = 3  # reductions tried per position before the monitor gives up and pages (TP1_FAILED)
+# A TP1 reduction counts as done only when its command COMPLETED and a fill was booked: a mandate's close writes an
+# ai_profile_decisions EXIT row with the command id (record_profile_trade); the legacy AI owner books none, so there
+# COMPLETED is the evidence. A COMPLETED close that sold nothing counts as a failed attempt.
+_TP1_PROGRESS_SQL = """
+SELECT c.status, c.created_at,
+       (c.status = 'COMPLETED' AND ($2::boolean OR EXISTS (
+            SELECT 1 FROM ai_profile_decisions d WHERE d.command_id = c.command_id AND d.stage = 'EXIT'))) AS filled,
+       count(*) OVER () AS attempts
+FROM execution_commands c
+WHERE c.idempotency_key LIKE $1 || '%'
+ORDER BY c.created_at DESC
+LIMIT 1
+"""
+
+
+@dataclass(frozen=True)
+class Tp1Progress:
+    state: str  # NONE | PENDING | DONE | FAILED
+    attempts: int = 0
+    last_at: float | None = None
+
+
+async def tp1_progress(conn, pos: Position, reason: str = "TAKE_PROFIT_1") -> Tp1Progress:
+    """Where the position's TP1 reduction stands, from its commands (idempotency ``exit_monitor:<key>:<reason>:<n>``)."""
+    legacy = mandate_id_from_instance(pos.owner_instance) is None
+    row = await conn.fetchrow(_TP1_PROGRESS_SQL, f"exit_monitor:{pos.key}:{reason}", legacy)
+    if row is None:
+        return Tp1Progress("NONE")
+    attempts, last_at = int(row["attempts"]), row["created_at"].timestamp()
+    if row["status"] in ("REJECTED", "FAILED") or (row["status"] == "COMPLETED" and not row["filled"]):
+        return Tp1Progress("FAILED", attempts, last_at)
+    return Tp1Progress("DONE" if row["status"] == "COMPLETED" else "PENDING", attempts, last_at)
+
+
+def tp1_payload(pos: Position, quantity: str, reason: str = "TAKE_PROFIT_1") -> dict:
+    """The TP1 scale-out: a CLOSE_POSITION of ``quantity`` on every market, targeting the owner (the close path caps a
+    mandate at its own holding and reduces a perp reduce-only, keeping the resting stop), so it can never become a new
+    entry. A spot SUBMIT_ORDER SELL had no mandate and was refused MANDATE_REQUIRED every time (H11)."""
+    return {"instrument_id": pos.instrument_id, "quantity": quantity, "reason": reason, "source": "exit_monitor_tp1"}
+
+
 async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1") -> bool:
-    """One TP1 scale-out per position; enqueues a reduction using profile scale or legacy 50% (ADR 0011 D13)."""
+    """One TP1 scale-out per position, using the profile scale or the legacy 50% (ADR 0011 D13). Nothing is queued while
+    one is pending or done; a failed one is retried after ``CLOSE_RETRY_AFTER_S``, at most ``TP1_MAX_ATTEMPTS`` times."""
     if pos.quantity <= 0:
         return False
     scale_quantity = Decimal(tp1_reduce_quantity(pos))
     if scale_quantity <= 0:
         return False
-    prefix = f"exit_monitor:{pos.key}:{reason}"
-    last = await conn.fetchrow(
-        "SELECT status, created_at FROM execution_commands WHERE idempotency_key LIKE $1 || '%' ORDER BY created_at DESC LIMIT 1",
-        prefix,
-    )
-    if last is not None:
-        if last["status"] not in ("REJECTED", "FAILED"):
-            return False  # pending, running or done
-        if time.time() - last["created_at"].timestamp() < CLOSE_RETRY_AFTER_S:
-            return False
-    attempts = await conn.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key LIKE $1 || '%'", prefix)
-    scale_qty_str = format(scale_quantity, "f")
-    if market_of(pos.instrument_id) in (Market.PERP, Market.SPOT_MARGIN):
-        # A perp scales out through the close path with a quantity (a reduce-only fill of half, the resting stop
-        # stays for the rest): a SUBMIT_ORDER on the other side would be a new entry, not a reduction
-        command_type = "CLOSE_POSITION"
-        payload = {"instrument_id": pos.instrument_id, "quantity": scale_qty_str, "reason": reason,
-                   "source": "exit_monitor_tp1"}
-    else:
-        command_type = "SUBMIT_ORDER"
-        payload = {
-            "instrument_id": pos.instrument_id,
-            "side": "SELL" if pos.side == "LONG" else "BUY",
-            "order_type": "MARKET",
-            "quantity": scale_qty_str,
-            "reason": reason,
-            "source": "exit_monitor_tp1",
-        }
+    progress = await tp1_progress(conn, pos, reason)
+    if progress.state in ("PENDING", "DONE"):
+        return False
+    if progress.state == "FAILED" and (progress.attempts >= TP1_MAX_ATTEMPTS
+                                       or time.time() - (progress.last_at or 0) < CLOSE_RETRY_AFTER_S):
+        return False
     await conn.execute(
         """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
                requester_id, payload, status, environment, account_id)
-           VALUES ($1, $2, $6, $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
+           VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
            ON CONFLICT (idempotency_key) DO NOTHING""",
-        uuid.uuid4(), f"{prefix}:{attempts}", pos.owner_instance,
-        json.dumps(payload), PAPER_ACCOUNT_ID, command_type,
+        uuid.uuid4(), f"exit_monitor:{pos.key}:{reason}:{progress.attempts}", pos.owner_instance,
+        json.dumps(tp1_payload(pos, format(scale_quantity, "f"), reason)), PAPER_ACCOUNT_ID,
     )
+    return True
+
+
+async def tp1_done(conn, redis_client, pos: Position) -> bool:
+    """TP1 is done once ``exit:tp1:<key>`` is set, which happens here and only after the reduction filled."""
+    key = f"exit:tp1:{pos.key}"
+    if await redis_client.exists(key):
+        return True
+    if pos.take_profit_price is None or not pos.ai_owned:
+        return False
+    if (await tp1_progress(conn, pos)).state != "DONE":
+        return False
+    await redis_client.set(key, "1", ex=30 * 86400)
     return True
 
 
@@ -657,9 +691,19 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
             logger.warning("%s: closing %s %s (pnl %.2f%%)", action.reason, pos.side, pos.instrument_id, pos.pnl_pct)
     elif action.kind == "REDUCE_TP1":
         if await enqueue_tp1_reduce(conn, pos, action.reason):
-            await redis_client.set(f"exit:tp1:{pos.key}", "1", ex=30 * 86400)
             scale = pos.profile_tp1_scale_pct if pos.profile_tp1_scale_pct is not None else Decimal("50")
             logger.info("%s: reducing %s%% %s %s (pnl %.2f%%)", action.reason, scale, pos.side, pos.instrument_id, pos.pnl_pct)
+        else:
+            progress = await tp1_progress(conn, pos, action.reason)
+            if (progress.state == "FAILED" and progress.attempts >= TP1_MAX_ATTEMPTS and await redis_client.set(
+                    f"exit:alert:{pos.key}:TP1_FAILED", "1", nx=True, ex=ALERT_DEBOUNCE_S)):
+                logger.error("TP1 for %s %s failed %d times; not retried", pos.side, pos.instrument_id, progress.attempts)
+                await redis_client.publish("channel:system_alerts", json.dumps({
+                    "type": "EXIT_MONITOR", "severity": "CRITICAL", "instrument_id": pos.instrument_id,
+                    "action": "REDUCE_TP1", "reason": "TP1_FAILED", "attempts": progress.attempts,
+                    "message": (f"{pos.instrument_id} {pos.side}: the TP1 scale-out failed {progress.attempts} times "
+                                "and is not retried. The stops still apply; scale out by hand if wanted."),
+                }))
     elif action.kind == "EXIT_DEBATE":
         run_id = uuid.uuid4()
         await conn.execute(
@@ -722,8 +766,8 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
                 await redis_client.delete(episode_key)
             armed = not await redis_client.exists(f"debounce:exit:{pos.instrument_id}")
             in_episode = bool(await redis_client.exists(episode_key))
-            tp1_done = bool(await redis_client.exists(f"exit:tp1:{pos.key}"))
-            actions = evaluate_exit(pos, best, armed, in_episode, position_t, tp1_done=tp1_done)
+            done = await tp1_done(conn, redis_client, pos)
+            actions = evaluate_exit(pos, best, armed, in_episode, position_t, tp1_done=done)
             max_hold = max_hold_action(pos)
             if max_hold is not None and not any(a.kind == "CLOSE" for a in actions):
                 actions = [a for a in actions if a.kind == "ALERT" and a.reason == "LIQUIDATION_PROXIMITY"]

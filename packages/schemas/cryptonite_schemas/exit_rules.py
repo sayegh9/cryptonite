@@ -99,17 +99,54 @@ class ExitAction:
     reason: str
 
 
+@dataclass(frozen=True)
+class EnforcedTp1:
+    """The TP1 the exit monitor enforces: ``price`` (None: no TP1), the share it scales out and where it comes from:
+    PROFILE_R (entry +/- ``tp_r`` x the entry-to-structural-stop distance) or ENTRY_TARGET (the entry's own target)."""
+
+    price: float | None
+    scale_pct: float
+    basis: str  # PROFILE_R | ENTRY_TARGET | NONE
+    tp_r: float | None = None
+
+    def text(self, card_target: float | None = None, *, from_fill: bool = True) -> str:
+        """One line for cards and system messages, e.g. "TP1 (50% at 2R): 76100.18 from the fill; card target
+        76388.88 is informational"."""
+        if self.price is None:
+            return "No TP1 is enforced (no usable stop or target)."
+        where = "from the fill" if from_fill else "estimated from the entry price; recomputed from the fill"
+        if self.basis == "PROFILE_R":
+            head = f"TP1 ({self.scale_pct:g}% at {self.tp_r:g}R): {self.price:.10g} {where}"
+            same = card_target is not None and abs(card_target - self.price) <= abs(self.price) * 1e-9
+            tail = "" if card_target is None or same else f"; card target {card_target:.10g} is informational"
+            return head + tail
+        return f"TP1 ({self.scale_pct:g}% at the card target): {self.price:.10g}"
+
+
+def enforced_tp1(side: str, entry: float | None, stop: float | None, target: float | None,
+                 tp_r: float | Decimal | None = None, scale_pct: float | Decimal | None = None) -> EnforcedTp1:
+    """The one TP1 rule (ADR 0011 D13), for the exit monitor and every display: with a profile R and a stop on the loss
+    side of ``entry`` it is entry +/- tp_r x |entry - stop|; otherwise the entry's own target. Scale: the profile's
+    ``exit_tp1_scale_pct``, else 50%."""
+    scale = float(scale_pct) if scale_pct is not None else 50.0
+    long = (side or "LONG").upper() in ("LONG", "BUY")
+    if tp_r is not None and entry and stop and entry > 0 and (stop < entry if long else stop > entry):
+        risk = abs(entry - stop)
+        return EnforcedTp1(entry + risk * float(tp_r) * (1 if long else -1), scale, "PROFILE_R", float(tp_r))
+    if target:
+        return EnforcedTp1(float(target), scale, "ENTRY_TARGET")
+    return EnforcedTp1(None, scale, "NONE")
+
+
 def apply_profile_exit_levels(pos: Position) -> Position:
-    """Set profile TP1 from its structural stop, preserving legacy behavior without a usable profile R (ADR 0011 D13)."""
+    """Set profile TP1 from its structural stop, preserving legacy behavior without a usable profile R (ADR 0011 D13).
+    The level is ``enforced_tp1``'s, the same number the Brain card and its messages show."""
     if not pos.ai_owned or pos.profile_tp_r is None or pos.stop_price is None or pos.entry_price <= 0:
         return pos
-    risk = abs(pos.entry_price - pos.stop_price)
-    if risk <= 0 or (pos.side == "LONG" and pos.stop_price >= pos.entry_price) or (
-        pos.side == "SHORT" and pos.stop_price <= pos.entry_price
-    ):
+    tp1 = enforced_tp1(pos.side, pos.entry_price, pos.stop_price, None, pos.profile_tp_r, pos.profile_tp1_scale_pct)
+    if tp1.basis != "PROFILE_R":
         return pos
-    target = pos.entry_price + risk * float(pos.profile_tp_r) * (1 if pos.side == "LONG" else -1)
-    return replace(pos, take_profit_price=target)
+    return replace(pos, take_profit_price=tp1.price)
 
 
 def position_thresholds(pos: Position, global_thresholds: ExitThresholds) -> ExitThresholds:

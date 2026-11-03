@@ -275,6 +275,7 @@ async def test_a_buy_that_would_size_is_ok_and_approve_queues_that_size(h, worke
     pre = await ask(h, sid)
     assert pre.status_code == 200, pre.text
     body = pre.json()
+    assert body.pop("tp1")["basis"] in ("PROFILE_R", "ENTRY_TARGET", "NONE")  # H11: the enforced TP1 (own tests)
     assert body == {"ok": True, "mandate": {"id": str(m.id), "name": name, "status": "ACTIVE"}, "side": "BUY",
                     "allocation_pct": float(pct), "budget_usd": float(usd.replace(",", "")), "clipped_from_pct": None,
                     "sell_quantity": None, "summary": f"BUY BTCUSDT.BINANCE MARKET at {pct}% of mandate {name} (${usd})"}

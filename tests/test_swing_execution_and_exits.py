@@ -5,9 +5,9 @@ Covers:
    and ignores invalid stop_price (e.g. above entry on a LONG).
 2. evaluate_exit triggers REDUCE_TP1 when pos.take_profit_price is reached and tp1_done=False,
    and does not re-trigger when tp1_done=True.
-3. monitor_once against the migrated test DB enqueues a 50% SUBMIT_ORDER SELL when
+3. monitor_once against the migrated test DB enqueues a 50% CLOSE_POSITION (owner-scoped quantity) when
    take_profit_price is reached (from either execution_commands.payload proposed_take_profit
-   or Redis exit:plan:{instrument}:{owner}), and sets exit:tp1:{pos.key}.
+   or Redis exit:plan:{instrument}:{owner}), and sets exit:tp1:{pos.key} only once that close completed (H11).
 4. Brain OrderCardWidget / approve_order_card with side="SELL" and reduce_pct=50 queues an order
    for 50% of the mandate's holding and updates the summary accordingly, while reduce_pct=None
    still sells 100%.
@@ -253,7 +253,7 @@ async def seed_position(
     )
 
 
-async def test_monitor_once_enqueues_50pct_sell_on_tp1_from_command_payload(db_url):
+async def test_monitor_once_enqueues_50pct_close_on_tp1_and_marks_done_only_after_it_completed(db_url):
     pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
     try:
         inst_id = "AI_DEBATE_WORKER"
@@ -284,7 +284,7 @@ async def test_monitor_once_enqueues_50pct_sell_on_tp1_from_command_payload(db_u
             "SELECT count(*) FROM execution_commands WHERE requester_id = 'risk:exit_monitor'"
         ) == 0
 
-        # Price hits 105.0 (TP1) -> enqueues 50% SUBMIT_ORDER SELL
+        # Price hits 105.0 (TP1) -> enqueues a 50% CLOSE_POSITION
         await em.monitor_once(pool, redis, quote_book(105.0, BTC))
 
         rows = await pool.fetch(
@@ -292,23 +292,28 @@ async def test_monitor_once_enqueues_50pct_sell_on_tp1_from_command_payload(db_u
         )
         assert len(rows) == 1
         cmd = rows[0]
-        assert cmd["command_type"] == "SUBMIT_ORDER"
+        assert cmd["command_type"] == "CLOSE_POSITION"
         assert cmd["target_instance_id"] == inst_id
         payload = json.loads(cmd["payload"])
         assert payload["instrument_id"] == BTC
-        assert payload["side"] == "SELL"
-        assert payload["order_type"] == "MARKET"
+        assert "side" not in payload and "order_type" not in payload
         assert Decimal(payload["quantity"]) == Decimal("0.1")  # 50% of 0.2
         assert payload["reason"] == "TAKE_PROFIT_1"
         assert payload["source"] == "exit_monitor_tp1"
+        assert not [k for k in redis.kv if k.startswith("exit:tp1:")]  # queued is not done
 
-        # Check exit:tp1 key set in Redis
-        tp1_keys = [k for k in redis.kv if k.startswith("exit:tp1:")]
-        assert len(tp1_keys) == 1
-        assert redis.kv[tp1_keys[0]] == "1"
-
-        # Subsequent monitor_once does not duplicate the scale-out
+        # Pending: no duplicate, still not done
         await em.monitor_once(pool, redis, quote_book(106.0, BTC))
+        assert await pool.fetchval(
+            "SELECT count(*) FROM execution_commands WHERE requester_id = 'risk:exit_monitor'"
+        ) == 1
+        assert not [k for k in redis.kv if k.startswith("exit:tp1:")]
+
+        # Completed (the legacy AI owner books no profile EXIT row): the next cycle marks TP1 done
+        await pool.execute("UPDATE execution_commands SET status = 'COMPLETED' WHERE requester_id = 'risk:exit_monitor'")
+        await em.monitor_once(pool, redis, quote_book(106.0, BTC))
+        tp1_keys = [k for k in redis.kv if k.startswith("exit:tp1:")]
+        assert len(tp1_keys) == 1 and redis.kv[tp1_keys[0]] == "1"
         assert await pool.fetchval(
             "SELECT count(*) FROM execution_commands WHERE requester_id = 'risk:exit_monitor'"
         ) == 1
@@ -377,7 +382,7 @@ async def test_monitor_once_enqueues_tp1_from_redis_exit_plan_override(db_url):
         )
         assert len(rows) == 1
         payload = json.loads(rows[0]["payload"])
-        assert payload["side"] == "SELL"
+        assert rows[0]["command_type"] == "CLOSE_POSITION"
         assert Decimal(payload["quantity"]) == Decimal("0.2")  # 50% of 0.4
         assert payload["reason"] == "TAKE_PROFIT_1"
     finally:

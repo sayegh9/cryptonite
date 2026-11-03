@@ -1254,6 +1254,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           </div>
         );
       })()}
+      {preflight?.ok && preflight.tp1?.price != null && (
+        <p role="note" data-testid="order-card-enforced-tp1" className="mt-2 text-emerald-300">
+          Enforced {preflight.tp1.text}
+        </p>
+      )}
       {/* The paused-mandate notice already says this refusal: the dry-run line does not repeat it */}
       {preflight && !(mandateBlock && !preflight.ok && /^MANDATE_(PAUSED|HALTED)/.test(preflight.code)) && (
         <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />

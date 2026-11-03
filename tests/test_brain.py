@@ -1415,8 +1415,10 @@ def test_the_brain_prompt_states_a_debate_outcome_only_from_its_system_line():
     from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
 
     prompt = " ".join(BRAIN_INSTRUCTIONS.split())
-    rule = ("4. A full multi-agent debate: stage_debate_proposal (it queues a debate; its card follows the run. State a "
-            "verdict, no-trade or not-run only from a `<system_event>` 'Debate for …' line).")
+    rule = ("4. A full multi-agent debate: stage_debate_proposal (it queues a debate and the debate worker starts it "
+            "automatically: never say it is staged or waiting for the operator to start it; say it is queued or running "
+            "and that its result will appear in the debate card when it finishes. State a verdict, no-trade or not-run "
+            "only from a `<system_event>` 'Debate for …' line).")
     assert rule in prompt and "decision still needs approval" not in prompt
     assert prompt.index("3. Backtests:") < prompt.index(rule) < prompt.index("5. Orders:")
 

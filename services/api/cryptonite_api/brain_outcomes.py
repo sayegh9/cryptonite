@@ -14,6 +14,8 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from cryptonite_schemas.exit_rules import enforced_tp1
+
 # Execution states a card can show after APPROVED; FILLED and NOT_EXECUTED are final
 FOLLOWED = ("APPROVED", "WORKING")
 FINAL = ("FILLED", "NOT_EXECUTED")
@@ -62,12 +64,32 @@ async def command_outcome(conn, command_id: str) -> dict[str, Any] | None:
     filled = Decimal(str(order["filled_qty"] or 0))
     fill = {"filled_qty": _num(order["filled_qty"]), "avg_fill_price": _num(order["avg_fill_price"])}
     if order["status"] in DONE_ORDER:
-        return {"state": "FILLED", **fill}
+        return {"state": "FILLED", **fill, **_fill_tp1(payload, order["avg_fill_price"])}
     if order["status"] in DEAD_ORDER:
         if filled > 0:  # partly filled, then the rest was cancelled: a position exists
-            return {"state": "FILLED", **fill, "reason": f"partly filled; the rest was {order['status'].lower()}"}
+            return {"state": "FILLED", **fill, **_fill_tp1(payload, order["avg_fill_price"]),
+                    "reason": f"partly filled; the rest was {order['status'].lower()}"}
         return {"state": "NOT_EXECUTED", "reason": order["reject_reason"] or f"order {order['status'].lower()}"}
     return {"state": "WORKING", "limit_price": _num(order["price"]), **fill}
+
+
+def _fill_tp1(payload: dict[str, Any], fill_price: Any) -> dict[str, Any]:
+    """H11: the TP1 the exit monitor enforces, recomputed from the actual fill (``exit_rules.enforced_tp1``, its own
+    rule), for an entry queued with the mandate's TP1 settings (``tp1_r``). Empty otherwise."""
+    if payload.get("tp1_r") is None or fill_price is None or payload.get("reduce_only"):
+        return {}
+    side = str(payload.get("side") or "").upper()
+    perp = "-PERP" in str(payload.get("instrument_id") or "").upper()
+    if side not in ("BUY", "SELL") or (side == "SELL" and not perp):
+        return {}
+    stop = payload.get("proposed_stop_loss") or payload.get("stop_loss")
+    target = payload.get("proposed_take_profit")
+    try:
+        tp1 = enforced_tp1("LONG" if side == "BUY" else "SHORT", float(fill_price), float(stop) if stop else None,
+                           float(target) if target else None, payload["tp1_r"], payload.get("tp1_scale_pct"))
+    except (TypeError, ValueError):
+        return {}
+    return {"tp1_text": tp1.text(float(target) if target else None)}
 
 
 def outcome_line(card: dict[str, Any], out: dict[str, Any]) -> str:
@@ -76,8 +98,9 @@ def outcome_line(card: dict[str, Any], out: dict[str, Any]) -> str:
     cmd = card.get("command_id")
     if out["state"] == "FILLED":
         extra = f" ({out['reason']})" if out.get("reason") else ""
+        tp1 = f" {out['tp1_text']}." if out.get("tp1_text") else ""
         return (f"Order for card {card['id']} FILLED: {what}, {out.get('filled_qty')} at {out.get('avg_fill_price')}"
-                f"{extra}. Paper command {cmd}.")
+                f"{extra}. Paper command {cmd}.{tp1}")
     if out["state"] == "WORKING":
         return (f"Order for card {card['id']} is WORKING: {what} limit at {out.get('limit_price')}, not filled yet. "
                 f"Paper command {cmd}.")

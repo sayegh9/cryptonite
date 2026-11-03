@@ -211,7 +211,8 @@ def test_a_refused_connection_falls_through_to_the_next_url(monkeypatch):
     result, calls = _stage(monkeypatch, [urllib.error.URLError(ConnectionRefusedError(111, "refused")),
                                             json.dumps({"id": "1-0"}).encode()])
     assert len(calls) == 2
-    assert result == "Success: Proposal staged to Action Inbox (Msg ID: 1-0)"
+    assert result.startswith("Success: Debate queued (Msg ID: 1-0).")
+    assert "starts it automatically" in result and "waiting for the operator" in result
 
 
 def test_a_non_connection_failure_does_not_try_another_url(monkeypatch):

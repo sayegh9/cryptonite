@@ -24,6 +24,11 @@ docker run --rm --memory 2g -v deploy-main/data/analytics_lake:/lake:ro  (+ the 
     `exit_tp_r` 2.00, `exit_tp1_scale_pct` 50, trail and max hold NULL; no exit thresholds stored), so the trade
     expires at the label horizon (15m 24 h, 1h 72 h, 4h 168 h);
   - **preset**: `net_r_preset`, the preset's own stop and target.
+- **Live spot TP1 has never happened.** Until this PR the exit monitor sent a spot TP1 as a `SUBMIT_ORDER` SELL
+  with no mandate, and the orchestrator refused it `MANDATE_REQUIRED` on every attempt since 2026-10-18. The
+  `exit:tp1` flag was set anyway, so TP1 was never retried. Live spot TP1 starts only with this fix (an owner-scoped
+  `CLOSE_POSITION`, as perps already used). The replay assumes the fixed behaviour, so spot longs replayed here are
+  not what past live spot trades did: those kept the whole position until a stop, the trail or the operator closed it.
 - Bars are the signal timeframe (15m / 1h). Inside a bar the path is open → adverse extreme → favourable extreme →
   close, so a bar that touches a stop and TP1 counts as the stop.
 - Train / test is chronological: data 2026-04-15 → 2026-11-03 12:45 UTC, cutoff 2026-08-28 00:30 UTC (2/3). Train

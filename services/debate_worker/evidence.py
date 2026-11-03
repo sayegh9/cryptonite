@@ -31,6 +31,7 @@ from cryptonite_execution.related_positions import (
     read_related_positions,
     related_instruments,
 )
+from cryptonite_schemas.exit_rules import enforced_tp1
 from cryptonite_schemas.profile import (
     Market,
     base_asset,
@@ -199,6 +200,10 @@ async def _positions_item(pg_pool, redis, instrument_id: str) -> dict[str, Any]:
                 except Exception:
                     p["stop"] = p["take_profit"] = None
                     p["protection_note"] = "stop/target could not be read"
+                try:
+                    await _enforced_tp1(conn, p)
+                except Exception:
+                    p["tp1"] = p["tp1_text"] = None
     except Exception as e:
         logger.warning("Related positions unreadable for %s: %s", instrument_id, e)
         return item(ERROR, None, source="paper_positions", unit="base asset",
@@ -333,12 +338,28 @@ def _fmt(v: Any) -> str:
     return str(v)
 
 
+async def _enforced_tp1(conn, p: dict[str, Any]) -> None:
+    """H11: the TP1 the exit monitor enforces on this position (``exit_rules.enforced_tp1`` with its profile's
+    ``exit_tp_r`` / ``exit_tp1_scale_pct``), which differs from the entry's target when the profile sets an R."""
+    tp_r = scale = None
+    if p.get("mandate_id"):
+        row = await conn.fetchrow("SELECT exit_tp_r, exit_tp1_scale_pct FROM ai_mandates WHERE id = $1::uuid",
+                                  p["mandate_id"])
+        if row is not None:
+            tp_r, scale = row["exit_tp_r"], row["exit_tp1_scale_pct"]
+    entry = float(p["entry_price"]) if p.get("entry_price") else None
+    tp1 = enforced_tp1(p["side"], entry, p.get("stop"), p.get("take_profit"), tp_r, scale)
+    p["tp1"] = tp1.price
+    p["tp1_text"] = tp1.text(p.get("take_profit")) if tp1.price is not None else None
+
+
 def _position_line(p: dict[str, Any]) -> str:
     owner = (f'profile {json.dumps(p["mandate_name"])}' if p.get("mandate_name")
              else ("an AI profile" if p.get("mandate_id") else f"owner {p.get('owner_instance')}"))
     return (f"- Existing {position_label(p)} open: {_fmt(p.get('quantity'))} {p['instrument_id']} @ "
             f"{_fmt(p.get('entry_price'))}, stop {_fmt(p.get('stop'))}, take profit {_fmt(p.get('take_profit'))}, "
-            f"leverage {p.get('leverage')}x, {owner}, opened {p.get('opened_at')}")
+            + (f"enforced {p['tp1_text']}, " if p.get("tp1_text") else "")
+            + f"leverage {p.get('leverage')}x, {owner}, opened {p.get('opened_at')}")
 
 
 def _status(it: dict[str, Any] | None) -> str:

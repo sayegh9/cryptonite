@@ -239,6 +239,8 @@ export type CardPreflight =
       high_leverage_confirm?: boolean;
       /** The mandate's own maximum cut the request: raising it (TOTP) would allow what was asked */
       leverage_remedy?: LeverageRemedy | null;
+      /** H11: the TP1 the exit monitor will enforce (profile R from entry and stop), not the card's target */
+      tp1?: EnforcedTp1 | null;
     }
   | {
       ok: false;
@@ -249,6 +251,15 @@ export type CardPreflight =
       leverage_plan?: LeveragePlan | null;
       needs_totp?: boolean;
     };
+
+export interface EnforcedTp1 {
+  price: number | null;
+  scale_pct: number;
+  tp_r: number | null;
+  basis: "PROFILE_R" | "ENTRY_TARGET" | "NONE";
+  /** e.g. "TP1 (50% at 2R): 76100.18 estimated from the entry price; recomputed from the fill; card target … is informational" */
+  text: string;
+}
 
 export interface LeverageRemedy {
   kind: "RAISE_MAX_LEVERAGE";
