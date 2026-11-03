@@ -36,6 +36,7 @@ VIEWS = {
         "run_id", "instrument_id", "status", "trigger_source", "created_at", "completed_at", "failure_reason",
         "mandate_id", "decision_trace_id", "recommendation", "conviction_score", "conviction_level",
         "allocation_pct", "decision_price", "reasoning",
+        "candidate_id",  # migration 061 (H10): the scanner candidate a run debated
     ],
     "agent_safe_open_approvals": [
         "id", "mandate_id", "action_class", "command_type", "summary", "source", "level_at_creation",
@@ -44,6 +45,8 @@ VIEWS = {
     "agent_safe_reflections": [
         "id", "run_id", "instrument_id", "timeframe", "volatility_regime", "outcome", "actual_outcome_pnl",
         "alpha_vs_benchmark", "lessons_learned", "created_at", "kind", "recall_excluded",
+        # migration 061 (H10): a Brain-card TRADE lesson's entry command, card and scanner candidate (ids only)
+        "entry_command_id", "brain_card_id", "candidate_id",
     ],
     "agent_safe_risk_latches": ["environment", "account_id", "is_latched", "latched_at", "reason"],
     "agent_safe_daily_loss": ["account_id", "utc_trading_day", "daily_realized_pnl", "daily_loss_latched"],
