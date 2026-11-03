@@ -38,7 +38,7 @@ const turnWith = (card: Record<string, unknown>) => sse([
   ["widget", { widget: { kind: "price_chart", id: "call-0", symbol: "BTCUSDT", timeframe: "4h" } }],
   ["token", { text: "BTC reclaimed 60k on the 4H. " }],
   ["tool_call", { id: "call-1", tool: "propose_order", args: {}, phase: "start", status: "RUNNING" }],
-  ["tool_call", { id: "call-1", tool: "propose_order", phase: "end", status: "DENIED" }],
+  ["tool_call", { id: "call-1", tool: "propose_order", phase: "end", status: "HELD_FOR_APPROVAL" }],
   ["widget", { widget: card }],
   ["token", { text: "The order card is waiting for your approval." }],
   [
@@ -111,7 +111,7 @@ async function mockBackend(page: Page) {
           status: "OK", error: null, cost_usd: "0.012300", latency_ms: 4200, created_at: "2026-09-25T10:01:00Z",
           tool_calls: [
             { tool: "show_price_chart", risk: "READ", args: { symbol: "BTCUSDT" }, status: "OK" },
-            { tool: "propose_order", risk: "ADD_RISK", args: { side: "BUY", quantity: 0.01 }, status: "DENIED" },
+            { tool: "propose_order", risk: "ADD_RISK", args: { side: "BUY", quantity: 0.01 }, status: "HELD_FOR_APPROVAL" },
           ],
           output: "BTC reclaimed 60k on the 4H.",
         },

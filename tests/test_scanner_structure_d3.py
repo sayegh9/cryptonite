@@ -695,9 +695,10 @@ async def test_worker_pre_insert_rr_rejection_gate(admin, db_url, monkeypatch):
         spec_version_id=ver_id,
         instrument_id="BTCUSDT.BINANCE",
         timeframe="15m",
-        bar_open_ns=now_ts - 30 * ONE_MINUTE_NS,
-        bar_close_inclusive_ns=now_ts - 15 * ONE_MINUTE_NS - 1_000_000,
-        interval_end_exclusive_ns=now_ts - 15 * ONE_MINUTE_NS,
+        # H9: on the same (newest) bar as the rejected one: a live scan stores only the bar it counts
+        bar_open_ns=now_ts - 15 * ONE_MINUTE_NS,
+        bar_close_inclusive_ns=now_ts - 1_000_000,
+        interval_end_exclusive_ns=now_ts,
         matched_rules=["rule_high_rr"],
         metrics={"stop_type": "donchian_low", "target_type": "htf_donchian_high", "risk_reward_ratio": 2.00},
         suggested_entry=Decimal("100.00"),
@@ -841,7 +842,7 @@ async def test_integration_stream_message_mixed_universe_5m_15m(admin, db_url, m
                 instrument_id=instrument_id,
                 timeframe=timeframe,
                 bar_open_ns=now_ts - 15 * ONE_MINUTE_NS,
-                bar_close_inclusive_ns=now_ts - 1000,
+                bar_close_inclusive_ns=now_ts - 1_000_000,  # the resampler's bar close (H9: live scans store only it)
                 interval_end_exclusive_ns=now_ts,
                 matched_rules=["rule_test"],
                 metrics={"stop_type": "donchian_low", "target_type": "atr_fallback", "risk_reward_ratio": 2.0},

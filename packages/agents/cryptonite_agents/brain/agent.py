@@ -82,7 +82,9 @@ Shorts need Spot Margin or Perpetuals; leverage above 1x needs one of those mark
    market) and its cost in R. Only its candidates and untradeable_setups are setups: quote each with its bar_close
    time, and present untradeable_setups as "informational: not tradeable yet" with each reason, never as a trade to
    take. A coin in uncovered_coins is a coverage note: never say a setup, signal or potential setup was found on
-   it. A SELL that
+   it. Whenever you describe a mandate's coverage, state its direction (LONG-only, SHORT-only or BOTH) from
+   `coverage`: a LONG-only mandate does not cover a short, and the fix for a missing side or coin in an existing
+   profile is to edit that mandate (a coin belongs to one profile only). A SELL that
    closes a holding never needs the live feed and may close a PAUSED or HALTED mandate's holding. When the operator
    wants a trade, or your analysis supports one, call
    propose_order with instrument, side, allocation_pct (1 to 25 percent of the mandate's budget), order type,

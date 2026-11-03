@@ -339,7 +339,7 @@ def widget_for_tool(
             backtest_id = str(args.get("backtest_id") or metrics.get("backtest_id") or "latest")
             return TearsheetWidget(id=call_id, backtest_id=backtest_id, metrics=metrics).model_dump()
         if active_tool == "propose_order":
-            # The gate holds ADD_RISK for approval (status DENIED): that is exactly when the card shows
+            # The gate holds ADD_RISK for approval (status HELD_FOR_APPROVAL): that is exactly when the card shows
             # A ``lessons`` argument from the model is dropped here: the Brain sets the field from the reader alone
             card = OrderCardWidget(id=call_id, trace_id=trace_id,
                                    **{k: v for k, v in args.items() if k not in SERVER_CARD_FIELDS})

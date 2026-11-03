@@ -77,7 +77,7 @@ function ToolChips({ message }: { message: BrainMessage }) {
       {expanded && (
         <ul className="flex flex-wrap gap-1 border-t border-zinc-800/60 px-2.5 py-1.5" aria-label="Tools used">
           {message.toolCalls.map((c) => {
-            const held = c.status === "DENIED";
+            const held = c.status === "HELD_FOR_APPROVAL";
             return (
               <li
                 key={c.id}
@@ -91,7 +91,9 @@ function ToolChips({ message }: { message: BrainMessage }) {
               >
                 {c.status === "RUNNING" ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Wrench className="h-2.5 w-2.5" />}
                 <span>{TOOL_LABELS[c.tool] ?? c.tool}</span>
-                <span className="text-zinc-400">{held ? "held for approval" : c.status === "RUNNING" ? "running" : "done"}</span>
+                <span className="text-zinc-400">
+                  {held ? "held for approval" : c.status === "RUNNING" ? "running" : c.status === "DENIED" ? "denied" : "done"}
+                </span>
               </li>
             );
           })}

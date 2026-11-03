@@ -99,7 +99,8 @@ SCOPES = [{"name": "BTC perp", "instruments": ["BTCUSDT-PERP.BINANCE"], "markets
 
 def test_a_scan_setup_routes_only_to_a_mandate_side_and_market():
     route, why = tools._setup_route("BTCUSDT.BINANCE", "SHORT", SCOPES)
-    assert why is None and route == {"mandate": "BTC perp", "market": "PERP", "instrument_id": "BTCUSDT-PERP.BINANCE"}
+    assert why is None and route == {"mandate": "BTC perp", "mandate_direction": "BOTH", "market": "PERP",
+                                     "instrument_id": "BTCUSDT-PERP.BINANCE"}
     route, why = tools._setup_route("ETHUSDT.BINANCE", "LONG", SCOPES)
     assert route["market"] == "SPOT" and route["instrument_id"] == "ETHUSDT.BINANCE"
     route, why = tools._setup_route("ETHUSDT.BINANCE", "SHORT", SCOPES)

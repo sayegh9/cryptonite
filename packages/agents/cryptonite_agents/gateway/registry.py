@@ -50,3 +50,7 @@ def get_tool(name: str) -> ToolSpec:
 
 def registered_tools() -> dict[str, ToolSpec]:
     return dict(_REGISTRY)
+
+
+# The answer the gate gives a call it holds for the operator (an order card): recorded as HELD_FOR_APPROVAL, not DENIED
+HELD_FOR_APPROVAL_PREFIX = "Held for approval"

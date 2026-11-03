@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import duckdb
+from cryptonite_scanner.freshness import fresh_row_age_s
 from cryptonite_schemas.identifiers import to_perp_instrument_id
 from cryptonite_schemas.mandate import DEFAULT_PROFIT_LOCK_PCT, canonical_instrument
 from cryptonite_schemas.profile import underlying_spot
+from cryptonite_schemas.reward_risk import meets_min_rr
 from cryptonite_schemas.session import session_verdict
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from sqlalchemy import create_engine, text
@@ -78,19 +80,7 @@ def query_postgres_readonly(sql: str) -> str:
     except Exception as e:
         return f"Database Error: {e}"
 
-# H7a: the scanner evidence a debate reads. A candidate is fresh while its bar closed at most about 3 bars of its
-# timeframe ago, never more than SCANNER_MAX_AGE_S; only live scans count (scan_runs.trigger_reason). A manual Scanner
-# Studio run or a priming run stores old bars' signals with a new created_at: debates argued over those as if live.
-SCANNER_MAX_AGE_S = 4 * 3600
-SCANNER_FRESH_BARS = 3
-LIVE_SCAN_TRIGGER = "COMMITTED_BAR_EVENT"
-_TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
-
-
-def scanner_max_age_s(timeframe: str) -> int:
-    """How old a candidate's bar close may be for a debate to read it: 3 bars of its timeframe, capped at 4 h."""
-    tf_s = _TF_SECONDS.get(str(timeframe or "").lower())
-    return SCANNER_MAX_AGE_S if tf_s is None else min(SCANNER_FRESH_BARS * tf_s, SCANNER_MAX_AGE_S)
+# H7a/H9: a stored scanner candidate's freshness (bar-close age, live scans only) is cryptonite_scanner.freshness.
 
 
 def _scanner_rows(instrument_id: str) -> list[dict[str, Any]]:
@@ -106,6 +96,10 @@ def _scanner_rows(instrument_id: str) -> list[dict[str, Any]]:
            LIMIT 50""", {"inst": inst, "venue_id": venue_id})
 
 
+def _exact_price(value: Any) -> Any:
+    return float(value) if isinstance(value, Decimal | float | int) and not isinstance(value, bool) else value
+
+
 def fresh_scanner_candidates(rows: list[dict[str, Any]], now_s: float) -> tuple[list[dict[str, Any]], float | None]:
     """The live candidates whose bar closed recently enough, newest first, and the age in hours of the newest
     candidate of any kind (None without one). A row from a non-live scan, or one stored long after its bar closed
@@ -116,26 +110,20 @@ def fresh_scanner_candidates(rows: list[dict[str, Any]], now_s: float) -> tuple[
     newest_h = None
     for r in rows:
         close_s = int(r["bar_close_inclusive_ns"]) / 1e9
-        age_s = now_s - close_s
-        newest_h = age_s / 3600 if newest_h is None else min(newest_h, age_s / 3600)
-        max_age = scanner_max_age_s(r["timeframe"])
-        created = r.get("created_at")
-        created_s = created.timestamp() if isinstance(created, datetime.datetime) else None
+        newest_h = (now_s - close_s) / 3600 if newest_h is None else min(newest_h, (now_s - close_s) / 3600)
+        age_s = fresh_row_age_s(r, now_s)
+        if age_s is None:
+            continue
         trigger = r.get("trigger_reason")
-        if trigger is not None and trigger != LIVE_SCAN_TRIGGER:
-            continue
-        if created_s is not None and created_s - close_s > max_age:
-            continue  # stored long after its bar closed: a backfill, not a live signal
-        if age_s > max_age:
-            continue
         metrics = r.get("metrics") if isinstance(r.get("metrics"), dict) else {}
         side = candidate_direction({**metrics, "suggested_entry": r["suggested_entry"],
                                     "suggested_stop": r["suggested_stop"]})
         fresh.append({
             "timeframe": r["timeframe"], "side": side, "age_minutes": round(age_s / 60, 1),
             "bar_close": datetime.datetime.fromtimestamp(close_s, tz=datetime.UTC).isoformat(timespec="seconds"),
-            "entry": _json_value(r["suggested_entry"]), "stop": _json_value(r["suggested_stop"]),
-            "target": _json_value(r["suggested_target"]),
+            # H9: the stored levels exactly (six significant figures made a 1.5R setup read as 1.4999R)
+            "entry": _exact_price(r["suggested_entry"]), "stop": _exact_price(r["suggested_stop"]),
+            "target": _exact_price(r["suggested_target"]),
             "source": metrics.get("preset_slug") or metrics.get("spec_slug") or trigger or "scanner",
         })
     return fresh, newest_h
@@ -154,6 +142,25 @@ def get_scanner_context(instrument_id: str) -> str:
     newest = "none stored" if newest_h is None else f"newest is {newest_h:.1f} h old"
     return json.dumps({"instrument_id": instrument_id, "fresh_candidates": [],
                        "message": f"no fresh scanner candidate for {instrument_id} ({newest})"})
+
+
+SCANNER_EVIDENCE_MAX = 5
+
+
+def scanner_evidence(instrument_id: str) -> dict[str, Any]:
+    """H9: the fresh scanner setups a debate's analysts always get (side, entry, stop, target, age), read on the spot
+    instrument the scanner stores candidates on (a '-PERP' debate reads its spot coin). Never raises."""
+    spot = instrument_id
+    try:
+        spot = underlying_spot(instrument_id)
+        fresh, newest_h = fresh_scanner_candidates(_scanner_rows(spot), time.time())
+    except Exception:
+        logger.warning("Scanner setups unavailable for %s", spot, exc_info=True)
+        return {"scanner_instrument": spot, "fresh_setups": [], "note": "scanner setups could not be read"}
+    if fresh:
+        return {"scanner_instrument": spot, "fresh_setups": fresh[:SCANNER_EVIDENCE_MAX]}
+    newest = "none stored" if newest_h is None else f"newest is {newest_h:.1f} h old"
+    return {"scanner_instrument": spot, "fresh_setups": [], "note": f"none fresh ({newest})"}
 
 
 RECENT_BARS_MAX = 200
@@ -795,9 +802,10 @@ def run_execution_analysis(snapshot_json: str) -> str:
 
 def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: str, conviction_score: float, reasoning: str) -> str:
     """
-    Stages a proposed trading strategy into the AI Brain Action Inbox for user approval.
-    Use this when you have formulated a strategy that you believe should be executed.
-    This routes the proposal through the Debate Pipeline and strict risk guardrails.
+    Queues a full multi-agent debate on the instrument and timeframe; its verdict then needs the operator's approval.
+    The debate is independent: only the instrument and timeframe reach the debaters. Your recommendation,
+    conviction_score and reasoning stay in this chat (shown on the debate card) and are never passed to the
+    analysts, so they cannot anchor on your verdict.
     """
     import errno
     import json
@@ -806,10 +814,11 @@ def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: st
     import urllib.error
     import urllib.request
     
+    # H9: facts only. The Brain's verdict (recommendation, score, reasoning) used to go in custom_thesis, and the
+    # "independent" debate then argued over the Brain's own answer. No custom_thesis from the Brain.
     payload = {
         "symbol": instrument_id,
         "timeframe": timeframe,
-        "custom_thesis": f"Recommendation: {recommendation}\nScore: {conviction_score}\nReasoning: {reasoning}",
         "origin": "brain",
     }
     
@@ -1550,6 +1559,8 @@ def get_derivatives_context(symbol: str = "BTCUSDT") -> str:
 
 
 DERIVATIVES_FIELDS = ("funding_rate", "open_interest", "mark_price")
+FUNDING_SETTLEMENT_NOTE = ("funding settles every 8 hours: this settled rate stays the current one until the next "
+                           "settlement, so an age under 8 h is not stale")
 
 
 def _ns_iso(ns: Any) -> str:
@@ -1594,10 +1605,20 @@ def derivatives_evidence(instrument_id: str, now_s: float | None = None) -> dict
         except (KeyError, TypeError, ValueError) as e:
             return {"unavailable": f"malformed derivatives value ({type(e).__name__})"}
 
+    # H9: funding settles every 8 h, so the last settlement is current until the next one: label it so (analysts
+    # called a 5 h old settlement stale) and add the rate in force and next settlement time when the feed has them
+    nxt = (_ns_iso(mark["next_funding_time_ns"]) if mark.get("next_funding_time_ns")
+           else mark.get("next_funding_time"))
+    upcoming = {k: v for k, v in (("predicted_next_rate", _num(mark.get("funding_rate"))
+                                   if mark.get("funding_rate") not in (None, "") else None),
+                                  ("next_settlement_at", nxt)) if v is not None}
     out["funding_rate"] = field(lambda: (
-        _evidence_field(funding[0]["funding_rate"], funding[0]["funding_time"], now_s, kind="last settlement")
+        _evidence_field(funding[0]["funding_rate"], funding[0]["funding_time"], now_s,
+                        kind=f"last 8h settlement (settled at {funding[0]['funding_time']})",
+                        note=FUNDING_SETTLEMENT_NOTE, **upcoming)
         if funding else
-        _evidence_field(mark["funding_rate"], mark_ts, now_s, kind="rate in force")
+        _evidence_field(mark["funding_rate"], mark_ts, now_s, kind="rate in force (predicted for the next settlement)",
+                        **({"next_settlement_at": nxt} if nxt else {}))
         if mark.get("funding_rate") not in (None, "") else None))
     out["open_interest"] = field(lambda: _evidence_field(oi["open_interest"], oi_ts, now_s, unit="base asset")
                                  if oi.get("open_interest") not in (None, "") else None)
@@ -1947,7 +1968,7 @@ def card_setup_grade(card: dict[str, Any]) -> dict[str, Any] | None:
                                 float(card["take_profit"]))).as_dict()
 
 
-SCANNER_SETUP_WINDOW_H = 4  # scanner setups younger than this join the swing scan
+SCANNER_SETUP_WINDOW_H = 4  # the SQL prefilter on bar close; fresh_row_age_s decides per timeframe (<= 4 h)
 SCANNER_SETUP_MAX_DRIFT = 0.025  # ...while the price is still within 2.5% of their entry
 
 
@@ -1964,9 +1985,12 @@ def _swing_score(direction: str, trend_4h: str, trend_1h: str, trend_15m: str) -
 
 
 def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """The latest setup per instrument, preset and timeframe that the system scanner stored in the last
-    SCANNER_SETUP_WINDOW_H hours, shaped like a swing candidate. Only ``target_inst`` when it is given."""
-    where = f"c.created_at > now() - interval '{SCANNER_SETUP_WINDOW_H} hours'"
+    """The latest fresh setup per instrument, preset and timeframe that the system scanner stored, shaped like a swing
+    candidate. Only ``target_inst`` when it is given. H9: fresh by its bar close (``fresh_row_age_s``: about 3 bars
+    of its timeframe, at most SCANNER_SETUP_WINDOW_H hours, live scans only), never by ``created_at``: a rescan
+    after a lake repair stores old bars with a new ``created_at``."""
+    where = (f"c.bar_close_inclusive_ns > ((extract(epoch FROM now()) - {SCANNER_SETUP_WINDOW_H} * 3600) * 1e9)::bigint"
+             " AND (r.trigger_reason IS NULL OR r.trigger_reason = 'COMMITTED_BAR_EVENT')")
     if target_inst:
         where += " AND c.instrument_id = '" + target_inst.replace("'", "''") + "'"
     # Global scanner specs put no slug in metrics: the spec's own slug (through its version) fills it in
@@ -1974,13 +1998,13 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
     sql = (f"SELECT DISTINCT ON (c.instrument_id, c.timeframe, {slug}) "
            f"c.instrument_id, c.timeframe, {slug} AS preset_slug, "
            "c.suggested_entry, c.suggested_stop, c.suggested_target, c.matched_rules, c.metrics->>'price' AS price, "
-           "c.bar_close_inclusive_ns, "
-           "extract(epoch FROM now() - c.created_at)::int / 60 AS age_minutes "
+           "c.bar_close_inclusive_ns, c.created_at, r.trigger_reason "
            "FROM signal_candidates c "
+           "LEFT JOIN scan_runs r ON r.id = c.scan_run_id "
            "LEFT JOIN scan_spec_versions v ON v.id = c.spec_version_id "
            "LEFT JOIN scan_specs s ON s.id = v.spec_id "
            f"WHERE {where} "
-           f"ORDER BY c.instrument_id, c.timeframe, {slug}, c.created_at DESC "
+           f"ORDER BY c.instrument_id, c.timeframe, {slug}, c.bar_close_inclusive_ns DESC "
            "LIMIT 50")
     try:
         rows = _readonly_rows(sql)
@@ -1988,7 +2012,14 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
         logger.warning("Could not read the recent scanner setups; the swing scan shows its own only: %s", e)
         return []
     out: list[dict[str, Any]] = []
+    now_s = time.time()
     for r in rows:
+        try:
+            age_s = fresh_row_age_s(r, now_s)
+        except (TypeError, ValueError, KeyError):
+            continue
+        if age_s is None:
+            continue  # an old bar (or a non-live scan): history, not a setup
         try:
             entry, stop, target = (float(r["suggested_entry"]), float(r["suggested_stop"]),
                                    float(r["suggested_target"]))
@@ -2025,7 +2056,7 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
             "trend_15m": trend_15m,
             "matched_rules": [str(x) for x in (rules or [])][:4],
             "source": "scanner",
-            "age_minutes": int(r.get("age_minutes") or 0),
+            "age_minutes": int(age_s // 60),
             "bar_close": _ns_iso(r.get("bar_close_inclusive_ns")),
         }
         if frames:
@@ -2079,6 +2110,22 @@ def _owners(spot_inst: str, scopes: list[dict[str, Any]]) -> list[dict[str, Any]
     return [m for m in scopes if any(underlying_spot(i) == spot_inst for i in m.get("instruments") or [])]
 
 
+_DIRECTION_LABEL = {"LONG": "LONG-only", "SHORT": "SHORT-only", "BOTH": "BOTH"}
+
+
+def direction_label(direction: Any) -> str:
+    """H9: a mandate's direction as the Brain must state it with its coverage: LONG-only, SHORT-only or BOTH."""
+    return _DIRECTION_LABEL.get(str(direction or "").upper(), f"unknown direction ({direction})")
+
+
+def mandate_coverage(scopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """H9: each ACTIVE mandate's coins, markets and direction, so coverage is never described without its side."""
+    return [{"mandate": m.get("name"), "direction": direction_label(m.get("direction")),
+             "markets": list(m.get("markets") or []),
+             "coins": sorted({underlying_spot(i).split(".")[0] for i in m.get("instruments") or []})}
+            for m in scopes]
+
+
 def _setup_route(spot_inst: str, side: str, scopes: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
     """Where a scan setup would trade: ({mandate, market, instrument_id}, None) when an ACTIVE mandate owns the coin
     in a market that allows the setup's side (``allows_side`` and ``select_market``, the profile rules at 1x), else
@@ -2095,10 +2142,10 @@ def _setup_route(spot_inst: str, side: str, scopes: list[dict[str, Any]]) -> tup
         except ValueError:
             market = None
         if market is not None:
-            return {"mandate": m["name"], "market": market.value,
-                    "instrument_id": instrument_for(spot_inst, market)}, None
-    scopes_text = "; ".join(f"{m['name']}: {m['direction']}, {', '.join(m.get('markets') or []) or 'no market'}"
-                            for m in owners)
+            return {"mandate": m["name"], "mandate_direction": direction_label(m.get("direction")),
+                    "market": market.value, "instrument_id": instrument_for(spot_inst, market)}, None
+    scopes_text = "; ".join(f"{m['name']}: {direction_label(m.get('direction'))}, "
+                            f"{', '.join(m.get('markets') or []) or 'no market'}" for m in owners)
     return None, f"no ACTIVE mandate allows a {side.lower()} on {coin} ({scopes_text})"
 
 
@@ -2108,7 +2155,7 @@ async def scan_swing_setups(
     max_results: int = 5,
     symbol: str | None = None,
 ) -> str:
-    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, or 'all'), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups. `rejections` counts why each coin and preset gave no candidate on its latest bar."""
+    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, or 'all'), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups; `coverage` lists each ACTIVE mandate's coins, markets and direction (LONG-only, SHORT-only or BOTH). `rejections` counts why each coin and preset gave no candidate on its latest bar."""
     import polars as pl
     from cryptonite_scanner.engine import ScannerEngine
     from cryptonite_scanner.models import RiskConfig
@@ -2363,10 +2410,14 @@ async def scan_swing_setups(
             route, why = _setup_route(inst, c["direction"], scopes)
         else:  # a discovery coin, or a stored scanner match on a coin outside the tradeable set
             route, why = None, why_uncovered.get(inst) or f"no ACTIVE mandate covers {inst.split('.')[0]}"
-        if c["rr_ratio"] < SCAN_MIN_RR:
+        rr_ok = meets_min_rr(c["rr_ratio"], SCAN_MIN_RR)
+        if not rr_ok:
             rejections.append({"coin": inst.split(".")[0], "preset_slug": c["preset_slug"],
                                "timeframe": c["timeframe"], "outcome": "REJECTED_RR"})
-        if route is None or c["rr_ratio"] < SCAN_MIN_RR:
+        if route is not None and rr_ok and c.get("setup_grade") == "NO_TRADE":
+            # H9: a setup this same scan grades NO_TRADE is never listed as tradeable
+            route, why = None, "graded NO_TRADE: " + "; ".join(c.get("grade_reasons") or ["no reason given"])
+        if route is None or not rr_ok:
             untradeable_setups.append({
                 "instrument_id": inst, "preset_slug": c["preset_slug"], "timeframe": c["timeframe"],
                 "direction": c["direction"], "entry": c["entry"], "stop": c["stop"], "target": c["target"],
@@ -2393,6 +2444,7 @@ async def scan_swing_setups(
         "timeframe": timeframe,
         "candidates": deduped,
         "scanned_count": len(bars_by_inst),
+        "coverage": mandate_coverage(scopes),
         "uncovered_coins": uncovered_coins[:NOT_TRADEABLE_LIMIT],
         "untradeable_setups": untradeable_setups[:NOT_TRADEABLE_LIMIT],
         "rejections": _rejection_summary(rejections),

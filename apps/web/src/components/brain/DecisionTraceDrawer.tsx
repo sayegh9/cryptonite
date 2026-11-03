@@ -108,9 +108,9 @@ export function DecisionTraceDrawer() {
               {trace.tool_calls.map((c, i) => (
                 <Step
                   key={i}
-                  icon={c.status === "DENIED" ? <ShieldAlert className="h-3 w-3 text-amber-400" /> : <Wrench className="h-3 w-3 text-cyan-400" />}
+                  icon={c.status === "HELD_FOR_APPROVAL" || c.status === "DENIED" ? <ShieldAlert className="h-3 w-3 text-amber-400" /> : <Wrench className="h-3 w-3 text-cyan-400" />}
                   title={`Tool · ${c.tool}`}
-                  meta={`${c.risk ?? ""} ${c.status === "DENIED" ? "held for approval" : c.status}`.trim()}
+                  meta={`${c.risk ?? ""} ${c.status === "HELD_FOR_APPROVAL" ? "held for approval" : c.status}`.trim()}
                 >
                   {c.args && Object.keys(c.args).length > 0 && (
                     <pre className="whitespace-pre-wrap break-all text-2xs text-zinc-500">{JSON.stringify(c.args)}</pre>

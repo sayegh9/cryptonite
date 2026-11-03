@@ -46,6 +46,7 @@ from cryptonite_schemas.profile import (
     preset_timeframes,
     underlying_spot,
 )
+from cryptonite_schemas.reward_risk import meets_min_rr
 from cryptonite_storage.queries import AnalyticsQueryEngine
 
 BRIEF_TTL_S = 2 * 3600
@@ -123,9 +124,22 @@ def latest_bar_outcome(df: Any, candidates: list[Any], now_ns: int) -> tuple[int
     min_rr = Decimal(str(MIN_RISK_REWARD_RATIO))
     for c in on_bar:
         risk = abs(c.suggested_entry - c.suggested_stop)
-        if risk > Decimal("0") and abs(c.suggested_target - c.suggested_entry) / risk >= min_rr:
+        if risk > Decimal("0") and meets_min_rr(abs(c.suggested_target - c.suggested_entry) / risk, min_rr):
             return newest, "MATCHED_FRESH"
     return newest, "REJECTED_RR"
+
+
+def live_store_candidates(df: Any, candidates: list[Any]) -> list[Any]:
+    """H9: the matches a live (committed-bar) evaluation may store: only those on the newest closed bar, the one
+    ``latest_bar_outcome`` counts. ``evaluate`` re-reads the whole lookback, so a rescan after a lake repair stored
+    old bars' matches as new rows (36 on 11-02, e.g. an ETH 15m bar of 10-31), and a later run could store a bar its
+    own evaluation had counted NO_TRIGGER (indicators drift as the lookback window moves). A stored candidate is
+    therefore always counted as a trigger by the run that stored it. Queueing for debate still needs ``is_fresh``;
+    manual and priming runs keep their history (not filtered here)."""
+    if df is None or df.is_empty() or "bar_close_inclusive_ns" not in df.columns:
+        return []
+    newest = int(df["bar_close_inclusive_ns"].max())
+    return [c for c in candidates if c.bar_close_inclusive_ns == newest]
 
 
 def eval_bucket(bar_close_ns: int) -> datetime:
@@ -1044,11 +1058,12 @@ class ScannerWorker:
                         )
                     else:
                         raise
-                all_candidates.extend(candidates)
                 if count_evals:
                     latest = latest_bar_outcome(enriched_df, candidates, time.time_ns())
                     if latest is not None:
                         eval_counts.append((eval_bucket(latest[0]), inst, tf, count_slug, count_side, latest[1]))
+                    candidates = live_store_candidates(enriched_df, candidates)
+                all_candidates.extend(candidates)
 
             if inst in frames_by_inst:
                 for extra_tf in source_timeframes:
@@ -1078,7 +1093,7 @@ class ScannerWorker:
             risk = abs(c.suggested_entry - c.suggested_stop)
             reward = abs(c.suggested_target - c.suggested_entry)
             derived_rr = (reward / risk) if risk > Decimal("0") else Decimal("0")
-            if derived_rr < min_rr_dec:
+            if not meets_min_rr(derived_rr, min_rr_dec):
                 # H5: a rejection on an old bar (the history re-read on every close) is debug noise
                 (logger.info if is_fresh(c, now_ns) else logger.debug)(
                     "Rejected candidate %s for %s %s at %d: R:R %.4f < %.2f "

@@ -412,7 +412,8 @@ export type BrainWidget =
   | SwingRadarWidget
   | ProfileProposalWidget;
 
-export type ToolCallStatus = "RUNNING" | "OK" | "DENIED" | "UNKNOWN";
+// HELD_FOR_APPROVAL: the gate staged the call as an order card for the operator; DENIED: a real guard refusal
+export type ToolCallStatus = "RUNNING" | "OK" | "HELD_FOR_APPROVAL" | "DENIED" | "ERROR" | "UNKNOWN";
 
 export interface BrainToolCall {
   id: string;
