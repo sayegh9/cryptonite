@@ -354,11 +354,16 @@ async def backfill_net_labels(pool, lake, limit: int = 300) -> int:
     return len(updates)
 
 
-async def backfill_live_labels(pool, lake, limit: int = 300, *, dry_run: bool = False) -> list[tuple]:
+async def backfill_live_labels(pool, lake, limit: int = 300, *, dry_run: bool = False,
+                               now: datetime.datetime | None = None) -> list[tuple]:
     """Fill the 062 columns on one batch of existing labels, oldest signal first. Idempotent: only rows with
     ``live_exit_model IS NULL`` are read and written (the 055 / 057 columns are never touched), so repeated passes
     walk forward to the newest. ``dry_run`` computes the batch and writes nothing. Returns the computed rows
-    ``(candidate_id, net_r_live, live_outcome, live_bars, live_exit_model)``."""
+    ``(candidate_id, net_r_live, live_outcome, live_bars, live_exit_model)``. A window below ``MIN_COVERAGE`` is
+    skipped (and retried) until ``NO_DATA_AFTER`` past its end, then recorded NO_DATA."""
+    from outcomes import MIN_COVERAGE
+
+    now = now or datetime.datetime.now(datetime.UTC)
     async with pool.acquire() as conn:
         live_by_base, live_t = await load_live_exit_context(conn)
         rows = await conn.fetch(
@@ -381,9 +386,15 @@ async def backfill_live_labels(pool, lake, limit: int = 300, *, dry_run: bool = 
             continue
         for r, start, end in items:
             w = _window(bars, start, end)
-            # No bars left in the lake: the model is recorded anyway so the walk moves on; net R stays NULL.
-            live = live_label(w if w is not None else [], r["direction"], float(r["stop"]), float(r["target"]), 1 / 60,
-                              _settings_for(live_by_base, r["instrument_id"]), live_t)
+            settings = _settings_for(live_by_base, r["instrument_id"])
+            if w is None or w.height < int(r["max_hold_hours"]) * 60 * MIN_COVERAGE:
+                # A partial window would label a trade whose stop bar is missing: retried while the lake may still be
+                # repaired, then recorded NO_DATA (net R NULL) so the oldest-first walk moves on
+                if datetime.datetime.fromtimestamp(end / 1e9, datetime.UTC) + NO_DATA_AFTER >= now:
+                    continue
+                updates.append((r["candidate_id"], None, "NO_DATA", None, settings.model_name(live_t)))
+                continue
+            live = live_label(w, r["direction"], float(r["stop"]), float(r["target"]), 1 / 60, settings, live_t)
             updates.append((r["candidate_id"], _dec(live["net_r_live"]), live["live_outcome"], live["live_bars"],
                             live["live_exit_model"]))
     if updates and not dry_run:

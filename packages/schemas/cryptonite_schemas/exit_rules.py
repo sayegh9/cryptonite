@@ -112,6 +112,10 @@ class EnforcedTp1:
     def text(self, card_target: float | None = None, *, from_fill: bool = True) -> str:
         """One line for cards and system messages, e.g. "TP1 (50% at 2R): 76100.18 from the fill; card target
         76388.88 is informational"."""
+        if self.price is None and self.basis == "PROFILE_R":
+            tail = f"; card target {card_target:.10g} is informational" if card_target is not None else ""
+            return (f"TP1 ({self.scale_pct:g}% at {self.tp_r:g}R): set from the fill and the structural stop when the "
+                    f"order fills{tail}")
         if self.price is None:
             return "No TP1 is enforced (no usable stop or target)."
         where = "from the fill" if from_fill else "estimated from the entry price; recomputed from the fill"
@@ -133,6 +137,9 @@ def enforced_tp1(side: str, entry: float | None, stop: float | None, target: flo
     if tp_r is not None and entry and stop and entry > 0 and (stop < entry if long else stop > entry):
         risk = abs(entry - stop)
         return EnforcedTp1(entry + risk * float(tp_r) * (1 if long else -1), scale, "PROFILE_R", float(tp_r))
+    if tp_r is not None and stop and not entry:
+        # no entry price yet (a market card): the monitor still sets TP1 from the fill, never the card target
+        return EnforcedTp1(None, scale, "PROFILE_R", float(tp_r))
     if target:
         return EnforcedTp1(float(target), scale, "ENTRY_TARGET")
     return EnforcedTp1(None, scale, "NONE")
@@ -263,7 +270,7 @@ class LiveExitSettings:
 class LiveExit:
     """The replayed trade: ``fills`` are (fraction of the position, price, bars held), oldest first."""
 
-    outcome: str  # STRUCTURAL_STOP | HARD_STOP | TRAILING_STOP | MAX_HOLD | EXPIRED | INVALID | NO_DATA
+    outcome: str  # STRUCTURAL_STOP | HARD_STOP | TRAILING_STOP | MAX_HOLD | TP1_FULL | EXPIRED | INVALID | NO_DATA
     entry: float | None = None
     fills: list[tuple[float, float, int]] = field(default_factory=list)
     tp1_bars: int | None = None
@@ -338,8 +345,12 @@ def simulate_live_exit(bars: list[dict[str, Any]], direction: str, stop: float |
             if close is not None:
                 crossed = [(lv, r) for lv, r in levels if (p <= lv if long else p >= lv)] or [(p, close.reason)]
                 level, reason = max(crossed) if long else min(crossed)
-                # the path reaches the nearest crossed level first; a bar opening beyond it fills at the open
-                price = p if k == 0 else (min(prev, max(p, level)) if long else max(prev, min(p, level)))
+                # the path reaches the nearest crossed level first; a bar opening beyond it fills at the open, and
+                # there the monitor sees the gapped price at once, so its own reason (HARD_STOP first) stands
+                if k == 0:
+                    price, reason = p, close.reason
+                else:
+                    price = min(prev, max(p, level)) if long else max(prev, min(p, level))
                 out.outcome = reason
                 out.fills.append((remaining, price, n))
                 return out
@@ -350,6 +361,9 @@ def simulate_live_exit(bars: list[dict[str, Any]], direction: str, stop: float |
                 out.tp1_bars = n
                 remaining -= frac
                 tp1_done = True
+                if remaining <= 1e-12:  # a 100% scale-out closes the trade there
+                    out.outcome = "TP1_FULL"
+                    return out
             prev = p
         if max_hold_action(pos, now_ts=pos.opened_ts + n * bar_seconds) is not None:
             out.outcome = "MAX_HOLD"

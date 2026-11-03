@@ -50,6 +50,7 @@ class Decision:
     entry: float
     stop: float
     net_r: dict[str, float | None]
+    exit_at_live: datetime | None = None  # net_r_live's own exit (live_bars one-minute bars after the signal)
 
 
 @dataclass(slots=True)
@@ -148,7 +149,8 @@ def simulate(decisions: list[Decision], policy: str, exit_set: str, *, seed: int
         notional, risk_usd = sized
         r_units = risk_usd / (equity * RISK_PCT)  # a capped or half-size trade risks less than 1R
         pnl = r * risk_usd
-        open_pos[d.instrument_id] = (d.exit_at, pnl, r * r_units)
+        exit_at = d.exit_at_live if exit_set == "net_r_live" and d.exit_at_live is not None else d.exit_at
+        open_pos[d.instrument_id] = (exit_at, pnl, r * r_units)
         res.trades += 1
         res.net_r += r * r_units
         res.net_pnl += pnl
@@ -164,7 +166,8 @@ QUERY = """
 SELECT pd.candidate_id::text, pd.policy, pd.decision, COALESCE(pd.side, co.direction) AS side,
        COALESCE(pd.size_factor, 1) AS size_factor, sc.instrument_id, sc.timeframe, sc.interval_end_exclusive_ns,
        COALESCE(co.entry_next_open, co.entry, sc.suggested_entry) AS entry, COALESCE(co.stop, sc.suggested_stop) AS stop,
-       co.bars_to_exit, co.max_hold_hours, co.net_r_preset, co.net_r_profile, co.net_r_live
+       co.bars_to_exit, co.max_hold_hours, co.net_r_preset, co.net_r_profile, co.net_r_live,
+       co.live_bars
 FROM policy_decisions pd
 JOIN signal_candidates sc ON sc.id = pd.candidate_id
 JOIN candidate_outcomes co ON co.candidate_id = pd.candidate_id
@@ -183,6 +186,8 @@ def to_decision(row) -> Decision:
         candidate_id=row["candidate_id"], policy=row["policy"], decision=row["decision"], side=row["side"],
         size_factor=float(row["size_factor"]), instrument_id=row["instrument_id"], entry_at=entry_at,
         exit_at=entry_at + hold, entry=float(row["entry"]), stop=float(row["stop"]),
+        exit_at_live=(entry_at + timedelta(minutes=max(int(row["live_bars"]), 1))
+                      if row["live_bars"] is not None else None),
         net_r={k: f(row[k]) for k in EXIT_SETS},
     )
 

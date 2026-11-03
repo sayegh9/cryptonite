@@ -7,6 +7,7 @@ price tracked as ``best_price_since_open`` does. Both must close at the same bar
 """
 
 import asyncio
+import datetime
 import sys
 import uuid
 from dataclasses import replace
@@ -236,7 +237,7 @@ def test_backfill_is_idempotent_and_leaves_the_057_columns():
             "INSERT INTO candidate_outcomes (candidate_id, direction, entry, stop, target, outcome, realized_r, "
             "bars_to_exit, max_hold_hours, entry_next_open, net_r_preset, net_r_profile, cost_model) "
             "VALUES ($1, 'LONG', 100, 99, 101.5, 'STOP', -1, 3, 24, 100, -1.3, -5.3, 'spot-v1')", cand)
-        bars = walk(100, 98.5)
+        bars = walk(100, 98.5) + flat(98.5, 1430)  # a full 24 h window (MIN_COVERAGE)
         lake = _Lake(pl.DataFrame([{**b, "ts_event_ns": start + (i + 1) * 60_000_000_000} for i, b in enumerate(bars)]))
         pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
         try:
@@ -251,6 +252,13 @@ def test_backfill_is_idempotent_and_leaves_the_057_columns():
             assert row["live_outcome"] == "STRUCTURAL_STOP" and row["live_bars"] == 10
             assert float(row["net_r_live"]) == pytest.approx(-1 - cost_in_r(100, 99, round_trip_cost_fraction("spot", 10 / 60)))
             assert row["live_exit_model"].startswith("live-v1 tp-r/50%")
+            # a partial window is not labelled while the lake may still be repaired, then it is NO_DATA
+            await conn.execute("UPDATE candidate_outcomes SET live_exit_model = NULL, live_outcome = NULL, "
+                               "net_r_live = NULL, live_bars = NULL")
+            short = _Lake(lake.bars.head(100))
+            assert await co.backfill_live_labels(pool, short, now=datetime.datetime(2026, 11, 3, tzinfo=datetime.UTC)) == []
+            late = await co.backfill_live_labels(pool, short, now=datetime.datetime(2026, 11, 20, tzinfo=datetime.UTC))
+            assert [(u[1], u[2]) for u in late] == [(None, "NO_DATA")]
         finally:
             await pool.close()
             await conn.close()
@@ -274,3 +282,26 @@ def test_brief_labels_the_old_replay_and_shows_the_live_parity_figure():
                 if x.startswith("Direction:"))
     assert "5%-stop model, not live exits" in line
     assert f"live-parity exits: {live['trades']} trades" in line and f"avg {live['avg_r']:+.2f}R" in line
+
+
+def test_a_gap_through_both_stops_keeps_the_monitors_reason():
+    bars = walk(100, 100.5) + [{"open": 94.0, "high": 94.2, "low": 93.5, "close": 94.0}]
+    sim = assert_parity(bars, "LONG", 96.0, 104.0, expect="HARD_STOP")  # evaluate_exit's reason at the gapped open
+    assert sim.fills[0][1] == 94.0
+
+
+def test_a_full_tp1_scale_out_ends_the_trade_there():
+    settings = LiveExitSettings(tp_r=2.0, tp1_scale_pct=100.0)
+    bars = walk(100, 102.4, 98.0)
+    sim = simulate_live_exit(bars, "LONG", 99.0, 101.5, settings=settings)
+    assert sim.outcome == "TP1_FULL" and len(sim.fills) == 1 and sim.fills[0][:2] == (1.0, pytest.approx(102.0))
+    assert sim.bars_to_exit == sim.tp1_bars
+
+
+def test_a_market_card_shows_the_profile_r_rule_not_the_card_target():
+    from cryptonite_schemas.exit_rules import enforced_tp1
+
+    tp1 = enforced_tp1("LONG", None, 99.0, 101.5, 2, 50)
+    assert (tp1.price, tp1.basis) == (None, "PROFILE_R")
+    assert tp1.text(101.5) == ("TP1 (50% at 2R): set from the fill and the structural stop when the order fills; "
+                               "card target 101.5 is informational")

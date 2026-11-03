@@ -212,7 +212,7 @@ def test_a_refused_connection_falls_through_to_the_next_url(monkeypatch):
                                             json.dumps({"id": "1-0"}).encode()])
     assert len(calls) == 2
     assert result.startswith("Success: Debate queued (Msg ID: 1-0).")
-    assert "starts it automatically" in result and "waiting for the operator" in result
+    assert "starts it automatically" in result and "nothing is waiting for the operator to start it" in result
 
 
 def test_a_non_connection_failure_does_not_try_another_url(monkeypatch):

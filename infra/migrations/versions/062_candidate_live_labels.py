@@ -15,7 +15,7 @@ the new columns.
 It also attributes a perp position closed by its resting stop in ``agent_safe_trade_timeline``: such a close has
 no closing command, so ``exit_price`` and ``close_reason`` were NULL (the BTC perp short closed 2026-11-03 13:29). The
 closing fill is now also found as the position's own filled STOP_MARKET paper order (its row is written when the stop
-is placed, just before ``opened_at``), and ``close_reason`` reads RESTING_STOP. The view is patched from Postgres' own
+is placed, just before ``opened_at``, and updated when it fills, after it), and ``close_reason`` reads RESTING_STOP. The view is patched from Postgres' own
 definition (as 061 does); the columns are unchanged, and past rows read right at once (nothing is stored).
 
 Follows H10's 061 (debate evidence snapshots); deploy 061 first.
@@ -31,10 +31,13 @@ depends_on: str | Sequence[str] | None = None
 
 
 _STOP = "((o.order_type)::text = 'STOP_MARKET'::text)"
+# the position's own stop: filled (its row updated) after this position opened, so an earlier position's stop placed
+# in the minute before ``opened_at`` never matches
+_OWN_STOP = f"({_STOP} AND (o.updated_at >= p.opened_at))"
 # (as pg_get_viewdef prints 048/061's text, new text): every one must be found, or the migration stops
 _TIMELINE_PATCHES = [
     ("SELECT o.avg_fill_price\n", "SELECT o.avg_fill_price, o.order_type\n"),
-    ("WHERE ((cl.command_id IS NOT NULL) AND ", f"WHERE (((cl.command_id IS NOT NULL) OR {_STOP}) AND "),
+    ("WHERE ((cl.command_id IS NOT NULL) AND ", f"WHERE (((cl.command_id IS NOT NULL) OR {_OWN_STOP}) AND "),
     ("(o.created_at >= cl.created_at)", "(o.created_at >= COALESCE(cl.created_at, (p.opened_at - '00:01:00'::interval)))"),
     ("(((cl.command_type)::text = 'CLOSE_POSITION'::text) OR ((o.client_order_id)::text = ",
      f"({_STOP} OR ((cl.command_type)::text = 'CLOSE_POSITION'::text) OR ((o.client_order_id)::text = "),
@@ -52,7 +55,7 @@ _TIMELINE_UNPATCHES = [
     (f"({_STOP} OR ((cl.command_type)::text = 'CLOSE_POSITION'::text) OR ((o.client_order_id)::text = ",
      "(((cl.command_type)::text = 'CLOSE_POSITION'::text) OR ((o.client_order_id)::text = "),
     ("(o.created_at >= COALESCE(cl.created_at, (p.opened_at - '00:01:00'::interval)))", "(o.created_at >= cl.created_at)"),
-    (f"WHERE (((cl.command_id IS NOT NULL) OR {_STOP}) AND ", "WHERE ((cl.command_id IS NOT NULL) AND "),
+    (f"WHERE (((cl.command_id IS NOT NULL) OR {_OWN_STOP}) AND ", "WHERE ((cl.command_id IS NOT NULL) AND "),
     ("SELECT o.avg_fill_price,\n            o.order_type\n", "SELECT o.avg_fill_price\n"),
 ]
 

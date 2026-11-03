@@ -359,8 +359,11 @@ def live_document(trades: list[dict[str, Any]], pairs: list[tuple[str, str]],
 def parse_live_exits(text: str) -> dict[str, LiveExitSettings]:
     """``--live-exits``: a JSON object (or a path to one) coin -> {tp_r, tp1_scale_pct, trail_activate_pct,
     trail_pct, max_hold_hours}; the key ``"*"`` applies to any other coin."""
-    path = Path(text)
-    raw = json.loads(path.read_text(encoding="utf-8") if path.is_file() else text)
+    try:
+        is_file = Path(text).is_file()
+    except OSError:  # inline JSON longer than a path component (ENAMETOOLONG) is still JSON
+        is_file = False
+    raw = json.loads(Path(text).read_text(encoding="utf-8") if is_file else text)
     return {coin.upper() if coin != "*" else coin: LiveExitSettings(**{k: v for k, v in cfg.items()})
             for coin, cfg in raw.items()}
 

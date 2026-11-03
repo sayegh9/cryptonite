@@ -24,14 +24,16 @@ db_url = tl.db_url  # the timeline suite's fixtures: one throwaway DB at head, a
 conn = tl.conn
 
 
-async def stop_order(conn, instance_id, client_order_id, side, created_at, qty, price, status="FILLED"):
-    """The resting stop's paper order: written when the stop is placed, filled (same row) when it triggers."""
+async def stop_order(conn, instance_id, client_order_id, side, created_at, qty, price, status="FILLED",
+                     filled_at=None):
+    """The resting stop's paper order: written when the stop is placed, filled (same row, ``updated_at``) when it
+    triggers."""
     await conn.execute(
         """INSERT INTO paper_orders (client_order_id, instance_id, account_id, instrument_id, side, order_type,
                quantity, filled_qty, avg_fill_price, status, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, 'STOP_MARKET', $6, $7, $8, $9, $10, $10)""",
+           VALUES ($1, $2, $3, $4, $5, 'STOP_MARKET', $6, $7, $8, $9, $10, $11)""",
         client_order_id, instance_id, ACCOUNT, XRP, side, qty, qty if status == "FILLED" else 0,
-        Decimal(str(price)) if status == "FILLED" else None, status, created_at,
+        Decimal(str(price)) if status == "FILLED" else None, status, created_at, filled_at or created_at,
     )
 
 
@@ -45,9 +47,9 @@ async def stopped_trade(conn, *, stop_status="FILLED"):
                           opened - timedelta(seconds=5), mid=mid)
     await order(conn, target, f"AI-{entry.hex[:12].upper()}", XRP, "BUY", opened - timedelta(seconds=4), 10, 0.5)
     # the stop row is written with the entry fill, a moment before the position row's opened_at
-    await stop_order(conn, target, "STOP-H11TEST0001", "SELL", opened - timedelta(milliseconds=100), 10, 0.47,
-                     status=stop_status)
     closed = opened + timedelta(hours=15) if stop_status == "FILLED" else None
+    await stop_order(conn, target, "STOP-H11TEST0001", "SELL", opened - timedelta(milliseconds=100), 10, 0.47,
+                     status=stop_status, filled_at=closed)
     return await position(conn, target, opened, qty=10, entry=0.5, realized=-0.3, closed_at=closed)
 
 
@@ -60,6 +62,23 @@ async def test_a_resting_stop_close_has_its_exit_price_and_reason(conn):
 async def test_an_open_position_with_a_resting_stop_has_no_exit(conn):
     r = await row(conn, await stopped_trade(conn, stop_status="ACCEPTED"))
     assert r["exit_price"] is None and r["close_reason"] is None
+
+
+async def test_an_earlier_positions_stop_never_closes_the_next_one(conn):
+    """Position 1 stopped out; position 2 opened within the minute: position 2 does not take position 1's stop."""
+    await account(conn)
+    mid = await mandate(conn, "two")
+    target = mandate_instance(mid)
+    await instance(conn, target)
+    first_open = NOW - timedelta(hours=3)
+    first_close = NOW - timedelta(hours=2, seconds=30)
+    await stop_order(conn, target, "STOP-H11TEST0004", "SELL", first_open - timedelta(milliseconds=100), 10, 0.45,
+                     filled_at=first_close)
+    await position(conn, target, first_open, qty=10, entry=0.5, realized=-0.5, closed_at=first_close)
+    second = await position(conn, target, first_close + timedelta(seconds=20), qty=10, entry=0.46, realized=0.2,
+                            closed_at=NOW - timedelta(hours=1))
+    r = await row(conn, second)
+    assert r["close_reason"] is None and r["exit_price"] is None
 
 
 async def test_a_command_close_still_wins_over_the_resting_stop(conn):

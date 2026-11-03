@@ -1244,7 +1244,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
                 <span className="text-zinc-500">R:R Geometry</span>
               )}
               <span className="text-emerald-400 font-semibold">
-                TP1: {fmt(widget.take_profit)}{refPrice ? ` (+${((Math.abs(widget.take_profit - refPrice) / refPrice) * 100).toFixed(1)}%)` : ""}
+                Target: {fmt(widget.take_profit)}{refPrice ? ` (+${((Math.abs(widget.take_profit - refPrice) / refPrice) * 100).toFixed(1)}%)` : ""}
               </span>
             </div>
             <div className="h-1.5 w-full flex rounded-full overflow-hidden bg-zinc-800">
@@ -1254,7 +1254,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           </div>
         );
       })()}
-      {preflight?.ok && preflight.tp1?.price != null && (
+      {preflight?.ok && preflight.tp1 && preflight.tp1.basis === "PROFILE_R" && (
         <p role="note" data-testid="order-card-enforced-tp1" className="mt-2 text-emerald-300">
           Enforced {preflight.tp1.text}
         </p>
