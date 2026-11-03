@@ -8,7 +8,8 @@ it is "blind". Blind time is counted per instrument (``exit_monitor:blind_s:<hou
 price source per position is published at ``exit_monitor:coverage`` for Mission Control; a CRITICAL
 NO_FRESH_QUOTE alert goes out once a position has been blind for ``BLIND_ALERT_CYCLES`` checks in a row.
 
-Every ``INTERVAL_S`` each open paper position is evaluated with pure rules (``evaluate_exit``):
+Every ``INTERVAL_S`` each open paper position is evaluated with pure rules (``evaluate_exit``; the rules live in
+``cryptonite_schemas.exit_rules``, which the candidate labeller also replays bar by bar, H11):
 - hard stop: loss >= ``STOP_LOSS_PCT`` at the live exit price (bid for longs, ask for shorts)
 - trailing stop: once the gain reached ``TRAIL_ACTIVATE_PCT``, a give-back of ``TRAIL_PCT`` from the
   best price seen since the position opened
@@ -52,6 +53,18 @@ from uuid import UUID
 import asyncpg
 import httpx
 import redis.asyncio as redis
+from cryptonite_schemas import exit_rules
+from cryptonite_schemas.exit_rules import (  # noqa: F401  (re-exported: the monitor's rules live in exit_rules)
+    AI_INSTANCE,
+    LIQ_ALERT_BUFFER_USED,
+    LIQ_CLOSE_BUFFER_USED,
+    ExitAction,
+    Position,
+    apply_profile_exit_levels,
+    max_hold_action,
+    position_thresholds,
+    tp1_reduce_quantity,
+)
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS, ExitThresholds, settled
 from cryptonite_schemas.mandate import mandate_id_from_instance
 from cryptonite_schemas.profile import Market, market_of, symbol_of, underlying_spot
@@ -68,7 +81,6 @@ logger = logging.getLogger("exit_monitor")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://cryptonite_api:api_dev_pass@127.0.0.1:5432/cryptonite")
 PAPER_ACCOUNT_ID = "PAPER-ACCOUNT-001"
-AI_INSTANCE = "AI_DEBATE_WORKER"
 HEARTBEAT_KEY = "exit_monitor:heartbeat"
 QUOTE_STREAM = "cryptonite:stream:ui_quote_tick"
 EXIT_DEBATE_QUEUE_MAXLEN = 10_000  # XADD trims the oldest entries (approximate); was unbounded (D1 / F-H2)
@@ -90,8 +102,6 @@ BLIND_S_KEY = "exit_monitor:blind_s:{hour}"  # hash: instrument -> blind seconds
 BLIND_S_TTL_S = 26 * 3600
 PROFILE_EXIT_CACHE_S = 30.0
 REST_TIMEOUT_S = 3.0
-LIQ_ALERT_BUFFER_USED = 0.5  # stop-to-liquidation buffer used: CRITICAL alert
-LIQ_CLOSE_BUFFER_USED = 0.75  # ... and a reduce-only close of an AI-owned perp (backup to the resting stop)
 SPOT_BOOK_TICKER_URL = "https://api.binance.com/api/v3/ticker/bookTicker"
 PERP_BOOK_TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/bookTicker"
 
@@ -200,157 +210,12 @@ async def load_profile_exits(conn, owners: list[str], redis_client=None) -> dict
             if mid in _profile_exit_cache and _profile_exit_cache[mid][1] is not None}
 
 
-@dataclass(frozen=True)
-class Position:
-    instrument_id: str
-    side: str  # LONG | SHORT
-    entry_price: float
-    current_price: float  # live exit price: bid for longs, ask for shorts
-    ai_owned: bool  # an AI owner's position the monitor may close (on a perp: the AI owns the whole instrument)
-    opened_ts: int = 0  # identity of the position (earliest open row), for per-position state
-    funding_rate: float | None = None
-    owner_instance: str = AI_INSTANCE  # the AI instance (legacy or a mandate's) whose rows these are
-    price_source: str = "STREAM"  # STREAM (live quote) | REST (backup: the stream quote was stale)
-    stop_price: float | None = None
-    take_profit_price: float | None = None
-    quantity: float = 0.0
-    shared: bool = False  # another owner also holds the instrument: a close sells only ``own_quantity``
-    own_quantity: str | None = None  # the owner's exact open quantity (decimal string), for a shared close
-    key_owner: bool = False  # the key names the owner: another owner's position opened in the same second
-    leverage: int = 1  # perps
-    liquidation_price: float | None = None  # perps: the snapshot written with the position (margin.py)
-    margin_level: float | None = None
-    margin_call_level: float | None = None
-    margin_liquidation_level: float | None = None
-    profile_tp_r: Decimal | None = None
-    profile_tp1_scale_pct: Decimal | None = None
-    profile_trail_activate_pct: Decimal | None = None
-    profile_trail_pct: Decimal | None = None
-    profile_max_hold_hours: int | None = None
-
-    @property
-    def liquidation_buffer_used(self) -> float | None:
-        """How much of the buffer between the stop (else the entry) and the liquidation price the price has used:
-        0 at the stop, 1 at liquidation, negative while on the safe side of the stop. None without a liquidation
-        price."""
-        liq = self.liquidation_price
-        if liq is None or liq <= 0 or not self.entry_price:
-            return None
-        long = self.side == "LONG"
-        stop_ok = self.stop_price is not None and (liq < self.stop_price if long else self.stop_price < liq)
-        ref = self.stop_price if stop_ok else self.entry_price
-        span = (ref - liq) if long else (liq - ref)
-        if span <= 0:
-            return None
-        return ((ref - self.current_price) if long else (self.current_price - ref)) / span
-
-    @property
-    def pnl_pct(self) -> float:
-        if not self.entry_price:
-            return 0.0
-        move = (self.current_price - self.entry_price) / self.entry_price * 100
-        return move if self.side == "LONG" else -move
-
-    @property
-    def key(self) -> str:
-        key = f"{self.instrument_id}:{self.side}:{self.opened_ts}"
-        return f"{key}:{self.owner_instance}" if self.key_owner else key
-
-
-@dataclass(frozen=True)
-class ExitAction:
-    kind: str  # CLOSE | EXIT_DEBATE | ALERT | REDUCE_TP1
-    reason: str
-
-
-def apply_profile_exit_levels(pos: Position) -> Position:
-    """Set profile TP1 from its structural stop, preserving legacy behavior without a usable profile R (ADR 0011 D13)."""
-    if not pos.ai_owned or pos.profile_tp_r is None or pos.stop_price is None or pos.entry_price <= 0:
-        return pos
-    risk = abs(pos.entry_price - pos.stop_price)
-    if risk <= 0 or (pos.side == "LONG" and pos.stop_price >= pos.entry_price) or (
-        pos.side == "SHORT" and pos.stop_price <= pos.entry_price
-    ):
-        return pos
-    target = pos.entry_price + risk * float(pos.profile_tp_r) * (1 if pos.side == "LONG" else -1)
-    return replace(pos, take_profit_price=target)
-
-
-def position_thresholds(pos: Position, global_thresholds: ExitThresholds) -> ExitThresholds:
-    """Apply per-profile trail values, falling back field-by-field to global thresholds (ADR 0011 D13)."""
-    activation = pos.profile_trail_activate_pct
-    trail = pos.profile_trail_pct
-    if activation is None and trail is None:
-        return global_thresholds
-    return replace(
-        global_thresholds,
-        trail_activate_pct=float(activation) if activation is not None else global_thresholds.trail_activate_pct,
-        trail_pct=float(trail) if trail is not None else global_thresholds.trail_pct,
-    )
-
-
-def max_hold_action(pos: Position, now_ts: float | None = None) -> ExitAction | None:
-    """Return the profile's reduce-only max-hold close when its holding deadline has passed (ADR 0011 D13)."""
-    if not pos.ai_owned or pos.profile_max_hold_hours is None or pos.opened_ts <= 0:
-        return None
-    now_ts = time.time() if now_ts is None else now_ts
-    if now_ts - pos.opened_ts >= pos.profile_max_hold_hours * 3600:
-        return ExitAction("CLOSE", "MAX_HOLD")
-    return None
-
-
-def tp1_reduce_quantity(pos: Position) -> str:
-    """Calculate a TP1 scale-out quantity using the profile percentage or the legacy 50% (ADR 0011 D13)."""
-    pct = pos.profile_tp1_scale_pct if pos.profile_tp1_scale_pct is not None else Decimal("50")
-    return format((Decimal(str(pos.quantity)) * Decimal(str(pct)) / Decimal("100")).normalize(), "f")
-
-
 def evaluate_exit(pos: Position, best_price: float, debate_armed: bool, in_drawdown_episode: bool = False,
                   t: ExitThresholds | None = None, tp1_done: bool = False) -> list[ExitAction]:
-    """Pure exit rules. ``best_price``: most favourable price since the position opened.
-    ``debate_armed``: no exit debate within the debounce window. ``in_drawdown_episode``: a drawdown
-    debate already ran and the loss has not recovered since. ``t``: the thresholds to apply (default: the
-    env-or-code defaults)."""
-    t = t or default_thresholds()
-    long = pos.side == "LONG"
-    if (pos.margin_level is not None and pos.margin_call_level is not None
-            and pos.margin_liquidation_level is not None):
-        close_at = pos.margin_liquidation_level + (pos.margin_call_level - pos.margin_liquidation_level) * 0.5
-        if pos.margin_level <= close_at:
-            return ([ExitAction("CLOSE", "MARGIN_LEVEL_PROXIMITY")] if pos.ai_owned
-                    else [ExitAction("ALERT", "MARGIN_LEVEL_PROXIMITY")])
-        if pos.margin_level <= pos.margin_call_level:
-            return [ExitAction("ALERT", "MARGIN_CALL")]
-    used = pos.liquidation_buffer_used
-    if used is not None and used >= LIQ_CLOSE_BUFFER_USED:
-        return [ExitAction("CLOSE", "LIQUIDATION_PROXIMITY")] if pos.ai_owned else [ExitAction("ALERT", "LIQUIDATION_PROXIMITY")]
-    proximity = [ExitAction("ALERT", "LIQUIDATION_PROXIMITY")] if used is not None and used >= LIQ_ALERT_BUFFER_USED else []
-    stop_reason = None
-    if pos.pnl_pct <= -t.stop_loss_pct:
-        stop_reason = "HARD_STOP"
-    elif pos.stop_price is not None and pos.stop_price > 0:
-        if (pos.stop_price < pos.entry_price and pos.current_price <= pos.stop_price) if long else (pos.stop_price > pos.entry_price and pos.current_price >= pos.stop_price):
-            stop_reason = "STRUCTURAL_STOP"
-    if stop_reason is None and pos.entry_price and best_price:
-        best_gain = (best_price - pos.entry_price) / pos.entry_price * 100 * (1 if long else -1)
-        give_back = (best_price - pos.current_price) / best_price * 100 * (1 if long else -1)
-        if best_gain >= t.trail_activate_pct and give_back >= t.trail_pct:
-            stop_reason = "TRAILING_STOP"
-    if stop_reason:
-        return proximity + ([ExitAction("CLOSE", stop_reason)] if pos.ai_owned else [ExitAction("ALERT", stop_reason)])
-    if proximity:
-        return proximity
-
-    if not tp1_done and pos.take_profit_price is not None and pos.take_profit_price > 0:
-        tp1_hit = (pos.take_profit_price > pos.entry_price and pos.current_price >= pos.take_profit_price) if long else (pos.take_profit_price < pos.entry_price and pos.current_price <= pos.take_profit_price)
-        if tp1_hit:
-            return [ExitAction("REDUCE_TP1", "TAKE_PROFIT_1")] if pos.ai_owned else [ExitAction("ALERT", "TAKE_PROFIT_1")]
-
-    funding_against = pos.funding_rate is not None and (pos.funding_rate if long else -pos.funding_rate) >= t.funding_spike
-    drawdown = pos.pnl_pct <= -t.debate_drawdown_pct and not in_drawdown_episode
-    if debate_armed and (drawdown or funding_against):
-        return [ExitAction("EXIT_DEBATE", "DRAWDOWN" if drawdown else "FUNDING_SPIKE")]
-    return []
+    """The pure exit rules (``cryptonite_schemas.exit_rules``, shared with the candidate labeller's live-parity
+    simulator, H11) under ``t``, default: the env-or-code defaults."""
+    return exit_rules.evaluate_exit(pos, best_price, debate_armed, in_drawdown_episode, t or default_thresholds(),
+                                    tp1_done=tp1_done)
 
 
 class QuoteBook:
@@ -736,49 +601,83 @@ def close_payload(pos: Position, reason: str) -> dict:
     return payload
 
 
+TP1_MAX_ATTEMPTS = 3  # reductions tried per position before the monitor gives up and pages (TP1_FAILED)
+# A TP1 reduction counts as done only when its command COMPLETED and a fill was booked: a mandate's close writes an
+# ai_profile_decisions EXIT row with the command id (record_profile_trade); the legacy AI owner books none, so there
+# COMPLETED is the evidence. A COMPLETED close that sold nothing counts as a failed attempt.
+_TP1_PROGRESS_SQL = """
+SELECT c.status, c.created_at,
+       (c.status = 'COMPLETED' AND ($2::boolean OR EXISTS (
+            SELECT 1 FROM ai_profile_decisions d WHERE d.command_id = c.command_id AND d.stage = 'EXIT'))) AS filled,
+       count(*) OVER () AS attempts
+FROM execution_commands c
+WHERE c.idempotency_key LIKE $1 || '%'
+ORDER BY c.created_at DESC
+LIMIT 1
+"""
+
+
+@dataclass(frozen=True)
+class Tp1Progress:
+    state: str  # NONE | PENDING | DONE | FAILED
+    attempts: int = 0
+    last_at: float | None = None
+
+
+async def tp1_progress(conn, pos: Position, reason: str = "TAKE_PROFIT_1") -> Tp1Progress:
+    """Where the position's TP1 reduction stands, from its commands (idempotency ``exit_monitor:<key>:<reason>:<n>``)."""
+    legacy = mandate_id_from_instance(pos.owner_instance) is None
+    row = await conn.fetchrow(_TP1_PROGRESS_SQL, f"exit_monitor:{pos.key}:{reason}", legacy)
+    if row is None:
+        return Tp1Progress("NONE")
+    attempts, last_at = int(row["attempts"]), row["created_at"].timestamp()
+    if row["status"] in ("REJECTED", "FAILED") or (row["status"] == "COMPLETED" and not row["filled"]):
+        return Tp1Progress("FAILED", attempts, last_at)
+    return Tp1Progress("DONE" if row["status"] == "COMPLETED" else "PENDING", attempts, last_at)
+
+
+def tp1_payload(pos: Position, quantity: str, reason: str = "TAKE_PROFIT_1") -> dict:
+    """The TP1 scale-out: a CLOSE_POSITION of ``quantity`` on every market, targeting the owner (the close path caps a
+    mandate at its own holding and reduces a perp reduce-only, keeping the resting stop), so it can never become a new
+    entry. A spot SUBMIT_ORDER SELL had no mandate and was refused MANDATE_REQUIRED every time (H11)."""
+    return {"instrument_id": pos.instrument_id, "quantity": quantity, "reason": reason, "source": "exit_monitor_tp1"}
+
+
 async def enqueue_tp1_reduce(conn, pos: Position, reason: str = "TAKE_PROFIT_1") -> bool:
-    """One TP1 scale-out per position; enqueues a reduction using profile scale or legacy 50% (ADR 0011 D13)."""
+    """One TP1 scale-out per position, using the profile scale or the legacy 50% (ADR 0011 D13). Nothing is queued while
+    one is pending or done; a failed one is retried after ``CLOSE_RETRY_AFTER_S``, at most ``TP1_MAX_ATTEMPTS`` times."""
     if pos.quantity <= 0:
         return False
     scale_quantity = Decimal(tp1_reduce_quantity(pos))
     if scale_quantity <= 0:
         return False
-    prefix = f"exit_monitor:{pos.key}:{reason}"
-    last = await conn.fetchrow(
-        "SELECT status, created_at FROM execution_commands WHERE idempotency_key LIKE $1 || '%' ORDER BY created_at DESC LIMIT 1",
-        prefix,
-    )
-    if last is not None:
-        if last["status"] not in ("REJECTED", "FAILED"):
-            return False  # pending, running or done
-        if time.time() - last["created_at"].timestamp() < CLOSE_RETRY_AFTER_S:
-            return False
-    attempts = await conn.fetchval("SELECT count(*) FROM execution_commands WHERE idempotency_key LIKE $1 || '%'", prefix)
-    scale_qty_str = format(scale_quantity, "f")
-    if market_of(pos.instrument_id) in (Market.PERP, Market.SPOT_MARGIN):
-        # A perp scales out through the close path with a quantity (a reduce-only fill of half, the resting stop
-        # stays for the rest): a SUBMIT_ORDER on the other side would be a new entry, not a reduction
-        command_type = "CLOSE_POSITION"
-        payload = {"instrument_id": pos.instrument_id, "quantity": scale_qty_str, "reason": reason,
-                   "source": "exit_monitor_tp1"}
-    else:
-        command_type = "SUBMIT_ORDER"
-        payload = {
-            "instrument_id": pos.instrument_id,
-            "side": "SELL" if pos.side == "LONG" else "BUY",
-            "order_type": "MARKET",
-            "quantity": scale_qty_str,
-            "reason": reason,
-            "source": "exit_monitor_tp1",
-        }
+    progress = await tp1_progress(conn, pos, reason)
+    if progress.state in ("PENDING", "DONE"):
+        return False
+    if progress.state == "FAILED" and (progress.attempts >= TP1_MAX_ATTEMPTS
+                                       or time.time() - (progress.last_at or 0) < CLOSE_RETRY_AFTER_S):
+        return False
     await conn.execute(
         """INSERT INTO execution_commands (command_id, idempotency_key, command_type, target_instance_id,
                requester_id, payload, status, environment, account_id)
-           VALUES ($1, $2, $6, $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
+           VALUES ($1, $2, 'CLOSE_POSITION', $3, 'risk:exit_monitor', $4::jsonb, 'PENDING', 'PAPER', $5)
            ON CONFLICT (idempotency_key) DO NOTHING""",
-        uuid.uuid4(), f"{prefix}:{attempts}", pos.owner_instance,
-        json.dumps(payload), PAPER_ACCOUNT_ID, command_type,
+        uuid.uuid4(), f"exit_monitor:{pos.key}:{reason}:{progress.attempts}", pos.owner_instance,
+        json.dumps(tp1_payload(pos, format(scale_quantity, "f"), reason)), PAPER_ACCOUNT_ID,
     )
+    return True
+
+
+async def tp1_done(conn, redis_client, pos: Position) -> bool:
+    """TP1 is done once ``exit:tp1:<key>`` is set, which happens here and only after the reduction filled."""
+    key = f"exit:tp1:{pos.key}"
+    if await redis_client.exists(key):
+        return True
+    if pos.take_profit_price is None or not pos.ai_owned:
+        return False
+    if (await tp1_progress(conn, pos)).state != "DONE":
+        return False
+    await redis_client.set(key, "1", ex=30 * 86400)
     return True
 
 
@@ -792,9 +691,19 @@ async def act(conn, redis_client, pos: Position, action: ExitAction) -> None:
             logger.warning("%s: closing %s %s (pnl %.2f%%)", action.reason, pos.side, pos.instrument_id, pos.pnl_pct)
     elif action.kind == "REDUCE_TP1":
         if await enqueue_tp1_reduce(conn, pos, action.reason):
-            await redis_client.set(f"exit:tp1:{pos.key}", "1", ex=30 * 86400)
             scale = pos.profile_tp1_scale_pct if pos.profile_tp1_scale_pct is not None else Decimal("50")
             logger.info("%s: reducing %s%% %s %s (pnl %.2f%%)", action.reason, scale, pos.side, pos.instrument_id, pos.pnl_pct)
+        else:
+            progress = await tp1_progress(conn, pos, action.reason)
+            if (progress.state == "FAILED" and progress.attempts >= TP1_MAX_ATTEMPTS and await redis_client.set(
+                    f"exit:alert:{pos.key}:TP1_FAILED", "1", nx=True, ex=ALERT_DEBOUNCE_S)):
+                logger.error("TP1 for %s %s failed %d times; not retried", pos.side, pos.instrument_id, progress.attempts)
+                await redis_client.publish("channel:system_alerts", json.dumps({
+                    "type": "EXIT_MONITOR", "severity": "CRITICAL", "instrument_id": pos.instrument_id,
+                    "action": "REDUCE_TP1", "reason": "TP1_FAILED", "attempts": progress.attempts,
+                    "message": (f"{pos.instrument_id} {pos.side}: the TP1 scale-out failed {progress.attempts} times "
+                                "and is not retried. The stops still apply; scale out by hand if wanted."),
+                }))
     elif action.kind == "EXIT_DEBATE":
         run_id = uuid.uuid4()
         await conn.execute(
@@ -857,8 +766,8 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
                 await redis_client.delete(episode_key)
             armed = not await redis_client.exists(f"debounce:exit:{pos.instrument_id}")
             in_episode = bool(await redis_client.exists(episode_key))
-            tp1_done = bool(await redis_client.exists(f"exit:tp1:{pos.key}"))
-            actions = evaluate_exit(pos, best, armed, in_episode, position_t, tp1_done=tp1_done)
+            done = await tp1_done(conn, redis_client, pos)
+            actions = evaluate_exit(pos, best, armed, in_episode, position_t, tp1_done=done)
             max_hold = max_hold_action(pos)
             if max_hold is not None and not any(a.kind == "CLOSE" for a in actions):
                 actions = [a for a in actions if a.kind == "ALERT" and a.reason == "LIQUIDATION_PROXIMITY"]

@@ -102,12 +102,13 @@ async def test_exit_monitor_tp1_on_a_perp_is_a_close_with_half_the_quantity():
                    take_profit_price=48000.0, quantity=0.04)
     assert await enqueue_tp1_reduce(conn, pos)
     args = conn.execute.call_args.args
-    assert args[6] == "CLOSE_POSITION"
+    assert "'CLOSE_POSITION'" in args[0]
     assert json.loads(args[4]) == {"instrument_id": "BTCUSDT-PERP.BINANCE", "quantity": "0.02",
                                    "reason": "TAKE_PROFIT_1", "source": "exit_monitor_tp1"}
 
 
-async def test_exit_monitor_tp1_on_spot_is_unchanged():
+async def test_exit_monitor_tp1_on_spot_is_an_owner_scoped_close_not_a_sell_order():
+    """H11: a spot SUBMIT_ORDER SELL carried no mandate and was refused MANDATE_REQUIRED every time."""
     conn = AsyncMock()
     conn.fetchrow.return_value = None
     conn.fetchval.return_value = 0
@@ -115,8 +116,9 @@ async def test_exit_monitor_tp1_on_spot_is_unchanged():
                    take_profit_price=0.55, quantity=100.0)
     assert await enqueue_tp1_reduce(conn, pos)
     args = conn.execute.call_args.args
-    assert args[6] == "SUBMIT_ORDER"
-    assert json.loads(args[4])["side"] == "SELL" and json.loads(args[4])["quantity"] == "50"
+    assert "'CLOSE_POSITION'" in args[0] and args[3] == "AI_MANDATE_x"
+    assert json.loads(args[4]) == {"instrument_id": "XRPUSDT.BINANCE", "quantity": "50", "reason": "TAKE_PROFIT_1",
+                                   "source": "exit_monitor_tp1"}
 
 
 async def test_position_side_makes_a_close_a_no_op_on_the_other_side_and_is_optional():

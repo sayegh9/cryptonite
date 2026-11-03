@@ -1,0 +1,2578 @@
+{
+  "assumptions": {
+    "bars": "signal timeframe; inside a bar open -> adverse extreme -> favourable extreme -> close, so a bar touching a stop and TP1 is a stop; stops fill at their level or at a gapping open",
+    "cost_model": "spot-v1 for LONG, perp-v1 for SHORT",
+    "entry": "open of the bar after the signal",
+    "exit_policy": "live exit monitor (net_r_live, cryptonite_schemas.exit_rules.simulate_live_exit)",
+    "fee_per_side": {
+      "perp": 0.0005,
+      "spot": 0.001
+    },
+    "funding": "perp: default 0.0001 per 8 h against the position",
+    "global_thresholds": {
+      "debate_drawdown_pct": 2.0,
+      "funding_spike": 0.0005,
+      "stop_loss_pct": 5.0,
+      "trail_activate_pct": 3.0,
+      "trail_pct": 2.0
+    },
+    "global_trail_activate_pct": 3.0,
+    "global_trail_pct": 2.0,
+    "live_exits": {
+      "*": {
+        "max_hold_hours": null,
+        "model": "live-v1 tp2r/50% trail3/2 hard5 hold-",
+        "tp1_scale_pct": 50,
+        "tp_r": 2,
+        "trail_activate_pct": null,
+        "trail_pct": null
+      }
+    },
+    "market": "spot for LONG, perp for SHORT",
+    "max_hold_hours": {
+      "15m": 24,
+      "1h": 72,
+      "4h": 168,
+      "5m": 12
+    },
+    "metric": "test window only, every signal (no variant selection, overlap not removed)",
+    "profile_stop_loss_pct": 5.0,
+    "r_unit": "distance from the fill to the preset stop (the live structural stop)",
+    "slippage_per_side": {
+      "perp": 0.0005,
+      "spot": 0.0005
+    },
+    "window": {
+      "data_end": "2026-11-03T12:45:00+00:00",
+      "data_start": "2026-04-15T00:00:00+00:00",
+      "split": "chronological; train trades exit before the cutoff, test trades signal at or after it",
+      "test_start": "2026-08-28T00:30:00+00:00",
+      "train_end": "2026-08-28T00:30:00+00:00",
+      "train_fraction": 0.6667
+    }
+  },
+  "censored_signals": 55,
+  "comparison": [
+    {
+      "coin": "BTCUSDT",
+      "preset": "bollinger-breakdown-short",
+      "test": {
+        "days": 31,
+        "live": {
+          "avg_r": -0.4466680327055121,
+          "n": 57,
+          "win_rate": 0.2631578947368421
+        },
+        "live_minus_old": -0.3129237694022571,
+        "live_outcomes": {
+          "EXPIRED": 16,
+          "STRUCTURAL_STOP": 38,
+          "TRAILING_STOP": 3
+        },
+        "old_profile": {
+          "avg_r": -0.133744263303255,
+          "n": 57,
+          "win_rate": 0.42105263157894735
+        },
+        "overlap_adjusted_live": 25,
+        "preset": {
+          "avg_r": -0.20547634561584424,
+          "n": 57,
+          "win_rate": 0.47368421052631576
+        },
+        "signals": 57
+      },
+      "train": {
+        "days": 48,
+        "live": {
+          "avg_r": -0.16108883137832355,
+          "n": 58,
+          "win_rate": 0.3448275862068966
+        },
+        "live_minus_old": 0.37136983171395777,
+        "live_outcomes": {
+          "EXPIRED": 12,
+          "HARD_STOP": 1,
+          "STRUCTURAL_STOP": 32,
+          "TRAILING_STOP": 13
+        },
+        "old_profile": {
+          "avg_r": -0.5324586630922813,
+          "n": 58,
+          "win_rate": 0.46551724137931033
+        },
+        "overlap_adjusted_live": 33,
+        "preset": {
+          "avg_r": -0.11825263733351456,
+          "n": 58,
+          "win_rate": 0.5
+        },
+        "signals": 58
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "bollinger-breakdown-short",
+      "test": {
+        "days": 34,
+        "live": {
+          "avg_r": -0.10514407151510509,
+          "n": 61,
+          "win_rate": 0.3770491803278688
+        },
+        "live_minus_old": -0.10543279191406699,
+        "live_outcomes": {
+          "EXPIRED": 5,
+          "STRUCTURAL_STOP": 39,
+          "TRAILING_STOP": 17
+        },
+        "old_profile": {
+          "avg_r": 0.00028872039896189885,
+          "n": 61,
+          "win_rate": 0.5081967213114754
+        },
+        "overlap_adjusted_live": 30,
+        "preset": {
+          "avg_r": -0.10642075015409146,
+          "n": 61,
+          "win_rate": 0.4918032786885246
+        },
+        "signals": 61
+      },
+      "train": {
+        "days": 47,
+        "live": {
+          "avg_r": -0.25409188378091463,
+          "n": 60,
+          "win_rate": 0.36666666666666664
+        },
+        "live_minus_old": -0.022051432053608516,
+        "live_outcomes": {
+          "EXPIRED": 9,
+          "STRUCTURAL_STOP": 32,
+          "TRAILING_STOP": 19
+        },
+        "old_profile": {
+          "avg_r": -0.2320404517273061,
+          "n": 60,
+          "win_rate": 0.5333333333333333
+        },
+        "overlap_adjusted_live": 38,
+        "preset": {
+          "avg_r": -0.20925905626154753,
+          "n": 60,
+          "win_rate": 0.4166666666666667
+        },
+        "signals": 60
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "bollinger-breakout",
+      "test": {
+        "days": 31,
+        "live": {
+          "avg_r": -0.9237297878023821,
+          "n": 53,
+          "win_rate": 0.20754716981132076
+        },
+        "live_minus_old": 0.8986891744458848,
+        "live_outcomes": {
+          "EXPIRED": 6,
+          "STRUCTURAL_STOP": 44,
+          "TRAILING_STOP": 3
+        },
+        "old_profile": {
+          "avg_r": -1.822418962248267,
+          "n": 53,
+          "win_rate": 0.2641509433962264
+        },
+        "overlap_adjusted_live": 28,
+        "preset": {
+          "avg_r": -0.5764127976200214,
+          "n": 53,
+          "win_rate": 0.37735849056603776
+        },
+        "signals": 53
+      },
+      "train": {
+        "days": 50,
+        "live": {
+          "avg_r": 0.30272389551579054,
+          "n": 61,
+          "win_rate": 0.5081967213114754
+        },
+        "live_minus_old": -0.31203396064577754,
+        "live_outcomes": {
+          "EXPIRED": 15,
+          "STRUCTURAL_STOP": 28,
+          "TRAILING_STOP": 18
+        },
+        "old_profile": {
+          "avg_r": 0.6147578561615681,
+          "n": 61,
+          "win_rate": 0.5737704918032787
+        },
+        "overlap_adjusted_live": 32,
+        "preset": {
+          "avg_r": 0.060775558437342246,
+          "n": 61,
+          "win_rate": 0.5901639344262295
+        },
+        "signals": 61
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "bollinger-breakout",
+      "test": {
+        "days": 36,
+        "live": {
+          "avg_r": -0.6532593630272453,
+          "n": 70,
+          "win_rate": 0.2857142857142857
+        },
+        "live_minus_old": 0.7139241763873533,
+        "live_outcomes": {
+          "EXPIRED": 8,
+          "STRUCTURAL_STOP": 54,
+          "TRAILING_STOP": 8
+        },
+        "old_profile": {
+          "avg_r": -1.3671835394145986,
+          "n": 70,
+          "win_rate": 0.32857142857142857
+        },
+        "overlap_adjusted_live": 30,
+        "preset": {
+          "avg_r": -0.4065913965845766,
+          "n": 70,
+          "win_rate": 0.42857142857142855
+        },
+        "signals": 70
+      },
+      "train": {
+        "days": 51,
+        "live": {
+          "avg_r": -0.054657671226916206,
+          "n": 67,
+          "win_rate": 0.417910447761194
+        },
+        "live_minus_old": -0.2730883039716198,
+        "live_outcomes": {
+          "EXPIRED": 7,
+          "STRUCTURAL_STOP": 36,
+          "TRAILING_STOP": 24
+        },
+        "old_profile": {
+          "avg_r": 0.2184306327447036,
+          "n": 67,
+          "win_rate": 0.5373134328358209
+        },
+        "overlap_adjusted_live": 36,
+        "preset": {
+          "avg_r": -0.16207324902132952,
+          "n": 67,
+          "win_rate": 0.47761194029850745
+        },
+        "signals": 67
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "macd-momentum-shift",
+      "test": {
+        "days": 30,
+        "live": {
+          "avg_r": -0.7123707121672503,
+          "n": 80,
+          "win_rate": 0.225
+        },
+        "live_minus_old": 0.7584658535016872,
+        "live_outcomes": {
+          "EXPIRED": 17,
+          "STRUCTURAL_STOP": 58,
+          "TRAILING_STOP": 5
+        },
+        "old_profile": {
+          "avg_r": -1.4708365656689375,
+          "n": 80,
+          "win_rate": 0.3
+        },
+        "overlap_adjusted_live": 26,
+        "preset": {
+          "avg_r": -0.5331531368533782,
+          "n": 80,
+          "win_rate": 0.3875
+        },
+        "signals": 80
+      },
+      "train": {
+        "days": 58,
+        "live": {
+          "avg_r": -0.10209872339454287,
+          "n": 70,
+          "win_rate": 0.37142857142857144
+        },
+        "live_minus_old": -0.17775583059699193,
+        "live_outcomes": {
+          "EXPIRED": 13,
+          "STRUCTURAL_STOP": 41,
+          "TRAILING_STOP": 16
+        },
+        "old_profile": {
+          "avg_r": 0.07565710720244906,
+          "n": 70,
+          "win_rate": 0.5142857142857142
+        },
+        "overlap_adjusted_live": 39,
+        "preset": {
+          "avg_r": -0.0885650188323105,
+          "n": 70,
+          "win_rate": 0.5142857142857142
+        },
+        "signals": 70
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "macd-momentum-shift",
+      "test": {
+        "days": 38,
+        "live": {
+          "avg_r": -0.43981431366608076,
+          "n": 74,
+          "win_rate": 0.3783783783783784
+        },
+        "live_minus_old": 0.9075930417134845,
+        "live_outcomes": {
+          "EXPIRED": 16,
+          "STRUCTURAL_STOP": 50,
+          "TRAILING_STOP": 8
+        },
+        "old_profile": {
+          "avg_r": -1.3474073553795654,
+          "n": 74,
+          "win_rate": 0.40540540540540543
+        },
+        "overlap_adjusted_live": 31,
+        "preset": {
+          "avg_r": -0.3430314247336233,
+          "n": 74,
+          "win_rate": 0.47297297297297297
+        },
+        "signals": 74
+      },
+      "train": {
+        "days": 62,
+        "live": {
+          "avg_r": -0.23648478322850247,
+          "n": 74,
+          "win_rate": 0.35135135135135137
+        },
+        "live_minus_old": -0.46646769568885427,
+        "live_outcomes": {
+          "EXPIRED": 11,
+          "STRUCTURAL_STOP": 43,
+          "TRAILING_STOP": 20
+        },
+        "old_profile": {
+          "avg_r": 0.22998291246035177,
+          "n": 74,
+          "win_rate": 0.5540540540540541
+        },
+        "overlap_adjusted_live": 41,
+        "preset": {
+          "avg_r": -0.27325398308913235,
+          "n": 74,
+          "win_rate": 0.43243243243243246
+        },
+        "signals": 74
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "rsi-oversold-reversal",
+      "test": {
+        "days": 16,
+        "live": {
+          "avg_r": -1.0110411281154916,
+          "n": 17,
+          "win_rate": 0.17647058823529413
+        },
+        "live_minus_old": -0.6023314850536141,
+        "live_outcomes": {
+          "EXPIRED": 3,
+          "STRUCTURAL_STOP": 14
+        },
+        "old_profile": {
+          "avg_r": -0.40870964306187757,
+          "n": 17,
+          "win_rate": 0.5882352941176471
+        },
+        "overlap_adjusted_live": 15,
+        "preset": {
+          "avg_r": -0.9011435395414934,
+          "n": 17,
+          "win_rate": 0.29411764705882354
+        },
+        "signals": 17
+      },
+      "train": {
+        "days": 15,
+        "live": {
+          "avg_r": -0.9479162934069566,
+          "n": 17,
+          "win_rate": 0.17647058823529413
+        },
+        "live_minus_old": -1.4676345125974897,
+        "live_outcomes": {
+          "EXPIRED": 1,
+          "STRUCTURAL_STOP": 14,
+          "TRAILING_STOP": 2
+        },
+        "old_profile": {
+          "avg_r": 0.5197182191905332,
+          "n": 17,
+          "win_rate": 0.5882352941176471
+        },
+        "overlap_adjusted_live": 16,
+        "preset": {
+          "avg_r": -1.0071418043545899,
+          "n": 17,
+          "win_rate": 0.17647058823529413
+        },
+        "signals": 17
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "rsi-oversold-reversal",
+      "test": {
+        "days": 18,
+        "live": {
+          "avg_r": -0.6255576005482975,
+          "n": 27,
+          "win_rate": 0.2962962962962963
+        },
+        "live_minus_old": 0.027764770445798614,
+        "live_outcomes": {
+          "EXPIRED": 2,
+          "STRUCTURAL_STOP": 20,
+          "TRAILING_STOP": 5
+        },
+        "old_profile": {
+          "avg_r": -0.6533223709940961,
+          "n": 27,
+          "win_rate": 0.5925925925925926
+        },
+        "overlap_adjusted_live": 26,
+        "preset": {
+          "avg_r": -0.4513174331270476,
+          "n": 27,
+          "win_rate": 0.37037037037037035
+        },
+        "signals": 27
+      },
+      "train": {
+        "days": 12,
+        "live": {
+          "avg_r": -0.39596262982561137,
+          "n": 13,
+          "win_rate": 0.3076923076923077
+        },
+        "live_minus_old": 1.6773513931829906,
+        "live_outcomes": {
+          "EXPIRED": 2,
+          "STRUCTURAL_STOP": 9,
+          "TRAILING_STOP": 2
+        },
+        "old_profile": {
+          "avg_r": -2.073314023008602,
+          "n": 13,
+          "win_rate": 0.38461538461538464
+        },
+        "overlap_adjusted_live": 13,
+        "preset": {
+          "avg_r": -0.5637232721028447,
+          "n": 13,
+          "win_rate": 0.3076923076923077
+        },
+        "signals": 13
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "scalp-multi-tf-short",
+      "test": {
+        "days": 1,
+        "live": {
+          "avg_r": -1.75628055019427,
+          "n": 1,
+          "win_rate": 0.0
+        },
+        "live_minus_old": -1.5143121355405516,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": -0.24196841465371843,
+          "n": 1,
+          "win_rate": 0.0
+        },
+        "overlap_adjusted_live": 1,
+        "preset": {
+          "avg_r": -1.75628055019427,
+          "n": 1,
+          "win_rate": 0.0
+        },
+        "signals": 1
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "scalp-multi-tf-short",
+      "test": {
+        "days": 1,
+        "live": {
+          "avg_r": 3.680489588773641,
+          "n": 1,
+          "win_rate": 1.0
+        },
+        "live_minus_old": -1.9283703049701018,
+        "live_outcomes": {
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": 5.608859893743743,
+          "n": 1,
+          "win_rate": 1.0
+        },
+        "overlap_adjusted_live": 1,
+        "preset": {
+          "avg_r": 1.253739204907495,
+          "n": 1,
+          "win_rate": 1.0
+        },
+        "signals": 1
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "swing-sniper-pullback-15m",
+      "test": {
+        "days": 4,
+        "live": {
+          "avg_r": -1.9046743575952563,
+          "n": 5,
+          "win_rate": 0.0
+        },
+        "live_minus_old": 3.76237224752456,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 5
+        },
+        "old_profile": {
+          "avg_r": -5.6670466051198165,
+          "n": 5,
+          "win_rate": 0.2
+        },
+        "overlap_adjusted_live": 5,
+        "preset": {
+          "avg_r": -1.5095285069884785,
+          "n": 5,
+          "win_rate": 0.2
+        },
+        "signals": 5
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "swing-sniper-pullback-15m",
+      "test": {
+        "days": 6,
+        "live": {
+          "avg_r": -1.0241451964990216,
+          "n": 8,
+          "win_rate": 0.125
+        },
+        "live_minus_old": 0.29250815768633354,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 7,
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": -1.3166533541853551,
+          "n": 8,
+          "win_rate": 0.5
+        },
+        "overlap_adjusted_live": 8,
+        "preset": {
+          "avg_r": -1.0348795684539756,
+          "n": 8,
+          "win_rate": 0.25
+        },
+        "signals": 8
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "WLDUSDT",
+      "preset": "swing-sniper-pullback-15m",
+      "test": {
+        "days": 4,
+        "live": {
+          "avg_r": 0.875358161941997,
+          "n": 5,
+          "win_rate": 0.8
+        },
+        "live_minus_old": 2.8263370316064416,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 2,
+          "TRAILING_STOP": 3
+        },
+        "old_profile": {
+          "avg_r": -1.9509788696644446,
+          "n": 5,
+          "win_rate": 0.6
+        },
+        "overlap_adjusted_live": 4,
+        "preset": {
+          "avg_r": -0.8535686057347693,
+          "n": 5,
+          "win_rate": 0.2
+        },
+        "signals": 5
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "XRPUSDT",
+      "preset": "swing-sniper-pullback-15m",
+      "test": {
+        "days": 3,
+        "live": {
+          "avg_r": -2.0842385941644763,
+          "n": 3,
+          "win_rate": 0.0
+        },
+        "live_minus_old": 6.362309902741023,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 3
+        },
+        "old_profile": {
+          "avg_r": -8.4465484969055,
+          "n": 3,
+          "win_rate": 0.3333333333333333
+        },
+        "overlap_adjusted_live": 3,
+        "preset": {
+          "avg_r": -2.0842385941644763,
+          "n": 3,
+          "win_rate": 0.0
+        },
+        "signals": 3
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "swing-sniper-pullback-short-15m",
+      "test": {
+        "days": 7,
+        "live": {
+          "avg_r": -1.5093912419424684,
+          "n": 11,
+          "win_rate": 0.09090909090909091
+        },
+        "live_minus_old": -0.0011324572513164988,
+        "live_outcomes": {
+          "EXPIRED": 2,
+          "STRUCTURAL_STOP": 9
+        },
+        "old_profile": {
+          "avg_r": -1.508258784691152,
+          "n": 11,
+          "win_rate": 0.36363636363636365
+        },
+        "overlap_adjusted_live": 9,
+        "preset": {
+          "avg_r": -1.7248995004236483,
+          "n": 11,
+          "win_rate": 0.09090909090909091
+        },
+        "signals": 11
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "swing-sniper-pullback-short-15m",
+      "test": {
+        "days": 10,
+        "live": {
+          "avg_r": -1.0006151402556471,
+          "n": 17,
+          "win_rate": 0.17647058823529413
+        },
+        "live_minus_old": -1.6535446056769934,
+        "live_outcomes": {
+          "EXPIRED": 2,
+          "STRUCTURAL_STOP": 14,
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": 0.6529294654213462,
+          "n": 17,
+          "win_rate": 0.5882352941176471
+        },
+        "overlap_adjusted_live": 13,
+        "preset": {
+          "avg_r": -1.32313567990344,
+          "n": 17,
+          "win_rate": 0.17647058823529413
+        },
+        "signals": 17
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "WLDUSDT",
+      "preset": "swing-sniper-pullback-short-15m",
+      "test": {
+        "days": 13,
+        "live": {
+          "avg_r": 0.3333578242828175,
+          "n": 22,
+          "win_rate": 0.45454545454545453
+        },
+        "live_minus_old": -2.014832596919509,
+        "live_outcomes": {
+          "EXPIRED": 2,
+          "STRUCTURAL_STOP": 13,
+          "TRAILING_STOP": 7
+        },
+        "old_profile": {
+          "avg_r": 2.3481904212023266,
+          "n": 22,
+          "win_rate": 0.8181818181818182
+        },
+        "overlap_adjusted_live": 17,
+        "preset": {
+          "avg_r": 0.5392521243686704,
+          "n": 22,
+          "win_rate": 0.4090909090909091
+        },
+        "signals": 22
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "XRPUSDT",
+      "preset": "swing-sniper-pullback-short-15m",
+      "test": {
+        "days": 7,
+        "live": {
+          "avg_r": -0.896814942779011,
+          "n": 10,
+          "win_rate": 0.1
+        },
+        "live_minus_old": -5.375436340192592,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 9,
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": 4.478621397413581,
+          "n": 10,
+          "win_rate": 0.8
+        },
+        "overlap_adjusted_live": 8,
+        "preset": {
+          "avg_r": -0.581692930256645,
+          "n": 10,
+          "win_rate": 0.2
+        },
+        "signals": 10
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "swing-squeeze-breakdown-short-1h",
+      "test": {
+        "days": 18,
+        "live": {
+          "avg_r": -0.8394475719523317,
+          "n": 54,
+          "win_rate": 0.18518518518518517
+        },
+        "live_minus_old": 0.06380496012889902,
+        "live_outcomes": {
+          "EXPIRED": 11,
+          "STRUCTURAL_STOP": 41,
+          "TRAILING_STOP": 2
+        },
+        "old_profile": {
+          "avg_r": -0.9032525320812307,
+          "n": 54,
+          "win_rate": 0.2962962962962963
+        },
+        "overlap_adjusted_live": 20,
+        "preset": {
+          "avg_r": -0.6107904197223892,
+          "n": 54,
+          "win_rate": 0.3148148148148148
+        },
+        "signals": 54
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "swing-squeeze-breakdown-short-1h",
+      "test": {
+        "days": 17,
+        "live": {
+          "avg_r": -0.004376949342092338,
+          "n": 56,
+          "win_rate": 0.42857142857142855
+        },
+        "live_minus_old": -0.24822192116627131,
+        "live_outcomes": {
+          "EXPIRED": 6,
+          "STRUCTURAL_STOP": 33,
+          "TRAILING_STOP": 17
+        },
+        "old_profile": {
+          "avg_r": 0.24384497182417897,
+          "n": 56,
+          "win_rate": 0.5892857142857143
+        },
+        "overlap_adjusted_live": 19,
+        "preset": {
+          "avg_r": -0.132626782853627,
+          "n": 56,
+          "win_rate": 0.5
+        },
+        "signals": 56
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "WLDUSDT",
+      "preset": "swing-squeeze-breakdown-short-1h",
+      "test": {
+        "days": 18,
+        "live": {
+          "avg_r": 0.5064872972112827,
+          "n": 60,
+          "win_rate": 0.6166666666666667
+        },
+        "live_minus_old": -0.19087477235830552,
+        "live_outcomes": {
+          "EXPIRED": 3,
+          "HARD_STOP": 1,
+          "STRUCTURAL_STOP": 23,
+          "TRAILING_STOP": 33
+        },
+        "old_profile": {
+          "avg_r": 0.6973620695695882,
+          "n": 60,
+          "win_rate": 0.6833333333333333
+        },
+        "overlap_adjusted_live": 23,
+        "preset": {
+          "avg_r": 0.17049519036809196,
+          "n": 60,
+          "win_rate": 0.6
+        },
+        "signals": 60
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "XRPUSDT",
+      "preset": "swing-squeeze-breakdown-short-1h",
+      "test": {
+        "days": 17,
+        "live": {
+          "avg_r": -0.08433242695705358,
+          "n": 69,
+          "win_rate": 0.42028985507246375
+        },
+        "live_minus_old": 0.0740857433239586,
+        "live_outcomes": {
+          "EXPIRED": 12,
+          "STRUCTURAL_STOP": 41,
+          "TRAILING_STOP": 16
+        },
+        "old_profile": {
+          "avg_r": -0.15841817028101218,
+          "n": 69,
+          "win_rate": 0.463768115942029
+        },
+        "overlap_adjusted_live": 21,
+        "preset": {
+          "avg_r": 0.012664457250449427,
+          "n": 69,
+          "win_rate": 0.5507246376811594
+        },
+        "signals": 69
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "swing-squeeze-breakout-1h",
+      "test": {
+        "days": 14,
+        "live": {
+          "avg_r": -1.276178788527253,
+          "n": 38,
+          "win_rate": 0.05263157894736842
+        },
+        "live_minus_old": 1.240929611058656,
+        "live_outcomes": {
+          "EXPIRED": 4,
+          "STRUCTURAL_STOP": 34
+        },
+        "old_profile": {
+          "avg_r": -2.517108399585909,
+          "n": 38,
+          "win_rate": 0.15789473684210525
+        },
+        "overlap_adjusted_live": 17,
+        "preset": {
+          "avg_r": -0.8984118607484118,
+          "n": 38,
+          "win_rate": 0.2894736842105263
+        },
+        "signals": 38
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "swing-squeeze-breakout-1h",
+      "test": {
+        "days": 11,
+        "live": {
+          "avg_r": -1.06340596328311,
+          "n": 29,
+          "win_rate": 0.1724137931034483
+        },
+        "live_minus_old": 1.3720071297108078,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 28,
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": -2.435413092993918,
+          "n": 29,
+          "win_rate": 0.27586206896551724
+        },
+        "overlap_adjusted_live": 9,
+        "preset": {
+          "avg_r": -0.3295620190581498,
+          "n": 29,
+          "win_rate": 0.5172413793103449
+        },
+        "signals": 29
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "WLDUSDT",
+      "preset": "swing-squeeze-breakout-1h",
+      "test": {
+        "days": 7,
+        "live": {
+          "avg_r": -0.25593361895560635,
+          "n": 17,
+          "win_rate": 0.4117647058823529
+        },
+        "live_minus_old": 0.5576837700473176,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 10,
+          "TRAILING_STOP": 7
+        },
+        "old_profile": {
+          "avg_r": -0.8136173890029239,
+          "n": 17,
+          "win_rate": 0.47058823529411764
+        },
+        "overlap_adjusted_live": 9,
+        "preset": {
+          "avg_r": -0.600402077263308,
+          "n": 17,
+          "win_rate": 0.23529411764705882
+        },
+        "signals": 17
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "XRPUSDT",
+      "preset": "swing-squeeze-breakout-1h",
+      "test": {
+        "days": 9,
+        "live": {
+          "avg_r": -0.6319445590714747,
+          "n": 20,
+          "win_rate": 0.3
+        },
+        "live_minus_old": 0.7806123515364325,
+        "live_outcomes": {
+          "EXPIRED": 2,
+          "STRUCTURAL_STOP": 15,
+          "TRAILING_STOP": 3
+        },
+        "old_profile": {
+          "avg_r": -1.4125569106079072,
+          "n": 20,
+          "win_rate": 0.3
+        },
+        "overlap_adjusted_live": 8,
+        "preset": {
+          "avg_r": -0.32422361160248475,
+          "n": 20,
+          "win_rate": 0.45
+        },
+        "signals": 20
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "swing-trend-pullback-1h",
+      "test": {
+        "days": 1,
+        "live": {
+          "avg_r": -2.1605523066329733,
+          "n": 1,
+          "win_rate": 0.0
+        },
+        "live_minus_old": 12.897727794353521,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": -15.058280100986495,
+          "n": 1,
+          "win_rate": 0.0
+        },
+        "overlap_adjusted_live": 1,
+        "preset": {
+          "avg_r": -2.1605523066329733,
+          "n": 1,
+          "win_rate": 0.0
+        },
+        "signals": 1
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "WLDUSDT",
+      "preset": "swing-trend-pullback-1h",
+      "test": {
+        "days": 2,
+        "live": {
+          "avg_r": 1.0237645735524272,
+          "n": 2,
+          "win_rate": 0.5
+        },
+        "live_minus_old": 0.6024422926447601,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 1,
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": 0.4213222809076671,
+          "n": 2,
+          "win_rate": 0.5
+        },
+        "overlap_adjusted_live": 2,
+        "preset": {
+          "avg_r": 0.11175068466353977,
+          "n": 2,
+          "win_rate": 0.5
+        },
+        "signals": 2
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "swing-trend-pullback-short-1h",
+      "test": {
+        "days": 3,
+        "live": {
+          "avg_r": 0.011755613810834268,
+          "n": 3,
+          "win_rate": 0.3333333333333333
+        },
+        "live_minus_old": 0.14531228262194906,
+        "live_outcomes": {
+          "EXPIRED": 1,
+          "STRUCTURAL_STOP": 2
+        },
+        "old_profile": {
+          "avg_r": -0.1335566688111148,
+          "n": 3,
+          "win_rate": 0.3333333333333333
+        },
+        "overlap_adjusted_live": 3,
+        "preset": {
+          "avg_r": 0.37691166821315375,
+          "n": 3,
+          "win_rate": 0.6666666666666666
+        },
+        "signals": 3
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "swing-trend-pullback-short-1h",
+      "test": {
+        "days": 3,
+        "live": {
+          "avg_r": 0.5502324081477612,
+          "n": 3,
+          "win_rate": 0.3333333333333333
+        },
+        "live_minus_old": -1.1879809533036227,
+        "live_outcomes": {
+          "EXPIRED": 1,
+          "STRUCTURAL_STOP": 1,
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": 1.738213361451384,
+          "n": 3,
+          "win_rate": 0.6666666666666666
+        },
+        "overlap_adjusted_live": 3,
+        "preset": {
+          "avg_r": -0.25868438647428754,
+          "n": 3,
+          "win_rate": 0.3333333333333333
+        },
+        "signals": 3
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "WLDUSDT",
+      "preset": "swing-trend-pullback-short-1h",
+      "test": {
+        "days": 2,
+        "live": {
+          "avg_r": 0.24002911949685557,
+          "n": 2,
+          "win_rate": 0.5
+        },
+        "live_minus_old": 0.6694634433962232,
+        "live_outcomes": {
+          "EXPIRED": 1,
+          "STRUCTURAL_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": -0.42943432389936764,
+          "n": 2,
+          "win_rate": 0.5
+        },
+        "overlap_adjusted_live": 2,
+        "preset": {
+          "avg_r": 0.24002911949685557,
+          "n": 2,
+          "win_rate": 0.5
+        },
+        "signals": 2
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "XRPUSDT",
+      "preset": "swing-trend-pullback-short-1h",
+      "test": {
+        "days": 2,
+        "live": {
+          "avg_r": 0.351611420572175,
+          "n": 2,
+          "win_rate": 0.5
+        },
+        "live_minus_old": -1.3725434852043117,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 1,
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": 1.7241549057764867,
+          "n": 2,
+          "win_rate": 1.0
+        },
+        "overlap_adjusted_live": 2,
+        "preset": {
+          "avg_r": -0.28502617291073007,
+          "n": 2,
+          "win_rate": 0.5
+        },
+        "signals": 2
+      },
+      "train": {
+        "days": 0,
+        "live": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "live_minus_old": null,
+        "live_outcomes": {},
+        "old_profile": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "overlap_adjusted_live": 0,
+        "preset": {
+          "avg_r": null,
+          "n": 0,
+          "win_rate": null
+        },
+        "signals": 0
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "trend-pullback",
+      "test": {
+        "days": 12,
+        "live": {
+          "avg_r": 0.22258171918972344,
+          "n": 17,
+          "win_rate": 0.23529411764705882
+        },
+        "live_minus_old": -0.9271727881336882,
+        "live_outcomes": {
+          "EXPIRED": 2,
+          "STRUCTURAL_STOP": 12,
+          "TRAILING_STOP": 3
+        },
+        "old_profile": {
+          "avg_r": 1.1497545073234117,
+          "n": 17,
+          "win_rate": 0.5294117647058824
+        },
+        "overlap_adjusted_live": 11,
+        "preset": {
+          "avg_r": -0.5853528521123351,
+          "n": 17,
+          "win_rate": 0.35294117647058826
+        },
+        "signals": 17
+      },
+      "train": {
+        "days": 18,
+        "live": {
+          "avg_r": -0.5767461427680232,
+          "n": 20,
+          "win_rate": 0.2
+        },
+        "live_minus_old": -0.15995093486900114,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 16,
+          "TRAILING_STOP": 4
+        },
+        "old_profile": {
+          "avg_r": -0.416795207899022,
+          "n": 20,
+          "win_rate": 0.5
+        },
+        "overlap_adjusted_live": 19,
+        "preset": {
+          "avg_r": -0.7615000038314006,
+          "n": 20,
+          "win_rate": 0.25
+        },
+        "signals": 20
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "trend-pullback",
+      "test": {
+        "days": 8,
+        "live": {
+          "avg_r": -0.5983890245928724,
+          "n": 11,
+          "win_rate": 0.36363636363636365
+        },
+        "live_minus_old": -0.6729978827443381,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 7,
+          "TRAILING_STOP": 4
+        },
+        "old_profile": {
+          "avg_r": 0.07460885815146577,
+          "n": 11,
+          "win_rate": 0.7272727272727273
+        },
+        "overlap_adjusted_live": 8,
+        "preset": {
+          "avg_r": -0.41009667481654377,
+          "n": 11,
+          "win_rate": 0.36363636363636365
+        },
+        "signals": 11
+      },
+      "train": {
+        "days": 13,
+        "live": {
+          "avg_r": -0.4091503415634362,
+          "n": 17,
+          "win_rate": 0.29411764705882354
+        },
+        "live_minus_old": 0.5077933069877195,
+        "live_outcomes": {
+          "STRUCTURAL_STOP": 12,
+          "TRAILING_STOP": 5
+        },
+        "old_profile": {
+          "avg_r": -0.9169436485511557,
+          "n": 17,
+          "win_rate": 0.47058823529411764
+        },
+        "overlap_adjusted_live": 17,
+        "preset": {
+          "avg_r": -0.3895092230026412,
+          "n": 17,
+          "win_rate": 0.35294117647058826
+        },
+        "signals": 17
+      }
+    },
+    {
+      "coin": "BTCUSDT",
+      "preset": "trend-pullback-short",
+      "test": {
+        "days": 15,
+        "live": {
+          "avg_r": -1.1389818288899842,
+          "n": 18,
+          "win_rate": 0.1111111111111111
+        },
+        "live_minus_old": -0.9000796404412708,
+        "live_outcomes": {
+          "EXPIRED": 2,
+          "STRUCTURAL_STOP": 15,
+          "TRAILING_STOP": 1
+        },
+        "old_profile": {
+          "avg_r": -0.2389021884487135,
+          "n": 18,
+          "win_rate": 0.4444444444444444
+        },
+        "overlap_adjusted_live": 16,
+        "preset": {
+          "avg_r": -1.2270256131884167,
+          "n": 18,
+          "win_rate": 0.16666666666666666
+        },
+        "signals": 18
+      },
+      "train": {
+        "days": 12,
+        "live": {
+          "avg_r": -1.2409503624948093,
+          "n": 16,
+          "win_rate": 0.0625
+        },
+        "live_minus_old": -5.120104954227351,
+        "live_outcomes": {
+          "EXPIRED": 1,
+          "STRUCTURAL_STOP": 15
+        },
+        "old_profile": {
+          "avg_r": 3.879154591732542,
+          "n": 16,
+          "win_rate": 0.75
+        },
+        "overlap_adjusted_live": 15,
+        "preset": {
+          "avg_r": -0.9585111652688134,
+          "n": 16,
+          "win_rate": 0.1875
+        },
+        "signals": 16
+      }
+    },
+    {
+      "coin": "ETHUSDT",
+      "preset": "trend-pullback-short",
+      "test": {
+        "days": 11,
+        "live": {
+          "avg_r": -0.7187469660063677,
+          "n": 16,
+          "win_rate": 0.125
+        },
+        "live_minus_old": -2.402195085787845,
+        "live_outcomes": {
+          "EXPIRED": 1,
+          "STRUCTURAL_STOP": 13,
+          "TRAILING_STOP": 2
+        },
+        "old_profile": {
+          "avg_r": 1.6834481197814775,
+          "n": 16,
+          "win_rate": 0.75
+        },
+        "overlap_adjusted_live": 14,
+        "preset": {
+          "avg_r": -0.6665534542343189,
+          "n": 16,
+          "win_rate": 0.1875
+        },
+        "signals": 16
+      },
+      "train": {
+        "days": 13,
+        "live": {
+          "avg_r": -0.2122703240283514,
+          "n": 18,
+          "win_rate": 0.4444444444444444
+        },
+        "live_minus_old": 2.5755448145291027,
+        "live_outcomes": {
+          "EXPIRED": 1,
+          "STRUCTURAL_STOP": 14,
+          "TRAILING_STOP": 3
+        },
+        "old_profile": {
+          "avg_r": -2.787815138557454,
+          "n": 18,
+          "win_rate": 0.3888888888888889
+        },
+        "overlap_adjusted_live": 13,
+        "preset": {
+          "avg_r": -0.2681216973693943,
+          "n": 18,
+          "win_rate": 0.3333333333333333
+        },
+        "signals": 18
+      }
+    }
+  ],
+  "generated_at": "2026-11-03T12:47:48.515495+00:00",
+  "results": [
+    {
+      "avg_r": -1.0110411281154918,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 17.18769917796336,
+      "median_r": -1.3593953209363003,
+      "preset": "rsi-oversold-reversal",
+      "trades": 17,
+      "win_rate": 0.17647058823529413
+    },
+    {
+      "avg_r": -0.6255576005482975,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 21.779954552421305,
+      "median_r": -1.2694540781357109,
+      "preset": "rsi-oversold-reversal",
+      "trades": 27,
+      "win_rate": 0.2962962962962963
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "rsi-oversold-reversal",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "WLDUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "rsi-oversold-reversal",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.22258171918972344,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 14.331289267390598,
+      "median_r": -1.2684752988059473,
+      "preset": "trend-pullback",
+      "trades": 17,
+      "win_rate": 0.23529411764705882
+    },
+    {
+      "avg_r": -0.5983890245928724,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 10.812405355096512,
+      "median_r": -1.7019597107438136,
+      "preset": "trend-pullback",
+      "trades": 11,
+      "win_rate": 0.36363636363636365
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "trend-pullback",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "WLDUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "trend-pullback",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": -0.9237297878023821,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 48.95767875352625,
+      "median_r": -1.3320362185389798,
+      "preset": "bollinger-breakout",
+      "trades": 53,
+      "win_rate": 0.20754716981132076
+    },
+    {
+      "avg_r": -0.6532593630272453,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 53.433118509463455,
+      "median_r": -1.2166193560727017,
+      "preset": "bollinger-breakout",
+      "trades": 70,
+      "win_rate": 0.2857142857142857
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "bollinger-breakout",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "WLDUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "bollinger-breakout",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": -0.7123707121672503,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 58.868927557408185,
+      "median_r": -1.2430321817784447,
+      "preset": "macd-momentum-shift",
+      "trades": 80,
+      "win_rate": 0.225
+    },
+    {
+      "avg_r": -0.4398143136660808,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 32.54625921128999,
+      "median_r": -1.1578364679534445,
+      "preset": "macd-momentum-shift",
+      "trades": 74,
+      "win_rate": 0.3783783783783784
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "macd-momentum-shift",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "WLDUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "macd-momentum-shift",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "scalp-multi-tf",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "scalp-multi-tf",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "scalp-multi-tf",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "WLDUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "scalp-multi-tf",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": -2.1605523066329733,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 2.1605523066329733,
+      "median_r": -2.1605523066329733,
+      "preset": "swing-trend-pullback-1h",
+      "trades": 1,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "swing-trend-pullback-1h",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "swing-trend-pullback-1h",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 1.0237645735524272,
+      "coin": "WLDUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 1.2209014084507044,
+      "median_r": 1.0237645735524272,
+      "preset": "swing-trend-pullback-1h",
+      "trades": 2,
+      "win_rate": 0.5
+    },
+    {
+      "avg_r": -1.904674357595256,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 9.52337178797628,
+      "median_r": -1.8300183723154575,
+      "preset": "swing-sniper-pullback-15m",
+      "trades": 5,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": -1.0241451964990216,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 8.193161571992173,
+      "median_r": -1.6812644480315329,
+      "preset": "swing-sniper-pullback-15m",
+      "trades": 8,
+      "win_rate": 0.125
+    },
+    {
+      "avg_r": -2.0842385941644763,
+      "coin": "XRPUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 6.252715782493429,
+      "median_r": -2.024049999999999,
+      "preset": "swing-sniper-pullback-15m",
+      "trades": 3,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.875358161941997,
+      "coin": "WLDUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 1.659520000000014,
+      "median_r": 1.1872272727272644,
+      "preset": "swing-sniper-pullback-15m",
+      "trades": 5,
+      "win_rate": 0.8
+    },
+    {
+      "avg_r": -1.2761787885272533,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 48.49479396403562,
+      "median_r": -1.4395399685222814,
+      "preset": "swing-squeeze-breakout-1h",
+      "trades": 38,
+      "win_rate": 0.05263157894736842
+    },
+    {
+      "avg_r": -1.06340596328311,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 30.850974356081103,
+      "median_r": -1.3908685082872947,
+      "preset": "swing-squeeze-breakout-1h",
+      "trades": 29,
+      "win_rate": 0.1724137931034483
+    },
+    {
+      "avg_r": -0.6319445590714747,
+      "coin": "XRPUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 12.638891181429495,
+      "median_r": -1.2281104373567606,
+      "preset": "swing-squeeze-breakout-1h",
+      "trades": 20,
+      "win_rate": 0.3
+    },
+    {
+      "avg_r": -0.25593361895560635,
+      "coin": "WLDUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 8.59590797413588,
+      "median_r": -1.097393442622951,
+      "preset": "swing-squeeze-breakout-1h",
+      "trades": 17,
+      "win_rate": 0.4117647058823529
+    },
+    {
+      "avg_r": -1.75628055019427,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 1.75628055019427,
+      "median_r": -1.75628055019427,
+      "preset": "scalp-multi-tf-short",
+      "trades": 1,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 3.680489588773641,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 0.0,
+      "median_r": 3.680489588773641,
+      "preset": "scalp-multi-tf-short",
+      "trades": 1,
+      "win_rate": 1.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "scalp-multi-tf-short",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "WLDUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "scalp-multi-tf-short",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": -1.1389818288899842,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 22.123572231969725,
+      "median_r": -1.5559109918164435,
+      "preset": "trend-pullback-short",
+      "trades": 18,
+      "win_rate": 0.1111111111111111
+    },
+    {
+      "avg_r": -0.7187469660063677,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 13.019014629417002,
+      "median_r": -1.2985084254232881,
+      "preset": "trend-pullback-short",
+      "trades": 16,
+      "win_rate": 0.125
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "trend-pullback-short",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "WLDUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "trend-pullback-short",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": -0.4466680327055121,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 26.280597037205265,
+      "median_r": -1.1543116859933455,
+      "preset": "bollinger-breakdown-short",
+      "trades": 57,
+      "win_rate": 0.2631578947368421
+    },
+    {
+      "avg_r": -0.10514407151510509,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 11.520728838793723,
+      "median_r": -1.106879696020938,
+      "preset": "bollinger-breakdown-short",
+      "trades": 61,
+      "win_rate": 0.3770491803278688
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "XRPUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "bollinger-breakdown-short",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.0,
+      "coin": "WLDUSDT",
+      "first_bar": null,
+      "last_bar": null,
+      "max_drawdown_r": 0.0,
+      "median_r": 0.0,
+      "preset": "bollinger-breakdown-short",
+      "trades": 0,
+      "win_rate": 0.0
+    },
+    {
+      "avg_r": 0.011755613810834268,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 1.9519517843326162,
+      "median_r": -0.1956712341383462,
+      "preset": "swing-trend-pullback-short-1h",
+      "trades": 3,
+      "win_rate": 0.3333333333333333
+    },
+    {
+      "avg_r": 0.5502324081477612,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 2.0297923643303575,
+      "median_r": -0.7300359565217533,
+      "preset": "swing-trend-pullback-short-1h",
+      "trades": 3,
+      "win_rate": 0.3333333333333333
+    },
+    {
+      "avg_r": 0.351611420572175,
+      "coin": "XRPUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 1.3115577411206005,
+      "median_r": 0.351611420572175,
+      "preset": "swing-trend-pullback-short-1h",
+      "trades": 2,
+      "win_rate": 0.5
+    },
+    {
+      "avg_r": 0.24002911949685557,
+      "coin": "WLDUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 1.0937900943396222,
+      "median_r": 0.24002911949685557,
+      "preset": "swing-trend-pullback-short-1h",
+      "trades": 2,
+      "win_rate": 0.5
+    },
+    {
+      "avg_r": -1.5093912419424684,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 16.603303661367153,
+      "median_r": -1.6843401794624073,
+      "preset": "swing-sniper-pullback-short-15m",
+      "trades": 11,
+      "win_rate": 0.09090909090909091
+    },
+    {
+      "avg_r": -1.0006151402556471,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 17.872893651525192,
+      "median_r": -1.6083328802562316,
+      "preset": "swing-sniper-pullback-short-15m",
+      "trades": 17,
+      "win_rate": 0.17647058823529413
+    },
+    {
+      "avg_r": -0.896814942779011,
+      "coin": "XRPUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 8.96814942779011,
+      "median_r": -1.2875674117193987,
+      "preset": "swing-sniper-pullback-short-15m",
+      "trades": 10,
+      "win_rate": 0.1
+    },
+    {
+      "avg_r": 0.3333578242828175,
+      "coin": "WLDUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 8.398077436833585,
+      "median_r": -1.070121585183631,
+      "preset": "swing-sniper-pullback-short-15m",
+      "trades": 22,
+      "win_rate": 0.45454545454545453
+    },
+    {
+      "avg_r": -0.8394475719523317,
+      "coin": "BTCUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 46.150688058416975,
+      "median_r": -1.211474101514169,
+      "preset": "swing-squeeze-breakdown-short-1h",
+      "trades": 54,
+      "win_rate": 0.18518518518518517
+    },
+    {
+      "avg_r": -0.004376949342092338,
+      "coin": "ETHUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 9.907181810690366,
+      "median_r": -0.7245719677050351,
+      "preset": "swing-squeeze-breakdown-short-1h",
+      "trades": 56,
+      "win_rate": 0.42857142857142855
+    },
+    {
+      "avg_r": -0.08433242695705358,
+      "coin": "XRPUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 17.627834988066986,
+      "median_r": -1.0999172214987323,
+      "preset": "swing-squeeze-breakdown-short-1h",
+      "trades": 69,
+      "win_rate": 0.42028985507246375
+    },
+    {
+      "avg_r": 0.5064872972112827,
+      "coin": "WLDUSDT",
+      "first_bar": "2026-08-28T00:30:00+00:00",
+      "last_bar": "2026-11-03T12:45:00+00:00",
+      "max_drawdown_r": 6.5955677538799335,
+      "median_r": 0.4718863269819098,
+      "preset": "swing-squeeze-breakdown-short-1h",
+      "trades": 60,
+      "win_rate": 0.6166666666666667
+    }
+  ],
+  "schema_version": 1,
+  "source_command": "python /app/preset_walkforward.py --lake /lake --coins BTCUSDT,ETHUSDT,XRPUSDT,WLDUSDT --since 2026-04-15 --mode live --live-exits {\"*\": {\"tp_r\": 2, \"tp1_scale_pct\": 50}} --out /out/preset_replay_live.json",
+  "trades": {
+    "test": 940,
+    "total": 1441
+  }
+}

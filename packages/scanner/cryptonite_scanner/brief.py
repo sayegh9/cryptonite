@@ -38,15 +38,22 @@ CHOP_MAX_VOLUME_RATIO = 0.8
 TIMEFRAME_UNIT_S = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
-def _load_replay() -> dict[tuple[str, str], dict[str, Any]]:
+def _load_replay(name: str = "preset_replay.json") -> tuple[dict[tuple[str, str], dict[str, Any]], bool]:
+    """The packaged replay rows by (coin, preset), and whether they were made with the live exit monitor's rules."""
     try:
-        doc = json.loads(resources.files("cryptonite_scanner").joinpath("data/preset_replay.json").read_text())
-        return {(r["coin"], r["preset"]): r for r in doc.get("results", [])}
+        doc = json.loads(resources.files("cryptonite_scanner").joinpath(f"data/{name}").read_text())
+        live = "live exit monitor" in str((doc.get("assumptions") or {}).get("exit_policy", ""))
+        return {(r["coin"], r["preset"]): r for r in doc.get("results", [])}, live
     except Exception:  # the replay is context only; a missing file never fails a brief
-        return {}
+        return {}, False
 
 
-_REPLAY = _load_replay()
+# H11: the installed replay used a 5% hard stop and a +3% / 2% trail only (no structural stop, no TP1), so its losses
+# run to several R; until a live-parity replay is installed its figure is labelled and the live-parity figure
+# (``preset_replay_live.json``, display only: gates and profile warnings still read the installed file) shown next.
+_REPLAY, _REPLAY_IS_LIVE = _load_replay()
+_LIVE_REPLAY, _ = _load_replay("preset_replay_live.json")
+OLD_REPLAY_LABEL = "5%-stop model, not live exits"
 
 
 def _f(value: Any, digits: int = 2) -> str:
@@ -175,10 +182,13 @@ def build_brief(
         if g := facts["setup_grade"]:
             parts.append(f"Setup grade: {g['grade']} ({'; '.join(g['reasons'])})")
         if rp := facts["replay"]:
-            parts.append(
-                f"Replay ({rp['preset']} on {rp['coin']}): {rp['trades']} trades, win {rp['win_rate'] * 100:.0f}%, "
-                f"avg {rp['avg_r']:+.2f}R"
-            )
+            label = "" if rp.get("exit_model") == "live" else f", {OLD_REPLAY_LABEL}"
+            text = (f"Replay ({rp['preset']} on {rp['coin']}{label}): {rp['trades']:.0f} trades, "
+                    f"win {rp['win_rate'] * 100:.0f}%, avg {rp['avg_r']:+.2f}R")
+            if lv := rp.get("live"):
+                text += (f"; live-parity exits: {lv['trades']:.0f} trades, win {lv['win_rate'] * 100:.0f}%, "
+                         f"avg {lv['avg_r']:+.2f}R")
+            parts.append(text)
         if parts:
             lines.append(" · ".join(parts))
     if derivatives:
@@ -272,7 +282,10 @@ def brief_data(
     slug = (candidate or {}).get("preset_slug") or (candidate or {}).get("spec_slug")
     coin = str(instrument_id).split(".")[0]
     if row := _REPLAY.get((coin, slug)):
-        data["replay"] = {"coin": coin, "preset": slug, **{k: _num(row.get(k)) for k in ("trades", "win_rate", "avg_r")}}
+        data["replay"] = {"coin": coin, "preset": slug, **{k: _num(row.get(k)) for k in ("trades", "win_rate", "avg_r")},
+                          "exit_model": "live" if _REPLAY_IS_LIVE else "5pct-stop"}
+        if not _REPLAY_IS_LIVE and (live := _LIVE_REPLAY.get((coin, slug))) and live.get("trades"):
+            data["replay"]["live"] = {k: _num(live.get(k)) for k in ("trades", "win_rate", "avg_r")}
     return data
 
 

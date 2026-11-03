@@ -800,6 +800,16 @@ def run_execution_analysis(snapshot_json: str) -> str:
     except Exception as e:
         return f"Error executing StrategistEngine: {e}"
 
+def debate_queued_text(msg_id) -> str:
+    """The staging tool's success reply. H11: the debate worker starts a queued debate on its own (the 11-03 run
+    853ad0d0 started at once and finished HOLD a minute later while the Brain told the operator it was "waiting for
+    you to start it"), and its result reaches this chat through the debate card, not as a new message."""
+    return (f"Success: Debate queued (Msg ID: {msg_id}). The debate worker starts it automatically; nothing is "
+            "waiting for the operator to start it. Its verdict (or no-trade / refusal) appears in the debate card when "
+            "the run finishes, usually within a few minutes; do not state a verdict before a 'Debate for ...' "
+            "system line says so.")
+
+
 def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: str, conviction_score: float, reasoning: str) -> str:
     """
     Queues a full multi-agent debate on the instrument and timeframe; its verdict then needs the operator's approval.
@@ -861,7 +871,7 @@ def stage_debate_proposal(instrument_id: str, timeframe: str, recommendation: st
             )
             with urllib.request.urlopen(req, timeout=5.0) as response:
                 res = json.loads(response.read().decode('utf-8'))
-                return f"Success: Proposal staged to Action Inbox (Msg ID: {res.get('id')})"
+                return debate_queued_text(res.get("id"))
         except urllib.error.HTTPError as e:
             err_body = e.read().decode('utf-8') if hasattr(e, 'read') else str(e)
             return f"Error staging proposal: Server returned {e.code} - {err_body}"

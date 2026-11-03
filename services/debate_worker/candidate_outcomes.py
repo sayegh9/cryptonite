@@ -2,7 +2,13 @@
 record which barrier (stop or target) is touched first, in R multiples of the stop distance.
 
 Phase 2 (migration 057) adds realistic net labels: entry at the open of the bar after the signal,
-the preset stop/target and the profile exits each net of cost model v1 (``cryptonite_scanner.costs``)."""
+the preset stop/target and the profile exits each net of cost model v1 (``cryptonite_scanner.costs``).
+
+``net_r_profile`` replays only a 5% hard stop and a +3% / 2% trail, so its losses run to several R on a tight
+structural stop. H11 (migration 062) adds ``net_r_live``: the exit monitor's own rules replayed bar by bar
+(``cryptonite_schemas.exit_rules.simulate_live_exit``: structural stop, TP1 partial, profile trail and max hold,
+hard-stop backstop) under the exits of the profile that holds the coin at labelling time. The 057 columns are
+kept as they are."""
 
 import datetime
 import logging
@@ -17,6 +23,9 @@ from cryptonite_scanner.costs import (
     default_market,
     round_trip_cost_fraction,
 )
+from cryptonite_schemas.exit_rules import DEFAULT_THRESHOLDS, LiveExitSettings, simulate_live_exit
+from cryptonite_schemas.exit_thresholds import SETTING_KEYS, ExitThresholds, settled
+from cryptonite_schemas.profile import base_asset, holds_coin_locks
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +156,71 @@ def net_labels(bars: pl.DataFrame | list[dict], direction: str | None, stop: flo
     return out
 
 
+def live_label(bars: pl.DataFrame | list[dict], direction: str | None, stop: float | None, target: float | None,
+               bar_hours: float, settings: LiveExitSettings | None = None, thresholds: ExitThresholds | None = None,
+               max_bars: int | None = None) -> dict[str, Any]:
+    """The 062 columns for one candidate: the live exit monitor replayed over ``bars`` (the first open is the fill),
+    net of the same cost model as ``net_labels`` with the hold weighted by the quantity still open. R is the
+    fill-to-preset-stop distance (the structural stop). A fill beyond the stop leaves ``net_r_live`` NULL."""
+    settings = settings or LiveExitSettings()
+    thresholds = thresholds or DEFAULT_THRESHOLDS
+    rows = bars.to_dicts() if isinstance(bars, pl.DataFrame) else list(bars)
+    if max_bars is not None:
+        rows = rows[:max_bars]
+    out = {"net_r_live": None, "live_outcome": None, "live_bars": None,
+           "live_exit_model": settings.model_name(thresholds)}
+    if not rows or stop is None or target is None or stop == target:
+        out["live_outcome"] = "NO_DATA" if not rows else "INVALID"
+        return out
+    direction = (direction or ("LONG" if stop < target else "SHORT")).upper()
+    res = simulate_live_exit(rows, direction, stop, target, settings=settings, thresholds=thresholds,
+                             bar_seconds=bar_hours * 3600)
+    out["live_outcome"] = res.outcome
+    out["live_bars"] = res.bars_to_exit
+    gross = res.gross_r(direction, stop) if res.fills else None
+    if gross is not None:
+        market = default_market(direction)
+        cost = cost_in_r(res.entry, stop, round_trip_cost_fraction(market, res.held_bars() * bar_hours))
+        out["net_r_live"] = None if cost is None else gross - cost
+    return out
+
+
+async def load_live_exit_context(conn) -> tuple[dict[str, LiveExitSettings], ExitThresholds]:
+    """The exits the live monitor would apply now: per base asset the exit columns of the profile holding that
+    coin (exclusive coins; the newest one if several), and the global thresholds stored in ``system_settings``
+    (else the code defaults). A coin no profile holds gets ``LiveExitSettings()``: TP1 at the preset target."""
+    rows = await conn.fetch(
+        """SELECT status, instruments, exit_tp_r, exit_tp1_scale_pct, exit_trail_activate_pct, exit_trail_pct,
+                  exit_max_hold_hours
+           FROM ai_mandates ORDER BY updated_at DESC NULLS LAST, created_at DESC""")
+    by_base: dict[str, LiveExitSettings] = {}
+    for r in rows:
+        try:
+            if not holds_coin_locks(r["status"]):
+                continue
+        except ValueError:
+            continue
+        settings = LiveExitSettings(*(None if r[k] is None else float(r[k]) for k in (
+            "exit_tp_r", "exit_tp1_scale_pct", "exit_trail_activate_pct", "exit_trail_pct", "exit_max_hold_hours")))
+        for inst in r["instruments"] or []:
+            try:
+                by_base.setdefault(base_asset(inst), settings)
+            except ValueError:
+                continue
+    stored = await conn.fetch("SELECT key, value FROM system_settings WHERE key = ANY($1)", list(SETTING_KEYS))
+    thresholds, problems = settled({r["key"]: r["value"] for r in stored}, DEFAULT_THRESHOLDS, DEFAULT_THRESHOLDS)
+    for problem in problems:
+        logger.warning("Live labels: stored exit thresholds refused (%s); code defaults used", problem)
+    return by_base, thresholds
+
+
+def _settings_for(by_base: dict[str, LiveExitSettings], instrument_id: str) -> LiveExitSettings:
+    try:
+        return by_base.get(base_asset(instrument_id), LiveExitSettings())
+    except ValueError:
+        return LiveExitSettings()
+
+
 def _symbol_bars(lake, symbol: str, start_ns: int, end_ns: int) -> pl.DataFrame | None:
     bars = lake.query_bars_df(symbol, "1m", start_ns, end_ns)
     return bars.sort("ts_event_ns") if bars is not None and not bars.is_empty() else None
@@ -164,6 +238,8 @@ async def label_candidates(pool, lake, limit: int = 300, now: datetime.datetime 
     # Debate-worker module, imported here so the pure functions above import anywhere (walk-forward script).
     from outcomes import MIN_COVERAGE
 
+    async with pool.acquire() as conn:
+        live_by_base, live_t = await load_live_exit_context(conn)
     now = now or datetime.datetime.now(datetime.UTC)
     now_ns = int(now.timestamp() * 1_000_000_000)
     async with pool.acquire() as conn:
@@ -195,6 +271,7 @@ async def label_candidates(pool, lake, limit: int = 300, now: datetime.datetime 
             entry, stop, target = (float(r[k]) for k in ("suggested_entry", "suggested_stop", "suggested_target"))
             hold_h = HOLD_HOURS[r["timeframe"]]
             net = EMPTY_NET
+            live = {"net_r_live": None, "live_outcome": None, "live_bars": None, "live_exit_model": None}
             if entry == stop:
                 res = barrier_outcome([], None, entry, stop, target)
             else:
@@ -208,23 +285,31 @@ async def label_candidates(pool, lake, limit: int = 300, now: datetime.datetime 
                 else:
                     res = barrier_outcome(w, None, entry, stop, target)
                     net = net_labels(w, res["direction"], stop, target, bar_hours=1 / 60)
+                    live = live_label(w, res["direction"], stop, target, 1 / 60,
+                                      _settings_for(live_by_base, r["instrument_id"]), live_t)
             out.append((r["id"], res["direction"], _dec(entry), _dec(stop), _dec(target), res["outcome"],
                         _dec(res["realized_r"]), _dec(res["mfe_r"]), _dec(res["mae_r"]), res["bars_to_exit"], hold_h,
                         _dec(net["entry_next_open"]), _dec(net["net_r_preset"]), _dec(net["net_r_profile"]),
-                        net["cost_model"]))
+                        net["cost_model"], _dec(live["net_r_live"]), live["live_outcome"], live["live_bars"],
+                        live["live_exit_model"]))
     if out:
         async with pool.acquire() as conn:
             await conn.executemany(
                 """INSERT INTO candidate_outcomes (candidate_id, direction, entry, stop, target, outcome,
                           realized_r, mfe_r, mae_r, bars_to_exit, max_hold_hours,
-                          entry_next_open, net_r_preset, net_r_profile, cost_model)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                          entry_next_open, net_r_preset, net_r_profile, cost_model,
+                          net_r_live, live_outcome, live_bars, live_exit_model)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
                    ON CONFLICT (candidate_id) DO NOTHING""", out)
         logger.info("Labelled %d candidate outcomes", len(out))
     try:
         await backfill_net_labels(pool, lake, limit)
     except Exception as e:  # the backfill is best-effort and retried next pass
         logger.warning("Candidate net-label backfill failed: %s", e)
+    try:
+        await backfill_live_labels(pool, lake, limit)
+    except Exception as e:  # the backfill is best-effort and retried next pass
+        logger.warning("Candidate live-label backfill failed: %s", e)
     return len(out)
 
 
@@ -267,3 +352,56 @@ async def backfill_net_labels(pool, lake, limit: int = 300) -> int:
                    WHERE candidate_id = $1 AND cost_model IS NULL""", updates)
         logger.info("Backfilled net labels on %d candidate outcomes", len(updates))
     return len(updates)
+
+
+async def backfill_live_labels(pool, lake, limit: int = 300, *, dry_run: bool = False,
+                               now: datetime.datetime | None = None) -> list[tuple]:
+    """Fill the 062 columns on one batch of existing labels, oldest signal first. Idempotent: only rows with
+    ``live_exit_model IS NULL`` are read and written (the 055 / 057 columns are never touched), so repeated passes
+    walk forward to the newest. ``dry_run`` computes the batch and writes nothing. Returns the computed rows
+    ``(candidate_id, net_r_live, live_outcome, live_bars, live_exit_model)``. A window below ``MIN_COVERAGE`` is
+    skipped (and retried) until ``NO_DATA_AFTER`` past its end, then recorded NO_DATA."""
+    from outcomes import MIN_COVERAGE
+
+    now = now or datetime.datetime.now(datetime.UTC)
+    async with pool.acquire() as conn:
+        live_by_base, live_t = await load_live_exit_context(conn)
+        rows = await conn.fetch(
+            """SELECT co.candidate_id, co.direction, co.stop, co.target, co.max_hold_hours,
+                      sc.instrument_id, sc.interval_end_exclusive_ns
+               FROM candidate_outcomes co JOIN signal_candidates sc ON sc.id = co.candidate_id
+               WHERE co.live_exit_model IS NULL AND co.outcome IN ('STOP', 'TARGET', 'EXPIRED')
+               ORDER BY sc.interval_end_exclusive_ns, co.candidate_id
+               LIMIT $1""", limit)
+    by_symbol: dict[str, list[tuple[Any, int, int]]] = defaultdict(list)
+    for r in rows:
+        start = int(r["interval_end_exclusive_ns"])
+        by_symbol[r["instrument_id"].split(".")[0]].append((r, start, start + int(r["max_hold_hours"]) * HOUR_NS))
+    updates: list[tuple] = []
+    for symbol, items in by_symbol.items():
+        try:
+            bars = _symbol_bars(lake, symbol, min(i[1] for i in items), max(i[2] for i in items))
+        except Exception as e:  # retried on the next pass
+            logger.warning("Candidate live backfill: lake refused %s (%s)", symbol, e)
+            continue
+        for r, start, end in items:
+            w = _window(bars, start, end)
+            settings = _settings_for(live_by_base, r["instrument_id"])
+            if w is None or w.height < int(r["max_hold_hours"]) * 60 * MIN_COVERAGE:
+                # A partial window would label a trade whose stop bar is missing: retried while the lake may still be
+                # repaired, then recorded NO_DATA (net R NULL) so the oldest-first walk moves on
+                if datetime.datetime.fromtimestamp(end / 1e9, datetime.UTC) + NO_DATA_AFTER >= now:
+                    continue
+                updates.append((r["candidate_id"], None, "NO_DATA", None, settings.model_name(live_t)))
+                continue
+            live = live_label(w, r["direction"], float(r["stop"]), float(r["target"]), 1 / 60, settings, live_t)
+            updates.append((r["candidate_id"], _dec(live["net_r_live"]), live["live_outcome"], live["live_bars"],
+                            live["live_exit_model"]))
+    if updates and not dry_run:
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """UPDATE candidate_outcomes SET net_r_live = $2, live_outcome = $3, live_bars = $4,
+                          live_exit_model = $5
+                   WHERE candidate_id = $1 AND live_exit_model IS NULL""", updates)
+        logger.info("Backfilled live-parity labels on %d candidate outcomes", len(updates))
+    return updates

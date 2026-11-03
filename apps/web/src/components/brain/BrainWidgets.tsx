@@ -1244,7 +1244,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
                 <span className="text-zinc-500">R:R Geometry</span>
               )}
               <span className="text-emerald-400 font-semibold">
-                TP1: {fmt(widget.take_profit)}{refPrice ? ` (+${((Math.abs(widget.take_profit - refPrice) / refPrice) * 100).toFixed(1)}%)` : ""}
+                Target: {fmt(widget.take_profit)}{refPrice ? ` (+${((Math.abs(widget.take_profit - refPrice) / refPrice) * 100).toFixed(1)}%)` : ""}
               </span>
             </div>
             <div className="h-1.5 w-full flex rounded-full overflow-hidden bg-zinc-800">
@@ -1254,6 +1254,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           </div>
         );
       })()}
+      {preflight?.ok && preflight.tp1 && preflight.tp1.basis === "PROFILE_R" && (
+        <p role="note" data-testid="order-card-enforced-tp1" className="mt-2 text-emerald-300">
+          Enforced {preflight.tp1.text}
+        </p>
+      )}
       {/* The paused-mandate notice already says this refusal: the dry-run line does not repeat it */}
       {preflight && !(mandateBlock && !preflight.ok && /^MANDATE_(PAUSED|HALTED)/.test(preflight.code)) && (
         <PreflightLine preflight={preflight} instrumentId={widget.instrument_id} />

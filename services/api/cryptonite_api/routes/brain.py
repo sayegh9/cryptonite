@@ -67,6 +67,7 @@ from cryptonite_execution.mandate_store import (
 from cryptonite_execution.mandates import entry_scope_reject
 from cryptonite_execution.profile_lifecycle import coin_lock_conflict
 from cryptonite_execution.sizing import grade_size_pct
+from cryptonite_schemas.exit_rules import EnforcedTp1, enforced_tp1
 from cryptonite_schemas.mandate import (
     MAX_PERP_LEVERAGE_CAP,
     MAX_POSITION_PCT_CAP,
@@ -768,6 +769,10 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         "source": "brain_order_card", "brain_session_id": str(sid), "brain_card_id": widget_id,
         "trace_id": card.get("trace_id"),
         "proposed_take_profit": card.get("take_profit"), "protection": protection,
+        # H11: what the exit monitor enforces as TP1 (the fill note recomputes the level from the fill)
+        "tp1_r": float(mandate.exit_tp_r) if getattr(mandate, "exit_tp_r", None) is not None else None,
+        "tp1_scale_pct": (float(mandate.exit_tp1_scale_pct)
+                          if getattr(mandate, "exit_tp1_scale_pct", None) is not None else None),
         # Stored with the order for scoring (leverage plan 3.3): the system's setup grade sets a perp's leverage
         # ceiling; the model's confidence never does
         "setup_grade": card.get("setup_grade"), "grade_reasons": list(card.get("grade_reasons") or [])[:12],
@@ -823,6 +828,8 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         raise HTTPException(status_code=502, detail="Could not queue the order")
 
     guard = protection_text(card, plan.structural_stop, protection, lev_plan is not None)
+    if (tp1 := _tp1_view(card_tp1(card, mandate, plan.structural_stop), card)) is not None:
+        guard += f" {tp1['text']}."
     await _worker_note(sid, {
         "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "command_id": command_id,
         "expect_status": "APPROVED",
@@ -831,6 +838,30 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     return {"command_id": command_id, "status": "APPROVED", "protection": protection, "mandate_id": str(mandate.id),
             "approval_id": str(decision.approval_id),
             "leverage": lev_plan["leverage"] if lev_plan is not None else None}
+
+
+def card_tp1(card: dict[str, Any], mandate: Any, structural_stop: Decimal | None = None) -> EnforcedTp1 | None:
+    """H11: the TP1 the exit monitor will enforce for an entry card (``exit_rules.enforced_tp1``, the monitor's own
+    rule): the mandate's ``exit_tp_r`` x R from the entry and the structural stop, not the card's target. Estimated
+    from the card's entry price here; the fill note recomputes it from the fill. None for a sell / reduction."""
+    if card["side"] != "BUY" and not is_perp_entry(card):
+        return None
+    ref = card.get("limit_price") or (card.get("grade_inputs") or {}).get("entry")
+    stop = structural_stop if structural_stop is not None else card.get("stop_loss")
+    try:
+        return enforced_tp1("LONG" if card["side"] == "BUY" else "SHORT", float(ref) if ref else None,
+                            float(stop) if stop else None, float(card["take_profit"]) if card.get("take_profit") else None,
+                            getattr(mandate, "exit_tp_r", None), getattr(mandate, "exit_tp1_scale_pct", None))
+    except (TypeError, ValueError):
+        return None
+
+
+def _tp1_view(tp1: EnforcedTp1 | None, card: dict[str, Any]) -> dict[str, Any] | None:
+    if tp1 is None:
+        return None
+    target = float(card["take_profit"]) if card.get("take_profit") else None
+    return {"price": tp1.price, "scale_pct": tp1.scale_pct, "tp_r": tp1.tp_r, "basis": tp1.basis,
+            "text": tp1.text(target, from_fill=False)}
 
 
 def protection_text(card: dict[str, Any], structural_stop: Decimal | None, protection: dict[str, Any],
@@ -985,6 +1016,7 @@ async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request,
             "clipped_from_pct": float(requested) if plan.allocation < requested else None,
             "sell_quantity": None, "summary": plan.summary, "leverage_plan": lp, "needs_totp": True,
             "high_leverage_confirm": lp["leverage"] >= HIGH_LEVERAGE_CONFIRM, "leverage_remedy": leverage_remedy,
+            "tp1": _tp1_view(card_tp1(card, plan.mandate, plan.structural_stop), card),
         }
     return {
         "ok": True, "mandate": {"id": str(plan.mandate.id), "name": plan.mandate.name,
@@ -992,6 +1024,7 @@ async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request,
         "side": card["side"], "allocation_pct": float(plan.allocation), "budget_usd": float(plan.budget),
         "clipped_from_pct": float(requested) if card["side"] == "BUY" and plan.allocation < requested else None,
         "sell_quantity": format(plan.held, "f") if card["side"] == "SELL" else None, "summary": plan.summary,
+        "tp1": _tp1_view(card_tp1(card, plan.mandate, plan.structural_stop), card),
     }
 
 
