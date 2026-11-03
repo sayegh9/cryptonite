@@ -23,7 +23,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent
+# On stdin (``python - < scripts/...``, the documented way in) there is no __file__: the container cwd is /app
+_HERE = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd() / "scripts"
 for _path in (_HERE.parent / "services" / "debate_worker", _HERE):
     if _path.is_dir() and str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
