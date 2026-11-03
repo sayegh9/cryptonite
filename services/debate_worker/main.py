@@ -7,6 +7,7 @@ import time
 import uuid
 
 import asyncpg
+import evidence
 import policies
 import redis.asyncio as redis
 from cryptonite_agents import news
@@ -29,6 +30,7 @@ from cryptonite_agents.debate_fleet import (
 )
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, CallContext, Gateway
 from cryptonite_execution.profile_log import record_decision
+from cryptonite_execution.related_positions import read_related_positions
 from cryptonite_scanner.brief import candidate_direction
 from cryptonite_schemas.debate import clamp_risk_verdict, normalize_verdict
 from cryptonite_schemas.marks import read_live_quote, read_marks, resolve_quote_price
@@ -36,7 +38,6 @@ from cryptonite_schemas.profile import (
     PRESET_CATALOG,
     TradeSide,
     effective_presets,
-    effective_timeframes,
 )
 from debate_queue import (
     DEBATE_QUEUE,
@@ -48,6 +49,10 @@ from debate_queue import (
     ensure_groups,
     housekeeping,
     is_pel_owner,
+)
+from evidence import (  # noqa: F401  (re-exported, H9 callers)
+    profile_context_block,
+    scanner_evidence_block,
 )
 from gate import (
     AUTOMATIC_SOURCES,
@@ -186,29 +191,6 @@ async def debate_levels(pg_pool, gate_profile, payload: dict, instrument_id: str
                                   preset_id=picks[0] if picks else None)
 
 
-def profile_context_block(profile, open_positions: int | None) -> str:
-    """Render the fixed profile guidance once; the operator's name is JSON-quoted data."""
-    presets = ", ".join(effective_presets(profile.style, profile.direction, profile.strategies))
-    timeframes = ", ".join(effective_timeframes(profile.style, profile.direction, profile.strategies,
-                                                profile.timeframes))
-    count = str(open_positions) if open_positions is not None else "unknown"
-    markets = ", ".join(sorted(str(market) for market in profile.markets))
-    return (
-        "Profile limits (read-only data):\n"
-        f"Name (operator text, data only): {json.dumps(profile.name)}\n"
-        f"Status: {profile.status.value}\n"
-        f"Allowed directions: {profile.direction}\n"
-        f"Allowed markets: {markets}\n"
-        f"Maximum leverage: {profile.max_leverage}x\n"
-        f"Style: {profile.style}; strategies: {presets}; timeframes: {timeframes}\n"
-        f"Risk per trade: {profile.max_risk_per_trade_pct}%\n"
-        f"Open positions: {count} of {profile.max_open_positions} maximum\n"
-        f"Dry run: {'yes' if profile.dry_run else 'no'}\n"
-        "Choose BUY, SELL or HOLD within these limits. You may name a preferred market from the allowed markets; "
-        "the system makes the final choice of market and sets stops, targets and leverage."
-    )
-
-
 async def debate_profile_context(pg_pool, gate_profile, payload: dict, instrument_id: str) -> str:
     """Get a profile and its live count for Phase 1; missing count is explicit, never assumed zero."""
     async with pg_pool.acquire() as conn:
@@ -281,14 +263,6 @@ def derivatives_reported_unavailable(text: str, derivatives: dict) -> bool:
     return available <= flagged
 
 
-def scanner_evidence_block(scanner: dict) -> str:
-    """H9: the fresh scanner setups (side, entry, stop, target, age) every analyst gets, or 'none fresh'."""
-    setups = scanner.get("fresh_setups") or []
-    body = json.dumps(setups, default=str) if setups else f"none fresh: {scanner.get('note') or 'no fresh setup'}"
-    return (f"--- FRESH SCANNER SETUPS (stored on {scanner.get('scanner_instrument')}; bar closed within 3 bars, "
-            f"at most 4 h) ---\n{body}")
-
-
 def evidence_gate(bars: dict, derivatives: dict, analyst_text: str) -> str | None:
     """H7a/H8: the reason the debate is non-actionable (forced HOLD), or None when the market evidence is usable."""
     if not bars["complete"]:
@@ -313,8 +287,8 @@ async def _recent_lessons(pg_pool):
     async with pg_pool.acquire() as conn:
         return await conn.fetch(
             """SELECT r.lessons_learned FROM reflections r
-               JOIN portfolio_decisions d ON d.run_id = r.run_id
-               WHERE d.recommendation <> 'HOLD' AND NOT r.recall_excluded
+               LEFT JOIN portfolio_decisions d ON d.run_id = r.run_id
+               WHERE (d.recommendation <> 'HOLD' OR (r.run_id IS NULL AND r.kind = 'TRADE')) AND NOT r.recall_excluded
                ORDER BY r.created_at DESC LIMIT 3""")
 
 
@@ -328,8 +302,9 @@ async def recall_lessons(pg_pool, gateway: Gateway, context_text: str) -> str:
         async with pg_pool.acquire() as conn:
             lessons = await conn.fetch(
                 """SELECT r.lessons_learned FROM reflections r
-                   JOIN portfolio_decisions d ON d.run_id = r.run_id
-                   WHERE r.embedding_model = $2 AND d.recommendation <> 'HOLD' AND NOT r.recall_excluded
+                   LEFT JOIN portfolio_decisions d ON d.run_id = r.run_id
+                   WHERE r.embedding_model = $2 AND NOT r.recall_excluded
+                     AND (d.recommendation <> 'HOLD' OR (r.run_id IS NULL AND r.kind = 'TRADE'))
                    ORDER BY r.embedding <=> $1 LIMIT 3""",
                 q_emb_str, model,
             )
@@ -374,9 +349,17 @@ class AntiCorruptionLayer:
                 "SELECT * FROM agent_safe_positions WHERE instrument_id = $1", 
                 instrument_id
             )
+            try:
+                # H10: the coin's spot, margin and perp positions, each owner separately (exit ownership still keys
+                # on ``current_position``, the exact instrument)
+                related = await read_related_positions(conn, instrument_id, PAPER_ACCOUNT_ID)
+            except Exception as e:
+                logger.warning("Related positions unreadable for %s: %s", instrument_id, e)
+                related = None
             return {
                 "instrument_id": instrument_id,
                 "current_position": dict(position) if position else None,
+                "related_positions": related,
                 "timestamp": time.time()
             }
 
@@ -616,11 +599,22 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         await candidate_lease.release()  # The durable outcome now fences every duplicate before model work.
     try:
         logger.info(f"Phase 1: Gathering Intelligence for {instrument_id}...")
+        # H10: one immutable evidence snapshot, built once before any model call; every role gets the same rendering
+        bars_tf = str(payload.get("timeframe") or "1h").lower()
+        snapshot = await evidence.build_entry_snapshot(
+            pg_pool, redis_client, payload, instrument_id, gate.profile, quoted,
+            bars_tf if bars_tf in ("15m", "1h", "4h") else "1h", EVIDENCE_BARS)
+        async with pg_pool.acquire() as conn:
+            await evidence.persist_snapshot(conn, run_id, snapshot)
+            await conn.execute("UPDATE debate_runs SET evidence_snapshot_version = $2 WHERE id = $1",
+                               run_id, snapshot["version"])
+        evidence_text = evidence.render_snapshot(snapshot)
         context_text = f"{brief}\n\n" if brief else ""
-        context_text += f"Position and price context: {json.dumps(context, default=str)}"
+        context_text += evidence_text
         if block := await debate_profile_context(pg_pool, gate.profile, payload, instrument_id):
             context_text += f"\n\n{block}"
         prompt = f"Analyze {instrument_id} based on your specialization.\n\n{context_text}"
+        turns: list[tuple[str, str]] = []  # (role, text) of every turn, for the H10 post-check
 
         async def run_agent(persona, prompt_text):
             """Run one debate persona; record and broadcast its turn. Returns the gateway result."""
@@ -633,6 +627,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                         gateway, prompt_text, parent_trace_id=uuid.UUID(trace_id),
                         context=CallContext(role=persona.role, mandate_id=payload.get("mandate_id")))
                 txt = turn_text(result.output)
+                turns.append((role_name, txt))
                 async with pg_pool.acquire() as c:
                     await c.execute("INSERT INTO debate_turns (run_id, agent_role, content) VALUES ($1, $2, $3)", run_id, role_name, txt)
                 # Broadcast over websocket
@@ -670,28 +665,17 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 conviction_level = decision
                 reasoning = f"{lite.reasoning}\n\nBull: {lite.bull_case}\n\nBear: {lite.bear_case}"
 
-        evidence_reason = None  # H7a: set when the market evidence is unusable; the verdict is then forced to HOLD
+        # H7a/H10: set when essential evidence is unusable; a risk-adding verdict is then forced to HOLD
+        evidence_reason = evidence.non_actionable_reason(snapshot)
         if lite is None:
             analysts = FULL_DEBATE_ANALYSTS
-            bars_tf = str(payload.get("timeframe") or "1h").lower()
-            bars, derivatives, scanner = await asyncio.gather(
-                asyncio.to_thread(agent_tools.recent_bars, instrument_id,
-                                  bars_tf if bars_tf in ("15m", "1h", "4h") else "1h", EVIDENCE_BARS),
-                asyncio.to_thread(agent_tools.derivatives_evidence, instrument_id),
-                asyncio.to_thread(agent_tools.scanner_evidence, instrument_id))
-            bars_block = (f"--- MEASURED BAR SUMMARY (computed exactly from the bars below) ---\n"
-                          f"{json.dumps(bars.get('summary'), default=str)}\n\n"
-                          f"--- RECENT CLOSED BARS (analytics lake) ---\n{json.dumps(bars, default=str)}")
-            # H8: funding, open interest and mark price fetched here, so no analyst guesses a lake path for them
-            derivatives_block = ("--- DERIVATIVES (perpetual; fetched by the system, each with its age) ---\n"
-                                 f"{json.dumps(derivatives, default=str)}")
-            scanner_block = scanner_evidence_block(scanner)
-            results = await _gather_cancel_on_error(*(
-                run_agent(a, f"{prompt}\n\n{bars_block}\n\n{derivatives_block}\n\n{scanner_block}"
-                          if a is MARKET_ANALYST else f"{prompt}\n\n{derivatives_block}\n\n{scanner_block}")
-                for a in analysts))
-            evidence_reason = evidence_gate(bars, derivatives,
-                                            turn_text(results[analysts.index(MARKET_ANALYST)].output))
+            bars_item = snapshot["items"]["bars"]
+            bars = {**bars_item["value"], "bars": bars_item.get("bars") or [], "reason": bars_item.get("reason")}
+            derivatives = snapshot.get("derivatives_raw") or {}
+            # H10: every analyst gets the same snapshot rendering (the bars, derivatives and scanner blocks are in it)
+            results = await _gather_cancel_on_error(*(run_agent(a, prompt) for a in analysts))
+            evidence_reason = evidence_reason or evidence_gate(
+                bars, derivatives, turn_text(results[analysts.index(MARKET_ANALYST)].output))
             await publish_sentiment_ok(redis_client)
             intel_dossier = "\n\n".join(section(a, r) for a, r in zip(analysts, results))
 
@@ -711,8 +695,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 side_line = (
                     f"The scanner candidate is a {direction} setup. "
                     + ("Taking this trade means recommendation SELL (open a short) where the mandate allows short/PERP; "
-                       "HOLD means not taking it." if direction == "SHORT" else
-                       "Taking this trade means recommendation BUY; HOLD means not taking it.")
+                       "HOLD means not taking it (add no new position)." if direction == "SHORT" else
+                       "Taking this trade means recommendation BUY; HOLD means not taking it (add no new position).")
                 )
                 open_ask = (f"The scanner candidate is a {direction} setup. "
                             f"Make your opening case FOR taking this {direction} trade. ")
@@ -721,9 +705,10 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 side_line = (
                     f"No scanner candidate; this is an operator-requested assessment of {instrument_id}: argue LONG, "
                     "SHORT or HOLD on the evidence. BUY opens a long; SELL opens a short where the mandate allows "
-                    "short/PERP; HOLD takes no position. The Bull names the direction the measured evidence favours "
-                    "and argues for it; the Bear argues for HOLD. If you take a SHORT case, the recommendation is SELL "
-                    "where the mandate allows short/PERP; a LONG case is BUY; HOLD means no trade."
+                    "short/PERP; HOLD adds no new position (it never closes an existing one). The Bull names the "
+                    "direction the measured evidence favours and argues for it; the Bear argues for HOLD. If you take a "
+                    "SHORT case, the recommendation is SELL where the mandate allows short/PERP; a LONG case is BUY; "
+                    "HOLD means add no new position."
                 )
                 # H8: the advocate picks the side the measured evidence favours (a falling market gets a SHORT case)
                 open_ask = (
@@ -733,18 +718,19 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                     "then argue for taking that trade. A SHORT is taken with SELL (open a short). "
                 )
             open_prompt = (
-                f"Here is the intel dossier for {instrument_id}:\n{intel_dossier}{custom_thesis_inject}\n{open_ask}"
-                "If a specific strategy evaluation is required above, ground your case in its backtest metrics."
+                f"{open_ask}If a specific strategy evaluation is required below, ground your case in its backtest "
+                f"metrics.\n\nHere is the intel dossier for {instrument_id}:\n{intel_dossier}{custom_thesis_inject}"
+                f"\n\n{evidence_text}"
             )
             opening = section(advocate, await run_agent(advocate, open_prompt))
 
-            doubt_prompt = (
+            doubt_prompt = ((
                 f"The opposing researcher has presented this opening case for a {direction} trade:\n{opening}\n\n"
                 "Rebut their points, and name what would invalidate the trade."
             ) if direction else (
                 f"The opposing researcher has presented this directional case:\n{opening}\n\n"
-                "Rebut their points and argue for HOLD (no position); name what would invalidate the trade."
-            )
+                "Rebut their points and argue for HOLD (add no new position); name what would invalidate the trade."
+            )) + f"\n\n{evidence_text}"
             rebuttal = section(doubter, await run_agent(doubter, doubt_prompt))
 
             full_transcript = intel_dossier + "\n\n" + "\n\n".join([opening, rebuttal])
@@ -775,9 +761,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 f"{side_line}\n"
                 f"Portfolio Manager proposed {decision} for {instrument_id} with {allocation}% allocation.\n"
                 f"Current Portfolio State: {json.dumps(portfolio_state, default=str)}\n"
-                # H9: the measured evidence the analysts had, so the risk panel needs no lake SQL
-                f"--- MEASURED BAR SUMMARY ---\n{json.dumps(bars.get('summary'), default=str)}\n"
-                f"{derivatives_block}\n{scanner_block}\n"
+                # H9/H10: the same snapshot the analysts had, so the risk panel needs no lake SQL
+                f"{evidence_text}\n"
                 f"Make your risk argument."
             )
             if RISK_PANEL_MODE == "merged":
@@ -789,7 +774,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 risk_transcript = f"PM Proposal: {decision} ({allocation}%)\n\n" + "\n\n".join(
                     section(p, r) for p, r in zip(risk_panel, results_risk)
                 )
-                cro_prompt = f"{side_line}\nBased on the risk debate, make the final sizing decision:\n\n{risk_transcript}"
+                cro_prompt = (f"{side_line}\n{evidence_text}\n\nBased on the risk debate, make the final sizing "
+                              f"decision:\n\n{risk_transcript}")
                 cro_decision = (await run_agent(CHIEF_RISK_OFFICER, cro_prompt)).output
             # H7a: the CRO's limits in code (both risk-panel modes): same direction at <= the PM's size, or HOLD
             verdict = clamp_risk_verdict(decision, conviction, allocation,
@@ -801,17 +787,27 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
             if verdict.clamp_note:
                 logger.warning("Run %s CRO verdict clamped: %s", run_id, verdict.clamp_note)
                 reasoning += f"\n\nCRO clamp: {verdict.clamp_note}"
-            if evidence_reason:
-                logger.warning("Run %s is non-actionable: %s", run_id, evidence_reason)
-                if verdict.recommendation != "HOLD":
-                    conviction = 0.0  # that conviction was for the PM's direction; this HOLD is the system's
-                conviction_level, allocation = "Hold", 0.0
-                reasoning += f"\n\n{evidence_reason}: the verdict is forced to HOLD"
+
+        # H10: the deterministic post-check over every role's text; a flag on an essential fact blocks
+        flags = [f for role, text in turns for f in evidence.validate_turn(role, text, snapshot)]
+        evidence_reason = evidence_reason or evidence.contradiction_reason(flags)
+        if evidence_reason:
+            logger.warning("Run %s is non-actionable: %s", run_id, evidence_reason)
+            if normalize_verdict(conviction_level) != "HOLD":
+                conviction = 0.0  # that conviction was for the PM's direction; this HOLD is the system's
+            conviction_level, allocation = "Hold", 0.0
+            reasoning += f"\n\n{evidence_reason}: the verdict is forced to HOLD"
 
         # One verdict vocabulary (B2): ``recommendation`` stores the direction (BUY / SELL / HOLD) that
         # scoring, routing and the approve endpoint read; ``conviction_level`` keeps the CRO's own
         # wording (Overweight, ...; the lite path's is its direction). Unknown wording fails the run.
         recommendation = normalize_verdict(conviction_level)
+        # H10: an entry verdict opposite to an open related position is a named block (no hedge, no close)
+        block_reason = evidence.opposite_block_reason(snapshot, recommendation)
+        if block_reason:
+            logger.warning("Run %s blocked: %s", run_id, block_reason)
+            reasoning += f"\n\n{block_reason}"
+        non_actionable = evidence_reason or block_reason
         marks = await read_marks(redis_client)  # B3: the mandate's room at live marks, not entry prices
         # Scanner candidates carry their own levels. Operator-triggered debates derive fresh levels from
         # closed lake bars using the scanner's calculation; absence stays a NO_STRUCTURE route refusal.
@@ -865,6 +861,11 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 decision_price = float(final_quoted.price)
                 logger.info(f"Final decision price for {instrument_id}: {final_quoted.price} "
                             f"(quote_age_s={round(final_quoted.age_s, 1)})")
+                # H10: the re-read decision quote is a refresh: a new snapshot version, never an edit of v1
+                final_snapshot = evidence.refreshed(snapshot, final_quoted) or snapshot
+                if final_snapshot is not snapshot:
+                    await evidence.persist_snapshot(conn, run_id, final_snapshot)
+                await evidence.persist_validations(conn, run_id, snapshot["version"], flags)
 
                 # Save final decision
                 await conn.execute(
@@ -884,13 +885,16 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                     structure_reason=structure_reason, levels_source=levels_source,
                     preferred_market=preferred_market,
                     redis=redis_client, grade_context=(brief_data or {}).get("grade_context"),
+                    block_reason=block_reason,
                 )
                 await conn.execute(
                     """UPDATE debate_runs SET status = $1, completed_at = now(), mandate_id = $3,
-                                              failure_reason = COALESCE($5, failure_reason)
+                                              failure_reason = COALESCE($5, failure_reason),
+                                              non_actionable_reason = $6, evidence_snapshot_version = $7
                         WHERE id = $2 AND status = 'RUNNING' AND claim_gen = $4""",
                     final_status, run_id, mandate.id if mandate else None, my_generation,
-                    EVIDENCE_INCOMPLETE if evidence_reason else None,
+                    non_actionable.split(":", 1)[0] if non_actionable else None, non_actionable,
+                    final_snapshot["version"],
                 )
 
         logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level} (decision_trace_id={trace_id})")
@@ -902,6 +906,8 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
             "run_id": str(run_id),
             "instrument_id": instrument_id,
             "decision": decision,
+            "action": evidence.HOLD_ENTRY_LABEL if recommendation == "HOLD" else recommendation,
+            "non_actionable_reason": non_actionable,
             # the run's written status (the row lock above guarantees the UPDATE landed): a CRO veto turns the
             # PM's decision into NO_TRADE, so the web must not derive the status from ``decision``
             "status": final_status,
@@ -1019,6 +1025,14 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
         logger.info(f"Phase 1: Exit Debate for {instrument_id}...")
         position = context["current_position"]
         intel = f"Position Context: {json.dumps(position, default=str)}"
+        # H10: the exit debate also sees the coin's other markets (separately); it still decides only this position
+        exit_snapshot = await evidence.build_exit_snapshot(pg_pool, redis_client, instrument_id)
+        async with pg_pool.acquire() as conn:
+            await evidence.persist_snapshot(conn, run_id, exit_snapshot)
+            await conn.execute("UPDATE debate_runs SET evidence_snapshot_version = $2 WHERE id = $1",
+                               run_id, exit_snapshot["version"])
+        intel += ("\n\n" + evidence.render_snapshot(exit_snapshot)
+                  + f"\nThis exit debate decides only the {instrument_id} position above.")
 
         async def run_agent(persona, prompt_text):
             role_name = persona.name

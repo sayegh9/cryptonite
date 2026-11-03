@@ -22,7 +22,12 @@ from cryptonite_agents.brain.store import session_cursor
 from cryptonite_agents.debate_fleet import CRO_CHAT, ONCHAIN_CHAT
 from cryptonite_agents.gateway import BudgetExceeded, BudgetGuard, Gateway, GatewayError
 from cryptonite_agents.persona import Persona
-from cryptonite_agents.tools import ai_state_header, card_setup_grade, system_redis_url
+from cryptonite_agents.tools import (
+    ai_state_header,
+    card_debate_link,
+    card_setup_grade,
+    system_redis_url,
+)
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -138,7 +143,12 @@ async def startup_event():
                             state=lambda: asyncio.to_thread(ai_state_header),
                             lessons=lambda instrument: asyncio.to_thread(card_lessons, instrument),
                             grader=lambda card: asyncio.to_thread(card_setup_grade, card),
-                            redis=app.state.system_redis)
+                            redis=app.state.system_redis,
+                            # H10: the automatic debate a card goes with or against
+                            debates=lambda card: asyncio.to_thread(
+                                card_debate_link, card["instrument_id"], card["side"],
+                                (card.get("grade_inputs") or {}).get("entry") or card.get("limit_price"),
+                                card.get("stop_loss")))
 
 @app.on_event("shutdown")
 async def shutdown_event():

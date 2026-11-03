@@ -47,6 +47,10 @@ async def main() -> None:
             except Exception as e:  # candidate labels are best-effort
                 logger.exception("Candidate labelling failed: %s", e)
             reflected = await reflections.process_pending_reflections()
+            try:  # H10: closed Brain-card trades get TRADE lessons too; best-effort like the candidate labels
+                reflected += await reflections.process_card_trade_reflections()
+            except Exception as e:
+                logger.exception("Brain card reflections failed: %s", e)
         except Exception as e:  # one bad pass must not stop learning
             logger.exception("Learner pass failed: %s", e)
         try:

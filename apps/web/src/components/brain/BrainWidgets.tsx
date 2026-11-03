@@ -939,6 +939,9 @@ function StructuredRationale({ widget }: { widget: OrderCardWidget }) {
 
 function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [confirming, setConfirming] = useState(false);
+  // H10: a card against a recent debate HOLD is approved only with this explicit acknowledgement
+  const againstDebate = widget.against_debate_verdict ?? null;
+  const [ackDebate, setAckDebate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // An entry on an instrument no ACTIVE mandate allows: the card creates the mandate inline (TOTP, checked by the API)
@@ -1111,6 +1114,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
         widget,
         mandateId,
         perpEntry ? { totp_code: totp, leverage: pickedLeverage, confirm_high_leverage: highLeverage && confirmHigh } : undefined,
+        { acknowledgeAgainstDebate: !!againstDebate && ackDebate },
       );
       setConfirming(false);
     } catch (e: any) {
@@ -1475,9 +1479,26 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
             <p className="mb-2 text-zinc-300">
               Send a PAPER {widget.side} {widget.instrument_id} {widget.order_type} order sized at {widget.allocation_pct}% of the mandate
               budget? It trades inside the ACTIVE mandate that allows this instrument; the mandate check, the 1–25% equity clamp and
-              the kill switch still apply. The position is stopped out by the exit
-              monitor&apos;s hard and trailing stops, not by the proposed stop price; approval is refused while the exit monitor is down.
+              the kill switch still apply.{" "}
+              {widget.stop_loss != null
+                ? <>The active stop is the card&apos;s structural stop at {widget.stop_loss}: the exit monitor closes the position there; its hard and trailing stops are backstops.</>
+                : <>Without a structural stop, the exit monitor&apos;s hard and trailing stops protect the position.</>}{" "}
+              Approval is refused while the exit monitor is down.
             </p>
+          )}
+          {againstDebate && (
+            <div role="alert" data-testid="against-debate" className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-2xs text-amber-100">
+              <p className="font-semibold">This card goes {againstDebate}.</p>
+              <label className="mt-1 flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  data-testid="ack-against-debate"
+                  checked={ackDebate}
+                  onChange={(e) => setAckDebate(e.target.checked)}
+                />
+                I have read the debate verdict and still want to approve this card.
+              </label>
+            </div>
           )}
           {needsTotp && (
             <label className="mb-2 flex w-1/2 flex-col gap-1 text-2xs text-zinc-400">
@@ -1496,7 +1517,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={staleBuild || busy || (needsMandate && !fix) || (!!fix && !fixReady) || (perpEntry && !fix && !perpReady)}
+              disabled={staleBuild || busy || (needsMandate && !fix) || (!!fix && !fixReady) || (perpEntry && !fix && !perpReady) || (!!againstDebate && !ackDebate)}
               title={staleBuild ? STALE_BUILD_TITLE : undefined}
               onClick={approve}
               className="flex-1 rounded bg-amber-600 px-2 py-1.5 text-2xs font-bold text-amber-950 hover:bg-amber-500 disabled:opacity-50"
@@ -1696,6 +1717,16 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
                   </span>
                 </div>
 
+                {c.debate_status && c.debate_status !== "not debated" && (
+                  <div
+                    data-testid="swing-radar-debate"
+                    className={`text-2xs ${c.debate?.against ? "rounded border border-amber-600/50 bg-amber-950/40 px-1.5 py-0.5 text-amber-200" : "text-zinc-400"}`}
+                  >
+                    {c.debate_status}
+                    {c.debate?.conviction_score != null ? ` · conviction ${c.debate.conviction_score}` : ""}
+                    {c.replay?.avg_r != null ? ` · replay ${Number(c.replay.avg_r).toFixed(2)}R over ${c.replay.trades} trades` : ""}
+                  </div>
+                )}
                 {/* MTF Alignment Strip */}
                 <div className="flex items-center gap-1.5 text-2xs">
                   <span className="text-zinc-500">MTF:</span>

@@ -15,7 +15,8 @@ def test_proposal_defaults_daily_loss_normalizes_bare_assets_and_reads_only_allo
 
     def rows(sql, params=None, **kwargs):
         reads.append(sql)
-        assert "agent_safe_mandate_health" in sql
+        # H10: the 1% minimum is checked from the read-only equity view when the API cannot be asked
+        assert "agent_safe_mandate_health" in sql or "agent_safe_account_equity" in sql
         return []
 
     monkeypatch.setattr(tools, "_readonly_rows", rows)
@@ -31,7 +32,7 @@ def test_proposal_defaults_daily_loss_normalizes_bare_assets_and_reads_only_allo
     assert result["proposal"]["daily_loss_defaulted"] is True
     assert result["proposal"]["mode"] == "ASK" and result["proposal"]["dry_run"] is True
     assert any(warning.startswith("Negative replay:") for warning in result["warnings"])
-    assert len(reads) == 1
+    assert len(reads) == 2
 
 
 def test_proposal_invalid_schema_still_returns_card_data_and_unknown_feed(monkeypatch):

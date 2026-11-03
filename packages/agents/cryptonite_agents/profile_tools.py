@@ -375,6 +375,25 @@ def _order_min_feasibility(proposal: dict[str, Any]) -> tuple[dict[str, Any] | N
         return None, type(exc).__name__
 
 
+def _local_order_min_feasibility(proposal: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """H10: the same check as the API's, from the read-only equity view (migration 061), when the API cannot be
+    asked (no agent token, or the call failed). (per-market result, None) or (None, why it is unknown)."""
+    from cryptonite_execution.sizing import entry_feasibility, typical_stop_for
+
+    try:
+        rows = _readonly_rows("SELECT total_equity FROM agent_safe_account_equity WHERE account_id = :a",
+                              {"a": "PAPER-ACCOUNT-001"})
+        equity = float(rows[0]["total_equity"]) if rows and rows[0]["total_equity"] is not None else None
+        if equity is None:
+            return None, "account equity unknown"
+        return entry_feasibility(
+            float(proposal["capital_budget_usd"]), float(proposal["max_position_pct"]),
+            float(proposal["max_risk_per_trade_pct"]), int(proposal["max_leverage"]),
+            list(proposal["markets"]), equity, typical_stop_for(proposal["timeframes"])), None
+    except Exception as exc:
+        return None, type(exc).__name__
+
+
 def _propose(spec: dict[str, Any]) -> dict[str, Any]:
     """Validate a profile spec; reads only safe profile views, the Redis in-feed reader and packaged replay JSON.
 
@@ -483,6 +502,9 @@ def _propose(spec: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         return _error(exc)
     feasibility, unknown = _order_min_feasibility(proposal)
+    if feasibility is None:
+        feasibility, local_unknown = _local_order_min_feasibility(proposal)
+        unknown = f"{unknown}; {local_unknown}" if feasibility is None else None
     if feasibility is None:
         warnings.append(f"ORDER_MIN_UNKNOWN: the 1% minimum order could not be checked ({unknown})")
     for market, row in (feasibility or {}).items():

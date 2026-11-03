@@ -596,7 +596,7 @@ async def test_pm_and_cro_see_a_short_candidate_and_the_market_brief(main, pool)
              "candidate_payload": json.dumps({"suggested_entry": 100, "suggested_stop": 102, "suggested_target": 95})}
     await run(main, pool, short, models)
     assert "candidate is a SHORT setup" in models.prompts["pm"] and "recommendation SELL" in models.prompts["pm"]
-    assert "--- MARKET BRIEF ---" in models.prompts["pm"] and "Position and price context" in models.prompts["pm"]
+    assert "--- MARKET BRIEF ---" in models.prompts["pm"] and "VERIFIED FACTS" in models.prompts["pm"]
     assert "candidate is a SHORT setup" in models.prompts["cro"]
 
 

@@ -537,22 +537,27 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
                       levels_source: str | None = None,
                       preferred_market: str | None = None,
                       redis=None,
-                      grade_context: dict[str, Any] | None = None) -> tuple[str, Mandate | None]:
+                      grade_context: dict[str, Any] | None = None,
+                      block_reason: str | None = None) -> tuple[str, Mandate | None]:
     """Returns (debate_runs status, mandate). ``decision_trace_id`` (R7.4) rides in the command and
     approval payloads so the order and its fill can be traced back to the scanner candidate. ``marks``
     (``cryptonite_schemas.marks.read_marks``) values the mandate's positions for its room. ``reference_price``
     (the decision price) is the entry the R:R filter measures from. ``stop_loss`` / ``take_profit``: the scanner
     candidate's levels (none for a Brain- or Inbox-started debate). ``redis`` (the perp mark, funding and leverage
-    brackets) and ``grade_context`` (``brief_data``'s) are read only on a perp route."""
+    brackets) and ``grade_context`` (``brief_data``'s) are read only on a perp route. ``block_reason`` (H10, e.g. an
+    entry verdict opposite to an open related position) refuses a directional verdict before any reduction or entry
+    route: NO_TRADE with that reason, never an approval card."""
     now = now or datetime.datetime.now(datetime.UTC)
     mandate = await resolve_profile(conn, instrument_id, mandate_id)
     side = side_of(recommendation)
     if mandate is None:
-        return ("NO_TRADE" if side is None else "PENDING_APPROVAL"), None
+        return ("NO_TRADE" if side is None or block_reason else "PENDING_APPROVAL"), None
     await record_decision(conn, mandate.id, "DEBATE", recommendation, instrument_id=instrument_id,
                           run_id=run_id, conviction=conviction)
     if side is None:
         return await _no_trade(conn, run_id, instrument_id, mandate, "HOLD")
+    if block_reason:
+        return await _no_trade(conn, run_id, instrument_id, mandate, block_reason)
     instrument = await reduction_instrument(conn, mandate, instrument_id, side)
     if instrument is None:
         reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side, preferred_market)

@@ -22,9 +22,10 @@ LESSON_WINDOW_DAYS = 90  # only reflections this recent are shown
 _LESSONS_SQL = f"""
     SELECT f.lessons_learned, f.outcome, f.alpha_vs_benchmark, f.created_at
     FROM agent_safe_reflections f
-    JOIN agent_safe_debate_verdicts v ON v.run_id = f.run_id
+    LEFT JOIN agent_safe_debate_verdicts v ON v.run_id = f.run_id
     WHERE f.instrument_id = :instrument_id
-      AND v.recommendation <> 'HOLD'
+      -- H10: a Brain-card TRADE lesson has no debate run
+      AND (v.recommendation <> 'HOLD' OR (f.run_id IS NULL AND f.kind = 'TRADE'))
       AND NOT f.recall_excluded
       AND f.created_at >= now() - interval '{LESSON_WINDOW_DAYS} days'
     ORDER BY abs(f.alpha_vs_benchmark) DESC NULLS LAST, f.created_at DESC

@@ -783,6 +783,29 @@ test.describe("Brain Home", () => {
     ...over,
   });
 
+  test("H10: a card against a recent debate HOLD needs an explicit acknowledgement before it is approved", async ({ page }) => {
+    await mockPreflight(page, () => ({ json: buyPreflight() }));
+    const against = "against the debate verdict: debate 82d44582 at 2026-11-03T11:15:40+00:00 ended HOLD (conviction 0) on the same candidate";
+    const card = await openCard(page, { ...ORDER_CARD, stop_loss: 58000, against_debate_verdict: against,
+                                        debate_link: { run_id: "82d44582", recommendation: "HOLD", against: true } });
+    const bodies: unknown[] = [];
+    await page.route(`**/agent-api/brain/sessions/${SESSION}/cards/call-1/approve`, (route) => {
+      bodies.push(route.request().postDataJSON());
+      return route.fulfill({ json: { command_id: "cmd-ack-1", status: "APPROVED" } });
+    });
+    await card.getByRole("button", { name: "Approve…" }).click();
+    const group = card.getByRole("group", { name: "Confirm paper order" });
+    await expect(group.getByTestId("against-debate")).toContainText(`This card goes ${against}.`);
+    await expect(group).toContainText("The active stop is the card's structural stop at 58000");
+    const confirm = card.getByRole("button", { name: "Confirm paper order" });
+    await expect(confirm).toBeDisabled();
+    await group.getByTestId("ack-against-debate").check();
+    await expect(confirm).toBeEnabled();
+    await confirm.click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0]).toEqual({ acknowledge_against_debate: true });
+  });
+
   test("a BUY card says what Approve would size to, before the operator confirms", async ({ page }) => {
     const reactErrors = collectReactErrors(page);
     const reads = await mockPreflight(page, () => ({ json: buyPreflight() }));

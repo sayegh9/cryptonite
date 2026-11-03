@@ -12,8 +12,9 @@ the mandate the order trades in (A5.1; the named one, else the single ACTIVE man
 instrument), claims the card (PENDING_APPROVAL -> APPROVED, so a concurrent reject cannot also win),
 records an APPROVED ``ai_approvals`` row and enqueues one PAPER ``SUBMIT_ORDER`` bound to it, with the
 idempotency key ``brain-card:<session>:<id>`` (a retry or double click never queues a second order).
-The order is booked under the mandate's own instance, which the exit monitor's hard and trailing stops
-protect, and sized by the allocation the operator saw. It is refused while the exit monitor is down,
+The order is booked under the mandate's own instance and sized by the allocation the operator saw. Its active stop
+is the structural stop written to the command (the exit monitor closes the position there); the exit monitor's hard
+and trailing stops are backstops (``protection_text``). It is refused while the exit monitor is down,
 because nothing else would stop the position out.
 """
 
@@ -23,7 +24,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -424,6 +425,9 @@ class CardApproveRequest(BaseModel):
     totp_code: str | None = None
     leverage: int | None = Field(default=None, ge=1, le=MAX_PERP_LEVERAGE_CAP)
     confirm_high_leverage: bool = False
+    # H10: a card that goes against a recent debate HOLD on the same candidate (or coin and side) is approved only
+    # with this explicit acknowledgement
+    acknowledge_against_debate: bool = False
 
 
 class _PerpRefusal(HTTPException):
@@ -729,6 +733,10 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         raise HTTPException(status_code=404, detail="Order card not found")
     if card.get("status") == "APPROVED" and card.get("command_id"):
         return {"command_id": card["command_id"], "status": "APPROVED", "replayed": True}
+    if card.get("against_debate_verdict") and not (req and req.acknowledge_against_debate):
+        raise HTTPException(status_code=409, detail=(
+            f"AGAINST_DEBATE_VERDICT: this card goes {card['against_debate_verdict']}; acknowledge it on the card to "
+            "approve"))
     plan = await _plan_card(request, sid, card, req.mandate_id if req else None, req.leverage if req else None)
     mandate, allocation, summary, held = plan.mandate, plan.allocation, plan.summary, plan.held
     protection, trace_id, source_ref = plan.protection, plan.trace_id, plan.source_ref
@@ -764,6 +772,10 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
         # ceiling; the model's confidence never does
         "setup_grade": card.get("setup_grade"), "grade_reasons": list(card.get("grade_reasons") or [])[:12],
         "confidence": card.get("confidence"),
+        # H10 audit chain: the automatic path's debate this card went with or against, and the acknowledgement
+        "debate_link": card.get("debate_link"), "against_debate_verdict": card.get("against_debate_verdict"),
+        "acknowledged_against_debate": bool(card.get("against_debate_verdict") and req
+                                            and req.acknowledge_against_debate),
     }
     if plan.structural_stop is not None:
         stop_text = format(plan.structural_stop, "f")
@@ -810,10 +822,7 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
                                  "content": f"Order card {widget_id} was approved but could not be queued."})
         raise HTTPException(status_code=502, detail="Could not queue the order")
 
-    guard = (f"a resting stop at {card.get('stop_loss')} (on the mark) and the exit monitor's liquidation-proximity "
-             f"close protect the position." if lev_plan is not None else
-             f"the exit monitor's {protection.get('stop_loss_pct')}% hard stop and {protection.get('trail_pct')}% "
-             f"trailing stop (after +{protection.get('trail_activate_pct')}%) protect the position.")
+    guard = protection_text(card, plan.structural_stop, protection, lev_plan is not None)
     await _worker_note(sid, {
         "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "command_id": command_id,
         "expect_status": "APPROVED",
@@ -822,6 +831,31 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     return {"command_id": command_id, "status": "APPROVED", "protection": protection, "mandate_id": str(mandate.id),
             "approval_id": str(decision.approval_id),
             "leverage": lev_plan["leverage"] if lev_plan is not None else None}
+
+
+def protection_text(card: dict[str, Any], structural_stop: Decimal | None, protection: dict[str, Any],
+                    perp_entry: bool) -> str:
+    """H10: the stop that is actually active, computed from what is queued, never inferred. A perp entry rests its stop
+    on the exchange mark. Otherwise the structural stop in the command (``proposed_stop_loss``) is the active stop: the
+    exit monitor closes the position there (``exit_monitor.load_positions``); its hard and trailing stops are backstops.
+    """
+    backstops = (f"the exit monitor's {protection.get('stop_loss_pct')}% hard stop and {protection.get('trail_pct')}% "
+                 f"trailing stop (after +{protection.get('trail_activate_pct')}%)")
+    if perp_entry:
+        return (f"the active stop is a resting stop at {card.get('stop_loss')} (on the mark); the exit monitor's "
+                "liquidation-proximity close is the backstop.")
+    stop = structural_stop if structural_stop is not None else card.get("stop_loss")
+    if stop is None:
+        return f"{backstops} protect the position (no structural stop was set)."
+    ref = card.get("limit_price") or (card.get("grade_inputs") or {}).get("entry")
+    dist = ""
+    try:
+        if ref:
+            dist = f" ({(Decimal(str(stop)) / Decimal(str(ref)) - 1) * 100:+.2f}% from entry {ref})"
+    except (InvalidOperation, ZeroDivisionError, ValueError):
+        dist = ""
+    return (f"the active stop is the structural stop at {stop}{dist}: the exit monitor closes the position there; "
+            f"{backstops} are backstops.")
 
 
 def _refusal_code(detail: str) -> str:
