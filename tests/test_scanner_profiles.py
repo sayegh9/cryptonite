@@ -26,6 +26,9 @@ from cryptonite_schemas.profile import preset_ids_for
 BTC = "BTCUSDT.BINANCE"
 ETH = "ETHUSDT.BINANCE"
 END = 1_791_201_600 * 10**9
+# The resampler closes a bar 1 ms before its interval end (Binance kline close time); the engine stamps each
+# candidate with its row's own close, so a live scan stores the newest bar's candidates (H9 live_store_candidates)
+LAST_CLOSE = END - 1_000_000
 
 
 @pytest.fixture
@@ -69,7 +72,7 @@ async def scanner(monkeypatch):
         return [SignalCandidateRead(
             id=uuid4(), scan_run_id=kw["scan_run_id"], spec_version_id=kw["spec_version_id"],
             instrument_id=kw["instrument_id"], timeframe=kw["timeframe"],
-            bar_open_ns=r["bar_open_ns"], bar_close_inclusive_ns=r["interval_end_exclusive_ns"] - 1,
+            bar_open_ns=r["bar_open_ns"], bar_close_inclusive_ns=r["bar_close_inclusive_ns"],
             interval_end_exclusive_ns=r["interval_end_exclusive_ns"], matched_rules=["test"],
             metrics={"direction": kw["risk_config"].direction}, suggested_entry=Decimal(100),
             suggested_stop=Decimal(102 if short else 98), suggested_target=Decimal(96 if short else 104),
@@ -97,7 +100,7 @@ async def profile(h, *, coins=(BTC,), style="SWING", direction="LONG", dry_run=F
 async def bar(h, *, inst=BTC, tf="1h", event="profile-bar"):
     """Deliver a single closed-bar event through the real worker handler."""
     await h.worker._handle_stream_message("closed", "1-0", {"data": json.dumps({
-        "event_id": event, "instrument_id": inst, "timeframe": tf, "bar_close_inclusive_ns": END - 1,
+        "event_id": event, "instrument_id": inst, "timeframe": tf, "bar_close_inclusive_ns": LAST_CLOSE,
     })})
 
 
@@ -187,7 +190,7 @@ async def test_scanner_profile_dedupes_global_candidate_with_mandate(scanner):
     btc = [p for p in payloads if p["instrument_id"] == BTC]
     assert len(btc) == 3 and all(p.get("mandate_id") == str(mid) for p in btc)
     assert len({p["preset_slug"] for p in btc}) == 3
-    assert await scanner.pool.fetchval("SELECT count(*) FROM signal_candidates WHERE instrument_id=$1 AND bar_close_inclusive_ns=$2", BTC, END - 1) == 3
+    assert await scanner.pool.fetchval("SELECT count(*) FROM signal_candidates WHERE instrument_id=$1 AND bar_close_inclusive_ns=$2", BTC, LAST_CLOSE) == 3
     assert await scanner.pool.fetchval("SELECT is_archived FROM scan_specs WHERE active_version_id=$1", vid) is False
     assert any(c["instrument_id"] == ETH for c in scanner.calls)  # Global universe is unchanged.
 
@@ -215,7 +218,7 @@ async def test_scanner_profile_adopts_an_existing_global_candidate(scanner):
     await bar(scanner, event="profile-after-global")
     rows = await scanner.pool.fetch("""SELECT payload FROM outbox_events
         WHERE event_type='signal_candidate' AND payload->>'instrument_id'=$1
-        AND payload->>'bar_close_inclusive_ns'=$2 AND payload->>'spec_version_id'=$3""", BTC, str(END - 1), str(vid))
+        AND payload->>'bar_close_inclusive_ns'=$2 AND payload->>'spec_version_id'=$3""", BTC, str(LAST_CLOSE), str(vid))
     assert len(rows) == 1
     assert "mandate_id" not in json.loads(rows[0]["payload"])
     stored = await scanner.pool.fetchval("""SELECT fields FROM scanner_debate_outbox

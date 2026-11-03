@@ -36,7 +36,7 @@ async def _seed(conn, instrument: str, slug: str, metrics: dict) -> uuid.UUID:
     await conn.execute(
         "INSERT INTO scan_runs (id, spec_version_id, spec_hash, scanner_version, indicator_version, input_watermark_ns, "
         "source_partitions, source_partition_checksums, trigger_reason) "
-        "VALUES ($1, $2, 'h6', 't', 't', 0, '[]', '{}', 'test')", run, version)
+        "VALUES ($1, $2, 'h6', 't', 't', 0, '[]', '{}', 'COMMITTED_BAR_EVENT')", run, version)
     close_ns = time.time_ns()
     await conn.execute(
         "INSERT INTO signal_candidates (id, scan_run_id, spec_version_id, instrument_id, timeframe, bar_open_ns, "
