@@ -4,8 +4,9 @@
 Joins ``policy_decisions`` to ``candidate_outcomes`` and replays every labelled TAKE in signal order through the
 real profile sizing rules: 1% risk of equity (times the policy's size factor), a 10% position limit, the 1%-of-equity
 minimum notional for perp and margin (spot has none), one position per coin and at most 3 open. A TAKE whose coin
-is held or whose portfolio is full is skipped. Each policy runs twice, once on ``net_r_preset`` and once on
-``net_r_profile``. Exit time is ``bars_to_exit`` bars after the signal (else ``max_hold_hours``): the labeller keeps
+is held or whose portfolio is full is skipped. Each policy runs once per exit set: ``net_r_preset``, ``net_r_profile``
+(the 5%-stop model) and ``net_r_live`` (H11: the live exit monitor's rules; NULL until labelled). Exit time is
+``bars_to_exit`` bars after the signal (else ``max_hold_hours``): the labeller keeps
 one exit time per candidate, so the profile-exit run shares the preset run's holding time.
 
 Outputs per policy and exit set: trades, net R, net P&L, max drawdown (R and %), turnover, win rate, the day-clustered
@@ -32,7 +33,7 @@ MAX_POSITION_PCT = 0.10
 MIN_NOTIONAL_PCT = 0.01  # perp and margin; the risk engine's fixed floor
 MAX_OPEN = 3
 POLICIES = ("A", "B", "C")
-EXIT_SETS = ("net_r_preset", "net_r_profile")
+EXIT_SETS = ("net_r_preset", "net_r_profile", "net_r_live")  # net_r_live: H11 live-parity exits (062)
 TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 
 
@@ -163,7 +164,7 @@ QUERY = """
 SELECT pd.candidate_id::text, pd.policy, pd.decision, COALESCE(pd.side, co.direction) AS side,
        COALESCE(pd.size_factor, 1) AS size_factor, sc.instrument_id, sc.timeframe, sc.interval_end_exclusive_ns,
        COALESCE(co.entry_next_open, co.entry, sc.suggested_entry) AS entry, COALESCE(co.stop, sc.suggested_stop) AS stop,
-       co.bars_to_exit, co.max_hold_hours, co.net_r_preset, co.net_r_profile
+       co.bars_to_exit, co.max_hold_hours, co.net_r_preset, co.net_r_profile, co.net_r_live
 FROM policy_decisions pd
 JOIN signal_candidates sc ON sc.id = pd.candidate_id
 JOIN candidate_outcomes co ON co.candidate_id = pd.candidate_id
@@ -182,7 +183,7 @@ def to_decision(row) -> Decision:
         candidate_id=row["candidate_id"], policy=row["policy"], decision=row["decision"], side=row["side"],
         size_factor=float(row["size_factor"]), instrument_id=row["instrument_id"], entry_at=entry_at,
         exit_at=entry_at + hold, entry=float(row["entry"]), stop=float(row["stop"]),
-        net_r={"net_r_preset": f(row["net_r_preset"]), "net_r_profile": f(row["net_r_profile"])},
+        net_r={k: f(row[k]) for k in EXIT_SETS},
     )
 
 

@@ -10,6 +10,12 @@ bootstrap 90% interval, the trade count and an overlap-adjusted count (one open 
 
 Modes:
   ``--mode report`` (default) writes the walk-forward report.
+  ``--mode live`` (H11) also closes every signal under the live exit monitor's own rules
+  (``cryptonite_schemas.exit_rules.simulate_live_exit``: structural stop = the preset stop, TP1 partial, profile
+  trail and max hold, 5% hard stop as backstop) with the per-coin profile exits from ``--live-exits``, and writes
+  ``results`` in the ``preset_replay.json`` row schema from the test-window ``net_r_live`` plus a per preset ×
+  coin comparison of the old 5%-stop profile model, the live model and the preset exits on both windows. Every
+  signal counts (no variant selection); overlap is reported, not removed. It is not installed anywhere.
   ``--mode replay`` writes ``preset_replay.json`` (schema_version 1, unchanged row schema) from the
   test-window NET results under the profile exits. It is only an input to a later gate; nothing is
   unticked automatically.
@@ -21,6 +27,7 @@ Run inside the scanner image with the lake mounted read-only (as for ``scripts/p
       -v "$PWD/scripts/preset_walkforward.py:/app/preset_walkforward.py:ro" \
       -v "$PWD/scripts/preset_replay.py:/app/preset_replay.py:ro" \
       -v "$PWD/services/debate_worker/candidate_outcomes.py:/app/candidate_outcomes.py:ro" \
+      -v "$PWD/packages/schemas/cryptonite_schemas/exit_rules.py:/app/packages/schemas/cryptonite_schemas/exit_rules.py:ro" \
       -v "$PWD/replay:/out" \
       "$(docker compose -f infra/docker-compose.yml images -q scanner)" \
       python /app/preset_walkforward.py --lake /lake --coins BTCUSDT,ETHUSDT \
@@ -34,8 +41,9 @@ import bisect
 import json
 import random
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 from statistics import mean
@@ -53,6 +61,7 @@ from candidate_outcomes import (  # noqa: E402
     PROFILE_STOP_PCT,
     PROFILE_TRAIL_ACTIVATE_PCT,
     PROFILE_TRAIL_PCT,
+    live_label,
     net_labels,
 )
 from cryptonite_scanner.costs import (  # noqa: E402
@@ -70,6 +79,7 @@ from cryptonite_scanner.preset_stats import (  # noqa: E402
 )
 from cryptonite_scanner.presets import _PROFILE_PRESETS  # noqa: E402
 from cryptonite_scanner.regime import regime_series  # noqa: E402
+from cryptonite_schemas.exit_rules import DEFAULT_THRESHOLDS, LiveExitSettings  # noqa: E402
 
 DAY_NS = 86_400_000_000_000
 POLICIES = ("preset", "profile")
@@ -85,7 +95,7 @@ CI_LEVEL = 0.90
 
 def trade_end_ns(trade: dict[str, Any]) -> int:
     """The last moment a trade is open under either exit policy (its signal time when never filled)."""
-    ends = [trade.get(f"exit_ns_{p}") for p in POLICIES]
+    ends = [trade.get(f"exit_ns_{p}") for p in (*POLICIES, "live")]
     return max([e for e in ends if e is not None], default=trade["signal_ns"])
 
 
@@ -220,11 +230,20 @@ def regime_at(ends_ns: list[int], tags: list[str | None], signal_ns: int) -> str
     return (tags[i] or "UNKNOWN") if i >= 0 else "UNKNOWN"
 
 
-def finish_trade(signal: dict[str, Any], rows: list[dict[str, Any]], bar_hours: float) -> dict[str, Any]:
-    """Close one signal over the bars after it (``rows``, oldest first) under both exit policies."""
+def finish_trade(signal: dict[str, Any], rows: list[dict[str, Any]], bar_hours: float,
+                 live_exits: dict[str, LiveExitSettings] | None = None) -> dict[str, Any]:
+    """Close one signal over the bars after it (``rows``, oldest first) under both exit policies, and under the
+    live exits too when ``live_exits`` (coin -> profile exits; ``"*"`` for any other coin) is given."""
     net = net_labels(rows, signal["direction"], signal["stop"], signal["target"], bar_hours)
     events = [int(r["ts_event_ns"]) for r in rows]
+    live: dict[str, Any] = {}
+    if live_exits is not None:
+        settings = live_exits.get(signal["coin"], live_exits.get("*", LiveExitSettings()))
+        got = live_label(rows, signal["direction"], signal["stop"], signal["target"], bar_hours, settings)
+        live = {"net_r_live": got["net_r_live"], "live_outcome": got["live_outcome"],
+                "exit_ns_live": events[got["live_bars"] - 1] if got["live_bars"] else None}
     return {
+        **live,
         **signal,
         "entry_next_open": net["entry_next_open"],
         "cost_model": net["cost_model"],
@@ -278,6 +297,74 @@ def replay_document(trades: list[dict[str, Any]], pairs: list[tuple[str, str]],
     return {"schema_version": 1, "assumptions": assumptions(window), "results": results}
 
 
+def _avg(trades: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    values = [t[key] for t in trades if t.get(key) is not None]
+    return {"n": len(values), "avg_r": mean(values) if values else None,
+            "win_rate": sum(v > 0 for v in values) / len(values) if values else None}
+
+
+def live_comparison(trades: list[dict[str, Any]], cutoff_ns: int) -> list[dict[str, Any]]:
+    """Per preset × coin and window: the old profile model, the live model and the preset exits over the same
+    signals (those with a live label), with the overlap-adjusted live count. No variant is selected."""
+    train, test = split_chronological(trades, cutoff_ns)
+    out = []
+    for slug, coin in sorted({(t["preset"], t["coin"]) for t in trades}):
+        row: dict[str, Any] = {"preset": slug, "coin": coin}
+        for name, window in (("train", train), ("test", test)):
+            mine = [t for t in window if t["preset"] == slug and t["coin"] == coin and t.get("net_r_live") is not None]
+            old, new = _avg(mine, "net_r_profile"), _avg(mine, "net_r_live")
+            row[name] = {
+                "signals": len(mine),
+                "overlap_adjusted_live": overlap_adjusted_count(mine, "live"),
+                "days": len({t["signal_ns"] // DAY_NS for t in mine}),
+                "old_profile": old, "live": new, "preset": _avg(mine, "net_r_preset"),
+                "live_minus_old": (new["avg_r"] - old["avg_r"]
+                                   if new["avg_r"] is not None and old["avg_r"] is not None else None),
+                "live_outcomes": dict(sorted(Counter(t.get("live_outcome") for t in mine).items())),
+            }
+        out.append(row)
+    return out
+
+
+def live_document(trades: list[dict[str, Any]], pairs: list[tuple[str, str]],
+                  ranges: dict[tuple[str, str], tuple[int, int]], cutoff_ns: int, window: dict[str, Any],
+                  live_exits: dict[str, LiveExitSettings]) -> dict[str, Any]:
+    """The live-parity replay: ``results`` (``preset_replay.json`` row schema) from the test-window ``net_r_live``
+    and the old-vs-new comparison. Not installed: the packaged file stays the 5%-stop model until replaced."""
+    _, test = split_chronological(trades, cutoff_ns)
+    results = []
+    for slug, coin in pairs:
+        rows = [ReplayTrade(t["signal_ns"], t["exit_ns_live"], t["net_r_live"]) for t in test
+                if t["preset"] == slug and t["coin"] == coin and t.get("net_r_live") is not None]
+        first, last = ranges.get((slug, coin), (None, None))
+        if last is not None and last < cutoff_ns:
+            first = last = None
+        elif first is not None:
+            first = max(first, cutoff_ns)
+        results.append(summarize_replay(slug, coin, rows, first, last))
+    assumed = assumptions(window)
+    assumed.update({
+        "exit_policy": "live exit monitor (net_r_live, cryptonite_schemas.exit_rules.simulate_live_exit)",
+        "live_exits": {coin: asdict(s) | {"model": s.model_name(DEFAULT_THRESHOLDS)} for coin, s in live_exits.items()},
+        "global_thresholds": asdict(DEFAULT_THRESHOLDS),
+        "bars": ("signal timeframe; inside a bar open -> adverse extreme -> favourable extreme -> close, so a bar "
+                 "touching a stop and TP1 is a stop; stops fill at their level or at a gapping open"),
+        "r_unit": "distance from the fill to the preset stop (the live structural stop)",
+    })
+    return {"schema_version": 1, "assumptions": assumed, "results": results,
+            "comparison": live_comparison(trades, cutoff_ns),
+            "trades": {"total": len(trades), "test": len(test)}}
+
+
+def parse_live_exits(text: str) -> dict[str, LiveExitSettings]:
+    """``--live-exits``: a JSON object (or a path to one) coin -> {tp_r, tp1_scale_pct, trail_activate_pct,
+    trail_pct, max_hold_hours}; the key ``"*"`` applies to any other coin."""
+    path = Path(text)
+    raw = json.loads(path.read_text(encoding="utf-8") if path.is_file() else text)
+    return {coin.upper() if coin != "*" else coin: LiveExitSettings(**{k: v for k, v in cfg.items()})
+            for coin, cfg in raw.items()}
+
+
 # ---------------------------------------------------------------- lake replay (read-only)
 
 
@@ -292,7 +379,8 @@ def _regime_lookup(reader, coin: str, since_ns: int) -> Callable[[int], str]:
 
 
 def stream_trades(reader, preset, coin: str, timeframe: str, since_ns: int,
-                  regime_of: Callable[[int], str]) -> tuple[list[dict], int | None, int | None, int]:
+                  regime_of: Callable[[int], str],
+                  live_exits: dict[str, LiveExitSettings] | None = None) -> tuple[list[dict], int | None, int | None, int]:
     """Replay one preset stream batch by batch (as ``preset_stats.replay_batches``), closing each signal
     once its max-hold bars have been seen. Returns trades, first/last bar and the censored signal count."""
     from preset_replay import INDICATOR_CONTEXT_BARS, timeframe_ns
@@ -336,7 +424,7 @@ def stream_trades(reader, preset, coin: str, timeframe: str, since_ns: int,
             for signal, rows in pending:
                 rows.append(row)
                 if len(rows) >= max_bars:
-                    trades.append(finish_trade(signal, rows, bar_hours))
+                    trades.append(finish_trade(signal, rows, bar_hours, live_exits))
                 else:
                     still.append((signal, rows))
             pending = still
@@ -353,7 +441,8 @@ def stream_trades(reader, preset, coin: str, timeframe: str, since_ns: int,
     return trades, first_ns, last_ns, len(pending)
 
 
-def run(lake: Path, coins: list[str], since: date) -> dict[str, Any]:
+def run(lake: Path, coins: list[str], since: date,
+        live_exits: dict[str, LiveExitSettings] | None = None) -> dict[str, Any]:
     """Replay every registered preset on the requested coins; returns trades and data ranges."""
     from preset_replay import LakeReader
 
@@ -371,7 +460,7 @@ def run(lake: Path, coins: list[str], since: date) -> dict[str, Any]:
                     continue
                 for timeframe in preset.universe.timeframes:
                     got, first, last, open_left = stream_trades(reader, preset, coin, timeframe, since_ns,
-                                                                regimes[coin])
+                                                                regimes[coin], live_exits)
                     trades.extend(got)
                     censored += open_left
                     if first is not None:
@@ -393,6 +482,9 @@ def build(data: dict[str, Any], mode: str, train_fraction: float, min_train_trad
               "split": "chronological; train trades exit before the cutoff, test trades signal at or after it"}
     if mode == "replay":
         doc = replay_document(data["trades"], data["pairs"], ranges, cutoff, window)
+    elif mode == "live":
+        doc = live_document(data["trades"], data["pairs"], ranges, cutoff, window, data.get("live_exits") or {})
+        doc["censored_signals"] = data["censored"]
     else:
         doc = {"schema_version": 1, "assumptions": assumptions(window),
                "censored_signals": data["censored"],
@@ -410,7 +502,9 @@ def main() -> None:
     parser.add_argument("--coins", required=True, help="Comma-separated spot symbols, e.g. BTCUSDT,ETHUSDT")
     parser.add_argument("--since", required=True, type=date.fromisoformat, help="First UTC date (YYYY-MM-DD)")
     parser.add_argument("--out", required=True, type=Path, help="Output JSON file")
-    parser.add_argument("--mode", choices=("report", "replay"), default="report")
+    parser.add_argument("--mode", choices=("report", "replay", "live"), default="report")
+    parser.add_argument("--live-exits", type=parse_live_exits, default=None,
+                        help='--mode live: JSON (or a file) coin -> profile exits, e.g. \'{"*": {"tp_r": 2, "tp1_scale_pct": 50}}\'')
     parser.add_argument("--train-fraction", type=float, default=TRAIN_FRACTION)
     parser.add_argument("--min-train-trades", type=int, default=MIN_TRAIN_TRADES)
     parser.add_argument("--bootstrap", type=int, default=BOOTSTRAP_SAMPLES)
@@ -424,7 +518,11 @@ def main() -> None:
         parser.error("--train-fraction must be between 0 and 1")
     if args.out.resolve().is_relative_to(args.lake.resolve()):
         parser.error("--out must resolve outside --lake; the analytics lake is read-only")
-    doc = build(run(args.lake, coins, args.since), args.mode, args.train_fraction, args.min_train_trades,
+    if args.mode == "live" and args.live_exits is None:
+        parser.error("--mode live needs --live-exits (the profile exits to replay)")
+    data = run(args.lake, coins, args.since, args.live_exits if args.mode == "live" else None)
+    data["live_exits"] = args.live_exits
+    doc = build(data, args.mode, args.train_fraction, args.min_train_trades,
                 args.bootstrap, args.seed)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
