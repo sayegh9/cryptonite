@@ -381,7 +381,7 @@ async def test_cross_spec_candidate_deduplication_in_worker(db_url, admin, redis
                 instrument_id=instrument_id,
                 timeframe=timeframe,
                 bar_open_ns=last_row["bar_open_ns"],
-                bar_close_inclusive_ns=last_row["interval_end_exclusive_ns"] - 1,
+                bar_close_inclusive_ns=last_row["bar_close_inclusive_ns"],  # the frame's own bar (H9: live scans store only it)
                 interval_end_exclusive_ns=last_row["interval_end_exclusive_ns"],
                 matched_rules=["match"],
                 metrics={},
@@ -636,7 +636,7 @@ async def test_cross_spec_dedupe_concurrent_race_serialized(db_url, admin, redis
                 instrument_id=instrument_id,
                 timeframe=timeframe,
                 bar_open_ns=last_row["bar_open_ns"],
-                bar_close_inclusive_ns=last_row["interval_end_exclusive_ns"] - 1,
+                bar_close_inclusive_ns=last_row["bar_close_inclusive_ns"],  # the frame's own bar (H9: live scans store only it)
                 interval_end_exclusive_ns=last_row["interval_end_exclusive_ns"],
                 matched_rules=["match"],
                 metrics={},

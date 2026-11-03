@@ -29,7 +29,7 @@ from cryptonite_agents.gateway.ledger import CallRecord, write_call
 from cryptonite_agents.gateway.local_tier import LocalTierHealth, is_local
 from cryptonite_agents.gateway.permission import CallContext, PermissionGate, ToolDenied
 from cryptonite_agents.gateway.providers import pydantic_ai_backend as backend
-from cryptonite_agents.gateway.registry import ToolSpec
+from cryptonite_agents.gateway.registry import HELD_FOR_APPROVAL_PREFIX, ToolSpec
 from cryptonite_agents.gateway.routes import (
     DEFAULT_ROUTES,
     FallbackPolicy,
@@ -51,8 +51,6 @@ PER_TURN_TOOL_LIMITS = {"stage_debate_proposal": 1, "propose_order": 1}
 # ADD_RISK tools whose denial is the normal way their result is made: the call is held and staged for the
 # operator's approval, so the model gets a "held" answer (not an error) and the per-turn limit applies to it
 HELD_FOR_APPROVAL_TOOLS = frozenset({"propose_order"})
-# The start of the answer a held call gets. The Brain renders a card only for a tool result that starts with it.
-HELD_FOR_APPROVAL_PREFIX = "Held for approval"
 
 
 class GatewayError(Exception):

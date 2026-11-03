@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from cryptonite_agents.gateway.registry import ToolSpec
+from cryptonite_agents.gateway.registry import HELD_FOR_APPROVAL_PREFIX, ToolSpec
 from pydantic_ai import Agent, Tool, capture_run_messages
 from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse
@@ -164,11 +164,15 @@ def _as_tool(spec: ToolSpec, guard: Callable[[ToolSpec], str | None], calls: lis
     def record(kwargs: dict[str, Any], status: str) -> None:
         calls.append({"tool": spec.name, "risk": spec.risk.value, "args": kwargs, "status": status})
 
+    def guard_status(answer: str) -> str:
+        """H9: a call the gate held for the operator's approval is HELD_FOR_APPROVAL; a real refusal stays DENIED."""
+        return "HELD_FOR_APPROVAL" if str(answer).startswith(HELD_FOR_APPROVAL_PREFIX) else "DENIED"
+
     if inspect.iscoroutinefunction(func):
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             if (denied := guard(spec)) is not None:
-                record(kwargs, "DENIED")
+                record(kwargs, guard_status(denied))
                 return denied
             try:
                 result = await func(*args, **kwargs)
@@ -181,7 +185,7 @@ def _as_tool(spec: ToolSpec, guard: Callable[[ToolSpec], str | None], calls: lis
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             if (denied := guard(spec)) is not None:
-                record(kwargs, "DENIED")
+                record(kwargs, guard_status(denied))
                 return denied
             try:
                 result = func(*args, **kwargs)

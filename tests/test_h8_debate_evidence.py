@@ -75,7 +75,10 @@ def test_the_derivatives_block_has_each_field_with_its_age(monkeypatch):
     assert (d["source"], d["perp_instrument"]) == ("live feed", "BTCUSDT-PERP.BINANCE")
     assert d["mark_price"] == {"value": 65010.5, "as_of": tools._ns_iso(int((NOW - 10) * 1e9)), "age_s": 10.0}
     assert (d["open_interest"]["value"], d["open_interest"]["age_s"]) == (81234.5, 10.0)
-    assert (d["funding_rate"]["value"], d["funding_rate"]["kind"]) == (0.00008, "last settlement")
+    assert d["funding_rate"]["value"] == 0.00008
+    # H9: labelled as the last 8h settlement with its time, plus the rate in force for the next settlement
+    assert d["funding_rate"]["kind"] == "last 8h settlement (settled at 2027-01-15T08:00:00+00:00)"
+    assert d["funding_rate"]["predicted_next_rate"] == 0.0001 and "not stale" in d["funding_rate"]["note"]
     assert d["funding_rate"]["as_of"] == "2027-01-15T08:00:00+00:00"
 
 
@@ -83,7 +86,7 @@ def test_a_missing_field_is_unavailable_with_the_reason(monkeypatch):
     monkeypatch.setattr(tools, "get_derivatives_context", lambda sym: _live(oi=False, funding=False))
     d = tools.derivatives_evidence("BTCUSDT.BINANCE", now_s=NOW)
     assert d["open_interest"] == {"unavailable": "perp:oi:BTCUSDT is missing: the open interest is unknown."}
-    assert d["funding_rate"]["kind"] == "rate in force" and d["mark_price"]["value"] == 65010.5
+    assert d["funding_rate"]["kind"].startswith("rate in force") and d["mark_price"]["value"] == 65010.5
 
 
 @pytest.mark.parametrize("answer, reason", [

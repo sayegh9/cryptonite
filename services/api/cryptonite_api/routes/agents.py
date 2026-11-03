@@ -55,6 +55,9 @@ DEBATE_QUEUE_MAXLEN = 10_000  # same cap as the scanner's writer (D1 / F-H2): XA
 # WS-1E: debates the Brain starts (origin "brain") per UTC day. Operator triggers are not counted.
 BRAIN_DEBATE_DAILY_CAP = int(os.getenv("BRAIN_DEBATE_DAILY_CAP", "6"))
 BRAIN_DEBATE_CAP_TTL_S = 2 * 86400  # a day's counter expires two days after it was last touched
+# H9: one operator click starts one debate. Two triggers for the same instrument and timeframe within this window are
+# one request: the repeat queues nothing and gets the first one's message id (two debates started 0.46 s apart).
+DEBATE_TRIGGER_DEDUPE_S = 5
 
 class CRORequest(BaseModel):
     message: str
@@ -129,6 +132,17 @@ async def trigger_debate(req: DebateTriggerRequest, request: Request):
         raise HTTPException(status_code=503, detail="Redis connection unavailable")
     
     brain = req.origin == "brain"
+    dedupe_key = f"debate:trigger:{inst_id}:{req.timeframe}"
+    if not brain:
+        try:
+            first = await redis_client.set(dedupe_key, "pending", nx=True, ex=DEBATE_TRIGGER_DEDUPE_S)
+        except Exception as e:
+            logger.warning(f"Debate trigger de-duplication unavailable for {inst_id}: {e}")
+            first = True
+        if not first:
+            existing = await redis_client.get(dedupe_key)
+            logger.info(f"Duplicate debate trigger for {inst_id} {req.timeframe} ignored (first: {existing})")
+            return {"status": "duplicate", "id": str(existing), "instrument_id": inst_id, "payload": None}
     day_key = f"brain:debates:{datetime.datetime.now(datetime.UTC):%Y-%m-%d}"
     if brain:
         # WS-1E: the day's count is taken before the queue write; a refused or failed trigger gives its slot back
@@ -154,17 +168,28 @@ async def trigger_debate(req: DebateTriggerRequest, request: Request):
         "instrument_id": inst_id,
         "trigger_source": "brain_on_demand" if brain else "user_on_demand",
         "timeframe": req.timeframe,
-        "custom_thesis": req.custom_thesis or "",
+        # H9: a Brain-started debate gets facts only, never the Brain's own verdict as a thesis to argue over
+        "custom_thesis": "" if brain else (req.custom_thesis or ""),
         "timestamp": str(time.time()),
     }
     
     try:
         msg_id = await redis_client.xadd("stream:debate_queue", payload, maxlen=DEBATE_QUEUE_MAXLEN, approximate=True)
         logger.info(f"Queued on-demand debate for {inst_id} (msg ID: {msg_id})")
+        if not brain:
+            try:
+                await redis_client.set(dedupe_key, str(msg_id), xx=True, keepttl=True)
+            except Exception as e:
+                logger.warning(f"Could not record the debate trigger {msg_id} for de-duplication: {e}")
         return {"status": "queued", "id": str(msg_id), "instrument_id": inst_id, "payload": payload}
     except Exception as e:
         if brain:
             await redis_client.decr(day_key)  # nothing was queued, so the slot goes back
+        else:
+            try:
+                await redis_client.delete(dedupe_key)  # nothing was queued: a retry may queue it
+            except Exception:
+                pass
         logger.error(f"Failed to queue debate trigger for {inst_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to queue debate: {str(e)}")
 

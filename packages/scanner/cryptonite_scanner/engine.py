@@ -6,11 +6,11 @@ strictly analytical SignalCandidate records. Completely isolated from execution.
 
 import logging
 import math
-from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 import polars as pl
+from cryptonite_schemas.reward_risk import meets_min_rr
 
 from cryptonite_scanner.indicators import (
     calc_atr,
@@ -249,7 +249,7 @@ class ScannerEngine:
             risk = abs(entry_dec - stop_dec)
             reward = abs(target_dec - entry_dec)
 
-            if filter_min_rr and derived_rr < Decimal(str(risk_config.min_risk_reward)):
+            if filter_min_rr and not meets_min_rr(derived_rr, risk_config.min_risk_reward):
                 continue
 
             # Snapshot metrics

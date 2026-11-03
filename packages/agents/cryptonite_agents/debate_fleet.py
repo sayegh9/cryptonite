@@ -27,6 +27,9 @@ from pydantic import BaseModel, Field
 DEBATE_TOOLS = (LIVE_MARKET_DATA, QUERY_POSTGRES, QUERY_PARQUET, SCANNER_CONTEXT, RECENT_BARS)
 # H8: the debate analysts get bars and derivatives injected by the worker, so no lake SQL (they guessed file paths)
 ANALYST_TOOLS = (LIVE_MARKET_DATA, QUERY_POSTGRES, SCANNER_CONTEXT, RECENT_BARS, DERIVATIVES_CONTEXT)
+# H9: the risk panel and the CRO get the measured bars, derivatives and scanner setups in their prompt, so no lake
+# SQL either (they guessed Parquet paths and errored). Bull and Bear keep DEBATE_TOOLS.
+RISK_TOOLS = tuple(t for t in DEBATE_TOOLS if t is not QUERY_PARQUET)
 
 # H8: shared by both debate analysts
 EVIDENCE_RULES = (
@@ -145,7 +148,7 @@ AGGRESSIVE_RISK = Persona(
     "recommendation and the overall portfolio exposure. You always advocate for "
     "maximizing allocation and sizing up on high-conviction trades to maximize alpha. "
     "Argue your case for taking on more risk.",
-    DEBATE_TOOLS,
+    RISK_TOOLS,
 )
 
 CONSERVATIVE_RISK = Persona(
@@ -154,7 +157,7 @@ CONSERVATIVE_RISK = Persona(
     "recommendation and the overall portfolio exposure. You always advocate for "
     "capital preservation, tight stops, and scaling down sizes. "
     "Argue your case for reducing risk.",
-    DEBATE_TOOLS,
+    RISK_TOOLS,
 )
 
 NEUTRAL_RISK = Persona(
@@ -162,7 +165,7 @@ NEUTRAL_RISK = Persona(
     "You are the Neutral Risk/Compliance Manager. You strictly evaluate the math, "
     "correlation with existing portfolio positions, and standard deviation. "
     "Provide an objective, volatility-adjusted sizing recommendation.",
-    DEBATE_TOOLS,
+    RISK_TOOLS,
 )
 
 CRO_INSTRUCTIONS = (
@@ -174,7 +177,7 @@ CRO_INSTRUCTIONS = (
     "or turn it into Hold; you can never turn a PM HOLD into a trade, reverse its direction or size it up."
 )
 
-CHIEF_RISK_OFFICER = Persona("Chief Risk Officer", "debate.cro", CRO_INSTRUCTIONS, DEBATE_TOOLS, RiskDecision)
+CHIEF_RISK_OFFICER = Persona("Chief Risk Officer", "debate.cro", CRO_INSTRUCTIONS, RISK_TOOLS, RiskDecision)
 
 # One Pro call replacing the Aggressive, Conservative and Neutral managers plus the CRO (blueprint A2.4)
 RISK_PANEL = Persona(
@@ -187,7 +190,7 @@ RISK_PANEL = Persona(
     "Underweight or Sell) and risk_reasoning that names which view prevailed and why. "
     "The system enforces the PM's limits: you may keep the PM's direction at the same or a smaller allocation, "
     "or turn it into Hold; you can never turn a PM HOLD into a trade, reverse its direction or size it up.",
-    DEBATE_TOOLS,
+    RISK_TOOLS,
     RiskDecision,
 )
 

@@ -21,6 +21,8 @@ from typing import Any
 
 import polars as pl
 from cryptonite_schemas.profile import PRESET_CATALOG
+from cryptonite_schemas.reward_risk import MIN_REWARD_TO_RISK as _RR_FLOOR
+from cryptonite_schemas.reward_risk import meets_min_rr
 
 from cryptonite_scanner.setup_grade import (
     GRADE_CONTEXT_KEYS,
@@ -31,7 +33,7 @@ from cryptonite_scanner.setup_grade import (
 )
 
 LEVEL_LOOKBACK_BARS = 50
-MIN_REWARD_TO_RISK = 1.5
+MIN_REWARD_TO_RISK = float(_RR_FLOOR)  # H9: one floor, compared with meets_min_rr (float error corrected)
 CHOP_MAX_VOLUME_RATIO = 0.8
 TIMEFRAME_UNIT_S = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -291,7 +293,7 @@ def hard_rejects(data: dict[str, Any] | None) -> list[str]:
     states = [s for s in data.get("timeframes") or [] if isinstance(s, dict)]
 
     rr = _num(candidate.get("reward_to_risk"))
-    if rr is not None and rr < MIN_REWARD_TO_RISK:
+    if rr is not None and not meets_min_rr(rr):
         hits.append("REWARD_TO_RISK")
 
     ranked = [(timeframe_seconds(s.get("timeframe")), s.get("trend")) for s in states]

@@ -70,7 +70,7 @@ function sse(events: [string, unknown][]): string {
 const turnWith = (card: Record<string, unknown>) => sse([
   ["session", { session_id: SESSION, trace_id: TRACE }],
   ["tool_call", { id: "call-1", tool: "propose_order", args: {}, phase: "start", status: "RUNNING" }],
-  ["tool_call", { id: "call-1", tool: "propose_order", phase: "end", status: "DENIED" }],
+  ["tool_call", { id: "call-1", tool: "propose_order", phase: "end", status: "HELD_FOR_APPROVAL" }],
   ["widget", { widget: card }],
   ["token", { text: "The perp card is waiting for your approval." }],
   ["done", { session_id: SESSION, message_id: 2, trace_id: TRACE, model: "google:gemini-2.5-pro", cost_usd: "0.0100",

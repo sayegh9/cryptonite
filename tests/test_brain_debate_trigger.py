@@ -62,7 +62,7 @@ def cap_redis():
     client = sync_redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
     def clear():
-        for key in client.scan_iter("brain:debates:*"):
+        for key in [*client.scan_iter("brain:debates:*"), *client.scan_iter("debate:trigger:*")]:
             client.delete(key)
         client.delete(QUEUE)
 
@@ -247,3 +247,24 @@ def test_stage_debate_proposal_sends_origin_brain(monkeypatch):
     assert result.startswith("Success")
     assert sent["body"]["origin"] == "brain"
     assert sent["body"]["symbol"] == "BTCUSDT"
+    # H9: the Brain's verdict never reaches the debaters: no thesis, recommendation, score or reasoning is sent
+    assert "custom_thesis" not in sent["body"]
+    assert not any(v in json.dumps(sent["body"]) for v in ("BUY", "0.7", "why"))
+
+
+def test_a_brain_trigger_never_queues_a_thesis(client, cap_redis):
+    """H9: even a Brain request that carries a custom_thesis queues the debate without it."""
+    res = client.post("/api/v1/agents/debates/trigger", headers={"X-API-Token": OPERATOR_TOKEN},
+                      json={"symbol": "BTCUSDT", "origin": "brain", "custom_thesis": "Recommendation: SELL 0.8"})
+    assert res.status_code == 200, res.text
+    assert _last_queued(cap_redis)["custom_thesis"] == ""
+
+
+def test_one_operator_click_queues_one_debate(client, cap_redis):
+    """H9: a repeated operator trigger (same instrument and timeframe) within the window queues nothing new and
+    answers with the first debate's message id."""
+    first = _trigger(client)
+    again = _trigger(client)
+    assert first.status_code == again.status_code == 200, again.text
+    assert again.json()["status"] == "duplicate" and again.json()["id"] == first.json()["id"]
+    assert cap_redis.xlen(QUEUE) == 1

@@ -78,6 +78,7 @@ from cryptonite_schemas.mandate import (
     room_remedy,
 )
 from cryptonite_schemas.marks import read_marks
+from cryptonite_schemas.reward_risk import MIN_REWARD_TO_RISK, meets_min_rr, reward_to_risk
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -450,6 +451,29 @@ class CardPlan:
     perp_reduce: bool = False  # a perp card with reduce_pct: a reduce-only close of the mandate's position
 
 
+async def slipped_below_rr_floor(redis, card: dict[str, Any], live_entry: Decimal | None = None) -> str | None:
+    """H9: the refusal when the price moved since the card was proposed and its reward-to-risk at the live price fell
+    below the 1.5 floor, though it met it at the entry the card was graded at (``grade_inputs.entry``). A tightening
+    only: a card proposed under the floor (an operator's explicit request) is judged as before, and a card without a
+    stop, a target, a graded entry or a live price is not checked here."""
+    graded = (card.get("grade_inputs") or {}).get("entry")
+    if not card.get("stop_loss") or not card.get("take_profit") or not graded:
+        return None
+    stop, target = Decimal(str(card["stop_loss"])), Decimal(str(card["take_profit"]))
+    if not meets_min_rr(reward_to_risk(graded, stop, target)):
+        return None
+    live = live_entry if live_entry is not None else await card_entry_price(redis, card)
+    if live is None:
+        return None
+    live_rr = reward_to_risk(live, stop, target)
+    if live_rr is not None and meets_min_rr(live_rr):
+        return None
+    shown = "n/a" if live_rr is None else f"{live_rr:.2f}"
+    return (f"REWARD_TO_RISK_SLIPPED: at the live price {live} the reward is {shown}x the risk (stop {stop}, target "
+            f"{target}), below the {MIN_REWARD_TO_RISK}x floor it met when proposed at {graded}; nothing was queued; "
+            "reject this card, or ask the Brain for new levels")
+
+
 async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], mandate_id: uuid.UUID | None,
                      leverage: int | None = None) -> CardPlan:
     """Every check approve makes before it claims a card, in the same order, with the same refusals and details.
@@ -639,6 +663,8 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
                                                 require_inputs=True)
         if refused is not None:
             raise HTTPException(status_code=409, detail=refused)
+        if (slipped := await slipped_below_rr_floor(redis, card, entry)) is not None:
+            raise HTTPException(status_code=409, detail=slipped)
         marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
         async with pool.acquire() as conn:
             room = await entry_room_pct(conn, mandate, card["instrument_id"], marks)

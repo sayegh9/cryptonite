@@ -14,6 +14,8 @@ import datetime
 from decimal import ROUND_DOWN, Decimal
 from enum import StrEnum
 
+from cryptonite_schemas.reward_risk import meets_min_rr
+
 HUNDRED = Decimal("100")
 
 
@@ -175,7 +177,7 @@ def entry_filter_refusal(mandate, verdict: SessionVerdict, *, conviction: Decima
             if not (sl < e < tp if long else tp < e < sl):
                 return MIN_RR_REFUSAL, "stop/target on the wrong side of the entry"
             rr = reward_risk(e, sl, tp)
-            if rr is not None and rr < mandate.min_rr:
+            if rr is not None and not meets_min_rr(rr, mandate.min_rr):  # H9: one compare, float error corrected
                 return MIN_RR_REFUSAL, f"R:R {_ratio(rr)} below the mandate minimum {_ratio(mandate.min_rr)}"
     return None
 

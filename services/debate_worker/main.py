@@ -281,6 +281,14 @@ def derivatives_reported_unavailable(text: str, derivatives: dict) -> bool:
     return available <= flagged
 
 
+def scanner_evidence_block(scanner: dict) -> str:
+    """H9: the fresh scanner setups (side, entry, stop, target, age) every analyst gets, or 'none fresh'."""
+    setups = scanner.get("fresh_setups") or []
+    body = json.dumps(setups, default=str) if setups else f"none fresh: {scanner.get('note') or 'no fresh setup'}"
+    return (f"--- FRESH SCANNER SETUPS (stored on {scanner.get('scanner_instrument')}; bar closed within 3 bars, "
+            f"at most 4 h) ---\n{body}")
+
+
 def evidence_gate(bars: dict, derivatives: dict, analyst_text: str) -> str | None:
     """H7a/H8: the reason the debate is non-actionable (forced HOLD), or None when the market evidence is usable."""
     if not bars["complete"]:
@@ -666,19 +674,22 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         if lite is None:
             analysts = FULL_DEBATE_ANALYSTS
             bars_tf = str(payload.get("timeframe") or "1h").lower()
-            bars, derivatives = await asyncio.gather(
+            bars, derivatives, scanner = await asyncio.gather(
                 asyncio.to_thread(agent_tools.recent_bars, instrument_id,
                                   bars_tf if bars_tf in ("15m", "1h", "4h") else "1h", EVIDENCE_BARS),
-                asyncio.to_thread(agent_tools.derivatives_evidence, instrument_id))
+                asyncio.to_thread(agent_tools.derivatives_evidence, instrument_id),
+                asyncio.to_thread(agent_tools.scanner_evidence, instrument_id))
             bars_block = (f"--- MEASURED BAR SUMMARY (computed exactly from the bars below) ---\n"
                           f"{json.dumps(bars.get('summary'), default=str)}\n\n"
                           f"--- RECENT CLOSED BARS (analytics lake) ---\n{json.dumps(bars, default=str)}")
             # H8: funding, open interest and mark price fetched here, so no analyst guesses a lake path for them
             derivatives_block = ("--- DERIVATIVES (perpetual; fetched by the system, each with its age) ---\n"
                                  f"{json.dumps(derivatives, default=str)}")
+            scanner_block = scanner_evidence_block(scanner)
             results = await _gather_cancel_on_error(*(
-                run_agent(a, f"{prompt}\n\n{bars_block}\n\n{derivatives_block}" if a is MARKET_ANALYST
-                          else f"{prompt}\n\n{derivatives_block}") for a in analysts))
+                run_agent(a, f"{prompt}\n\n{bars_block}\n\n{derivatives_block}\n\n{scanner_block}"
+                          if a is MARKET_ANALYST else f"{prompt}\n\n{derivatives_block}\n\n{scanner_block}")
+                for a in analysts))
             evidence_reason = evidence_gate(bars, derivatives,
                                             turn_text(results[analysts.index(MARKET_ANALYST)].output))
             await publish_sentiment_ok(redis_client)
@@ -764,6 +775,9 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                 f"{side_line}\n"
                 f"Portfolio Manager proposed {decision} for {instrument_id} with {allocation}% allocation.\n"
                 f"Current Portfolio State: {json.dumps(portfolio_state, default=str)}\n"
+                # H9: the measured evidence the analysts had, so the risk panel needs no lake SQL
+                f"--- MEASURED BAR SUMMARY ---\n{json.dumps(bars.get('summary'), default=str)}\n"
+                f"{derivatives_block}\n{scanner_block}\n"
                 f"Make your risk argument."
             )
             if RISK_PANEL_MODE == "merged":

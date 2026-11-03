@@ -177,7 +177,7 @@ async def test_stream_passes_the_permission_gate_and_reports_tool_status():
     with override_model(PLANNER, script.model()):
         events = await collect(gw().stream(BRAIN_PLAN, "go", tools=(show_price_chart, propose_order)))
     results = {e.data["tool"]: e.data["status"] for e in events if e.kind == "tool_result"}
-    assert results == {"show_price_chart": "OK", "propose_order": "DENIED"}
+    assert results == {"show_price_chart": "OK", "propose_order": "HELD_FOR_APPROVAL"}
     held = [r for r in script.returns if r.tool_name == "propose_order"][0]
     assert str(held.content).startswith("Held for approval")
     assert {c["tool"]: c["status"] for c in events[-1].result.tool_calls} == results
@@ -203,7 +203,7 @@ async def test_stream_writes_ledger_and_trace_record(monkeypatch):
     assert len(written) == 1
     rec = written[0]
     assert (rec.status, str(rec.trace_id)) == ("OK", events[0].data["trace_id"])
-    assert rec.tool_calls[0]["tool"] == "propose_order" and rec.tool_calls[0]["status"] == "DENIED"
+    assert rec.tool_calls[0]["tool"] == "propose_order" and rec.tool_calls[0]["status"] == "HELD_FOR_APPROVAL"
 
 
 async def test_closing_the_stream_cancels_the_model_and_records_a_cancelled_call(monkeypatch):
@@ -304,7 +304,7 @@ async def test_analyze_propose_approve_in_one_conversation():
     card = next(w for w in widgets if w["kind"] == "order_card")
     assert card["status"] == "PENDING_APPROVAL" and card["trace_id"] == trace_id  # the card links to its trace
     ends = {e.data["tool"]: e.data["status"] for e in events if e.type == "tool_call" and e.data["phase"] == "end"}
-    assert ends["propose_order"] == "DENIED"  # held by the gate: the Brain placed nothing
+    assert ends["propose_order"] == "HELD_FOR_APPROVAL"  # held by the gate: the Brain placed nothing
     assert events[-1].data["trace_id"] == trace_id
 
     # The operator approves in the UI; the API claims the card from PENDING_APPROVAL, queues the order,
@@ -651,7 +651,7 @@ async def test_streamed_turn_writes_the_trace_the_order_card_links_to(db_url):
         row = await api.fetchrow("SELECT role, session_id, status, tool_calls FROM ai_decision_traces WHERE id = $1",
                                  uuid.UUID(card["trace_id"]))
         assert (row["role"], row["status"], row["session_id"]) == (BRAIN_PLAN, "OK", events[0].data["session_id"])
-        assert json.loads(row["tool_calls"])[0]["status"] == "DENIED"
+        assert json.loads(row["tool_calls"])[0]["status"] == "HELD_FOR_APPROVAL"
     finally:
         with contextlib.suppress(Exception):
             await api.close()
@@ -1104,8 +1104,10 @@ def test_the_brain_prompt_proposes_only_fed_buys():
     assert ('Only its candidates and untradeable_setups are setups: quote each with its bar_close time, and present '
             'untradeable_setups as "informational: not tradeable yet" with each reason, never as a trade to take. A '
             'coin in uncovered_coins is a coverage note: never say a setup, signal or potential setup was found on it. '
-            "A SELL that closes a holding never needs the live feed and may close a PAUSED or HALTED mandate's "
-            "holding.") in prompt
+            "Whenever you describe a mandate's coverage, state its direction (LONG-only, SHORT-only or BOTH) from "
+            "`coverage`: a LONG-only mandate does not cover a short, and the fix for a missing side or coin in an "
+            "existing profile is to edit that mandate (a coin belongs to one profile only). A SELL that closes a "
+            "holding never needs the live feed and may close a PAUSED or HALTED mandate's holding.") in prompt
     assert 'call show_price_chart only for symbols the ingest feed records (get_klines reports in_feed "fed")' in prompt
 
 
