@@ -209,11 +209,12 @@ async def test_scan_swing_setups_real_match_keeps_preset_levels_and_timeframe(mo
 
 @pytest.mark.asyncio
 async def test_scan_swing_setups_short_preset_keeps_its_side(monkeypatch):
-    """A SHORT preset is reported as SHORT with its own levels, never turned into a LONG."""
+    """A SHORT preset is reported as SHORT with its own levels, never turned into a LONG. Falling bars: on rising
+    ones the short is graded NO_TRADE and listed as untradeable (H9)."""
     from cryptonite_scanner import presets as scanner_presets
     from cryptonite_scanner.models import RiskConfig
 
-    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=-5.0)
     base = scanner_presets.SWING_PRESETS[0]
     short_preset = base.model_copy(update={"risk": RiskConfig(direction="SHORT", min_risk_reward=1.8)})
     monkeypatch.setattr(scanner_presets, "SWING_PRESETS", [])
@@ -647,15 +648,18 @@ async def test_scan_swing_setups_all_scans_long_and_short_presets(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scan_swing_setups_adds_recent_scanner_setups(monkeypatch, scanner_rows):
-    """A setup the system scanner stored recently joins the result, with its side, source and age."""
-    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    """A setup the system scanner stored recently joins the result, with its side, source and age (falling bars, so
+    the short is not graded NO_TRADE)."""
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=-5.0)
     close = float(synthetic_bars.tail(1)["close"][0])
     monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
     monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(lambda cls, *a, **k: []))
     scanner_rows.append({
         "instrument_id": "BTCUSDT.BINANCE", "timeframe": "15m", "preset_slug": "swing-sniper-pullback-short-15m",
         "suggested_entry": close, "suggested_stop": close * 1.01, "suggested_target": close * 0.98,
-        "matched_rules": '["[TREND] htf_close < htf_ema_50"]', "price": close, "age_minutes": 12,
+        "matched_rules": '["[TREND] htf_close < htf_ema_50"]', "price": close,
+        # H9: freshness and age come from the bar close of a live scan
+        "bar_close_inclusive_ns": time.time_ns() - 12 * 60 * 10**9, "trigger_reason": "COMMITTED_BAR_EVENT",
     })
 
     data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
