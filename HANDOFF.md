@@ -8,7 +8,7 @@ evidence for each release are in `~/Documents/projects/cryptonite/reports/` (fin
 
 - **Code:** `main` `f94b117`, no open pull requests. Every PR runs GitHub Actions (ruff, web, pytest, e2e-smoke,
   verify) and is merged only when green. Deploys run from `deploy-main/` (detached at `main`), one script per release.
-- **Database:** production `cryptonite` at `058`; H6 adds `059` (agent read of scan spec slugs); H7a adds `060` (reflection `kind` WHAT_IF/TRADE + `recall_excluded`). P5 (live profiles) will add `061`.
+- **Database:** production `cryptonite` at `058`; H6 adds `059` (agent read of scan spec slugs); H7a adds `060` (reflection `kind` WHAT_IF/TRADE + `recall_excluded`); H10 adds `061` (debate evidence snapshots + validation results). P5 (live profiles) will add `062`.
 - **Services:** the whole Compose stack (`infra`) is healthy: `api`, `agent_worker`, `research_worker`, `orchestrator`,
   `ingest`, `scanner`, `learner`, `debate_worker` ×3, `exit_monitor`, `derivatives_feed`, `outbox`, `notifier`,
   `backtester`, `strategy_sandbox`, `lake_maintenance`, `sentiment`, `web`, `postgres`, `redis`.
@@ -66,7 +66,7 @@ trade results with that in mind.
    endpoints and `fleet.py` personas, and the `recall_lessons` fallback that still includes HOLD lessons.
    Plan: `reports/ai-phase1-plan.md` (Phase 2 list) and the expert review in `reports/ai-expert-review/`.
 5. **Optional:** grade sizing for perp Brain cards (they keep the leverage plan's size today).
-6. **P5 live profiles** (migration 060): see `reports/autotrade-profiles-plan.md`; needs Binance keys and the
+6. **P5 live profiles** (migration 062): see `reports/autotrade-profiles-plan.md`; needs Binance keys and the
    hosting decision (O5).
 7. **Automatic trading volume:** most candidates are refused by triage or the timeframe rule and debates lean HOLD;
    Phase 2 measures which filters cost winners before any is loosened.

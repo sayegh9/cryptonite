@@ -70,6 +70,10 @@ export interface OrderCardWidget {
   setup_grade?: SetupGrade | null;
   grade_reasons?: string[];
   grade_version?: string | null;
+  /** H10: the automatic debate on this coin and side (or candidate), set by the server */
+  debate_link?: Record<string, unknown> | null;
+  /** H10: why the card goes against a recent debate HOLD; approval then needs an explicit acknowledgement */
+  against_debate_verdict?: string | null;
 }
 
 export type SetupGrade = "A" | "B" | "C" | "NO_TRADE";
@@ -322,6 +326,11 @@ export interface SwingCandidateItem {
   cost_r?: number | null;
   /** H5: the setup's bar close (ISO UTC). */
   bar_close?: string | null;
+  /** H10: the automatic debate on this setup ("debated: HOLD" when it held), and the preset replay. */
+  candidate_id?: string | null;
+  debate?: { run_id: string; recommendation: string | null; conviction_score: number | null; against: boolean; policies?: Record<string, string> | null } | null;
+  debate_status?: string | null;
+  replay?: { trades: number | null; win_rate: number | null; avg_r: number | null } | null;
 }
 
 /** H5: a coverage note from the swing scan, never a setup. */

@@ -198,8 +198,8 @@ async def test_an_operator_debate_has_the_derivatives_block_and_the_bull_picks_t
     await run(main, pool, {"instrument_id": "BTCUSDT.BINANCE", "trigger_source": "user_on_demand"}, models)
     texts = models.prompts["texts"]  # analysts (in parallel), then the Bull, then the Bear
     assert sum("--- DERIVATIVES (perpetual" in t for t in texts[:2]) == 2  # both analysts
-    assert sum("MEASURED BAR SUMMARY" in t for t in texts[:2]) == 1  # the Market Analyst
-    assert "'Direction: LONG' or 'Direction: SHORT'" in texts[2] and "SELL (open a short)" in texts[2]
+    assert sum("MEASURED BAR SUMMARY" in t for t in texts[:2]) == 2  # H10: both analysts get the same snapshot
+    assert "Direction: LONG" in texts[2] and "Direction: SHORT" in texts[2] and "SELL (open a short)" in texts[2]
     assert "argue for HOLD" in texts[3]
     assert "If you take a SHORT case, the recommendation is SELL" in models.prompts["pm"]
 

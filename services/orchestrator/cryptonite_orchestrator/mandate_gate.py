@@ -423,6 +423,19 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
         if cross is not None:
             logger.warning("AI order %s refused by the cross-mandate exposure check: %s", _row_get(row, "command_id"), cross)
             return cross
+        # H10: a debate entry is never a hedge. Its debate was blocked when an opposite position was open; this
+        # rechecks at execution, so an approval granted after such a position opened is refused too (never a breach)
+        if str(payload.get("source") or "") == "debate":
+            from cryptonite_execution.related_positions import (
+                OPPOSITE_POSITION_OPEN,
+                opposite_positions,
+                read_related_positions,
+            )
+            account = getattr(engine, "account_id", "PAPER-ACCOUNT-001")
+            if opposite_positions(await read_related_positions(conn, intent.instrument_id, account), side):
+                logger.warning("AI debate entry %s refused: %s on %s", _row_get(row, "command_id"),
+                               OPPOSITE_POSITION_OPEN, intent.instrument_id)
+                return OPPOSITE_POSITION_OPEN
     if reject is None and not await ensure_mandate_instance(conn, mandate, getattr(engine, "account_id", "PAPER-ACCOUNT-001")):
         reject = MandateReject.INSTANCE_UNAVAILABLE
     if reject in (MandateReject.BUDGET_EXCEEDED, MandateReject.POSITION_PCT_EXCEEDED) and system_sized:

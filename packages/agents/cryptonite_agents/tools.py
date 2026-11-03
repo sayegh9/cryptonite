@@ -1971,6 +1971,114 @@ def card_setup_grade(card: dict[str, Any]) -> dict[str, Any] | None:
 SCANNER_SETUP_WINDOW_H = 4  # the SQL prefilter on bar close; fresh_row_age_s decides per timeframe (<= 4 h)
 SCANNER_SETUP_MAX_DRIFT = 0.025  # ...while the price is still within 2.5% of their entry
 
+# H10 (Brain session 391c04c0): a setup or card for a candidate carries the automatic path's verdict on it. A debate
+# that ended HOLD (or NO_TRADE) on the same candidate, or on the same coin and side within the setup window, is shown
+# as "debated: HOLD" and an order card against it needs the operator's explicit acknowledgement to be approved.
+DEBATED_HOLD = "debated: HOLD"
+_FINISHED_DEBATE_STATES = ("COMPLETED", "PENDING_APPROVAL", "NO_TRADE", "REJECTED")
+
+
+def _side_of_levels(entry: Any, stop: Any) -> str | None:
+    try:
+        e, s_ = float(entry), float(stop)
+    except (TypeError, ValueError):
+        return None
+    return None if e <= 0 or s_ == e else ("SHORT" if s_ > e else "LONG")
+
+
+def recent_debate_verdicts(instruments: list[str], window_h: float = SCANNER_SETUP_WINDOW_H) -> list[dict[str, Any]]:
+    """The finished debates of the last ``window_h`` hours on these instruments (any market of each coin), newest
+    first, each with its candidate's side and the policy decisions recorded for that candidate. Raises on a failed
+    read (the caller decides what an unknown verdict means)."""
+    coins = sorted({underlying_spot(i) for i in instruments if i})
+    if not coins:
+        return []
+    rows = _readonly_rows(
+        "SELECT v.run_id, v.instrument_id, v.status, v.trigger_source, v.created_at, v.recommendation, "
+        "v.conviction_score, v.failure_reason, v.candidate_id, sc.suggested_entry, sc.suggested_stop, "
+        "sc.suggested_target "
+        "FROM agent_safe_debate_verdicts v LEFT JOIN signal_candidates sc ON sc.id = v.candidate_id "
+        "WHERE v.created_at > now() - make_interval(secs => :secs) AND v.status = ANY(:states) "
+        "ORDER BY v.created_at DESC LIMIT 200",
+        {"secs": float(window_h) * 3600, "states": list(_FINISHED_DEBATE_STATES)})
+    rows = [r for r in rows if underlying_spot(str(r["instrument_id"])) in coins]
+    cids = [r["candidate_id"] for r in rows if r.get("candidate_id")]
+    policies: dict[str, dict[str, str]] = {}
+    if cids:
+        for p in _readonly_rows("SELECT candidate_id, policy, decision, reason FROM agent_safe_policy_decisions "
+                                "WHERE candidate_id = ANY(:ids)", {"ids": cids}):
+            policies.setdefault(str(p["candidate_id"]), {})[p["policy"]] = (
+                p["decision"] + (f":{p['reason']}" if p.get("reason") and p["decision"] != "TAKE" else ""))
+    out = []
+    for r in rows:
+        out.append({
+            "run_id": str(r["run_id"]), "instrument_id": r["instrument_id"], "status": r["status"],
+            "trigger_source": r["trigger_source"], "created_at": r["created_at"].isoformat() if r.get("created_at")
+            else None, "recommendation": r["recommendation"], "conviction_score": _json_value(r["conviction_score"]),
+            "failure_reason": r.get("failure_reason"),
+            "candidate_id": str(r["candidate_id"]) if r.get("candidate_id") else None,
+            "side": _side_of_levels(r.get("suggested_entry"), r.get("suggested_stop")),
+            "policies": policies.get(str(r["candidate_id"])) if r.get("candidate_id") else None,
+        })
+    return out
+
+
+def _replay_expectancy(instrument_id: str, preset_slug: str | None) -> dict[str, Any] | None:
+    """The packaged preset replay for the coin and preset (trades, win rate, average R), or None."""
+    from cryptonite_scanner.brief import _REPLAY
+
+    row = _REPLAY.get((str(instrument_id).split(".")[0], preset_slug)) if preset_slug else None
+    return {k: _json_value(row.get(k)) for k in ("trades", "win_rate", "avg_r")} if row else None
+
+
+def debate_link(verdicts: list[dict[str, Any]], instrument_id: str, side: str | None,
+                candidate_id: str | None = None) -> dict[str, Any] | None:
+    """The debate that judged this setup: the one on ``candidate_id``, else the newest on the same coin and side. A
+    side-less debate (an operator debate) counts only for its own candidate. ``against`` names a HOLD or NO_TRADE."""
+    coin = underlying_spot(instrument_id)
+    match = next((v for v in verdicts if candidate_id and v["candidate_id"] == str(candidate_id)), None)
+    if match is None and side:
+        match = next((v for v in verdicts if underlying_spot(v["instrument_id"]) == coin and v["side"] == side), None)
+    if match is None:
+        return None
+    held = str(match.get("recommendation") or "").upper() == "HOLD" or match["status"] == "NO_TRADE"
+    return {**match, "debated": DEBATED_HOLD if held else f"debated: {match.get('recommendation') or match['status']}",
+            "against": held}
+
+
+def annotate_with_debates(setups: list[dict[str, Any]]) -> None:
+    """Add each setup's ``debate`` link and ``replay`` in place; a setup a debate held is labelled ``debated: HOLD``.
+    A failed verdict read is said on the setup, never read as 'not debated'."""
+    try:
+        verdicts = recent_debate_verdicts([s["instrument_id"] for s in setups])
+    except Exception as e:
+        logger.warning("Could not read the recent debate verdicts: %s", e)
+        for s in setups:
+            s["debate_status"] = "unknown: the debate verdicts could not be read"
+        return
+    for s in setups:
+        link = debate_link(verdicts, s["instrument_id"], s.get("direction"), s.get("candidate_id"))
+        s["debate"] = link
+        s["debate_status"] = link["debated"] if link else "not debated"
+        s["replay"] = _replay_expectancy(s["instrument_id"], s.get("preset_slug"))
+
+
+def card_debate_link(instrument_id: str, side: str, entry: Any = None, stop: Any = None) -> dict[str, Any] | None:
+    """H10: the debate an order card goes with or against: the newest finished debate on the same coin and side (a BUY
+    card is LONG; a SELL card on a perp is SHORT) in the setup window, or on a candidate with the card's exact entry and
+    stop. None when there is none. Raises on a failed read."""
+    card_side = "LONG" if str(side).upper() == "BUY" else "SHORT"
+    verdicts = recent_debate_verdicts([instrument_id])
+    link = debate_link(verdicts, instrument_id, card_side)
+    if link is None and entry is not None and stop is not None:
+        rows = _readonly_rows(
+            "SELECT id FROM signal_candidates WHERE instrument_id = :inst AND suggested_entry = :entry "
+            "AND suggested_stop = :stop ORDER BY bar_close_inclusive_ns DESC LIMIT 1",
+            {"inst": underlying_spot(instrument_id), "entry": entry, "stop": stop})
+        if rows:
+            link = debate_link(verdicts, instrument_id, None, str(rows[0]["id"]))
+    return link
+
 
 def _swing_score(direction: str, trend_4h: str, trend_1h: str, trend_15m: str) -> float:
     """A setup's 0-100 score from how far the 4h/1h/15m trends run with its side."""
@@ -1998,7 +2106,7 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
     sql = (f"SELECT DISTINCT ON (c.instrument_id, c.timeframe, {slug}) "
            f"c.instrument_id, c.timeframe, {slug} AS preset_slug, "
            "c.suggested_entry, c.suggested_stop, c.suggested_target, c.matched_rules, c.metrics->>'price' AS price, "
-           "c.bar_close_inclusive_ns, c.created_at, r.trigger_reason "
+           "c.bar_close_inclusive_ns, c.created_at, r.trigger_reason, c.id AS candidate_id "
            "FROM signal_candidates c "
            "LEFT JOIN scan_runs r ON r.id = c.scan_run_id "
            "LEFT JOIN scan_spec_versions v ON v.id = c.spec_version_id "
@@ -2058,6 +2166,7 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
             "source": "scanner",
             "age_minutes": int(age_s // 60),
             "bar_close": _ns_iso(r.get("bar_close_inclusive_ns")),
+            "candidate_id": str(r["candidate_id"]) if r.get("candidate_id") else None,
         }
         if frames:
             candidate.update(_scan_grade(frames, direction, entry, stop, target))
@@ -2149,9 +2258,26 @@ def _setup_route(spot_inst: str, side: str, scopes: list[dict[str, Any]]) -> tup
     return None, f"no ACTIVE mandate allows a {side.lower()} on {coin} ({scopes_text})"
 
 
+SCAN_TIMEFRAMES = ("15m", "1h", "4h")
+
+
+def nearest_scan_timeframe(timeframe: Any) -> tuple[str, str | None]:
+    """H10: (the timeframe to scan, a note when it is not the one asked for). '13m' scans 15m and says so."""
+    tf = str(timeframe or "1h").strip().lower()
+    if tf in SCAN_TIMEFRAMES:
+        return tf, None
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(m|min|h|hr|d)", tf)
+    if not m:
+        return "1h", f"Timeframe {timeframe!r} is not supported; scanned 1h (supported: 15m, 1h, 4h)."
+    minutes = float(m.group(1)) * {"m": 1, "min": 1, "h": 60, "hr": 60, "d": 1440}[m.group(2)]
+    nearest = min(SCAN_TIMEFRAMES, key=lambda t: abs({"15m": 15, "1h": 60, "4h": 240}[t] - minutes))
+    return nearest, (f"Timeframe {timeframe} is not supported; the nearest supported timeframe, {nearest}, was scanned "
+                     "instead (supported: 15m, 1h, 4h).")
+
+
 async def scan_swing_setups(
     preset_slug: str = "all",
-    timeframe: Literal["15m", "1h", "4h"] = "1h",
+    timeframe: str = "1h",
     max_results: int = 5,
     symbol: str | None = None,
 ) -> str:
@@ -2171,6 +2297,8 @@ async def scan_swing_setups(
         ScannerEngine.resample_bars = staticmethod(resample_1m_bars)
 
     max_results = max(1, min(int(max_results), 10))
+    timeframe, timeframe_note = nearest_scan_timeframe(timeframe)
+    scanned_tfs: set[str] = set()  # H10: the timeframes a live preset was actually evaluated on
 
     all_swing = [*SWING_PRESETS, *SWING_PRESETS_SHORT]  # long and short: a downtrend has setups too
     try:
@@ -2321,6 +2449,7 @@ async def scan_swing_setups(
             htf_df = frames.get(HTF_MAP.get(target_tf, "4h"))
             if primary_df is None or primary_df.is_empty():
                 continue
+            scanned_tfs.add(target_tf)
 
             try:
                 last_row = primary_df.tail(1).to_dicts()[0]
@@ -2403,6 +2532,7 @@ async def scan_swing_setups(
     # cost of the round trip is shown in R (fees and slippage, plus funding for a perp, over a 24 h hold).
     from cryptonite_scanner.costs import cost_in_r, round_trip_cost_fraction
 
+    annotate_with_debates(candidates)  # H10: the automatic path's verdict on each setup, and its replay
     routeable: list[dict[str, Any]] = []
     for c in candidates:
         inst = c["instrument_id"]
@@ -2450,6 +2580,13 @@ async def scan_swing_setups(
         "rejections": _rejection_summary(rejections),
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
     }
+    result["scanned_timeframes"] = sorted(scanned_tfs, key=SCAN_TIMEFRAMES.index)
+    if timeframe_note:
+        result["timeframe_note"] = timeframe_note
+    scanned = ", ".join(result["scanned_timeframes"]) or "none (no bars)"
+    result["scope_note"] = (f"Scanned{' ' + target_sym if target_sym else ''} with live presets on: {scanned}; plus "
+                            f"stored scanner setups of the last {SCANNER_SETUP_WINDOW_H} h. Other timeframes were not "
+                            "scanned, so nothing is claimed about them.")
     if fed is None:
         result["feed_note"] = "The live feed universe could not be read: only coins with lake bars were scanned."
     if not deduped:

@@ -216,7 +216,8 @@ async function postCard(path: string, body?: unknown): Promise<any> {
  * refuses while the exit monitor (the position's stop) is down. Repeating it never queues a second order.
  * `mandateId` names the mandate the order trades in; omitted, the API uses the single ACTIVE mandate that allows the instrument.
  */
-export async function approveOrderCard(card: OrderCardWidget, mandateId?: string, perp?: PerpApproval): Promise<string> {
+export async function approveOrderCard(card: OrderCardWidget, mandateId?: string, perp?: PerpApproval,
+                                       opts?: { acknowledgeAgainstDebate?: boolean }): Promise<string> {
   const sessionId = useBrainStore.getState().sessionId;
   if (!sessionId) throw new Error("No Brain session");
   const body: Record<string, unknown> = {};
@@ -226,6 +227,7 @@ export async function approveOrderCard(card: OrderCardWidget, mandateId?: string
     if (perp.leverage != null) body.leverage = perp.leverage;
     if (perp.confirm_high_leverage) body.confirm_high_leverage = true;
   }
+  if (opts?.acknowledgeAgainstDebate) body.acknowledge_against_debate = true;
   const res = await postCard(
     `/agent-api/brain/sessions/${encodeURIComponent(sessionId)}/cards/${encodeURIComponent(card.id)}/approve`,
     Object.keys(body).length ? body : undefined,

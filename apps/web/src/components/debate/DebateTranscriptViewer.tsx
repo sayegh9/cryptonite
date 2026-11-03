@@ -3,6 +3,7 @@ import { useDebateStore } from '@/lib/stores/useDebateStore';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { TrendingUp, TrendingDown, ShieldAlert, Scale, Search, ArrowDown } from 'lucide-react';
+import { VerifiedFactsPanel } from './VerifiedFactsPanel';
 
 interface Props {
   runId: string;
@@ -111,6 +112,11 @@ export const DebateTranscriptViewer: React.FC<Props> = ({ runId, symbol }) => {
         tabIndex={0}
         className="flex-1 overflow-y-auto p-3 space-y-3 font-mono text-xs relative scroll-smooth focus-visible:ring-1 focus-visible:ring-cyan-500/30 focus:outline-none min-w-0 max-w-full"
       >
+        {/* H10: facts computed by code, kept apart from the agents' arguments below */}
+        <VerifiedFactsPanel runId={run.runId} status={run.status} />
+        {run.turns.length > 0 && (
+          <div className="text-2xs uppercase tracking-wide text-slate-500 font-sans">Agents&apos; arguments</div>
+        )}
         {run.turns.map((turn, idx) => {
           const { color, Icon } = getRoleInfo(turn.role);
           return (

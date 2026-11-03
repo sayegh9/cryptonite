@@ -60,6 +60,11 @@ class SwingCandidateItem(BaseModel):
     route: dict[str, str] | None = None
     cost_r: float | None = None
     bar_close: str | None = None  # H5: the setup's bar close (ISO UTC)
+    # H10: the scanner candidate, the automatic path's debate on it ("debated: HOLD" when it held) and its replay
+    candidate_id: str | None = None
+    debate: dict[str, Any] | None = None
+    debate_status: str | None = None
+    replay: dict[str, Any] | None = None
 
 
 class UncoveredCoinItem(BaseModel):
@@ -188,7 +193,8 @@ class OrderProposal(BaseModel):
 
 
 # Card fields only the server sets: a value the model passes in its arguments is dropped
-SERVER_CARD_FIELDS = frozenset({"lessons", "setup_grade", "grade_reasons", "grade_inputs", "grade_version"})
+SERVER_CARD_FIELDS = frozenset({"lessons", "setup_grade", "grade_reasons", "grade_inputs", "grade_version",
+                                "debate_link", "against_debate_verdict"})
 
 
 class CardLesson(BaseModel):
@@ -218,6 +224,11 @@ class OrderCardWidget(OrderProposal):
     grade_reasons: list[str] = Field(default_factory=list, max_length=12)
     grade_inputs: dict[str, Any] | None = None
     grade_version: str | None = None
+    # H10: the automatic path's debate on this coin and side (or this candidate), attached by the Brain from the
+    # verdict reader alone; never from the model. ``against_debate_verdict`` says why the card goes against a recent
+    # HOLD: approving it then needs the operator's explicit acknowledgement.
+    debate_link: dict[str, Any] | None = None
+    against_debate_verdict: str | None = None
 
 
 class ProfileProposalWidget(BaseModel):

@@ -8,10 +8,16 @@ reviewer persona. The lesson is embedded and tagged with its embedding model (A6
 H7a: most verdicts never fill (HOLD, refused, vetoed or expired cards). A reflection on a run with no fill is a
 ``WHAT_IF`` verdict evaluation: its prompt says no trade was executed and its stored lesson is labelled so. A run with
 a fill gets a ``TRADE`` reflection that sees the fill price and the commission paid.
+
+H10: a closed, filled Brain order-card trade (``agent_safe_trade_timeline`` entry source ``brain_card``) gets a TRADE
+reflection too, once, keyed by its entry command (migration 061), linked to the card and to the scanner candidate its
+card carried. Its outcome is the realized return; its alpha is against BTC over the holding period. What-if lessons
+stay as H7a keeps them: a card that never filled has no closed trade and no lesson here.
 """
 
 import datetime
 import logging
+import uuid
 
 import asyncpg
 from cryptonite_agents.gateway import Gateway
@@ -103,6 +109,36 @@ def reflection_prompt(row, outcome: float, alpha: float) -> str:
     )
 
 
+CARD_TRADE_TIMEFRAME = "trade"  # a card lesson covers the holding period, not a fixed horizon
+CARD_TRADES_SQL = """
+    SELECT t.position_id, t.instrument_id, t.side, t.entry_price, t.exit_price, t.opened_at, t.closed_at,
+           t.realized_pnl, t.return_pct, t.close_reason, t.entry_command_id, t.entry_summary_text,
+           c.payload->>'brain_card_id' AS brain_card_id,
+           c.payload->'debate_link'->>'candidate_id' AS candidate_id
+    FROM agent_safe_trade_timeline t
+    JOIN execution_commands c ON c.command_id = t.entry_command_id
+    LEFT JOIN reflections f ON f.entry_command_id = t.entry_command_id
+    WHERE t.entry_source = 'brain_card' AND t.status = 'CLOSED' AND t.return_pct IS NOT NULL
+      AND t.entry_command_id IS NOT NULL AND f.id IS NULL
+    ORDER BY t.closed_at
+    LIMIT $1
+"""
+
+
+def card_trade_prompt(row, outcome: float, alpha: float | None) -> str:
+    """The reviewer's prompt for one closed Brain order-card trade (a filled trade, never a what-if)."""
+    return (
+        f"Brain order card trade on {row['instrument_id']}: {row['side']}, approved by the operator from a Brain card.\n"
+        f"Execution: the entry filled at {float(row['entry_price']):g}; it closed at "
+        + (f"{float(row['exit_price']):g}" if row.get("exit_price") is not None else "an unknown price")
+        + f" by {row.get('close_reason') or 'an unrecorded exit'}; realized P&L {float(row['realized_pnl']):+g}.\n"
+        f"Card summary: {row.get('entry_summary_text') or 'none'}\n"
+        f"Realized return: {outcome * 100:+.2f}%"
+        + (f"; alpha vs BTC over the holding period: {alpha * 100:+.2f}%" if alpha is not None else "") + "\n\n"
+        "What is the key lesson learned here?"
+    )
+
+
 def outcome_tag(outcome: float) -> str:
     return "WIN" if outcome > 0 else "LOSS" if outcome < 0 else "FLAT"
 
@@ -163,4 +199,45 @@ class ReflectionEngine:
             written += 1
             logger.info("Reflection (%s) for run %s: outcome %+.2f%%, alpha %+.2f%%", kind, row["run_id"],
                         outcome * 100, alpha * 100)
+        return written
+
+    async def process_card_trade_reflections(self) -> int:
+        """H10: one TRADE lesson per closed, filled Brain order-card trade."""
+        async with self.pg_pool.acquire() as conn:
+            pending = await conn.fetch(CARD_TRADES_SQL, BATCH)
+        written = 0
+        for row in pending:
+            outcome = float(row["return_pct"]) / 100
+            alpha = None
+            if row["opened_at"] and row["closed_at"]:
+                if row["instrument_id"].startswith(BENCHMARK):
+                    alpha = 0.0
+                else:
+                    bench = benchmark_return(self.query_engine, row["opened_at"], row["closed_at"] - row["opened_at"])
+                    if bench is not None:
+                        alpha = outcome - (bench if row["side"] != "SHORT" else -bench)
+            lesson = str((await REVIEWER.run(self.gateway, card_trade_prompt(row, outcome, alpha))).output)
+            embedding_str = embedding_model = None
+            try:
+                (vector,), embedding_model = await self.gateway.embed_tagged([lesson], kind="document")
+                embedding_str = f"[{','.join(map(str, vector))}]"
+            except Exception as e:
+                logger.warning("Lesson embedding failed: %s", e)
+                embedding_model = None
+            try:
+                candidate = uuid.UUID(row["candidate_id"]) if row["candidate_id"] else None
+            except ValueError:
+                candidate = None
+            async with self.pg_pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO reflections (run_id, entry_command_id, brain_card_id, candidate_id, actual_outcome_pnl,
+                                                alpha_vs_benchmark, lessons_learned, embedding, embedding_model,
+                                                instrument_type, timeframe, kind, outcome)
+                       VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                       ON CONFLICT (entry_command_id) WHERE entry_command_id IS NOT NULL DO NOTHING""",
+                    row["entry_command_id"], (row["brain_card_id"] or "")[:128] or None, candidate,
+                    round(outcome, 6), round(alpha if alpha is not None else 0.0, 6), lesson, embedding_str,
+                    embedding_model, str(row["instrument_id"])[:32], CARD_TRADE_TIMEFRAME, TRADE, outcome_tag(outcome))
+            written += 1
+            logger.info("Reflection (TRADE) for Brain card %s: outcome %+.2f%%", row["brain_card_id"], outcome * 100)
         return written

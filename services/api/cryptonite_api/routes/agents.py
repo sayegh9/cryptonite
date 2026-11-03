@@ -664,13 +664,93 @@ async def get_debate_decision(run_id: str, request: Request, _auth=Depends(requi
         result["similar_decisions"] = similar
     return result
 
+HOLD_ENTRY_LABEL = "Add no new position"  # H10: an entry debate's HOLD adds nothing; it never closes or flattens
+
+
+def debate_action_label(recommendation: str | None, trigger_source: str | None) -> str | None:
+    """H10: what the verdict does. An entry HOLD is 'Add no new position'; an exit debate keeps its own wording."""
+    if not recommendation:
+        return None
+    if str(recommendation).upper() == "HOLD" and trigger_source != "exit_monitor":
+        return HOLD_ENTRY_LABEL
+    return str(recommendation).upper()
+
+
+@router.get("/debates/{run_id}/evidence")
+async def get_debate_evidence(run_id: str, request: Request, _auth=Depends(require_auth)):
+    """H10: the run's evidence snapshot (latest version, with the list of versions), the post-check's validation
+    results, the verdict and its action label, and the routing outcome. A run from before migration 061 answers
+    ``snapshot: null`` with ``evidence_status: NO_SNAPSHOT``."""
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid run_id format")
+    pool = request.app.state.pool
+    async with pool.acquire() as conn:
+        run = await conn.fetchrow(
+            """SELECT r.id, r.instrument_id, r.status, r.trigger_source, r.failure_reason, r.non_actionable_reason,
+                      r.evidence_snapshot_version, d.recommendation, d.conviction_level, d.conviction_score,
+                      d.allocation_pct, d.decision_price
+               FROM debate_runs r LEFT JOIN portfolio_decisions d ON d.run_id = r.id WHERE r.id = $1""", run_uuid)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Debate run not found")
+        snaps = await conn.fetch(
+            """SELECT version, schema_version, purpose, essential_ok, snapshot, created_at
+               FROM debate_evidence_snapshots WHERE run_id = $1 ORDER BY version""", run_uuid)
+        flags = await conn.fetch(
+            """SELECT snapshot_version, role, code, fact, severity, detail FROM debate_validation_results
+               WHERE run_id = $1 ORDER BY id""", run_uuid)
+        approval = await conn.fetchrow(
+            "SELECT id, status, action_class FROM ai_approvals WHERE source = 'debate' AND source_ref = $1",
+            str(run_uuid))
+        route = await conn.fetchrow(
+            """SELECT outcome, reason FROM ai_profile_decisions WHERE run_id = $1 AND stage = 'ROUTE'
+               ORDER BY ts DESC, id DESC LIMIT 1""", run_uuid)
+    latest = snaps[-1] if snaps else None
+    snapshot = None
+    if latest is not None:
+        snapshot = latest["snapshot"]
+        snapshot = json.loads(snapshot) if isinstance(snapshot, str) else snapshot
+        if isinstance(snapshot, dict):
+            for it in (snapshot.get("items") or {}).values():
+                it.pop("bars", None)  # the raw bar rows stay in the database; the summary is shown
+            snapshot.pop("derivatives_raw", None)
+    blocking = [f for f in flags if f["severity"] == "BLOCK"]
+    if latest is None:
+        status = "NO_SNAPSHOT"
+    elif run["non_actionable_reason"] or blocking or not latest["essential_ok"]:
+        status = "NON_ACTIONABLE"
+    elif flags:
+        status = "DEGRADED"
+    else:
+        status = "OK"
+    num = lambda v: float(v) if v is not None else None  # noqa: E731
+    return {
+        "run_id": str(run_uuid), "instrument_id": run["instrument_id"], "status": run["status"],
+        "trigger_source": run["trigger_source"], "evidence_status": status,
+        "failure_reason": run["failure_reason"], "non_actionable_reason": run["non_actionable_reason"],
+        "verdict": {"recommendation": run["recommendation"], "conviction_level": run["conviction_level"],
+                    "conviction_score": num(run["conviction_score"]), "allocation_pct": num(run["allocation_pct"]),
+                    "decision_price": num(run["decision_price"]),
+                    "action_label": debate_action_label(run["recommendation"], run["trigger_source"])},
+        "snapshot_version": run["evidence_snapshot_version"],
+        "snapshot_versions": [{"version": r["version"], "created_at": r["created_at"].isoformat(),
+                               "essential_ok": r["essential_ok"]} for r in snaps],
+        "snapshot": snapshot,
+        "validation": [dict(f) for f in flags],
+        "routing": {"outcome": route["outcome"], "reason": route["reason"]} if route else None,
+        "approval": {"id": str(approval["id"]), "status": approval["status"],
+                     "action_class": approval["action_class"]} if approval else None,
+    }
+
+
 @router.get("/debates")
 async def list_debates(request: Request, limit: int = 50, _auth=Depends(require_auth)):
     pool = request.app.state.pool
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT r.id as run_id, r.instrument_id, r.status, r.created_at, 
-                   d.recommendation, d.conviction_level, d.conviction_score, d.allocation_pct, d.reasoning
+            SELECT r.id as run_id, r.instrument_id, r.status, r.created_at, r.trigger_source,
+                   r.non_actionable_reason, d.recommendation, d.conviction_level, d.conviction_score, d.allocation_pct, d.reasoning
             FROM debate_runs r
             LEFT JOIN portfolio_decisions d ON d.run_id = r.id
             WHERE r.status <> 'GATE_REFUSED' OR r.trigger_source <> 'scanner'
@@ -694,6 +774,8 @@ async def list_debates(request: Request, limit: int = 50, _auth=Depends(require_
             "status": d["status"],
             "decision": decision_str,
             "convictionLevel": level,
+            "actionLabel": debate_action_label(d.get("recommendation"), d.get("trigger_source")),
+            "nonActionableReason": d.get("non_actionable_reason"),
             "timestamp": d["created_at"].timestamp() * 1000,
             "turns": [] # We omit turns in the list view for performance
         })

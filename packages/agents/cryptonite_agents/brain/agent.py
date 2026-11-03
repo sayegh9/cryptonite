@@ -92,9 +92,12 @@ Shorts need Spot Margin or Perpetuals; leverage above 1x needs one of those mark
    from), what would invalidate it, a horizon and your confidence, and a one-line rationale. The call returns "Held for
    approval" and the operator sees an order card with Approve / Reject buttons. If no active mandate authorizes the instrument yet, you may still propose: the operator's order card creates the mandate inline on approval. That is the expected, successful result:
    do not retry and do not claim the order was placed. Tell the operator the card is waiting for their approval. An
-   approved order is sized by allocation_pct, and the position is protected by the exit
-   monitor's deterministic hard and trailing stops, not by your stop price: say so, and if your stop is much
-   tighter than a few percent, say the position will not be stopped there. Never propose more than one card
+   approved order is sized by allocation_pct. The card's stop_loss is the active structural stop: the exit monitor
+   closes the position at it; the exit monitor's hard and trailing stops are only backstops. State the stop that way
+   (the approval's system event names it exactly); never say the card's stop is not used. Before you propose a card for
+   a setup, read its `debate_status`: a setup "debated: HOLD" was refused by the automatic debate (run id, conviction,
+   policies and replay are on the setup): say so first and never present it as plainly tradeable; a card against that
+   verdict is flagged and needs the operator's explicit acknowledgement. Never propose more than one card
    for the same idea. Before proposing a SELL, check what the mandate holds (query_postgres_readonly on
    agent_safe_ai_holdings). Spot cannot be shorted: propose a SELL only to close a position the mandate already holds.
    An approved SELL sells that whole holding, not allocation_pct of the budget.
@@ -106,6 +109,10 @@ Shorts need Spot Margin or Perpetuals; leverage above 1x needs one of those mark
    leverage is optional: the system caps it at the lowest ceiling (risk at the stop, the liquidation buffer, the
    mandate's room and maximum, the setup grade, the exchange) and the card's dry run shows the leverage it allows and
    which ceiling binds. Say that; never claim a leverage the dry run did not allow.
+   When propose_profile returns INVALID, list every error it gives (COIN_LOCKED, ORDER_MIN_UNREACHABLE and all others),
+   never only the first, and never describe an INVALID proposal as ready. When the operator asks for a timeframe the
+   scan does not support (it supports 15m, 1h and 4h), say so and name the nearest supported one the scan used. Claims
+   about timeframes must match `scanned_timeframes`: never say "no setups on any timeframe" after scanning one.
 6. Missing data is neutral: when a tool reports no perpetual, no headlines or a symbol it does not cover, say so once
    and do not count it against a trade. CHOP is not an automatic no. In a range, look for a defined setup: entry near
    range support, stop below the range, target at the range middle or top. Measure the risk from the wider of your stop
@@ -149,6 +156,31 @@ _FIELD_REASONS = {
     "rationale": "the rationale is too long",
     "leverage": "the leverage must be a whole number from 1 to 10",
 }
+
+
+def profile_invalid_note(widget: dict[str, Any]) -> str | None:
+    """H10: an INVALID profile proposal's errors, all of them, for the reply (the model once left COIN_LOCKED out)."""
+    if widget.get("kind") != "profile_proposal" or widget.get("status") != "INVALID":
+        return None
+    errors = [str(e) for e in widget.get("errors") or []] or ["no error given"]
+    return "The profile proposal is INVALID and cannot be created as it is: " + "; ".join(errors) + "."
+
+
+def scan_notes(content: Any) -> list[str]:
+    """H10: what a swing scan actually covered, said in the reply by code: an unsupported timeframe and the nearest
+    one scanned, and the timeframes scanned (a claim about any other timeframe is not backed by this scan)."""
+    try:
+        data = json.loads(content) if isinstance(content, str) else None
+    except ValueError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    out = []
+    if data.get("timeframe_note"):
+        out.append(str(data["timeframe_note"]))
+    if data.get("scope_note"):
+        out.append(str(data["scope_note"]))
+    return out
 
 
 def no_card_note(args: dict[str, Any]) -> str:
@@ -227,7 +259,8 @@ class Brain:
                  state: Callable[[], Awaitable[str | None]] | None = None,
                  lessons: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
                  grader: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None,
-                 redis: Any | None = None) -> None:
+                 redis: Any | None = None,
+                 debates: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None) -> None:
         self.gateway = gateway
         self.store = store
         self.persona = persona
@@ -243,6 +276,8 @@ class Brain:
         self._grader = grader
         # Redis client (system Redis DB 0) to cache staged active cards during streaming turns
         self._redis = redis
+        # H10: the automatic path's debate an entry card goes with or against (tools.card_debate_link; None: no link)
+        self._debates = debates
 
     async def _system_state(self) -> str | None:
         """The system state header for this turn, or None. Bounded by STATE_TIMEOUT_S: a failed or slow read never
@@ -287,6 +322,24 @@ class Brain:
         except Exception as e:
             logger.warning("Could not grade the setup of card %s; it stays ungraded: %s", card.get("id"), e)
             return None
+
+    async def _card_debate(self, card: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+        """H10: (debate link, why the card goes against the debate verdict or None). A failed or slow read is never
+        'no debate': the card then needs the same acknowledgement as one against a HOLD."""
+        if self._debates is None:
+            return None, None
+        try:
+            link = await asyncio.wait_for(self._debates(card), timeout=GRADE_TIMEOUT_S)
+        except Exception as e:
+            logger.warning("Could not read the debate verdict for card %s: %s", card.get("id"), e)
+            return None, "UNKNOWN: the automatic debate verdict for this coin could not be read; check it before approving"
+        if not link or not link.get("against"):
+            return link, None
+        conviction = link.get("conviction_score")
+        return link, (f"against the debate verdict: debate {str(link.get('run_id'))[:8]} at {link.get('created_at')} "
+                      f"ended {link.get('recommendation') or link.get('status')}"
+                      + (f" (conviction {conviction})" if conviction is not None else "")
+                      + f" on the same {'candidate' if link.get('candidate_id') else 'coin and side'}")
 
     async def _feed_refusal(self, instrument_id: str) -> str | None:
         """Why the live feed does not cover ``instrument_id``, or None. Display only, so a failed read shows nothing."""
@@ -413,6 +466,9 @@ class Brain:
                                     elif widget.get("kind") == "swing_radar":
                                         if any(w.get("kind") == "swing_radar" for w in widgets):
                                             continue
+                                        notes.extend(scan_notes(ev.data.get("content")))
+                                    elif note := profile_invalid_note(widget):
+                                        notes.append(note)  # H10: every error of an INVALID proposal, by code
                                     if widget.get("kind") == "order_card":
                                         # Only an entry needs a live feed; a SELL closes a holding and is never
                                         # refused for it.
@@ -437,6 +493,12 @@ class Brain:
                                                 widget["grade_reasons"] = list(graded.get("reasons") or [])[:12]
                                                 widget["grade_inputs"] = graded.get("inputs")
                                                 widget["grade_version"] = graded.get("version")
+                                            # H10: the debate link comes from the verdict reader alone
+                                            link, against = await self._card_debate(widget)
+                                            widget["debate_link"], widget["against_debate_verdict"] = link, against
+                                            if against:
+                                                notes.append(f"This card goes {against}. Approving it needs an "
+                                                             "explicit acknowledgement on the card.")
                                         if self._redis is not None and widget.get("id"):
                                             try:
                                                 await self._redis.set(f"brain:active_card:{widget['id']}", json.dumps(widget), ex=1800)

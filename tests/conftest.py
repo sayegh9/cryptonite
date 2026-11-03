@@ -121,7 +121,7 @@ def complete_lake_bars(monkeypatch):
     """H7a: a full debate reads the lake's recent bars and is forced to HOLD when they are incomplete. Tests that
     drive a full debate without a lake use this to get complete (synthetic) bars (an empty list, so the H8
     bar-figure check has nothing to measure), an all-unavailable derivatives block and no fresh scanner setup."""
-    from cryptonite_agents import tools
+    from cryptonite_agents import news, tools
 
     def _complete(instrument_id, timeframe="1h", n=48, now_ns=None):
         return {"instrument_id": instrument_id, "timeframe": timeframe, "expected": n, "returned": n, "missing": 0,
@@ -139,6 +139,10 @@ def complete_lake_bars(monkeypatch):
     monkeypatch.setattr(tools, "recent_bars", _complete)
     monkeypatch.setattr(tools, "derivatives_evidence", _no_derivatives)
     monkeypatch.setattr(tools, "scanner_evidence", _no_scanner)
+    # H10: the evidence snapshot reads news once; never the RSS feeds or the sentiment service in a test
+    monkeypatch.setattr(news, "get_news_sentiment",
+                        lambda symbol="BTCUSDT": json.dumps({"symbol": symbol, "headlines": [],
+                                                              "note": "not fetched in tests"}))
 
 
 @pytest.fixture

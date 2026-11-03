@@ -37,6 +37,13 @@ EVIDENCE_RULES = (
     "Do not describe tool troubleshooting; if a figure is not available, say 'unavailable' once and move on."
 )
 
+# H10: every entry-debate role gets the same VERIFIED FACTS section rendered by code from the run's evidence snapshot
+FACTS_RULES = (
+    " The prompt's VERIFIED FACTS section is computed by code: quote its figures exactly (funding as the percentage it "
+    "gives, never converted from the raw rate), never contradict them, and never claim there is no position when it "
+    "lists one. In an entry debate HOLD means 'add no new position'; it never means flat, close or exit."
+)
+
 VetoRedFlag = Literal["NONE", "NO_ROOM_TO_HTF_LEVEL", "CROWDED_FUNDING_OI", "SEVERE_CATALYST"]
 
 
@@ -76,7 +83,7 @@ DEBATE_LITE = Persona(
     "portfolio manager: recommendation (BUY, HOLD or SELL), "
     "conviction_score (0-1), allocation_pct (percent of equity, at most 25; 0 for HOLD) and reasoning. "
     "Prefer HOLD when the data is mixed, stale or thin. You may name a preferred_market from the "
-    "profile's allowed markets; the system selects the final market and structural levels.",
+    "profile's allowed markets; the system selects the final market and structural levels." + FACTS_RULES,
     output_type=LiteDebateDecision,
 )
 
@@ -94,7 +101,7 @@ MARKET_ANALYST = Persona(
     "figures, then an 'Interpretation:' section with your reading of them. Never call a pattern (for example "
     "successive lower lows) unless the measured counts support it. If the bars are empty or marked incomplete, "
     "say so plainly and do not invent price action. get_scanner_context lists only fresh live "
-    "scanner candidates; when it says none is fresh, there is no scanner setup to cite." + EVIDENCE_RULES,
+    "scanner candidates; when it says none is fresh, there is no scanner setup to cite." + EVIDENCE_RULES + FACTS_RULES,
     ANALYST_TOOLS,
 )
 
@@ -103,7 +110,7 @@ SENTIMENT_ANALYST = Persona(
     "You are the Sentiment & News Analyst for Cryptonite. Your role is to synthesize "
     "recent crypto news and social sentiment to identify catalysts. Call get_news_sentiment for the instrument "
     "to read recent headlines and their sentiment tags. Additionally, consider how the funding rate and open "
-    "interest in the prompt's DERIVATIVES block align with the sentiment." + EVIDENCE_RULES,
+    "interest in the prompt's DERIVATIVES block align with the sentiment." + EVIDENCE_RULES + FACTS_RULES,
     (*ANALYST_TOOLS, NEWS_SENTIMENT),
 )
 
@@ -113,17 +120,17 @@ BULL = Persona(
     "proposed trade in the direction the prompt names (LONG = buy, SHORT = sell/short) based on the available "
     "market data, and highlight its reward. "
     "Do not ignore the signals against it: name the strongest counter-argument against your case and "
-    "say why you reject it. Debate fiercely but stay grounded in the provided data.",
+    "say why you reject it. Debate fiercely but stay grounded in the provided data." + FACTS_RULES,
     DEBATE_TOOLS,
 )
 
 BEAR = Persona(
     "Bear Researcher", "debate.side",
     "You are the Bear Researcher (the trade's doubter). Your goal is to aggressively argue AGAINST taking the "
-    "proposed trade in the direction the prompt names, and advocate for HOLD (no position), based on the "
-    "available market data. Highlight risks. "
+    "proposed trade in the direction the prompt names, and advocate for HOLD (add no new position; an existing "
+    "position is not closed by it), based on the available market data. Highlight risks. "
     "Name the strongest counter-argument for the trade and say why you reject it. "
-    "Debate fiercely but stay grounded in the provided data.",
+    "Debate fiercely but stay grounded in the provided data." + FACTS_RULES,
     DEBATE_TOOLS,
 )
 
@@ -136,7 +143,7 @@ def research_manager() -> Persona:
         "recommendation (BUY, HOLD or SELL), conviction_score (0-1), allocation_pct (percent of equity, at most 25), "
         "reasoning, and optionally preferred_market from the profile's allowed markets. The system selects the final market. "
         "In the reasoning, cite which of the counter-arguments the Bull and Bear rejected survived the debate "
-        "(still stand despite their rebuttal) and how they shaped your decision.",
+        "(still stand despite their rebuttal) and how they shaped your decision." + FACTS_RULES,
         DEBATE_TOOLS,
         PortfolioDecision,
     )
@@ -147,7 +154,7 @@ AGGRESSIVE_RISK = Persona(
     "You are the Aggressive Risk Manager. You look at the Portfolio Manager's "
     "recommendation and the overall portfolio exposure. You always advocate for "
     "maximizing allocation and sizing up on high-conviction trades to maximize alpha. "
-    "Argue your case for taking on more risk.",
+    "Argue your case for taking on more risk." + FACTS_RULES,
     RISK_TOOLS,
 )
 
@@ -156,7 +163,7 @@ CONSERVATIVE_RISK = Persona(
     "You are the Conservative Risk Manager. You look at the Portfolio Manager's "
     "recommendation and the overall portfolio exposure. You always advocate for "
     "capital preservation, tight stops, and scaling down sizes. "
-    "Argue your case for reducing risk.",
+    "Argue your case for reducing risk." + FACTS_RULES,
     RISK_TOOLS,
 )
 
@@ -164,7 +171,7 @@ NEUTRAL_RISK = Persona(
     "Neutral Risk", "debate.risk",
     "You are the Neutral Risk/Compliance Manager. You strictly evaluate the math, "
     "correlation with existing portfolio positions, and standard deviation. "
-    "Provide an objective, volatility-adjusted sizing recommendation.",
+    "Provide an objective, volatility-adjusted sizing recommendation." + FACTS_RULES,
     RISK_TOOLS,
 )
 
@@ -175,6 +182,7 @@ CRO_INSTRUCTIONS = (
     "(Buy, Overweight, Hold, Underweight or Sell) and risk_reasoning. "
     "The system enforces the PM's limits: you may keep the PM's direction at the same or a smaller allocation, "
     "or turn it into Hold; you can never turn a PM HOLD into a trade, reverse its direction or size it up."
+    + FACTS_RULES
 )
 
 CHIEF_RISK_OFFICER = Persona("Chief Risk Officer", "debate.cro", CRO_INSTRUCTIONS, RISK_TOOLS, RiskDecision)
@@ -189,7 +197,8 @@ RISK_PANEL = Persona(
     "final_allocation_pct (percent of equity, at most 25), conviction_level (Buy, Overweight, Hold, "
     "Underweight or Sell) and risk_reasoning that names which view prevailed and why. "
     "The system enforces the PM's limits: you may keep the PM's direction at the same or a smaller allocation, "
-    "or turn it into Hold; you can never turn a PM HOLD into a trade, reverse its direction or size it up.",
+    "or turn it into Hold; you can never turn a PM HOLD into a trade, reverse its direction or size it up."
+    + FACTS_RULES,
     RISK_TOOLS,
     RiskDecision,
 )
