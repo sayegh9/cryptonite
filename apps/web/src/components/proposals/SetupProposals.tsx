@@ -114,6 +114,11 @@ function PendingRow({ p, onDecided }: { p: Proposal; onDecided: () => void }) {
           <span data-testid="proposal-rr">{flight?.live_rr != null ? `${flight.live_rr.toFixed(2)}x` : "unknown"}</span>
         </Fact>
       </dl>
+      {card.spot_levels && card.perp_shift != null && (
+        <p className="mt-2 text-xs text-zinc-300" data-testid="proposal-perp-shift">
+          Levels moved to the perp price by {card.perp_shift > 0 ? "+" : ""}{price(card.perp_shift)}
+        </p>
+      )}
       {belowFloor && (
         <p className="mt-2 text-xs font-semibold text-red-300" data-testid="proposal-floor">
           Below the {flight?.rr_floor ?? 1.5} floor, cannot be approved.

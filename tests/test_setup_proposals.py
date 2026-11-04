@@ -75,6 +75,7 @@ async def h(db_url):
     await harness.redis.set(quote_tick_key(SPOT), json.dumps({
         "instrument_id": SPOT, "bid_price": "59999", "ask_price": "60001", "arrival_ns": time.time_ns()}), ex=60)
     await set_prices(harness, ENTRY)
+    await set_tick(harness, "0.01")
     try:
         yield harness
     finally:
@@ -85,6 +86,19 @@ async def h(db_url):
 async def set_prices(h, price: float) -> None:
     await h.redis.set("market:24h:BTCUSDT", json.dumps({"last_price": price}), ex=60)
     await h.redis.set(MARK_KEY, json.dumps({"type": "perp.mark", "mark_price": str(price), "funding_rate": "0.0001",
+                                            "ts_event_ns": 1}), ex=60)
+
+
+async def set_tick(h, tick: str) -> None:
+    await h.pool.execute(
+        """INSERT INTO instruments (instrument_id, raw_symbol, venue, market_type, base_currency, quote_currency,
+               price_precision, size_precision, price_increment, size_increment, is_active)
+           VALUES ($1, 'BTCUSDT', 'BINANCE', 'SPOT', 'BTC', 'USDT', 2, 5, $2::numeric, 0.00001, true)
+           ON CONFLICT (instrument_id) DO UPDATE SET price_increment = EXCLUDED.price_increment""", SPOT, tick)
+
+
+async def set_mark(h, mark: str) -> None:
+    await h.redis.set(MARK_KEY, json.dumps({"type": "perp.mark", "mark_price": mark, "funding_rate": "0.0001",
                                             "ts_event_ns": 1}), ex=60)
 
 
@@ -140,7 +154,7 @@ def hold(cid, **over) -> proposals.HoldDebate:
 async def create(h, debate, mandate):
     async with h.pool.acquire() as conn:
         async with conn.transaction():
-            return await proposals.create_for_hold(conn, debate, mandate)
+            return await proposals.create_for_hold(conn, debate, mandate, h.redis)
 
 
 async def seeded(h, mandate, **over) -> str:
@@ -274,16 +288,16 @@ async def test_a_helper_failure_never_breaks_the_debate_transaction(h, monkeypat
     run = uuid.uuid4()
     real = proposals._skip_reason
 
-    async def broken(conn, debate, mandate):
+    async def broken(conn, debate, mandate, redis):
         await conn.execute("SELECT * FROM a_table_that_does_not_exist")
-        return await real(conn, debate, mandate)
+        return await real(conn, debate, mandate, redis)
 
     monkeypatch.setattr(proposals, "_skip_reason", broken)
     async with h.pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("INSERT INTO debate_runs (id, instrument_id, status, trigger_source) "
                                "VALUES ($1, $2, 'NO_TRADE', 'scanner')", run, SPOT)
-            assert await proposals.create_for_hold(conn, hold(cid), m) is None
+            assert await proposals.create_for_hold(conn, hold(cid), m, h.redis) is None
             await conn.execute("UPDATE debate_runs SET failure_reason = 'still-usable' WHERE id = $1", run)
     assert await h.pool.fetchval("SELECT failure_reason FROM debate_runs WHERE id = $1", run) == "still-usable"
     assert await h.pool.fetchval("SELECT count(*) FROM setup_proposals") == 0
@@ -385,7 +399,7 @@ async def test_e2e_a_broken_helper_leaves_the_debate_result_intact(main, h, monk
     await profile(h)
     cid = await candidate(h)
 
-    async def broken(conn, debate, mandate):
+    async def broken(conn, debate, mandate, redis):
         raise RuntimeError("proposal bug")
 
     monkeypatch.setattr(proposals, "_skip_reason", broken)
@@ -580,8 +594,9 @@ async def test_e2e_a_spot_candidate_on_a_multi_market_long_profile_is_a_perp_car
     row = await h.pool.fetchrow("SELECT * FROM setup_proposals WHERE candidate_id = $1", cid)
     card = json.loads(row["card"])
     assert row["instrument_id"] == PERP and card["instrument_id"] == PERP and row["side"] == "BUY"
-    # The levels and the graded entry are the spot candidate's
-    assert (card["grade_inputs"]["entry"], card["stop_loss"], card["take_profit"]) == (65010.0, 64000.0, 67500.0)
+    # The spot candidate's levels, moved to the mark by one amount (65000 - 65010); the originals stay for display
+    assert (card["grade_inputs"]["entry"], card["stop_loss"], card["take_profit"]) == (65000.0, 63990.0, 67490.0)
+    assert card["spot_levels"] == {"entry": 65010.0, "stop": 64000.0, "target": 67500.0} and card["perp_shift"] == -10.0
     pid = str(row["id"])
 
     # ... and the live R:R is measured at the perp mark, not at the spot price
@@ -589,7 +604,7 @@ async def test_e2e_a_spot_candidate_on_a_multi_market_long_profile_is_a_perp_car
     await h.redis.set("market:24h:BTCUSDT", json.dumps({"last_price": 66900.0}), ex=60)
     flight = (await post(h, f"{pid}/preflight")).json()
     assert flight["ok"] is True, flight
-    assert flight["live_entry"] == 65020.0 and flight["live_rr"] == pytest.approx(2480 / 1020, abs=1e-3)
+    assert flight["live_entry"] == 65020.0 and flight["live_rr"] == pytest.approx(2470 / 1030, abs=1e-3)
     assert flight["needs_totp"] is True and flight["leverage_plan"]["ok"] is True
 
     assert (await post(h, f"{pid}/approve", ACK)).status_code in (401, 403)
@@ -600,17 +615,85 @@ async def test_e2e_a_spot_candidate_on_a_multi_market_long_profile_is_a_perp_car
     assert payload["source"] == "scanner_proposal" and payload["instrument_id"] == PERP and payload["confidence"] is None
 
 
-async def test_the_spot_perp_basis_alone_can_refuse_a_setup_that_meets_the_floor_on_spot(h):
-    """REPORTED, not changed (PR #160): the slip check measures spot levels at the perp mark. This pins today's
-    behaviour: with spot exactly at its entry, a 5 bps perp premium refuses a setup at the 1.5 floor."""
-    m = await profile(h, markets=("PERP",), max_leverage=3)
-    pid = await seeded(h, m, take_profit=63000.0)  # 60000 / 58000 / 63000: exactly 1.5 on spot
-    await h.redis.set("market:24h:BTCUSDT", json.dumps({"last_price": ENTRY}), ex=60)
-    await h.redis.set(MARK_KEY, json.dumps({"type": "perp.mark", "mark_price": "60030", "funding_rate": "0.0001",
-                                            "ts_event_ns": 1}), ex=60)
+SHORT_LEVELS = {"stop_loss": 62000.0, "take_profit": 55000.0,
+                "candidate": {"suggested_entry": ENTRY, "suggested_stop": 62000.0, "suggested_target": 55000.0}}
+
+
+@pytest.mark.parametrize("mark", ["60030", "59970"], ids=["premium", "discount"])
+@pytest.mark.parametrize("over", [{}, SHORT_LEVELS], ids=["BUY", "SELL"])
+async def test_levels_move_to_the_mark_with_the_same_distances_and_r_r(h, mark, over):
+    m = await profile(h, markets=("PERP",), direction="BOTH", max_leverage=3)
+    await set_mark(h, mark)
+    pid = await seeded(h, m, **over)
+    card = json.loads(await h.pool.fetchval("SELECT card FROM setup_proposals WHERE id = $1", uuid.UUID(pid)))
+    stop0, target0 = over.get("stop_loss", STOP), over.get("take_profit", TARGET)
+    entry = card["grade_inputs"]["entry"]
+    assert entry == float(mark) and card["perp_shift"] == float(mark) - ENTRY
+    assert card["side"] == ("SELL" if over else "BUY")
+    assert abs(entry - card["stop_loss"]) == pytest.approx(abs(ENTRY - stop0))
+    assert abs(card["take_profit"] - entry) == pytest.approx(abs(target0 - ENTRY))
+    assert card["spot_levels"] == {"entry": ENTRY, "stop": stop0, "target": target0}
     flight = (await post(h, f"{pid}/preflight")).json()
-    assert flight["code"] == "REWARD_TO_RISK_SLIPPED" and flight["meets_rr_floor"] is False
-    assert flight["live_rr"] == pytest.approx(2970 / 2030, abs=1e-3)
+    assert flight["live_rr"] == pytest.approx(abs(target0 - ENTRY) / abs(ENTRY - stop0))
+    assert flight["ok"] is True, flight
+
+
+async def test_a_setup_at_the_floor_survives_a_perp_premium(h):
+    """60000 / 58000 / 63000 is exactly 1.5 on spot; a 5 bps premium no longer reads as a slip."""
+    m = await profile(h, markets=("PERP",), max_leverage=3)
+    await set_mark(h, "60030")
+    pid = await seeded(h, m, take_profit=63000.0)
+    flight = (await post(h, f"{pid}/preflight")).json()
+    assert flight["ok"] is True, flight
+    assert flight["live_entry"] == 60030.0 and flight["live_rr"] == pytest.approx(1.5) and flight["meets_rr_floor"] is True
+
+
+async def test_a_real_move_after_creation_is_still_refused(h):
+    m = await profile(h, markets=("PERP",), max_leverage=3)
+    await set_mark(h, "60030")
+    pid = await seeded(h, m, take_profit=63000.0)
+    await set_mark(h, "60060")
+    res = await post(h, f"{pid}/approve", {**ACK, "totp_code": h.totp.now()})
+    assert res.status_code == 409 and res.json()["detail"].startswith("REWARD_TO_RISK_SLIPPED")
+    assert await status_of(h, pid) == "PENDING" and await counts(h) == (0, 0)
+
+
+@pytest.mark.parametrize("mark", [None, "0", "-5"], ids=["missing", "zero", "negative"])
+async def test_no_usable_perp_mark_means_no_proposal(h, caplog, mark):
+    m = await profile(h, markets=("PERP",), max_leverage=3)
+    await (h.redis.delete(MARK_KEY) if mark is None else set_mark(h, mark))
+    with caplog.at_level("INFO", logger="cryptonite.debate_worker.proposals"):
+        assert await create(h, hold(await candidate(h)), m) is None
+    assert "NO_PERP_MARK" in caplog.text
+    assert await h.pool.fetchval("SELECT count(*) FROM setup_proposals") == 0
+
+
+async def test_a_rounding_break_of_the_floor_means_no_proposal(h, caplog):
+    m = await profile(h, markets=("PERP",), max_leverage=3)
+    await set_tick(h, "10")
+    over = {"stop_loss": 58004.0, "take_profit": 62994.0,  # 2994 / 1996 is 1.5 before rounding, 2990 / 2000 after
+            "candidate": {"suggested_entry": ENTRY, "suggested_stop": 58004.0, "suggested_target": 62994.0}}
+    with caplog.at_level("INFO", logger="cryptonite.debate_worker.proposals"):
+        assert await create(h, hold(await candidate(h), **over), m) is None
+    assert "RR_BELOW_FLOOR" in caplog.text
+    assert await h.pool.fetchval("SELECT count(*) FROM setup_proposals") == 0
+
+
+async def test_no_price_tick_means_no_proposal(h, caplog):
+    m = await profile(h, markets=("PERP",), max_leverage=3)
+    await h.pool.execute("DELETE FROM instruments WHERE instrument_id = ANY($1::text[])", [SPOT, PERP])
+    with caplog.at_level("INFO", logger="cryptonite.debate_worker.proposals"):
+        assert await create(h, hold(await candidate(h)), m) is None
+    assert "NO_PRICE_TICK" in caplog.text
+
+
+async def test_a_spot_route_keeps_the_candidate_levels(h):
+    m = await profile(h)
+    await set_mark(h, "60030")
+    pid = await seeded(h, m)
+    card = json.loads(await h.pool.fetchval("SELECT card FROM setup_proposals WHERE id = $1", uuid.UUID(pid)))
+    assert (card["grade_inputs"]["entry"], card["stop_loss"], card["take_profit"]) == (ENTRY, STOP, TARGET)
+    assert "spot_levels" not in card and "perp_shift" not in card
 
 
 # --- consumers of the source --------------------------------------------------------------------------

@@ -16,6 +16,9 @@ export interface ProposalCard {
   debate_reasoning?: string;
   preset_slug?: string | null;
   timeframe?: string | null;
+  /** A perp route: the levels the scanner found on spot, and how far they moved to the perp's price */
+  spot_levels?: { entry: number; stop: number; target: number };
+  perp_shift?: number;
 }
 
 export interface Proposal {

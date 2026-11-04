@@ -904,7 +904,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                     trigger_source=trigger_source, recommendation=recommendation, final_status=final_status,
                     conviction=float(conviction or 0), reasoning=reasoning, trace_id=trace_id,
                     non_actionable=non_actionable, stop_loss=stop_loss, take_profit=take_profit,
-                    brief_data=brief_data), mandate)
+                    brief_data=brief_data), mandate, redis_client)
 
         logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level} (decision_trace_id={trace_id})")
         await policies.record_policy_b(pg_pool, candidate_id, *policies.policy_b_for_route(final_status, recommendation))

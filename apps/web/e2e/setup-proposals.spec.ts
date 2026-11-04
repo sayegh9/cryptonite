@@ -16,6 +16,7 @@ function proposal(id: string, instrument: string, side = "BUY", over: Record<str
       allocation_pct: 25, stop_loss: 58000, take_profit: 65000, setup_grade: "B", grade_reasons: ["trend up"],
       grade_inputs: { entry: 60000 }, against_debate_verdict: "HOLD", debate_reasoning: "Momentum is fading on the higher frame.",
       preset_slug: "trend-pullback", timeframe: "1h",
+      ...(instrument.includes("-PERP") ? { spot_levels: { entry: 59970, stop: 57970, target: 64970 }, perp_shift: 30 } : {}),
     },
     ...over,
   };
@@ -69,6 +70,7 @@ test.describe("Setups to review", () => {
     }
     await expect(page.getByTestId("proposal-rr")).toHaveText("2.50x");
     await expect(page.getByTestId("proposal-expiry")).toContainText("expires in");
+    await expect(page.getByTestId("proposal-perp-shift")).toHaveCount(0);
   });
 
   test("approve needs the acknowledgement, and sends it", async ({ page }) => {
@@ -93,6 +95,7 @@ test.describe("Setups to review", () => {
     const row = page.getByTestId("proposal-row");
     await expect(row).toContainText("Short");
     await expect(row).toContainText("Perp");
+    await expect(page.getByTestId("proposal-perp-shift")).toHaveText("Levels moved to the perp price by +30");
     await page.getByLabel("The debate said HOLD").check();
     const approve = page.getByRole("button", { name: "Approve BTC" });
     await expect(approve).toBeDisabled();
