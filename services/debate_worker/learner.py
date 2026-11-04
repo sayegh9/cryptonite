@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import asyncpg
+import funnel
 import redis.asyncio as redis
 from candidate_outcomes import label_candidates
 from cryptonite_agents.gateway import BudgetGuard, Gateway
@@ -40,6 +41,8 @@ async def main() -> None:
     while True:
         started = time.monotonic()
         labelled = reflected = cand_labelled = 0
+        # H13c: first and on its own, so a slow or failing reflection cannot delay an alarm. Never raises.
+        await funnel.run_pass(pool, lake, redis_client)
         try:
             labelled = await label_pending(pool, lake)
             try:

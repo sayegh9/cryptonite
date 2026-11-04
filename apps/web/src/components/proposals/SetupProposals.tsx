@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { FunnelView } from "@/components/proposals/FunnelView";
 import { useVisiblePoll } from "@/components/autotrade/AutoTradeWorkspace";
 import { btnPrimary, btnSecondary } from "@/components/autotrade/Dialogs";
 import { HIGH_LEVERAGE_CONFIRM } from "@/lib/leverage";
@@ -194,6 +195,7 @@ export function SetupProposals() {
   const showRecent = useProposalStore((s) => s.showRecent);
   const setShowRecent = useProposalStore((s) => s.setShowRecent);
   const load = useProposalStore((s) => s.load);
+  const [view, setView] = useState<"review" | "funnel">("review");
 
   useEffect(() => {
     void useProposalStore.persist.rehydrate();
@@ -213,31 +215,48 @@ export function SetupProposals() {
         <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-xs font-semibold text-zinc-100" data-testid="proposal-count">
           {loaded ? pending : "?"}
         </span>
-        {decided.length > 0 && (
+        {view === "review" && decided.length > 0 && (
           <button type="button" className="ml-auto text-xs text-cyan-300 underline" onClick={() => setShowRecent(!showRecent)}>
             {showRecent ? "Hide" : "Show"} decided ({decided.length})
           </button>
         )}
       </header>
-      <p className="text-xs text-zinc-300">
-        Setups the scanner found and the debate said HOLD on. Nothing trades unless you approve; unanswered setups expire.
-      </p>
-      {error && !loaded && <p className="text-xs text-amber-300" data-testid="proposal-error">Could not load the setups: {error}</p>}
-      {loaded && open.length === 0 && <p className="text-xs text-zinc-400">No setups are waiting.</p>}
-      <ul className="space-y-2">
-        {open.map((p) => <PendingRow key={p.id} p={p} onDecided={() => void load()} />)}
-      </ul>
-      {showRecent && decided.length > 0 && (
-        <ul className="space-y-1" data-testid="proposal-decided">
-          {decided.map((p) => (
-            <li key={p.id} className="flex flex-wrap gap-x-3 text-xs text-zinc-300">
-              <span className="font-semibold text-zinc-100">{coin(p.instrument_id)} {p.side === "BUY" ? "Long" : "Short"}</span>
-              <span>{p.status}</span>
-              {p.command_id && <span>order {p.command_id.slice(0, 8)}</span>}
-              {p.refusal && <span>last refusal: {p.refusal}</span>}
-            </li>
-          ))}
-        </ul>
+      <div className="flex flex-wrap gap-2" role="group" aria-label="Setups view">
+        {([["review", "To review"], ["funnel", "What happened to setups"]] as const).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            aria-pressed={view === id}
+            className={`rounded border px-2 py-1 text-xs ${view === id ? "border-cyan-400 text-cyan-200" : "border-zinc-700 text-zinc-300"}`}
+            onClick={() => setView(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {view === "funnel" ? <FunnelView /> : (
+        <>
+          <p className="text-xs text-zinc-300">
+            Setups the scanner found and the debate said HOLD on. Nothing trades unless you approve; unanswered setups expire.
+          </p>
+          {error && !loaded && <p className="text-xs text-amber-300" data-testid="proposal-error">Could not load the setups: {error}</p>}
+          {loaded && open.length === 0 && <p className="text-xs text-zinc-400">No setups are waiting.</p>}
+          <ul className="space-y-2">
+            {open.map((p) => <PendingRow key={p.id} p={p} onDecided={() => void load()} />)}
+          </ul>
+          {showRecent && decided.length > 0 && (
+            <ul className="space-y-1" data-testid="proposal-decided">
+              {decided.map((p) => (
+                <li key={p.id} className="flex flex-wrap gap-x-3 text-xs text-zinc-300">
+                  <span className="font-semibold text-zinc-100">{coin(p.instrument_id)} {p.side === "BUY" ? "Long" : "Short"}</span>
+                  <span>{p.status}</span>
+                  {p.command_id && <span>order {p.command_id.slice(0, 8)}</span>}
+                  {p.refusal && <span>last refusal: {p.refusal}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </section>
   );

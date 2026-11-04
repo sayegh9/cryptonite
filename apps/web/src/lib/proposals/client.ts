@@ -1,5 +1,6 @@
 import { fetchApi, type FetchApiOptions } from "@/lib/api";
 import type { CardPreflight } from "@/lib/brain/types";
+import type { Funnel } from "@/lib/proposals/funnel";
 
 /** /api/v1/proposals: scanner setups the debate said HOLD on (H13b). Writes carry the CSRF token. */
 
@@ -68,4 +69,6 @@ export const preflightProposal = (id: string, leverage?: number | null): Promise
   write(`/proposals/${id}/preflight${leverage != null ? `?leverage=${encodeURIComponent(String(leverage))}` : ""}`);
 export const approveProposal = (id: string, body: ProposalApproval): Promise<{ command_id: string; status: string }> =>
   write(`/proposals/${id}/approve`, body);
+export const fetchFunnel = (hours = 24, init?: Pick<FetchApiOptions, "signal" | "timeoutMs">): Promise<Funnel> =>
+  fetchApi(`/funnel?hours=${encodeURIComponent(String(hours))}`, init);
 export const rejectProposal = (id: string): Promise<{ status: string }> => write(`/proposals/${id}/reject`);

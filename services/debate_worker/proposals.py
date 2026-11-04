@@ -19,6 +19,7 @@ from typing import Any
 
 from cryptonite_execution.related_positions import opposite_positions, read_related_positions
 from cryptonite_scanner.brief import candidate_direction
+from cryptonite_schemas.funnel import PROPOSAL_SKIPPED
 from cryptonite_schemas.mandate import DEFAULT_APPROVAL_TTL_S, Mandate
 from cryptonite_schemas.profile import Market, market_of, underlying_spot
 from cryptonite_schemas.reward_risk import meets_min_rr, reward_to_risk
@@ -205,6 +206,11 @@ async def create_for_hold(conn, debate: HoldDebate, mandate: Mandate | None, red
             reason, fields = await _skip_reason(conn, debate, mandate, redis)
             if reason:
                 logger.info("Run %s: no proposal for candidate %s: %s", debate.run_id, debate.candidate_id, reason)
+                # H13c: the funnel's record of why (a failed write rolls back only this savepoint)
+                await conn.execute(
+                    """INSERT INTO candidate_funnel_stops (candidate_id, stage, reason, detail)
+                       VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (candidate_id) DO NOTHING""",
+                    debate.candidate_id, PROPOSAL_SKIPPED, reason, json.dumps({"run_id": str(debate.run_id)}))
                 return None
             proposal_id = uuid.uuid4()
             now = now or datetime.datetime.now(datetime.UTC)
