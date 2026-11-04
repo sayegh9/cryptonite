@@ -5,10 +5,11 @@ its target selection; no model-suggested price is accepted here.
 """
 
 import math
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 import polars as pl
+from cryptonite_schemas.reward_risk import MIN_REWARD_TO_RISK, meets_min_rr
 
 from cryptonite_scanner.models import RiskConfig
 
@@ -144,6 +145,19 @@ def derive_levels(
     target_dec = round(Decimal(str(target_val)), price_precision)
     risk = abs(entry_dec - stop_dec)
     reward = abs(target_dec - entry_dec)
+    # Only correct the rounding of an intended qualifying ATR/ATR pair. Never move a structural
+    # level or promote a genuinely sub-floor setup; use the nearest price that meets the floor.
+    raw_risk = abs(Decimal(str(stop_val)) - entry_dec)
+    raw_reward = abs(Decimal(str(target_val)) - entry_dec)
+    if (stop_type == target_type == "atr_fallback" and risk > 0 and raw_risk > 0
+            and meets_min_rr(raw_reward / raw_risk)
+            and not meets_min_rr(reward / risk)):
+        tick = Decimal(1).scaleb(-price_precision)
+        required = (risk * MIN_REWARD_TO_RISK / tick).to_integral_value(rounding=ROUND_CEILING) * tick
+        adjusted = entry_dec - required if direction == "SHORT" else entry_dec + required
+        if adjusted > 0 and abs(adjusted - target_dec) <= 2 * tick:
+            target_dec = adjusted
+            reward = abs(target_dec - entry_dec)
     derived_rr = (reward / risk) if risk > Decimal("0") else Decimal("0")
     rr_float = float(round(derived_rr, 4))
     return entry_dec, stop_dec, target_dec, stop_type, target_type, rr_float, derived_rr

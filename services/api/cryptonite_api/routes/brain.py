@@ -721,54 +721,31 @@ def _card_summary(card: dict[str, Any], instrument: str, mandate: Mandate, alloc
             f"{mandate.name} (${budget:,.0f})")
 
 
-@router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
-async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_human_operator),
-                             req: CardApproveRequest | None = None):
-    """Approve an order card: one PAPER order inside a mandate, at most once, protected by the exit
-    monitor's stops. The approval is recorded in ``ai_approvals`` and bound to its command (A5.3)."""
-    op = operator_id(auth)
-    if len(widget_id) > 128:
-        raise HTTPException(status_code=422, detail="Invalid card id")
-    card = await _get_card(request, op, sid, widget_id)
-    if card is None:
-        raise HTTPException(status_code=404, detail="Order card not found")
-    if card.get("status") == "APPROVED" and card.get("command_id"):
-        return {"command_id": card["command_id"], "status": "APPROVED", "replayed": True}
-    if card.get("against_debate_verdict") and not (req and req.acknowledge_against_debate):
+async def require_leverage_confirmation(request: Request, auth: dict, lev_plan: dict[str, Any] | None, req: Any) -> None:
+    """A leveraged entry: a second confirmation at 8x and above, then the operator's TOTP (ADR 0009 D3), both before the
+    card is claimed, so a refusal leaves it pending. ``req`` carries ``confirm_high_leverage`` and ``totp_code``."""
+    if lev_plan is None:
+        return
+    if lev_plan["leverage"] >= HIGH_LEVERAGE_CONFIRM and not (req and req.confirm_high_leverage):
         raise HTTPException(status_code=409, detail=(
-            f"AGAINST_DEBATE_VERDICT: this card goes {card['against_debate_verdict']}; acknowledge it on the card to "
-            "approve"))
-    plan = await _plan_card(request, sid, card, req.mandate_id if req else None, req.leverage if req else None)
-    mandate, allocation, summary, held = plan.mandate, plan.allocation, plan.summary, plan.held
-    protection, trace_id, source_ref = plan.protection, plan.trace_id, plan.source_ref
-    shown = plan.shown  # what the note lines say: the audit summary above keeps the card's own text
-    pool = request.app.state.pool
-    lev_plan = plan.leverage_plan
-    if lev_plan is not None:
-        # A leveraged entry: a second confirmation at 8x and above, then the operator's TOTP (ADR 0009 D3), both
-        # before the card is claimed, so a refusal leaves it pending
-        if lev_plan["leverage"] >= HIGH_LEVERAGE_CONFIRM and not (req and req.confirm_high_leverage):
-            raise HTTPException(status_code=409, detail=(
-                f"HIGH_LEVERAGE_CONFIRMATION_REQUIRED: {lev_plan['leverage']}x needs a second confirmation; "
-                f"the loss if liquidated is the margin, ${Decimal(lev_plan['loss_if_liquidated_usd']):,.2f}"))
-        await require_totp(request, auth, req.totp_code if req else None)
+            f"HIGH_LEVERAGE_CONFIRMATION_REQUIRED: {lev_plan['leverage']}x needs a second confirmation; "
+            f"the loss if liquidated is the margin, ${Decimal(lev_plan['loss_if_liquidated_usd']):,.2f}"))
+    await require_totp(request, auth, req.totp_code if req else None)
 
-    if card.get("status") == "PENDING_APPROVAL":  # claim it first: a concurrent reject can no longer win
-        claimed = await _worker_note(sid, {
-            "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "expect_status": "PENDING_APPROVAL",
-            "content": f"Operator approved order card {widget_id}: {shown}.",
-        })
-        if claimed == 409:
-            raise HTTPException(status_code=409, detail="The card is no longer pending")
 
+def card_command_payload(card: dict[str, Any], plan: CardPlan, req: Any, *, source: str,
+                         origin: dict[str, str]) -> dict[str, Any]:
+    """The command payload of an approved order card. ``source`` and ``origin`` say where the card came from;
+    ``req`` carries ``acknowledge_against_debate``."""
+    mandate, allocation, held, lev_plan = plan.mandate, plan.allocation, plan.held, plan.leverage_plan
     payload: dict[str, Any] = {
         "instrument_id": card["instrument_id"], "side": card["side"], "order_type": card["order_type"],
         # sized from the allocation the operator approved, as a share of the mandate's budget
         # (the mandate check and the dispatcher's 1-25% clamp still apply)
         "allocation_pct": float(allocation),
-        "source": "brain_order_card", "brain_session_id": str(sid), "brain_card_id": widget_id,
+        "source": source, **origin,
         "trace_id": card.get("trace_id"),
-        "proposed_take_profit": card.get("take_profit"), "protection": protection,
+        "proposed_take_profit": card.get("take_profit"), "protection": plan.protection,
         # H11: what the exit monitor enforces as TP1 (the fill note recomputes the level from the fill)
         "tp1_r": float(mandate.exit_tp_r) if getattr(mandate, "exit_tp_r", None) is not None else None,
         "tp1_scale_pct": (float(mandate.exit_tp1_scale_pct)
@@ -802,6 +779,44 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
     elif card["side"] == "SELL":
         payload["quantity"] = format(held, "f")  # exact: a float drops the last digits of a fill-sized holding  # the orchestrator sells this quantity, not a share of the budget
     payload["mandate_id"] = str(mandate.id)
+    return payload
+
+
+@router.post("/sessions/{sid}/cards/{widget_id}/approve", dependencies=OPERATOR_WRITE)
+async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, auth: dict = Depends(require_human_operator),
+                             req: CardApproveRequest | None = None):
+    """Approve an order card: one PAPER order inside a mandate, at most once, protected by the exit
+    monitor's stops. The approval is recorded in ``ai_approvals`` and bound to its command (A5.3)."""
+    op = operator_id(auth)
+    if len(widget_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid card id")
+    card = await _get_card(request, op, sid, widget_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Order card not found")
+    if card.get("status") == "APPROVED" and card.get("command_id"):
+        return {"command_id": card["command_id"], "status": "APPROVED", "replayed": True}
+    if card.get("against_debate_verdict") and not (req and req.acknowledge_against_debate):
+        raise HTTPException(status_code=409, detail=(
+            f"AGAINST_DEBATE_VERDICT: this card goes {card['against_debate_verdict']}; acknowledge it on the card to "
+            "approve"))
+    plan = await _plan_card(request, sid, card, req.mandate_id if req else None, req.leverage if req else None)
+    mandate, summary = plan.mandate, plan.summary
+    protection, trace_id, source_ref = plan.protection, plan.trace_id, plan.source_ref
+    shown = plan.shown  # what the note lines say: the audit summary above keeps the card's own text
+    pool = request.app.state.pool
+    lev_plan = plan.leverage_plan
+    await require_leverage_confirmation(request, auth, lev_plan, req)
+
+    if card.get("status") == "PENDING_APPROVAL":  # claim it first: a concurrent reject can no longer win
+        claimed = await _worker_note(sid, {
+            "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "expect_status": "PENDING_APPROVAL",
+            "content": f"Operator approved order card {widget_id}: {shown}.",
+        })
+        if claimed == 409:
+            raise HTTPException(status_code=409, detail="The card is no longer pending")
+
+    payload = card_command_payload(card, plan, req, source="brain_order_card",
+                                   origin={"brain_session_id": str(sid), "brain_card_id": widget_id})
     key = f"brain-card:{sid}:{widget_id}"
     try:
         async with pool.acquire() as conn:
@@ -988,14 +1003,25 @@ async def preflight_order_card(sid: uuid.UUID, widget_id: str, request: Request,
     try:
         plan = await _plan_card(request, sid, card, mandate_id, leverage)
     except HTTPException as e:
-        detail = str(e.detail)
-        code = _refusal_code(detail)
-        # approve's NO_MANDATE for a BUY makes the card offer to create a mandate; the remedy says how (and which
-        # other refusals a mandate change fixes)
-        needs_mandate = code == "NO_MANDATE" and (card["side"] == "BUY" or is_perp_entry(card))
-        remedy = await _card_remedy(request, card, code, mandate_id)
-        return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate, "remedy": remedy,
-                "leverage_plan": getattr(e, "leverage_plan", None), "needs_totp": is_perp_entry(card)}
+        return await preflight_refusal(request, card, e, mandate_id)
+    return preflight_result(card, plan, leverage)
+
+
+async def preflight_refusal(request: Request, card: dict[str, Any], e: HTTPException,
+                            mandate_id: uuid.UUID | None) -> dict[str, Any]:
+    """The dry run's answer for a card ``_plan_card`` refused: the code and detail approve would give."""
+    detail = str(e.detail)
+    code = _refusal_code(detail)
+    # approve's NO_MANDATE for a BUY makes the card offer to create a mandate; the remedy says how (and which
+    # other refusals a mandate change fixes)
+    needs_mandate = code == "NO_MANDATE" and (card["side"] == "BUY" or is_perp_entry(card))
+    remedy = await _card_remedy(request, card, code, mandate_id)
+    return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate, "remedy": remedy,
+            "leverage_plan": getattr(e, "leverage_plan", None), "needs_totp": is_perp_entry(card)}
+
+
+def preflight_result(card: dict[str, Any], plan: CardPlan, leverage: int | None) -> dict[str, Any]:
+    """The dry run's answer for a card ``_plan_card`` planned: the mandate and size approve would queue."""
     # A spot or margin entry asks its grade size (O2), so the room left cut it from that; a perp asks its own allocation
     max_pct = plan.mandate.max_position_pct
     requested = (Decimal(str(card["allocation_pct"])) if plan.leverage_plan is not None

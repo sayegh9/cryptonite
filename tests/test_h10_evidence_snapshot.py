@@ -162,6 +162,15 @@ def snap_with(**items) -> dict:
             "related_instruments": {}, "built_at": "x", "items": base, "optional": list(evidence.OPTIONAL["ENTRY"])}
 
 
+def test_spot_scanner_entry_does_not_claim_execution_market_is_spot():
+    """A spot-priced scanner signal can be routed to a profile's permitted perpetual market."""
+    snap = snap_with()
+    facts = evidence.verified_facts(snap)
+    assert "Debate purpose: ENTRY on BTCUSDT.BINANCE (SPOT)." not in facts
+    assert "reference instrument" in facts.lower()
+    assert "does not determine the execution market" in facts.lower()
+
+
 PERP_SHORT = {"instrument_id": PERP, "market": "PERP", "side": "SHORT", "quantity": 0.02598, "entry_price": 76979.4,
               "leverage": 2, "stop": 77578.61, "take_profit": 75581.41, "owner_instance": "x", "mandate_id": None,
               "mandate_name": None, "opened_at": None}

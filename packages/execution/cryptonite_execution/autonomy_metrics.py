@@ -104,10 +104,12 @@ async def gate_metrics(conn, mandate: Mandate, now: datetime.datetime | None = N
         honest, honest_detail = None, f"{fee_check['free']} of {fee_check['n']} fills without fees"
     else:
         honest, honest_detail = None, "no fills yet"
+    # A scanner proposal is recorded at the mandate's level but never had a veto window: not evidence for the veto rate
     decided = await conn.fetchrow(
         """SELECT count(*) FILTER (WHERE status = 'VETOED') AS vetoed,
                   count(*) FILTER (WHERE status IN ('APPROVED', 'VETOED', 'EXPIRED_PROCEEDED')) AS decided
-           FROM ai_approvals WHERE mandate_id = $1 AND action_class = 'ADD_RISK' AND level_at_creation = 2 AND created_at >= $2""",
+           FROM ai_approvals WHERE mandate_id = $1 AND action_class = 'ADD_RISK' AND level_at_creation = 2 AND created_at >= $2
+             AND source <> 'scanner_proposal'""",
         mandate.id, since)
     veto_rate = (Decimal(decided["vetoed"]) / Decimal(decided["decided"]) * 100) if decided["decided"] else None
     return GateMetrics(

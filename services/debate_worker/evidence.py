@@ -372,11 +372,15 @@ def verified_facts(snap: dict[str, Any]) -> str:
     """The VERIFIED FACTS section every role gets: figures computed by code, to be quoted, never converted."""
     it = snap["items"]
     lines = [f"=== VERIFIED FACTS (evidence snapshot v{snap['version']}, built {snap['built_at']} by code) ===",
-             "Quote these figures exactly as written. Do not convert units or recompute them; do not contradict them.",
-             f"Debate purpose: {snap['purpose']} on {snap['instrument_id']} ({snap['market']})."]
+             "Quote these figures exactly as written. Do not convert units or recompute them; do not contradict them."]
     if snap["purpose"] == ENTRY:
+        lines.append(f"Debate purpose: ENTRY for {snap['instrument_id']}; reference instrument market: "
+                     f"{snap['market']}. The reference instrument does not determine the execution market; "
+                     "the profile's allowed markets and the system's routing determine it.")
         lines.append(f"HOLD in this debate means: {HOLD_ENTRY_LABEL}. It never means flat, close or exit an "
                      "existing position.")
+    else:
+        lines.append(f"Debate purpose: {snap['purpose']} on {snap['instrument_id']} ({snap['market']}).")
     pos = it.get("positions") or {}
     if pos.get("status") != OK:
         lines.append(f"Related positions: UNRESOLVED {_status(pos)}; never assume there is no position.")

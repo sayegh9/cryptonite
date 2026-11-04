@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { MANDATE_UPDATED_EVENT } from "@/lib/mission/events";
+import { SetupProposals } from "@/components/proposals/SetupProposals";
 import { useAutoTradeStore, type AutoTradeView, type ProfileTab } from "@/lib/stores/useAutoTradeStore";
 import { ProfileDetail } from "./detail/ProfileDetail";
 import { ProfileList } from "./ProfileList";
@@ -95,6 +96,7 @@ export function AutoTradeWorkspace() {
 
   return (
     <div ref={headingRef} className="mx-auto w-full max-w-[1400px] px-4 py-4 sm:px-6" data-testid="autotrade-workspace">
+      {view === "list" && <SetupProposals />}
       {view === "list" && <ProfileList onCreate={() => go({ view: "new" })} onOpen={(pid) => go({ view: "profile", id: pid })} />}
       {view === "new" && (
         <ProfileWizard
