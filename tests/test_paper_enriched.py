@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -156,7 +156,7 @@ def test_get_positions_enriched_fields(test_app_and_pool):
     """Verify that get_positions returns opened_at, strategy_name, duration_s, stop_loss_price, and take_profit_price."""
     client, mock_pool = test_app_and_pool
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     past_iso = "2026-10-18T12:00:00+00:00"
 
     positions = [
@@ -229,10 +229,8 @@ def test_get_positions_enriched_fields(test_app_and_pool):
     assert p1["strategy_name"] == "EMA Crossover Strategy"
     assert p1["opened_at"] == past_iso
     assert p1["duration_s"] > 0
-    # Stop loss for LONG at 2.5%: 50000 * (1 - 0.025) = 48750.0
-    assert p1["stop_loss_price"] == 48750.0
-    # Take profit for LONG at 4.0%: 50000 * (1 + 0.04) = 52000.0
-    assert p1["take_profit_price"] == 52000.0
+    assert p1["stop_loss_price"] is None
+    assert p1["take_profit_price"] is None
     assert p1["side"] == "LONG"
     assert p1["entry_price"] == 50000.0
     assert p1["quantity"] == 0.5
@@ -245,10 +243,8 @@ def test_get_positions_enriched_fields(test_app_and_pool):
     assert p2["strategy_name"] == "Manual Trade"
     assert p2["opened_at"] == now_iso
     assert p2["duration_s"] >= 0
-    # Stop loss for SHORT at 2.5%: 3000 * (1 + 0.025) = 3075.0
-    assert p2["stop_loss_price"] == 3075.0
-    # Take profit for SHORT at 4.0%: 3000 * (1 - 0.04) = 2880.0
-    assert p2["take_profit_price"] == 2880.0
+    assert p2["stop_loss_price"] is None
+    assert p2["take_profit_price"] is None
 
     # Position 3: AI_DEBATE_WORKER normalization and missing opened_at fallback
     p3 = rows[2]
@@ -256,55 +252,8 @@ def test_get_positions_enriched_fields(test_app_and_pool):
     assert p3["strategy_name"] == "AI Debate Worker"
     assert p3["opened_at"] is not None
     assert p3["duration_s"] >= 0
-    # Stop loss for LONG at 2.5%: 100 * (1 - 0.025) = 97.5
-    assert p3["stop_loss_price"] == 97.5
-    # Take profit for LONG at 4.0%: 100 * (1 + 0.04) = 104.0
-    assert p3["take_profit_price"] == 104.0
-
-
-def test_get_positions_custom_exit_rules(test_app_and_pool):
-    """Verify that system_settings exit rules are dynamically picked up by get_positions."""
-    client, mock_pool = test_app_and_pool
-
-    positions = [
-        {
-            "position_id": "POS-100",
-            "account_id": "PAPER-ACCOUNT-001",
-            "instance_id": "INST-CUSTOM",
-            "instrument_id": "BTCUSDT.BINANCE",
-            "side": "LONG",
-            "entry_price": 10000.0,
-            "quantity": 1.0,
-            "current_price": 10000.0,
-            "unrealized_pnl": 0.0,
-            "realized_pnl": 0.0,
-            "status": "OPEN",
-            "opened_at": "2026-10-18T10:00:00Z",
-            "closed_at": None,
-            "strategy_name": "Custom Trend",
-        }
-    ]
-
-    async def mock_fetch(sql, *args):
-        if "system_settings" in sql:
-            # Custom 3.0% stop loss and 5.0% take profit
-            return [
-                {"key": "exit.stop_loss_pct", "value": "3.0"},
-                {"key": "exit.trail_activate_pct", "value": "5.0"},
-            ]
-        return positions
-
-    mock_pool.fetch = AsyncMock(side_effect=mock_fetch)
-
-    res = client.get("/api/v1/paper/positions")
-    assert res.status_code == 200
-    rows = res.json()
-    assert len(rows) == 1
-    p = rows[0]
-    # 10000 * (1 - 0.03) = 9700.0
-    assert p["stop_loss_price"] == 9700.0
-    # 10000 * (1 + 0.05) = 10500.0
-    assert p["take_profit_price"] == 10500.0
+    assert p3["stop_loss_price"] is None
+    assert p3["take_profit_price"] is None
 
 
 def test_get_orders_enriched_strategy_name(test_app_and_pool):

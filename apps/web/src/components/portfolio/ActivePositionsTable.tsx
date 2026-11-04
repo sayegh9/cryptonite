@@ -154,6 +154,11 @@ const PositionRow = React.memo(function PositionRow({ pos, latched, onSelect }: 
               markPrice={mark}
               stopLossPrice={pos.stop_loss_price}
               takeProfitPrice={pos.take_profit_price}
+              trailingStopPrice={pos.trailing_stop_price}
+              quantity={pos.quantity}
+              tp1Done={pos.tp1_done}
+              tp1ScalePct={pos.tp1_scale_pct}
+              levelsKnown={pos.exit_levels_known}
               liquidationPrice={pos.liquidation_price}
             />
           </td>

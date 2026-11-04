@@ -34,6 +34,8 @@ LIVE_EXIT_MODEL_VERSION = "live-v1"
 DEFAULT_THRESHOLDS = ExitThresholds(stop_loss_pct=5.0, trail_activate_pct=3.0, trail_pct=2.0,
                                     debate_drawdown_pct=2.0, funding_spike=0.0005)
 _EPS = 1e-12
+EXIT_LEVELS_TTL_S = 600  # twice the longest allowed check interval; no cycle for this long: the API reports them unknown
+MANUAL_LEVELS_OWNER = "MANUAL"  # the levels key of a position the monitor only alerts on
 
 
 @dataclass(frozen=True)
@@ -306,6 +308,28 @@ def _stop_levels(pos: Position, best: float, t: ExitThresholds) -> list[tuple[fl
     if best_gain >= t.trail_activate_pct:
         levels.append((best * (1 - sign * t.trail_pct / 100), "TRAILING_STOP"))
     return levels
+
+
+def exit_levels_key(instrument_id: str, side: str, owner: str) -> str:
+    return f"exit:levels:{instrument_id}:{side}:{owner}"
+
+
+def enforced_levels(pos: Position, best: float, t: ExitThresholds, tp1_done: bool) -> dict[str, Any]:
+    """The levels ``evaluate_exit`` applies to ``pos`` now, for display: ``stop_price`` is the nearer of the structural
+    and the hard stop, ``trailing_stop_price`` is set once the trail is active, ``tp1_price`` is the scale-out level
+    (kept after ``tp1_done``; the remainder then has no target)."""
+    levels = _stop_levels(pos, best, t)
+    long = pos.side == "LONG"
+    fixed = [lv for lv, reason in levels if reason != "TRAILING_STOP"]
+    tp = pos.take_profit_price
+    return {
+        "stop_price": max(fixed) if long else min(fixed),
+        "trailing_stop_price": next((lv for lv, reason in levels if reason == "TRAILING_STOP"), None),
+        "tp1_price": tp if tp and (tp > pos.entry_price if long else tp < pos.entry_price) else None,
+        "tp1_scale_pct": float(pos.profile_tp1_scale_pct) if pos.profile_tp1_scale_pct is not None else 50.0,
+        "tp1_done": tp1_done,
+        "alert_only": not pos.ai_owned,
+    }
 
 
 def simulate_live_exit(bars: list[dict[str, Any]], direction: str, stop: float | None, target: float | None, *,

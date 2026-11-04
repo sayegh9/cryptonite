@@ -34,6 +34,11 @@ export interface PaperPosition {
   duration_s?: number | null;
   stop_loss_price?: number | null;
   take_profit_price?: number | null;
+  trailing_stop_price?: number | null;
+  tp1_scale_pct?: number | null;
+  tp1_done?: boolean;
+  exit_levels_known?: boolean;
+  exit_levels_alert_only?: boolean;
   // Perpetual-only (null/absent on spot rows)
   leverage?: number | null;
   margin_mode?: 'ISOLATED' | 'CROSS' | null;

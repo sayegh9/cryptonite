@@ -56,11 +56,15 @@ import redis.asyncio as redis
 from cryptonite_schemas import exit_rules
 from cryptonite_schemas.exit_rules import (  # noqa: F401  (re-exported: the monitor's rules live in exit_rules)
     AI_INSTANCE,
+    EXIT_LEVELS_TTL_S,
     LIQ_ALERT_BUFFER_USED,
     LIQ_CLOSE_BUFFER_USED,
+    MANUAL_LEVELS_OWNER,
     ExitAction,
     Position,
     apply_profile_exit_levels,
+    enforced_levels,
+    exit_levels_key,
     max_hold_action,
     position_thresholds,
     tp1_reduce_quantity,
@@ -567,6 +571,18 @@ async def best_price_since_open(redis_client, pos: Position) -> float:
     return best
 
 
+async def publish_levels(redis_client, pos: Position, best: float, t: ExitThresholds, done: bool) -> None:
+    """Publish the levels in force for the positions API. A display aid: a failure here never stops a check."""
+    if pos.entry_price <= 0:
+        return
+    owner = pos.owner_instance if pos.ai_owned else MANUAL_LEVELS_OWNER
+    try:
+        await redis_client.set(exit_levels_key(pos.instrument_id, pos.side, owner),
+                               json.dumps(enforced_levels(pos, best, t, done)), ex=EXIT_LEVELS_TTL_S)
+    except Exception as e:
+        logger.debug("Could not publish exit levels for %s: %s", pos.instrument_id, e)
+
+
 async def enqueue_close(conn, pos: Position, reason: str) -> bool:
     """One close per position and reason; a REJECTED/FAILED close is retried after a pause."""
     prefix = f"exit_monitor:{pos.key}:{reason}"
@@ -767,6 +783,7 @@ async def monitor_once(pool, redis_client, quotes: QuoteBook, t: ExitThresholds 
             armed = not await redis_client.exists(f"debounce:exit:{pos.instrument_id}")
             in_episode = bool(await redis_client.exists(episode_key))
             done = await tp1_done(conn, redis_client, pos)
+            await publish_levels(redis_client, pos, best, position_t, done)
             actions = evaluate_exit(pos, best, armed, in_episode, position_t, tp1_done=done)
             max_hold = max_hold_action(pos)
             if max_hold is not None and not any(a.kind == "CLOSE" for a in actions):

@@ -12,6 +12,13 @@ export interface PositionLifecycleGaugeProps {
   takeProfitPrice?: number | null;
   trailingStopPrice?: number | null;
   liquidationPrice?: number | null;
+  /** Open size: every dollar figure is for the whole position, not per coin */
+  quantity?: number | null;
+  /** TP1 has scaled out: the remainder runs on the stops, with no target */
+  tp1Done?: boolean;
+  tp1ScalePct?: number | null;
+  /** False: the exit monitor has published no levels for this position */
+  levelsKnown?: boolean;
   className?: string;
   showLabels?: boolean;
 }
@@ -51,6 +58,10 @@ export function PositionLifecycleGauge({
   takeProfitPrice,
   trailingStopPrice,
   liquidationPrice,
+  quantity,
+  tp1Done = false,
+  tp1ScalePct,
+  levelsKnown = true,
   className,
   showLabels = true,
 }: PositionLifecycleGaugeProps) {
@@ -69,6 +80,7 @@ export function PositionLifecycleGauge({
     return isShort ? entryPrice - price : price - entryPrice;
   };
 
+  const size = quantity && Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
   const markPnl = calcPnl(markPrice) ?? 0;
   const markPnlPct = entryPrice > 0 ? (markPnl / entryPrice) * 100 : 0;
   const isInProfit = markPnl > 0;
@@ -77,10 +89,12 @@ export function PositionLifecycleGauge({
   // Distances to Stop Loss and Take Profit
   const slMetrics = useMemo(() => {
     if (stopLossPrice === null || stopLossPrice === undefined || !Number.isFinite(stopLossPrice)) return null;
-    const distanceUsd = Math.abs(markPrice - stopLossPrice);
-    const distancePct = markPrice > 0 ? (distanceUsd / markPrice) * 100 : 0;
-    const fromEntryUsd = calcPnl(stopLossPrice) ?? 0;
-    const fromEntryPct = entryPrice > 0 ? (fromEntryUsd / entryPrice) * 100 : 0;
+    const distance = Math.abs(markPrice - stopLossPrice);
+    const distanceUsd = distance * size;
+    const distancePct = markPrice > 0 ? (distance / markPrice) * 100 : 0;
+    const fromEntry = calcPnl(stopLossPrice) ?? 0;
+    const fromEntryUsd = fromEntry * size;
+    const fromEntryPct = entryPrice > 0 ? (fromEntry / entryPrice) * 100 : 0;
     return {
       price: stopLossPrice,
       distanceUsd,
@@ -88,14 +102,16 @@ export function PositionLifecycleGauge({
       fromEntryUsd,
       fromEntryPct,
     };
-  }, [stopLossPrice, markPrice, entryPrice, isShort]);
+  }, [stopLossPrice, markPrice, entryPrice, isShort, size]);
 
   const tpMetrics = useMemo(() => {
     if (takeProfitPrice === null || takeProfitPrice === undefined || !Number.isFinite(takeProfitPrice)) return null;
-    const distanceUsd = Math.abs(takeProfitPrice - markPrice);
-    const distancePct = markPrice > 0 ? (distanceUsd / markPrice) * 100 : 0;
-    const fromEntryUsd = calcPnl(takeProfitPrice) ?? 0;
-    const fromEntryPct = entryPrice > 0 ? (fromEntryUsd / entryPrice) * 100 : 0;
+    const distance = Math.abs(takeProfitPrice - markPrice);
+    const distanceUsd = distance * size;
+    const distancePct = markPrice > 0 ? (distance / markPrice) * 100 : 0;
+    const fromEntry = calcPnl(takeProfitPrice) ?? 0;
+    const fromEntryUsd = fromEntry * size;
+    const fromEntryPct = entryPrice > 0 ? (fromEntry / entryPrice) * 100 : 0;
     return {
       price: takeProfitPrice,
       distanceUsd,
@@ -103,12 +119,13 @@ export function PositionLifecycleGauge({
       fromEntryUsd,
       fromEntryPct,
     };
-  }, [takeProfitPrice, markPrice, entryPrice, isShort]);
+  }, [takeProfitPrice, markPrice, entryPrice, isShort, size]);
 
   const liqMetrics = useMemo(() => {
     if (liquidationPrice === null || liquidationPrice === undefined || !Number.isFinite(liquidationPrice)) return null;
-    const distanceUsd = Math.abs(markPrice - liquidationPrice);
-    const distancePct = markPrice > 0 ? (distanceUsd / markPrice) * 100 : 0;
+    const distance = Math.abs(markPrice - liquidationPrice);
+    const distanceUsd = distance * size;
+    const distancePct = markPrice > 0 ? (distance / markPrice) * 100 : 0;
     const isNear = distancePct <= 5; // Warning threshold: within 5% of liquidation
     return {
       price: liquidationPrice,
@@ -116,7 +133,20 @@ export function PositionLifecycleGauge({
       distancePct,
       isNear,
     };
-  }, [liquidationPrice, markPrice]);
+  }, [liquidationPrice, markPrice, size]);
+
+  // The stop the position meets first: the trailing stop once it is active and nearer
+  const trailMetrics = useMemo(() => {
+    if (trailingStopPrice === null || trailingStopPrice === undefined || !Number.isFinite(trailingStopPrice)) return null;
+    const distance = Math.abs(markPrice - trailingStopPrice);
+    return {
+      distanceUsd: distance * size,
+      distancePct: markPrice > 0 ? (distance / markPrice) * 100 : 0,
+    };
+  }, [trailingStopPrice, markPrice, size]);
+  const stopCallout = trailMetrics && (!slMetrics || trailMetrics.distanceUsd <= slMetrics.distanceUsd)
+    ? { label: "To Trailing Stop:", ...trailMetrics }
+    : slMetrics && { label: "To Stop Loss:", distanceUsd: slMetrics.distanceUsd, distancePct: slMetrics.distancePct };
 
   // Compute visual domain [minPnl, maxPnl] mapped to [0%, 100%]
   // 0% on left (Downside / Hard Stop Loss / Risk)
@@ -238,7 +268,7 @@ export function PositionLifecycleGauge({
                 : "bg-zinc-800/60 text-zinc-400 border-zinc-700/50"
             )}
           >
-            {formatDeltaUsd(markPnl)} ({formatPct(markPnlPct)})
+            {formatDeltaUsd(markPnl * size)} ({formatPct(markPnlPct)})
           </span>
         </div>
       </div>
@@ -339,7 +369,7 @@ export function PositionLifecycleGauge({
                 <div className="flex justify-between text-zinc-400">
                   <span>Distance to Mark:</span>
                   <span className="font-mono text-zinc-200 tabular-nums">
-                    ${formatPrice(Math.abs(markPrice - trailingStopPrice!))}
+                    ${formatPrice(trailMetrics?.distanceUsd ?? 0)}
                   </span>
                 </div>
               </div>
@@ -366,16 +396,16 @@ export function PositionLifecycleGauge({
             onMouseLeave={() => setActiveTooltip(null)}
             tabIndex={0}
             role="button"
-            aria-label={`Take Profit: $${formatPrice(takeProfitPrice!)}`}
+            aria-label={`${tp1Done ? "TP1 done" : "TP1"}: $${formatPrice(takeProfitPrice!)}`}
           >
             <div className="h-4 w-1 rounded-full bg-emerald-400 ring-2 ring-emerald-500/30 group-hover:scale-125 transition-transform" />
-            <span className="mt-1 text-[10px] font-mono font-bold text-emerald-400 tracking-tight">TP</span>
+            <span className="mt-1 text-[10px] font-mono font-bold text-emerald-400 tracking-tight">{tp1Done ? "TP1 ✓" : "TP1"}</span>
 
             {/* Hover Tooltip */}
             {(activeTooltip === "tp" || activeTooltip === `${gaugeId}-tp`) && tpMetrics && (
               <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-48 rounded-lg border border-emerald-500/30 bg-zinc-900/95 p-2 text-2xs shadow-xl backdrop-blur-xs z-30 pointer-events-none">
                 <div className="flex items-center justify-between font-bold text-emerald-300 border-b border-zinc-800 pb-1 mb-1">
-                  <span>Take Profit</span>
+                  <span>{tp1Done ? "TP1 done" : "TP1"}</span>
                   <span className="font-mono tabular-nums">${formatPrice(tpMetrics.price)}</span>
                 </div>
                 <div className="flex justify-between text-zinc-400">
@@ -504,7 +534,7 @@ export function PositionLifecycleGauge({
                     isInProfit ? "text-emerald-400" : isInLoss ? "text-rose-400" : "text-zinc-300"
                   )}
                 >
-                  {formatDeltaUsd(markPnl)} ({formatPct(markPnlPct)})
+                  {formatDeltaUsd(markPnl * size)} ({formatPct(markPnlPct)})
                 </span>
               </div>
             </div>
@@ -516,30 +546,38 @@ export function PositionLifecycleGauge({
       {showLabels && (
         <div className="mt-3 pt-2.5 border-t border-zinc-900 flex flex-wrap items-center justify-between gap-2 text-2xs text-zinc-400">
           {/* SL Distance Callout */}
-          <div className="flex items-center gap-1.5 font-medium">
+          <div className="flex items-center gap-1.5 font-medium" data-testid="gauge-stop-callout">
             <span className="size-1.5 rounded-full bg-rose-500" />
-            <span className="text-zinc-500">To Stop Loss:</span>
-            {slMetrics ? (
+            <span className="text-zinc-500">{stopCallout?.label ?? "To Stop Loss:"}</span>
+            {stopCallout ? (
               <span className="font-mono text-zinc-300 tabular-nums">
-                ${formatPrice(slMetrics.distanceUsd)}{" "}
-                <span className="text-rose-400 font-semibold">({slMetrics.distancePct.toFixed(2)}%)</span>
+                ${formatPrice(stopCallout.distanceUsd)}{" "}
+                <span className="text-rose-400 font-semibold">({stopCallout.distancePct.toFixed(2)}%)</span>
               </span>
             ) : (
-              <span className="text-zinc-600">None set</span>
+              <span className="text-zinc-600">{levelsKnown ? "None set" : "Exit monitor levels unavailable"}</span>
             )}
           </div>
 
           {/* TP Distance Callout */}
-          <div className="flex items-center gap-1.5 font-medium">
+          <div className="flex items-center gap-1.5 font-medium" data-testid="gauge-tp-callout">
             <span className="size-1.5 rounded-full bg-emerald-400" />
-            <span className="text-zinc-500">To Take Profit:</span>
-            {tpMetrics ? (
-              <span className="font-mono text-zinc-300 tabular-nums">
-                ${formatPrice(tpMetrics.distanceUsd)}{" "}
-                <span className="text-emerald-400 font-semibold">({tpMetrics.distancePct.toFixed(2)}%)</span>
+            {tp1Done ? (
+              <span className="text-zinc-300">
+                TP1 done: {tp1ScalePct ?? 50}% sold, the rest runs on the stops
               </span>
             ) : (
-              <span className="text-zinc-600">None set</span>
+              <>
+                <span className="text-zinc-500">To TP1:</span>
+                {tpMetrics ? (
+                  <span className="font-mono text-zinc-300 tabular-nums">
+                    ${formatPrice(tpMetrics.distanceUsd)}{" "}
+                    <span className="text-emerald-400 font-semibold">({tpMetrics.distancePct.toFixed(2)}%)</span>
+                  </span>
+                ) : (
+                  <span className="text-zinc-600">{levelsKnown ? "None set" : "Exit monitor levels unavailable"}</span>
+                )}
+              </>
             )}
           </div>
         </div>

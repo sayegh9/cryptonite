@@ -28,6 +28,10 @@ const MOCK_POSITION_ENRICHED = {
   duration_s: 3600,
   stop_loss_price: 66000,
   take_profit_price: 72000,
+  trailing_stop_price: null,
+  tp1_done: false,
+  tp1_scale_pct: 50,
+  exit_levels_known: true,
   leverage: 5,
   margin_mode: "CROSS" as const,
   liquidation_price: 55000,
@@ -176,9 +180,44 @@ test.describe("Unified Hubs & 4-Pillar Institutional Navigation", () => {
 
     // Verify PositionLifecycleGauge renders bracket targets
     await expect(page.getByRole("button", { name: /Stop Loss: \$66,000/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Take Profit: \$72,000/ })).toBeVisible();
-    await expect(page.getByText("To Stop Loss:")).toBeVisible();
-    await expect(page.getByText("To Take Profit:")).toBeVisible();
+    await expect(page.getByRole("button", { name: /TP1: \$72,000/ })).toBeVisible();
+    // Dollar figures are for the whole position (0.5 BTC), not per coin
+    await expect(page.getByTestId("gauge-stop-callout")).toContainText("To Stop Loss:");
+    await expect(page.getByTestId("gauge-stop-callout")).toContainText("$1,500.00");
+    await expect(page.getByTestId("gauge-tp-callout")).toContainText("To TP1:");
+    await expect(page.getByTestId("gauge-tp-callout")).toContainText("$1,500.00");
+    await expect(page.getByText("+$500.00 (+1.47%)").first()).toBeVisible();
+
+    // After TP1: the trailing stop is the nearer stop and the remainder has no target
+    await page.route("**/api/v1/paper/positions*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([{ ...MOCK_POSITION_ENRICHED, trailing_stop_price: 68500, tp1_done: true }]),
+      }),
+    );
+    await page.reload();
+    await expect(page.getByTestId("gauge-stop-callout")).toContainText("To Trailing Stop:");
+    await expect(page.getByTestId("gauge-stop-callout")).toContainText("$250.00");
+    await expect(page.getByTestId("gauge-tp-callout")).toContainText("TP1 done: 50% sold");
+
+    // Levels the exit monitor has not published are not guessed
+    await page.route("**/api/v1/paper/positions*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            ...MOCK_POSITION_ENRICHED,
+            stop_loss_price: null,
+            take_profit_price: null,
+            exit_levels_known: false,
+          },
+        ]),
+      }),
+    );
+    await page.reload();
+    await expect(page.getByTestId("gauge-stop-callout")).toContainText("Exit monitor levels unavailable");
 
     // Verify zero-dummy empty state when positions list is empty
     await page.route("**/api/v1/paper/positions*", (route) =>
