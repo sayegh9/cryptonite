@@ -27,6 +27,7 @@ from cryptonite_api.routes import (
     market,
     paper,
     profiles,
+    proposals,
     research,
     scanners,
     settings,
@@ -160,6 +161,7 @@ def create_app() -> FastAPI:
     app.include_router(brain.router)
     app.include_router(ai.router)
     app.include_router(profiles.router)
+    app.include_router(proposals.router)
     app.include_router(setups.router)
     app.include_router(research.router)
 

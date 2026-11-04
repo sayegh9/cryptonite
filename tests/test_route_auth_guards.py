@@ -228,6 +228,8 @@ def test_protected_reads_declare_require_auth():
     "/api/v1/ai/mandates",
     "/api/v1/agents/brain/sessions/00000000-0000-4000-8000-000000000001/cards/c1/approve",
     "/api/v1/agents/debates/00000000-0000-4000-8000-000000000001/approve",
+    "/api/v1/proposals/00000000-0000-4000-8000-000000000001/approve",
+    "/api/v1/proposals/00000000-0000-4000-8000-000000000001/reject",
 ])
 def test_machine_tokens_cannot_approve_ai_actions_or_widen_mandates(client, path):
     """A5: the agent workers hold an operator-scoped token; approvals need a human operator session."""

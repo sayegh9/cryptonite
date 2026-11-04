@@ -424,8 +424,9 @@ async def gate_ai_order(conn, engine, row: Any, payload: dict, intent, mandate: 
             logger.warning("AI order %s refused by the cross-mandate exposure check: %s", _row_get(row, "command_id"), cross)
             return cross
         # H10: a debate entry is never a hedge. Its debate was blocked when an opposite position was open; this
-        # rechecks at execution, so an approval granted after such a position opened is refused too (never a breach)
-        if str(payload.get("source") or "") == "debate":
+        # rechecks at execution, so an approval granted after such a position opened is refused too (never a breach).
+        # H13b: a scanner proposal is the same setup, approved up to 15 minutes later
+        if str(payload.get("source") or "") in ("debate", "scanner_proposal"):
             from cryptonite_execution.related_positions import (
                 OPPOSITE_POSITION_OPEN,
                 opposite_positions,
