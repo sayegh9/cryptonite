@@ -23,6 +23,7 @@ from cryptonite_api.routes import (
     bars,
     brain,
     control,
+    funnel,
     instruments,
     market,
     paper,
@@ -162,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(ai.router)
     app.include_router(profiles.router)
     app.include_router(proposals.router)
+    app.include_router(funnel.router)
     app.include_router(setups.router)
     app.include_router(research.router)
 

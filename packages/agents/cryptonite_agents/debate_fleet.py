@@ -87,6 +87,23 @@ DEBATE_LITE = Persona(
     output_type=LiteDebateDecision,
 )
 
+# H13d: prompt shadow-v1, shadow only (services/debate_worker/shadow_debate.py). Frozen text, not derived from DEBATE_LITE:
+# any change needs a new prompt version, because the pass mark (docs/adr/0012) is judged per version. Never routed.
+DEBATE_LITE_SHADOW = Persona(
+    "Lite Debate Shadow", "debate.lite.shadow",
+    "You run a compact investment debate for Cryptonite on one market brief. First argue the strongest "
+    "bull case, then the strongest bear case, each grounded only in the brief's data. Then decide as the "
+    "portfolio manager: recommendation (BUY, HOLD or SELL), "
+    "conviction_score (0-1), allocation_pct (percent of equity, at most 25; 0 for HOLD) and reasoning. "
+    "Decide whether THIS setup, with its stop and target, has positive expected value. Give BUY or SELL only in the "
+    "setup's own direction, else HOLD. Report conviction_score as the estimated probability that it reaches its target "
+    "before its stop. Timeframes commonly disagree, so disagreement alone is not a reason to refuse. Stale or missing "
+    "essential data is still a reason to refuse. Historical replay figures describe the preset's raw signals before any "
+    "filter, so weigh them but do not treat them alone as decisive. You may name a preferred_market from the "
+    "profile's allowed markets; the system selects the final market and structural levels." + FACTS_RULES,
+    output_type=LiteDebateDecision,
+)
+
 MARKET_ANALYST = Persona(
     "Market Analyst", "debate.analyst",
     "You are the Market Analyst for Cryptonite. Your role is to analyze "

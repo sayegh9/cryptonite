@@ -156,3 +156,67 @@ test.describe("Setups to review", () => {
     await expect(page.getByTestId("proposal-count")).toHaveText("?");
   });
 });
+
+const FUNNEL = {
+  now: new Date().toISOString(), hours: 24, rows_truncated: false,
+  counts: {
+    evaluations: { NO_TRIGGER: 1200, REJECTED_RR: 30, STALE: 2, MATCHED_FRESH: 17 }, candidates: 17, gate_passed: 9, gate_refused: 8,
+    verdicts: { HOLD: 9 }, proposals: { PENDING: 0, APPROVED: 0, REJECTED: 0, EXPIRED: 1 }, approved: 0, unaccounted: 1,
+  },
+  caveats: ["What-if figures are model figures, not trades.", "Setups overlap, so these are not independent wins: several rows can be the same move."],
+  rows: [
+    { candidate_id: "c1", time: "2026-11-04T10:00:00+00:00", instrument_id: "WLDUSDT.BINANCE", coin: "WLD", timeframe: "1h", preset: "momentum-breakout-with-a-long-name",
+      direction: "LONG", entry: 1.2, stop: 1.1, target: 1.5, stage: "UNACCOUNTED", reason: "QUEUED_NO_DEBATE", verdict: null, policy_a: null, policy_b: null, policy_c: null,
+      what_if_r: null, what_if_state: "PENDING", what_if_exit: null },
+    { candidate_id: "c2", time: "2026-11-04T09:00:00+00:00", instrument_id: "BTCUSDT.BINANCE", coin: "BTC", timeframe: "15m", preset: "trend-pullback",
+      direction: "SHORT", entry: 60000, stop: 61000, target: 58000, stage: "PROPOSAL_SKIPPED", reason: "RR_BELOW_FLOOR", verdict: "HOLD", policy_a: "TAKE", policy_b: "SKIP", policy_c: "ERROR",
+      what_if_r: 1.25, what_if_state: "PROVISIONAL", what_if_exit: "OPEN" },
+    { candidate_id: "c3", time: "2026-11-04T08:00:00+00:00", instrument_id: "ETHUSDT.BINANCE", coin: "ETH", timeframe: "1h", preset: "trend-pullback",
+      direction: "LONG", entry: 2300, stop: 2250, target: 2400, stage: "EXPIRED", reason: null, verdict: "HOLD", policy_a: "TAKE", policy_b: "SKIP", policy_c: "TAKE",
+      what_if_r: -1, what_if_state: "FINAL", what_if_exit: null },
+  ],
+};
+
+test.describe("What happened to setups", () => {
+  async function open(page: Page) {
+    await mockAutoTrade(page);
+    await mockProposals(page, []);
+    await page.route(/\/api\/v1\/funnel/, (route) => route.fulfill({ json: FUNNEL }));
+    await page.goto("/?ws=autotrade");
+    await page.getByRole("button", { name: "What happened to setups" }).click();
+  }
+
+  test("counts, stages in plain language, what-if states and the caveats are shown; unaccounted stands out", async ({ page }) => {
+    await open(page);
+    await expect(page.getByTestId("funnel-counts")).toContainText("no trigger 1,200");
+    await expect(page.getByTestId("funnel-counts")).toContainText("17 setups");
+    await expect(page.getByTestId("funnel-counts")).toContainText("unaccounted 1");
+    await expect(page.getByTestId("funnel-caveats")).toContainText("model figures");
+    await expect(page.getByTestId("funnel-caveats")).toContainText("not independent wins");
+    const rows = page.getByTestId("funnel-row");
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0)).toHaveAttribute("data-stage", "UNACCOUNTED");
+    await expect(rows.nth(0)).toHaveClass(/bg-amber/);
+    await expect(rows.nth(0)).toContainText("nothing records where it stopped");
+    await expect(rows.nth(0)).toContainText("queued for a debate that never started");
+    await expect(rows.nth(0).getByTestId("funnel-what-if")).toHaveText("not scored yet");
+    await expect(rows.nth(1)).toContainText("The debate said HOLD and no card was made");
+    await expect(rows.nth(1)).toContainText("reward to risk is below the floor");
+    await expect(rows.nth(1).getByTestId("funnel-what-if")).toHaveText("+1.25R provisional, still open");
+    await expect(rows.nth(1)).not.toHaveClass(/bg-amber/);
+    await expect(rows.nth(2).getByTestId("funnel-what-if")).toHaveText("-1.00R final");
+  });
+
+  test("the view fits a phone without page-level sideways scrolling", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await open(page);
+    await expect(page.getByTestId("funnel-row")).toHaveCount(3);
+    const overflow = await page.evaluate(() => {
+      const view = document.querySelector('[data-testid="funnel-view"]')!;
+      const wide = view.querySelector(".overflow-x-auto")!;
+      return { page: document.documentElement.scrollWidth - window.innerWidth, table: wide.scrollWidth - wide.clientWidth };
+    });
+    expect(overflow.page).toBeLessThanOrEqual(0);
+    expect(overflow.table).toBeLessThanOrEqual(0);
+  });
+});

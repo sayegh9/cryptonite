@@ -37,7 +37,9 @@ OUTBOX_KINDS = {"MANDATE_HARD_STOP", "ACCOUNT_BACKSTOP_DRAWDOWN", "HEARTBEAT_DOW
                 "MANDATE_DAILY_LOSS", "MANDATE_PROFIT_LOCK", "MANDATE_DAILY_TARGET",
                 "PROFILE_BREAKER", "PROFILE_BREAKER_RESUMED", "PROFILE_FILL", "PROFILE_EXIT", "PROFILE_DAILY_SUMMARY"}  # ADR 0010 daily sessions
 SCANNER_PROPOSAL_KIND = "SCANNER_PROPOSAL"
+FUNNEL_DAILY_KIND = "FUNNEL_DAILY"
 SCANNER_PROPOSAL_DEDUPE_S = 3600
+FUNNEL_DAILY_DEDUPE_S = 2 * 86400
 TOTP_WINDOW_S = 90
 MAX_ATTEMPTS = 5
 TOTP_RE = re.compile(r"^\d{6}$")
@@ -290,6 +292,8 @@ class Notifier:
         kind = str(alert.get("kind") or alert.get("reason") or "")
         if kind == SCANNER_PROPOSAL_KIND:
             return await self._on_scanner_proposal(alert)
+        if kind == FUNNEL_DAILY_KIND:
+            return await self._on_funnel_daily(alert)
         critical = alert.get("severity") == "CRITICAL" or kind == "DAILY_DRAWDOWN_LIMIT_BREACHED"
         if not critical or kind in OUTBOX_KINDS or alert.get("type") == "mandate_updated":
             return False
@@ -308,6 +312,15 @@ class Notifier:
             return False
         title, body = render.alert_text(alert)
         await self._send("ACTION", title, body, ntfy_priority=4)
+        return True
+
+    async def _on_funnel_daily(self, alert: dict[str, Any]) -> bool:
+        """H13c: the day's setup summary. Information, so ACTION tier, and one per date."""
+        if not await self.redis.set(f"notifier:alert:{FUNNEL_DAILY_KIND}:{alert.get('date', '')}", "1", nx=True,
+                                    ex=FUNNEL_DAILY_DEDUPE_S):
+            return False
+        title, body = render.alert_text(alert)
+        await self._send("ACTION", title, body, ntfy_priority=3)
         return True
 
     # ------------------------------------------------------------------ loops
