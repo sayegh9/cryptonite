@@ -153,6 +153,23 @@ async def verdict(h, cid):
 # ------------------------------------------------------------------------------------ invariant 1: reaches nothing live
 
 
+async def test_the_debate_workers_role_can_write_a_verdict_and_live_models_cannot_read_one(h):
+    """The workers connect as cryptonite_api. A SELECT-only grant lost every answer and blinded the spend cap."""
+    async with h.pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.execute("SET CONSTRAINTS ALL DEFERRED")
+            await conn.execute("SET LOCAL ROLE cryptonite_api")
+            await conn.fetchval(shadow_debate._SPENT_TODAY)
+            assert await conn.fetchval(
+                "SELECT has_table_privilege('cryptonite_api', 'shadow_debate_verdicts', 'INSERT')")
+            assert not await conn.fetchval(
+                "SELECT has_table_privilege('cryptonite_agent_ro', 'shadow_debate_verdicts', 'SELECT')")
+        finally:
+            await tx.rollback()
+
+
 async def test_a_shadow_take_on_a_live_hold_changes_no_live_row(main, h):
     await profile(h)
     cid = await candidate(h)
