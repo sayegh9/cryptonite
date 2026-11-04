@@ -12,6 +12,7 @@ from cryptonite_api.leverage_card import manual_ticket_preview
 from cryptonite_api.routes.ai import require_totp
 from cryptonite_api.routes.auth import require_csrf, require_operator
 from cryptonite_api.universe import require_fed
+from cryptonite_schemas.exit_rules import MANUAL_LEVELS_OWNER, exit_levels_key
 from cryptonite_schemas.mandate import MANDATE_INSTANCE_PREFIX, canonical_instrument
 from cryptonite_schemas.marks import read_marks, resolve_mark, unrealized_pnl
 from cryptonite_schemas.profile import Market, market_of
@@ -129,6 +130,46 @@ async def get_accounts(request: Request, auth: dict = Depends(require_operator))
     return [dict(r) for r in rows]
 
 
+def _levels_id(row: Any) -> tuple[str, str, str]:
+    return (row["instrument_id"], str(row.get("side") or "").upper(), row.get("instance_id") or "")
+
+
+async def read_exit_levels(redis: Any, rows: list[Any]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """The levels the exit monitor published for each open position, read with the position's own owner, else the
+    alert-only key. A position with no entry (Redis down, monitor not running) has unknown levels."""
+    ids = list({_levels_id(r) for r in rows if r.get("status") == "OPEN"})
+    if redis is None or not ids:
+        return {}
+    keys = [k for i in ids for k in (exit_levels_key(i[0], i[1], i[2]), exit_levels_key(i[0], i[1], MANUAL_LEVELS_OWNER))]
+    try:
+        raw = await redis.mget(keys)
+        out = {}
+        for n, i in enumerate(ids):
+            found = raw[2 * n] or raw[2 * n + 1]
+            if found:
+                out[i] = json.loads(found)
+        return out
+    except Exception as e:
+        logger.warning("Could not read exit levels: %s", e)
+        return {}
+
+
+def exit_level_fields(levels: dict[str, Any] | None) -> dict[str, Any]:
+    """The monitor's levels in the position row, never an estimate: unknown levels are null with ``exit_levels_known``
+    false."""
+    if not levels:
+        return {"exit_levels_known": False}
+    return {
+        "exit_levels_known": True,
+        "stop_loss_price": levels.get("stop_price"),
+        "trailing_stop_price": levels.get("trailing_stop_price"),
+        "take_profit_price": levels.get("tp1_price"),
+        "tp1_scale_pct": levels.get("tp1_scale_pct"),
+        "tp1_done": bool(levels.get("tp1_done")),
+        "exit_levels_alert_only": bool(levels.get("alert_only")),
+    }
+
+
 @router.get("/positions")
 async def get_positions(request: Request, account_id: str | None = None, auth: dict = Depends(require_operator)) -> list[dict[str, Any]]:
     pool = request.app.state.pool
@@ -161,36 +202,11 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
             """
         )
 
-    # Dynamic exit rules from system_settings or default exit thresholds (stop loss 2.5%, trail activate / take profit 4.0%)
-    stop_loss_pct = 2.5
-    take_profit_pct = 4.0
-    if pool:
-        try:
-            settings_rows = await pool.fetch(
-                "SELECT key, value FROM system_settings WHERE key IN ('exit.stop_loss_pct', 'exit.trail_activate_pct', 'exit.take_profit_pct');"
-            )
-            for sr in settings_rows:
-                k = sr["key"]
-                v = sr["value"]
-                if isinstance(v, str):
-                    try:
-                        v = json.loads(v)
-                    except Exception:
-                        pass
-                try:
-                    val = float(v)
-                    if k == "exit.stop_loss_pct":
-                        stop_loss_pct = val
-                    elif k in ("exit.trail_activate_pct", "exit.take_profit_pct"):
-                        take_profit_pct = val
-                except (ValueError, TypeError):
-                    pass
-        except Exception:
-            pass
-
     now_dt = datetime.now(UTC)
     # B3 (F-H3): an open position shows its live mark and PnL, else its stored mark flagged stale
-    marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
+    redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
+    marks = await read_marks(redis)
+    levels = await read_exit_levels(redis, rows)
     out = []
     for r in rows:
         row = dict(r)
@@ -243,21 +259,9 @@ async def get_positions(request: Request, account_id: str | None = None, auth: d
         else:
             row["duration_s"] = 0.0
 
-        # Dynamic stop loss and take profit calculation
-        entry_price = float(row["entry_price"]) if row.get("entry_price") is not None else 0.0
-        side = str(row.get("side") or "").upper()
-        if entry_price > 0:
-            if side == "SHORT":
-                sl_price = entry_price * (1.0 + stop_loss_pct / 100.0)
-                tp_price = entry_price * (1.0 - take_profit_pct / 100.0)
-            else:
-                sl_price = entry_price * (1.0 - stop_loss_pct / 100.0)
-                tp_price = entry_price * (1.0 + take_profit_pct / 100.0)
-            row["stop_loss_price"] = round(sl_price, 8)
-            row["take_profit_price"] = round(tp_price, 8)
-        else:
-            row["stop_loss_price"] = None
-            row["take_profit_price"] = None
+        row.update(exit_level_fields(levels.get(_levels_id(row))) if row.get("status") == "OPEN" else {})
+        row.setdefault("stop_loss_price", None)
+        row.setdefault("take_profit_price", None)
 
         out.append(row)
     return out
