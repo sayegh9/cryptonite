@@ -36,6 +36,8 @@ OFFSET_KEY = "notifier:telegram:offset"
 OUTBOX_KINDS = {"MANDATE_HARD_STOP", "ACCOUNT_BACKSTOP_DRAWDOWN", "HEARTBEAT_DOWN",
                 "MANDATE_DAILY_LOSS", "MANDATE_PROFIT_LOCK", "MANDATE_DAILY_TARGET",
                 "PROFILE_BREAKER", "PROFILE_BREAKER_RESUMED", "PROFILE_FILL", "PROFILE_EXIT", "PROFILE_DAILY_SUMMARY"}  # ADR 0010 daily sessions
+SCANNER_PROPOSAL_KIND = "SCANNER_PROPOSAL"
+SCANNER_PROPOSAL_DEDUPE_S = 3600
 TOTP_WINDOW_S = 90
 MAX_ATTEMPTS = 5
 TOTP_RE = re.compile(r"^\d{6}$")
@@ -206,22 +208,25 @@ class Notifier:
         return first
 
     async def send_critical(self, title: str, body: str) -> None:
+        await self._send("CRITICAL", title, body, ntfy_priority=5)
+
+    async def _send(self, tier: str, title: str, body: str, *, ntfy_priority: int) -> None:
         """Telegram and ntfy, independently. Raises only when no channel delivered it."""
         delivered, errors = 0, []
         if self.telegram is not None:
             try:
-                await self._to_all_chats(render.plain_text("CRITICAL", title, body))
+                await self._to_all_chats(render.plain_text(tier, title, body))
                 delivered += 1
             except Exception as e:
                 errors.append(f"telegram: {type(e).__name__}")
         if self.ntfy is not None and self.ntfy.enabled:
             try:
-                await self.ntfy.publish(f"Cryptonite: {title}", body, priority=5)
+                await self.ntfy.publish(f"Cryptonite: {title}", body, priority=ntfy_priority)
                 delivered += 1
             except Exception as e:
                 errors.append(f"ntfy: {e}")
         if not delivered:
-            raise RuntimeError("Critical alert not delivered: " + ("; ".join(errors) or "no channel configured"))
+            raise RuntimeError(f"{tier.title()} alert not delivered: " + ("; ".join(errors) or "no channel configured"))
         if errors:
             logger.error("Critical alert partly delivered: %s", "; ".join(errors))
 
@@ -283,6 +288,8 @@ class Notifier:
         except ValueError:
             return False
         kind = str(alert.get("kind") or alert.get("reason") or "")
+        if kind == SCANNER_PROPOSAL_KIND:
+            return await self._on_scanner_proposal(alert)
         critical = alert.get("severity") == "CRITICAL" or kind == "DAILY_DRAWDOWN_LIMIT_BREACHED"
         if not critical or kind in OUTBOX_KINDS or alert.get("type") == "mandate_updated":
             return False
@@ -291,6 +298,16 @@ class Notifier:
             return False
         title, body = render.alert_text(alert)
         await self.send_critical(title, body)
+        return True
+
+    async def _on_scanner_proposal(self, alert: dict[str, Any]) -> bool:
+        """H13b: a setup that lives 15 minutes, for the operator to decide. One notice per proposal: the instrument key
+        above would drop a second setup on the same coin."""
+        if not await self.redis.set(f"notifier:alert:{SCANNER_PROPOSAL_KIND}:{alert.get('proposal_id', '')}", "1",
+                                    nx=True, ex=SCANNER_PROPOSAL_DEDUPE_S):
+            return False
+        title, body = render.alert_text(alert)
+        await self._send("ACTION", title, body, ntfy_priority=4)
         return True
 
     # ------------------------------------------------------------------ loops

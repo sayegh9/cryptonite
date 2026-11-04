@@ -179,11 +179,12 @@ async def test_created_on_hold_with_policy_a_take_and_shaped_as_an_order_card(h)
     assert (row["status"], row["instrument_id"], row["side"], row["mandate_id"]) == ("PENDING", SPOT, "BUY", m.id)
     assert (row["expires_at"] - row["created_at"]).total_seconds() == pytest.approx(900, abs=5)
     assert OrderCardWidget.model_validate({**card, "quantity": 0.01}).status == "PENDING_APPROVAL"
+    assert card["confidence"] is None  # a HOLD's conviction is not confidence in the trade
     assert card["setup_grade"] == "B" and card["grade_inputs"]["entry"] == ENTRY and card["against_debate_verdict"] == "HOLD"
     assert card["debate_link"] == {"run_id": str(debate.run_id), "recommendation": "HOLD", "conviction_score": 0.6,
                                    "candidate_id": str(cid), "against": True, "status": "NO_TRADE"}
     assert len(card["debate_reasoning"]) == 600 and card["preset_slug"] == "h13b-preset" and card["timeframe"] == "1h"
-    assert alert["severity"] == "INFO" and "the debate said HOLD" in alert["message"] and "grade B" in alert["message"]
+    assert alert["severity"] == "ACTION" and "the debate said HOLD" in alert["message"] and "grade B" in alert["message"]
 
 
 @pytest.mark.parametrize("over", [
@@ -211,6 +212,17 @@ async def test_not_created_without_a_candidate_or_a_profile(h):
     m = await profile(h)
     assert await create(h, hold(None), m) is None
     assert await create(h, hold(await candidate(h)), None) is None
+    assert await h.pool.fetchval("SELECT count(*) FROM setup_proposals") == 0
+
+
+async def test_a_mandate_with_min_conviction_gets_no_proposal(h, caplog):
+    m = await profile(h)
+    await h.pool.execute("UPDATE ai_mandates SET min_conviction = 0.5 WHERE id = $1", m.id)
+    async with h.pool.acquire() as conn:
+        m = await load_mandate(conn, m.id)
+    with caplog.at_level("INFO", logger="cryptonite.debate_worker.proposals"):
+        assert await create(h, hold(await candidate(h)), m) is None
+    assert "MIN_CONVICTION_UNMEASURED" in caplog.text
     assert await h.pool.fetchval("SELECT count(*) FROM setup_proposals") == 0
 
 
@@ -339,7 +351,7 @@ async def test_e2e_a_hold_creates_a_proposal_and_queues_nothing_at_every_level(m
     b = await h.pool.fetchrow("SELECT decision, reason FROM policy_decisions WHERE candidate_id = $1 AND policy = 'B'", cid)
     assert (b["decision"], b["reason"]) == ("SKIP", "DEBATE_HOLD")
     alerts = [json.loads(m) for ch, m in redis.published if ch == "channel:system_alerts"]
-    assert [a["kind"] for a in alerts] == ["SCANNER_PROPOSAL"] and alerts[0]["severity"] == "INFO"
+    assert [a["kind"] for a in alerts] == ["SCANNER_PROPOSAL"] and alerts[0]["severity"] == "ACTION"
 
     # Unanswered it simply expires: reading writes EXPIRED and still nothing is queued, whatever the mandate's level
     await h.pool.execute("UPDATE setup_proposals SET expires_at = now() - interval '1 second'")
@@ -549,6 +561,56 @@ async def test_a_perp_proposal_is_sized_to_fit_and_needs_totp(h):
     assert payload["instrument_id"] == PERP and payload["margin_mode"] == "ISOLATED" and payload["stop_loss"]
     assert payload["leverage"] >= 1 and payload["leverage_plan"]["binding_ceiling"]
     assert payload["allocation_pct"] == flight["allocation_pct"]
+
+
+# --- the production route: spot candidate, perp order ---------------------------------------------------
+
+ALL_MARKETS = ("SPOT", "SPOT_MARGIN", "PERP")
+
+
+async def test_e2e_a_spot_candidate_on_a_multi_market_long_profile_is_a_perp_card_with_spot_levels(main, h):
+    """What production's entry_profile_route does, also for profiles named spot. The worker's Redis is a fake; the API
+    reads the harness's."""
+    await profile(h, markets=ALL_MARKETS, direction="LONG", max_leverage=3)
+    cid = await candidate(h)
+    worker_redis = PublishRedis()
+    worker_redis.kv[MARK_KEY] = json.dumps({"type": "perp.mark", "mark_price": "65000", "funding_rate": "0.0001", "ts_event_ns": 1})
+    run = await run_debate(main, h, scanner_payload(cid), Models(lite=HOLD_LITE), worker_redis)
+    assert run["status"] == "NO_TRADE"
+    row = await h.pool.fetchrow("SELECT * FROM setup_proposals WHERE candidate_id = $1", cid)
+    card = json.loads(row["card"])
+    assert row["instrument_id"] == PERP and card["instrument_id"] == PERP and row["side"] == "BUY"
+    # The levels and the graded entry are the spot candidate's
+    assert (card["grade_inputs"]["entry"], card["stop_loss"], card["take_profit"]) == (65010.0, 64000.0, 67500.0)
+    pid = str(row["id"])
+
+    # ... and the live R:R is measured at the perp mark, not at the spot price
+    await set_prices(h, 65020.0)
+    await h.redis.set("market:24h:BTCUSDT", json.dumps({"last_price": 66900.0}), ex=60)
+    flight = (await post(h, f"{pid}/preflight")).json()
+    assert flight["ok"] is True, flight
+    assert flight["live_entry"] == 65020.0 and flight["live_rr"] == pytest.approx(2480 / 1020, abs=1e-3)
+    assert flight["needs_totp"] is True and flight["leverage_plan"]["ok"] is True
+
+    assert (await post(h, f"{pid}/approve", ACK)).status_code in (401, 403)
+    assert await status_of(h, pid) == "PENDING" and await counts(h) == (0, 0)
+    res = await post(h, f"{pid}/approve", {**ACK, "totp_code": h.totp.now()})
+    assert res.status_code == 200, res.text
+    payload = json.loads(await h.pool.fetchval("SELECT payload FROM execution_commands"))
+    assert payload["source"] == "scanner_proposal" and payload["instrument_id"] == PERP and payload["confidence"] is None
+
+
+async def test_the_spot_perp_basis_alone_can_refuse_a_setup_that_meets_the_floor_on_spot(h):
+    """REPORTED, not changed (PR #160): the slip check measures spot levels at the perp mark. This pins today's
+    behaviour: with spot exactly at its entry, a 5 bps perp premium refuses a setup at the 1.5 floor."""
+    m = await profile(h, markets=("PERP",), max_leverage=3)
+    pid = await seeded(h, m, take_profit=63000.0)  # 60000 / 58000 / 63000: exactly 1.5 on spot
+    await h.redis.set("market:24h:BTCUSDT", json.dumps({"last_price": ENTRY}), ex=60)
+    await h.redis.set(MARK_KEY, json.dumps({"type": "perp.mark", "mark_price": "60030", "funding_rate": "0.0001",
+                                            "ts_event_ns": 1}), ex=60)
+    flight = (await post(h, f"{pid}/preflight")).json()
+    assert flight["code"] == "REWARD_TO_RISK_SLIPPED" and flight["meets_rr_floor"] is False
+    assert flight["live_rr"] == pytest.approx(2970 / 2030, abs=1e-3)
 
 
 # --- consumers of the source --------------------------------------------------------------------------

@@ -83,6 +83,10 @@ async def _skip_reason(conn, debate: HoldDebate, mandate: Mandate | None) -> tup
         return f"NON_ACTIONABLE: {debate.non_actionable}", {}
     if mandate is None:
         return "NO_PROFILE", {}
+    # A HOLD's conviction is its confidence in holding, not in this trade, so the filter cannot be measured and the
+    # card would always be refused
+    if mandate.min_conviction is not None:
+        return "MIN_CONVICTION_UNMEASURED", {}
     policy_a = await conn.fetchrow(
         "SELECT decision, reason FROM policy_decisions WHERE candidate_id = $1 AND policy = 'A'", debate.candidate_id)
     if policy_a is None or policy_a["decision"] != "TAKE" or policy_a["reason"] not in _GRADE_OF_REASON:
@@ -119,7 +123,7 @@ def proposal_card(proposal_id: uuid.UUID, debate: HoldDebate, mandate: Mandate, 
     card = {
         "id": str(proposal_id), "kind": "order_card", "status": "PENDING_APPROVAL", "instrument_id": f["instrument"],
         "side": f["side"], "order_type": "MARKET", "allocation_pct": float(mandate.max_position_pct),
-        "stop_loss": f["stop"], "take_profit": f["target"], "confidence": debate.conviction, "setup_grade": f["grade"],
+        "stop_loss": f["stop"], "take_profit": f["target"], "confidence": None, "setup_grade": f["grade"],
         "grade_reasons": debate.grade_reasons, "grade_inputs": {"entry": f["entry"]}, "trace_id": debate.trace_id,
         "debate_link": {"run_id": str(debate.run_id), "recommendation": debate.recommendation,
                         "conviction_score": debate.conviction, "candidate_id": str(debate.candidate_id),
@@ -135,10 +139,10 @@ def proposal_card(proposal_id: uuid.UUID, debate: HoldDebate, mandate: Mandate, 
 
 def proposal_alert(proposal_id: uuid.UUID, debate: HoldDebate, mandate: Mandate, f: dict[str, Any]) -> dict[str, Any]:
     side = "long" if f["side"] == "BUY" else "short"
-    return {"kind": ALERT_KIND, "severity": "INFO", "proposal_id": str(proposal_id), "mandate": mandate.name,
+    return {"kind": ALERT_KIND, "severity": "ACTION", "proposal_id": str(proposal_id), "mandate": mandate.name,
             "instrument_id": f["instrument"], "side": f["side"], "grade": f["grade"],
             "message": (f"{f['instrument']} {side}, grade {f['grade']}: the debate said HOLD. Open Setups to review to "
-                        "decide; nothing trades unless you approve.")}
+                        "decide within 15 minutes; nothing trades unless you approve.")}
 
 
 async def create_for_hold(conn, debate: HoldDebate, mandate: Mandate | None,
