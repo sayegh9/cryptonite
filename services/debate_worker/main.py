@@ -11,6 +11,7 @@ import evidence
 import policies
 import proposals
 import redis.asyncio as redis
+import shadow_debate
 from cryptonite_agents import news
 from cryptonite_agents import tools as agent_tools
 from cryptonite_agents.debate_fleet import (
@@ -649,6 +650,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         # Operator-triggered debates always get the full fleet.
         lite = None
         preferred_market = None  # D-P3-9: the deciding verdict's optional market preference; routing clamps it
+        lite_prompt = None
         if trigger_source in AUTOMATIC_SOURCES:
             lite_prompt = f"{context_text}\n\nDebate and decide for {instrument_id}."
             lite = (await run_agent(DEBATE_LITE, lite_prompt)).output
@@ -909,6 +911,9 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level} (decision_trace_id={trace_id})")
         await policies.record_policy_b(pg_pool, candidate_id, *policies.policy_b_for_route(final_status, recommendation))
         await proposals.publish_alert(redis_client, proposal_alert)
+        # H13d: the prompt test sees what the lite call saw, never its verdict; a detached task that cannot reach this run
+        if lite_prompt is not None:
+            shadow_debate.spawn(pg_pool, gateway, candidate_id, run_id, lite_prompt)
 
         # Publish result to websocket channel
         await redis_client.publish(f"channel:debates:{instrument_id}", json.dumps({
