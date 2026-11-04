@@ -95,6 +95,12 @@ def no_paid_model_calls(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_shadow_debate(monkeypatch):
+    """H13d: the prompt test's extra call stays out of suites that count model calls; test_shadow_debate turns it on."""
+    monkeypatch.setenv("DEBATE_SHADOW_ENABLED", "0")
+
+
+@pytest.fixture(autouse=True)
 def no_live_leverage_brackets():
     """Live bracket tables are process-wide (``margin._LIVE_BRACKETS``): none leak from one test to the next."""
     from cryptonite_execution.margin import clear_live_brackets

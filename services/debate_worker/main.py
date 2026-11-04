@@ -9,7 +9,9 @@ import uuid
 import asyncpg
 import evidence
 import policies
+import proposals
 import redis.asyncio as redis
+import shadow_debate
 from cryptonite_agents import news
 from cryptonite_agents import tools as agent_tools
 from cryptonite_agents.debate_fleet import (
@@ -648,6 +650,7 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
         # Operator-triggered debates always get the full fleet.
         lite = None
         preferred_market = None  # D-P3-9: the deciding verdict's optional market preference; routing clamps it
+        lite_prompt = None
         if trigger_source in AUTOMATIC_SOURCES:
             lite_prompt = f"{context_text}\n\nDebate and decide for {instrument_id}."
             lite = (await run_agent(DEBATE_LITE, lite_prompt)).output
@@ -896,10 +899,22 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
                     non_actionable.split(":", 1)[0] if non_actionable else None, non_actionable,
                     final_snapshot["version"],
                 )
+                # H13b: a HOLD on a setup policy A would take reaches the operator as a proposal (own savepoint, never
+                # raises); it changes neither the run nor its scoring, and only the operator's approve can execute it
+                proposal_alert = await proposals.create_for_hold(conn, proposals.hold_debate(
+                    payload, run_id=run_id, candidate_id=candidate_id, instrument_id=instrument_id,
+                    trigger_source=trigger_source, recommendation=recommendation, final_status=final_status,
+                    conviction=float(conviction or 0), reasoning=reasoning, trace_id=trace_id,
+                    non_actionable=non_actionable, stop_loss=stop_loss, take_profit=take_profit,
+                    brief_data=brief_data), mandate, redis_client)
 
         logger.info(f"Debate {final_status} for {instrument_id}. Decision: {conviction_level} (decision_trace_id={trace_id})")
         await policies.record_policy_b(pg_pool, candidate_id, *policies.policy_b_for_route(final_status, recommendation))
-        
+        await proposals.publish_alert(redis_client, proposal_alert)
+        # H13d: the prompt test sees what the lite call saw, never its verdict; a detached task that cannot reach this run
+        if lite_prompt is not None:
+            shadow_debate.spawn(pg_pool, gateway, candidate_id, run_id, lite_prompt)
+
         # Publish result to websocket channel
         await redis_client.publish(f"channel:debates:{instrument_id}", json.dumps({
             "type": "DEBATE_COMPLETED",

@@ -66,7 +66,7 @@ trade results with that in mind.
    endpoints and `fleet.py` personas, and the `recall_lessons` fallback that still includes HOLD lessons.
    Plan: `reports/ai-phase1-plan.md` (Phase 2 list) and the expert review in `reports/ai-expert-review/`.
 5. **Optional:** grade sizing for perp Brain cards (they keep the leverage plan's size today).
-6. **P5 live profiles** (migration 063): see `reports/autotrade-profiles-plan.md`; needs Binance keys and the
+6. **P5 live profiles** (migration 065): see `reports/autotrade-profiles-plan.md`; needs Binance keys and the
    hosting decision (O5).
 7. **Automatic trading volume:** most candidates are refused by triage or the timeframe rule and debates lean HOLD;
    Phase 2 measures which filters cost winners before any is loosened.

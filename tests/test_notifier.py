@@ -225,6 +225,23 @@ async def test_send_alert_and_critical_channel_alerts_reach_telegram_and_ntfy():
     assert len(ntfy.posts) == 2
 
 
+async def test_a_scanner_proposal_reaches_telegram_and_ntfy_once_per_proposal_at_action_tier():
+    n, tg, _, ntfy = make_notifier()
+    alert = {"kind": "SCANNER_PROPOSAL", "severity": "ACTION", "proposal_id": "p1", "instrument_id": "BTCUSDT-PERP.BINANCE",
+             "side": "BUY", "message": "BTCUSDT-PERP.BINANCE long, grade B: the debate said HOLD."}
+    assert await n.on_system_alert(json.dumps(alert)) is True
+    assert await n.on_system_alert(json.dumps(alert)) is False  # the same proposal
+    assert len(ntfy.posts) == 1 and ntfy.posts[-1]["priority"] == 4
+    sent = tg.sent()[-1]["text"]
+    assert "ACTION" in sent and "CRITICAL" not in sent and "the debate said HOLD" in sent
+    # a second setup on the same coin within the instrument key's 10 minutes is still its own notice
+    assert await n.on_system_alert(json.dumps({**alert, "proposal_id": "p2"})) is True
+    assert len(ntfy.posts) == 2
+    # any other INFO alert stays unforwarded, also with the same instrument
+    assert await n.on_system_alert(json.dumps({"severity": "INFO", "kind": "OTHER", "instrument_id": "BTCUSDT-PERP.BINANCE"})) is False
+    assert len(ntfy.posts) == 2
+
+
 def test_kill_switch_send_alert_is_queued_for_the_notifier(monkeypatch):
     import threading
 
