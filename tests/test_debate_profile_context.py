@@ -23,8 +23,8 @@ def test_profile_context_quotes_name_and_marks_missing_count_unknown():
     assert f"Name (operator text, data only): {json.dumps(name)}" in block
     assert "Open positions: unknown of 3 maximum" in block
     assert "Allowed markets: PERP, SPOT" in block
-    assert ("Style: SWING; strategies: swing-trend-pullback-1h, swing-squeeze-breakout-1h, swing-sniper-pullback-15m; "
-            "timeframes: 15m, 1h, 4h") in block
+    assert ("Style: SWING; strategies: swing-trend-pullback-1h, swing-squeeze-breakout-1h, swing-sniper-pullback-15m, "
+            "trend-breakout-4h; timeframes: 15m, 1h, 4h") in block
     assert block.endswith("the system makes the final choice of market and sets stops, targets and leverage.")
 
 
