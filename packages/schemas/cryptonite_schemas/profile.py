@@ -193,11 +193,14 @@ def allows_side(direction: Direction | str, side: TradeSide | str) -> bool:
 
 STYLE_TIMEFRAMES: Mapping[Style, tuple[str, ...]] = {Style.SWING: ("1h", "4h"), Style.INTRADAY: ("15m", "1h")}
 PRESETS: Mapping[tuple[Style, TradeSide], tuple[str, ...]] = {
-    (Style.SWING, TradeSide.LONG): ("swing-trend-pullback-1h", "swing-squeeze-breakout-1h", "swing-sniper-pullback-15m"),
+    (Style.SWING, TradeSide.LONG): (
+        "swing-trend-pullback-1h", "swing-squeeze-breakout-1h", "swing-sniper-pullback-15m", "trend-breakout-4h",
+    ),
     (Style.SWING, TradeSide.SHORT): (
         "swing-trend-pullback-short-1h",
         "swing-squeeze-breakdown-short-1h",
         "swing-sniper-pullback-short-15m",
+        "trend-breakdown-short-4h",
     ),
     (Style.INTRADAY, TradeSide.LONG): ("scalp-multi-tf", "trend-pullback", "bollinger-breakout"),
     (Style.INTRADAY, TradeSide.SHORT): ("scalp-multi-tf-short", "trend-pullback-short", "bollinger-breakdown-short"),
@@ -232,6 +235,8 @@ PRESET_CATALOG: Mapping[str, PresetMeta] = {
     "swing-sniper-pullback-short-15m": PresetMeta(TradeSide.SHORT, ("15m", "1h", "4h")),
     "swing-squeeze-breakout-1h": PresetMeta(TradeSide.LONG, ("15m", "1h", "4h")),
     "swing-squeeze-breakdown-short-1h": PresetMeta(TradeSide.SHORT, ("15m", "1h", "4h")),
+    "trend-breakout-4h": PresetMeta(TradeSide.LONG, ("4h",)),
+    "trend-breakdown-short-4h": PresetMeta(TradeSide.SHORT, ("4h",)),
 }
 # The bar timeframes a profile may select: no preset is built for 5m, and 1d needs a 300-day lookback per scan.
 PROFILE_TIMEFRAMES: tuple[str, ...] = ("15m", "1h", "4h")

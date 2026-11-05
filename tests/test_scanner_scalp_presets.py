@@ -137,9 +137,9 @@ def test_symmetric_fixed_random_walk_is_selective_and_balanced():
     assert max(long_count, short_count) <= 3 * max(1, min(long_count, short_count))
 
 
-def test_profile_preset_registry_keeps_the_existing_twelve_slugs():
+def test_profile_preset_registry_keeps_every_slug():
     expected = {slug for slugs in PRESETS.values() for slug in slugs}
-    assert len(expected) == 12
+    assert len(expected) == 14
     # Keep resolution for every contract entry and ensure both scalp slugs remain registered.
     assert {"scalp-multi-tf", "scalp-multi-tf-short"} <= expected
     for slug in expected:

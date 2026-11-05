@@ -478,6 +478,56 @@ PRESET_SWING_SQUEEZE_BREAKDOWN_SHORT_1H = ScanSpecCreate(
     risk=RiskConfig(direction="SHORT", min_risk_reward=1.8),
 )
 
+PRESET_TREND_BREAKOUT_4H = ScanSpecCreate(
+    slug="trend-breakout-4h",
+    name="Trend Breakout (4H)",
+    description="4H close above the prior 20-bar high with EMA50 above EMA200. Wide ATR stop. Unproven: it has not passed the edge test.",
+    universe=UniverseConfig(instrument_ids=SWING_LIQUID_12, timeframes=["4h"]),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.GT, value="ema_200", lookback=0),
+                RuleCondition(field="ema_50", operator=RuleOperator.GT, value="ema_200", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.CROSS_ABOVE, value="donchian_upper_prior", lookback=1),
+            ],
+        ),
+    ],
+    risk=RiskConfig(stop_mode="atr_only", stop_loss_atr_mult=3.0, take_profit_atr_mult=6.0),
+)
+
+PRESET_TREND_BREAKDOWN_SHORT_4H = ScanSpecCreate(
+    slug="trend-breakdown-short-4h",
+    name="Trend Breakdown Short (4H)",
+    description="4H close below the prior 20-bar low with EMA50 below EMA200. Wide ATR stop. Unproven: it has not passed the edge test.",
+    universe=UniverseConfig(instrument_ids=SWING_LIQUID_12, timeframes=["4h"]),
+    rules=[
+        RuleGroup(
+            category="trend",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.LT, value="ema_200", lookback=0),
+                RuleCondition(field="ema_50", operator=RuleOperator.LT, value="ema_200", lookback=0),
+            ],
+        ),
+        RuleGroup(
+            category="trigger",
+            logic="AND",
+            conditions=[
+                RuleCondition(field="close", operator=RuleOperator.CROSS_BELOW, value="donchian_lower_prior", lookback=1),
+            ],
+        ),
+    ],
+    risk=RiskConfig(direction="SHORT", stop_mode="atr_only", stop_loss_atr_mult=3.0, take_profit_atr_mult=6.0),
+)
+
 SWING_PRESETS: list[ScanSpecCreate] = [
     PRESET_SWING_TREND_PULLBACK_1H,
     PRESET_SWING_SNIPER_PULLBACK_15M,
@@ -501,6 +551,8 @@ _PROFILE_PRESETS: dict[str, ScanSpecCreate] = {
         PRESET_SWING_TREND_PULLBACK_SHORT_1H,
         PRESET_SWING_SNIPER_PULLBACK_SHORT_15M,
         PRESET_SWING_SQUEEZE_BREAKDOWN_SHORT_1H,
+        PRESET_TREND_BREAKOUT_4H,
+        PRESET_TREND_BREAKDOWN_SHORT_4H,
     ]
 }
 

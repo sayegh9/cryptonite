@@ -19,6 +19,7 @@ from typing import Any
 
 from cryptonite_execution.related_positions import opposite_positions, read_related_positions
 from cryptonite_scanner.brief import candidate_direction
+from cryptonite_scanner.costs import cost_in_r, round_trip_cost_fraction
 from cryptonite_schemas.funnel import PROPOSAL_SKIPPED
 from cryptonite_schemas.mandate import DEFAULT_APPROVAL_TTL_S, Mandate
 from cryptonite_schemas.profile import Market, market_of, underlying_spot
@@ -32,6 +33,7 @@ SYSTEM_ALERTS_CHANNEL = "channel:system_alerts"
 ALERT_KIND = "SCANNER_PROPOSAL"
 REASONING_CHARS = 600
 _SIDE_OF_DIRECTION = {"LONG": "BUY", "SHORT": "SELL"}
+MAX_COST_R = 0.25  # the cheapest round trip (perp) as a share of the risk: a stop nearer than 0.8% of the price
 _GRADE_OF_REASON = {"GRADE_A": "A", "GRADE_B": "B", "GRADE_C": "C"}
 
 
@@ -148,6 +150,9 @@ async def _skip_reason(conn, debate: HoldDebate, mandate: Mandate | None, redis)
         return f"NO_STRUCTURE: stop {stop:g} / target {target:g} are not a {side}'s around {entry}", {}
     if not meets_min_rr(reward_to_risk(entry, stop, target)):
         return "RR_BELOW_FLOOR", {}
+    # A stop this close loses too much of its risk to fees and slippage for the setup to pay (edge search, 2026-11-05)
+    if (cost_in_r(float(entry), stop, round_trip_cost_fraction("perp")) or 0.0) > MAX_COST_R:
+        return "STOP_TOO_TIGHT", {}
     # A HOLD carries no block_reason even with an opposite position open (opposite_block_reason reads the verdict's
     # side), so the candidate's side is checked here
     if opposite_positions(await read_related_positions(conn, debate.instrument_id, PAPER_ACCOUNT_ID), side):

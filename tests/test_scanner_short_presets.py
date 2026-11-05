@@ -63,6 +63,8 @@ def _frame_for(preset, *, downtrend: bool) -> pl.DataFrame:
         "volume_ratio": 1.2,
         "donchian_lower": 82.0,
         "donchian_upper": 98.0,
+        "donchian_lower_prior": 82.0,
+        "donchian_upper_prior": 98.0,
     }
     row1 = dict(row0)
     row1.update(
@@ -77,6 +79,8 @@ def _frame_for(preset, *, downtrend: bool) -> pl.DataFrame:
         macd_hist=1.0 if downtrend else -1.0,
         donchian_lower=last_close - 8,
         donchian_upper=last_close + 8,
+        donchian_lower_prior=last_close - 8,
+        donchian_upper_prior=last_close + 8,
     )
 
     # Make crossover conditions fire on the final row while preserving the
@@ -141,7 +145,7 @@ def test_all_profile_preset_slugs_resolve():
     from cryptonite_scanner.presets import preset_by_slug
 
     expected = {slug for slugs in PRESETS.values() for slug in slugs}
-    assert len(expected) == 12
+    assert len(expected) == 14
     assert {preset_by_slug(slug).slug for slug in expected} == expected
     with pytest.raises(KeyError):
         preset_by_slug("unknown-profile-preset")
