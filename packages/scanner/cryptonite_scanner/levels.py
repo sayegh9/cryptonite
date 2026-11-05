@@ -61,7 +61,7 @@ def derive_levels(
             stop_type = "atr_fixed"
 
         # SHORT TARGET
-        if enriched_htf is not None and not enriched_htf.is_empty():
+        if stop_mode != "atr_only" and enriched_htf is not None and not enriched_htf.is_empty():
             closed_htf = enriched_htf.filter(pl.col("interval_end_exclusive_ns") <= signal_bar_end_ns)
             if not closed_htf.is_empty():
                 latest_htf = closed_htf.slice(-1, 1).to_dicts()[0]
@@ -112,7 +112,7 @@ def derive_levels(
             stop_type = "atr_fixed"
 
         # LONG TARGET
-        if enriched_htf is not None and not enriched_htf.is_empty():
+        if stop_mode != "atr_only" and enriched_htf is not None and not enriched_htf.is_empty():
             closed_htf = enriched_htf.filter(pl.col("interval_end_exclusive_ns") <= signal_bar_end_ns)
             if not closed_htf.is_empty():
                 latest_htf = closed_htf.slice(-1, 1).to_dicts()[0]

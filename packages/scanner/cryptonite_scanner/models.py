@@ -99,7 +99,7 @@ class UniverseConfig(BaseModel):
 
 class RiskConfig(BaseModel):
     direction: str = "LONG"  # "LONG" or "SHORT"
-    stop_mode: str = "structure"  # "structure", "donchian", "atr"
+    stop_mode: str = "structure"  # "structure", "donchian", "atr", "atr_only" (ATR stop and target, no HTF target)
     donchian_lookback: int = 20
     min_atr_mult: float = 0.5
     max_atr_mult: float = 4.0

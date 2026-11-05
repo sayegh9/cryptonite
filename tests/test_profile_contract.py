@@ -180,10 +180,11 @@ def test_preset_ids_for(style: Style, direction: Direction) -> None:
 
 def test_preset_slugs_exact() -> None:
     assert P.preset_ids_for(Style.SWING, Direction.LONG) == (
-        "swing-trend-pullback-1h", "swing-squeeze-breakout-1h", "swing-sniper-pullback-15m",
+        "swing-trend-pullback-1h", "swing-squeeze-breakout-1h", "swing-sniper-pullback-15m", "trend-breakout-4h",
     )  # fmt: skip
     assert P.preset_ids_for(Style.SWING, Direction.SHORT) == (
         "swing-trend-pullback-short-1h", "swing-squeeze-breakdown-short-1h", "swing-sniper-pullback-short-15m",
+        "trend-breakdown-short-4h",
     )  # fmt: skip
     assert P.preset_ids_for(Style.INTRADAY, Direction.LONG) == ("scalp-multi-tf", "trend-pullback", "bollinger-breakout")
     assert P.preset_ids_for(Style.INTRADAY, Direction.SHORT) == (

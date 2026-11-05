@@ -21,7 +21,7 @@ def test_catalog_matches_the_scanner_registry():
 
 def test_empty_picks_follow_the_style():
     assert effective_presets("SWING", "LONG", []) == (
-        "swing-trend-pullback-1h", "swing-squeeze-breakout-1h", "swing-sniper-pullback-15m")
+        "swing-trend-pullback-1h", "swing-squeeze-breakout-1h", "swing-sniper-pullback-15m", "trend-breakout-4h")
     assert effective_timeframes("SWING", "LONG", [], []) == ("15m", "1h", "4h")  # the 15m sniper runs on 15m
     assert effective_timeframes("INTRADAY", "BOTH", [], []) == ("15m", "1h")
 

@@ -56,6 +56,8 @@ trade results with that in mind.
 
 ## Open items
 
+- **H14 (2026-11-05):** 4h trend presets `trend-breakout-4h` and `trend-breakdown-short-4h`, cards refused when round-trip cost exceeds 0.25R (`STOP_TOO_TIGHT`), every card labelled unproven. No strategy passed `reports/edge-search`: these are a paper forward test, not a proven edge.
+
 1. **Gate L checks (operator):** Phase 1 and H2 in the UI: the brief's direction/grade/replay line, "grade X · size Y%"
    on entry cards, Debates History/New, conversation delete, the dry-run card text, the swing radar after #137.
 2. **Dry run:** both profiles are in dry run; turn it off per profile (TOTP) to place paper orders.

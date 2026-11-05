@@ -741,3 +741,12 @@ async def test_the_timeline_labels_the_entry_and_reflections_skip_it(h):
     row = await h.pool.fetchrow("SELECT entry_source, entry_setup_grade, debate_run_id FROM agent_safe_trade_timeline")
     assert row["entry_source"] == "scanner_proposal" and row["entry_setup_grade"] == "B" and row["debate_run_id"] is None
     assert await h.pool.fetch(reflection.CARD_TRADES_SQL, 5) == []
+
+
+async def test_a_stop_too_close_for_the_costs_makes_no_card(h):
+    mandate = await profile(h)
+    cid = await candidate(h)
+    debate = hold(cid, stop_loss=ENTRY * 0.9965, take_profit=ENTRY * 1.007)
+    assert await create(h, debate, mandate) is None
+    async with h.pool.acquire() as conn:
+        assert await conn.fetchval("SELECT reason FROM candidate_funnel_stops WHERE candidate_id = $1", cid) == "STOP_TOO_TIGHT"

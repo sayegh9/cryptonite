@@ -125,6 +125,9 @@ function PendingRow({ p, onDecided }: { p: Proposal; onDecided: () => void }) {
           Below the {flight?.rr_floor ?? 1.5} floor, cannot be approved.
         </p>
       )}
+      <p className="mt-2 text-xs font-semibold text-amber-300" data-testid="proposal-unproven">
+        Unproven: no strategy has passed the edge test yet. Paper trade only.
+      </p>
       <p className="mt-2 text-xs text-zinc-300">
         <span className="font-semibold text-amber-300">The debate said {card.against_debate_verdict}.</span>{" "}
         {card.debate_reasoning}

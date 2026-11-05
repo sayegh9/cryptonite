@@ -64,6 +64,9 @@ class ScannerEngine:
             donchian_lower=donchian_lower,
             donchian_middle=donchian_mid,
             donchian_upper=donchian_upper,
+            # the channel before this bar: the live channel holds the bar's own high, so a close can never break it
+            donchian_lower_prior=donchian_lower.shift(1),
+            donchian_upper_prior=donchian_upper.shift(1),
         )
 
     @classmethod
