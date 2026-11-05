@@ -407,7 +407,8 @@ async def test_preset_stats_computes_quality_labels_on_server(h):
         assert row["quality"] == expected
     assert {row["quality"] for row in document["results"]} == {"thin", "negative", "ok"}
     assert document["preset_ids"]["SWING:SHORT"] == [
-        "swing-trend-pullback-short-1h", "swing-squeeze-breakdown-short-1h", "swing-sniper-pullback-short-15m"]
+        "swing-trend-pullback-short-1h", "swing-squeeze-breakdown-short-1h", "swing-sniper-pullback-short-15m",
+        "trend-breakdown-short-4h"]
     assert len(document["preset_ids"]["INTRADAY:BOTH"]) == 6
 
 
