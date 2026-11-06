@@ -2622,12 +2622,12 @@ async def scan_swing_setups(
 
 
 def _monitored_scopes() -> set[tuple[str, str, str]] | None:
-    """(spot instrument, preset, timeframe) every ACTIVE profile runs, or None when the view does not expose the picks."""
+    """(spot instrument, preset, timeframe) every ACTIVE profile runs, or None when the view cannot be read."""
     from cryptonite_schemas.profile import preset_timeframes
 
     try:
         rows = _readonly_rows("SELECT instruments, direction, style, strategies, timeframes "
-                              "FROM agent_safe_mandate_health WHERE status = 'ACTIVE' LIMIT 50")
+                              "FROM agent_safe_profile_picks WHERE status = 'ACTIVE' LIMIT 50")
     except Exception as e:
         logger.info("The profiles' preset picks are not readable, so `monitored` stays unknown: %s", e)
         return None

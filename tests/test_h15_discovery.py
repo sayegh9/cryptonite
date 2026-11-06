@@ -268,3 +268,12 @@ def test_brain_is_told_never_to_propose_from_a_watchlist_item():
     source = open(agent.__file__).read()
     assert "NEVER propose an order from it" in source
     assert '"broad"' in source
+
+
+def test_monitored_scopes_read_the_profile_picks_view(monkeypatch):
+    rows = [{"instruments": ["WLDUSDT.BINANCE", "WLDUSDT-PERP.BINANCE"], "direction": "BOTH", "style": "SWING",
+             "strategies": ["trend-breakdown-short-4h"], "timeframes": ["4h"]}]
+    seen = []
+    monkeypatch.setattr(tools, "_readonly_rows", lambda sql, *_: seen.append(sql) or rows)
+    assert ("WLDUSDT.BINANCE", "trend-breakdown-short-4h", "4h") in tools._monitored_scopes()
+    assert "agent_safe_profile_picks" in seen[0]
