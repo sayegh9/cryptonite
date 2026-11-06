@@ -171,8 +171,9 @@ def plan_scope(m: Mandate, policy: Policy, ledger: Ledger) -> list[Change]:
         if need not in timeframes and fresh(TIMEFRAME, need):
             timeframes.append(need)
             changes.append(Change(TIMEFRAME, need))
-    # A plan that only sets a market or only makes defaults explicit, with nothing to add, changes nothing useful
-    return changes if any(c.kind in (DIRECTION, COIN) or c.old_value is None for c in changes) else []
+    # A plan that only sets a market or only makes defaults explicit, with nothing to add, changes nothing useful.
+    # A short-capable profile always has PERP or SPOT_MARGIN already (chk_ai_mandates_short_market).
+    return changes if any(c.kind in (DIRECTION, COIN) or (c.kind != MARKET and c.old_value is None) for c in changes) else []
 
 
 def _with_item(values: Iterable[Any], item: str) -> list[str]:
@@ -396,10 +397,10 @@ async def run_cycle(pool, redis, *, probes: Probes = DEFAULT_PROBES, apply: bool
             results.append(Result(pid if m is None else m.name, reason))
             continue
         assert m is not None
-        eligible.append(m)
         if errors := selection_errors(m.style, m.direction, m.strategies, m.timeframes):
             results.append(Result(m.name, f"INVALID_SELECTION: {', '.join(errors)}"))
             continue
+        eligible.append(m)
         changes = plan_scope(m, policy, ledger)
         if not changes:
             results.append(Result(m.name, "NO_CHANGE"))
@@ -514,14 +515,17 @@ async def write_policy(conn, policy: Policy, actor: str) -> Policy:
     def content(p: Policy) -> tuple[Any, ...]:
         return p.profiles, p.allowed_modes, p.allowed_presets, p.allow_new_coins, p.max_changes_per_cycle
 
-    before = await read_policy(conn)
-    version = before.version if before.version and content(before) == content(policy) else before.version + 1
-    out = Policy(**{**asdict(policy), "version": version, "actor": actor,
-                    "updated_at": datetime.datetime.now(datetime.UTC).isoformat()})
-    await conn.execute(
-        """INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
-           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
-        POLICY_KEY, json.dumps(asdict(out)))
+    async with conn.transaction():
+        # The lock apply_changes holds: a write waits for an apply in progress, and later applies see the new policy
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", POLICY_KEY)
+        before = await read_policy(conn)
+        version = before.version if before.version and content(before) == content(policy) else before.version + 1
+        out = Policy(**{**asdict(policy), "version": version, "actor": actor,
+                        "updated_at": datetime.datetime.now(datetime.UTC).isoformat()})
+        await conn.execute(
+            """INSERT INTO system_settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
+            POLICY_KEY, json.dumps(asdict(out)))
     return out
 
 
@@ -533,6 +537,14 @@ async def _resolve_profiles(conn, names: str) -> tuple[str, ...]:
             raise SystemExit(f"No profile named {name}")
         out.append(str(row["id"]))
     return tuple(out)
+
+
+def wanted_policy(current: Policy, args: argparse.Namespace, profiles: tuple[str, ...]) -> Policy:
+    """The policy a preview or enable asks for. An option left out keeps its current value."""
+    return Policy(**{**asdict(current), "profiles": profiles,
+                     "allow_new_coins": current.allow_new_coins if args.new_coins is None else args.new_coins,
+                     "allowed_modes": tuple(m.strip().upper() for m in args.modes.split(",")) if args.modes else current.allowed_modes,
+                     "enabled": args.command == "enable"})
 
 
 def _print(results: list[Result]) -> None:
@@ -559,9 +571,7 @@ async def _cli(args: argparse.Namespace) -> int:
         elif args.command in ("preview", "enable"):
             async with pool.acquire() as conn:
                 profiles = await _resolve_profiles(conn, args.profiles) if args.profiles else current.profiles
-            wanted = Policy(**{**asdict(current), "profiles": profiles, "allow_new_coins": args.new_coins or current.allow_new_coins,
-                               "allowed_modes": tuple(m.strip().upper() for m in args.modes.split(",")) if args.modes else current.allowed_modes,
-                               "enabled": args.command == "enable"})
+            wanted = wanted_policy(current, args, profiles)
             if not wanted.profiles:
                 raise SystemExit("Name the profiles: --profiles NAME[,NAME] in priority order.")
             if args.command == "enable":
@@ -586,15 +596,20 @@ async def _cli(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Paper auto-coverage: paper profiles only, and it sends no order.")
     parser.add_argument("command", choices=("preview", "enable", "disable", "undo"))
     parser.add_argument("--profiles", help="profile names or ids, in priority order")
     parser.add_argument("--modes", help="allowed modes, default ASK. Rule-based entries need ASK,AUTO")
-    parser.add_argument("--new-coins", action="store_true", help="assign fed coins nobody covers")
+    parser.add_argument("--new-coins", action=argparse.BooleanOptionalAction, default=None,
+                        help="assign fed coins nobody covers, or stop assigning them. Left out, the current value stays")
     parser.add_argument("--confirm", help="undo: ledger ids to remove, or all")
     parser.add_argument("--actor", default=os.environ.get("USER", "operator"))
-    return asyncio.run(_cli(parser.parse_args(argv)))
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    return asyncio.run(_cli(_parser().parse_args(argv)))
 
 
 if __name__ == "__main__":
