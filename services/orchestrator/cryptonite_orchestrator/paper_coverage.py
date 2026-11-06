@@ -27,6 +27,15 @@ from typing import Any
 import asyncpg
 import httpx
 from cryptonite_execution import profile_lifecycle
+from cryptonite_execution.brackets import open_entry_market
+from cryptonite_execution.leverage import (
+    ACCOUNT_EXPOSURE_CAP,
+    ACCOUNT_MAX_LEVERAGE,
+    DEFAULT_FEE_ROUND_TRIP,
+    DEFAULT_SLIPPAGE_ALLOWANCE,
+    LeverageLimits,
+    plan_spot_margin_order,
+)
 from cryptonite_execution.mandate_store import load_mandate
 from cryptonite_scanner.setup_grade import settlement_interval_hours
 from cryptonite_schemas.mandate import Mandate
@@ -46,6 +55,7 @@ from cryptonite_schemas.profile import (
     selection_errors,
     underlying_spot,
 )
+from cryptonite_schemas.runtime_settings import default_margin_settings, read_margin_settings
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 
 logger = logging.getLogger("cryptonite.orchestrator.paper_coverage")
@@ -213,14 +223,40 @@ async def fetch_perp_symbols() -> set[str] | None:
         return None
 
 
+async def _margin_route_refusal(pool, m: Mandate, spot: str, mark: Decimal) -> str | None:
+    """The margin dry run a real short would pass, sized as the debate's margin route sizes it."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT key, value FROM system_settings WHERE key LIKE 'margin.%'")
+        equity = await conn.fetchval("SELECT total_equity FROM paper_accounts WHERE account_id = $1",
+                                     profile_lifecycle.PAPER_ACCOUNT_ID)
+    if equity is None or Decimal(str(equity)) <= 0:
+        return "ORDER_ROUTE_REFUSED: NON_POSITIVE_EQUITY"
+    settings, _ = read_margin_settings({r["key"]: r["value"] for r in rows}, default_margin_settings())
+    budget = m.capital_budget_usd
+    margin_usd = budget * Decimal(str(m.max_position_pct)) / Decimal("100")
+    limits = LeverageLimits(
+        risk_budget_usd=budget * m.max_risk_per_trade_pct / Decimal("100"),
+        max_notional_usd=min(margin_usd, Decimal(str(equity)) * ACCOUNT_EXPOSURE_CAP),
+        max_leverage=min(m.max_leverage, ACCOUNT_MAX_LEVERAGE), slippage_pct=DEFAULT_SLIPPAGE_ALLOWANCE,
+        fee_pct=DEFAULT_FEE_ROUND_TRIP, min_notional_usd=Decimal(str(equity)) * Decimal("0.01"))
+    plan = plan_spot_margin_order(
+        instrument_for(spot, Market.SPOT_MARGIN), "SELL", mark, mark * Decimal("1.02"), margin_usd, limits,
+        requested_leverage=m.max_leverage, pair_settings=settings.pair_settings.get(spot.split(".")[0]),
+        base_asset=base_asset(spot), budget_usd=budget, shrink_margin_to_fit=True)
+    return None if plan.ok else f"ORDER_ROUTE_REFUSED: {plan.reject}"
+
+
 async def route_refusal(pool, redis, m: Mandate, spot: str) -> str | None:
-    """The card dry run a real order would pass: a hypothetical short at the profile's real size and leverage ceiling."""
+    """The dry run a real order would pass: a hypothetical short at the profile's real size and leverage ceiling, on the
+    market it would really route to."""
     from cryptonite_api.leverage_card import card_leverage_plan, perp_mark
 
     perp = instrument_for(spot, Market.PERP)
     mark, _ = await perp_mark(redis, perp)
     if mark is None:
         return "NO_PERP_MARK"
+    if await open_entry_market(redis, Market.PERP, spot, m.markets) is Market.SPOT_MARGIN:
+        return await _margin_route_refusal(pool, m, spot, mark)
     probe = m.model_copy(update={"allow_perps": True, "markets": frozenset(_with_item(m.markets, Market.PERP.value)),
                                  "instruments": _with_item(_with_item(m.instruments, spot), perp)})
     card = {"instrument_id": perp, "side": "SELL", "order_type": "MARKET", "allocation_pct": float(m.max_position_pct),

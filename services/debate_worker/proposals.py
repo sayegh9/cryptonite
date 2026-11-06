@@ -171,11 +171,14 @@ async def _skip_reason(conn, debate: HoldDebate, mandate: Mandate | None, redis)
     # side), so the candidate's side is checked here
     if opposite_positions(await read_related_positions(conn, debate.instrument_id, PAPER_ACCOUNT_ID), side):
         return "OPPOSITE_POSITION_OPEN", {}
-    refused, instrument = await entry_profile_route(conn, mandate, debate.instrument_id, side)
+    refused, instrument = await entry_profile_route(conn, mandate, debate.instrument_id, side, redis=redis)
     if refused:
         return refused, {}
     # A Brain card plans spot and perp orders only: a margin SELL would read as closing a spot holding
-    if market_of(instrument) is Market.SPOT_MARGIN or (side == "SELL" and market_of(instrument) is not Market.PERP):
+    # A rule entry makes no card, and route_entry plans margin
+    margin_by_rule = market_of(instrument) is Market.SPOT_MARGIN and await trades_by_rule(conn, mandate)
+    if not margin_by_rule and (market_of(instrument) is Market.SPOT_MARGIN
+                               or (side == "SELL" and market_of(instrument) is not Market.PERP)):
         return f"MARKET_NOT_PROPOSABLE: {market_of(instrument).value}", {}
     levels: dict[str, Any] = {"entry": float(entry), "stop": float(stop), "target": float(target)}
     if market_of(instrument) is Market.PERP:
