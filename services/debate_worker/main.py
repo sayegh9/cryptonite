@@ -729,10 +729,10 @@ async def _process_debate_trigger(pg_pool, redis_client, payload: dict, gateway:
 
             doubt_prompt = ((
                 f"The opposing researcher has presented this opening case for a {direction} trade:\n{opening}\n\n"
-                "Rebut their points, and name what would invalidate the trade."
+                "Answer their points where the evidence allows, say which you cannot answer, and name what would invalidate the trade."
             ) if direction else (
                 f"The opposing researcher has presented this directional case:\n{opening}\n\n"
-                "Rebut their points and argue for HOLD (add no new position); name what would invalidate the trade."
+                "Answer their points where the evidence allows, say which you cannot answer, and make the case for HOLD (add no new position); name what would invalidate the trade."
             )) + f"\n\n{evidence_text}"
             rebuttal = section(doubter, await run_agent(doubter, doubt_prompt))
 
@@ -1063,7 +1063,7 @@ async def process_exit_debate_trigger(pg_pool, redis_client, payload: dict, gate
                 raise
 
         bull_thesis = turn_text((await run_agent(EXIT_BULL, f"Context: {intel}\nMake your case to CUT/REDUCE the position.")).output)
-        bear_rebuttal = turn_text((await run_agent(EXIT_BEAR, f"The Exit Bull says: --- EXIT BULL RESEARCHER ---\n{bull_thesis}\nMake your case to HOLD/ADD to the position.")).output)
+        bear_rebuttal = turn_text((await run_agent(EXIT_BEAR, f"The Exit Bull says: --- EXIT BULL RESEARCHER ---\n{bull_thesis}\nMake your case to HOLD the existing position.")).output)
         transcript = f"--- EXIT BULL RESEARCHER ---\n{bull_thesis}\n\n--- EXIT BEAR RESEARCHER ---\n{bear_rebuttal}"
 
         manager_prompt = f"Based on the following debate, make your exit decision.\n\n{transcript}"

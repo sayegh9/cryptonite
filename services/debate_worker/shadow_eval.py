@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 PROMPT_VERSION = "shadow-v1"
+PROMPT_VERSION_V2 = "shadow-v2"
+PROMPT_VERSIONS = (PROMPT_VERSION, PROMPT_VERSION_V2)
 
 MIN_ROWS = 100
 MIN_DAYS = 21

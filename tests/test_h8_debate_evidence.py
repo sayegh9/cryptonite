@@ -200,7 +200,7 @@ async def test_an_operator_debate_has_the_derivatives_block_and_the_bull_picks_t
     assert sum("--- DERIVATIVES (perpetual" in t for t in texts[:2]) == 2  # both analysts
     assert sum("MEASURED BAR SUMMARY" in t for t in texts[:2]) == 2  # H10: both analysts get the same snapshot
     assert "Direction: LONG" in texts[2] and "Direction: SHORT" in texts[2] and "SELL (open a short)" in texts[2]
-    assert "argue for HOLD" in texts[3]
+    assert "make the case for HOLD" in texts[3]
     assert "If you take a SHORT case, the recommendation is SELL" in models.prompts["pm"]
 
 

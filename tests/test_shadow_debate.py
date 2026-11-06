@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 from ai_api_harness import close_harness, make_harness
-from cryptonite_agents.debate_fleet import DEBATE_LITE, DEBATE_LITE_SHADOW
+from cryptonite_agents.debate_fleet import DEBATE_LITE, DEBATE_LITE_SHADOW, DEBATE_LITE_SHADOW_V2
 from cryptonite_agents.gateway import BudgetExceeded, Gateway, GatewayError, ModelUnavailable
 from cryptonite_agents.gateway.providers.pydantic_ai_backend import override_model
 from cryptonite_agents.gateway.routes import (
@@ -147,7 +147,7 @@ async def live_rows(h) -> dict[str, list[str]]:
 
 
 async def verdict(h, cid):
-    return await h.pool.fetchrow("SELECT * FROM shadow_debate_verdicts WHERE candidate_id = $1", cid)
+    return await h.pool.fetchrow("SELECT * FROM shadow_debate_verdicts WHERE candidate_id = $1 AND prompt_version = 'shadow-v1'", cid)
 
 
 # ------------------------------------------------------------------------------------ invariant 1: reaches nothing live
@@ -220,20 +220,21 @@ async def test_the_shadow_call_never_receives_the_live_verdict_or_reasoning(main
     cid = await candidate(h)
     gw = ShadowGateway(h.pool)
     await drive(main, h, scanner_payload(cid), gw)
-    (call,) = gw.shadow_calls
-    assert call["prompt"] == gw.live_prompts["debate.lite"]  # the lite call's own text, unchanged
-    assert LIVE_SECRET not in json.dumps(call, default=str)
+    assert len(gw.shadow_calls) == 2  # shadow-v1 and shadow-v2
+    for call in gw.shadow_calls:
+        assert call["prompt"] == gw.live_prompts["debate.lite"]  # the lite call's own text, unchanged
+        assert LIVE_SECRET not in json.dumps(call, default=str)
 
 
 async def test_the_call_has_no_tools_no_mandate_and_no_parent_trace(main, h):
     await profile(h)
     gw = ShadowGateway(h.pool)
     await drive(main, h, scanner_payload(await candidate(h)), gw)
-    (call,) = gw.shadow_calls
-    assert call["tools"] == () and call["parent_trace_id"] is None
-    assert call["context"].role == ROLE and call["context"].mandate_id is None
-    assert call["instructions"] == DEBATE_LITE_SHADOW.instructions
-    assert call["output_type"] is DEBATE_LITE.output_type
+    for call in gw.shadow_calls:
+        assert call["tools"] == () and call["parent_trace_id"] is None
+        assert call["context"].role == ROLE and call["context"].mandate_id is None
+        assert call["output_type"] is DEBATE_LITE.output_type
+    assert {c["instructions"] for c in gw.shadow_calls} == {DEBATE_LITE_SHADOW.instructions, DEBATE_LITE_SHADOW_V2.instructions}
 
 
 async def test_through_the_real_gateway_cost_is_attributed_to_the_shadow_role_and_not_to_the_profile(main, h):
@@ -242,7 +243,7 @@ async def test_through_the_real_gateway_cost_is_attributed_to_the_shadow_role_an
     await drive(main, h, scanner_payload(cid), Gateway(pool=h.pool))
     row = await verdict(h, cid)
     assert row["state"] == "OK" and row["model"] and row["cost_usd"] is not None
-    assert await h.pool.fetchval("SELECT count(*) FROM llm_cost_ledger WHERE role = $1", ROLE) == 1
+    assert await h.pool.fetchval("SELECT count(*) FROM llm_cost_ledger WHERE role = $1", ROLE) == 2
     trace = await h.pool.fetchrow("SELECT mandate_id, parent_id FROM ai_decision_traces WHERE role = $1", ROLE)
     assert trace["mandate_id"] is None and trace["parent_id"] is None
     # the live lite call keeps its own attribution
@@ -348,7 +349,7 @@ async def test_the_cap_reads_only_today_utc_and_only_this_table(main, h):
     await seed_spend(h, Decimal("0.99"))
     gw = ShadowGateway(h.pool)
     await drive(main, h, scanner_payload(cid), gw)
-    assert len(gw.shadow_calls) == 1 and (await verdict(h, cid))["state"] == "OK"
+    assert len(gw.shadow_calls) == 2 and (await verdict(h, cid))["state"] == "OK"
 
 
 async def test_unknown_spend_makes_no_call_and_raises_nothing():
@@ -418,7 +419,7 @@ async def test_a_lite_verdict_that_escalates_still_reached_the_lite_call(main, h
     big = {**LIVE_HOLD, "recommendation": "BUY", "allocation_pct": 8.0}
     gw = ShadowGateway(h.pool)
     await drive(main, h, scanner_payload(cid), gw, lite=big)
-    assert len(gw.shadow_calls) == 1 and gw.shadow_calls[0]["prompt"] == gw.live_prompts["debate.lite"]
+    assert len(gw.shadow_calls) == 2 and all(c["prompt"] == gw.live_prompts["debate.lite"] for c in gw.shadow_calls)
 
 
 async def test_a_debate_refused_at_the_gate_makes_no_shadow_call(main, h):
@@ -668,3 +669,26 @@ def test_the_report_is_read_only_and_documents_the_stdin_run():
     assert "readonly=True" in source and "exec -T learner python - < scripts/shadow_prompt_report.py" in source
     for word in ("INSERT ", "UPDATE ", "DELETE ", "execute("):
         assert word not in source
+
+
+async def test_each_prompt_version_gets_its_own_row_and_one_failure_spares_the_other(h, monkeypatch):
+    cid, run_id = await candidate(h), uuid.uuid4()
+
+    class Failing:
+        role = ROLE
+
+        async def run(self, *_a, **_k):
+            raise RuntimeError("model down")
+
+    class Answering:
+        role = ROLE
+
+        async def run(self, *_a, **_k):
+            output = SimpleNamespace(recommendation="HOLD", conviction_score=0.4, reasoning="thin")
+            return SimpleNamespace(output=output, model="test:shadow", cost_usd=Decimal("0.003"))
+
+    monkeypatch.setattr(shadow_debate, "SHADOW_PROMPTS", (("shadow-v1", Failing()), ("shadow-v2", Answering())))
+    await shadow_debate.run_shadow(h.pool, None, cid, run_id, "a brief")
+    rows = await h.pool.fetch("SELECT prompt_version, state FROM shadow_debate_verdicts WHERE candidate_id = $1 "
+                              "ORDER BY prompt_version", cid)
+    assert [tuple(r) for r in rows] == [("shadow-v1", "ERROR"), ("shadow-v2", "OK")]
