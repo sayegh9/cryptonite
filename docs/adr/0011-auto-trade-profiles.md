@@ -44,6 +44,10 @@ The operator wants an AI-first auto-trade product instead:
 - Leverage is the lowest of the deterministic ceilings (risk at stop, liquidation buffer, exposure, profile maximum, setup grade, exchange bracket). The model never sets it above them.
 - Each profile's daily loss limit and hard stop; exits pass every latch.
 
+## Amendment, 2026-11-06: rule-based paper entries (H15)
+
+With `PAPER_RULE_ENTRIES=1`, a scanner debate that ends in HOLD and passes every check a proposal card must pass trades through `route_entry` instead of writing a card, when the profile is `PAPER`, Fully automatic and the master switch is on. It enters only on a coin with no open position and no queued command. This trades against the debate's HOLD on a filter no replay has proven, and is allowed on paper only so that shorts and other thin samples produce real data. Orders stay behind `route_entry`, the mandate checks and `GuardedOrderDispatcher`. The HOLD stays the run's verdict and policy B's decision, and entries carry `entry_source = paper_rule_entry`. Rollback: set the flag to 0 and restart the debate workers; open positions keep their stops and exits.
+
 ## Consequences
 
 - ADR 0004 decision 9 (promotion only from a system proposal) and its automatic demotions no longer apply; the gate code stays as the health score.
