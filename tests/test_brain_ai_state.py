@@ -26,7 +26,7 @@ UNREACHABLE_REDIS = "redis://localhost:1/10"
 BTC = "BTCUSDT.BINANCE"
 SOL = "SOLUSDT.BINANCE"
 NOW = datetime.now(UTC)
-SECTIONS = ("mandates", "holdings", "risk", "pending_approvals", "recent_verdicts", "feed", "exit_monitor")
+SECTIONS = ("mandates", "holdings", "risk", "pending_approvals", "recent_verdicts", "feed", "exit_monitor", "auto_trade_switch")
 FREE_TEXT_KEYS = {"reasoning", "summary", "halted_reason", "reason", "failure_reason", "lessons_learned"}
 
 
