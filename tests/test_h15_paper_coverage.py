@@ -284,6 +284,42 @@ async def test_no_eligible_profile_for_a_new_coin_is_named(pool):
     assert ("MUBARAKUSDT", "NO_ELIGIBLE_PAPER_PROFILE") in {(r.subject, r.outcome) for r in results}
 
 
+async def test_an_invalid_profile_is_not_offered_new_coins_and_the_next_valid_one_gets_them(pool):
+    bad = await profile(pool, direction="LONG", strategies=["trend-pullback-short"], lock=False, instruments=("XRPUSDT.BINANCE",))
+    good = await profile(pool, direction="BOTH", markets=("SPOT", "PERP"), instruments=(WLD, WLD_PERP), strategies=pc.DEFAULT_PRESETS)
+    await policy(pool, bad, good, allow_new_coins=True)
+    results = await cycle(pool, await _new_coin_redis())
+    assert any(r.outcome.startswith("INVALID_SELECTION") for r in results)
+    assert NEW in (await scope(pool, good))["instruments"]
+    assert NEW not in (await scope(pool, bad))["instruments"]
+
+
+async def test_a_plan_that_only_adds_a_market_nothing_needs_is_dropped(pool):
+    picks = ["trend-pullback"]
+    before_id = await profile(pool, strategies=picks)
+    await policy(pool, before_id, allowed_presets=tuple(picks))
+    before = await scope(pool, before_id)
+    assert [r.outcome for r in await cycle(pool)] == ["NO_CHANGE"]
+    assert await scope(pool, before_id) == before
+
+
+async def test_a_policy_write_waits_for_an_apply_in_progress(pool):
+    async with pool.acquire() as holder, holder.transaction():
+        await holder.execute("SELECT pg_advisory_xact_lock(hashtext($1))", pc.POLICY_KEY)
+        write = asyncio.create_task(policy(pool, uuid.uuid4()))
+        await asyncio.sleep(0.2)
+        assert not write.done()
+    assert (await write).enabled
+
+
+@pytest.mark.parametrize(("flags", "stored", "expected"), [
+    ([], True, True), ([], False, False), (["--new-coins"], False, True), (["--no-new-coins"], True, False),
+])
+def test_new_coins_can_be_turned_off_and_stays_put_when_left_out(flags, stored, expected):
+    args = pc._parser().parse_args(["enable", *flags])
+    assert pc.wanted_policy(pc.Policy(allow_new_coins=stored), args, ("p",)).allow_new_coins is expected
+
+
 async def test_a_failed_lock_write_rolls_back_the_scope_change(pool, monkeypatch):
     mid = await profile(pool)
     await policy(pool, mid)
