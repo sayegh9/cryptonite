@@ -32,6 +32,7 @@ from cryptonite_scanner.brief import candidate_direction
 from cryptonite_scanner.costs import cost_in_r, round_trip_cost_fraction
 from cryptonite_schemas.funnel import PROPOSAL_SKIPPED
 from cryptonite_schemas.mandate import DEFAULT_APPROVAL_TTL_S, AutonomyLevel, Mandate
+from cryptonite_schemas.marks import read_live_quote, resolve_quote_price
 from cryptonite_schemas.profile import Market, market_of, underlying_spot
 from cryptonite_schemas.reward_risk import meets_min_rr, reward_to_risk
 from gate import AUTOMATIC_SOURCES
@@ -134,6 +135,20 @@ async def _at_perp_price(conn, redis, instrument: str, side: str, entry: Any, st
                   "perp_shift": float(shift)}
 
 
+async def _at_spot_price(redis, instrument: str, side: str, stop: Any, target: Any) -> tuple[str | None, dict[str, Any]]:
+    """A margin entry trades the spot's price, so the scanner's stop and target stand, measured from the price now: the
+    debate took minutes, and the route checks R:R from the entry it is given."""
+    spot = underlying_spot(instrument)
+    live = resolve_quote_price(spot, await read_live_quote(redis, spot)).price
+    if live is None:
+        return "NO_LIVE_PRICE", {}
+    stop, target = Decimal(str(stop)), Decimal(str(target))
+    if not (stop < live < target if side == "BUY" else target < live < stop) or not meets_min_rr(
+            reward_to_risk(live, stop, target)):
+        return "RR_BELOW_FLOOR", {}
+    return None, {"entry": float(live), "stop": float(stop), "target": float(target)}
+
+
 async def _skip_reason(conn, debate: HoldDebate, mandate: Mandate | None, redis) -> tuple[str | None, dict[str, Any]]:
     """(why no proposal, the fields a proposal is built from). Reads only."""
     if debate.trigger_source not in AUTOMATIC_SOURCES or debate.candidate_id is None:
@@ -171,18 +186,24 @@ async def _skip_reason(conn, debate: HoldDebate, mandate: Mandate | None, redis)
     # side), so the candidate's side is checked here
     if opposite_positions(await read_related_positions(conn, debate.instrument_id, PAPER_ACCOUNT_ID), side):
         return "OPPOSITE_POSITION_OPEN", {}
-    refused, instrument = await entry_profile_route(conn, mandate, debate.instrument_id, side)
+    refused, instrument = await entry_profile_route(conn, mandate, debate.instrument_id, side, redis=redis)
     if refused:
         return refused, {}
-    # A Brain card plans spot and perp orders only: a margin SELL would read as closing a spot holding
-    if market_of(instrument) is Market.SPOT_MARGIN or (side == "SELL" and market_of(instrument) is not Market.PERP):
-        return f"MARKET_NOT_PROPOSABLE: {market_of(instrument).value}", {}
+    by_rule = await trades_by_rule(conn, mandate)  # read once: the switch's cache can turn between two reads
+    market = market_of(instrument)
+    # A Brain card plans spot and perp orders only: a margin SELL would read as closing a spot holding. A rule entry
+    # makes no card, and route_entry plans margin
+    if (market is Market.SPOT_MARGIN and not by_rule) or (side == "SELL" and market not in (Market.PERP, Market.SPOT_MARGIN)):
+        return f"MARKET_NOT_PROPOSABLE: {market.value}", {}
     levels: dict[str, Any] = {"entry": float(entry), "stop": float(stop), "target": float(target)}
-    if market_of(instrument) is Market.PERP:
+    if market is Market.PERP:
         refused, levels = await _at_perp_price(conn, redis, instrument, side, entry, stop, target)
-        if refused:
-            return refused, {}
-    return None, {"side": side, "instrument": instrument, "grade": _GRADE_OF_REASON[policy_a["reason"]], **levels}
+    elif market is Market.SPOT_MARGIN:
+        refused, levels = await _at_spot_price(redis, instrument, side, stop, target)
+    if refused:
+        return refused, {}
+    return None, {"side": side, "instrument": instrument, "grade": _GRADE_OF_REASON[policy_a["reason"]],
+                  "by_rule": by_rule, **levels}
 
 
 def proposal_card(proposal_id: uuid.UUID, debate: HoldDebate, mandate: Mandate, f: dict[str, Any]) -> dict[str, Any]:
@@ -278,7 +299,7 @@ async def create_for_hold(conn, debate: HoldDebate, mandate: Mandate | None, red
                 logger.info("Run %s: no proposal for candidate %s: %s", debate.run_id, debate.candidate_id, reason)
                 await _skipped(conn, debate, reason)
                 return None
-            if await trades_by_rule(conn, mandate):
+            if fields["by_rule"]:
                 await _enter_by_rule(conn, debate, mandate, fields, redis, marks, now)
                 return None
             proposal_id = uuid.uuid4()

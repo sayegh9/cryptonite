@@ -19,11 +19,14 @@ reference snapshot and every other symbol refuses perp entries.
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from decimal import Decimal
 from typing import Any
 
-from cryptonite_execution.margin import MaintenanceBracket, set_live_brackets
+from cryptonite_schemas.profile import Market, instrument_for, underlying_spot
+from cryptonite_schemas.runtime_settings import MARGIN_PAIR_SETTINGS
+
+from cryptonite_execution.margin import MaintenanceBracket, bracket_source, set_live_brackets
 
 logger = logging.getLogger("cryptonite.execution.brackets")
 
@@ -107,6 +110,25 @@ async def refresh_brackets(fetch: Callable[[], Awaitable[Any]], redis, now_ms: i
                         ex=BRACKETS_KEY_TTL_S)
     logger.info("Cached leverage brackets for %d symbols", len(parsed))
     return len(parsed)
+
+
+async def open_entry_market(redis, market: Market, instrument_id: str, markets: Iterable[Market | str]) -> Market:
+    """The market an entry routes to. A perp whose table refuses new entries goes to isolated spot margin when the
+    profile allows that market and the pair has margin settings; otherwise it stays on the perp, which names the refusal.
+    A table arriving later moves entries back to the perp by itself."""
+    spot = underlying_spot(instrument_id)
+    if (market is not Market.PERP or redis is None or Market.SPOT_MARGIN not in {Market(m) for m in markets}
+            or spot.split(".")[0] not in MARGIN_PAIR_SETTINGS):
+        return market
+    try:
+        await load_brackets(redis)
+    except Exception as e:  # noqa: BLE001 - a failed read says nothing about the table: the perp route decides
+        logger.warning("Could not load leverage brackets: %s", e)
+        return market
+    if bracket_source(instrument_for(spot, Market.PERP)).entry_reject is None:
+        return market
+    logger.info("%s: no usable leverage brackets, entry routes to spot margin", spot)
+    return Market.SPOT_MARGIN
 
 
 async def load_brackets(redis) -> int:

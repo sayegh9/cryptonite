@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from cryptonite_execution import profile_lifecycle
+from cryptonite_execution.brackets import open_entry_market
 from cryptonite_execution.leverage import (
     ACCOUNT_EXPOSURE_CAP,
     ACCOUNT_MAX_LEVERAGE,
@@ -120,8 +121,9 @@ def choose_market(side: str, mandate: Mandate, preferred: str | None) -> Market 
 
 
 async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: str,
-                              preferred_market: str | None = None) -> tuple[str | None, str]:
-    """ADR 0011: apply the profile entry refusals in their specified order, then select its market."""
+                              preferred_market: str | None = None, redis=None) -> tuple[str | None, str]:
+    """ADR 0011: apply the profile entry refusals in their specified order, then select its market. ``redis`` reads the
+    leverage brackets, for an entry on a perp without them (``open_entry_market``)."""
     if mandate.status.value != "ACTIVE":
         return "PROFILE_NOT_RUNNING", instrument_id
     if not allows_side(mandate.direction, "LONG" if side == "BUY" else "SHORT"):
@@ -136,8 +138,7 @@ async def entry_profile_route(conn, mandate: Mandate, instrument_id: str, side: 
     market = choose_market(side, mandate, preferred_market)
     if market is None:
         return "NO_MARKET", instrument_id
-    instrument = instrument_for(instrument_id, market)
-    return None, instrument
+    return None, instrument_for(instrument_id, await open_entry_market(redis, market, instrument_id, mandate.markets))
 
 
 async def reduction_instrument(conn, mandate: Mandate, instrument_id: str, side: str) -> str | None:
@@ -558,7 +559,7 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         return await _no_trade(conn, run_id, instrument_id, mandate, block_reason)
     instrument = await reduction_instrument(conn, mandate, instrument_id, side)
     if instrument is None:
-        reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side, preferred_market)
+        reason, instrument = await entry_profile_route(conn, mandate, instrument_id, side, preferred_market, redis)
         if reason:
             return await _no_trade(conn, run_id, instrument, mandate, reason)
     routed_market = market_of(instrument)

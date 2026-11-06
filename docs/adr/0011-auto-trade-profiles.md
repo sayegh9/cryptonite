@@ -48,6 +48,10 @@ The operator wants an AI-first auto-trade product instead:
 
 With `PAPER_RULE_ENTRIES=1`, a scanner debate that ends in HOLD and passes every check a proposal card must pass trades through `route_entry` instead of writing a card, when the profile is `PAPER`, Fully automatic and the master switch is on. It enters only on a coin with no open position and no queued command. This trades against the debate's HOLD on a filter no replay has proven, and is allowed on paper only so that shorts and other thin samples produce real data. Orders stay behind `route_entry`, the mandate checks and `GuardedOrderDispatcher`. The HOLD stays the run's verdict and policy B's decision, and entries carry `entry_source = paper_rule_entry`. Rollback: set the flag to 0 and restart the debate workers; open positions keep their stops and exits.
 
+### H15 amendment: spot margin when a perp has no usable leverage table
+
+D8 picks the perp first. When a perp's leverage table is missing or stale, the entry would be refused, so it routes to isolated spot margin if the profile allows that market and the pair has margin settings. The refusal stays when neither holds. A table that arrives later moves entries back to the perp without a change. Approval cards still cannot plan margin: on such a coin a HOLD gets no card (`MARKET_NOT_PROPOSABLE`), and only a rule entry or a debate's BUY or SELL verdict reaches margin.
+
 ## Consequences
 
 - ADR 0004 decision 9 (promotion only from a system proposal) and its automatic demotions no longer apply; the gate code stays as the health score.
