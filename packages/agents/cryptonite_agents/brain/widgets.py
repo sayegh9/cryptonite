@@ -58,6 +58,9 @@ class SwingCandidateItem(BaseModel):
     grade_reasons: list[str] = Field(default_factory=list)
     # H4: where the setup would trade ({mandate, market, instrument_id}) and its round-trip cost in R
     route: dict[str, str] | None = None
+    # H15, broad scan only: set by the server; every preset behind this coin, side and timeframe, with its levels
+    status: Literal["CANDIDATE"] | None = None
+    contributing_presets: list[dict[str, Any]] = Field(default_factory=list)
     cost_r: float | None = None
     bar_close: str | None = None  # H5: the setup's bar close (ISO UTC)
     # H10: the scanner candidate, the automatic path's debate on it ("debated: HOLD" when it held) and its replay
@@ -90,6 +93,38 @@ class UntradeableSetupItem(BaseModel):
     bar_close: str | None = None
     source: Literal["live_scan", "scanner"] = "live_scan"
     reason: str
+    status: Literal["RESEARCH_ONLY", "REJECTED"] | None = None  # H15, broad scan only
+
+
+class ConditionalItem(BaseModel):
+    """H15: one trigger away on the newest closed bar. It has not fired: no levels, and no order action."""
+
+    model_config = ConfigDict(extra="forbid")
+    instrument_id: str
+    direction: Literal["LONG", "SHORT"]
+    timeframe: str
+    preset_slug: str
+    preset_version: str | None = None
+    status: Literal["CONDITIONAL"] = "CONDITIONAL"
+    as_of: str
+    bar_close: str
+    expires_at: str
+    trigger: dict[str, Any]
+    also_required: list[dict[str, Any]] = Field(default_factory=list)
+    invalidation: list[dict[str, Any]] = Field(default_factory=list)
+    monitored: bool | None = None  # None: the profiles' preset picks could not be read
+
+
+class UnavailableScope(BaseModel):
+    """H15: a scope the broad scan could not judge; the result is partial, not a verdict."""
+
+    model_config = ConfigDict(extra="forbid")
+    instrument_id: str
+    preset_slug: str
+    timeframe: str
+    status: Literal["UNAVAILABLE"] = "UNAVAILABLE"
+    reason: str
+    detail: str | None = None
 
 
 class ScanRejections(BaseModel):
@@ -113,6 +148,9 @@ class SwingRadarWidget(BaseModel):
     uncovered_coins: list[UncoveredCoinItem] = Field(default_factory=list)
     untradeable_setups: list[UntradeableSetupItem] = Field(default_factory=list)
     rejections: ScanRejections | None = None
+    conditional: list[ConditionalItem] = Field(default_factory=list)  # H15, broad scan only
+    unavailable: list[UnavailableScope] = Field(default_factory=list)
+    partial: bool = False
 
 
 class TearsheetWidget(BaseModel):
@@ -388,6 +426,9 @@ def widget_for_tool(
                                         if isinstance(i, dict)],
                     rejections=(ScanRejections(**data["rejections"]) if isinstance(data.get("rejections"), dict)
                                 else None),
+                    conditional=[ConditionalItem(**i) for i in data.get("conditional") or [] if isinstance(i, dict)],
+                    unavailable=[UnavailableScope(**i) for i in data.get("unavailable") or [] if isinstance(i, dict)],
+                    partial=bool(data.get("partial")),
                 )
                 return widget.model_dump()
     except (ValidationError, ValueError, TypeError) as e:
@@ -427,5 +468,7 @@ def describe_widget(widget: dict[str, Any]) -> str:
         return (f"[debate {str(widget.get('status', '')).lower()} for {widget.get('instrument_id')}"
                 + (f", verdict {verdict['recommendation']}" if verdict else "") + "]")
     if kind == "swing_radar":
-        return f"[widget:swing_radar preset={widget.get('preset_slug')} candidates={len(widget.get('candidates') or [])}]"
+        watchlist = len(widget.get("conditional") or [])
+        return (f"[widget:swing_radar preset={widget.get('preset_slug')} candidates={len(widget.get('candidates') or [])}"
+                + (f" conditional={watchlist}" if watchlist else "") + (" partial" if widget.get("partial") else "") + "]")
     return f"[{kind}]"
