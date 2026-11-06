@@ -62,6 +62,10 @@ MARGIN_INTEREST_KEYS = {
     "ETH": "margin.interest_hourly.ETH",
     "XRP": "margin.interest_hourly.XRP",
     "WLD": "margin.interest_hourly.WLD",
+    "SOL": "margin.interest_hourly.SOL",
+    "ZEC": "margin.interest_hourly.ZEC",
+    "NEAR": "margin.interest_hourly.NEAR",
+    "SUI": "margin.interest_hourly.SUI",
     "USDT": "margin.interest_hourly.USDT",
 }
 MARGIN_SETTING_BOUNDS: dict[str, DecimalBound] = {
@@ -69,6 +73,11 @@ MARGIN_SETTING_BOUNDS: dict[str, DecimalBound] = {
     MARGIN_INTEREST_KEYS["ETH"]: DecimalBound(Decimal("0.00022700"), Decimal("0"), Decimal("1"), 8),
     MARGIN_INTEREST_KEYS["XRP"]: DecimalBound(Decimal("0.00039871"), Decimal("0"), Decimal("1"), 8),
     MARGIN_INTEREST_KEYS["WLD"]: DecimalBound(Decimal("0.00140158"), Decimal("0"), Decimal("1"), 8),
+    # Snapshot of 2026-11-06: Binance's daily rate x 100 / 24 for a regular user
+    MARGIN_INTEREST_KEYS["SOL"]: DecimalBound(Decimal("0.00059138"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["ZEC"]: DecimalBound(Decimal("0.00168979"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["NEAR"]: DecimalBound(Decimal("0.00077992"), Decimal("0"), Decimal("1"), 8),
+    MARGIN_INTEREST_KEYS["SUI"]: DecimalBound(Decimal("0.00020017"), Decimal("0"), Decimal("1"), 8),
     MARGIN_INTEREST_KEYS["USDT"]: DecimalBound(Decimal("0.00065600"), Decimal("0"), Decimal("1"), 8),
     # The liquidation fee is a percentage of liquidated assets, as documented by Binance.
     "margin.liquidation_fee_pct": DecimalBound(Decimal("2"), Decimal("0"), Decimal("5"), 2),
@@ -97,6 +106,26 @@ MARGIN_PAIR_SETTINGS: dict[str, dict[str, Decimal]] = {
         "max_leverage": Decimal("5"), "call_level": Decimal("1.19"),
         "liquidation_level": Decimal("1.15"), "max_borrow_WLD": Decimal("66600"),
         "max_borrow_USDT": Decimal("119000"),
+    },
+    "SOLUSDT": {
+        "max_leverage": Decimal("10"), "call_level": Decimal("1.10"),
+        "liquidation_level": Decimal("1.05"), "max_borrow_SOL": Decimal("24000"),
+        "max_borrow_USDT": Decimal("450000"),
+    },
+    "ZECUSDT": {
+        "max_leverage": Decimal("10"), "call_level": Decimal("1.10"),
+        "liquidation_level": Decimal("1.05"), "max_borrow_ZEC": Decimal("140"),
+        "max_borrow_USDT": Decimal("683000"),
+    },
+    "NEARUSDT": {
+        "max_leverage": Decimal("5"), "call_level": Decimal("1.19"),
+        "liquidation_level": Decimal("1.15"), "max_borrow_NEAR": Decimal("37800"),
+        "max_borrow_USDT": Decimal("695000"),
+    },
+    "SUIUSDT": {
+        "max_leverage": Decimal("10"), "call_level": Decimal("1.10"),
+        "liquidation_level": Decimal("1.05"), "max_borrow_SUI": Decimal("189700"),
+        "max_borrow_USDT": Decimal("698000"),
     },
 }
 

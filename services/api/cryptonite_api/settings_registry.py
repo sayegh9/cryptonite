@@ -23,6 +23,7 @@ from cryptonite_schemas.exit_thresholds import (
     violations,
 )
 from cryptonite_schemas.runtime_settings import (
+    MARGIN_INTEREST_KEYS,
     MARGIN_PAIR_SETTINGS,
     MARGIN_SETTING_BOUNDS,
     RUNTIME_BOUNDS,
@@ -235,16 +236,10 @@ REGISTRY: tuple[Setting, ...] = (
                      "equity (checked at Start); raising it needs TOTP"),
     *(
         _margin_setting(key, f"Hourly margin interest rate, {asset} (%/hour)",
-                        "snapshot of Binance's dynamic rate on 2026-10-29; the higher modeled rate is conservative, "
+                        "snapshot of Binance's dynamic rate (2026-10-29; SOL, ZEC, NEAR, SUI 2026-11-06); the higher modeled rate is conservative, "
                         "so lowering it requires TOTP",
                         tighter=Tighter.HIGHER)
-        for asset, key in {
-            "BTC": "margin.interest_hourly.BTC",
-            "ETH": "margin.interest_hourly.ETH",
-            "XRP": "margin.interest_hourly.XRP",
-            "WLD": "margin.interest_hourly.WLD",
-            "USDT": "margin.interest_hourly.USDT",
-        }.items()
+        for asset, key in MARGIN_INTEREST_KEYS.items()
     ),
     *(
         _margin_pair_setting(pair, field)

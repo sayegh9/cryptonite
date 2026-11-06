@@ -36,6 +36,10 @@ def test_margin_defaults_preserve_the_public_rate_digits_exactly():
         "ETH": D("0.00022700"),
         "XRP": D("0.00039871"),
         "WLD": D("0.00140158"),
+        "SOL": D("0.00059138"),
+        "ZEC": D("0.00168979"),
+        "NEAR": D("0.00077992"),
+        "SUI": D("0.00020017"),
         "USDT": D("0.00065600"),
     }
     assert settings.liquidation_fee_pct == D("2")
@@ -107,6 +111,14 @@ def test_pair_defaults_use_displayed_borrow_caps_and_faq_levels():
                     "max_borrow_XRP": D("584000"), "max_borrow_USDT": D("450000")},
         "WLDUSDT": {"max_leverage": D("5"), "call_level": D("1.19"), "liquidation_level": D("1.15"),
                     "max_borrow_WLD": D("66600"), "max_borrow_USDT": D("119000")},
+        "SOLUSDT": {"max_leverage": D("10"), "call_level": D("1.10"), "liquidation_level": D("1.05"),
+                    "max_borrow_SOL": D("24000"), "max_borrow_USDT": D("450000")},
+        "ZECUSDT": {"max_leverage": D("10"), "call_level": D("1.10"), "liquidation_level": D("1.05"),
+                    "max_borrow_ZEC": D("140"), "max_borrow_USDT": D("683000")},
+        "NEARUSDT": {"max_leverage": D("5"), "call_level": D("1.19"), "liquidation_level": D("1.15"),
+                     "max_borrow_NEAR": D("37800"), "max_borrow_USDT": D("695000")},
+        "SUIUSDT": {"max_leverage": D("10"), "call_level": D("1.10"), "liquidation_level": D("1.05"),
+                    "max_borrow_SUI": D("189700"), "max_borrow_USDT": D("698000")},
     }
     assert {k for k in MARGIN_SETTING_BOUNDS if k.startswith("margin.pair.")} == {
         f"margin.pair.{pair}.{field}" for pair, fields in MARGIN_PAIR_SETTINGS.items() for field in fields
