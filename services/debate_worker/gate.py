@@ -17,7 +17,7 @@ from cryptonite_agents.debate_fleet import TRIAGE
 from cryptonite_agents.gateway import CallContext, Gateway
 from cryptonite_agents.gateway.budget import DEFAULT_DAILY_CAP_USD, BudgetExceeded, parse_cap
 from cryptonite_execution.profile_log import record_decision
-from cryptonite_scanner.brief import hard_rejects
+from cryptonite_scanner.brief import candidate_direction, hard_rejects
 from cryptonite_schemas.debate import TriageDecision
 from cryptonite_schemas.profile import effective_presets, effective_timeframes
 from mandate_routing import resolve_profile
@@ -79,6 +79,13 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0
 """
+
+
+def debate_cooldown_key(instrument_id: str, timeframe: str, direction: str | None) -> str:
+    """Per side: a long never blocks a short on the same coin and timeframe. A candidate with no readable side keeps
+    the old key, so it can only collide with another one like it."""
+    base = f"debate:cooldown:{instrument_id}:{timeframe}"
+    return f"{base}:{direction}" if direction else base
 
 
 async def release_cooldown(redis, key: str | None, token: str | None) -> None:
@@ -476,7 +483,7 @@ async def _evaluate(pg_pool, redis, payload, gateway, brief, now_s, brief_data=N
                 if await profile_budget_exhausted(conn, profile, _utc_now_s()):
                     return GateDecision(False, "AI_BUDGET_EXHAUSTED")
 
-    cooldown_key = f"debate:cooldown:{instrument_id}:{timeframe}"
+    cooldown_key = debate_cooldown_key(instrument_id, timeframe, candidate_direction(candidate))
     # Candidate-aware: the value is the candidate's token, so a crash or cancellation after this point
     # leaves a window that its OWN redelivery still passes (no durable row exists yet), while every other
     # candidate waits it out. Unidentified payloads keep the legacy opaque value and the old semantics.

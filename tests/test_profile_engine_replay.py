@@ -151,7 +151,7 @@ async def debate(ctx, m, *, direction="SHORT", coin=None):
     payload = {"instrument_id": coin, "mandate_id": str(m.id), "trigger_source": "scanner",
                "candidate_payload": c.model_dump_json()}
     # A unique scanner window permits each replay step without waiting out production cooldowns.
-    await ctx.redis.delete(f"debate:cooldown:{coin}:1h")
+    await ctx.redis.delete(gate.debate_cooldown_key(coin, "1h", direction))
     run = uuid.uuid4()
     await ctx.pool.execute(
         "INSERT INTO debate_runs(id,instrument_id,status,trigger_source) VALUES($1,$2,'RUNNING','test')",

@@ -123,41 +123,7 @@ class ScannerEngine:
             else:
                 enriched_htf = cls.enrich_indicators(htf_df)
 
-        if enriched_htf is not None and not enriched_htf.is_empty():
-            htf_cols = [
-                col
-                for col in (
-                    "close",
-                    "open",
-                    "high",
-                    "low",
-                    "ema_20",
-                    "ema_50",
-                    "ema_200",
-                    "rsi",
-                    "macd",
-                    "macd_signal",
-                    "macd_hist",
-                    "atr",
-                    "volume_ratio",
-                    "bb_upper",
-                    "bb_middle",
-                    "bb_lower",
-                    "donchian_upper",
-                    "donchian_middle",
-                    "donchian_lower",
-                )
-                if col in enriched_htf.columns
-            ]
-            htf_selected = enriched_htf.select(
-                [pl.col("interval_end_exclusive_ns")]
-                + [pl.col(c).alias(f"htf_{c}") for c in htf_cols]
-            ).sort("interval_end_exclusive_ns")
-            valid_df = valid_df.sort("interval_end_exclusive_ns").join_asof(
-                htf_selected,
-                on="interval_end_exclusive_ns",
-                strategy="backward",
-            )
+        valid_df = cls.join_htf(valid_df, enriched_htf)
 
         # Evaluate each rule group into a boolean mask expression
         group_masks: list[pl.Expr] = []
@@ -296,6 +262,46 @@ class ScannerEngine:
             candidates.append(candidate)
 
         return candidates
+
+    @staticmethod
+    def join_htf(valid_df: pl.DataFrame, enriched_htf: pl.DataFrame | None) -> pl.DataFrame:
+        """The newest closed parent bar's columns (``htf_*``) on each row. No parent: the frame unchanged."""
+        if enriched_htf is None or enriched_htf.is_empty():
+            return valid_df
+        htf_cols = [
+            col
+            for col in (
+                "close",
+                "open",
+                "high",
+                "low",
+                "ema_20",
+                "ema_50",
+                "ema_200",
+                "rsi",
+                "macd",
+                "macd_signal",
+                "macd_hist",
+                "atr",
+                "volume_ratio",
+                "bb_upper",
+                "bb_middle",
+                "bb_lower",
+                "donchian_upper",
+                "donchian_middle",
+                "donchian_lower",
+            )
+            if col in enriched_htf.columns
+        ]
+        htf_selected = enriched_htf.select(
+            [pl.col("interval_end_exclusive_ns")]
+            + [pl.col(c).alias(f"htf_{c}") for c in htf_cols]
+        ).sort("interval_end_exclusive_ns")
+        return valid_df.sort("interval_end_exclusive_ns").join_asof(
+            htf_selected,
+            on="interval_end_exclusive_ns",
+            strategy="backward",
+        )
 
     deduplicate_candidates = staticmethod(deduplicate_candidates)
 

@@ -24,7 +24,7 @@ import asyncpg
 import duckdb
 import polars as pl
 import redis.asyncio as aioredis
-from cryptonite_scanner.brief import brief_data, build_brief
+from cryptonite_scanner.brief import brief_data, build_brief, funding_comparison
 from cryptonite_scanner.engine import ScannerEngine
 from cryptonite_scanner.models import (
     ALLOWED_AUTOMATIC_TIMEFRAMES,
@@ -40,6 +40,8 @@ from cryptonite_scanner.models import (
 )
 from cryptonite_scanner.presets import preset_by_slug
 from cryptonite_scanner.resampler import ONE_MINUTE_NS, TIMEFRAME_MINUTES, resample_1m_bars
+from cryptonite_scanner.setup_grade import settlement_interval_hours
+from cryptonite_schemas.identifiers import to_perp_instrument_id
 from cryptonite_schemas.profile import (
     effective_presets,
     effective_timeframes,
@@ -263,6 +265,33 @@ class ScannerWorker:
             out[str(part)] = hashlib.sha256("\n".join(entries).encode()).hexdigest()
         return out
 
+    async def _funding_interval_hours(self, sym: str) -> float | None:
+        """The perpetual's settlement interval from ``funding_rates``. None when unknown: the grade reads that as 8 h."""
+        try:
+            rows = await self.pool.fetch(
+                """SELECT funding_interval_hours, funding_time_ns FROM funding_rates WHERE instrument_id = $1
+                   ORDER BY funding_time_ns DESC LIMIT 2""", to_perp_instrument_id(sym))
+            return settlement_interval_hours(dict(r) for r in rows)
+        except Exception as e:
+            logger.warning("Could not read the funding interval of %s: %s", sym, e)
+            return None
+
+    async def _record_funding_comparison(self, c: Any, data: dict[str, Any], raw_mark: Any) -> None:
+        """H15 A6: one audit row per graded candidate. Read by no live code; a failed write costs only the row."""
+        try:
+            comparison = funding_comparison(data, c.timeframe)
+            if comparison is None:
+                return
+            mark = json.loads(raw_mark) if raw_mark else {}
+            details = {**comparison, "candidate_id": str(c.id), "instrument_id": c.instrument_id,
+                       "timeframe": c.timeframe, "direction": data.get("direction"),
+                       "rate_source": "perp:mark", "rate_ts_event_ns": mark.get("ts_event_ns")}
+            await self.pool.execute(
+                "INSERT INTO audit_events (event_type, source, details) VALUES ($1, $2, $3::jsonb)",
+                "GRADE_FUNDING_COMPARISON", "scanner", json.dumps(details))
+        except Exception as e:
+            logger.warning("Funding comparison not recorded for candidate %s: %s", getattr(c, "id", None), e)
+
     async def _publish_brief(self, c: Any, candidate_payload: dict[str, Any], frames: dict[str, Any]) -> str | None:
         """Build the candidate's market brief once and cache it for the debate (blueprint §4.3)."""
         try:
@@ -270,7 +299,8 @@ class ScannerWorker:
             derivatives: dict[str, Any] = {}
             if raw_mark := await self.redis.get(f"perp:mark:{sym}"):
                 mark = json.loads(raw_mark)
-                derivatives.update(mark_price=mark.get("mark_price"), funding_rate=mark.get("funding_rate"))
+                derivatives.update(mark_price=mark.get("mark_price"), funding_rate=mark.get("funding_rate"),
+                                   funding_interval_hours=await self._funding_interval_hours(sym))
             if raw_oi := await self.redis.get(f"perp:oi:{sym}"):
                 derivatives["open_interest"] = json.loads(raw_oi).get("open_interest")
             now = datetime.now(UTC)
@@ -280,7 +310,9 @@ class ScannerWorker:
             key = brief_key_for(c.instrument_id, c.timeframe, c.bar_close_inclusive_ns)
             await self.redis.set(key, brief, ex=BRIEF_TTL_S)
             try:  # the structured twin lets the gate apply the hard triage rules in code (R3.1)
-                await self.redis.set(f"{key}:data", json.dumps(brief_data(c.instrument_id, frames, **args)), ex=BRIEF_TTL_S)
+                data = brief_data(c.instrument_id, frames, **args)
+                await self.redis.set(f"{key}:data", json.dumps(data), ex=BRIEF_TTL_S)
+                await self._record_funding_comparison(c, data, raw_mark)
             except Exception as e:  # without it the gate falls back to the model, as before
                 logger.warning("Market brief data failed for %s: %s", c.instrument_id, e)
             return key

@@ -25,8 +25,10 @@ from cryptonite_schemas.reward_risk import MIN_REWARD_TO_RISK as _RR_FLOOR
 from cryptonite_schemas.reward_risk import meets_min_rr
 
 from cryptonite_scanner.setup_grade import (
+    CROWDED_FUNDING_8H,
     GRADE_CONTEXT_KEYS,
     GradeInputs,
+    funding_carry,
     funding_rate_8h,
     grade_context,
     grade_setup,
@@ -118,12 +120,35 @@ def _setup_grade(direction: str | None, cand: dict[str, Any] | None, ctx: dict[s
         return None
     try:
         kw = {k: ctx.get(k) for k in GRADE_CONTEXT_KEYS}
-        funding = funding_rate_8h(_num((derivatives or {}).get("funding_rate")), None)
+        funding = funding_rate_8h(_num((derivatives or {}).get("funding_rate")),
+                                  _num((derivatives or {}).get("funding_interval_hours")))
         g = grade_setup(GradeInputs(side=direction, entry=entry, stop=stop, target=target,  # type: ignore[arg-type]
                                     funding_rate_8h=funding, **kw))
     except Exception:
         return None
     return {"grade": g.grade, "reasons": list(g.reasons)[:5]}
+
+
+def funding_comparison(data: dict[str, Any] | None, timeframe: str | None) -> dict[str, Any] | None:
+    """H15 A6: a graded candidate's actual grade beside the grade ``funding-carry-v1`` would give, or None when it has
+    no grade. Decides nothing. An unknown carry records no alternative grade."""
+    if not isinstance(data, dict) or not isinstance(data.get("setup_grade"), dict):
+        return None
+    direction, cand, ctx = data.get("direction"), data.get("candidate") or {}, data.get("grade_context") or {}
+    entry, stop, target = _num(cand.get("entry")), _num(cand.get("stop")), _num(cand.get("target"))
+    if direction not in ("LONG", "SHORT") or None in (entry, stop, target):
+        return None
+    derivatives = data.get("derivatives") or {}
+    carry = funding_carry(direction, entry, stop, _num(derivatives.get("funding_rate")),  # type: ignore[arg-type]
+                          _num(derivatives.get("funding_interval_hours")), timeframe)
+    out = {**carry, "actual_grade": data["setup_grade"].get("grade"), "alternative_grade": None}
+    if carry["carry_status"] == "KNOWN":
+        adverse = 2 * CROWDED_FUNDING_8H * (1 if direction == "LONG" else -1)  # the grade's crowding test, set by carry
+        kw = {k: ctx.get(k) for k in GRADE_CONTEXT_KEYS}
+        out["alternative_grade"] = grade_setup(GradeInputs(
+            side=direction, entry=entry, stop=stop, target=target,  # type: ignore[arg-type]
+            funding_rate_8h=adverse if carry["crowded"] else 0.0, **kw)).grade
+    return out
 
 
 def timeframe_line(timeframe: str, df: pl.DataFrame) -> str | None:
@@ -273,7 +298,8 @@ def brief_data(
             "matched_rules": [str(r) for r in candidate.get("matched_rules") or []],
         }
     if derivatives:
-        data["derivatives"] = {k: _num(derivatives.get(k)) for k in ("mark_price", "funding_rate", "open_interest")}
+        data["derivatives"] = {k: _num(derivatives.get(k)) for k in ("mark_price", "funding_rate", "open_interest",
+                                                                     "funding_interval_hours")}
     try:  # missing grade inputs only make the grade weaker; they never fail the brief
         data["grade_context"] = grade_context(frames)
     except Exception:

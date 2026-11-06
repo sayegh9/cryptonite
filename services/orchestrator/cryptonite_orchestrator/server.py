@@ -43,6 +43,7 @@ from cryptonite_strategies.registry import STRATEGY_REGISTRY
 from nautilus_trader.model import Bar, BarType, InstrumentId, Price, Quantity
 from pydantic import ValidationError
 
+from cryptonite_orchestrator import paper_coverage
 from cryptonite_orchestrator.mandate_gate import (
     command_mandate_id,
     fresh_autotrade_switch_on,
@@ -3620,6 +3621,7 @@ async def main():
     asyncio.create_task(publish_positions())
     mark_projector = await start_mark_to_market(pool, redis, engine, quote_cache)  # noqa: F841 (B3; kept referenced)
     asyncio.create_task(ops_monitor(engine, pool, redis))  # enforced limits (R1.8) + heartbeat alerts (R7.5)
+    asyncio.create_task(paper_coverage.coverage_loop(pool, redis))  # H15: does nothing until the policy is enabled
 
     # Stream consumer for nautilus:stream:bus
     stream_name = "nautilus:stream:bus"

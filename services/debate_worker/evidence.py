@@ -510,11 +510,22 @@ _NO_POSITION = re.compile(
     r"|\bnot\s+in\s+a\s+position\b", re.IGNORECASE)
 _QUALIFIED = re.compile(r"\s*(?:in|on)\s+(?:the\s+)?(?:\w+\s+)?(spot|margin|perp|perpetual)\b", re.IGNORECASE)
 _NUM = r"(-?\d[\d,]*(?:\.\d+)?)"
+_BAR_INTERVAL = r"\d+\s*(?:seconds?|minutes?|hours?|days?|weeks?|[smhdw])\b"
+# A timeframe can qualify the close. A bare "last closed 1h bar" identifies a bar, and what that bar "showed" is not its
+# close, while "last closed at 1.25", "last close on the 1h bar was 1.25", "last close (1h): 1.25" and "last closed 1h
+# bar was 1.25" all assert prices.
+_NAMED_BAR_CLOSE = (rf"d?\s+{_BAR_INTERVAL}\s+(?:bar|candle)\s+"
+                    r"(?:closed?(?:\s+(?:at|near|around|was))?|was|is|at|near|around|[:=])\s*"
+                    r"(?:(?:at|near|around)\s+)?")
+_QUALIFIED_CLOSE = (rf"(?:\b|d\b(?!\s+{_BAR_INTERVAL}))"
+                    rf"(?:\s*\(?\s*(?:(?:on|of|for)\s+(?:the\s+)?)?{_BAR_INTERVAL}\s*\)?)?"
+                    rf"[^.\n\d]{{0,25}}(?!{_BAR_INTERVAL})")
+_CLOSE_PRICE = re.compile(rf"\blast close(?:{_NAMED_BAR_CLOSE}|{_QUALIFIED_CLOSE})" + _NUM, re.IGNORECASE)
 _BAR_CLAIMS = (
     ("net_change_pct", re.compile(r"net change[^.\n%\d-]{0,30}" + _NUM + r"\s*%", re.IGNORECASE), "pct"),
     ("window_high", re.compile(r"window high[^.\n\d]{0,25}" + _NUM, re.IGNORECASE), "price"),
     ("window_low", re.compile(r"window low[^.\n\d]{0,25}" + _NUM, re.IGNORECASE), "price"),
-    ("last_close", re.compile(r"last close[^.\n\d]{0,25}" + _NUM, re.IGNORECASE), "price"),
+    ("last_close", _CLOSE_PRICE, "price"),
     ("lower_lows", re.compile(r"\b(\d+)\s+lower lows\b", re.IGNORECASE), "count"),
     ("higher_highs", re.compile(r"\b(\d+)\s+higher highs\b", re.IGNORECASE), "count"),
 )

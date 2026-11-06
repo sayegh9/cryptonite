@@ -300,7 +300,7 @@ def _num(value: Any) -> float | None:
 async def funding_8h(conn, redis, perp_instrument: str) -> float | None:
     """The perpetual's current funding rate (the derivatives feed's ``perp:mark:<SYM>``) per 8 h, scaled by its
     settlement interval from ``funding_rates`` (8 h when unknown). None without a fresh mark."""
-    from cryptonite_scanner.setup_grade import funding_rate_8h
+    from cryptonite_scanner.setup_grade import funding_rate_8h, settlement_interval_hours
 
     if redis is None:
         return None
@@ -316,12 +316,7 @@ async def funding_8h(conn, redis, perp_instrument: str) -> float | None:
     rows = await conn.fetch(
         """SELECT funding_interval_hours, funding_time_ns FROM funding_rates WHERE instrument_id = $1
            ORDER BY funding_time_ns DESC LIMIT 2""", perp_instrument)
-    hours = None
-    if rows and rows[0]["funding_interval_hours"]:
-        hours = float(rows[0]["funding_interval_hours"])
-    elif len(rows) == 2:
-        hours = (int(rows[0]["funding_time_ns"]) - int(rows[1]["funding_time_ns"])) / 3.6e12
-    return funding_rate_8h(rate, hours)
+    return funding_rate_8h(rate, settlement_interval_hours(dict(r) for r in rows))
 
 
 def perp_setup_grade(side: str, entry: float, stop: float, target: float, context: dict[str, Any] | None,

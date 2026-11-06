@@ -454,3 +454,25 @@ def test_a_contradicted_bar_figure_blocks_and_a_matching_one_does_not():
     bad = "Measured: net change +3.5% with 31 lower lows."
     flags = evidence.validate_turn("Bull Researcher", bad, snap)
     assert [(f["code"], f["severity"]) for f in flags] == [("BAR_FIGURE_CONTRADICTION", "BLOCK")] * 2
+
+
+@pytest.mark.parametrize(("claim", "blocks"), [
+    ("The last closed 1h bar also showed a significant drop from 1.3185 to 1.3051.", False),
+    ("The last close on the 1h bar was 1.3051.", False),
+    ("The last close on the 1h bar was 1.25.", True),
+    ("XRP last closed at 1.25.", True),
+    ("XRP last closed near 1.25.", True),
+    ("The last close was 1.", True),
+    ("The last closed 1h bar was 1.25.", True),
+    ("The last closed 1h bar closed at 1.25.", True),
+    ("Last close (1h): 1.25", True),
+    ("The last closed 1h bar closed at 1.3051.", False),
+    ("Last close (1h): 1.3051", False),
+])
+def test_xrp_close_claim_distinguishes_the_timeframe_from_the_price(claim, blocks):
+    """A timeframe in a measured-bar description must never become the claimed closing price."""
+    snap = snap_with(bars=evidence.item("OK", {"summary": {"last_close": 1.3051}}, source="lake"))
+    flags = evidence.validate_turn("Lite Debate", claim, snap)
+    assert [(f["code"], f["severity"]) for f in flags] == (
+        [("BAR_FIGURE_CONTRADICTION", "BLOCK")] if blocks else []
+    )

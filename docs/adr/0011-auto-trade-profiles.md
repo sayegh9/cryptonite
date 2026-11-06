@@ -54,3 +54,7 @@ With `PAPER_RULE_ENTRIES=1`, a scanner debate that ends in HOLD and passes every
 - ADR 0009 D3 no longer applies. D1, D2, D4–D6 stand.
 - The global scanner presets keep running. Their candidates route to the coin-lock owner, which applies its own direction and style.
 - Live trading (P5) still needs the live executor, wallet transfers, a dead-man switch and the operator's hardening of the workstation (UPS, wired link, 4G failover) before any LIVE profile starts.
+
+## Amendment, 2026-11-06: paper auto-coverage (H15, D12)
+
+D12 stays the rule for the public API: risk-adding edits need a human operator session and never a machine token. As one bounded exception, enabling the `paper_auto_coverage` policy on the host authorises a worker to widen opted-in paper profiles: direction from long to both, added presets and the timeframes they need, the perp market, and fed coins nobody covers, all recorded in `paper_coverage_ledger`. It cannot change a mode, the master switch, dry run, status, budget, risk, leverage or any limit, it never touches a non-paper profile, and it sends no order. Review ledger items before any paper profile goes LIVE. Control is `python -m cryptonite_orchestrator.paper_coverage preview|enable|disable|undo`; no API route exists.
