@@ -538,7 +538,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
                       preferred_market: str | None = None,
                       redis=None,
                       grade_context: dict[str, Any] | None = None,
-                      block_reason: str | None = None) -> tuple[str, Mandate | None]:
+                      block_reason: str | None = None,
+                      entry_source: str | None = None) -> tuple[str, Mandate | None]:
     """Returns (debate_runs status, mandate). ``decision_trace_id`` (R7.4) rides in the command and
     approval payloads so the order and its fill can be traced back to the scanner candidate. ``marks``
     (``cryptonite_schemas.marks.read_marks``) values the mandate's positions for its room. ``reference_price``
@@ -546,14 +547,16 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
     candidate's levels (none for a Brain- or Inbox-started debate). ``redis`` (the perp mark, funding and leverage
     brackets) and ``grade_context`` (``brief_data``'s) are read only on a perp route. ``block_reason`` (H10, e.g. an
     entry verdict opposite to an open related position) refuses a directional verdict before any reduction or entry
-    route: NO_TRADE with that reason, never an approval card."""
+    route: NO_TRADE with that reason, never an approval card. ``entry_source`` (H15, ``paper_rule_entry``) tags an entry
+    made by rule on a debate that said HOLD: the debate's own row is already written, and results can be separated."""
     now = now or datetime.datetime.now(datetime.UTC)
     mandate = await resolve_profile(conn, instrument_id, mandate_id)
     side = side_of(recommendation)
     if mandate is None:
         return ("NO_TRADE" if side is None or block_reason else "PENDING_APPROVAL"), None
-    await record_decision(conn, mandate.id, "DEBATE", recommendation, instrument_id=instrument_id,
-                          run_id=run_id, conviction=conviction)
+    if entry_source is None:
+        await record_decision(conn, mandate.id, "DEBATE", recommendation, instrument_id=instrument_id,
+                              run_id=run_id, conviction=conviction)
     if side is None:
         return await _no_trade(conn, run_id, instrument_id, mandate, "HOLD")
     if block_reason:
@@ -570,6 +573,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
         route_detail["market_suggested"] = preferred_market
     if levels_source:
         route_detail["levels_source"] = levels_source
+    if entry_source:
+        route_detail["entry_source"] = entry_source
     if routed_market is Market.SPOT and side == "BUY":
         # A profile spot entry must have the structural stop used by the exit monitor.
         # Refuse before creating an ASK/VETO approval, including Brain and Inbox debates.
@@ -595,6 +600,8 @@ async def route_entry(conn, run_id: uuid.UUID, instrument_id: str, recommendatio
             "recommendation": recommendation, "conviction_score": conviction, "source": "debate", "run_id": str(run_id)}
     if decision_trace_id:
         base["decision_trace_id"] = str(decision_trace_id)
+    if entry_source:
+        base["entry_source"] = entry_source
     # The candidate's levels: the exit monitor's structural stop and TP1 for a spot position. Never ``stop_price``:
     # the dispatcher reads that as a resting STOP_MARKET (perps only), so a spot entry carrying it is refused
     if stop_loss is not None and float(stop_loss) > 0:

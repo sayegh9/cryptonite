@@ -5,6 +5,10 @@ one ``setup_proposals`` row next to that result. It never touches ``_approval`` 
 (``timeout_policy_for`` makes an L2 ADD_RISK proceed on timeout and an L3 need no approval), the run's status or its
 policy B row. The row expires unanswered; the API's approve is the only way from it to an order.
 
+H15 PR C, behind ``PAPER_RULE_ENTRIES`` (default off): on a PAPER profile set to Fully automatic with the master switch on,
+a setup that would have become a card goes through ``route_entry`` instead, tagged ``paper_rule_entry``. The HOLD still
+stands as the run's verdict and policy B's decision. Every other profile gets a card exactly as before.
+
 ``create_for_hold`` runs inside the debate's finalization transaction, in its own savepoint, and never raises: a failure
 here leaves the debate's result intact.
 """
@@ -12,20 +16,26 @@ here leaves the debate's result intact.
 import datetime
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any
 
-from cryptonite_execution.related_positions import opposite_positions, read_related_positions
+from cryptonite_execution import profile_lifecycle
+from cryptonite_execution.related_positions import (
+    opposite_positions,
+    read_related_positions,
+    related_instruments,
+)
 from cryptonite_scanner.brief import candidate_direction
 from cryptonite_scanner.costs import cost_in_r, round_trip_cost_fraction
 from cryptonite_schemas.funnel import PROPOSAL_SKIPPED
-from cryptonite_schemas.mandate import DEFAULT_APPROVAL_TTL_S, Mandate
+from cryptonite_schemas.mandate import DEFAULT_APPROVAL_TTL_S, AutonomyLevel, Mandate
 from cryptonite_schemas.profile import Market, market_of, underlying_spot
 from cryptonite_schemas.reward_risk import meets_min_rr, reward_to_risk
 from gate import AUTOMATIC_SOURCES
-from mandate_routing import PAPER_ACCOUNT_ID, entry_profile_route
+from mandate_routing import PAPER_ACCOUNT_ID, entry_profile_route, route_entry
 
 logger = logging.getLogger("cryptonite.debate_worker.proposals")
 
@@ -35,6 +45,9 @@ REASONING_CHARS = 600
 _SIDE_OF_DIRECTION = {"LONG": "BUY", "SHORT": "SELL"}
 MAX_COST_R = 0.25  # the cheapest round trip (perp) as a share of the risk: a stop nearer than 0.8% of the price
 _GRADE_OF_REASON = {"GRADE_A": "A", "GRADE_B": "B", "GRADE_C": "C"}
+RULE_ENTRIES_FLAG = "PAPER_RULE_ENTRIES"
+RULE_ENTRY_TAG = "paper_rule_entry"
+_SETTLED_COMMANDS = ("COMPLETED", "REJECTED", "FAILED", "CANCELLED", "EXPIRED")
 
 
 @dataclass(frozen=True)
@@ -55,6 +68,7 @@ class HoldDebate:
     candidate: dict[str, Any] | None
     grade_reasons: list[str]
     replay: dict[str, Any] | None = None
+    grade_context: dict[str, Any] | None = None
 
 
 def _candidate_of(payload: dict) -> dict[str, Any] | None:
@@ -74,7 +88,7 @@ def hold_debate(payload: dict, *, run_id: uuid.UUID, candidate_id: uuid.UUID | N
     replay = facts.get("replay") if isinstance(facts.get("replay"), dict) else None
     return HoldDebate(run_id, candidate_id, instrument_id, trigger_source, recommendation, final_status, conviction,
                       reasoning, trace_id, non_actionable, stop_loss, take_profit, _candidate_of(payload),
-                      list(grade.get("reasons") or [])[:12], replay)
+                      list(grade.get("reasons") or [])[:12], replay, facts.get("grade_context"))
 
 
 async def _price_tick(conn, instrument: str) -> Decimal | None:
@@ -201,9 +215,60 @@ def proposal_alert(proposal_id: uuid.UUID, debate: HoldDebate, mandate: Mandate,
                         "decide within 15 minutes; nothing trades unless you approve.")}
 
 
+async def _skipped(conn, debate: HoldDebate, reason: str) -> None:
+    """H13c: the funnel's record of why (a failed write rolls back only the caller's savepoint)."""
+    await conn.execute(
+        """INSERT INTO candidate_funnel_stops (candidate_id, stage, reason, detail)
+           VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (candidate_id) DO NOTHING""",
+        debate.candidate_id, PROPOSAL_SKIPPED, reason, json.dumps({"run_id": str(debate.run_id)}))
+
+
+async def trades_by_rule(conn, mandate: Mandate) -> bool:
+    """The flag, a PAPER profile, Fully automatic and the master switch. Anything else gets a card."""
+    return (os.environ.get(RULE_ENTRIES_FLAG, "0") == "1"
+            and str(getattr(mandate.environment, "value", mandate.environment)) == "PAPER"
+            and mandate.autonomy_level == AutonomyLevel.L3
+            and await profile_lifecycle.autotrade_switch_on(conn))
+
+
+async def _rule_entry_block(conn, debate: HoldDebate, mandate: Mandate) -> str | None:
+    """A rule entry only opens a position on a flat coin: repeated signals must not pyramid, which a card's human would
+    have judged. The lock makes two debates finishing together see each other's queued command."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"{RULE_ENTRY_TAG}:{mandate.id}")
+    if await read_related_positions(conn, debate.instrument_id, PAPER_ACCOUNT_ID):
+        return "POSITION_ALREADY_OPEN"
+    instruments = list(related_instruments(debate.instrument_id).values())
+    if await conn.fetchval(
+            """SELECT 1 FROM execution_commands WHERE mandate_id = $1 AND NOT (status = ANY($2::text[]))
+               AND payload->>'instrument_id' = ANY($3::text[]) LIMIT 1""",
+            mandate.id, list(_SETTLED_COMMANDS), instruments):
+        return "ENTRY_ALREADY_QUEUED"
+    return None
+
+
+async def _enter_by_rule(conn, debate: HoldDebate, mandate: Mandate, f: dict[str, Any], redis,
+                         marks: dict | None, now: datetime.datetime | None) -> None:
+    """Route the candidate's own side and levels. ``route_entry``'s run key makes a redelivery queue nothing, and a
+    refusal is recorded and never retried."""
+    if blocked := await _rule_entry_block(conn, debate, mandate):
+        logger.info("Run %s: no rule entry for candidate %s: %s", debate.run_id, debate.candidate_id, blocked)
+        await _skipped(conn, debate, blocked)
+        return
+    status, _ = await route_entry(
+        conn, debate.run_id, debate.instrument_id, f["side"], 0.0, 0.0, mandate_id=str(mandate.id), now=now,
+        decision_trace_id=debate.trace_id, marks=marks, stop_loss=f["stop"], take_profit=f["target"],
+        reference_price=f["entry"], levels_source=RULE_ENTRY_TAG, redis=redis, grade_context=debate.grade_context,
+        entry_source=RULE_ENTRY_TAG)
+    logger.info("Run %s: rule entry %s %s for candidate %s: %s", debate.run_id, f["side"], f["instrument"],
+                debate.candidate_id, status)
+    if status != "COMPLETED":
+        await _skipped(conn, debate, f"RULE_ENTRY_{status}")
+
+
 async def create_for_hold(conn, debate: HoldDebate, mandate: Mandate | None, redis,
-                          now: datetime.datetime | None = None) -> dict[str, Any] | None:
-    """Write the debate's proposal when it qualifies. Returns the alert to publish after the commit, else None."""
+                          now: datetime.datetime | None = None, marks: dict | None = None) -> dict[str, Any] | None:
+    """Write the debate's proposal when it qualifies, or trade it when the profile says so (``trades_by_rule``). Returns
+    the alert to publish after the commit, else None."""
     if debate.recommendation != "HOLD" or debate.candidate_id is None:
         return None  # the common case: a BUY or SELL keeps its route, and a Brain or operator debate has no candidate
     try:
@@ -211,11 +276,10 @@ async def create_for_hold(conn, debate: HoldDebate, mandate: Mandate | None, red
             reason, fields = await _skip_reason(conn, debate, mandate, redis)
             if reason:
                 logger.info("Run %s: no proposal for candidate %s: %s", debate.run_id, debate.candidate_id, reason)
-                # H13c: the funnel's record of why (a failed write rolls back only this savepoint)
-                await conn.execute(
-                    """INSERT INTO candidate_funnel_stops (candidate_id, stage, reason, detail)
-                       VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (candidate_id) DO NOTHING""",
-                    debate.candidate_id, PROPOSAL_SKIPPED, reason, json.dumps({"run_id": str(debate.run_id)}))
+                await _skipped(conn, debate, reason)
+                return None
+            if await trades_by_rule(conn, mandate):
+                await _enter_by_rule(conn, debate, mandate, fields, redis, marks, now)
                 return None
             proposal_id = uuid.uuid4()
             now = now or datetime.datetime.now(datetime.UTC)

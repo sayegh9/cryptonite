@@ -50,3 +50,7 @@ The operator wants an AI-first auto-trade product instead:
 - ADR 0009 D3 no longer applies. D1, D2, D4–D6 stand.
 - The global scanner presets keep running. Their candidates route to the coin-lock owner, which applies its own direction and style.
 - Live trading (P5) still needs the live executor, wallet transfers, a dead-man switch and the operator's hardening of the workstation (UPS, wired link, 4G failover) before any LIVE profile starts.
+
+## Amendment, 2026-11-06: rule-based paper entries (H15)
+
+With `PAPER_RULE_ENTRIES=1`, a scanner debate that ends in HOLD and passes every check a proposal card must pass trades through `route_entry` instead of writing a card, when the profile is `PAPER`, Fully automatic and the master switch is on. It enters only on a coin with no open position and no queued command. This trades against the debate's HOLD on a filter no replay has proven, and is allowed on paper only so that shorts and other thin samples produce real data. Orders stay behind `route_entry`, the mandate checks and `GuardedOrderDispatcher`. The HOLD stays the run's verdict and policy B's decision, and entries carry `entry_source = paper_rule_entry`. Rollback: set the flag to 0 and restart the debate workers; open positions keep their stops and exits.
