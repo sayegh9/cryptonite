@@ -36,7 +36,9 @@ import type {
   DebateVerdict,
   OrderCardWidget,
   PriceChartWidget,
+  ConditionalItem,
   SwingRadarWidget,
+  UnavailableScope,
   UntradeableSetupItem,
   TearsheetWidget,
 } from "@/lib/brain/types";
@@ -1618,20 +1620,66 @@ function UntradeableSetups({ setups }: { setups: UntradeableSetupItem[] }) {
                   <span className="font-bold text-zinc-200">{coin}</span> {s.direction} · {s.preset_slug} · {s.timeframe} ·{" "}
                   {s.rr_ratio.toFixed(2)}R · <span data-testid="swing-radar-untradeable-bar">{barTime(s.bar_close)}</span>
                 </span>
-                <button
-                  type="button"
-                  data-testid="swing-radar-cover-btn"
-                  onClick={() => useBrainStore.getState().setDraft(coverCoinPrompt(coin))}
-                  className="rounded border border-zinc-700 bg-zinc-800/80 px-2 py-0.5 text-2xs text-zinc-200 hover:border-amber-700 hover:text-amber-300 transition-colors"
-                >
-                  Cover this coin
-                </button>
+                {s.status !== "REJECTED" && (
+                  <button
+                    type="button"
+                    data-testid="swing-radar-cover-btn"
+                    onClick={() => useBrainStore.getState().setDraft(coverCoinPrompt(coin))}
+                    className="rounded border border-zinc-700 bg-zinc-800/80 px-2 py-0.5 text-2xs text-zinc-200 hover:border-amber-700 hover:text-amber-300 transition-colors"
+                  >
+                    Cover this coin
+                  </button>
+                )}
               </div>
               <p className="mt-1 text-zinc-500">{s.reason}</p>
             </li>
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+const conditionText = (c: ConditionalItem["trigger"]) =>
+  `${c.field} ${c.operator} ${c.compared_to} (now ${c.field_value ?? "?"} vs ${c.compared_value ?? "?"})`;
+
+/** H15: setups one trigger away. Deliberately no action: an item has not fired and has no levels. */
+function ConditionalWatchlist({ items }: { items: ConditionalItem[] }) {
+  return (
+    <div className="mt-3 border-t border-zinc-800/80 pt-2" data-testid="swing-radar-conditional">
+      <p className="mb-1.5 text-2xs font-bold uppercase tracking-wider text-sky-300">Watchlist: not fired, not a trade</p>
+      <ul className="space-y-1.5">
+        {items.map((i) => (
+          <li
+            key={`${i.instrument_id}-${i.direction}-${i.timeframe}-${i.preset_slug}`}
+            data-testid="swing-radar-conditional-item"
+            className="rounded border border-zinc-800/80 bg-zinc-900/30 p-2 text-2xs text-zinc-400"
+          >
+            <div>
+              <span className="font-bold text-zinc-200">{i.instrument_id.split(".")[0]}</span> {i.direction} · {i.preset_slug} · {i.timeframe}
+              {" · "}
+              {i.monitored === true ? "monitored" : i.monitored === false ? "not monitored" : "monitoring unknown"}
+            </div>
+            <p className="mt-1">Needs: {conditionText(i.trigger)}</p>
+            {(i.also_required?.length ?? 0) > 0 && (
+              <p className="mt-0.5 text-zinc-500">On that bar also: {i.also_required?.map(conditionText).join("; ")}</p>
+            )}
+            <p className="mt-0.5 text-zinc-500">Expires {barTime(i.expires_at)}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** H15: what the broad scan could not judge, so a partial result never reads as complete. */
+function UnavailableScopes({ scopes }: { scopes: UnavailableScope[] }) {
+  return (
+    <div className="mt-3 border-t border-zinc-800/80 pt-2" data-testid="swing-radar-unavailable">
+      <p className="text-2xs font-bold uppercase tracking-wider text-amber-300">Partial result: {scopes.length} scopes not judged</p>
+      <p className="mt-1 text-2xs text-zinc-500">
+        {Array.from(new Set(scopes.map((s) => `${s.instrument_id.split(".")[0]} ${s.timeframe} (${s.reason.replace("UNAVAILABLE: ", "")})`))).slice(0, 8).join(", ")}
+      </p>
     </div>
   );
 }
@@ -1801,6 +1849,8 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
         </div>
       )}
       {(w.untradeable_setups?.length ?? 0) > 0 && <UntradeableSetups setups={w.untradeable_setups ?? []} />}
+      {(w.conditional?.length ?? 0) > 0 && <ConditionalWatchlist items={w.conditional ?? []} />}
+      {(w.unavailable?.length ?? 0) > 0 && <UnavailableScopes scopes={w.unavailable ?? []} />}
     </section>
   );
 }

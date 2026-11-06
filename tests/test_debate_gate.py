@@ -224,6 +224,19 @@ async def test_cooldown_allows_one_debate_per_setup_window(gate, pool):
     assert (first.allowed, second.reason) == (True, "COOLDOWN")
 
 
+async def test_cooldown_is_per_direction(gate, pool):
+    """H15: a long never blocks a short on the same coin and timeframe; a second long is still refused."""
+    def side(slug):
+        payload = scanner_payload()
+        return {**payload, "candidate_payload": json.dumps({**json.loads(payload["candidate_payload"]), "preset_slug": slug})}
+    redis = Redis()
+    long_ = await gate.pre_debate_gate(pool, redis, side("trend-pullback"), None, "MARKET BRIEF")
+    short = await gate.pre_debate_gate(pool, redis, side("trend-pullback-short"), None, "MARKET BRIEF")
+    again = await gate.pre_debate_gate(pool, redis, side("trend-pullback"), None, "MARKET BRIEF")
+    assert (long_.allowed, short.allowed, again.reason) == (True, True, "COOLDOWN")
+    assert long_.cooldown_key.endswith(":LONG") and short.cooldown_key.endswith(":SHORT")
+
+
 async def test_a_failure_before_the_durable_run_leaves_the_retry_passable(main, pool, monkeypatch):
     """D1 review blocker 1: nothing durable exists before the debate_runs row, so a transient failure
     there must not poison the same message's retry (a pre-run dedupe key did exactly that)."""

@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import json
 import logging
@@ -1837,12 +1838,18 @@ def _frame_trend(df: Any) -> str | None:
 def _stored_funding_8h(instrument_id: str) -> float | None:
     """The funding rate per 8 h the derivatives feed stored for the coin's perpetual (``perp:mark:<SYM>``), or None
     when the feed does not cover it. A Redis read only: no exchange call in the scan."""
-    from cryptonite_scanner.setup_grade import funding_rate_8h
+    from cryptonite_scanner.setup_grade import funding_rate_8h, settlement_interval_hours
 
     try:
-        raw = _redis_get(PERP_MARK_KEY.format(symbol=_feed_symbol(instrument_id)))
+        symbol = _feed_symbol(instrument_id)
+        raw = _redis_get(PERP_MARK_KEY.format(symbol=symbol))
         rate = json.loads(raw).get("funding_rate") if raw else None
-        return funding_rate_8h(float(rate), None) if rate is not None else None
+        if rate is None:
+            return None
+        return funding_rate_8h(float(rate), settlement_interval_hours(_readonly_rows(
+            "SELECT funding_interval_hours, funding_time_ns FROM funding_rates "
+            "WHERE instrument_id = :instrument_id ORDER BY funding_time_ns DESC LIMIT 2",
+            {"instrument_id": to_perp_instrument_id(symbol)})))
     except Exception:
         return None
 
@@ -2218,7 +2225,7 @@ def _active_scopes() -> list[dict[str, Any]] | None:
     """The ACTIVE mandates and profiles (name, instruments, markets, direction) from agent_safe_mandate_health, or
     None when they cannot be read."""
     try:
-        return _readonly_rows("SELECT name, instruments, markets, direction FROM agent_safe_mandate_health "
+        return _readonly_rows("SELECT name, instruments, markets, direction, max_leverage FROM agent_safe_mandate_health "
                               "WHERE status = 'ACTIVE' ORDER BY name, id LIMIT 50")
     except Exception as e:
         logger.warning("Could not read the ACTIVE mandates; the swing scan covers no coin: %s", e)
@@ -2247,8 +2254,8 @@ def mandate_coverage(scopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _setup_route(spot_inst: str, side: str, scopes: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
     """Where a scan setup would trade: ({mandate, market, instrument_id}, None) when an ACTIVE mandate owns the coin
-    in a market that allows the setup's side (``allows_side`` and ``select_market``, the profile rules at 1x), else
-    (None, why it is not tradeable yet)."""
+    in a market that allows the setup's side (``allows_side`` and ``select_market`` at the mandate's own leverage, as an
+    entry routes), else (None, why it is not tradeable yet)."""
     from cryptonite_schemas.profile import allows_side, instrument_for, select_market
 
     coin = spot_inst.split(".")[0]
@@ -2257,7 +2264,7 @@ def _setup_route(spot_inst: str, side: str, scopes: list[dict[str, Any]]) -> tup
         return None, f"no ACTIVE mandate covers {coin}"
     for m in owners:
         try:
-            market = select_market(side, 1, m.get("markets") or []) if allows_side(m["direction"], side) else None
+            market = select_market(side, int(m.get("max_leverage") or 1), m.get("markets") or []) if allows_side(m["direction"], side) else None
         except ValueError:
             market = None
         if market is not None:
@@ -2269,6 +2276,9 @@ def _setup_route(spot_inst: str, side: str, scopes: list[dict[str, Any]]) -> tup
 
 
 SCAN_TIMEFRAMES = ("15m", "1h", "4h")
+BROAD_SCAN = "broad"
+BROAD_MAX_RESULTS = 20
+BROAD_UNAVAILABLE_LIMIT = 40
 
 
 def nearest_scan_timeframe(timeframe: Any) -> tuple[str, str | None]:
@@ -2291,7 +2301,7 @@ async def scan_swing_setups(
     max_results: int = 5,
     symbol: str | None = None,
 ) -> str:
-    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, or 'all'), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups; `coverage` lists each ACTIVE mandate's coins, markets and direction (LONG-only, SHORT-only or BOTH). `rejections` counts why each coin and preset gave no candidate on its latest bar."""
+    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, 'all' for those six swing presets, or 'broad' for every catalog preset on every timeframe with the watchlist), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups; `coverage` lists each ACTIVE mandate's coins, markets and direction (LONG-only, SHORT-only or BOTH). `rejections` counts why each coin and preset gave no candidate on its latest bar."""
     import polars as pl
     from cryptonite_scanner.engine import ScannerEngine
     from cryptonite_scanner.models import RiskConfig
@@ -2305,6 +2315,9 @@ async def scan_swing_setups(
 
     if not hasattr(ScannerEngine, "resample_bars"):
         ScannerEngine.resample_bars = staticmethod(resample_1m_bars)
+
+    if preset_slug == BROAD_SCAN:
+        return await _scan_broad(symbol)
 
     max_results = max(1, min(int(max_results), 10))
     timeframe, timeframe_note = nearest_scan_timeframe(timeframe)
@@ -2568,12 +2581,12 @@ async def scan_swing_setups(
         routeable.append({**c, "route": route, "cost_r": None if cost_r is None else round(cost_r, 3)})
     candidates = routeable
 
-    # Deduplicate by instrument_id (keep highest-scoring setup per symbol)
-    best_by_inst: dict[str, dict[str, Any]] = {}
+    # H15: the best setup per coin and side, so a long never hides a short on the same coin
+    best_by_inst: dict[tuple[str, str], dict[str, Any]] = {}
     for c in candidates:
-        inst_id = c["instrument_id"]
-        if inst_id not in best_by_inst or c["score"] > best_by_inst[inst_id]["score"]:
-            best_by_inst[inst_id] = c
+        key = (c["instrument_id"], c["direction"])
+        if key not in best_by_inst or c["score"] > best_by_inst[key]["score"]:
+            best_by_inst[key] = c
 
     deduped = list(best_by_inst.values())
     deduped.sort(key=lambda c: (0 if (target_inst and c["instrument_id"] == target_inst) else 1, -c["score"]))
@@ -2605,6 +2618,147 @@ async def scan_swing_setups(
                           f"at least {SCAN_MIN_RR}x the risk), and none from the scanner in the last "
                           f"{SCANNER_SETUP_WINDOW_H} hours; no setup. `uncovered_coins` are coverage notes, not "
                           "setups; `untradeable_setups` are real matches that cannot be traded yet, with the reason.")
+    return json.dumps(result)
+
+
+def _monitored_scopes() -> set[tuple[str, str, str]] | None:
+    """(spot instrument, preset, timeframe) every ACTIVE profile runs, or None when the view does not expose the picks."""
+    from cryptonite_schemas.profile import preset_timeframes
+
+    try:
+        rows = _readonly_rows("SELECT instruments, direction, style, strategies, timeframes "
+                              "FROM agent_safe_mandate_health WHERE status = 'ACTIVE' LIMIT 50")
+    except Exception as e:
+        logger.info("The profiles' preset picks are not readable, so `monitored` stays unknown: %s", e)
+        return None
+    out: set[tuple[str, str, str]] = set()
+    for m in rows:
+        runs = preset_timeframes(m["style"], m["direction"], m.get("strategies") or [], m.get("timeframes") or [])
+        out |= {(underlying_spot(i), slug, tf) for i in m.get("instruments") or [] for slug, tfs in runs.items() for tf in tfs}
+    return out
+
+
+async def _scan_broad(symbol: str | None) -> str:
+    """H15 A2: every catalog preset on its catalog timeframes for the fed coins, on closed bars only. The server sets
+    each result's status: CANDIDATE, CONDITIONAL, RESEARCH_ONLY, REJECTED or UNAVAILABLE."""
+    from cryptonite_scanner.broad import LOOKBACK_MINUTES, scan_coin
+    from cryptonite_scanner.conditional import capped
+    from cryptonite_scanner.costs import cost_in_r, round_trip_cost_fraction
+
+    target_inst: str | None = None
+    if symbol and symbol.strip():
+        sym_clean = _strip_venue_preserve_quote(symbol).split("-")[0].replace("/", "")
+        target_inst = f"{sym_clean if sym_clean.endswith(tuple(_QUOTE_SUFFIXES)) else sym_clean + 'USDT'}.BINANCE"
+    scopes = _active_scopes() or []
+    fed = _fed_symbols()
+    owned = {underlying_spot(i) for m in scopes for i in m.get("instruments") or []}
+    universe = [target_inst] if target_inst else sorted(owned | {f"{s}.BINANCE" for s in fed or ()})
+    unavailable: list[dict[str, Any]] = []
+    uncovered: list[dict[str, Any]] = []
+    loadable: list[str] = []
+    for inst in universe:
+        coin = inst.split(".")[0]
+        if fed is not None and coin not in fed:
+            uncovered.append({"coin": coin, "reason": f"{coin} is not in the live feed: add it to the feed first (Watchlist)"})
+            unavailable.append({"instrument_id": inst, "preset_slug": "*", "timeframe": "*", "status": "UNAVAILABLE",
+                                "reason": "UNAVAILABLE: INSUFFICIENT_WARMUP", "detail": "not fed, so no lake history"})
+        else:
+            loadable.append(inst)
+
+    now_ns = time.time_ns()
+
+    def scan_all() -> dict[str, Any]:
+        lake = DuckDBLakeRepository(read_only=True)
+        scans: dict[str, Any] = {}
+        try:
+            for inst in loadable:
+                try:
+                    df = lake.load_bars(symbol=inst.split(".")[0], timeframe="1m",
+                                        start_ns=now_ns - LOOKBACK_MINUTES * 60_000_000_000, end_ns=now_ns)
+                except Exception as e:
+                    unavailable.append({"instrument_id": inst, "preset_slug": "*", "timeframe": "*",
+                                        "status": "UNAVAILABLE", "reason": "UNAVAILABLE: LAKE_READ_FAILED",
+                                        "detail": type(e).__name__})
+                    continue
+                if df is None or df.is_empty():
+                    unavailable.append({"instrument_id": inst, "preset_slug": "*", "timeframe": "*",
+                                        "status": "UNAVAILABLE", "reason": "UNAVAILABLE: INSUFFICIENT_WARMUP",
+                                        "detail": "no lake bars"})
+                    continue
+                scans[inst] = scan_coin(inst, df, now_ns)
+        finally:
+            lake.close()
+        return scans
+
+    scans = await asyncio.to_thread(scan_all)
+    frames_by_inst = {inst: s.frames for inst, s in scans.items()}
+    funding: dict[str, float | None] = {}
+    candidates: list[dict[str, Any]] = []
+    rejections: list[dict[str, str]] = []
+    conditional: list[dict[str, Any]] = []
+    for inst, scan in scans.items():
+        unavailable.extend(scan.unavailable)
+        rejections.extend(scan.rejections)
+        conditional.extend(scan.conditional)
+        frames = scan.frames
+        trends = {f"trend_{tf}": _classify_tf_trend(frames.get(tf)) for tf in ("4h", "1h", "15m")}
+        for m in scan.matches:
+            if inst not in funding:
+                funding[inst] = _stored_funding_8h(inst)
+            candidates.append({**m, **trends, "in_feed": True,
+                               "score": _swing_score(m["direction"], trends["trend_4h"], trends["trend_1h"], trends["trend_15m"]),
+                               **_scan_grade(frames, m["direction"], m["entry"], m["stop"], m["target"], funding[inst])})
+    candidates.extend({**c, "in_feed": True} for c in _recent_scanner_setups(target_inst, frames_by_inst)
+                      if c["instrument_id"] in scans)
+    annotate_with_debates(candidates)
+
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    other: list[dict[str, Any]] = []
+    for c in candidates:
+        inst = c["instrument_id"]
+        route, why = _setup_route(inst, c["direction"], scopes)
+        status = "CANDIDATE" if route is not None else "RESEARCH_ONLY"
+        if not meets_min_rr(c["rr_ratio"], SCAN_MIN_RR):
+            status, why = "REJECTED", f"reward {c['rr_ratio']}x the risk, below {SCAN_MIN_RR}x"
+            rejections.append({"coin": inst.split(".")[0], "preset_slug": c["preset_slug"],
+                               "timeframe": c["timeframe"], "outcome": "REJECTED_RR"})
+        elif c.get("setup_grade") == "NO_TRADE":
+            status, why = "REJECTED", "graded NO_TRADE: " + "; ".join(c.get("grade_reasons") or ["no reason given"])
+        if status != "CANDIDATE":
+            other.append({k: c.get(k) for k in ("instrument_id", "preset_slug", "timeframe", "direction", "entry", "stop",
+                                                "target", "rr_ratio", "bar_close")}
+                         | {"source": c.get("source", "live_scan"), "status": status, "reason": why})
+            continue
+        assert route is not None
+        cost_r = cost_in_r(c["entry"], c["stop"], round_trip_cost_fraction(_COST_MARKET[route["market"]], 24.0))
+        grouped.setdefault((inst, c["direction"], c["timeframe"]), []).append(
+            {**c, "status": "CANDIDATE", "route": route, "cost_r": None if cost_r is None else round(cost_r, 3)})
+
+    routeable = []
+    for rows in grouped.values():
+        rows.sort(key=lambda c: (-c["score"], c["preset_slug"]))
+        routeable.append({**rows[0], "contributing_presets": [
+            {k: r[k] for k in ("preset_slug", "entry", "stop", "target", "rr_ratio")} for r in rows]})
+    routeable.sort(key=lambda c: (-c["score"], c["instrument_id"], c["direction"], c["timeframe"]))
+
+    monitored = _monitored_scopes()
+    for item in conditional:
+        item["monitored"] = None if monitored is None else (
+            (item["instrument_id"], item["preset_slug"], item["timeframe"]) in monitored)
+
+    result: dict[str, Any] = {
+        "preset_slug": BROAD_SCAN, "timeframe": ",".join(SCAN_TIMEFRAMES), "scanned_timeframes": list(SCAN_TIMEFRAMES),
+        "candidates": routeable[:BROAD_MAX_RESULTS], "conditional": capped(conditional), "scanned_count": len(scans),
+        "coverage": mandate_coverage(scopes), "uncovered_coins": uncovered[:NOT_TRADEABLE_LIMIT],
+        "untradeable_setups": other[:BROAD_MAX_RESULTS], "unavailable": unavailable[:BROAD_UNAVAILABLE_LIMIT],
+        "partial": bool(unavailable), "rejections": _rejection_summary(rejections),
+        "as_of": datetime.datetime.now(datetime.UTC).isoformat(),
+        "scope_note": (f"Broad scan: every catalog preset on {', '.join(SCAN_TIMEFRAMES)} on closed bars"
+                       f"{', result partial: see `unavailable`' if unavailable else ''}; plus stored scanner setups of "
+                       f"the last {SCANNER_SETUP_WINDOW_H} h. `conditional` items have not fired and are never a trade."),
+    }
+    if fed is None:
+        result["feed_note"] = "The live feed universe could not be read: only coins with lake bars were scanned."
     return json.dumps(result)
 
 

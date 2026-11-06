@@ -342,6 +342,44 @@ export interface SwingCandidateItem {
   debate?: { run_id: string; recommendation: string | null; conviction_score: number | null; against: boolean; policies?: Record<string, string> | null } | null;
   debate_status?: string | null;
   replay?: { trades: number | null; win_rate: number | null; avg_r: number | null } | null;
+  /** H15, broad scan only: set by the server, with every preset behind this coin, side and timeframe. */
+  status?: "CANDIDATE" | null;
+  contributing_presets?: Array<{ preset_slug: string; entry: number; stop: number; target: number; rr_ratio: number }>;
+}
+
+/** H15: one trigger away on the newest closed bar. It has not fired: no levels and no order action. */
+export interface ConditionalCondition {
+  field: string;
+  operator: string;
+  compared_to: string | number;
+  field_value: number | null;
+  compared_value: number | null;
+}
+
+export interface ConditionalItem {
+  instrument_id: string;
+  direction: "LONG" | "SHORT";
+  timeframe: string;
+  preset_slug: string;
+  status: "CONDITIONAL";
+  as_of: string;
+  bar_close: string;
+  expires_at: string;
+  trigger: ConditionalCondition;
+  also_required?: ConditionalCondition[];
+  invalidation?: ConditionalCondition[];
+  /** null: the profiles' preset picks could not be read. */
+  monitored?: boolean | null;
+}
+
+/** H15: a scope the broad scan could not judge. */
+export interface UnavailableScope {
+  instrument_id: string;
+  preset_slug: string;
+  timeframe: string;
+  status: "UNAVAILABLE";
+  reason: string;
+  detail?: string | null;
 }
 
 /** H5: a coverage note from the swing scan, never a setup. */
@@ -363,6 +401,8 @@ export interface UntradeableSetupItem {
   bar_close?: string | null;
   source?: "live_scan" | "scanner";
   reason: string;
+  /** H15, broad scan only. REJECTED: a named rule failed, so covering the coin would not help. */
+  status?: "RESEARCH_ONLY" | "REJECTED" | null;
 }
 
 export interface ScanRejections {
@@ -381,6 +421,9 @@ export interface SwingRadarWidget {
   uncovered_coins?: UncoveredCoinItem[];
   untradeable_setups?: UntradeableSetupItem[];
   rejections?: ScanRejections | null;
+  conditional?: ConditionalItem[];
+  unavailable?: UnavailableScope[];
+  partial?: boolean;
 }
 
 /** The read-only tool's resolved spec; the API rechecks it when the operator creates a profile. */

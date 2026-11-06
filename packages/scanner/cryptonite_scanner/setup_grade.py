@@ -23,6 +23,8 @@ steps (A -> B -> C -> NO_TRADE), the liquidity cap and the unknown-input cap. NO
 4h and the 1h trend both run against the trade.
 """
 
+import math
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
@@ -233,6 +235,38 @@ def funding_rate_8h(rate: float | None, interval_hours: float | None) -> float |
         return None
     hours = interval_hours if interval_hours in (1.0, 2.0, 4.0, 8.0) else 8.0
     return float(rate) * 8.0 / hours
+
+
+def settlement_interval_hours(rows: Iterable[Mapping[str, Any]]) -> float | None:
+    """The funding interval from ``funding_rates`` rows, newest first: the stored interval, else the gap between the two
+    newest settlements. None when neither says."""
+    rows = list(rows)
+    if rows and rows[0].get("funding_interval_hours"):
+        return float(rows[0]["funding_interval_hours"])
+    if len(rows) >= 2:
+        return (int(rows[0]["funding_time_ns"]) - int(rows[1]["funding_time_ns"])) / 3.6e12
+    return None
+
+
+FUNDING_CARRY_VERSION = "funding-carry-v1"
+CARRY_CROWDED_R = 0.10
+CARRY_HOLD_HOURS: Mapping[str, int] = {"5m": 12, "15m": 24, "1h": 72, "4h": 168}  # candidate_outcomes' hold limits
+
+
+def funding_carry(side: str, entry: float, stop: float, rate: float | None, interval_hours: float | None,
+                  timeframe: str | None) -> dict[str, Any]:
+    """``funding-carry-v1``: the funding a trade would pay over its planned hold, in R, at the live rate held constant.
+    Recorded for comparison only: nothing live reads it, and ``net_r_live`` keeps its own cost model. A changed rule
+    is a new version. Missing data is UNKNOWN, never an assumed interval."""
+    out: dict[str, Any] = {"version": FUNDING_CARRY_VERSION, "rate": rate, "interval_hours": interval_hours,
+                           "hold_hours": CARRY_HOLD_HOURS.get(timeframe or "")}
+    if rate is None or interval_hours not in (1.0, 2.0, 4.0, 8.0) or out["hold_hours"] is None or entry == stop:
+        return {**out, "carry_status": "UNKNOWN"}
+    settlements = math.ceil(out["hold_hours"] / interval_hours)
+    adverse = rate > 0 if side == "LONG" else rate < 0
+    carry = abs(rate) * settlements * entry / abs(entry - stop) if adverse else 0.0
+    return {**out, "carry_status": "KNOWN", "settlements": settlements, "carry_r": round(carry, 4),
+            "crowded": carry > CARRY_CROWDED_R}
 
 
 def regime_trend_inputs(bars_1h) -> dict[str, float | None]:
