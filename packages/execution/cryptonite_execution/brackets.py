@@ -122,8 +122,9 @@ async def open_entry_market(redis, market: Market, instrument_id: str, markets: 
         return market
     try:
         await load_brackets(redis)
-    except Exception as e:  # noqa: BLE001 - the cached tables stay as they are; a missing table is what is read below
+    except Exception as e:  # noqa: BLE001 - a failed read says nothing about the table: the perp route decides
         logger.warning("Could not load leverage brackets: %s", e)
+        return market
     if bracket_source(instrument_for(spot, Market.PERP)).entry_reject is None:
         return market
     logger.info("%s: no usable leverage brackets, entry routes to spot margin", spot)
