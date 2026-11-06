@@ -1920,8 +1920,9 @@ def test_the_brain_prompt_says_missing_data_is_neutral_and_chop_is_not_an_automa
         ("An operator's explicit trade request follows rule 5 as before, with the reward-to-risk stated, not refused "
          "for being under 1.5 times the risk."),
         ("Use get_market_regime with the timeframe the operator asked about."),
-        ("When you do not recommend a trade, end with a concrete plan: the trigger that would make it a trade (a level "
-         "and what must happen there), the stop and the target — or what would invalidate the idea."),
+        ("When you do not recommend a trade, say why. Give a trigger, stop and target only from levels a tool returned "
+         "this turn or that you measured from its bars; otherwise say which data is missing or what would invalidate "
+         "the idea, and never invent levels."),
         ("Never say you will monitor, watch, alert or come back later: you only run when the operator writes. Offer to "
          "stage a debate, or tell the operator what to watch."),
     ]

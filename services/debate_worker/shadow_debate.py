@@ -12,12 +12,13 @@ import logging
 import os
 from decimal import Decimal
 
-from cryptonite_agents.debate_fleet import DEBATE_LITE_SHADOW
+from cryptonite_agents.debate_fleet import DEBATE_LITE_SHADOW, DEBATE_LITE_SHADOW_V2
 from cryptonite_agents.gateway import BudgetExceeded, CallContext
-from shadow_eval import PROMPT_VERSION
+from shadow_eval import PROMPT_VERSION, PROMPT_VERSION_V2
 
 logger = logging.getLogger("debate_worker.shadow_debate")
 
+SHADOW_PROMPTS = ((PROMPT_VERSION, DEBATE_LITE_SHADOW), (PROMPT_VERSION_V2, DEBATE_LITE_SHADOW_V2))
 SHADOW_TIMEOUT_S = 45
 SHADOW_DAILY_USD_CAP = Decimal("1.00")
 _REASONING_MAX = 2000
@@ -29,7 +30,7 @@ _SPENT_TODAY = (
 )
 _INSERT = (
     "INSERT INTO shadow_debate_verdicts (candidate_id, run_id, prompt_version, state, recommendation, conviction, "
-    "reasoning, model, cost_usd) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (candidate_id) DO NOTHING"
+    "reasoning, model, cost_usd) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (candidate_id, prompt_version) DO NOTHING"
 )
 
 
@@ -51,42 +52,47 @@ def spawn(pg_pool, gateway, candidate_id, run_id, prompt: str) -> asyncio.Task |
         return None
 
 
-async def _write(pg_pool, candidate_id, run_id, state: str, *, recommendation=None, conviction=None, reasoning=None,
+async def _write(pg_pool, version: str, candidate_id, run_id, state: str, *, recommendation=None, conviction=None, reasoning=None,
                  model=None, cost_usd=None) -> None:
     async with pg_pool.acquire() as conn:
-        await conn.execute(_INSERT, candidate_id, run_id, PROMPT_VERSION, state, recommendation, conviction,
+        await conn.execute(_INSERT, candidate_id, run_id, version, state, recommendation, conviction,
                            reasoning[:_REASONING_MAX] if reasoning else None, model, cost_usd)
 
 
-async def _call(pg_pool, gateway, candidate_id, run_id, prompt: str) -> None:
+async def _call(pg_pool, gateway, version: str, persona, candidate_id, run_id, prompt: str) -> None:
     async with pg_pool.acquire() as conn:
         spent = Decimal(str(await conn.fetchval(_SPENT_TODAY)))
     if spent >= SHADOW_DAILY_USD_CAP:
-        await _write(pg_pool, candidate_id, run_id, "SKIPPED_BUDGET", reasoning=f"spent ${spent} of ${SHADOW_DAILY_USD_CAP} today")
+        await _write(pg_pool, version, candidate_id, run_id, "SKIPPED_BUDGET", reasoning=f"spent ${spent} of ${SHADOW_DAILY_USD_CAP} today")
         return
     try:
         result = await asyncio.wait_for(
-            DEBATE_LITE_SHADOW.run(gateway, prompt, context=CallContext(role=DEBATE_LITE_SHADOW.role)),
+            persona.run(gateway, prompt, context=CallContext(role=persona.role)),
             timeout=SHADOW_TIMEOUT_S)
     except TimeoutError:
-        await _write(pg_pool, candidate_id, run_id, "TIMEOUT", reasoning=f"no answer within {SHADOW_TIMEOUT_S} s")
+        await _write(pg_pool, version, candidate_id, run_id, "TIMEOUT", reasoning=f"no answer within {SHADOW_TIMEOUT_S} s")
         return
     except BudgetExceeded as e:  # the gateway's global budget, or this role's own cap
-        await _write(pg_pool, candidate_id, run_id, "SKIPPED_BUDGET", reasoning=str(e))
+        await _write(pg_pool, version, candidate_id, run_id, "SKIPPED_BUDGET", reasoning=str(e))
         return
     except Exception as e:
         logger.warning("shadow debate call for candidate %s failed: %s", candidate_id, e)
-        await _write(pg_pool, candidate_id, run_id, "ERROR", reasoning=f"{type(e).__name__}: {e}")
+        await _write(pg_pool, version, candidate_id, run_id, "ERROR", reasoning=f"{type(e).__name__}: {e}")
         return
     output = result.output
-    await _write(pg_pool, candidate_id, run_id, "OK", recommendation=output.recommendation,
+    await _write(pg_pool, version, candidate_id, run_id, "OK", recommendation=output.recommendation,
                  conviction=output.conviction_score, reasoning=output.reasoning, model=result.model,
                  cost_usd=result.cost_usd)
 
 
 async def run_shadow(pg_pool, gateway, candidate_id, run_id, prompt: str) -> None:
-    """The whole shadow step, catching everything (a cancel at shutdown too): nothing leaves this task."""
+    """The whole shadow step, one call per prompt version, catching everything (a cancel at shutdown too): nothing
+    leaves this task, and one version's failure never stops the other's."""
     try:
-        await _call(pg_pool, gateway, candidate_id, run_id, prompt)
+        results = await asyncio.gather(*(_call(pg_pool, gateway, version, persona, candidate_id, run_id, prompt)
+                                         for version, persona in SHADOW_PROMPTS), return_exceptions=True)
+        for (version, _), result in zip(SHADOW_PROMPTS, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning("shadow %s for candidate %s ended without a row: %s", version, candidate_id, result)
     except BaseException as e:
         logger.warning("shadow debate for candidate %s ended without a row: %s: %s", candidate_id, type(e).__name__, e)

@@ -42,3 +42,7 @@ Fixed here so that they cannot be chosen after seeing results:
 - A BUY or SELL against the setup's direction is a SKIP.
 
 The report can be run at any time, but repeated looks raise the chance of a lucky PASS. Treat a PASS as the start of the operator's decision, not as its end.
+
+## Amendment, 2026-11-06: prompt `shadow-v2`
+
+`shadow-v2` answers the same setups beside `shadow-v1`, in the same isolation and under the same daily spend cap. It asks for the strongest supported case on each side, says mixed signals alone do not decide, returns HOLD when essential evidence is missing, and treats `conviction_score` as confidence rather than a win probability. Its text is frozen and it counts from zero under the unchanged pass mark above. `shadow-v1` keeps its own count. The table's key is now `(candidate_id, prompt_version)`. The report prints one verdict per version, so reading two versions adds another chance of a lucky PASS. The live lite prompt does not change.

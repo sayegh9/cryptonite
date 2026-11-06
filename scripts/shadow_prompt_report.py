@@ -25,7 +25,7 @@ for _path in (_HERE.parent / "services" / "debate_worker", _HERE):
 
 import asyncpg  # noqa: E402
 from cryptonite_storage.queries import AnalyticsQueryEngine  # noqa: E402
-from shadow_eval import REGIMES, Row, evaluate, regime_at  # noqa: E402
+from shadow_eval import PROMPT_VERSIONS, REGIMES, Row, evaluate, regime_at  # noqa: E402
 
 _NS = 10**9
 _REGIME_MARGIN_NS = 26 * 3600 * _NS
@@ -77,7 +77,12 @@ def _line(name: str, f: dict) -> str:
 
 
 def render(raw: list, bars: dict[str, list[tuple[int, float]]]) -> str:
-    verdict = evaluate([_row(r, bars) for r in raw])
+    return "\n\n".join(_render_version(version, [r for r in raw if r["prompt_version"] == version], bars)
+                       for version in PROMPT_VERSIONS)
+
+
+def _render_version(version: str, raw: list, bars: dict[str, list[tuple[int, float]]]) -> str:
+    verdict = evaluate([_row(r, bars) for r in raw], version)
     s = verdict.stats
     today = datetime.datetime.now(datetime.UTC).date()
     states = Counter(r["state"] for r in raw)
