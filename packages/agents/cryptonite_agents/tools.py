@@ -2312,7 +2312,7 @@ async def scan_swing_setups(
     max_results: int = 5,
     symbol: str | None = None,
 ) -> str:
-    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, 'all' for those six swing presets, or 'broad' for every catalog preset on every timeframe with the watchlist), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups; `coverage` lists each ACTIVE mandate's coins, markets and direction (LONG-only, SHORT-only or BOTH). `rejections` counts why each coin and preset gave no candidate on its latest bar."""
+    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, 'all' for those six swing presets, or 'broad' for every catalog preset on every timeframe with the watchlist), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no matching routeable preset fired in the scanned scope and the scanner found nothing recent: it says nothing about other price action, coins or timeframes, so never call it "no trade" for the market, and never invent a setup from it. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups; `coverage` lists each ACTIVE mandate's coins, markets and direction (LONG-only, SHORT-only or BOTH). `rejections` counts why each coin and preset gave no candidate on its latest bar."""
     import polars as pl
     from cryptonite_scanner.engine import ScannerEngine
     from cryptonite_scanner.models import RiskConfig
@@ -2625,10 +2625,12 @@ async def scan_swing_setups(
         result["feed_note"] = "The live feed universe could not be read: only coins with lake bars were scanned."
     if not deduped:
         scope = target_sym or "the fed coins your ACTIVE mandates cover"
-        result["note"] = (f"No routeable setup on {scope} at {timeframe} (a preset fired on a covered side with reward "
-                          f"at least {SCAN_MIN_RR}x the risk), and none from the scanner in the last "
-                          f"{SCANNER_SETUP_WINDOW_H} hours; no setup. `uncovered_coins` are coverage notes, not "
-                          "setups; `untradeable_setups` are real matches that cannot be traded yet, with the reason.")
+        result["note"] = (f"No matching routeable preset on {scope} at {timeframe} (a preset fired on a covered side "
+                          f"with reward at least {SCAN_MIN_RR}x the risk), and none from the scanner in the last "
+                          f"{SCANNER_SETUP_WINDOW_H} hours. This covers only these presets and timeframes, not other "
+                          "price action: it does not show the market has no trade. `uncovered_coins` are coverage "
+                          "notes, not setups; `untradeable_setups` are real matches that cannot be traded yet, with "
+                          "the reason.")
     return json.dumps(result)
 
 

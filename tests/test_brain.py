@@ -2033,3 +2033,47 @@ async def test_brain_eval_case_15_reads_the_regime_on_the_timeframe_the_operator
     with override_model(PLANNER, wrong.model()):
         bad = await eval_runner.run_case(Gateway(routes=routes(), budget=BudgetGuard()), case, PLANNER)
     assert not bad.passed and bad.checks["args_as_expected"] is False
+
+
+# --- Price-action evidence: the Brain can read closed lake bars, and a scan miss is scoped ----------------------
+
+def test_recent_bars_is_a_read_only_brain_tool_kept_in_the_degraded_set():
+    from cryptonite_agents.brain.agent import BRAIN_READONLY_TOOLS  # noqa: PLC0415
+    from cryptonite_agents.tools import GET_KLINES, RECENT_BARS  # noqa: PLC0415
+
+    assert RECENT_BARS in BRAIN_TOOLS and GET_KLINES in BRAIN_TOOLS
+    assert RECENT_BARS.risk is RiskClass.READ and not RECENT_BARS.side_effects
+    assert RECENT_BARS in BRAIN_READONLY_TOOLS
+
+
+def test_brain_instructions_scope_a_scan_miss_and_ask_for_bar_evidence():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    assert "get_recent_bars" in BRAIN_INSTRUCTIONS
+    assert "not that the market has no trade" in BRAIN_INSTRUCTIONS
+    assert "never as a finding about the market" in BRAIN_INSTRUCTIONS
+    assert "not data you have read" in BRAIN_INSTRUCTIONS  # a chart widget is not candle data
+
+
+def test_scan_tool_description_no_longer_claims_there_is_no_setup():
+    from cryptonite_agents.tools import SCAN_SWING_SETUPS  # noqa: PLC0415
+
+    doc = SCAN_SWING_SETUPS.func.__doc__
+    assert "there is no setup" not in doc
+    assert "no matching routeable preset" in doc and "never call it \"no trade\"" in doc
+
+
+async def test_brain_turn_reads_recent_bars_and_sees_an_incomplete_window(monkeypatch):
+    from cryptonite_agents import tools as tools_mod  # noqa: PLC0415
+
+    incomplete = {"instrument_id": "BTCUSDT.BINANCE", "timeframe": "15m", "expected": 60, "returned": 57,
+                  "missing": 3, "complete": False, "newest_bar_close": "2026-11-07T10:00:00+00:00",
+                  "newest_bar_age_minutes": 2.0, "bars": []}
+    monkeypatch.setattr(tools_mod, "recent_bars", lambda *a, **k: incomplete)
+    script = Script([("get_recent_bars", {"instrument_id": "BTCUSDT.BINANCE", "timeframe": "15m", "n": 60})],
+                    ["3 of 60 bars are missing, so this read is incomplete."])
+    with override_model(PLANNER, script.model()):
+        events = await collect(gw().stream(BRAIN_PLAN, "price action on BTC 15m", tools=BRAIN_TOOLS))
+    assert {e.data["tool"]: e.data["status"] for e in events if e.kind == "tool_result"} == {"get_recent_bars": "OK"}
+    seen = json.loads(next(r for r in script.returns if r.tool_name == "get_recent_bars").content)
+    assert seen["complete"] is False and seen["missing"] == 3
