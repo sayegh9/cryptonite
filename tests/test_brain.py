@@ -2061,6 +2061,7 @@ def test_scan_tool_description_no_longer_claims_there_is_no_setup():
     doc = SCAN_SWING_SETUPS.func.__doc__
     assert "there is no setup" not in doc
     assert "no matching routeable preset" in doc and "never call it \"no trade\"" in doc
+    assert "A broad scan has no `note`" in doc and "missing data, not a finding" in doc
 
 
 async def test_brain_turn_reads_recent_bars_and_sees_an_incomplete_window(monkeypatch):
