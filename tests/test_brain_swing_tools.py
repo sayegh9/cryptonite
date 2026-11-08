@@ -154,11 +154,11 @@ async def test_scan_swing_setups_no_preset_match_returns_empty_with_note(monkeyp
     assert data["scanned_count"] == 1  # only BTC has bars; REST finds nothing for the rest
     assert "as_of" in data
     assert data["candidates"] == []
-    assert data["note"].startswith("No routeable setup on the fed coins your ACTIVE mandates cover at 1h")
+    assert data["note"].startswith("No matching routeable preset on the fed coins your ACTIVE mandates cover at 1h")
 
     data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="4h"))
     assert data["candidates"] == []
-    assert data["note"].startswith("No routeable setup on BTCUSDT at 4h")
+    assert data["note"].startswith("No matching routeable preset on BTCUSDT at 4h")
 
 
 @pytest.mark.asyncio
@@ -534,7 +534,7 @@ async def test_dot_quote_and_bare_symbol_normalization_in_klines_and_swing_scan(
     swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
     assert swing_out["scanned_count"] == 1
     assert swing_out["candidates"] == []  # no preset fires on these bars, and none is made up
-    assert swing_out["note"].startswith("No routeable setup on MUBARAKUSDT at 1h")
+    assert swing_out["note"].startswith("No matching routeable preset on MUBARAKUSDT at 1h")
 
     monkeypatch.setattr(ScannerEngine, "evaluate", _fake_evaluate())
     swing_out = json.loads(await scan_swing_setups(symbol="MUBARAK.USDT", timeframe="1h", max_results=3))
@@ -686,4 +686,61 @@ async def test_scan_swing_setups_drops_scanner_setup_when_price_moved(monkeypatc
     })
 
     data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
-    assert data["candidates"] == [] and "no setup" in data["note"]
+    assert data["candidates"] == [] and "No matching routeable preset" in data["note"]
+
+
+@pytest.mark.asyncio
+async def test_empty_scan_note_is_scoped_to_presets_not_the_market(monkeypatch):
+    """A scan miss says which presets and timeframe found nothing; it never says the market has no setup."""
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(lambda cls, *a, **k: []))
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
+    assert data["candidates"] == []
+    note = data["note"]
+    assert note.startswith("No matching routeable preset on BTCUSDT at 1h")
+    assert "no setup" not in note.lower() and "not other price action" in note
+    assert "does not show the market has no trade" in note
+    assert data["scope_note"].startswith("Scanned BTCUSDT with live presets on: ")
+
+
+@pytest.mark.asyncio
+async def test_a_scan_with_no_bars_reports_missing_data_not_a_miss(monkeypatch):
+    """Nothing evaluated (no lake bars, REST unavailable) is missing data, never 'no matching preset'."""
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: pl.DataFrame())
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
+    assert data["candidates"] == [] and data["scanned_count"] == 0
+    assert data["note"].startswith("No bars could be read for BTCUSDT at 1h")
+    assert "missing data, not a finding" in data["note"] and "No matching routeable preset" not in data["note"]
+
+
+@pytest.mark.asyncio
+async def test_failed_scanner_and_mandate_reads_are_reported_as_missing_evidence(monkeypatch):
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(lambda cls, *a, **k: []))
+
+    def boom(sql):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("cryptonite_agents.tools._readonly_rows", boom)
+    monkeypatch.setattr("cryptonite_agents.tools._active_scopes", lambda: None)
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
+    assert data["candidates"] == []
+    assert data["missing_evidence"] == ["scanner_setups", "active_mandates"]
+    assert "stored scanner setups could not be read" in data["note"]
+    assert "scanner evidence is missing" in data["scope_note"]
+    assert "ACTIVE mandates could not be read" in data["note"] and "routeable is unknown" in data["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_clean_miss_has_no_missing_evidence(monkeypatch):
+    synthetic_bars = make_synthetic_1m_bars(num_bars=1500, start_price=60000.0, drift=5.0)
+    monkeypatch.setattr(DuckDBLakeRepository, "load_bars", lambda self, symbol, *a, **k: synthetic_bars)
+    monkeypatch.setattr(ScannerEngine, "evaluate", classmethod(lambda cls, *a, **k: []))
+
+    data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
+    assert "missing_evidence" not in data and "no routeable setup stored by the scanner" in data["note"]

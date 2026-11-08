@@ -39,6 +39,7 @@ from cryptonite_agents.tools import (
     NEWS_SENTIMENT,
     QUERY_PARQUET,
     QUERY_POSTGRES,
+    RECENT_BARS,
     SCAN_SWING_SETUPS,
     SCANNER_CONTEXT,
     STAGE_DEBATE_PROPOSAL,
@@ -140,6 +141,7 @@ def propose_order(
 
 BRAIN_TOOLS = (
     LIVE_MARKET_DATA,
+    RECENT_BARS,
     GET_KLINES,
     NEWS_SENTIMENT,
     DERIVATIVES_CONTEXT,

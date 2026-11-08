@@ -2120,7 +2120,8 @@ def _swing_score(direction: str, trend_4h: str, trend_1h: str, trend_15m: str) -
     return float(round(max(0.0, min(100.0, score)), 1))
 
 
-def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, dict[str, Any]],
+                           read_errors: list[str] | None = None) -> list[dict[str, Any]]:
     """The latest fresh setup per instrument, preset and timeframe that the system scanner stored, shaped like a swing
     candidate. Only ``target_inst`` when it is given. H9: fresh by its bar close (``fresh_row_age_s``: about 3 bars
     of its timeframe, at most SCANNER_SETUP_WINDOW_H hours, live scans only), never by ``created_at``: a rescan
@@ -2146,6 +2147,8 @@ def _recent_scanner_setups(target_inst: str | None, frames_by_inst: dict[str, di
         rows = _readonly_rows(sql)
     except Exception as e:
         logger.warning("Could not read the recent scanner setups; the swing scan shows its own only: %s", e)
+        if read_errors is not None:
+            read_errors.append("scanner_setups")
         return []
     out: list[dict[str, Any]] = []
     now_s = time.time()
@@ -2312,7 +2315,7 @@ async def scan_swing_setups(
     max_results: int = 5,
     symbol: str | None = None,
 ) -> str:
-    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, 'all' for those six swing presets, or 'broad' for every catalog preset on every timeframe with the watchlist), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). An empty `candidates` list (with a `note`) means no preset fired and the scanner found nothing recent: there is no setup, so do not invent one. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups; `coverage` lists each ACTIVE mandate's coins, markets and direction (LONG-only, SHORT-only or BOTH). `rejections` counts why each coin and preset gave no candidate on its latest bar."""
+    """Scan the liquid universe, or only `symbol` when one is given (e.g. 'SOLUSDT'), with the long and short multi-timeframe swing presets ('swing-trend-pullback-1h', 'swing-sniper-pullback-15m', 'swing-squeeze-breakout-1h', their '-short' twins such as 'swing-squeeze-breakdown-short-1h', any profile preset slug, 'all' for those six swing presets, or 'broad' for every catalog preset on every timeframe with the watchlist), and add the setups the system scanner itself found in the last few hours (`source` "scanner", with `age_minutes`). Return real setups only: side (LONG/SHORT), Entry, Stop, Target (TP1), R:R, 4h/1h/15m trend, matched rules, the timeframe each was found on, and `source` ("live_scan" or "scanner"). For a non-broad scan, an empty `candidates` list (with a `note`) means no matching routeable preset fired in the scanned scope and the scanner stored no routeable setup recently: it says nothing about other price action, coins or timeframes, so never call it "no trade" for the market, and never invent a setup from it. When the `note` says bars, stored scanner setups or the ACTIVE mandates could not be read, that part is missing data, not a finding. A broad scan has no `note`: read its `scope_note`, `partial` and `unavailable`. `untradeable_setups` are real preset matches (with `bar_close` and `reason`) on coins not fed or not covered, or below 1.5 R:R: informational, never a trade to take. `uncovered_coins` are coverage notes, never setups; `coverage` lists each ACTIVE mandate's coins, markets and direction (LONG-only, SHORT-only or BOTH). `rejections` counts why each coin and preset gave no candidate on its latest bar."""
     import polars as pl
     from cryptonite_scanner.engine import ScannerEngine
     from cryptonite_scanner.models import RiskConfig
@@ -2352,7 +2355,8 @@ async def scan_swing_setups(
     # H4: only coins the live feed records and an ACTIVE mandate covers are tradeable. H5: `uncovered_coins` holds
     # the coverage notes (never a setup); the discovery coins outside that set are searched too (over REST), and a
     # preset match on one is an `untradeable_setups` entry, never a candidate.
-    scopes = _active_scopes() or []
+    scopes_read = _active_scopes()
+    scopes = scopes_read or []
     fed = _fed_symbols()
     uncovered_coins: list[dict[str, Any]] = []
     untradeable_setups: list[dict[str, Any]] = []
@@ -2416,6 +2420,7 @@ async def scan_swing_setups(
             }
 
     HTF_MAP = {"15m": "1h", "1h": "4h", "4h": "1d"}
+    read_errors: list[str] = []  # the evidence this scan could not read (missing data, never a finding)
     candidates: list[dict[str, Any]] = []
     # H5: what each coin x preset's latest evaluation came to when it gave no candidate (REJECTED_RR is added below)
     rejections: list[dict[str, str]] = []
@@ -2560,7 +2565,7 @@ async def scan_swing_setups(
     # same real setups. Read-only; a failed read only means none are added.
     candidates.extend({**c, "in_feed": c["instrument_id"] in scan_universe or fed is None
                        or c["instrument_id"].split(".")[0] in fed}
-                      for c in _recent_scanner_setups(target_inst, frames_by_inst))
+                      for c in _recent_scanner_setups(target_inst, frames_by_inst, read_errors))
 
     # Every setup must be routeable: a mandate side and market for it, and the reward at least 1.5x the risk. The
     # cost of the round trip is shown in R (fees and slippage, plus funding for a perp, over a 24 h hold).
@@ -2623,12 +2628,29 @@ async def scan_swing_setups(
                             "scanned, so nothing is claimed about them.")
     if fed is None:
         result["feed_note"] = "The live feed universe could not be read: only coins with lake bars were scanned."
+    if scopes_read is None:
+        read_errors.append("active_mandates")
+    if read_errors:
+        result["missing_evidence"] = read_errors
+    if "scanner_setups" in read_errors:
+        result["scope_note"] += " The stored scanner setups could not be read: scanner evidence is missing."
     if not deduped:
         scope = target_sym or "the fed coins your ACTIVE mandates cover"
-        result["note"] = (f"No routeable setup on {scope} at {timeframe} (a preset fired on a covered side with reward "
-                          f"at least {SCAN_MIN_RR}x the risk), and none from the scanner in the last "
-                          f"{SCANNER_SETUP_WINDOW_H} hours; no setup. `uncovered_coins` are coverage notes, not "
-                          "setups; `untradeable_setups` are real matches that cannot be traded yet, with the reason.")
+        if not bars_by_inst:
+            note = (f"No bars could be read for {scope} at {timeframe}, so no preset was evaluated: this is missing "
+                    "data, not a finding about the market.")
+        else:
+            note = (f"No matching routeable preset on {scope} at {timeframe} (a preset fired on a covered side with "
+                    f"reward at least {SCAN_MIN_RR}x the risk), and no routeable setup stored by the scanner in the "
+                    f"last {SCANNER_SETUP_WINDOW_H} hours. This covers only these presets and timeframes, not other "
+                    "price action: it does not show the market has no trade.")
+        if "scanner_setups" in read_errors:
+            note += " The stored scanner setups could not be read, so scanner evidence is missing."
+        if scopes_read is None:
+            note += (" The ACTIVE mandates could not be read, so which coins and sides are routeable is unknown; "
+                     "`uncovered_coins` may list a coin only because of that.")
+        result["note"] = note + (" `uncovered_coins` are coverage notes, not setups; `untradeable_setups` are real "
+                                 "matches that cannot be traded yet, with the reason.")
     return json.dumps(result)
 
 
