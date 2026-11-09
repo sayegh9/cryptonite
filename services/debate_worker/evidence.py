@@ -521,14 +521,61 @@ _QUALIFIED_CLOSE = (rf"(?:\b|d\b(?!\s+{_BAR_INTERVAL}))"
                     rf"(?:\s*\(?\s*(?:(?:on|of|for)\s+(?:the\s+)?)?{_BAR_INTERVAL}\s*\)?)?"
                     rf"[^.\n\d]{{0,25}}(?!{_BAR_INTERVAL})")
 _CLOSE_PRICE = re.compile(rf"\blast close(?:{_NAMED_BAR_CLOSE}|{_QUALIFIED_CLOSE})" + _NUM, re.IGNORECASE)
+# Between a label and its figure the gap may hold a bar count or a timeframe ("the window low over the 48 1h bars was
+# 1.0817", "for the entire 48-bar period (down to 0.3213)"); those are never the figure.
+_GAP_COUNT = rf"(?:\d+(?:[\s-]+{_BAR_INTERVAL})?[\s-]+(?:bars?|candles?)\b|{_BAR_INTERVAL})"
+_GAP = rf"(?:[^.\n\d)]|{_GAP_COUNT}){{0,30}}?"
+# ... and the figure itself is not one: "48" in "48 bars", "48 1h bars" or "48h"
+_NOT_A_COUNT = rf"(?![\d.,]*[\s-]*(?:{_BAR_INTERVAL}[\s-]+)?(?:bars?|candles?)\b|\s*[smhdw]\b)"
 _BAR_CLAIMS = (
     ("net_change_pct", re.compile(r"net change[^.\n%\d-]{0,30}" + _NUM + r"\s*%", re.IGNORECASE), "pct"),
-    ("window_high", re.compile(r"window high[^.\n\d]{0,25}" + _NUM, re.IGNORECASE), "price"),
-    ("window_low", re.compile(r"window low[^.\n\d]{0,25}" + _NUM, re.IGNORECASE), "price"),
+    ("window_high", re.compile(r"window high" + _GAP + _NUM + _NOT_A_COUNT, re.IGNORECASE),
+     "price"),
+    ("window_low", re.compile(r"window low" + _GAP + _NUM + _NOT_A_COUNT, re.IGNORECASE),
+     "price"),
     ("last_close", _CLOSE_PRICE, "price"),
     ("lower_lows", re.compile(r"\b(\d+)\s+lower lows\b", re.IGNORECASE), "count"),
     ("higher_highs", re.compile(r"\b(\d+)\s+higher highs\b", re.IGNORECASE), "count"),
 )
+
+
+# A claim whose clause names its own window is about other bars than the snapshot's summary: a timeframe ("on the 1d
+# timeframe", "1-hour") or a bar count ("over the last 50 bars").
+_TIMEFRAME_WORD = re.compile(
+    r"\b(\d+)[\s-]*(m|min|minutes?|h|hr|hours?|d|days?|w|weeks?)\b(?![\s-]*(?:ago|later|old)\b)", re.IGNORECASE)
+# "over 47 bar pairs" is the measured window's comparisons, and "the 22:00 bar" a time, neither a bar count
+_BAR_COUNT = re.compile(rf"(?<![:\d])\b(\d+)(?:[\s-]+{_BAR_INTERVAL})?[\s-]+(?:bars?|candles?)\b(?![\s-]+pairs?\b)",
+                        re.IGNORECASE)
+_UNIT_MINUTES = {"m": 1, "h": 60, "d": 1440, "w": 10080}
+_VOLUME_OF = re.compile(r"\bvolume\s+(?:on|of|for|in|at)\s+(?:the\s+)?$", re.IGNORECASE)  # "the volume on the ..."
+
+
+def _minutes(number: str, unit: str) -> int:
+    u = unit.lower()
+    return int(number) * _UNIT_MINUTES["m" if u.startswith("mi") or u == "m" else u[0]]
+
+
+def _other_window(clause: str, timeframe: str | None, bars: int | None) -> bool:
+    """The clause names a timeframe or a bar count other than the measured window's."""
+    own = _TIMEFRAME_WORD.fullmatch(timeframe or "")
+    own_minutes = _minutes(own.group(1), own.group(2)) if own else None
+    if own_minutes is not None:
+        # "48 hours" or "48-hour bars" is the measured window's span (48 x 1h), not another timeframe
+        same = {own_minutes, own_minutes * bars} if bars else {own_minutes}
+        if any(_minutes(n, u) not in same for n, u in _TIMEFRAME_WORD.findall(clause)):
+            return True
+    return bars is not None and any(int(n) != bars for n in _BAR_COUNT.findall(clause))
+
+
+_CLAUSE = re.compile(r"\.(?!\d)|[\n;!?,()]|\s(?:and|while|but|whereas)\s", re.IGNORECASE)
+
+
+def _clause_around(text: str, start: int, end: int) -> str:
+    """The claim from its label to its figure, widened to the clause it sits in: one sentence often names several
+    windows ("1.42% over the last 50 bars, and a net change of 3.5% over the last 48 1h bars")."""
+    starts = [m.end() for m in _CLAUSE.finditer(text, 0, start)]
+    after = _CLAUSE.search(text, end)
+    return text[starts[-1] if starts else 0:after.start() if after else len(text)]
 
 
 def _flag(role: str, code: str, fact: str, detail: str, essential: bool) -> dict[str, Any]:
@@ -575,13 +622,24 @@ def validate_turn(role: str, text: str, snap: dict[str, Any]) -> list[dict[str, 
             else:
                 continue
             break
-    summary = ((snap["items"].get("bars") or {}).get("value") or {}).get("summary")
+    bars_value = (snap["items"].get("bars") or {}).get("value") or {}
+    summary = bars_value.get("summary")
     if summary:
+        window_bars = summary.get("bars") or bars_value.get("returned")
+        # Every price the snapshot measured: a figure equal to one of them is a measured figure, at worst under another
+        # label ("75571.08 (window low) and 76249.98 (window high)"), never an invented one
+        measured = [float(v) for k in ("window_high", "window_low", "last_close", "first_close")
+                    if (v := summary.get(k)) is not None]
+        measured += [float(v) for v in summary.get("last_closes") or [] if v is not None]
+        quote = snap["items"].get("quote") or {}
+        if quote.get("status") == OK and isinstance(quote.get("value"), (int, float)):
+            measured.append(float(quote["value"]))  # "Window Low:** The current price of 0.33725" is the quote
         for key, pattern, kind in _BAR_CLAIMS:
             truth = summary.get(key)
             if truth is None:
                 continue
-            for raw in pattern.findall(text):
+            for m in pattern.finditer(text):
+                raw = m.group(1)
                 try:
                     x = float(raw.replace(",", ""))
                 except ValueError:
@@ -589,6 +647,13 @@ def validate_turn(role: str, text: str, snap: dict[str, Any]) -> list[dict[str, 
                 ok = (x == float(truth) if kind == "count" else
                       abs(abs(x) - abs(float(truth))) <= max(0.05, 0.02 * abs(float(truth))) if kind == "pct" else
                       _close(x, float(truth), 0.005))
+                if not ok and kind == "price" and any(_close(x, v, 0.0005) for v in measured):
+                    ok = True
+                if not ok and kind == "price" and _VOLUME_OF.search(text[max(0, m.start() - 30):m.start()]):
+                    ok = True  # "the volume on the last closed 1h bar is 3,516,683.1"
+                if not ok and _other_window(_clause_around(text, m.start(), m.end()), bars_value.get("timeframe"),
+                                            window_bars):
+                    ok = True  # "-21.45% on the 1d timeframe", "-0.41% over the last 50 bars"
                 if not ok:
                     flags.append(_flag(role, "BAR_FIGURE_CONTRADICTION", "bars",
                                        f"{key.replace('_', ' ')} written as {raw}, measured {truth}",

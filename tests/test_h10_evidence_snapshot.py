@@ -476,3 +476,58 @@ def test_xrp_close_claim_distinguishes_the_timeframe_from_the_price(claim, block
     assert [(f["code"], f["severity"]) for f in flags] == (
         [("BAR_FIGURE_CONTRADICTION", "BLOCK")] if blocks else []
     )
+
+
+# 2026-11-04..09: every one of the 11 BAR_FIGURE_CONTRADICTION blocks in production was the check's error, not an
+# invented figure. The turns are kept verbatim with the summary and the quote each debate saw.
+REAL_TURNS = json.loads((Path(__file__).parent / "fixtures" / "evidence_contradictions_2026_11.json").read_text())
+
+
+def bars_snap(summary, timeframe="1h", quote=65010.0):
+    return snap_with(quote=evidence.item("OK", quote, source="quote", unit="USD"), bars=evidence.item("OK", {"timeframe": timeframe, "expected": 48, "returned": 48, "missing": 0,
+                                               "complete": True, "newest_bar_close": None, "newest_bar_age_minutes": 1,
+                                               "summary": summary}, source="lake"))
+
+
+@pytest.mark.parametrize("turn", REAL_TURNS, ids=[f"{t['at']}-{t['role']}" for t in REAL_TURNS])
+def test_the_production_false_alarms_no_longer_block(turn):
+    snap = bars_snap(turn["summary"], turn["timeframe"], quote=turn["quote"])
+    assert evidence.validate_turn(turn["role"], turn["text"], snap) == []
+
+
+XRP_SUMMARY = {"bars": 48, "last_close": 1.0842, "window_low": 1.0817, "window_high": 1.1821, "first_close": 1.1764,
+               "net_change_pct": -7.837, "lower_lows": 27, "higher_highs": 17,
+               "last_closes": [1.1113, 1.1059, 1.0948, 1.0915, 1.0842]}
+
+
+@pytest.mark.parametrize(("claim", "blocks"), [
+    # a count or a timeframe between the label and the figure is not the figure
+    ('The "window low" over the 48 1h bars was **1.0817**.', False),
+    ("It is the *window low* for the entire 48-bar period (down to 1.0817).", False),
+    ('The "window low" over the 48 1h bars was **1.20**.', True),
+    ("The window low for the 48-bar period was 1.20.", True),
+    ("Window low: 1.20", True),
+    # a measured figure under another label is not invented; a figure matching nothing is
+    ("Ranging between 1.0817 (window low) and 1.1821 (window high).", False),
+    ("Window Low:** The price of 1.0842 is near the lowest point.", False),
+    ("Window Low:** The price of 1.0500 is the lowest point.", True),
+    ("Proximity to 1h Window Low:** The current price of **1.08425 USD** is only slightly above it.", False),  # quote
+    # a sentence that names another window is about other bars
+    ("A substantial net change, particularly the -21.45% on the 1d timeframe.", False),
+    ("The 1-hour timeframe shows a net change of -0.41% over the last 50 bars.", False),
+    ("The 1h timeframe shows a net change of -21.45% over 48 bars.", True),
+    ("Net change -21.45%.", True),
+    # volume is not a price
+    ("The volume on the last closed 1h bar is 3,516,683.1, elevated.", False),
+    ("The last closed 1h bar was 3,516,683.1.", True),
+    ("After the recent high-volume drop to the window low of 1.16951, a bounce.", True),
+    # "47 bar pairs" and "the 22:00 bar" are not bar counts; "48 hours" is the measured window's span
+    ("A net change of -12.5% with 27 lower lows out of 47 bar pairs.", True),
+    ("Over the past 48 hours the net change was -12.5%.", True),
+    ("The 22:00 bar recorded the window low of 1.20.", True),
+    ("1.42% over the last 50 bars, and a net change of -12.5% over the last 48 1h bars.", True),
+])
+def test_figures_are_read_after_their_label_in_the_measured_window(claim, blocks):
+    flags = evidence.validate_turn("Bear Researcher", claim, bars_snap(XRP_SUMMARY, quote=1.08425))
+    assert bool(flags) is blocks, flags
+    assert all((f["code"], f["severity"]) == ("BAR_FIGURE_CONTRADICTION", "BLOCK") for f in flags)
