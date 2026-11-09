@@ -2,10 +2,12 @@
 
 import json
 import time
+from decimal import Decimal
 
 import pytest
 from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.brackets import open_entry_market, parse_leverage_brackets
+from cryptonite_execution.mandate_store import load_mandate
 from cryptonite_execution.margin import set_live_brackets
 from cryptonite_orchestrator import paper_coverage as pc
 from cryptonite_schemas.marks import quote_tick_key
@@ -194,3 +196,36 @@ async def test_the_coverage_check_keeps_the_perp_refusal_for_a_perp_only_profile
     stale_btc_table()
     m = await profile(h, level=1, markets=("PERP",), max_leverage=3)
     assert await pc.route_refusal(h.pool, h.redis, m, SPOT) == "ORDER_ROUTE_REFUSED: STALE_LEVERAGE_BRACKETS"
+
+
+async def at_position_pct(h, m, pct):  # noqa: F811
+    await h.pool.execute("UPDATE ai_mandates SET max_position_pct = $2 WHERE id = $1", m.id, pct)
+    async with h.pool.acquire() as conn:
+        return await load_mandate(conn, m.id)
+
+
+async def test_a_room_below_the_minimum_order_is_refused_before_it_is_queued_with_the_numbers(h, monkeypatch):  # noqa: F811
+    """2026-11-08/09: $10,000 at 10% queued margin entries the orchestrator then refused (room $990 after its sizing
+    margin, minimum $1,010.10 at $100,000 equity). The route sizes as the orchestrator does, so nothing is queued."""
+    await auto_on(h, monkeypatch)
+    stale_btc_table()
+    m = await at_position_pct(h, await profile(h, level=3, markets=ALL, max_leverage=3), 10)
+    assert await create(h, hold(await candidate(h)), m) is None
+    assert await commands(h) == []
+    why = await h.pool.fetchval(
+        "SELECT detail->>'explanation' FROM ai_profile_decisions WHERE mandate_id = $1 AND stage = 'ROUTE'", m.id)
+    assert why.startswith("ORDER_BELOW_MIN_NOTIONAL") and "largest order $990.00 set by profile max position" in why
+    assert "minimum order $1,010.10 (1% of account equity $100,000.00)" in why
+    refusal = await pc.route_refusal(h.pool, h.redis, m, SPOT)
+    assert refusal.startswith("ORDER_ROUTE_REFUSED: ORDER_BELOW_MIN_NOTIONAL (largest order $990.00")
+
+
+async def test_a_room_above_the_minimum_queues_a_plan_the_orchestrator_can_size(h, monkeypatch):  # noqa: F811
+    await auto_on(h, monkeypatch)
+    stale_btc_table()
+    m = await at_position_pct(h, await profile(h, level=3, markets=ALL, max_leverage=3), 15)
+    assert await create(h, hold(await candidate(h)), m) is None
+    (payload,) = await commands(h)
+    notional = Decimal(payload["margin_plan"]["notional_usd"])
+    assert Decimal("1010.10") <= notional <= Decimal("1485.00")  # inside both buffered limits
+    assert await pc.route_refusal(h.pool, h.redis, m, SPOT) is None

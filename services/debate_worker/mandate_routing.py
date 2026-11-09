@@ -10,11 +10,8 @@ from typing import Any
 from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.brackets import open_entry_market
 from cryptonite_execution.leverage import (
-    ACCOUNT_EXPOSURE_CAP,
     ACCOUNT_MAX_LEVERAGE,
-    DEFAULT_FEE_ROUND_TRIP,
-    DEFAULT_SLIPPAGE_ALLOWANCE,
-    LeverageLimits,
+    buffered_entry_limits,
     plan_spot_margin_order,
 )
 from cryptonite_execution.profile_log import record_decision
@@ -479,14 +476,11 @@ async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrume
     equity = Decimal(str(equity_raw))
     budget = mandate.capital_budget_usd
     requested_margin = budget * Decimal(str(sized_pct)) / Decimal("100")
-    max_notional = min(budget * room_pct / Decimal("100"), equity * ACCOUNT_EXPOSURE_CAP)
-    limits = LeverageLimits(
+    # The orchestrator's sizing, margins included, so a plan queued here is not refused when it is sized again
+    limits = buffered_entry_limits(
+        room_usd=budget * room_pct / Decimal("100"), equity_usd=equity,
         risk_budget_usd=budget * mandate.max_risk_per_trade_pct / Decimal("100"),
-        max_notional_usd=max_notional,
         max_leverage=min(mandate.max_leverage, ACCOUNT_MAX_LEVERAGE),
-        slippage_pct=DEFAULT_SLIPPAGE_ALLOWANCE,
-        fee_pct=DEFAULT_FEE_ROUND_TRIP,
-        min_notional_usd=equity * Decimal("0.01"),
     )
     plan = plan_spot_margin_order(
         instrument, side, entry, stop, requested_margin, limits,
@@ -495,7 +489,8 @@ async def _route_spot_margin(conn, run_id: uuid.UUID, mandate: Mandate, instrume
     )
     if not plan.ok:
         return await _no_trade(conn, run_id, instrument, mandate,
-                               f"{plan.reject}: margin dry run does not allow an order")
+                               f"{plan.reject}: margin dry run does not allow an order"
+                               + (f" ({plan.binding_ceiling})" if plan.binding_ceiling else ""))
     size = size_margin_borrow("LONG" if long else "SHORT", plan.margin_usd, entry, Decimal(plan.leverage))
     asset = "USDT" if long else base_asset(instrument)
     borrowed = size.borrowed_quote if long else size.borrowed_base

@@ -22,8 +22,11 @@ from cryptonite_execution.leverage import (
     DEFAULT_FEE_ROUND_TRIP,
     DEFAULT_GRADE_CEILINGS,
     DEFAULT_SLIPPAGE_ALLOWANCE,
+    SIZING_EXTRA_SLIPPAGE,
+    SIZING_MARGIN,
     LeverageLimits,
     LeveragePlan,
+    buffered_entry_limits,
     check_leveraged_order,
     plan_leveraged_order,
     plan_spot_margin_order,
@@ -209,10 +212,9 @@ async def mandate_entry_room(conn, engine, mandate: Mandate, instrument_id: str,
     return max_entry_quantity(mandate, exposure, ref, order_type=order_type), ref, exposure
 
 
-# Sizing keeps a margin to the check, so a mark tick between sizing and the dispatcher cannot flip a boundary: 1% of
-# the risk budget and of the room, and 0.1% more slippage than the dispatcher allows
-PERP_SIZING_MARGIN = Decimal("0.99")
-PERP_SIZING_EXTRA_SLIPPAGE = Decimal("0.001")
+# Sizing keeps a margin to the check (cryptonite_execution.leverage.SIZING_MARGIN); the perp names stay for importers
+PERP_SIZING_MARGIN = SIZING_MARGIN
+PERP_SIZING_EXTRA_SLIPPAGE = SIZING_EXTRA_SLIPPAGE
 # An AI perp entry without a system grade is held to grade C's ceiling (the safer reading of §2.3)
 UNGRADED_PERP_GRADE = "C"
 
@@ -283,17 +285,15 @@ async def plan_spot_margin_entry(conn, engine, mandate: Mandate, instrument_id: 
     d = engine.dispatcher
     held = abs(d.get_position_qty(instrument_id)) * entry if hasattr(d, "get_position_qty") else Decimal("0")
     equity = d.portfolio_equity()
-    max_notional = max(Decimal("0"), min(room_qty * entry, ACCOUNT_EXPOSURE_CAP * equity - held)) * PERP_SIZING_MARGIN
     pair = instrument_id.split("-", 1)[0].split(".", 1)[0].upper()
     runtime_pairs = getattr(getattr(engine, "margin_settings", None), "pair_settings", None)
     pair_settings = runtime_pairs.get(pair, {}) if runtime_pairs is not None else None
-    limits = LeverageLimits(
-        risk_budget_usd=mandate_risk_budget(mandate) * PERP_SIZING_MARGIN,
-        max_notional_usd=max_notional,
-        max_leverage=mandate.max_leverage,
-        slippage_pct=getattr(d, "slippage_allowance_pct", DEFAULT_SLIPPAGE_ALLOWANCE) + PERP_SIZING_EXTRA_SLIPPAGE,
+    limits = buffered_entry_limits(
+        room_usd=room_qty * entry, equity_usd=equity, held_usd=held,
+        risk_budget_usd=mandate_risk_budget(mandate), max_leverage=mandate.max_leverage,
+        slippage_pct=getattr(d, "slippage_allowance_pct", DEFAULT_SLIPPAGE_ALLOWANCE),
         fee_pct=getattr(d, "spot_taker_fee", Decimal("0.001")),
-        min_notional_usd=getattr(d, "min_order_equity_pct", Decimal("0")) * equity / PERP_SIZING_MARGIN,
+        min_order_equity=getattr(d, "min_order_equity_pct", Decimal("0")),
     )
     requested = int(payload["leverage"]) if payload.get("leverage") else None
     return plan_spot_margin_order(

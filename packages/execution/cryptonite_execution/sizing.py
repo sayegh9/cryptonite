@@ -2,6 +2,8 @@
 
 import math
 
+from cryptonite_execution.leverage import SIZING_MARGIN
+
 GRADE_SIZE_FACTOR = {"A": 1.0, "B": 1.0, "C": 0.5}
 UNKNOWN_GRADE_FACTOR = 0.5  # C, NO_TRADE and an unknown grade size at half
 
@@ -36,7 +38,8 @@ def entry_feasibility(
     """Per market (spot, margin, perp), whether the profile can place an entry above the risk engine's minimum order.
 
     ``max_notional`` is the budget times the position limit (times leverage for a perp); ``risk_notional`` is the order a
-    typical stop sizes to at the risk limit; ``min_notional`` is 1% of equity for margin and perp, 0 for spot. Codes:
+    typical stop sizes to at the risk limit; ``min_notional`` is 1% of equity for margin and perp, 0 for spot. All three
+    carry the sizing margin an AI entry is sized with (``SIZING_MARGIN``), so OK here means the orchestrator can size it. Codes:
     OK, ORDER_MIN_UNREACHABLE (even the position limit is below the minimum), ORDER_MIN_LIKELY_REFUSED (the
     risk-sized order is). ``suggested_budget_usd`` is the smallest budget (rounded up to $100) that clears both."""
     budget, pos, risk = float(budget_usd), float(max_position_pct) / 100, float(max_risk_pct) / 100
@@ -47,15 +50,17 @@ def entry_feasibility(
         if market not in held:
             continue
         leverage = max(1, int(max_leverage)) if market == "perp" else 1
-        max_notional = budget * pos * leverage
-        risk_notional = budget * risk / cost_stop
-        min_notional = (MIN_ORDER_EQUITY_PCT / 100 * float(equity_usd)) if market != "spot" and equity_usd else 0.0
+        margin = float(SIZING_MARGIN)
+        max_notional = budget * pos * leverage * margin
+        risk_notional = budget * risk * margin / cost_stop
+        min_notional = (MIN_ORDER_EQUITY_PCT / 100 * float(equity_usd) / margin) if market != "spot" and equity_usd else 0.0
         code = "OK"
         if max_notional < min_notional:
             code = "ORDER_MIN_UNREACHABLE"
         elif risk_notional < min_notional:
             code = "ORDER_MIN_LIKELY_REFUSED"
-        needed = max(min_notional / (pos * leverage), min_notional * cost_stop / risk) if pos > 0 and risk > 0 else None
+        needed = (max(min_notional / (pos * leverage * margin), min_notional * cost_stop / (risk * margin))
+                  if pos > 0 and risk > 0 else None)
         suggested = math.ceil(needed / 100) * 100 if code != "OK" and needed is not None else None
         out[market] = {
             "max_notional": round(max_notional, 2), "risk_notional": round(risk_notional, 2),
