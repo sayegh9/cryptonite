@@ -2909,7 +2909,9 @@ async def command_poller(pool, engine, quote_cache=None):
                                     logger.info("AI margin entry %s not placed: %s", row["command_id"], plan.reject)
                                     await conn.execute(
                                         "UPDATE execution_commands SET status = 'REJECTED', command_outcome = 'REJECTED', error_message = $2, processed_at = now() WHERE command_id = $1",
-                                        row["command_id"], f"{plan.reject}: spot-margin sizing",
+                                        row["command_id"],
+                                        f"{plan.reject}: spot-margin sizing"
+                                        + (f" ({plan.binding_ceiling})" if plan.binding_ceiling else ""),
                                     )
                                     continue
                                 qty_val, planned_leverage = plan.quantity, plan.leverage

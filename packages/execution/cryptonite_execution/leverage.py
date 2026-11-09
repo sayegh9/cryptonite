@@ -36,6 +36,11 @@ DEFAULT_SLIPPAGE_ALLOWANCE = Decimal("0.003")  # an XRP stop filled 0.28% past i
 DEFAULT_FEE_ROUND_TRIP = Decimal("0.001")  # 2 x the USD-M taker fee (0.05%)
 LIQUIDATION_BUFFER_FRACTION = Decimal("0.5")  # the stop fires before half the liquidation distance is used
 MANUAL_RISK_PER_TRADE_PCT = Decimal("2")  # manual orders with a stop: the D6 cap, of account equity
+# AI entry sizing keeps a margin to the dispatcher's checks, so a mark tick between sizing and the check cannot flip a
+# boundary: 1% of the risk budget and of the room, the 1% minimum order raised by the same 1%, and 0.1% more slippage
+SIZING_MARGIN = Decimal("0.99")
+SIZING_EXTRA_SLIPPAGE = Decimal("0.001")
+MIN_ORDER_EQUITY = Decimal("0.01")  # the dispatcher's minimum order, a fraction of account equity
 # §2.3: the leverage each setup grade allows by default (operator settings, lowering free, raising with TOTP)
 DEFAULT_GRADE_CEILINGS = {"A": 10, "B": 5, "C": 2, "NO_TRADE": 0}
 MAX_SCAN_LEVERAGE = 125  # the widest Binance bracket; ceilings are scanned up to it for display
@@ -95,6 +100,8 @@ class LeverageLimits:
     fee_pct: Decimal = DEFAULT_FEE_ROUND_TRIP
     maximum_label: str = Ceiling.MAXIMUM.value  # "account maximum" on the manual ticket
     min_notional_usd: Decimal = Decimal("0")  # the dispatcher's 1%-of-equity minimum order
+    max_notional_binding: str = "position room"  # what sets ``max_notional_usd``, for a refusal's explanation
+    account_equity_usd: Decimal | None = None  # the equity the minimum order comes from, for a refusal's explanation
 
 
 @dataclass(frozen=True)
@@ -287,6 +294,45 @@ def plan_leveraged_order(
     )
 
 
+def buffered_entry_limits(
+    *,
+    room_usd: Decimal,
+    equity_usd: Decimal,
+    held_usd: Decimal = Decimal("0"),
+    risk_budget_usd: Decimal,
+    max_leverage: int,
+    slippage_pct: Decimal = DEFAULT_SLIPPAGE_ALLOWANCE,
+    fee_pct: Decimal = DEFAULT_FEE_ROUND_TRIP,
+    min_order_equity: Decimal = MIN_ORDER_EQUITY,
+    room_label: str = "profile max position",
+) -> LeverageLimits:
+    """The limits an AI spot-margin entry is sized to, with the sizing margin on every side. The debate's route plan, the
+    coverage probe and the orchestrator all size with it, so a plan that fits before the order is queued also fits when
+    the orchestrator sizes it again. ``room_usd`` is the mandate's room left; the account cap is 25% of equity less what
+    the account already holds of the instrument."""
+    account_room = ACCOUNT_EXPOSURE_CAP * equity_usd - held_usd
+    binding = room_label if room_usd <= account_room else "25% account exposure cap"
+    return LeverageLimits(
+        risk_budget_usd=risk_budget_usd * SIZING_MARGIN,
+        max_notional_usd=max(Decimal("0"), min(room_usd, account_room)) * SIZING_MARGIN,
+        max_leverage=max_leverage,
+        slippage_pct=slippage_pct + SIZING_EXTRA_SLIPPAGE,
+        fee_pct=fee_pct,
+        min_notional_usd=min_order_equity * equity_usd / SIZING_MARGIN,
+        max_notional_binding=binding,
+        account_equity_usd=equity_usd,
+    )
+
+
+def min_order_conflict(limits: LeverageLimits, largest_usd: Decimal, bound: str) -> str:
+    """Why an entry cannot reach the minimum order: the largest order the limits allow, what bounds it, the minimum and
+    the equity it comes from. Both sides include the sizing margin."""
+    equity = (f" (1% of account equity ${limits.account_equity_usd:,.2f})"
+              if limits.account_equity_usd is not None else "")
+    return (f"largest order ${largest_usd:,.2f} set by {bound} is below the minimum order "
+            f"${limits.min_notional_usd:,.2f}{equity}")
+
+
 def plan_spot_margin_order(
     instrument_id: str,
     side: str,
@@ -341,9 +387,15 @@ def plan_spot_margin_order(
         return refused(LeverageReject.MARGIN_BORROW_LIMIT, binding=f"max_borrow_{base_asset}")
     original_margin = margin_usd
     if shrink_margin_to_fit:
-        max_notional = min(limits.max_notional_usd, limits.risk_budget_usd / cost)
+        risk_notional = limits.risk_budget_usd / cost
+        max_notional = min(limits.max_notional_usd, risk_notional)
         if max_notional <= 0:
             return refused(LeverageReject.EXPOSURE_LIMIT_REACHED)
+        if max_notional < limits.min_notional_usd:
+            # The limits cannot meet each other at any size: say which limit binds, with the numbers
+            bound = "the risk budget at this stop" if risk_notional < limits.max_notional_usd else limits.max_notional_binding
+            return refused(LeverageReject.ORDER_BELOW_MIN_NOTIONAL, notional_usd=max_notional,
+                           binding=min_order_conflict(limits, max_notional, bound))
         # Floor to cents: at the exact risk boundary, Decimal rounding can push the loss a hair over the budget
         margin_usd = min(margin_usd, (max_notional / exposure_per_margin).quantize(Decimal("0.01"), rounding=ROUND_DOWN))
 
@@ -376,7 +428,8 @@ def plan_spot_margin_order(
     if loss > limits.risk_budget_usd:
         return refused(LeverageReject.RISK_AT_STOP_EXCEEDED)
     if notional < limits.min_notional_usd:
-        return refused(LeverageReject.ORDER_BELOW_MIN_NOTIONAL)
+        return refused(LeverageReject.ORDER_BELOW_MIN_NOTIONAL, notional_usd=notional,
+                       binding=min_order_conflict(limits, notional, f"the margin at {leverage}x"))
     return LeveragePlan(
         instrument_id=instrument_id, side=side, reject=None, leverage=leverage,
         requested_leverage=requested_leverage, allowed_max_leverage=max_leverage,

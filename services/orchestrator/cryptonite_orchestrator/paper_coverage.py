@@ -29,11 +29,8 @@ import httpx
 from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.brackets import open_entry_market
 from cryptonite_execution.leverage import (
-    ACCOUNT_EXPOSURE_CAP,
     ACCOUNT_MAX_LEVERAGE,
-    DEFAULT_FEE_ROUND_TRIP,
-    DEFAULT_SLIPPAGE_ALLOWANCE,
-    LeverageLimits,
+    buffered_entry_limits,
     plan_spot_margin_order,
 )
 from cryptonite_execution.mandate_store import load_mandate
@@ -235,16 +232,17 @@ async def _margin_route_refusal(pool, m: Mandate, spot: str, mark: Decimal) -> s
     settings, _ = read_margin_settings({r["key"]: r["value"] for r in rows}, default_margin_settings())
     budget = m.capital_budget_usd
     margin_usd = budget * Decimal(str(m.max_position_pct)) / Decimal("100")
-    limits = LeverageLimits(
+    limits = buffered_entry_limits(
+        room_usd=margin_usd, equity_usd=Decimal(str(equity)),
         risk_budget_usd=budget * m.max_risk_per_trade_pct / Decimal("100"),
-        max_notional_usd=min(margin_usd, Decimal(str(equity)) * ACCOUNT_EXPOSURE_CAP),
-        max_leverage=min(m.max_leverage, ACCOUNT_MAX_LEVERAGE), slippage_pct=DEFAULT_SLIPPAGE_ALLOWANCE,
-        fee_pct=DEFAULT_FEE_ROUND_TRIP, min_notional_usd=Decimal(str(equity)) * Decimal("0.01"))
+        max_leverage=min(m.max_leverage, ACCOUNT_MAX_LEVERAGE))
     plan = plan_spot_margin_order(
         instrument_for(spot, Market.SPOT_MARGIN), "SELL", mark, mark * Decimal("1.02"), margin_usd, limits,
         requested_leverage=m.max_leverage, pair_settings=settings.pair_settings.get(spot.split(".")[0]),
         base_asset=base_asset(spot), budget_usd=budget, shrink_margin_to_fit=True)
-    return None if plan.ok else f"ORDER_ROUTE_REFUSED: {plan.reject}"
+    if plan.ok:
+        return None
+    return f"ORDER_ROUTE_REFUSED: {plan.reject}" + (f" ({plan.binding_ceiling})" if plan.binding_ceiling else "")
 
 
 async def route_refusal(pool, redis, m: Mandate, spot: str) -> str | None:
