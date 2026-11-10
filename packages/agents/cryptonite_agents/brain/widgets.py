@@ -153,6 +153,51 @@ class SwingRadarWidget(BaseModel):
     partial: bool = False
 
 
+class IdeaReason(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    code: str
+    text: str = ""
+
+
+class TradeIdeaItem(BaseModel):
+    """One ranked idea as the tool returned it. Unknown fields are ignored, so a newer tool never breaks a widget."""
+    model_config = ConfigDict(extra="ignore")
+    rank: int
+    instrument_id: str
+    coin: str
+    timeframe: str
+    kind: str
+    direction: Literal["LONG", "SHORT"]
+    entry_type: str = "ON_BREAK"
+    entry: float
+    stop: float
+    target: float
+    rr_ratio: float
+    risk_pct: float | None = None
+    score: float | None = None
+    basis: str = ""
+    invalidation: str = ""
+    bar_close: str | None = None
+    status: Literal["EXECUTABLE", "BLOCKED", "UNKNOWN"] = "UNKNOWN"
+    reasons: list[IdeaReason] = Field(default_factory=list)
+    card_possible: bool = False
+    route: dict[str, Any] | None = None
+
+
+class TradeIdeasWidget(BaseModel):
+    """The ranked ideas of one get_trade_ideas call. Saved with the reply, it is also the record each idea is scored
+    from later (levels, bar_close and as_of are all it needs)."""
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["trade_ideas"] = "trade_ideas"
+    id: str | None = None
+    as_of: str | None = None
+    ideas: list[TradeIdeaItem] = Field(default_factory=list)
+    scanned_coins: list[str] = Field(default_factory=list)
+    scanned_timeframes: list[str] = Field(default_factory=list)
+    unavailable: list[dict[str, str]] = Field(default_factory=list)
+    note: str | None = None
+
+
 class TearsheetWidget(BaseModel):
     kind: Literal["tearsheet"] = "tearsheet"
     id: str
@@ -328,7 +373,8 @@ class DebateSummaryWidget(BaseModel):
 
 
 BrainWidget = Annotated[
-    PriceChartWidget | TearsheetWidget | OrderCardWidget | ProfileProposalWidget | DebateSummaryWidget | SwingRadarWidget,
+    PriceChartWidget | TearsheetWidget | OrderCardWidget | ProfileProposalWidget | DebateSummaryWidget | SwingRadarWidget\
+    | TradeIdeasWidget,
     Field(discriminator="kind"),
 ]
 
@@ -407,6 +453,10 @@ def widget_for_tool(
                 recommendation=args.get("recommendation"), conviction_score=args.get("conviction_score"),
                 status="QUEUED" if queued else "FAILED", message=(active_content or "")[:500], message_ref=message_ref,
             ).model_dump()
+        if active_tool == "get_trade_ideas":
+            data = _parse_json(active_content)
+            if isinstance(data, dict) and isinstance(data.get("ideas"), list):
+                return TradeIdeasWidget(id=call_id or None, **{k: v for k, v in data.items() if k != "id"}).model_dump()
         if active_tool == "scan_swing_setups":
             data = _parse_json(active_content)
             if isinstance(data, dict) and isinstance(data.get("candidates"), list):
@@ -471,4 +521,9 @@ def describe_widget(widget: dict[str, Any]) -> str:
         watchlist = len(widget.get("conditional") or [])
         return (f"[widget:swing_radar preset={widget.get('preset_slug')} candidates={len(widget.get('candidates') or [])}"
                 + (f" conditional={watchlist}" if watchlist else "") + (" partial" if widget.get("partial") else "") + "]")
+    if kind == "trade_ideas":
+        ideas = widget.get("ideas") or []
+        listed = "; ".join(f"{i.get('coin')} {i.get('direction')} {i.get('timeframe')} entry {i.get('entry')} stop "
+                           f"{i.get('stop')} target {i.get('target')} {i.get('status')}" for i in ideas)
+        return f"[widget:trade_ideas {len(ideas)} ideas as of {widget.get('as_of')}" + (f": {listed}" if listed else "") + "]"
     return f"[{kind}]"

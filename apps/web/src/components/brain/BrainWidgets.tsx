@@ -38,6 +38,7 @@ import type {
   PriceChartWidget,
   ConditionalItem,
   SwingRadarWidget,
+  TradeIdeasWidget,
   UnavailableScope,
   UntradeableSetupItem,
   TearsheetWidget,
@@ -1855,6 +1856,143 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
   );
 }
 
+const IDEA_KIND: Record<string, string> = {
+  trend_continuation: "Trend continuation",
+  range_reversion: "Range reversion",
+  range_break: "Range break",
+};
+
+const IDEA_STATUS: Record<string, { label: string; cls: string }> = {
+  EXECUTABLE: { label: "Executable now", cls: "border-emerald-800 bg-emerald-950/60 text-emerald-300" },
+  BLOCKED: { label: "Blocked", cls: "border-amber-800 bg-amber-950/60 text-amber-300" },
+  UNKNOWN: { label: "Status unknown", cls: "border-zinc-700 bg-zinc-800/70 text-zinc-300" },
+};
+
+/** The Brain's ranked price-action ideas. A blocked idea is still shown, with every reason it cannot be taken now. */
+export function TradeIdeasCard({ w }: { w: TradeIdeasWidget }) {
+  const ideas = w.ideas ?? [];
+  return (
+    <section
+      data-testid="trade-ideas-card"
+      aria-label="Trade ideas"
+      className="mt-2 rounded-lg border border-zinc-800 bg-zinc-950/90 p-3.5 text-xs font-mono text-zinc-300"
+    >
+      <header className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded border border-cyan-800 bg-cyan-950/70 px-1.5 py-0.5 text-2xs font-bold uppercase tracking-wider text-cyan-300">
+            TRADE IDEAS
+          </span>
+          <span className="text-2xs text-zinc-400">Price-action observations, no measured edge</span>
+        </div>
+        <span className="text-2xs text-zinc-500">
+          {(w.scanned_coins?.length ?? 0)} coins · {(w.scanned_timeframes ?? []).join(", ")}
+          {w.as_of ? ` · as of ${barTime(w.as_of)}` : ""}
+        </span>
+      </header>
+
+      {w.note ? (
+        <p className="mb-3 text-2xs text-amber-300" data-testid="trade-ideas-note">
+          {w.note}
+        </p>
+      ) : null}
+
+      {ideas.length === 0 ? (
+        <p className="py-3 text-center text-zinc-400" data-testid="trade-ideas-empty">
+          No idea could be built: the closed bars could not be read. This is missing data, not a view on the market.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {ideas.map((i) => {
+            const isLong = i.direction === "LONG";
+            const status = IDEA_STATUS[i.status] ?? IDEA_STATUS.UNKNOWN;
+            return (
+              <div
+                key={`${i.instrument_id}-${i.direction}-${i.timeframe}`}
+                data-testid="trade-idea"
+                className="space-y-2 rounded-md border border-zinc-800/80 bg-zinc-900/40 p-2.5"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-2xs text-zinc-500">#{i.rank}</span>
+                    <span className="text-xs font-bold text-zinc-100">{i.coin}</span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-2xs font-bold ${
+                        isLong
+                          ? "border border-emerald-800 bg-emerald-950/60 text-emerald-300"
+                          : "border border-rose-800 bg-rose-950/60 text-rose-300"
+                      }`}
+                    >
+                      {i.direction}
+                    </span>
+                    <span className="rounded bg-zinc-800/90 px-1.5 py-0.5 text-2xs text-zinc-400">{i.timeframe}</span>
+                    <span className="text-2xs text-zinc-400">{IDEA_KIND[i.kind] ?? i.kind}</span>
+                  </div>
+                  <span
+                    data-testid="trade-idea-status"
+                    className={`rounded border px-1.5 py-0.5 text-2xs font-bold ${status.cls}`}
+                  >
+                    {status.label}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div>
+                    <div className="text-2xs text-zinc-500">
+                      {i.entry_type === "AT_MARKET" ? "Entry (at market)" : "Entry (on a break)"}
+                    </div>
+                    <div className="text-zinc-100">{i.entry}</div>
+                  </div>
+                  <div>
+                    <div className="text-2xs text-zinc-500">Stop</div>
+                    <div className="text-rose-300">{i.stop}</div>
+                  </div>
+                  <div>
+                    <div className="text-2xs text-zinc-500">Target</div>
+                    <div className="text-emerald-300">{i.target}</div>
+                  </div>
+                  <div>
+                    <div className="text-2xs text-zinc-500">Reward : risk</div>
+                    <div className="text-zinc-100">{i.rr_ratio.toFixed(2)}</div>
+                  </div>
+                </div>
+
+                {i.basis ? <p className="text-2xs text-zinc-400">{i.basis}</p> : null}
+                {i.invalidation ? <p className="text-2xs text-zinc-500">Invalid on {i.invalidation}.</p> : null}
+                {(i.reasons ?? []).length > 0 ? (
+                  <ul className="space-y-0.5 text-2xs text-amber-300" data-testid="trade-idea-reasons">
+                    {(i.reasons ?? []).map((r) => (
+                      <li key={r.code}>{r.text}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {i.card_possible ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void sendBrainMessage(
+                        `Stage an order card for trade idea #${i.rank}: ${i.coin} ${i.direction} on ${i.timeframe}, entry ${i.entry}, stop ${i.stop}, target ${i.target}`,
+                      )
+                    }
+                    className="rounded border border-cyan-800/60 bg-cyan-950/40 px-2.5 py-1 text-2xs font-semibold text-cyan-300 transition-colors hover:bg-cyan-900/60"
+                  >
+                    Stage order card
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {(w.unavailable ?? []).length > 0 ? (
+        <p className="mt-3 text-2xs text-zinc-500" data-testid="trade-ideas-unavailable">
+          Not analysed (bars unreadable): {(w.unavailable ?? []).map((u) => u.coin).join(", ")}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 export function BrainWidgetView({ widget }: { widget: BrainWidget }) {
   switch (widget.kind) {
     case "price_chart":
@@ -1867,6 +2005,8 @@ export function BrainWidgetView({ widget }: { widget: BrainWidget }) {
       return <DebateSummaryCard widget={widget} />;
     case "swing_radar":
       return <SwingRadarCard w={widget} />;
+    case "trade_ideas":
+      return <TradeIdeasCard w={widget} />;
     case "profile_proposal":
       return <ProfileProposalCard widget={widget} />;
     default:
