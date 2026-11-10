@@ -47,7 +47,8 @@ LOG_INPUT_ROLES = frozenset({"triage", "tagging", "summarize"})
 MAX_LOGGED_INPUT = 20_000
 # Tools that start paid or external work, capped per model turn (LE-8). propose_order is capped at one order
 # card per turn: the first call is held for approval, any later one is refused.
-PER_TURN_TOOL_LIMITS = {"stage_debate_proposal": 1, "propose_order": 1}
+# propose_order: one card per idea of a ranked shortlist; every card still waits for its own approval
+PER_TURN_TOOL_LIMITS = {"stage_debate_proposal": 1, "propose_order": 3}
 # ADD_RISK tools whose denial is the normal way their result is made: the call is held and staged for the
 # operator's approval, so the model gets a "held" answer (not an error) and the per-turn limit applies to it
 HELD_FOR_APPROVAL_TOOLS = frozenset({"propose_order"})
@@ -245,10 +246,13 @@ class Gateway:
                     if held:
                         return (f"{HELD_FOR_APPROVAL_PREFIX}: the order card is staged and shown to the operator with "
                                 f"Approve / Reject. This is the expected result, not an error. Do not call "
-                                f"{spec.name} again in this turn; tell the operator the card is waiting for their "
-                                "approval. Do not call any more tools in this turn; provide your summary to the operator now.")
-                    return (f"Refused: only one order card per turn, and the first card is already waiting for the "
-                            f"operator. Do not call {spec.name} again; tell the operator the card is waiting.")
+                                f"{spec.name} again for this idea. Call it again in this turn only for a different "
+                                f"idea of a get_trade_ideas shortlist (at most {PER_TURN_TOOL_LIMITS[spec.name]} "
+                                "cards per turn); otherwise tell the operator the card is waiting for their approval "
+                                "and give your summary now.")
+                    return (f"Refused: at most {PER_TURN_TOOL_LIMITS[spec.name]} order cards per turn, and they are "
+                            f"already waiting for the operator. Do not call {spec.name} again; tell the operator the "
+                            "cards are waiting.")
                 return f"Tool call denied: {denied.reason}. Ask the operator to approve this action."
             limit = PER_TURN_TOOL_LIMITS.get(spec.name)
             if limit is not None:

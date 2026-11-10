@@ -37,7 +37,7 @@ from cryptonite_agents.gateway import (
     ModelUnavailable,
     RiskClass,
 )
-from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX
+from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX, PER_TURN_TOOL_LIMITS
 from cryptonite_agents.persona import Persona
 from cryptonite_schemas.mandate import MIN_HOLDING_QTY
 from pydantic import ValidationError
@@ -107,7 +107,7 @@ Operating mode: read each profile's autonomy level and auto_trade_switch from ge
    a setup, read its `debate_status`: a setup "debated: HOLD" was refused by the automatic debate (run id, conviction,
    policies and replay are on the setup): say so first and never present it as plainly tradeable; a card against that
    verdict is flagged and needs the operator's explicit acknowledgement. Never propose more than one card
-   for the same idea. Before proposing a SELL, check what the mandate holds (query_postgres_readonly on
+   for the same idea; a turn stages at most three cards, each for a different idea. Before proposing a SELL, check what the mandate holds (query_postgres_readonly on
    agent_safe_ai_holdings). Spot cannot be shorted: propose a SELL only to close a position the mandate already holds.
    An approved SELL sells that whole holding, not allocation_pct of the budget.
    Perpetuals (USD-M, instrument like 'BTCUSDT-PERP.BINANCE'): propose one only in a mandate whose allow_perps is on
@@ -126,6 +126,21 @@ Operating mode: read each profile's autonomy level and auto_trade_switch from ge
    about timeframes must match `scanned_timeframes`: never say "no setups on any timeframe" after scanning one.
    An empty scan means no matching routeable preset in the scanned scope, not that the market has no trade:
    say what was scanned, and never claim "no trade" for coins, timeframes or price action you did not examine.
+   Trade ideas: whenever the operator asks what to trade, or for ideas, suggestions, setups or opportunities, call
+   get_trade_ideas (with the symbol when they name one) and answer with every idea it returns, in rank order: coin,
+   side, timeframe, kind, entry and whether it is at market or only on a break of the entry, stop, target, reward to
+   risk, basis, invalidation, and then on its own line the status: EXECUTABLE, or BLOCKED / UNKNOWN with every
+   reason given, in the tool's words. Never answer such a request with only "no setups"; an empty scan_swing_setups
+   is not an answer to it. Never drop an idea because it is blocked, and never present a BLOCKED or UNKNOWN idea as
+   something that can be executed now. A profile paused for stale data is "temporarily paused because data is
+   stale, as of <as_of>", never "no active mandate". Quote the tool's levels exactly and add none of your own. Say
+   once that the ideas are price-action observations with no measured edge, and that scanner signals and debates are
+   separate. Offer a card only for an idea with card_possible true: for an EXECUTABLE one, or for a long whose only
+   block is NO_PROFILE (the card creates the profile). When the operator asked you to stage the trades, call
+   propose_order once per such idea (at most three cards a turn) with that idea's instrument (its route's
+   instrument_id when it has a route), stop and target; otherwise ask which idea to stage. An ON_BREAK idea whose
+   entry has not traded yet is staged as a LIMIT order at its entry only when the operator asks; say that a market
+   order now would not be the idea.
 6. Missing data is neutral: when a tool reports no perpetual, no headlines or a symbol it does not cover, say so once
    and do not count it against a trade. CHOP is not an automatic no. In a range, look for a defined setup: entry near
    range support, stop below the range, target at the range middle or top. Measure the risk from the wider of your stop
@@ -224,6 +239,7 @@ def no_card_note(args: dict[str, Any]) -> str:
 
 CANCELLED_NOTE = "\n\n_[stopped by the operator]_"
 STATE_TIMEOUT_S = 3.0  # a slow system-state read never delays a turn by more than this
+MAX_ORDER_CARDS = PER_TURN_TOOL_LIMITS["propose_order"]  # cards a turn may stage, one per idea
 LESSONS_TIMEOUT_S = 2.0  # a slow lessons read never delays an order card by more than this
 GRADE_TIMEOUT_S = 8.0  # the setup grade reads klines and futures data; an ungraded card is held to grade C
 
@@ -399,7 +415,8 @@ class Brain:
         widgets: list[dict[str, Any]] = []
         notes: list[str] = []  # what the Brain could not stage, said to the operator in the reply
         calls: dict[str, dict[str, Any]] = {}
-        order_cards = 0  # at most one order card per turn; a SELL that gets no card does not count
+        order_cards = 0  # at most MAX_ORDER_CARDS per turn; a SELL that gets no card does not count
+        carded: set[tuple[str, str]] = set()  # the (instrument, side) of each card: one card per idea
         trace_id: str | None = None
         finished = False
         call_ctx = CallContext(role=self.persona.role, session_id=sid)
@@ -453,11 +470,17 @@ class Brain:
                                                                "status": status})
                                 args = (calls.get(call_id) or {}).get("args") or {}
                                 if ev.data["tool"] == "propose_order":
-                                    # Only the held call makes a card, and only the turn's first one. The gateway
-                                    # gives the held call the "Held for approval" answer; a refused call gets
-                                    # "Refused" and no card.
+                                    # Only a held call makes a card, at most MAX_ORDER_CARDS a turn and one per
+                                    # instrument and side. The gateway gives the held call the "Held for approval"
+                                    # answer; a refused call gets "Refused" and no card.
                                     held = str(ev.data.get("content") or "").startswith(HELD_FOR_APPROVAL_PREFIX)
-                                    if not held or order_cards:
+                                    if not held or order_cards >= MAX_ORDER_CARDS:
+                                        continue
+                                    idea_key = (str(args.get("instrument_id", "")).strip().upper(),
+                                                str(args.get("side", "")).upper())
+                                    if idea_key in carded:
+                                        notes.append(f"No second order card for {idea_key[0]} {idea_key[1]}: one "
+                                                     "card per idea.")
                                         continue
                                     # A spot SELL closes a holding; a perp SELL opens or adds to a short (leverage
                                     # plan 4.1), so only spot needs a holding to make a card
@@ -476,6 +499,11 @@ class Brain:
                                         tf = widget.get("timeframe")
                                         if any(w.get("kind") == "price_chart" and w.get("symbol") == sym and w.get("timeframe") == tf for w in widgets):
                                             continue
+                                    elif widget.get("kind") == "trade_ideas":
+                                        if any(w.get("kind") == "trade_ideas" for w in widgets):
+                                            continue
+                                        if widget.get("note"):  # paused-for-stale-data and missing data, said by code
+                                            notes.append(str(widget["note"]))
                                     elif widget.get("kind") == "swing_radar":
                                         if any(w.get("kind") == "swing_radar" for w in widgets):
                                             continue
@@ -520,6 +548,8 @@ class Brain:
                                     widgets.append(widget)
                                     if widget.get("kind") == "order_card":
                                         order_cards += 1
+                                        carded.add((str(args.get("instrument_id", "")).strip().upper(),
+                                                    str(args.get("side", "")).upper()))
                                     yield BrainEvent("widget", {"widget": widget})
                                 elif ev.data["tool"] == "propose_order":  # held, but the arguments cannot make a card
                                     notes.append(no_card_note(args))

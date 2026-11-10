@@ -467,12 +467,52 @@ export interface ProfileProposalWidget {
   feed_status?: "known" | "unknown" | null;
 }
 
+export interface TradeIdeaReason {
+  code: string;
+  text: string;
+}
+
+/** One ranked price-action idea; `status` says whether an entry could be taken when the ideas were built. */
+export interface TradeIdeaItem {
+  rank: number;
+  instrument_id: string;
+  coin: string;
+  timeframe: string;
+  kind: string;
+  direction: "LONG" | "SHORT";
+  entry_type: string;
+  entry: number;
+  stop: number;
+  target: number;
+  rr_ratio: number;
+  risk_pct?: number | null;
+  score?: number | null;
+  basis?: string;
+  invalidation?: string;
+  bar_close?: string | null;
+  status: "EXECUTABLE" | "BLOCKED" | "UNKNOWN";
+  reasons?: TradeIdeaReason[];
+  card_possible?: boolean;
+}
+
+export interface TradeIdeasWidget {
+  kind: "trade_ideas";
+  id?: string | null;
+  as_of?: string | null;
+  ideas: TradeIdeaItem[];
+  scanned_coins?: string[];
+  scanned_timeframes?: string[];
+  unavailable?: Array<{ coin: string; reason: string }>;
+  note?: string | null;
+}
+
 export type BrainWidget =
   | PriceChartWidget
   | TearsheetWidget
   | OrderCardWidget
   | DebateSummaryWidget
   | SwingRadarWidget
+  | TradeIdeasWidget
   | ProfileProposalWidget;
 
 // HELD_FOR_APPROVAL: the gate staged the call as an order card for the operator; DENIED: a real guard refusal

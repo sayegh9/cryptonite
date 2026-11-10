@@ -755,31 +755,37 @@ async def test_a_held_proposal_tells_the_model_the_hold_is_the_expected_result()
     [text] = _proposal_returns(script)
     assert text.startswith("Held for approval: the order card is staged and shown to the operator")
     assert "This is the expected result, not an error." in text
-    assert "Do not call propose_order again in this turn" in text
+    assert "Do not call propose_order again for this idea" in text
     assert "ADD_RISK_REQUIRES_APPROVAL" not in text
     cards = _cards(events)
     assert len(cards) == 1 and cards[0]["status"] == "PENDING_APPROVAL"
     assert events[-1].type == "done"
 
 
-async def test_a_second_proposal_in_one_turn_is_refused_and_renders_no_card():
-    second = {**GOOD_ORDER, "instrument_id": "ETHUSDT.BINANCE"}
-    # The two calls of one model response run concurrently, so which one is held is not fixed. The card must be
-    # the held call's every time: a card for the refused call would show the operator an order the gateway refused.
+async def test_a_turn_stages_at_most_three_cards_and_refuses_the_fourth():
+    orders = [{**GOOD_ORDER, "instrument_id": f"{coin}USDT.BINANCE"} for coin in ("BTC", "ETH", "SOL", "XRP")]
+    # The calls of one model response run concurrently, so which one is refused is not fixed. Every card must be a
+    # held call's: a card for the refused call would show the operator an order the gateway refused.
     for _ in range(30):
-        script = Script([("propose_order", GOOD_ORDER), ("propose_order", second)], ["One card is staged."])
+        script = Script([("propose_order", o) for o in orders], ["Three cards are staged."])
         with override_model(PLANNER, script.model()):
-            events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC and ETH"))
+            events = await collect(brain(MemorySessionStore()).turn("op-1", "Stage your four ideas"))
         cards = _cards(events)
-        assert len(cards) == 1
         held = [r for r in script.returns if r.tool_name == "propose_order" and str(r.content).startswith("Held")]
         refused = [r for r in script.returns if r.tool_name == "propose_order" and str(r.content).startswith("Refused")]
-        assert len(held) == 1 and len(refused) == 1
-        assert cards[0]["id"] == held[0].tool_call_id
-        assert str(refused[0].content) == ("Refused: only one order card per turn, and the first card is already "
-                                           "waiting for the operator. Do not call propose_order again; tell the "
-                                           "operator the card is waiting.")
+        assert len(held) == 3 and len(refused) == 1
+        assert sorted(c["id"] for c in cards) == sorted(r.tool_call_id for r in held)
+        assert all(c["status"] == "PENDING_APPROVAL" for c in cards)
+        assert str(refused[0].content).startswith("Refused: at most 3 order cards per turn")
         assert events[-1].type == "done"
+
+
+async def test_a_second_card_for_the_same_idea_is_not_rendered():
+    script = Script([("propose_order", GOOD_ORDER), ("propose_order", GOOD_ORDER)], ["One card is staged."])
+    with override_model(PLANNER, script.model()):
+        events = await collect(brain(MemorySessionStore()).turn("op-1", "Buy BTC twice"))
+    assert len(_cards(events)) == 1
+    assert "one card per idea" in "".join(str(e.data) for e in events)
 
 
 def _invalid_output_model(card_first: bool) -> FunctionModel:
@@ -858,14 +864,17 @@ def _one_call_per_round(rounds: list[tuple[str, dict]], answer: list[str]) -> Fu
     return FunctionModel(sync, stream_function=stream)
 
 
-async def test_a_suppressed_sell_then_a_buy_renders_no_card_and_says_why():
+async def test_a_suppressed_sell_says_why_and_a_buy_after_it_still_gets_its_card():
     async def nothing(instrument):
         return Decimal("0")
 
     model = _one_call_per_round([("propose_order", SELL_ORDER), ("propose_order", GOOD_ORDER)], ["Nothing to sell."])
     with override_model(PLANNER, model):
         events = await collect(brain(MemorySessionStore(), holdings=nothing).turn("op-1", "Short XRP, buy BTC"))
-    assert _cards(events) == []  # the SELL was held but had no holding; the BUY was refused for the turn's slot
+    # The SELL was held but had no holding, so it made no card and the reply says why; the BUY is a different idea
+    # and still gets its own card (up to three cards a turn).
+    cards = _cards(events)
+    assert [(c["instrument_id"], c["side"]) for c in cards] == [(GOOD_ORDER["instrument_id"], "BUY")]
     assert events[-1].type == "done" and "spot cannot be shorted" in events[-1].data["content"]
 
 

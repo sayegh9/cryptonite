@@ -46,6 +46,7 @@ from cryptonite_agents.tools import (
     TRADE_TIMELINE,
     read_nautilus_tearsheet,
 )
+from cryptonite_agents.trade_ideas import TRADE_IDEAS
 from pydantic import Field
 
 
@@ -147,6 +148,7 @@ BRAIN_TOOLS = (
     DERIVATIVES_CONTEXT,
     MARKET_REGIME,
     GRADE_SETUP,
+    TRADE_IDEAS,
     SCANNER_CONTEXT,
     AI_STATE,
     TRADE_TIMELINE,
