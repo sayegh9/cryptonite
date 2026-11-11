@@ -240,6 +240,17 @@ def no_card_note(args: dict[str, Any]) -> str:
 CANCELLED_NOTE = "\n\n_[stopped by the operator]_"
 STATE_TIMEOUT_S = 3.0  # a slow system-state read never delays a turn by more than this
 MAX_ORDER_CARDS = PER_TURN_TOOL_LIMITS["propose_order"]  # cards a turn may stage, one per idea
+# A short network drop (the host's Wi-Fi, a DNS lookup) fails every model within seconds. When no model could even be
+# reached and the operator has seen nothing yet, the turn waits and runs again from the main model: twice at most.
+NETWORK_RETRY_WAITS_S = (8.0, 20.0)
+NETWORK_FAILURE_MARKERS = ("ConnectError", "ConnectTimeout", "name resolution", "All connection attempts failed",
+                           "Network is unreachable")
+
+
+def is_network_failure(error: Exception) -> bool:
+    """True when the model was never reached (no connection), as opposed to a provider that answered with an error."""
+    text = str(error)
+    return any(marker in text for marker in NETWORK_FAILURE_MARKERS)
 LESSONS_TIMEOUT_S = 2.0  # a slow lessons read never delays an order card by more than this
 GRADE_TIMEOUT_S = 8.0  # the setup grade reads klines and futures data; an ungraded card is held to grade C
 
@@ -423,6 +434,7 @@ class Brain:
         degraded = False  # True once the turn is answered by the read-only backup model
         emitted = False  # True once any token or tool event reached the operator: no retry after that
         after_tool = False  # True from a tool call until the text that resumes after it
+        network_retries = 0  # waits already spent on a network drop (NETWORK_RETRY_WAITS_S)
         try:
             while True:
                 if degraded:
@@ -581,7 +593,19 @@ class Brain:
                 except ModelUnavailable as e:
                     # Pro failed before it emitted anything (no token, no tool event): answer once, read-only, on the
                     # backup model. A pinned model is never swapped; a failure after output, or on the backup, ends it.
-                    if degraded or emitted or model_override:
+                    if emitted:
+                        raise
+                    if degraded or model_override:
+                        # Nothing was shown and no model could be reached: wait out a short network drop, then run
+                        # the turn again from the main model (or the pinned one). Any other failure ends the turn.
+                        if network_retries < len(NETWORK_RETRY_WAITS_S) and is_network_failure(e):
+                            wait_s = NETWORK_RETRY_WAITS_S[network_retries]
+                            network_retries += 1
+                            logger.warning("Brain turn for session %s could not reach a model; retry %d of %d in "
+                                           "%.0f s: %s", sid, network_retries, len(NETWORK_RETRY_WAITS_S), wait_s, e)
+                            await asyncio.sleep(wait_s)
+                            degraded = False
+                            continue
                         raise
                     logger.warning("Brain plan unavailable for session %s; answering read-only on %s: %s",
                                    sid, BRAIN_CHAT, e)
