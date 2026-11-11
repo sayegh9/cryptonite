@@ -310,3 +310,92 @@ async def test_a_degraded_answer_that_fails_midway_keeps_its_label_and_is_not_re
     assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
     stored = await store.messages(events[0].data["session_id"])
     assert stored[-1]["content"].startswith(agent_mod.DEGRADED_PREFIX) and "answer incomplete" in stored[-1]["content"]
+
+
+# --- A short network drop: wait and run the turn again ----------------------------------------------------------
+
+NO_NETWORK = RuntimeError("ConnectError: [Errno -3] Temporary failure in name resolution")
+
+
+class RecoveringModel(ScriptedModel):
+    """Unreachable for its first ``down_calls`` calls, then answers."""
+
+    def __init__(self, answer, down_calls: int):
+        super().__init__(answer)
+        self.down_calls = down_calls
+
+    def model(self) -> FunctionModel:
+        async def stream(messages, info: AgentInfo):
+            self.calls += 1
+            self.tool_names = sorted(t.name for t in info.function_tools)
+            if self.calls <= self.down_calls:
+                raise NO_NETWORK
+            for chunk in self.answer:
+                yield chunk
+
+        def sync(messages, info):
+            raise AssertionError("the Brain streams its turns")
+
+        return FunctionModel(sync, stream_function=stream)
+
+
+@pytest.fixture
+def waits(monkeypatch):
+    slept: list[float] = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(agent_mod.asyncio, "sleep", no_sleep)
+    return slept
+
+
+def test_only_an_unreached_model_counts_as_a_network_failure():
+    assert agent_mod.is_network_failure(NO_NETWORK)
+    assert agent_mod.is_network_failure(RuntimeError("google:gemini-2.5-pro: ConnectError: All connection attempts failed"))
+    assert not agent_mod.is_network_failure(RuntimeError("provider down"))
+    assert not agent_mod.is_network_failure(RuntimeError("status_code: 429, quota exceeded"))
+
+
+async def test_a_network_drop_is_waited_out_and_the_turn_is_answered_by_the_main_model(waits):
+    brain, store = make_brain()
+    plan = RecoveringModel(["Ideas: ", "BTC short."], down_calls=1)
+    chat, backup = ScriptedModel(error=NO_NETWORK), ScriptedModel(error=NO_NETWORK)
+    with models(plan, chat, backup):
+        events = await collect(brain.turn("op-1", "what should I trade?"))
+    assert (plan.calls, chat.calls, backup.calls) == (2, 1, 1)  # one full pass failed, then the main model answered
+    assert waits == [agent_mod.NETWORK_RETRY_WAITS_S[0]]
+    done = events[-1]
+    assert done.type == "done" and done.data["degraded"] is False and done.data["content"] == "Ideas: BTC short."
+    assert set(plan.tool_names) == {t.name for t in BRAIN_TOOLS}  # the full toolset, not the read-only backup
+    assert [m["role"] for m in await store.messages(events[0].data["session_id"])] == ["user", "assistant"]
+
+
+async def test_a_network_outage_that_lasts_ends_the_turn_after_two_waits(waits):
+    brain, store = make_brain()
+    plan, chat, backup = (ScriptedModel(error=NO_NETWORK) for _ in range(3))
+    with models(plan, chat, backup):
+        events = await collect(brain.turn("op-1", "what should I trade?"))
+    assert (plan.calls, chat.calls, backup.calls) == (3, 3, 3)
+    assert waits == list(agent_mod.NETWORK_RETRY_WAITS_S)
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
+    assert [m["role"] for m in await store.messages(events[0].data["session_id"])] == ["user"]
+
+
+async def test_a_provider_error_that_is_not_a_network_drop_is_not_waited_on(waits):
+    brain, _ = make_brain()
+    plan, chat, backup = (ScriptedModel(error=RuntimeError("provider down")) for _ in range(3))
+    with models(plan, chat, backup):
+        events = await collect(brain.turn("op-1", "what should I trade?"))
+    assert (plan.calls, chat.calls, backup.calls) == (1, 1, 1) and waits == []
+    assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
+
+
+async def test_a_pinned_model_is_retried_after_a_network_drop_and_never_swapped(waits):
+    brain, _ = make_brain()
+    pinned = RecoveringModel(["Pinned answer."], down_calls=1)
+    chat, backup = ScriptedModel(["never"]), ScriptedModel(["never"])
+    with override_model(PINNED, pinned.model()), models(ScriptedModel(["never"]), chat, backup):
+        events = await collect(brain.turn("op-1", "analyze", model_override=PINNED))
+    assert pinned.calls == 2 and (chat.calls, backup.calls) == (0, 0) and len(waits) == 1
+    assert events[-1].type == "done" and events[-1].data["content"] == "Pinned answer."
