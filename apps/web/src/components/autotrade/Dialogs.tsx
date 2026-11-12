@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { useTotpRequired } from "@/lib/stores/useSessionStore";
 
 /**
  * The two Auto-Trade modals. Both use the app dialog (focus trap, Escape closes, focus returns to the trigger).
@@ -97,6 +98,9 @@ export function TotpDialog({
   onClose: () => void;
 }) {
   const [code, setCode] = useState("");
+  // TOTP switched off (Settings → Security): the same confirm step, without a code
+  const totpOn = useTotpRequired();
+  const ready = !totpOn || code.length === 6;
   const inputRef = useRef<HTMLInputElement>(null);
   const inputId = useId();
   const errId = useId();
@@ -113,14 +117,18 @@ export function TotpDialog({
     <Dialog open={open} onOpenChange={(o) => !o && !pending && onClose()}>
       <DialogContent showCloseButton={false} initialFocus={inputRef} className="border border-zinc-800 bg-zinc-950 text-zinc-200 sm:max-w-sm">
         <DialogTitle className="text-sm font-bold text-zinc-100">Confirm this risk change</DialogTitle>
-        <DialogDescription className="text-xs text-zinc-300">{change} increases risk, so it needs your current TOTP code.</DialogDescription>
+        <DialogDescription className="text-xs text-zinc-300">
+          {change} increases risk, so {totpOn ? "it needs your current TOTP code" : "confirm it (TOTP is switched off)"}.
+        </DialogDescription>
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (code.length === 6 && !pending) onSubmit(code);
+            if (ready && !pending) onSubmit(totpOn ? code : "");
           }}
           className="space-y-3"
         >
+          {totpOn && (
+          <>
           <label htmlFor={inputId} className="block text-xs text-zinc-300">
             TOTP code
           </label>
@@ -137,6 +145,8 @@ export function TotpDialog({
             onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
             className="w-32 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 font-mono text-base tracking-widest text-zinc-100"
           />
+          </>
+          )}
           {error && (
             <p id={errId} role="alert" className="text-xs text-red-300">
               {error}
@@ -146,7 +156,7 @@ export function TotpDialog({
             <button type="button" className={btnSecondary} onClick={onClose} disabled={pending}>
               Cancel
             </button>
-            <button type="submit" className={btnPrimary} disabled={pending || code.length !== 6}>
+            <button type="submit" className={btnPrimary} disabled={pending || !ready}>
               {pending ? "Confirming…" : confirmLabel}
             </button>
           </div>

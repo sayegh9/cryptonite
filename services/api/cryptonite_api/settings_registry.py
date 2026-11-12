@@ -184,6 +184,11 @@ REGISTRY: tuple[Setting, ...] = (
                      "read on every ops-monitor pass; a lower value raises the alert sooner"),
     _runtime_setting("alerts.sentiment_stale_s", "Sentiment stale alert (s)", Tier.SESSION, "0004",
                      "read on every ops-monitor pass; SENTIMENT_STALE_ALERT_S sets the default"),
+    _runtime_setting("alerts.telegram_enabled", "Telegram notifications", Tier.SESSION, "0004",
+                     "read by the notifier every 15 s: while off, no alert, approval card or summary is sent to "
+                     "Telegram (Critical alerts still go to ntfy; approve cards in the app); replies to your own "
+                     "Telegram messages still work; no TOTP either way",
+                     choices=(("0", "Off"), ("1", "On"))),
     _runtime_setting("scanner.max_active_specs", "Max active scanner specs", Tier.SESSION, "0004",
                      "read on every spec change and scan cycle; MAX_ACTIVE_SPECS sets the default. "
                      "Presets turn on and off as scan specs in Scanner."),
@@ -194,6 +199,11 @@ REGISTRY: tuple[Setting, ...] = (
     _runtime_setting("auth.lockout_s", "Failed-login window (s)", Tier.T_L, "0007",
                      "failed logins are counted over this window; a longer window is the tighter one",
                      tighter=Tighter.HIGHER),
+    _runtime_setting("auth.totp_enabled", "TOTP codes (two-factor)", Tier.T_L, "0007",
+                     "read on every request: while off, sign-in takes the password alone and no action asks for a "
+                     "code (approvals, profile starts, loosened limits, Telegram approvals); switching off needs your "
+                     "TOTP code one last time, switching on is free",
+                     tighter=Tighter.HIGHER, choices=(("0", "Off"), ("1", "On"))),
     _runtime_setting("auth.max_login_attempts", "Failed logins before lockout", Tier.T_L, "0007",
                      "a lower count locks out sooner"),
     Setting("alerts.routing", "Alert routing", "critical only", None, None, Apply.DEPLOY, Tier.R, "0004",
@@ -368,10 +378,14 @@ PROD_ENVS = frozenset({"PROD", "PRODUCTION"})  # the same names the login gate c
 
 
 def health_warnings(*, environment: str, dev_totp_login: bool, dev_totp_approvals: bool, secure_cookie: bool,
-                    kill_switch_active: bool) -> list[dict[str, str]]:
+                    kill_switch_active: bool, totp_off: bool = False) -> list[dict[str, str]]:
     """Warnings for the Settings health panel. Each flag is computed from the environment by the route, so the
     panel says what the running process will do, not what the .env file says."""
     warnings: list[dict[str, str]] = []
+    if totp_off:
+        warnings.append({"code": "TOTP_OFF", "severity": "critical",
+                         "text": "TOTP is switched off (Security): sign-in takes the password alone and no approval, "
+                                 "profile start or limit change asks for a code."})
     if dev_totp_approvals:
         warnings.append({"code": "DEV_TOTP_APPROVALS", "severity": "critical",
                          "text": "AI_ALLOW_DEV_TOTP is on: risk-adding AI approvals accept the 000000 code. Turn it off."})

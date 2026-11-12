@@ -7,6 +7,7 @@ import { Button } from "../../ui/button";
 import { TierBadge } from "./TierBadge";
 import { ApplyModeBadge } from "./ApplyModeBadge";
 import { STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
+import { useSessionStore, useTotpRequired } from "@/lib/stores/useSessionStore";
 
 export interface RegistryEntry {
   key: string;
@@ -126,6 +127,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
   const [amount, setAmount] = useState<string>(current);
   const [reason, setReason] = useState<string>("");
   const [totp, setTotp] = useState<string>("");
+  const totpOn = useTotpRequired();
   const [saving, setSaving] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [innerOpen, setInnerOpen] = useState<boolean>(false);
@@ -200,7 +202,8 @@ export const SettingCard: React.FC<SettingCardProps> = ({
   // Loosening detection & TOTP requirement
   const isLoosening =
     changed && (entry.tighter === "higher" ? next < Number(current) : next > Number(current));
-  const needsTotp = entry.tier === "TOTP" || (entry.tier === "T/L" && isLoosening);
+  // the operator can switch TOTP off globally (auth.totp_enabled); switching it off still needs one code
+  const needsTotp = totpOn && (entry.tier === "TOTP" || (entry.tier === "T/L" && isLoosening));
 
   // Cross-field exit rule checking (ADR 0007)
   const getExitVal = (k: string): number => {
@@ -258,6 +261,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
       toast.success(`${entry.label} saved successfully`);
       setReason("");
       setTotp("");
+      if (entry.key === "auth.totp_enabled") void useSessionStore.getState().check(); // every code box follows
       onSaved();
       closeEditor();
     } catch (err: unknown) {

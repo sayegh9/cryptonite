@@ -20,6 +20,7 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
   highlightedKey,
 }) => {
   const authKeys = [
+    "auth.totp_enabled",
     "auth.session_ttl_s",
     "auth.idle_timeout_s",
     "auth.lockout_s",
@@ -48,10 +49,10 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
         <div>
           <h3 className="text-sm font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
             <Lock className="w-4 h-4" aria-hidden="true" />
-            Runtime Session Lifetimes & Lockout Thresholds
+            TOTP, Session Lifetimes & Lockout Thresholds
           </h3>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Hot-applied runtime rules. Tightening rules (shortening sessions or lengthening lockouts) is free; loosening requires operator TOTP.
+            Hot-applied runtime rules. Tightening rules (switching TOTP on, shortening sessions or lengthening lockouts) is free; loosening requires operator TOTP. With TOTP switched off, sign-in takes the password alone and no action asks for a code.
           </p>
         </div>
 

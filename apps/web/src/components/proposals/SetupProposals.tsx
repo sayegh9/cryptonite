@@ -14,6 +14,7 @@ import {
   type ProposalPreflight,
 } from "@/lib/proposals/client";
 import { useProposalStore } from "@/lib/stores/useProposalStore";
+import { useTotpRequired } from "@/lib/stores/useSessionStore";
 
 const LIST_POLL_MS = 15_000;
 const PREFLIGHT_POLL_MS = 30_000;
@@ -47,6 +48,7 @@ function PendingRow({ p, onDecided }: { p: Proposal; onDecided: () => void }) {
   const [ack, setAck] = useState(false);
   const [leverage, setLeverage] = useState<number | null>(null);
   const [totp, setTotp] = useState("");
+  const totpOn = useTotpRequired();
   const [confirmHigh, setConfirmHigh] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,7 +71,7 @@ function PendingRow({ p, onDecided }: { p: Proposal; onDecided: () => void }) {
   const highLeverage = (plan?.leverage ?? 0) >= HIGH_LEVERAGE_CONFIRM;
   const belowFloor = flight?.meets_rr_floor === false;
   const expired = left <= 0;
-  const ready = ack && !belowFloor && !expired && (!perp || totp.length === 6) && (!highLeverage || confirmHigh);
+  const ready = ack && !belowFloor && !expired && (!perp || !totpOn || totp.length === 6) && (!highLeverage || confirmHigh);
 
   const decide = async (act: () => Promise<unknown>) => {
     setBusy(true);
@@ -87,7 +89,7 @@ function PendingRow({ p, onDecided }: { p: Proposal; onDecided: () => void }) {
   };
   const approve = () => {
     const body: ProposalApproval = { acknowledge_against_debate: true };
-    if (perp) body.totp_code = totp;
+    if (perp && totpOn) body.totp_code = totp;
     if (perp && leverage != null) body.leverage = leverage;
     if (perp && highLeverage) body.confirm_high_leverage = confirmHigh;
     void decide(() => approveProposal(p.id, body));
@@ -157,6 +159,7 @@ function PendingRow({ p, onDecided }: { p: Proposal; onDecided: () => void }) {
                 {LEVERAGE_CHOICES.map((l) => <option key={l} value={l}>{l}x</option>)}
               </select>
             </label>
+            {totpOn && (
             <label className="flex flex-col gap-1 text-2xs text-zinc-300">
               TOTP code
               <input
@@ -168,6 +171,7 @@ function PendingRow({ p, onDecided }: { p: Proposal; onDecided: () => void }) {
                 onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
               />
             </label>
+            )}
             {highLeverage && (
               <label className="flex items-center gap-2 text-xs text-zinc-200">
                 <input type="checkbox" checked={confirmHigh} onChange={(e) => setConfirmHigh(e.target.checked)} />

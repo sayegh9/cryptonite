@@ -16,6 +16,7 @@ import {
 import { approveOrderCard, fetchCardDebate, fetchCardOutcome, fetchCardPreflight, rejectOrderCard, sendBrainMessage } from "@/lib/brain/client";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
+import { useTotpRequired } from "@/lib/stores/useSessionStore";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import { firstMandateChoice, MandateChoicePicker, overlapping, stopOverlap } from "@/components/brain/MandateChoice";
 import { createMandate, editMandate, resumeMandate } from "@/lib/mission/client";
@@ -966,6 +967,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const [chosenId, setChosenId] = useState("");
   const [tidyOthers, setTidyOthers] = useState(false);
   const [totp, setTotp] = useState("");
+  const totpOn = useTotpRequired();
   // A perp card: the leverage pill the operator picked (null: the card's own), the 8x second confirmation, and
   // whether the confirm step also raises the mandate's maximum leverage (RAISE_MAX_LEVERAGE)
   const [pickedLeverage, setPickedLeverage] = useState<number | null>(null);
@@ -1030,13 +1032,13 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   // Choosing a mandate changes none (and tidying the others only takes room away): only the other fixes need TOTP.
   // A perp entry needs it to approve too (ADR 0009 D3); a code works once, so a perp fix is its own step: the mandate
   // change takes this code, and approve takes the next one
-  const needsTotp = (fix !== null && fix !== "choose") || perpEntry;
+  const needsTotp = totpOn && ((fix !== null && fix !== "choose") || perpEntry);
   const perpFixStep = perpEntry && fix !== null && fix !== "choose";
   const symbol = widget.instrument_id.split(".")[0];
 
   const fixReady = (() => {
     if (fix === "choose") return chosen !== null;
-    if (totp.length !== 6) return false;
+    if (totpOn && totp.length !== 6) return false;
     if (fix === "create") {
       const pct = Number(mandatePct);
       return !!mandateName.trim() && Number(mandateBudget) > 0 && pct >= 1 && pct <= MAX_POSITION_PCT;
@@ -1048,7 +1050,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
     return fix === "add" || fix === "resume" || fix === "allow" || fix === "raise";
   })();
   // A perp approval without a fix: the code, a plan the server accepts, and the second confirmation at 8x and above
-  const perpReady = totp.length === 6 && (!highLeverage || confirmHigh);
+  const perpReady = (!totpOn || totp.length === 6) && (!highLeverage || confirmHigh);
 
   const approve = async () => {
     if (isStaleBuild()) return;

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { fetchApi } from "@/lib/api";
+import { useTotpRequired } from "@/lib/stores/useSessionStore";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { Button } from "@/components/ui/button";
 import type { RegistryEntry } from "../controls/SettingCard";
@@ -43,11 +44,12 @@ const RouteEditor: React.FC<RouteEditorProps> = ({ route, onSaved, onClose }) =>
   const [thinking, setThinking] = useState(stored?.thinking_budget?.toString() ?? "");
   const [reason, setReason] = useState("");
   const [totp, setTotp] = useState("");
+  const totpOn = useTotpRequired();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const blankToNull = (text: string) => (text.trim() === "" ? null : text.trim());
-  const canSave = reason.trim().length >= MIN_REASON_CHARS && /^\d{6}$/.test(totp) && !saving;
+  const canSave = reason.trim().length >= MIN_REASON_CHARS && (!totpOn || /^\d{6}$/.test(totp)) && !saving;
 
   const save = async () => {
     setSaving(true);
@@ -67,7 +69,7 @@ const RouteEditor: React.FC<RouteEditorProps> = ({ route, onSaved, onClose }) =>
           totp_code: totp,
         }),
       });
-      toast.success(`${route.role} route updated with TOTP certification`);
+      toast.success(`${route.role} route updated${totpOn ? " with TOTP certification" : ""}`);
       setTotp("");
       setReason("");
       onSaved();
@@ -86,7 +88,7 @@ const RouteEditor: React.FC<RouteEditorProps> = ({ route, onSaved, onClose }) =>
         <span className="text-xs font-semibold text-cyan-300">
           Edit Routing Policy for <span className="font-mono">{route.role}</span>
         </span>
-        <span className="text-[10px] text-zinc-400">TOTP Required (ADR 0007 §2)</span>
+        <span className="text-[10px] text-zinc-400">{totpOn ? "TOTP Required (ADR 0007 §2)" : "TOTP switched off"}</span>
       </div>
 
       <div className="grid grid-cols-1 @2xl:grid-cols-2 gap-3">
@@ -169,6 +171,7 @@ const RouteEditor: React.FC<RouteEditorProps> = ({ route, onSaved, onClose }) =>
         />
       </label>
 
+      {totpOn && (
       <label className="block text-[11px] text-amber-200">
         Operator TOTP Code (every route alteration requires 2FA authentication)
         <input
@@ -181,6 +184,7 @@ const RouteEditor: React.FC<RouteEditorProps> = ({ route, onSaved, onClose }) =>
           className="mt-1 block w-32 rounded border border-white/10 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-amber-200 focus:border-amber-400 focus:outline-none"
         />
       </label>
+      )}
 
       {error && (
         <p role="alert" className="text-xs text-red-400">
@@ -203,7 +207,7 @@ const RouteEditor: React.FC<RouteEditorProps> = ({ route, onSaved, onClose }) =>
           disabled={!canSave}
           className="bg-cyan-600 hover:bg-cyan-500 text-zinc-950 text-xs font-bold uppercase tracking-wider disabled:opacity-40"
         >
-          {saving ? "Saving…" : "Save with TOTP"}
+          {saving ? "Saving…" : totpOn ? "Save with TOTP" : "Save"}
         </Button>
       </div>
     </div>

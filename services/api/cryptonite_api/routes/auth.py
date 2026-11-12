@@ -6,6 +6,7 @@ from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, 
 from pydantic import BaseModel
 
 from cryptonite_api.auth import OperatorAuthManager
+from cryptonite_api.totp_policy import totp_enabled
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -182,10 +183,11 @@ async def logout(
 
 
 @router.get("/me")
-async def get_me(session: dict = Depends(get_current_session)):
-    """Return current authenticated session details."""
+async def get_me(request: Request, session: dict = Depends(get_current_session)):
+    """Return current authenticated session details, and whether actions ask for a TOTP code."""
     return {
         "authenticated": True,
+        "totp_enabled": await totp_enabled(request.app.state.pool),
         "username": session["username"],
         "user_id": session["user_id"],
         "csrf_token": session.get("csrf_token"),

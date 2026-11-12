@@ -27,6 +27,7 @@ from cryptonite_api.settings_registry import (
     validate_value,
     write_needs_totp,
 )
+from cryptonite_api.totp_policy import totp_enabled
 from cryptonite_schemas.exit_thresholds import SETTING_KEYS
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -154,6 +155,7 @@ async def get_environment_health(
     secure_cookie = os.getenv("SECURE_COOKIE", "false").lower() in ("true", "1", "yes")
 
     shadow_allow_paid = False
+    totp_off = False
     if request is not None:
         pool = getattr(getattr(request, "app", None), "state", None)
         pool = getattr(pool, "pool", None)
@@ -165,6 +167,7 @@ async def get_environment_health(
             except Exception as e:
                 logger.warning(f"Failed to fetch shadow_allow_paid for environment: {e}")
                 shadow_allow_paid = False
+            totp_off = not await totp_enabled(pool)
 
     return {
         "gemini_key_set": bool(gemini_key and len(gemini_key) > 10),
@@ -175,9 +178,10 @@ async def get_environment_health(
         "dev_totp_approvals": dev_totp_approvals,
         "secure_cookie": secure_cookie,
         "shadow_allow_paid": shadow_allow_paid,
+        "totp_enabled": not totp_off,
         "warnings": health_warnings(
             environment=gate_env, dev_totp_login=dev_totp_login, dev_totp_approvals=dev_totp_approvals,
-            secure_cookie=secure_cookie, kill_switch_active=kill_switch_active),
+            secure_cookie=secure_cookie, kill_switch_active=kill_switch_active, totp_off=totp_off),
     }
 
 
@@ -259,7 +263,7 @@ async def update_registry_setting(
                 raise HTTPException(status_code=403, detail=str(e))
             if needs_totp:
                 try:
-                    await require_totp(request, auth, body.totp_code)
+                    needs_totp = await require_totp(request, auth, body.totp_code)  # False: TOTP is switched off
                 except HTTPException as e:
                     await auth_mgr.log_audit_event(
                         username=username, action="SETTING_UPDATE_FAILED_AUTH", ip_address=client_ip,

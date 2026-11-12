@@ -13,6 +13,7 @@ import {
   type RiskLimitsConfig,
 } from "@/lib/limits";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
+import { useTotpRequired } from "@/lib/stores/useSessionStore";
 
 const LABELS: Record<ConfigurableLimit, string> = {
   max_daily_loss_pct: "Max daily loss",
@@ -50,6 +51,7 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
   const [inputs, setInputs] = useState<Record<ConfigurableLimit, string>>(emptyInputs);
   const [reason, setReason] = useState("");
   const [totp, setTotp] = useState("");
+  const totpOn = useTotpRequired();
   const [busy, setBusy] = useState(false);
   // Loosening (TOTP) never runs from a tab older than the server; tightening stays open
   const staleBuild = useStaleBuild();
@@ -84,7 +86,7 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
   }, [load]);
 
   const loosened = useMemo(() => (config ? loosenedLimits(config, inputs) : []), [config, inputs]);
-  const needsTotp = loosened.length > 0;
+  const needsTotp = totpOn && loosened.length > 0;
 
   if (loadError) {
     return <p className="text-xs font-mono text-zinc-400" data-testid="risk-limits-unavailable">Configurable limits unavailable ({loadError}).</p>;
