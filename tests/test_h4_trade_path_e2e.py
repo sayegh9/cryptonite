@@ -3,16 +3,26 @@
 Spot long: gate -> debate route -> operator approval -> command -> mandate gate -> dispatcher -> paper fill -> the exit
 monitor's stop. Perp short: gate -> Brain card -> approval (TOTP) -> command -> mandate gate -> dispatcher -> paper
 fill -> resting stop and the exit monitor's stop. Quotes and marks are faked; no model is called (no gateway).
+
+Brain idea (review 2026-11-12, item 6): get_trade_ideas -> the Brain's own order card (scripted gateway, real card
+code and limit guard) -> approval -> command -> mandate gate -> dispatcher -> paper fill -> the exit monitor's stop.
+An idea that waits for a break ends with no card and no command.
 """
 
 import json
 import time
 import uuid
+from dataclasses import replace
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from ai_api_harness import close_harness, make_harness
+from cryptonite_agents import trade_ideas as ti
+from cryptonite_agents.brain import BRAIN, Brain, MemorySessionStore
+from cryptonite_agents.brain.toolset import propose_order, show_price_chart
+from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX
 from cryptonite_api.routes import agents as agents_routes
 from cryptonite_execution.mandate_store import load_mandate
 from cryptonite_execution.risk import OrderIntent
@@ -21,6 +31,8 @@ from cryptonite_orchestrator.server import SimpleQuoteCache
 from cryptonite_scanner_service import exit_monitor as em
 from cryptonite_schemas.marks import quote_tick_key
 from migrated_db import migrated_database
+from test_brain_trade_ideas import RANGE_LOW, UP, active
+from test_brain_trade_ideas import payload as bars_payload
 from test_debate_gate import Redis as GateRedis
 from test_debate_gate import load
 from test_exit_monitor import Redis as MonitorRedis
@@ -211,3 +223,97 @@ async def test_a_short_card_in_a_long_only_mandate_is_refused_before_it_is_claim
     assert response.json()["detail"].startswith("MANDATE_DIRECTION_NOT_ALLOWED: mandate h4-long-only (LONG, markets PERP)")
     assert worker.card["status"] == "PENDING_APPROVAL"
     assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+
+
+# --- From a Brain trade idea to a protected paper fill ------------------------------------------------------------
+
+def scaled(closes: list[float], last: float = 50000.0) -> list[float]:
+    """The same shape of bars, ending exactly on the faked quote's mid."""
+    return [round(c * last / closes[-1], 2) for c in closes]
+
+
+async def ideas_for(monkeypatch, closes, scope) -> list[dict]:
+    def bars(instrument_id, timeframe="1h", n=48, now_ns=None):
+        return {**bars_payload(closes, timeframe=timeframe), "instrument_id": instrument_id}
+
+    monkeypatch.setattr(ti, "recent_bars", bars)
+    monkeypatch.setattr(ti, "_fed_symbols", lambda: frozenset({"BTCUSDT"}))
+    monkeypatch.setattr(ti, "all_scopes", lambda: [scope])
+    return json.loads(await ti.get_trade_ideas(symbol="BTCUSDT"))["ideas"]
+
+
+async def brain_turn(args: dict, market_price: float) -> tuple[list[dict], str]:
+    """One Brain turn in which the model asks for this order: the Brain's own code decides whether a card exists."""
+    def ev(kind, data=None, text="", result=None):
+        return SimpleNamespace(kind=kind, data=data or {}, text=text, result=result)
+
+    class Gateway:
+        async def stream(self, *a, **k):
+            yield ev("start", {"trace_id": "t1"})
+            yield ev("tool_call", {"tool_call_id": "c0", "tool": "propose_order", "args": args})
+            yield ev("tool_result", {"tool_call_id": "c0", "tool": "propose_order", "status": "DENIED",
+                                     "content": HELD_FOR_APPROVAL_PREFIX + " waiting"})
+            yield ev("token", text="Done.")
+            yield ev("done", result=SimpleNamespace(output="Done.", model="test", cost_usd=Decimal("0"),
+                                                    trace_id="t1"))
+
+    async def price(_instrument):
+        return market_price
+
+    brain = Brain(Gateway(), MemorySessionStore(), replace(BRAIN, tools=(show_price_chart, propose_order)),
+                  price=price)
+    events = [e async for e in brain.turn("op-1", "Trade the idea")]
+    cards = [e.data["widget"] for e in events if e.type == "widget" and e.data["widget"]["kind"] == "order_card"]
+    return cards, events[-1].data["content"]
+
+
+async def test_an_at_market_brain_idea_goes_from_the_idea_to_a_protected_paper_fill(h, monkeypatch):
+    mandate = await spot_mandate(h)
+    scope = active(name=mandate.name, coins=(BTC,), markets=("SPOT",), direction="LONG", max_leverage=1)
+    ideas = await ideas_for(monkeypatch, scaled(RANGE_LOW), scope)
+    idea = next(i for i in ideas if i["entry_type"] == "AT_MARKET")
+    assert (idea["direction"], idea["status"], idea["trigger"], idea["card_possible"]) == (
+        "LONG", "POTENTIAL", "NONE", True)
+    assert idea["stop"] < idea["entry"] == 50000.0 < idea["target"]
+
+    [card], _ = await brain_turn({"instrument_id": idea["instrument_id"], "side": "BUY", "allocation_pct": 5,
+                                  "order_type": "MARKET", "stop_loss": idea["stop"], "take_profit": idea["target"],
+                                  "rationale": idea["basis"]}, 50000.0)
+    assert (card["status"], card["stop_loss"], card["take_profit"]) == (
+        "PENDING_APPROVAL", idea["stop"], idea["target"])
+
+    await fresh_spot_quote(h)
+    worker = worker_for_brain(monkeypatch, card)
+    async with h.client() as client:
+        response = await client.post(f"/api/v1/agents/brain/sessions/{uuid.uuid4()}/cards/{card['id']}/approve",
+                                     headers=h.headers)
+    assert response.status_code == 200, response.text
+    assert worker.card["status"] == "APPROVED"
+
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 1  # one approval, one command
+    row, payload = await queued_command(h)
+    assert (payload["instrument_id"], payload["side"], row["mandate_id"]) == (BTC, "BUY", mandate.id)
+    assert Decimal(str(payload["proposed_stop_loss"])) == Decimal(str(idea["stop"]))  # the idea's stop, not a default
+    dispatcher, _ = make_fresh_dispatcher(Decimal("10000"))
+    await gate_and_fill(h, row, payload, dispatcher, Decimal("0.01"), Decimal("50001"))
+    assert dispatcher.positions[BTC] == Decimal("0.01")
+
+    await assert_exit_monitor_stops(h, row["target_instance_id"], BTC, 47000.0)
+
+
+async def test_a_brain_idea_that_waits_for_a_break_ends_with_no_card_and_no_command(h, monkeypatch):
+    mandate = await spot_mandate(h)
+    scope = active(name=mandate.name, coins=(BTC,), markets=("SPOT",), direction="LONG", max_leverage=1)
+    ideas = await ideas_for(monkeypatch, UP, scope)
+    idea = next(i for i in ideas if i["direction"] == "LONG")
+    assert (idea["entry_type"], idea["status"], idea["trigger"], idea["card_possible"]) == (
+        "ON_BREAK", "POTENTIAL", "WAITING", False)
+    assert idea["entry"] > UP[-1] * (1 + ti.LIMIT_TOLERANCE)  # the break level has not traded
+
+    # The model stages it as a limit order at the break level anyway: the Brain's code refuses the card
+    cards, content = await brain_turn({"instrument_id": idea["instrument_id"], "side": "BUY", "allocation_pct": 5,
+                                       "order_type": "LIMIT", "limit_price": idea["entry"],
+                                       "stop_loss": idea["stop"], "rationale": idea["basis"]}, UP[-1])
+    assert cards == [] and "would fill at once" in content
+    assert await h.pool.fetchval("SELECT count(*) FROM execution_commands") == 0
+    assert await h.pool.fetchval("SELECT count(*) FROM paper_positions") == 0
