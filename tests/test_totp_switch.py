@@ -120,3 +120,15 @@ async def test_sign_in_takes_the_password_alone_only_while_totp_is_off(db_url):
     finally:
         await redis.aclose()
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_caller_holding_a_connection_reads_the_switch_on_it():
+    class NoPool:
+        def acquire(self):
+            raise AssertionError("a second connection was taken while the caller held one")
+
+    held = _Conn('"0"')
+    assert await totp_policy.totp_enabled(NoPool(), held) is False
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(pool=NoPool(), stream_hub=None)))
+    assert await ai_route.require_totp(request, {"user_id": str(uuid.uuid4())}, None, conn=held) is False

@@ -16,10 +16,18 @@ logger = logging.getLogger(__name__)
 TOTP_SWITCH_KEY = "auth.totp_enabled"
 
 
-async def totp_enabled(pool: Any) -> bool:
+SQL = "SELECT value FROM system_settings WHERE key = $1"
+
+
+async def totp_enabled(pool: Any, conn: Any = None) -> bool:
+    """Pass ``conn`` when the caller already holds a connection: the read then uses it and never waits on the pool
+    for a second one (a request holding one connection while waiting for another can starve the pool)."""
     try:
-        async with pool.acquire() as conn:
-            raw = await conn.fetchval("SELECT value FROM system_settings WHERE key = $1", TOTP_SWITCH_KEY)
+        if conn is not None:
+            raw = await conn.fetchval(SQL, TOTP_SWITCH_KEY)
+        else:
+            async with pool.acquire() as held:
+                raw = await held.fetchval(SQL, TOTP_SWITCH_KEY)
     except Exception as e:
         logger.warning("TOTP switch unreadable (%s): TOTP stays required", type(e).__name__)
         return True

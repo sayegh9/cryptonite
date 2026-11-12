@@ -329,7 +329,7 @@ async def test_lowering_the_budget_writes_without_totp_and_is_audited(monkeypatc
 
 @pytest.mark.asyncio
 async def test_raising_the_budget_without_totp_is_refused_and_writes_nothing(monkeypatch):
-    async def missing_totp(request, auth, code):
+    async def missing_totp(request, auth, code, conn=None):
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
 
     monkeypatch.setattr(settings_route, "require_totp", missing_totp)
@@ -345,7 +345,7 @@ async def test_raising_the_budget_without_totp_is_refused_and_writes_nothing(mon
 async def test_raising_the_budget_with_totp_writes_and_records_it(monkeypatch):
     seen = {}
 
-    async def good_totp(request, auth, code):
+    async def good_totp(request, auth, code, conn=None):
         seen["code"] = code
         return True  # checked (False would mean TOTP is switched off)
 
@@ -460,7 +460,7 @@ async def test_exit_lowering_writes_without_totp(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_exit_raising_without_totp_writes_nothing(monkeypatch):
-    async def missing_totp(request, auth, code):
+    async def missing_totp(request, auth, code, conn=None):
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
 
     monkeypatch.setattr(settings_route, "require_totp", missing_totp)

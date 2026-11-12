@@ -263,7 +263,7 @@ async def update_registry_setting(
                 raise HTTPException(status_code=403, detail=str(e))
             if needs_totp:
                 try:
-                    needs_totp = await require_totp(request, auth, body.totp_code)  # False: TOTP is switched off
+                    needs_totp = await require_totp(request, auth, body.totp_code, conn=conn)  # False: TOTP is switched off
                 except HTTPException as e:
                     await auth_mgr.log_audit_event(
                         username=username, action="SETTING_UPDATE_FAILED_AUTH", ip_address=client_ip,
@@ -341,7 +341,7 @@ async def update_model_route(
             if all(same_value(before[field], values[field]) for field in EDITABLE):
                 return {"success": True, "role": role, "changed": False}
             try:
-                await require_totp(request, auth, body.totp_code)
+                await require_totp(request, auth, body.totp_code, conn=conn)
             except HTTPException as e:
                 await auth_mgr.log_audit_event(
                     username=username, action="ROUTE_UPDATE_FAILED_AUTH", ip_address=client_ip,

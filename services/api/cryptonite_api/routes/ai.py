@@ -351,11 +351,12 @@ async def _checked_code(request: Request, code: str | None, throttle_key: str, *
     return outcome
 
 
-async def require_totp(request: Request, auth: dict, code: str | None) -> bool:
-    """Raises unless the code is valid. False when TOTP is switched off and nothing was checked; True when it was."""
+async def require_totp(request: Request, auth: dict, code: str | None, *, conn: Any = None) -> bool:
+    """Raises unless the code is valid. False when TOTP is switched off and nothing was checked; True when it was.
+    A caller inside ``pool.acquire()`` passes its ``conn`` so the switch read takes no second connection."""
     if not auth.get("user_id"):
         raise HTTPException(status_code=403, detail="TOTP_REQUIRED: a machine token cannot add risk")
-    if not await totp_enabled(request.app.state.pool):
+    if not await totp_enabled(request.app.state.pool, conn):
         return False
     # the switch is read once: a code is always checked from here, so True means it really was
     outcome = await _checked_code(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"])
@@ -676,7 +677,7 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 if stopped := await _stopped_mandate_on(conn, added, except_id=mandate_id):
                     raise HTTPException(status_code=409, detail=stopped)
             if risk_adding_change(old, new):
-                await require_totp(request, auth, req.totp_code)
+                await require_totp(request, auth, req.totp_code, conn=conn)
             locks_retained: list[str] = []
             try:
                 if new.capital_budget_usd > old.capital_budget_usd and old.status.value in profile_lifecycle.ALLOCATING_STATUSES:

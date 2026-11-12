@@ -299,7 +299,7 @@ async def update_risk_limits(
             totp_verified = False
             if check.needs_totp:
                 try:
-                    totp_verified = await require_totp(request, auth, req.totp_code)
+                    totp_verified = await require_totp(request, auth, req.totp_code, conn=conn)
                 except HTTPException as e:
                     await auth_mgr.log_audit_event(
                         username=username, action="RISK_LIMITS_UPDATE_FAILED_AUTH", ip_address=client_ip,
