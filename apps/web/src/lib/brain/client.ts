@@ -37,7 +37,27 @@ export async function sendBrainMessage(text: string): Promise<void> {
   const store = useBrainStore.getState();
   if (!message || active) return;
   store.setDraft("");
-  const assistantId = store.beginTurn(message);
+  await streamTurn(message, store.beginTurn(message), false);
+}
+
+/** Errors that sending the same request again cannot fix */
+const NOT_RETRYABLE = new Set(["AUTH", "BUDGET", "SESSION_NOT_FOUND"]);
+
+export function isRetryable(code: string | undefined): boolean {
+  return !!code && !NOT_RETRYABLE.has(code);
+}
+
+/**
+ * Send the request of a failed turn again. The server is told it is a retry: it stores no second copy of the message
+ * and stages no second order card for an instrument and side the failed turn already carded.
+ */
+export async function retryBrainMessage(failedId: string): Promise<void> {
+  if (active) return;
+  const turn = useBrainStore.getState().beginRetry(failedId);
+  if (turn) await streamTurn(turn.text, turn.assistantId, true);
+}
+
+async function streamTurn(message: string, assistantId: string, retry: boolean): Promise<void> {
   const controller = new AbortController();
   active = controller;
   let terminal: "done" | "error" | null = null;
@@ -46,7 +66,7 @@ export async function sendBrainMessage(text: string): Promise<void> {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream", "X-CSRF-Token": csrf() },
-      body: JSON.stringify({ message, session_id: useBrainStore.getState().sessionId }),
+      body: JSON.stringify({ message, session_id: useBrainStore.getState().sessionId, ...(retry ? { retry: true } : {}) }),
       signal: controller.signal,
     });
     if (!res.ok) {

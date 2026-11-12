@@ -18,7 +18,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Any
 
@@ -300,6 +300,21 @@ class SessionNotFound(Exception):
     pass
 
 
+def retried_turn(turns: list[dict[str, Any]], message: str) -> tuple[int, set[tuple[str, str]]] | None:
+    """The failed turn a retry repeats: (the index of its operator message, the (instrument, side) of each order card
+    it staged that still waits for approval). None when the newest operator message is a different text: the retry
+    is then an ordinary new message."""
+    for i in range(len(turns) - 1, -1, -1):
+        if turns[i].get("role") != "user":
+            continue
+        if str(turns[i].get("content") or "").strip() != message.strip():
+            return None
+        return i, {(str(w.get("instrument_id", "")).strip().upper(), str(w.get("side", "")).upper())
+                   for t in turns[i + 1:] for w in t.get("widgets") or []
+                   if w.get("kind") == "order_card" and w.get("status") == "PENDING_APPROVAL"}
+    return None
+
+
 class Brain:
     def __init__(self, gateway: Gateway, store: SessionStore, persona: Persona = BRAIN,
                  holdings: Callable[[str], Awaitable[Decimal]] | None = None,
@@ -438,7 +453,10 @@ class Brain:
         )
 
     async def turn(self, operator_id: str, message: str, session_id: str | None = None,
-                   *, model_override: str | None = None) -> AsyncIterator[BrainEvent]:
+                   *, model_override: str | None = None, retry: bool = False) -> AsyncIterator[BrainEvent]:
+        """One turn. ``retry`` says the operator is sending the request of a failed turn again: when the newest
+        operator message of the session is this same text, it is not stored a second time, and an order card the
+        failed turn already staged for an instrument and side is not staged again."""
         try:
             sid = await self.open_session(operator_id, session_id, message)
         except SessionNotFound:
@@ -446,7 +464,12 @@ class Brain:
             return
 
         ctx = await memory.load_context(self.store, sid)
-        await self.store.append_message(sid, "user", message)
+        repeated = retried_turn(ctx.turns, message) if retry else None
+        if repeated is None:
+            await self.store.append_message(sid, "user", message)
+        elif repeated[0] == len(ctx.turns) - 1:
+            # Nothing came after the failed request: it is the new message, not also a recent turn
+            ctx = replace(ctx, turns=ctx.turns[:-1])
         state_text = await self._system_state()
         prompt = memory.render_prompt(ctx, message, state=state_text)
 
@@ -456,7 +479,8 @@ class Brain:
         notes: list[str] = []  # what the Brain could not stage, said to the operator in the reply
         calls: dict[str, dict[str, Any]] = {}
         order_cards = 0  # at most MAX_ORDER_CARDS per turn; a SELL that gets no card does not count
-        carded: set[tuple[str, str]] = set()  # the (instrument, side) of each card: one card per idea
+        # The (instrument, side) of each card: one card per idea. A retry starts with the cards the failed turn staged
+        carded: set[tuple[str, str]] = set(repeated[1]) if repeated else set()
         trace_id: str | None = None
         finished = False
         call_ctx = CallContext(role=self.persona.role, session_id=sid)
@@ -656,7 +680,7 @@ class Brain:
                                    sid, BRAIN_CHAT, e)
                     degraded = True
         except BudgetExceeded as e:
-            yield BrainEvent("error", {"code": "BUDGET", "message": f"LLM budget: {e.reason}"})
+            yield BrainEvent("error", {"session_id": sid, "code": "BUDGET", "message": f"LLM budget: {e.reason}"})
             return
         except InvalidModelOutput as e:
             if order_cards:  # the card the operator sees is real: keep it and say the reply was cut short
@@ -664,20 +688,20 @@ class Brain:
                 await self._keep_partial(sid, _final_text(text, prior_text), widgets, trace_id,
                                          note="\n\n_[the model did not finish its reply; the order card above is "
                                               "waiting for your approval]_", degraded=degraded)
-                yield BrainEvent("error", {"code": "MODEL_INCOMPLETE", "message": (
+                yield BrainEvent("error", {"session_id": sid, "code": "MODEL_INCOMPLETE", "message": (
                     "The model stopped before finishing its reply. The order card above is staged and waiting "
                     "for your approval.")})
                 return
             logger.error("Brain turn failed for session %s: %s", sid, e)
             await self._keep_partial(sid, _final_text(text, prior_text), widgets, trace_id, degraded=degraded,
                                      note="\n\n_[the model failed; answer incomplete]_")
-            yield BrainEvent("error", {"code": "MODEL_UNAVAILABLE", "message": str(e)})
+            yield BrainEvent("error", {"session_id": sid, "code": "MODEL_UNAVAILABLE", "message": str(e)})
             return
         except GatewayError as e:
             logger.error("Brain turn failed for session %s: %s", sid, e)
             await self._keep_partial(sid, _final_text(text, prior_text), widgets, trace_id, degraded=degraded,
                                      note="\n\n_[the model failed; answer incomplete]_")
-            yield BrainEvent("error", {"code": "MODEL_UNAVAILABLE", "message": str(e)})
+            yield BrainEvent("error", {"session_id": sid, "code": "MODEL_UNAVAILABLE", "message": str(e)})
             return
         except (GeneratorExit, asyncio.CancelledError):
             if not finished:  # the operator pressed stop: keep what they already saw

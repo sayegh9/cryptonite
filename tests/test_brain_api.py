@@ -98,7 +98,9 @@ def test_stream_relays_sse_signed_with_the_operator_identity(client, worker):
     assert res.status_code == 200 and res.headers["content-type"].startswith("text/event-stream")
     assert res.content == SSE
     sent = json.loads(worker[0].content)
-    assert sent == {"operator_id": "u-op", "message": "analyze BTC", "session_id": None}
+    assert sent == {"operator_id": "u-op", "message": "analyze BTC", "session_id": None, "retry": False}
+    c.post("/api/v1/agents/brain/stream", json={"message": "analyze BTC", "retry": True}, headers={"X-CSRF-Token": CSRF})
+    assert json.loads(worker[-1].content)["retry"] is True  # the Retry button's flag reaches the worker
 
 
 def test_sessions_are_scoped_to_the_logged_in_operator(client, worker):
