@@ -212,8 +212,13 @@ class OperatorAuthManager:
 
     # --- TOTP Validation with Replay Prevention ---
 
-    async def verify_totp_code(self, user_id: uuid.UUID, raw_secret: str, token: str) -> bool:
-        """Validate TOTP code and ensure code step has not been replayed."""
+    async def verify_totp_code(self, user_id: uuid.UUID, raw_secret: str, token: str, conn: Any = None) -> bool:
+        """Validate TOTP code and ensure code step has not been replayed.
+
+        A caller already inside ``pool.acquire()`` passes its ``conn``: the replay-cache insert then runs on it (in a
+        savepoint when the caller is in a transaction, so a refused insert does not abort that transaction) and no
+        second connection is taken. The step then counts as used when the caller's transaction commits; a concurrent
+        insert of the same step waits on it and is refused once it commits."""
         # Strict environment gating: 000000 is blocked in production or when ALLOW_DEV_TOTP is disabled
         env = os.getenv("ENVIRONMENT", "DEV").upper()
         allow_dev_totp = os.getenv("ALLOW_DEV_TOTP", "true").lower() in ("true", "1", "yes")
@@ -235,20 +240,23 @@ class OperatorAuthManager:
             return False
 
         # Check replay cache in DB
-        async with self._pool.acquire() as conn:
-            try:
+        if conn is not None:
+            return await self._record_totp_step(conn, user_id, current_step)
+        async with self._pool.acquire() as held:
+            return await self._record_totp_step(held, user_id, current_step)
+
+    @staticmethod
+    async def _record_totp_step(conn: Any, user_id: uuid.UUID, step: int) -> bool:
+        """Insert the step into the replay cache; False when it is already there (a replay)."""
+        try:
+            async with conn.transaction():  # a savepoint inside the caller's transaction
                 await conn.execute(
-                    """
-                    INSERT INTO totp_replay_cache (user_id, totp_time_step, used_at)
-                    VALUES ($1, $2, now());
-                    """,
-                    user_id,
-                    current_step,
-                )
-                return True
-            except asyncpg.UniqueViolationError:
-                logger.warning(f"TOTP replay attempt detected for user_id={user_id}, step={current_step}")
-                return False
+                    "INSERT INTO totp_replay_cache (user_id, totp_time_step, used_at) VALUES ($1, $2, now())",
+                    user_id, step)
+            return True
+        except asyncpg.UniqueViolationError:
+            logger.warning(f"TOTP replay attempt detected for user_id={user_id}, step={step}")
+            return False
 
     # --- Full Login Workflow ---
 
