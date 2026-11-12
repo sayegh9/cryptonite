@@ -178,7 +178,10 @@ class TradeIdeaItem(BaseModel):
     basis: str = ""
     invalidation: str = ""
     bar_close: str | None = None
-    status: Literal["EXECUTABLE", "BLOCKED", "UNKNOWN"] = "UNKNOWN"
+    # EXECUTABLE is the old name of POTENTIAL, kept so saved widgets still load
+    status: Literal["POTENTIAL", "EXECUTABLE", "BLOCKED", "UNKNOWN"] = "UNKNOWN"
+    trigger: str | None = None  # WAITING: an ON_BREAK entry that has not traded; NONE: at market
+    level_sources: dict[str, str] | None = None
     reasons: list[IdeaReason] = Field(default_factory=list)
     card_possible: bool = False
     route: dict[str, Any] | None = None

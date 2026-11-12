@@ -6,9 +6,11 @@ executed right now?" decide "is there an idea worth showing?". This module keeps
 - ``ideas_for_frame`` is pure price action on closed bars: a trend continuation, a range reversion or a range break,
   each with an entry, a structural stop, a target and what invalidates it. Every level is computed here from the bars,
   so the model never supplies one.
-- ``executability`` says, for one idea, whether an entry could be taken now (EXECUTABLE), what blocks it (BLOCKED,
+- ``executability`` says, for one idea, whether nothing known blocks an entry (POTENTIAL: the card's dry run still
+  has to pass, so it is never called executable), what blocks it (BLOCKED,
   with every reason: a profile paused for stale data is named as temporary, never as "no mandate"), or that the
-  profiles could not be read (UNKNOWN, which is never executable).
+  profiles could not be read (UNKNOWN). An ON_BREAK idea is information only until its trigger has traded: it
+  never gets an order card (``card_possible`` false, ``trigger`` WAITING).
 
 An idea is a research observation, not a recommendation with a measured edge: nothing here grades, sizes or places an
 order. A card for an idea still goes through ``propose_order``, the card's dry run and every gate behind it.
@@ -107,7 +109,13 @@ def _idea(inst: str, tf: str, payload: dict[str, Any], *, kind: str, direction: 
             "basis": basis, "invalidation": invalidation, "bar_close": payload.get("newest_bar_close"),
             "newest_bar_age_minutes": payload.get("newest_bar_age_minutes"),
             "data_complete": bool(payload.get("complete")), "bars_used": len(payload.get("bars") or []),
-            "source": "lake closed bars"}
+            "source": "lake closed bars",
+            # An ON_BREAK entry lies beyond the newest close by construction: it has not traded yet
+            "trigger": "WAITING" if entry_type == "ON_BREAK" else "NONE",
+            "level_sources": {
+                "entry": "newest close" if entry_type == "AT_MARKET" else f"break level from the {tf} bars",
+                "stop": f"{tf} swing or range level with an ATR buffer",
+                "target": "planning level at a fixed multiple of the risk or the range middle, not a measured target"}}
 
 
 def ideas_for_frame(instrument_id: str, timeframe: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -229,8 +237,10 @@ def _reason(code: str, text: str) -> dict[str, str]:
 
 def executability(idea: dict[str, Any], scopes: list[dict[str, Any]] | None) -> dict[str, Any]:
     """Whether an entry on ``idea`` could be taken now. BLOCKED lists every reason. ``card_possible`` says whether an
-    order card can be proposed for it. An EXECUTABLE idea is a point-in-time preview: the card's dry run and the
-    submission recheck everything (kill switch, session limits, size minimum, grade, feed)."""
+    order card can be proposed for it. POTENTIAL means nothing checked here blocks it: the card's dry run and the
+    submission still check the live price, size minimum, kill switch, session limits, grade and feed. An ON_BREAK
+    idea never gets a card: a limit order at a break level would fill at once, before the break."""
+    at_market = idea.get("entry_type") == "AT_MARKET"
     if scopes is None:
         return {"status": "UNKNOWN", "route": None, "card_possible": False,
                 "reasons": [_reason("PROFILES_UNREADABLE", "the profiles could not be read, so it is unknown whether "
@@ -283,10 +293,10 @@ def executability(idea: dict[str, Any], scopes: list[dict[str, Any]] | None) -> 
         card_fixable = False
     if reasons:
         return {"status": "BLOCKED", "route": None, "reasons": reasons,
-                "card_possible": card_fixable and len(reasons) == 1}
+                "card_possible": card_fixable and len(reasons) == 1 and at_market}
     # A Brain card opens a short on perps only; a margin short is Auto-Trade's
-    card_possible = not (side == "SHORT" and route["market"] != "PERP")
-    return {"status": "EXECUTABLE", "route": route, "reasons": [], "card_possible": card_possible}
+    card_possible = at_market and not (side == "SHORT" and route["market"] != "PERP")
+    return {"status": "POTENTIAL", "route": route, "reasons": [], "card_possible": card_possible}
 
 
 def _profile_summary(scopes: list[dict[str, Any]] | None) -> dict[str, Any] | None:
@@ -327,9 +337,9 @@ def build_trade_ideas(symbol: str | None = None, max_results: int = DEFAULT_IDEA
         scanned.append(inst.split(".")[0])
         for i in found:
             ideas.append({**i, "trends": trends, "score": idea_score(i, trends), **executability(i, scopes)})
-    # The best idea per coin and side, so three timeframes of one move are one idea; executable ideas win ties
+    # The best idea per coin and side, so three timeframes of one move are one idea; unblocked ideas win ties
     best: dict[tuple[str, str], dict[str, Any]] = {}
-    for i in sorted(ideas, key=lambda i: (-i["score"], i["status"] != "EXECUTABLE")):
+    for i in sorted(ideas, key=lambda i: (-i["score"], i["status"] != "POTENTIAL")):
         best.setdefault((i["coin"], i["direction"]), i)
     ranked = sorted(best.values(), key=lambda i: -i["score"])[:max_results]
     for n, i in enumerate(ranked, start=1):
@@ -340,8 +350,12 @@ def build_trade_ideas(symbol: str | None = None, max_results: int = DEFAULT_IDEA
         "unavailable": unavailable, "profiles": _profile_summary(scopes),
         "as_of": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "method_note": ("Ideas are price-action observations on closed bars, ranked against each other. They are not "
-                        "scanner signals and carry no measured edge. Status is a preview as of as_of; an order card's "
-                        "dry run rechecks size minimum, grade, session limits, kill switch and feed."),
+                        "scanner signals and carry no measured edge. POTENTIAL means nothing checked here blocks the "
+                        "idea as of as_of; it is not confirmed until an order card's dry run passes on the live price, "
+                        "size minimum, grade, session limits, kill switch and feed. An ON_BREAK idea is information "
+                        "only until price trades through its entry: it gets no order card before that. Targets are "
+                        "planning levels (a fixed multiple of the risk, or the range middle), not measured market "
+                        "targets."),
     }
     missing = [name for name, gone in (("profiles", scopes is None), ("bars", bool(unavailable))) if gone]
     if missing:
@@ -371,11 +385,13 @@ async def get_trade_ideas(symbol: str | None = None, max_results: int = DEFAULT_
     whenever the operator asks what to trade, for trade ideas, suggestions, setups or opportunities; it answers even
     when no scanner preset fired. Each idea has rank, coin, timeframe, direction, kind (trend_continuation,
     range_reversion, range_break), entry_type (AT_MARKET, or ON_BREAK: enter only once price trades through entry),
-    entry, stop, target, rr_ratio, basis, invalidation, bar_close, and separately whether it can be executed now:
-    `status` EXECUTABLE, BLOCKED (with every reason in `reasons`, e.g. a profile temporarily paused for stale data,
+    entry, stop, target, rr_ratio, basis, invalidation, bar_close, `trigger` (WAITING for an ON_BREAK idea whose
+    entry has not traded, NONE for AT_MARKET), and separately `status`: POTENTIAL (nothing checked here blocks it; a
+    card's dry run must still pass, so never call it executable or confirmed), BLOCKED (with every reason in `reasons`, e.g. a profile temporarily paused for stale data,
     no profile, side not allowed, reward below 1.5 times the risk, stale bars) or UNKNOWN (profiles unreadable), plus
     `card_possible`. Show every idea returned, blocked ones included, with its status and reasons; never drop an idea
-    because it is blocked, and never present a BLOCKED or UNKNOWN idea as executable. All levels come from this
+    because it is blocked, and never present a BLOCKED or UNKNOWN idea as possible. An idea with trigger WAITING is
+    information only: no order card, market or limit, until price has traded through its entry. All levels come from this
     tool: quote them exactly and add none. Ideas are research observations with no measured edge: say so once.
     `unavailable` lists coins whose bars could not be read (missing data, not "no trade")."""
     return json.dumps(await asyncio.to_thread(build_trade_ideas, symbol, max_results), default=str)
@@ -436,5 +452,52 @@ def score_idea(idea: dict[str, Any], bars_1m: list[dict[str, Any]]) -> dict[str,
 
 from cryptonite_agents.gateway import RiskClass  # noqa: E402
 from cryptonite_agents.gateway import tool as _register  # noqa: E402
+
+# ---- the limit-order guard for order cards ----------------------------------------------------------------------
+
+LIMIT_TOLERANCE = 0.001  # a limit within 0.1% of the market is an ordinary priced order
+REFERENCE_PRICE_MAX_AGE_MIN = 5.0
+
+
+def reference_price(instrument_id: str, now_ns: int | None = None) -> float | None:
+    """The close of the newest 1m lake bar of ``instrument_id``, or None when it is older than
+    REFERENCE_PRICE_MAX_AGE_MIN or cannot be read. Never raises."""
+    import os
+    import time
+    from pathlib import Path
+
+    from cryptonite_schemas.profile import underlying_spot
+    from cryptonite_storage.queries import AnalyticsQueryEngine, lake_symbol
+
+    now_ns = now_ns if now_ns is not None else time.time_ns()
+    start_ns = now_ns - int(REFERENCE_PRICE_MAX_AGE_MIN * 60 * 10**9)
+    try:
+        lake = AnalyticsQueryEngine(Path(os.getenv("ANALYTICS_LAKE_PATH", "/app/data/analytics_lake")))
+        try:
+            df = lake.query_bars_df(lake_symbol(underlying_spot(instrument_id)), "1m", start_ns, now_ns)
+        finally:
+            lake._con.close()
+        if df is None or df.is_empty():
+            return None
+        order = "bar_open_ns" if "bar_open_ns" in df.columns else "ts_event_ns"
+        price = float(df.sort(order)["close"][-1])
+        return price if price > 0 else None
+    except Exception:
+        return None
+
+
+def limit_entry_refusal(side: str, limit_price: float, market_price: float | None) -> str | None:
+    """Why an entry LIMIT order must not get a card, or None. A buy limit above the market, or a sell limit below it,
+    fills at once: it is a market order, not a wait for a break. An unknown market price refuses too."""
+    if market_price is None or market_price <= 0:
+        return "the current price could not be read, so the limit price cannot be checked against the market"
+    if side == "BUY" and limit_price > market_price * (1 + LIMIT_TOLERANCE):
+        return (f"a buy limit at {limit_price} is above the market ({market_price}) and would fill at once, before "
+                "any break of that level")
+    if side == "SELL" and limit_price < market_price * (1 - LIMIT_TOLERANCE):
+        return (f"a sell limit at {limit_price} is below the market ({market_price}) and would fill at once, before "
+                "any break of that level")
+    return None
+
 
 TRADE_IDEAS = _register(RiskClass.READ)(get_trade_ideas)

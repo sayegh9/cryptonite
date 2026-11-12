@@ -28,6 +28,7 @@ from cryptonite_agents.tools import (
     card_setup_grade,
     system_redis_url,
 )
+from cryptonite_agents.trade_ideas import reference_price
 from cryptonite_schemas.universe import INGEST_UNIVERSE_KEY, IngestUniverse
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -140,6 +141,7 @@ async def startup_event():
     app.state.brain = Brain(app.state.gateway, store,
                             holdings=lambda instrument: ai_spot_holding(app.state.pool, instrument),
                             feed=ingest_refusal,
+                            price=lambda instrument: asyncio.to_thread(reference_price, instrument),
                             state=lambda: asyncio.to_thread(ai_state_header),
                             lessons=lambda instrument: asyncio.to_thread(card_lessons, instrument),
                             grader=lambda card: asyncio.to_thread(card_setup_grade, card),
