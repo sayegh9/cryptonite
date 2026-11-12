@@ -490,7 +490,9 @@ export interface TradeIdeaItem {
   basis?: string;
   invalidation?: string;
   bar_close?: string | null;
-  status: "EXECUTABLE" | "BLOCKED" | "UNKNOWN";
+  status: "POTENTIAL" | "EXECUTABLE" | "BLOCKED" | "UNKNOWN";
+  trigger?: string | null;
+  level_sources?: Record<string, string> | null;
   reasons?: TradeIdeaReason[];
   card_possible?: boolean;
 }

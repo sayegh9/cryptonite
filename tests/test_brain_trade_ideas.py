@@ -95,14 +95,14 @@ def test_every_readable_frame_gives_at_least_one_idea():
 # ---- can it be executed now -------------------------------------------------------------------------------------
 
 
-def idea(direction="LONG", rr=2.0, age=5.0, complete=True) -> dict:
+def idea(direction="LONG", rr=2.0, age=5.0, complete=True, entry_type="AT_MARKET") -> dict:
     return {"instrument_id": "BTCUSDT.BINANCE", "coin": "BTCUSDT", "timeframe": "1h", "direction": direction,
-            "rr_ratio": rr, "newest_bar_age_minutes": age, "data_complete": complete}
+            "rr_ratio": rr, "newest_bar_age_minutes": age, "data_complete": complete, "entry_type": entry_type}
 
 
-def test_active_profile_makes_an_idea_executable():
+def test_active_profile_makes_an_idea_potential_never_executable():
     s = ti.executability(idea(), [active()])
-    assert s["status"] == "EXECUTABLE" and s["route"]["mandate"] == "BTC Perps" and s["reasons"] == []
+    assert s["status"] == "POTENTIAL" and s["card_possible"] and s["route"]["mandate"] == "BTC Perps" and s["reasons"] == []
 
 
 def test_stale_data_pause_is_named_as_temporary_not_as_no_mandate():
@@ -143,7 +143,7 @@ def test_a_stop_wider_than_the_hard_stop_blocks_and_ranks_below_a_tighter_idea()
     tight = {**wide, "risk_pct": 1.2}
     s = ti.executability(wide, [active()])
     assert s["status"] == "BLOCKED" and s["reasons"][0]["code"] == "STOP_BEYOND_HARD_STOP"
-    assert ti.executability(tight, [active()])["status"] == "EXECUTABLE"
+    assert ti.executability(tight, [active()])["status"] == "POTENTIAL"
     assert ti.idea_score(tight, {}) > ti.idea_score(wide, {})
 
 
@@ -181,7 +181,7 @@ def test_tool_returns_a_ranked_shortlist_with_status_and_scope(world):
     assert 1 <= len(out["ideas"]) <= 3
     assert [i["rank"] for i in out["ideas"]] == list(range(1, len(out["ideas"]) + 1))
     assert out["ideas"] == sorted(out["ideas"], key=lambda i: -i["score"])
-    assert all(i["status"] in ("EXECUTABLE", "BLOCKED", "UNKNOWN") for i in out["ideas"])
+    assert all(i["status"] in ("POTENTIAL", "BLOCKED", "UNKNOWN") for i in out["ideas"])
     assert out["scanned_timeframes"] == ["15m", "1h", "4h"]
     assert set(out["scanned_coins"]) == {"BTCUSDT", "ETHUSDT"}
     assert out["unavailable"] == [{"coin": "SOLUSDT", "reason": "lake bars could not be read"}]
@@ -307,3 +307,34 @@ def test_scorecard_counts_a_repeated_idea_once_and_says_when_the_sample_is_too_s
     text = mod.render(scored, T0, T0 + datetime.timedelta(days=1))
     assert "Ideas: 1 distinct" in text and "| BLOCKED | 1 |" in text and "STRUCTURAL_STOP" in text
     assert "too few to judge an edge" in text and "Not realized P&L" in text
+
+
+# ---- an untriggered breakout is information only; a limit that would fill at once gets no card ------------------
+
+def test_an_on_break_idea_never_gets_a_card_whatever_its_status():
+    waiting = idea(entry_type="ON_BREAK")
+    unblocked = ti.executability(waiting, [active()])
+    assert unblocked["status"] == "POTENTIAL" and unblocked["card_possible"] is False
+    assert ti.executability(idea("LONG", entry_type="ON_BREAK"), [])["card_possible"] is False  # NO_PROFILE long too
+
+
+def test_every_idea_says_whether_its_trigger_is_waiting_and_where_its_levels_come_from():
+    for closes in (UP, DOWN, RANGE_LOW, RANGE_HIGH):
+        for i in ti.ideas_for_frame("BTCUSDT.BINANCE", "1h", payload(closes)):
+            assert i["trigger"] == ("WAITING" if i["entry_type"] == "ON_BREAK" else "NONE")
+            assert "not a measured target" in i["level_sources"]["target"]
+            if i["entry_type"] == "ON_BREAK":  # the break level lies beyond the newest close: it has not traded
+                last = bars_from_closes(closes)[-1]["close"]
+                assert (i["entry"] >= last) if i["direction"] == "LONG" else (i["entry"] <= last)
+
+
+@pytest.mark.parametrize(("side", "limit", "market", "refused"), [
+    ("BUY", 101.0, 100.0, True),    # a buy "breakout" limit above the market fills at once
+    ("SELL", 99.0, 100.0, True),    # a sell "breakout" limit below the market fills at once
+    ("BUY", 99.0, 100.0, False),    # an ordinary resting buy limit
+    ("SELL", 101.0, 100.0, False),  # an ordinary resting sell limit
+    ("BUY", 100.05, 100.0, False),  # within the tolerance of the market
+    ("BUY", 99.0, None, True),      # no current price: not checkable, no card
+])
+def test_a_limit_entry_that_would_fill_at_once_is_refused(side, limit, market, refused):
+    assert (ti.limit_entry_refusal(side, limit, market) is not None) is refused

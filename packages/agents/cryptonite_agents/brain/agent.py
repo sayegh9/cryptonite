@@ -39,6 +39,7 @@ from cryptonite_agents.gateway import (
 )
 from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX, PER_TURN_TOOL_LIMITS
 from cryptonite_agents.persona import Persona
+from cryptonite_agents.trade_ideas import limit_entry_refusal
 from cryptonite_schemas.mandate import MIN_HOLDING_QTY
 from pydantic import ValidationError
 
@@ -135,12 +136,17 @@ Operating mode: read each profile's autonomy level and auto_trade_switch from ge
    something that can be executed now. A profile paused for stale data is "temporarily paused because data is
    stale, as of <as_of>", never "no active mandate". Quote the tool's levels exactly and add none of your own. Say
    once that the ideas are price-action observations with no measured edge, and that scanner signals and debates are
-   separate. Offer a card only for an idea with card_possible true: for an EXECUTABLE one, or for a long whose only
-   block is NO_PROFILE (the card creates the profile). When the operator asked you to stage the trades, call
-   propose_order once per such idea (at most three cards a turn) with that idea's instrument (its route's
-   instrument_id when it has a route), stop and target; otherwise ask which idea to stage. An ON_BREAK idea whose
-   entry has not traded yet is staged as a LIMIT order at its entry only when the operator asks; say that a market
-   order now would not be the idea.
+   separate. Offer a card only for an idea with card_possible true: an AT_MARKET
+   idea that is POTENTIAL, or an AT_MARKET long whose only block is NO_PROFILE (the card creates the profile).
+   POTENTIAL means nothing known blocks it; never call an idea executable, confirmed or safe before its card's dry
+   run passed. When the operator asked you to stage the trades, call propose_order once per such idea (at most three
+   cards a turn) with that idea's instrument (its route's instrument_id when it has a route), stop and target;
+   otherwise ask which idea to stage. An idea with trigger WAITING (ON_BREAK) is information only: never call
+   propose_order for it, as a MARKET or as a LIMIT order, and say that it becomes a trade only after price has traded
+   through its entry. A limit order at a break level is not a breakout order: it fills at once. If the operator asks
+   to stage one, refuse and say why; once get_live_market_data shows the price beyond the entry, call get_trade_ideas
+   again and work from the new ideas. Targets are planning levels at a fixed multiple of the risk, not measured
+   market targets: say so when you quote one.
 6. Missing data is neutral: when a tool reports no perpetual, no headlines or a symbol it does not cover, say so once
    and do not count it against a trade. CHOP is not an automatic no. In a range, look for a defined setup: entry near
    range support, stop below the range, target at the range middle or top. Measure the risk from the wider of your stop
@@ -168,7 +174,8 @@ BRAIN = Persona(name="brain", role=BRAIN_PLAN, instructions=BRAIN_INSTRUCTIONS, 
 BRAIN_READONLY_TOOLS = tuple(t for t in BRAIN_TOOLS if t.risk is RiskClass.READ and not t.side_effects)
 DEGRADED_NOTE = ("\n\nDEGRADED MODE: the main model is unavailable. You can look things up and explain, but you cannot "
                  "propose orders, stage debates or queue research in this turn. Say so if the operator asks for any of "
-                 "those.")
+                 "those, tell them to send the same request again in a minute, and do not call propose_profile or "
+                 "any other tool in place of the order they asked for.")
 DEGRADED_PREFIX = "_[degraded: answered by the backup model, read-only]_\n\n"
 
 # Why a held propose_order made no card, in plain words, keyed by the field its first validation error names
@@ -243,6 +250,7 @@ MAX_ORDER_CARDS = PER_TURN_TOOL_LIMITS["propose_order"]  # cards a turn may stag
 # A short network drop (the host's Wi-Fi, a DNS lookup) fails every model within seconds. When no model could even be
 # reached and the operator has seen nothing yet, the turn waits and runs again from the main model: twice at most.
 NETWORK_RETRY_WAITS_S = (8.0, 20.0)
+PLAN_RETRY_WAIT_S = 4.0  # before the read-only backup answers for a main model that was not reached
 NETWORK_FAILURE_MARKERS = ("ConnectError", "ConnectTimeout", "name resolution", "All connection attempts failed",
                            "Network is unreachable")
 
@@ -296,6 +304,7 @@ class Brain:
     def __init__(self, gateway: Gateway, store: SessionStore, persona: Persona = BRAIN,
                  holdings: Callable[[str], Awaitable[Decimal]] | None = None,
                  feed: Callable[[str], Awaitable[str | None]] | None = None,
+                 price: Callable[[str], Awaitable[float | None]] | None = None,
                  state: Callable[[], Awaitable[str | None]] | None = None,
                  lessons: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
                  grader: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None = None,
@@ -308,6 +317,8 @@ class Brain:
         self._holdings = holdings
         # Why ingest does not feed an instrument (None when it does). Only labels the card: approval checks again.
         self._feed = feed
+        # The current price of an instrument, for the limit-order guard. None (tests) skips the guard.
+        self._price = price
         # The system state snapshot for each turn's prompt (None: no block).
         self._state = state
         # The past lessons on an instrument, shown on its order card (None: no lessons).
@@ -391,6 +402,24 @@ class Brain:
             logger.warning("Could not read the live feed for %s: %s", instrument_id, e)
             return None
 
+    async def _limit_refusal(self, args: dict[str, Any]) -> str | None:
+        """Why a LIMIT entry must not become a card (it would fill at once), or None. A reduction is not an entry."""
+        if self._price is None or str(args.get("order_type", "")).upper() != "LIMIT" or args.get("reduce_pct"):
+            return None
+        instrument, side = str(args.get("instrument_id", "")), str(args.get("side", "")).upper()
+        if side == "SELL" and "-PERP" not in instrument.upper():
+            return None  # a spot sell closes a holding
+        try:
+            limit = float(args.get("limit_price"))
+        except (TypeError, ValueError):
+            return None  # the card's own validation reports a missing or bad price
+        try:
+            market = await self._price(instrument)
+        except Exception as e:
+            logger.warning("Could not read the price of %s for the limit guard: %s", instrument, e)
+            market = None
+        return limit_entry_refusal(side, limit, market)
+
     async def open_session(self, operator_id: str, session_id: str | None, first_message: str) -> str:
         if session_id:
             if await self.store.get_session(session_id, operator_id) is None:
@@ -435,6 +464,7 @@ class Brain:
         emitted = False  # True once any token or tool event reached the operator: no retry after that
         after_tool = False  # True from a tool call until the text that resumes after it
         network_retries = 0  # waits already spent on a network drop (NETWORK_RETRY_WAITS_S)
+        plan_retried = False  # the main model gets one second try after a network failure
         try:
             while True:
                 if degraded:
@@ -493,6 +523,13 @@ class Brain:
                                     if idea_key in carded:
                                         notes.append(f"No second order card for {idea_key[0]} {idea_key[1]}: one "
                                                      "card per idea.")
+                                        continue
+                                    if refusal := await self._limit_refusal(args):
+                                        # Server rule, whatever the model was told: an entry limit that would fill
+                                        # at once (an untriggered breakout) gets no card
+                                        notes.append(f"No order card for {idea_key[0]}: {refusal}. An idea that "
+                                                     "waits for a break stays information until price trades "
+                                                     "through its entry.")
                                         continue
                                     # A spot SELL closes a holding; a perp SELL opens or adds to a short (leverage
                                     # plan 4.1), so only spot needs a holding to make a card
@@ -607,6 +644,14 @@ class Brain:
                             degraded = False
                             continue
                         raise
+                    if not plan_retried and is_network_failure(e):
+                        # The main model was not reached: one short wait and a second try before the read-only
+                        # backup answers, so a brief drop does not cost the operator the order card they asked for
+                        plan_retried = True
+                        logger.warning("Brain plan not reached for session %s; one more try in %.0f s: %s",
+                                       sid, PLAN_RETRY_WAIT_S, e)
+                        await asyncio.sleep(PLAN_RETRY_WAIT_S)
+                        continue
                     logger.warning("Brain plan unavailable for session %s; answering read-only on %s: %s",
                                    sid, BRAIN_CHAT, e)
                     degraded = True

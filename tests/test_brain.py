@@ -2087,3 +2087,69 @@ async def test_brain_turn_reads_recent_bars_and_sees_an_incomplete_window(monkey
     assert {e.data["tool"]: e.data["status"] for e in events if e.kind == "tool_result"} == {"get_recent_bars": "OK"}
     seen = json.loads(next(r for r in script.returns if r.tool_name == "get_recent_bars").content)
     assert seen["complete"] is False and seen["missing"] == 3
+
+
+# --- The limit guard: an untriggered breakout cannot become an immediately marketable order ----------------------
+
+async def _limit_turn(args, market_price):
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from cryptonite_agents.gateway.gateway import HELD_FOR_APPROVAL_PREFIX  # noqa: PLC0415
+
+    events = [
+        SimpleNamespace(kind="start", data={"trace_id": "t1"}, text="", result=None),
+        SimpleNamespace(kind="tool_call", data={"tool_call_id": "c0", "tool": "propose_order", "args": args},
+                        text="", result=None),
+        SimpleNamespace(kind="tool_result", data={"tool_call_id": "c0", "tool": "propose_order", "status": "DENIED",
+                                                  "content": HELD_FOR_APPROVAL_PREFIX + " waiting"},
+                        text="", result=None),
+        SimpleNamespace(kind="token", data={}, text="Done.", result=None),
+        SimpleNamespace(kind="done", data={}, text="", result=SimpleNamespace(
+            output="Done.", model="test", cost_usd=Decimal("0"), trace_id="t1")),
+    ]
+
+    async def price(instrument):
+        if isinstance(market_price, Exception):
+            raise market_price
+        return market_price
+
+    persona = replace(BRAIN, tools=(show_price_chart, propose_order))
+    scripted = Brain(_ScriptedGateway(events), MemorySessionStore(), persona, price=price)
+    out = await collect(scripted.turn("op-1", "Stage the breakout"))
+    return _cards(out), out[-1].data["content"]
+
+
+PERP_SHORT = {"instrument_id": "BTCUSDT-PERP.BINANCE", "side": "SELL", "allocation_pct": 5, "stop_loss": 76000,
+              "take_profit": 70000, "rationale": "break of the 5-bar low"}
+
+
+async def test_an_untriggered_buy_breakout_limit_gets_no_card():
+    cards, content = await _limit_turn({**GOOD_ORDER, "order_type": "LIMIT", "limit_price": 61000}, 60000.0)
+    assert cards == [] and "above the market" in content and "would fill at once" in content
+
+
+async def test_an_untriggered_sell_breakout_limit_gets_no_card():
+    cards, content = await _limit_turn({**PERP_SHORT, "order_type": "LIMIT", "limit_price": 72700}, 74000.0)
+    assert cards == [] and "below the market" in content and "would fill at once" in content
+
+
+async def test_a_resting_limit_and_a_market_order_still_get_their_cards():
+    [resting], _ = await _limit_turn({**GOOD_ORDER, "order_type": "LIMIT", "limit_price": 59000}, 60000.0)
+    assert resting["order_type"] == "LIMIT"
+    [short_resting], _ = await _limit_turn({**PERP_SHORT, "order_type": "LIMIT", "limit_price": 75000}, 74000.0)
+    assert short_resting["side"] == "SELL"
+    [market], _ = await _limit_turn(GOOD_ORDER, 60000.0)
+    assert market["order_type"] == "MARKET"
+
+
+async def test_a_limit_entry_with_no_readable_price_gets_no_card():
+    for unknown in (None, RuntimeError("lake down")):
+        cards, content = await _limit_turn({**GOOD_ORDER, "order_type": "LIMIT", "limit_price": 59000}, unknown)
+        assert cards == [] and "could not be read" in content
+
+
+def test_the_instructions_never_tell_the_brain_to_stage_a_breakout_as_a_limit_order():
+    from cryptonite_agents.brain.agent import BRAIN_INSTRUCTIONS  # noqa: PLC0415
+
+    assert "is staged as a LIMIT order" not in BRAIN_INSTRUCTIONS
+    assert "trigger WAITING" in BRAIN_INSTRUCTIONS and "never call\n   propose_order for it" in BRAIN_INSTRUCTIONS

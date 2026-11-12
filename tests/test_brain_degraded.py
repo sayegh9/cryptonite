@@ -357,29 +357,45 @@ def test_only_an_unreached_model_counts_as_a_network_failure():
     assert not agent_mod.is_network_failure(RuntimeError("status_code: 429, quota exceeded"))
 
 
+async def test_a_main_model_that_was_not_reached_gets_one_more_try_before_the_read_only_backup(waits):
+    brain, store = make_brain()
+    plan = RecoveringModel(["Card ", "staged."], down_calls=1)
+    chat, backup = ScriptedModel(["never"]), ScriptedModel(["never"])
+    with models(plan, chat, backup):
+        events = await collect(brain.turn("op-1", "stage the SUI short"))
+    assert (plan.calls, chat.calls, backup.calls) == (2, 0, 0)  # the read-only backup never answered
+    assert waits == [agent_mod.PLAN_RETRY_WAIT_S]
+    done = events[-1]
+    assert done.type == "done" and done.data["degraded"] is False and done.data["content"] == "Card staged."
+    assert set(plan.tool_names) == {t.name for t in BRAIN_TOOLS}  # the full toolset, order cards included
+
+
 async def test_a_network_drop_is_waited_out_and_the_turn_is_answered_by_the_main_model(waits):
     brain, store = make_brain()
-    plan = RecoveringModel(["Ideas: ", "BTC short."], down_calls=1)
+    plan = RecoveringModel(["Ideas: ", "BTC short."], down_calls=2)
     chat, backup = ScriptedModel(error=NO_NETWORK), ScriptedModel(error=NO_NETWORK)
     with models(plan, chat, backup):
         events = await collect(brain.turn("op-1", "what should I trade?"))
-    assert (plan.calls, chat.calls, backup.calls) == (2, 1, 1)  # one full pass failed, then the main model answered
-    assert waits == [agent_mod.NETWORK_RETRY_WAITS_S[0]]
+    assert (plan.calls, chat.calls, backup.calls) == (3, 1, 1)  # one full pass failed, then the main model answered
+    assert waits == [agent_mod.PLAN_RETRY_WAIT_S, agent_mod.NETWORK_RETRY_WAITS_S[0]]
     done = events[-1]
     assert done.type == "done" and done.data["degraded"] is False and done.data["content"] == "Ideas: BTC short."
-    assert set(plan.tool_names) == {t.name for t in BRAIN_TOOLS}  # the full toolset, not the read-only backup
     assert [m["role"] for m in await store.messages(events[0].data["session_id"])] == ["user", "assistant"]
 
 
-async def test_a_network_outage_that_lasts_ends_the_turn_after_two_waits(waits):
+async def test_a_network_outage_that_lasts_ends_the_turn_after_its_waits(waits):
     brain, store = make_brain()
     plan, chat, backup = (ScriptedModel(error=NO_NETWORK) for _ in range(3))
     with models(plan, chat, backup):
         events = await collect(brain.turn("op-1", "what should I trade?"))
-    assert (plan.calls, chat.calls, backup.calls) == (3, 3, 3)
-    assert waits == list(agent_mod.NETWORK_RETRY_WAITS_S)
+    assert (plan.calls, chat.calls, backup.calls) == (4, 3, 3)
+    assert waits == [agent_mod.PLAN_RETRY_WAIT_S, *agent_mod.NETWORK_RETRY_WAITS_S]
     assert events[-1].type == "error" and events[-1].data["code"] == "MODEL_UNAVAILABLE"
     assert [m["role"] for m in await store.messages(events[0].data["session_id"])] == ["user"]
+
+
+def test_the_degraded_note_tells_the_backup_not_to_swap_in_other_proposals():
+    assert "send the same request again" in agent_mod.DEGRADED_NOTE and "propose_profile" in agent_mod.DEGRADED_NOTE
 
 
 async def test_a_provider_error_that_is_not_a_network_drop_is_not_waited_on(waits):

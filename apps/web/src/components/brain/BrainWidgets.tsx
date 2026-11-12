@@ -1863,7 +1863,9 @@ const IDEA_KIND: Record<string, string> = {
 };
 
 const IDEA_STATUS: Record<string, { label: string; cls: string }> = {
-  EXECUTABLE: { label: "Executable now", cls: "border-emerald-800 bg-emerald-950/60 text-emerald-300" },
+  POTENTIAL: { label: "Potential · preflight required", cls: "border-sky-800 bg-sky-950/60 text-sky-300" },
+  // the old name of POTENTIAL, in widgets saved before the rename
+  EXECUTABLE: { label: "Potential · preflight required", cls: "border-sky-800 bg-sky-950/60 text-sky-300" },
   BLOCKED: { label: "Blocked", cls: "border-amber-800 bg-amber-950/60 text-amber-300" },
   UNKNOWN: { label: "Status unknown", cls: "border-zinc-700 bg-zinc-800/70 text-zinc-300" },
 };
@@ -1965,7 +1967,13 @@ export function TradeIdeasCard({ w }: { w: TradeIdeasWidget }) {
                     ))}
                   </ul>
                 ) : null}
-                {i.card_possible ? (
+                {i.entry_type !== "AT_MARKET" ? (
+                  <p data-testid="trade-idea-trigger" className="text-2xs text-zinc-400">
+                    Waiting for trigger: information only until price trades through {i.entry}. No order card before
+                    that.
+                  </p>
+                ) : null}
+                {i.card_possible && i.entry_type === "AT_MARKET" ? (
                   <button
                     type="button"
                     onClick={() =>
