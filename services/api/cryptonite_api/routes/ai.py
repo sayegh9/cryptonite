@@ -316,11 +316,16 @@ TOTP_LOCKOUT_S = 900
 
 
 async def checked_totp(request: Request, code: str | None, throttle_key: str, **who: Any) -> TotpOutcome:
+    """``_checked_code``, or VALID without a check while the operator has switched TOTP off (Settings -> Security)."""
+    if not await totp_enabled(request.app.state.pool):
+        return TotpOutcome.VALID
+    return await _checked_code(request, code, throttle_key, **who)
+
+
+async def _checked_code(request: Request, code: str | None, throttle_key: str, **who: Any) -> TotpOutcome:
     """``verify_totp`` with a lockout: 5 wrong codes in 15 min lock the key out for 15 min (a 6-digit
     code must not be brute-forceable). A correct or reused code is not a failed guess and is not counted.
     Fails closed when Redis is unavailable."""
-    if not await totp_enabled(request.app.state.pool):
-        return TotpOutcome.VALID  # the operator switched TOTP off (Settings -> Security)
     if not code:
         # No code is not a guess: answering "code required" must not spend the lockout budget (the Auto-Trade editor
         # sends a change without a code first and asks for one only when the API says the change adds risk)
@@ -352,7 +357,8 @@ async def require_totp(request: Request, auth: dict, code: str | None) -> bool:
         raise HTTPException(status_code=403, detail="TOTP_REQUIRED: a machine token cannot add risk")
     if not await totp_enabled(request.app.state.pool):
         return False
-    outcome = await checked_totp(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"])
+    # the switch is read once: a code is always checked from here, so True means it really was
+    outcome = await _checked_code(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"])
     if outcome is TotpOutcome.REUSED:
         raise HTTPException(status_code=401, detail="TOTP_REUSED: this code was already used (each code works once); "
                             "wait for the next code from your authenticator")
@@ -900,7 +906,7 @@ async def decide_from_telegram(approval_id: uuid.UUID, request: Request):
             operator = os.getenv("NOTIFIER_OPERATOR_USERNAME", "")
             outcome = None
             if operator:
-                outcome = await checked_totp(request, req.totp_code, f"telegram:{operator}", username=operator)
+                outcome = await _checked_code(request, req.totp_code, f"telegram:{operator}", username=operator)
             if outcome is not TotpOutcome.VALID:
                 raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
     return await _decide(request, approval_id, approve, "telegram", f"telegram:{req.chat_id}")

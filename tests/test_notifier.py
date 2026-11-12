@@ -485,7 +485,7 @@ async def test_replies_to_the_operator_still_go_out_while_telegram_is_off():
 
 
 async def test_telegram_is_on_by_default_and_when_switched_on():
-    for raw in (None, "1", '"1"'):
+    for raw in (None, "1", '"1"', "0.5"):  # only a stored 0 turns it off
         n, tg, _, _ = make_notifier(FakePool(telegram_switch=raw))
         await n.send_critical("Kill switch", "tripped")
         assert len(tg.sent()) == 1, raw

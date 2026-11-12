@@ -203,7 +203,8 @@ export const SettingCard: React.FC<SettingCardProps> = ({
   const isLoosening =
     changed && (entry.tighter === "higher" ? next < Number(current) : next > Number(current));
   // the operator can switch TOTP off globally (auth.totp_enabled); switching it off still needs one code
-  const needsTotp = totpOn && (entry.tier === "TOTP" || (entry.tier === "T/L" && isLoosening));
+  const loosens = entry.tier === "TOTP" || (entry.tier === "T/L" && isLoosening);
+  const needsTotp = totpOn && loosens; // a stale tab never loosens, whatever the switch says
 
   // Cross-field exit rule checking (ADR 0007)
   const getExitVal = (k: string): number => {
@@ -234,7 +235,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
     !crossFieldWarning &&
     reason.trim().length >= MIN_REASON_CHARS &&
     (!needsTotp || /^\d{6}$/.test(totp.trim())) &&
-    !(needsTotp && staleBuild) &&
+    !(loosens && staleBuild) &&
     !saving;
 
   const handleCancel = () => {
@@ -261,7 +262,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
       toast.success(`${entry.label} saved successfully`);
       setReason("");
       setTotp("");
-      if (entry.key === "auth.totp_enabled") void useSessionStore.getState().check(); // every code box follows
+      if (entry.key === "auth.totp_enabled") void useSessionStore.getState().refresh(); // every code box follows
       onSaved();
       closeEditor();
     } catch (err: unknown) {
@@ -688,7 +689,7 @@ export const SettingCard: React.FC<SettingCardProps> = ({
                   <Button
                     onClick={() => void handleSave()}
                     disabled={!canSave}
-                    title={needsTotp && staleBuild ? STALE_BUILD_TITLE : undefined}
+                    title={loosens && staleBuild ? STALE_BUILD_TITLE : undefined}
                     className={cn(
                       "cursor-pointer px-4 py-2 text-xs font-bold uppercase tracking-wider transition-all",
                       needsTotp

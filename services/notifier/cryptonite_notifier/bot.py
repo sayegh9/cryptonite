@@ -93,7 +93,7 @@ class Notifier:
                                          1.0 if last else 0.0)
             if problem:
                 logger.warning("%s: %s; keeping %s", key, problem, "on" if last else "off")
-            on = value >= 1
+            on = value != 0  # only a stored 0 turns a switch off
         except Exception as e:
             logger.warning("%s unreadable (%s): keeping %s", key, type(e).__name__, "on" if last else "off")
             on = last

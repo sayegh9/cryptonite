@@ -68,7 +68,7 @@ def test_the_settings_panel_warns_while_totp_is_off():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("raw", "on"), [(None, True), ('"1"', True), ('"0"', False), ('"7"', True), ('"abc"', True),
+@pytest.mark.parametrize(("raw", "on"), [(None, True), ('"1"', True), ('"0"', False), ('"0.5"', True), ('"7"', True), ('"abc"', True),
                                          (RuntimeError("db down"), True)])
 async def test_only_a_stored_zero_turns_totp_off(raw, on):
     assert await totp_policy.totp_enabled(_Pool(raw)) is on

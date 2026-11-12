@@ -86,7 +86,9 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
   }, [load]);
 
   const loosened = useMemo(() => (config ? loosenedLimits(config, inputs) : []), [config, inputs]);
-  const needsTotp = totpOn && loosened.length > 0;
+  // a stale tab never loosens, whether or not TOTP is switched on; the code box follows the switch
+  const loosens = loosened.length > 0;
+  const needsTotp = totpOn && loosens;
 
   if (loadError) {
     return <p className="text-xs font-mono text-zinc-400" data-testid="risk-limits-unavailable">Configurable limits unavailable ({loadError}).</p>;
@@ -95,7 +97,7 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (needsTotp && isStaleBuild()) return;
+    if (loosens && isStaleBuild()) return;
     setBusy(true);
     setErrors({});
     setSaved(null);
@@ -237,8 +239,8 @@ export function RiskLimitsForm({ onSaved }: { onSaved?: () => void }) {
         </p>
         <button
           type="submit"
-          disabled={busy || reason.trim().length < 5 || (needsTotp && (totp.length !== 6 || staleBuild))}
-          title={needsTotp && staleBuild ? STALE_BUILD_TITLE : undefined}
+          disabled={busy || reason.trim().length < 5 || (loosens && staleBuild) || (needsTotp && totp.length !== 6)}
+          title={loosens && staleBuild ? STALE_BUILD_TITLE : undefined}
           className="ml-3 shrink-0 rounded bg-amber-600 px-3 py-1 font-bold text-black disabled:opacity-40"
         >
           {busy ? "Saving…" : needsTotp ? "Loosen with TOTP" : "Save"}

@@ -2,7 +2,8 @@
 
 While off, the API asks for no TOTP code: not at sign-in and not for any action (approvals, profile starts, loosened
 limits, Telegram approvals). Switching it off needs one last valid code (a T/L key whose higher value is the tighter);
-switching it on is free. An unreadable value counts as on: a database fault never removes the second factor.
+switching it on is free. Only a stored 0 turns it off: an unreadable, invalid or fractional value counts as on, so a
+database fault never removes the second factor.
 """
 
 import logging
@@ -26,4 +27,4 @@ async def totp_enabled(pool: Any) -> bool:
     if problem:
         logger.warning("TOTP switch: %s; TOTP stays required", problem)
         return True
-    return value >= 1
+    return value != 0
