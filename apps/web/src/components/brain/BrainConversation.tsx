@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { BrainCircuit, CheckCircle2, ChevronDown, ChevronRight, Loader2, Send, Square, User as UserIcon, Wrench, ShieldAlert, Info } from "lucide-react";
-import { sendBrainMessage, stopBrain } from "@/lib/brain/client";
+import { BrainCircuit, CheckCircle2, ChevronDown, ChevronRight, Loader2, RotateCcw, Send, Square, User as UserIcon, Wrench, ShieldAlert, Info } from "lucide-react";
+import { isRetryable, retryBrainMessage, sendBrainMessage, stopBrain } from "@/lib/brain/client";
 import { dispatchBrainOpenTrace } from "@/lib/brain/events";
 import type { BrainMessage } from "@/lib/brain/types";
 import { useBrainStore } from "@/lib/stores/useBrainStore";
@@ -103,7 +103,7 @@ function ToolChips({ message }: { message: BrainMessage }) {
   );
 }
 
-function MessageView({ message }: { message: BrainMessage }) {
+function MessageView({ message, canRetry = false }: { message: BrainMessage; canRetry?: boolean }) {
   if (message.role === "system") {
     return (
       <div className="msg-enter flex items-start gap-1.5 px-2 text-2xs font-mono text-zinc-500" data-testid="brain-system-note">
@@ -165,6 +165,17 @@ function MessageView({ message }: { message: BrainMessage }) {
                 ? "Sign in as operator to talk to the Brain."
                 : message.error.message}
           </p>
+        )}
+        {canRetry && message.status === "error" && isRetryable(message.error?.code) && (
+          <button
+            type="button"
+            onClick={() => void retryBrainMessage(message.id)}
+            data-testid="brain-retry"
+            className="mt-1.5 inline-flex items-center gap-1 rounded border border-zinc-700 px-2 py-1 text-2xs font-mono text-zinc-200 hover:border-cyan-500 hover:text-cyan-300"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Retry
+          </button>
         )}
       </div>
     </div>
@@ -269,8 +280,8 @@ export function BrainConversation({ compact = false, onShowHistory }: { compact?
             <BrainRecentConversations onShowAll={onShowHistory} />
           </div>
         )}
-        {messages.map((m) => (
-          <MessageView key={m.id} message={m} />
+        {messages.map((m, i) => (
+          <MessageView key={m.id} message={m} canRetry={!streaming && i === messages.length - 1} />
         ))}
         <div ref={endRef} />
       </div>

@@ -539,7 +539,7 @@ export type BrainStreamEvent =
       type: "done";
       data: { session_id: string; message_id: number; trace_id: string; model: string; cost_usd: string; content: string };
     }
-  | { type: "error"; data: { code: string; message: string } };
+  | { type: "error"; data: { code: string; message: string; session_id?: string } };
 
 export type BrainMessageStatus = "streaming" | "done" | "stopped" | "error";
 

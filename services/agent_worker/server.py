@@ -239,6 +239,7 @@ class BrainStreamRequest(BaseModel):
     operator_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=8000)
     session_id: str | None = Field(default=None, max_length=64)
+    retry: bool = False  # the operator pressed Retry on a failed turn: same text, no second copy, no second card
 
 
 class BrainSessionSearch(BaseModel):
@@ -287,7 +288,7 @@ async def brain_stream(request: Request, req: BrainStreamRequest):
 
     async def events():
         try:
-            async for ev in brain.turn(req.operator_id, req.message, req.session_id):
+            async for ev in brain.turn(req.operator_id, req.message, req.session_id, retry=req.retry):
                 yield sse(ev.type, ev.data)
         except Exception as e:  # never end a stream without telling the client why
             logger.exception("Brain stream failed")

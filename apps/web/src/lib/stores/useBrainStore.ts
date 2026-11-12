@@ -37,6 +37,8 @@ interface BrainState {
   newConversation: () => void;
   loadHistory: (sessionId: string, messages: StoredBrainMessage[]) => void;
   beginTurn: (userText: string) => string;
+  /** Start the failed turn again: no second operator bubble. Null when the message cannot be retried. */
+  beginRetry: (failedId: string) => { assistantId: string; text: string } | null;
   applyEvent: (assistantId: string, ev: BrainStreamEvent) => void;
   endTurn: (assistantId: string, status: "done" | "stopped" | "error", error?: { code: string; message: string }) => void;
   updateOrderCard: (widgetId: string, patch: Partial<OrderCardWidget>) => void;
@@ -57,7 +59,7 @@ function upsertWidget(widgets: BrainWidget[], widget: BrainWidget): BrainWidget[
 
 export const useBrainStore = create<BrainState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       sessionId: null,
       draft: "",
       railOpen: true,
@@ -103,8 +105,29 @@ export const useBrainStore = create<BrainState>()(
         return assistantId;
       },
 
+      beginRetry: (failedId) => {
+        const { messages } = get();
+        const at = messages.findIndex((m) => m.id === failedId && m.role === "assistant" && m.status === "error");
+        const asked = at < 0 ? undefined : messages.slice(0, at).reverse().find((m) => m.role === "user");
+        if (!asked) return null;
+        const assistantId = localId("a");
+        const fresh: BrainMessage = { id: assistantId, role: "assistant", content: "", widgets: [], toolCalls: [], traceId: null, status: "streaming" };
+        const failed = messages[at];
+        // An empty failure is replaced; one that already shows text or a card stays, and the new answer follows it
+        const empty = !failed.content && failed.widgets.length === 0;
+        set({
+          streaming: true,
+          messages: empty ? messages.map((m) => (m.id === failedId ? fresh : m)) : [...messages, fresh],
+        });
+        return { assistantId, text: asked.content };
+      },
+
       applyEvent: (assistantId, ev) => {
         if (ev.type === "session") {
+          set({ sessionId: ev.data.session_id, historyLoadedFor: ev.data.session_id });
+        }
+        if (ev.type === "error" && ev.data.session_id && !get().sessionId) {
+          // The turn failed before its session event: keep the conversation it opened, so Retry continues it
           set({ sessionId: ev.data.session_id, historyLoadedFor: ev.data.session_id });
         }
         set((s) => ({
@@ -135,7 +158,7 @@ export const useBrainStore = create<BrainState>()(
                   status: "done",
                 };
               case "error":
-                return { ...m, status: "error", error: ev.data };
+                return { ...m, status: "error", error: { code: ev.data.code, message: ev.data.message } };
               default:
                 return m;
             }

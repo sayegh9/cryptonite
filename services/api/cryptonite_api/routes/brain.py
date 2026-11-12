@@ -97,6 +97,7 @@ STREAM_TIMEOUT = httpx.Timeout(300.0, connect=5.0)
 class BrainAskRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     session_id: str | None = Field(default=None, max_length=64)
+    retry: bool = False  # Retry on a failed turn; the worker keeps it to one stored message and one card per idea
 
 
 class BrainNoteRequest(BaseModel):
@@ -145,7 +146,7 @@ async def brain_stream(req: BrainAskRequest, request: Request, auth: dict = Depe
         pass  # not a session id; the worker answers SESSION_NOT_FOUND
     path = "/api/v1/brain/stream"
     body = json.dumps({"operator_id": operator_id(auth), "message": req.message,
-                       "session_id": req.session_id}).encode()
+                       "session_id": req.session_id, "retry": req.retry}).encode()
     client = httpx.AsyncClient(timeout=STREAM_TIMEOUT)
     try:
         upstream = await client.send(
