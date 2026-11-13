@@ -1,11 +1,11 @@
 """Authentication API routes for operator users."""
 
 import os
-from typing import Optional
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
-from pydantic import BaseModel
 
 from cryptonite_api.auth import OperatorAuthManager
+from cryptonite_api.totp_policy import totp_enabled
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -16,7 +16,7 @@ IS_SECURE_COOKIE = os.getenv("SECURE_COOKIE", "false").lower() in ("true", "1", 
 class LoginRequest(BaseModel):
     username: str
     password: str
-    totp_code: Optional[str] = None
+    totp_code: str | None = None
 
 
 class LoginResponse(BaseModel):
@@ -44,7 +44,7 @@ async def get_auth_manager(request: Request) -> OperatorAuthManager:
 async def get_current_session(
     request: Request,
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
-    session_id: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
+    session_id: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> dict:
     """Base dependency validating only session presence."""
     if not session_id:
@@ -63,8 +63,8 @@ async def get_current_session(
 async def require_auth(
     request: Request,
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
-    session_id: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
-    x_api_token: Optional[str] = Header(default=None, alias="X-API-Token"),
+    session_id: str | None = Cookie(default=None, alias=COOKIE_NAME),
+    x_api_token: str | None = Header(default=None, alias="X-API-Token"),
 ) -> dict:
     """Unified auth dependency validating cookie or machine token without CSRF."""
     if x_api_token:
@@ -114,7 +114,7 @@ async def require_human_operator(auth_data: dict = Depends(require_operator)) ->
 async def require_csrf(
     request: Request,
     auth_data: dict = Depends(require_auth),
-    x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token")
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token")
 ) -> dict:
     """Requires CSRF only if authenticated via cookie."""
     if auth_data["type"] == "cookie":
@@ -172,7 +172,7 @@ async def logout(
     response: Response,
     session: dict = Depends(get_current_session),
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
-    session_id: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
+    session_id: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ):
     """Revoke active session and clear cookie."""
     if session_id:
@@ -182,10 +182,11 @@ async def logout(
 
 
 @router.get("/me")
-async def get_me(session: dict = Depends(get_current_session)):
-    """Return current authenticated session details."""
+async def get_me(request: Request, session: dict = Depends(get_current_session)):
+    """Return current authenticated session details, and whether actions ask for a TOTP code."""
     return {
         "authenticated": True,
+        "totp_enabled": await totp_enabled(request.app.state.pool),
         "username": session["username"],
         "user_id": session["user_id"],
         "csrf_token": session.get("csrf_token"),
@@ -196,7 +197,7 @@ async def get_me(session: dict = Depends(get_current_session)):
 async def issue_ws_ticket(
     session: dict = Depends(get_current_session),
     auth_mgr: OperatorAuthManager = Depends(get_auth_manager),
-    x_csrf_token: Optional[str] = Header(default=None, alias="X-CSRF-Token"),
+    x_csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
 ):
     """Issue a single-use 60s WebSocket ticket."""
     if not x_csrf_token or x_csrf_token != session.get("csrf_token"):

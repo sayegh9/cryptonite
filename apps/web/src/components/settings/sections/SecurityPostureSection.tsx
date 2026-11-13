@@ -20,11 +20,15 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
   highlightedKey,
 }) => {
   const authKeys = [
+    "auth.totp_enabled",
     "auth.session_ttl_s",
     "auth.idle_timeout_s",
     "auth.lockout_s",
     "auth.max_login_attempts",
   ];
+
+  // the runtime switch overrides both cards below: while it is off no code is asked for at all
+  const totpOff = envHealth?.totp_enabled === false;
 
   const authEntries = authKeys
     .map((k) => entries.find((e) => e.key === k))
@@ -48,10 +52,10 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
         <div>
           <h3 className="text-sm font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
             <Lock className="w-4 h-4" aria-hidden="true" />
-            Runtime Session Lifetimes & Lockout Thresholds
+            TOTP, Session Lifetimes & Lockout Thresholds
           </h3>
           <p className="text-xs text-zinc-400 mt-0.5">
-            Hot-applied runtime rules. Tightening rules (shortening sessions or lengthening lockouts) is free; loosening requires operator TOTP.
+            Hot-applied runtime rules. Tightening rules (switching TOTP on, shortening sessions or lengthening lockouts) is free; loosening requires operator TOTP. With TOTP switched off, sign-in takes the password alone and no action asks for a code.
           </p>
         </div>
 
@@ -83,12 +87,14 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
                 <span className="font-mono text-[11px] text-zinc-400">ALLOW_DEV_TOTP</span>
                 <span
                   className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${
-                    envHealth?.dev_totp_login
+                    totpOff
+                      ? "border-red-500/40 bg-red-950/40 text-red-300"
+                      : envHealth?.dev_totp_login
                       ? "border-amber-500/40 bg-amber-950/40 text-amber-300"
                       : "border-emerald-500/40 bg-emerald-950/40 text-emerald-300"
                   }`}
                 >
-                  {envHealth?.dev_totp_login ? "Active (Dev Mode)" : "Strict (Enforced)"}
+                  {totpOff ? "TOTP Off" : envHealth?.dev_totp_login ? "Active (Dev Mode)" : "Strict (Enforced)"}
                 </span>
               </div>
               <h4 className="text-xs font-semibold text-zinc-200 mt-2">
@@ -99,7 +105,11 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
               </p>
             </div>
             <div className="pt-2 border-t border-white/5 text-[10px] text-zinc-400">
-              {envHealth?.dev_totp_login ? (
+              {totpOff ? (
+                <span className="text-red-400 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" aria-hidden="true" /> TOTP switched off: sign-in takes the password alone
+                </span>
+              ) : envHealth?.dev_totp_login ? (
                 <span className="text-amber-400 flex items-center gap-1">
                   <AlertTriangle className="w-3 h-3" aria-hidden="true" /> Enabled for local development
                 </span>
@@ -118,12 +128,12 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
                 <span className="font-mono text-[11px] text-zinc-400">AI_ALLOW_DEV_TOTP</span>
                 <span
                   className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${
-                    envHealth?.dev_totp_approvals
+                    totpOff || envHealth?.dev_totp_approvals
                       ? "border-red-500/40 bg-red-950/40 text-red-300"
                       : "border-emerald-500/40 bg-emerald-950/40 text-emerald-300"
                   }`}
                 >
-                  {envHealth?.dev_totp_approvals ? "Bypassed (Dev)" : "Strict 2FA"}
+                  {totpOff ? "TOTP Off" : envHealth?.dev_totp_approvals ? "Bypassed (Dev)" : "Strict 2FA"}
                 </span>
               </div>
               <h4 className="text-xs font-semibold text-zinc-200 mt-2">
@@ -134,7 +144,11 @@ export const SecurityPostureSection: React.FC<SecurityPostureSectionProps> = ({
               </p>
             </div>
             <div className="pt-2 border-t border-white/5 text-[10px] text-zinc-400">
-              {envHealth?.dev_totp_approvals ? (
+              {totpOff ? (
+                <span className="text-red-400 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" aria-hidden="true" /> TOTP switched off: approvals ask for no code
+                </span>
+              ) : envHealth?.dev_totp_approvals ? (
                 <span className="text-red-400 flex items-center gap-1">
                   <AlertTriangle className="w-3 h-3" aria-hidden="true" /> Test OTP enabled in environment
                 </span>

@@ -52,7 +52,7 @@ def perp_lines(payload: dict[str, Any]) -> list[str]:
     ]
 
 
-def approval_text(row: dict[str, Any], approval: dict[str, Any], now: datetime.datetime) -> str:
+def approval_text(row: dict[str, Any], approval: dict[str, Any], now: datetime.datetime, *, totp: bool = True) -> str:
     add = approval["action_class"] == "ADD_RISK"
     label = "🟡 ADD RISK" if add else "🟢 REDUCE RISK"
     timeout = "no" if approval["timeout_policy"] == "DENY" else "proceeds"
@@ -60,7 +60,8 @@ def approval_text(row: dict[str, Any], approval: dict[str, Any], now: datetime.d
         f"{label} · {row['title']}          ⏱ {countdown(approval['expires_at'], now)}",
         approval["summary"] or row.get("body") or "",
         *perp_lines(approval.get("payload") or {}),
-        ("Approving new risk needs your TOTP code." if add else "Risk reducing: one tap."),
+        ("Approving new risk needs your TOTP code." if add and totp
+         else "New risk: one tap (TOTP is switched off)." if add else "Risk reducing: one tap."),
         f"At {approval['expires_at'].astimezone(datetime.UTC):%H:%M} UTC the answer is {timeout}.",
     ]
     if approval.get("trace_id"):
@@ -68,10 +69,10 @@ def approval_text(row: dict[str, Any], approval: dict[str, Any], now: datetime.d
     return "\n".join(lines)
 
 
-def approval_buttons(secret: str, approval: dict[str, Any]) -> list[list[dict[str, str]]]:
-    add = approval["action_class"] == "ADD_RISK"
+def approval_buttons(secret: str, approval: dict[str, Any], *, totp: bool = True) -> list[list[dict[str, str]]]:
+    lock = approval["action_class"] == "ADD_RISK" and totp
     return [[
-        {"text": "Approve 🔐" if add else "Approve", "callback_data": contract.callback_data(secret, "a", approval["id"])},
+        {"text": "Approve 🔐" if lock else "Approve", "callback_data": contract.callback_data(secret, "a", approval["id"])},
         {"text": "Veto", "callback_data": contract.callback_data(secret, "v", approval["id"])},
         {"text": "Details", "callback_data": contract.callback_data(secret, "d", approval["id"])},
     ]]

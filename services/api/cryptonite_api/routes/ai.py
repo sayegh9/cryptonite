@@ -31,6 +31,7 @@ from cryptonite_api import shadow as shadow_report
 from cryptonite_api.kill_switch import PAPER_ACCOUNT_ID, PAPER_ENVIRONMENT, read_kill_switch
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.similar import similar_or_none
+from cryptonite_api.totp_policy import totp_enabled
 from cryptonite_api.universe import require_fed
 from cryptonite_execution import profile_lifecycle
 from cryptonite_execution.approvals import (
@@ -315,6 +316,13 @@ TOTP_LOCKOUT_S = 900
 
 
 async def checked_totp(request: Request, code: str | None, throttle_key: str, **who: Any) -> TotpOutcome:
+    """``_checked_code``, or VALID without a check while the operator has switched TOTP off (Settings -> Security)."""
+    if not await totp_enabled(request.app.state.pool):
+        return TotpOutcome.VALID
+    return await _checked_code(request, code, throttle_key, **who)
+
+
+async def _checked_code(request: Request, code: str | None, throttle_key: str, **who: Any) -> TotpOutcome:
     """``verify_totp`` with a lockout: 5 wrong codes in 15 min lock the key out for 15 min (a 6-digit
     code must not be brute-forceable). A correct or reused code is not a failed guess and is not counted.
     Fails closed when Redis is unavailable."""
@@ -343,15 +351,21 @@ async def checked_totp(request: Request, code: str | None, throttle_key: str, **
     return outcome
 
 
-async def require_totp(request: Request, auth: dict, code: str | None) -> None:
+async def require_totp(request: Request, auth: dict, code: str | None, *, conn: Any = None) -> bool:
+    """Raises unless the code is valid. False when TOTP is switched off and nothing was checked; True when it was.
+    A caller inside ``pool.acquire()`` passes its ``conn`` so the switch read takes no second connection."""
     if not auth.get("user_id"):
         raise HTTPException(status_code=403, detail="TOTP_REQUIRED: a machine token cannot add risk")
-    outcome = await checked_totp(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"])
+    if not await totp_enabled(request.app.state.pool, conn):
+        return False
+    # the switch is read once: a code is always checked from here, so True means it really was
+    outcome = await _checked_code(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"])
     if outcome is TotpOutcome.REUSED:
         raise HTTPException(status_code=401, detail="TOTP_REUSED: this code was already used (each code works once); "
                             "wait for the next code from your authenticator")
     if outcome is not TotpOutcome.VALID:
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED: this change gives the AI more room; enter your current TOTP code")
+    return True
 
 
 def _redis(request: Request):
@@ -663,7 +677,7 @@ async def edit_mandate(mandate_id: uuid.UUID, req: MandatePatch, request: Reques
                 if stopped := await _stopped_mandate_on(conn, added, except_id=mandate_id):
                     raise HTTPException(status_code=409, detail=stopped)
             if risk_adding_change(old, new):
-                await require_totp(request, auth, req.totp_code)
+                await require_totp(request, auth, req.totp_code, conn=conn)
             locks_retained: list[str] = []
             try:
                 if new.capital_budget_usd > old.capital_budget_usd and old.status.value in profile_lifecycle.ALLOCATING_STATUSES:
@@ -744,8 +758,8 @@ async def _lifecycle_view(request: Request, mandate_id: uuid.UUID, change: str, 
 async def start_mandate(mandate_id: uuid.UUID, req: TotpIn, request: Request, auth: dict = Depends(require_human_operator)):
     """Start (or restart) the profile: master switch, profile rules, TOTP above Ask, capital cap and coin locks, in one
     transaction. A code that is sent is checked; whether one is needed is the lifecycle's rule."""
-    totp_ok = False
-    if req.totp_code:
+    totp_ok = not await totp_enabled(request.app.state.pool)  # switched off: no code is needed above Ask
+    if req.totp_code and not totp_ok:
         await require_totp(request, auth, req.totp_code)
         totp_ok = True
 
@@ -889,11 +903,11 @@ async def decide_from_telegram(approval_id: uuid.UUID, request: Request):
             action = await conn.fetchval("SELECT action_class FROM ai_approvals WHERE id = $1", approval_id)
         if action is None:
             raise HTTPException(status_code=404, detail="Approval not found")
-        if action == ActionClass.ADD_RISK:
+        if action == ActionClass.ADD_RISK and await totp_enabled(request.app.state.pool):
             operator = os.getenv("NOTIFIER_OPERATOR_USERNAME", "")
             outcome = None
             if operator:
-                outcome = await checked_totp(request, req.totp_code, f"telegram:{operator}", username=operator)
+                outcome = await _checked_code(request, req.totp_code, f"telegram:{operator}", username=operator)
             if outcome is not TotpOutcome.VALID:
                 raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
     return await _decide(request, approval_id, approve, "telegram", f"telegram:{req.chat_id}")

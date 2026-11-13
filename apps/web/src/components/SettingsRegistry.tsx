@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { fetchApi } from "@/lib/api";
+import { useTotpRequired } from "@/lib/stores/useSessionStore";
 import { toast } from "sonner";
 import { Button } from "./ui/button";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
@@ -56,11 +57,12 @@ const RouteEditor: React.FC<{ route: RouteView; onSaved: () => void }> = ({ rout
   const [thinking, setThinking] = useState(stored?.thinking_budget?.toString() ?? "");
   const [reason, setReason] = useState("");
   const [totp, setTotp] = useState("");
+  const totpOn = useTotpRequired();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const blankToNull = (text: string) => (text.trim() === "" ? null : text.trim());
-  const canSave = reason.trim().length >= MIN_REASON_CHARS && /^\d{6}$/.test(totp) && !saving;
+  const canSave = reason.trim().length >= MIN_REASON_CHARS && (!totpOn || /^\d{6}$/.test(totp)) && !saving;
 
   const save = async () => {
     setSaving(true);
@@ -129,13 +131,15 @@ const RouteEditor: React.FC<{ route: RouteView; onSaved: () => void }> = ({ rout
         Reason (audited, at least {MIN_REASON_CHARS} characters)
         <input type="text" maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} className={`${INPUT_CLASS} w-full`} />
       </label>
-      <label className="block text-[11px] text-amber-200">
-        Your TOTP code (every route change needs it)
-        <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={totp} onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))} className={`${INPUT_CLASS} w-32`} />
-      </label>
+      {totpOn && (
+        <label className="block text-[11px] text-amber-200">
+          Your TOTP code (every route change needs it)
+          <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={totp} onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))} className={`${INPUT_CLASS} w-32`} />
+        </label>
+      )}
       {error && <p role="alert" className="text-[11px] text-red-300">{error}</p>}
       <Button onClick={() => void save()} disabled={!canSave} className="bg-cyan-600 text-xs font-bold uppercase tracking-wider text-zinc-950 hover:bg-cyan-500 disabled:opacity-40">
-        {saving ? "Saving…" : "Save with TOTP"}
+        {saving ? "Saving…" : totpOn ? "Save with TOTP" : "Save"}
       </Button>
     </div>
   );

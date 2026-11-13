@@ -103,13 +103,18 @@ def make_notifier(pool=None, api_status=200, api_body=None):
 
 
 class FakePool:
-    def __init__(self, approval=None):
-        self.approval = approval
+    def __init__(self, approval=None, telegram_switch=None, totp_switch=None):
+        self.approval, self.telegram_switch, self.totp_switch = approval, telegram_switch, totp_switch
 
     async def fetchrow(self, sql, *args):
         return self.approval
 
     async def fetchval(self, sql, *args):
+        if "notifier_settings" in sql:
+            value = self.telegram_switch if args[0] == "alerts.telegram_enabled" else self.totp_switch
+            if isinstance(value, Exception):
+                raise value
+            return value
         return 0
 
     async def fetch(self, sql, *args):
@@ -403,7 +408,15 @@ async def test_the_notifier_role_can_deliver_but_never_decide(h, db_url):
             await pool.execute("UPDATE ai_approvals SET status = 'APPROVED'")
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await pool.execute("UPDATE ai_mandates SET autonomy_level = 3")
+        # migration 069: the Telegram switch is readable, the rest of system_settings is not
+        await h.pool.execute("""INSERT INTO system_settings (key, value, updated_at) VALUES ('alerts.telegram_enabled', '"0"', now())
+                                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""")
+        n._switches.clear()  # read again now, not after the 15 s cache
+        assert await n.telegram_enabled() is False
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await pool.fetch("SELECT key, value FROM system_settings")
     finally:
+        await h.pool.execute("DELETE FROM system_settings WHERE key = 'alerts.telegram_enabled'")
         await pool.close()
 
 
@@ -450,3 +463,71 @@ async def test_a_debate_perp_entry_approval_renders_its_perp_lines_and_telegram_
     assert await h.pool.fetchval("SELECT status FROM ai_approvals WHERE id = $1", a["id"]) == "PENDING"
     ok = await signed_post(h, a["id"], {**decide, "totp_code": h.totp.now()})
     assert ok.status_code == 200 and ok.json()["status"] == "APPROVED"
+
+
+# ------------------------------------------------------------------------------------ Telegram switch
+
+
+async def test_switching_telegram_off_stops_telegram_and_keeps_ntfy():
+    n, tg, _, ntfy = make_notifier(FakePool(telegram_switch="0"))
+    await n.send_critical("Kill switch", "tripped")
+    assert tg.sent() == [] and len(ntfy.posts) == 1
+    assert await n._deliver({"tier": "INFO", "approval_id": None, "title": "t", "body": "b"},
+                            datetime.datetime.now(datetime.UTC)) == ("SKIPPED", None)
+    await n.heartbeat()
+    assert json.loads(n.redis.kv["notifier:heartbeat"])["telegram_enabled"] is False
+
+
+async def test_replies_to_the_operator_still_go_out_while_telegram_is_off():
+    n, tg, _, _ = make_notifier(FakePool(telegram_switch="0"))
+    assert await n.handle_update(text(OPERATOR_CHAT, "/help")) == "help"
+    assert len(tg.sent()) == 1
+
+
+async def test_telegram_is_on_by_default_and_when_switched_on():
+    for raw in (None, "1", '"1"', "0.5"):  # only a stored 0 turns it off
+        n, tg, _, _ = make_notifier(FakePool(telegram_switch=raw))
+        await n.send_critical("Kill switch", "tripped")
+        assert len(tg.sent()) == 1, raw
+
+
+async def test_an_unreadable_or_invalid_switch_keeps_the_last_value(monkeypatch):
+    pool = FakePool(telegram_switch="0")
+    n, _, _, _ = make_notifier(pool)
+    assert await n.telegram_enabled() is False
+    clock = [1000.0]
+    monkeypatch.setattr("cryptonite_notifier.bot.time.monotonic", lambda: clock[0])
+    for bad in (RuntimeError("db down"), "7", "abc"):
+        pool.telegram_switch, clock[0] = bad, clock[0] + 60
+        assert await n.telegram_enabled() is False, bad
+    fresh, _, _, _ = make_notifier(FakePool(telegram_switch=RuntimeError("db down")))
+    assert await fresh.telegram_enabled() is True  # never read: on, so alerts are not silenced
+
+
+async def test_with_telegram_off_and_no_ntfy_a_critical_alert_is_an_error():
+    n, _, _, _ = make_notifier(FakePool(telegram_switch="0"))
+    n.ntfy = None
+    with pytest.raises(RuntimeError, match="Telegram is switched off"):
+        await n.send_critical("Kill switch", "tripped")
+
+
+# ------------------------------------------------------------------------------------ TOTP switch
+
+
+async def test_with_totp_switched_off_a_telegram_add_risk_approval_is_one_tap():
+    a = approval_row("ADD_RISK")
+    n, tg, api, _ = make_notifier(FakePool(a, totp_switch="0"))
+    assert await n.handle_update(press(OPERATOR_CHAT, contract.callback_data(SECRET, "a", a["id"]))) == "decided:APPROVED"
+    assert json.loads(api.requests[-1].content)["totp_code"] is None
+
+
+async def test_the_approval_card_says_one_tap_when_totp_is_off():
+    a = approval_row("ADD_RISK")
+    row = {"tier": "ACTION", "approval_id": a["id"], "title": "BTC entry", "body": ""}
+    n, tg, _, _ = make_notifier(FakePool(a, totp_switch="0"))
+    assert (await n._deliver(row, datetime.datetime.now(datetime.UTC)))[0] == "SENT"
+    card = tg.sent()[-1]
+    assert "TOTP is switched off" in card["text"] and "🔐" not in json.dumps(card["reply_markup"], ensure_ascii=False)
+    on, tg_on, _, _ = make_notifier(FakePool(a))
+    await on._deliver(row, datetime.datetime.now(datetime.UTC))
+    assert "needs your TOTP code" in tg_on.sent()[-1]["text"]

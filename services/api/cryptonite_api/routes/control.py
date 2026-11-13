@@ -296,9 +296,10 @@ async def update_risk_limits(
                     detail=[{"loc": ["body", name], "msg": f"{name}: {msg}", "type": "risk_limit"}
                             for name, msg in check.errors.items()],
                 )
+            totp_verified = False
             if check.needs_totp:
                 try:
-                    await require_totp(request, auth, req.totp_code)
+                    totp_verified = await require_totp(request, auth, req.totp_code, conn=conn)
                 except HTTPException as e:
                     await auth_mgr.log_audit_event(
                         username=username, action="RISK_LIMITS_UPDATE_FAILED_AUTH", ip_address=client_ip,
@@ -328,7 +329,7 @@ async def update_risk_limits(
         details={"environment": req.environment, "account_id": req.account_id, "reason": req.reason,
                  "before": current.as_dict(), "after": requested.as_dict(),
                  "tightened": list(check.tightened), "loosened": list(check.loosened),
-                 "totp_verified": check.needs_totp})
+                 "totp_verified": totp_verified})
     return {
         "success": True,
         **_risk_limits_view(req.environment, req.account_id, saved),

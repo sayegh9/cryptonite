@@ -133,7 +133,7 @@ async def test_a_model_the_gateway_cannot_call_is_refused_before_totp(monkeypatc
 async def test_every_route_change_needs_totp_and_writes_only_the_editable_fields(monkeypatch):
     seen = {}
 
-    async def missing_totp(request, auth, code):
+    async def missing_totp(request, auth, code, conn=None):
         seen["asked"] = True
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
 
@@ -144,7 +144,7 @@ async def test_every_route_change_needs_totp_and_writes_only_the_editable_fields
     assert refused.value.status_code == 401 and seen["asked"] and not _inserts(pool)
     assert [e["action"] for e in audit.events] == ["ROUTE_UPDATE_FAILED_AUTH"]
 
-    async def good_totp(request, auth, code):
+    async def good_totp(request, auth, code, conn=None):
         seen["code"] = code
 
     monkeypatch.setattr(settings_route, "require_totp", good_totp)

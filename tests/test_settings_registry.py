@@ -329,7 +329,7 @@ async def test_lowering_the_budget_writes_without_totp_and_is_audited(monkeypatc
 
 @pytest.mark.asyncio
 async def test_raising_the_budget_without_totp_is_refused_and_writes_nothing(monkeypatch):
-    async def missing_totp(request, auth, code):
+    async def missing_totp(request, auth, code, conn=None):
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
 
     monkeypatch.setattr(settings_route, "require_totp", missing_totp)
@@ -345,8 +345,9 @@ async def test_raising_the_budget_without_totp_is_refused_and_writes_nothing(mon
 async def test_raising_the_budget_with_totp_writes_and_records_it(monkeypatch):
     seen = {}
 
-    async def good_totp(request, auth, code):
+    async def good_totp(request, auth, code, conn=None):
         seen["code"] = code
+        return True  # checked (False would mean TOTP is switched off)
 
     monkeypatch.setattr(settings_route, "require_totp", good_totp)
     pool, auth_mgr = WritePool({"LLM_DAILY_BUDGET_USD": '"25.00"'}), FakeAuthMgr()
@@ -459,7 +460,7 @@ async def test_exit_lowering_writes_without_totp(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_exit_raising_without_totp_writes_nothing(monkeypatch):
-    async def missing_totp(request, auth, code):
+    async def missing_totp(request, auth, code, conn=None):
         raise HTTPException(status_code=401, detail="TOTP_REQUIRED")
 
     monkeypatch.setattr(settings_route, "require_totp", missing_totp)
@@ -523,6 +524,13 @@ def test_heartbeat_grace_lower_is_free_and_raising_needs_totp():
     grace = by_key("alerts.heartbeat_grace_s")
     assert write_needs_totp(grace, Decimal("300"), Decimal("120")) is False
     assert write_needs_totp(grace, Decimal("300"), Decimal("900")) is True
+
+
+def test_the_telegram_switch_needs_no_totp_either_way():
+    switch = by_key("alerts.telegram_enabled")
+    assert switch.default == 1 and switch.tier is Tier.SESSION
+    assert write_needs_totp(switch, Decimal("1"), Decimal("0")) is False
+    assert write_needs_totp(switch, Decimal("0"), Decimal("1")) is False
 
 
 def test_session_runtime_values_need_no_totp():
