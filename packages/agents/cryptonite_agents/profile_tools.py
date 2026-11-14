@@ -308,7 +308,7 @@ def propose_profile(
     direction: Literal["LONG", "SHORT", "BOTH"],
     style: Literal["SWING", "INTRADAY"] = "SWING",
     max_leverage: Annotated[int, Field(ge=1, le=10)] = 1,
-    capital_budget_usd: Annotated[float, Field(gt=0)] = 1000,
+    capital_budget_usd: Annotated[float, Field(gt=0)] = 25000,
     max_risk_per_trade_pct: Annotated[float, Field(gt=0, le=5)] = 1,
     daily_loss_limit_pct: Annotated[float | None, Field(gt=0, le=50)] = None,
     max_drawdown_pct: Annotated[float, Field(gt=0, le=50)] = 20,
@@ -420,7 +420,7 @@ def _propose(spec: dict[str, Any]) -> dict[str, Any]:
         errors.append("INVALID_DAILY_LOSS_LIMIT_PCT")
     proposal = {
         "name": str(spec.get("name") or "").strip(), "coins": coins,
-        "markets": spec.get("markets", ["SPOT"]), "capital_budget_usd": str(spec.get("capital_budget_usd", "1000")),
+        "markets": spec.get("markets", ["SPOT"]), "capital_budget_usd": str(spec.get("capital_budget_usd", "25000")),
         "style": spec.get("style", "SWING"), "direction": spec.get("direction", "LONG"),
         "max_position_pct": str(spec.get("max_position_pct", "10")),
         "max_leverage": spec.get("max_leverage", 1),
@@ -445,7 +445,7 @@ def _propose(spec: dict[str, Any]) -> dict[str, Any]:
     if not coins or len(coins) * len(proposal["markets"]) > 20 or any(not COIN_RE.fullmatch(c) for c in coins):
         errors.append("COINS_INVALID")
     try:
-        budget = _decimal(proposal["capital_budget_usd"], "1000")
+        budget = _decimal(proposal["capital_budget_usd"], "25000")
         if budget <= 0:
             errors.append("BUDGET_INVALID")
         position_pct = _decimal(proposal["max_position_pct"], "10")

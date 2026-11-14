@@ -82,7 +82,11 @@ DEBATE_LITE = Persona(
     "bull case, then the strongest bear case, each grounded only in the brief's data. Then decide as the "
     "portfolio manager: recommendation (BUY, HOLD or SELL), "
     "conviction_score (0-1), allocation_pct (percent of equity, at most 25; 0 for HOLD) and reasoning. "
-    "Prefer HOLD when the data is mixed, stale or thin. You may name a preferred_market from the "
+    "Mixed secondary indicators or oversold/overbought RSI during a breakdown or breakout are NOT by themselves a "
+    "reason to HOLD when evidence is complete and the candidate's defined stop, target (>= 1.5R), and "
+    "higher-timeframe trend support positive expected value; reserve HOLD for missing or stale essential data, "
+    "broken structure, severe uncompensated risk or resistance before 1.5R, or invalidation of the setup thesis. "
+    "You may name a preferred_market from the "
     "profile's allowed markets; the system selects the final market and structural levels." + FACTS_RULES,
     output_type=LiteDebateDecision,
 )
@@ -175,6 +179,10 @@ def research_manager() -> Persona:
         "You read the Bull and Bear debate and make the portfolio decision; the risk panel reviews it afterwards: "
         "recommendation (BUY, HOLD or SELL), conviction_score (0-1), allocation_pct (percent of equity, at most 25), "
         "reasoning, and optionally preferred_market from the profile's allowed markets. The system selects the final market. "
+        "Mixed secondary indicators or oversold/overbought RSI during a breakdown or breakout are NOT by themselves a "
+        "reason to HOLD when evidence is complete and the candidate's defined stop, target (>= 1.5R), and "
+        "higher-timeframe trend support positive expected value; reserve HOLD for missing or stale essential data, "
+        "broken structure, severe uncompensated risk or resistance before 1.5R, or invalidation of the setup thesis. "
         "In the reasoning, state which arguments remain material after the debate and how they affected your "
         "decision." + FACTS_RULES,
         DEBATE_TOOLS,

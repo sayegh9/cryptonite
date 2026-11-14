@@ -434,9 +434,10 @@ async def test_a_debate_refused_at_the_gate_makes_no_shadow_call(main, h):
 # ------------------------------------------------------------------------------------ the prompt
 
 
-def test_the_shadow_prompt_drops_the_sentence_and_the_live_one_keeps_it():
+def test_the_shadow_prompt_is_distinct_and_live_uses_calibrated_hold_rule():
     text = DEBATE_LITE_SHADOW.instructions
-    assert REMOVED not in text and REMOVED in DEBATE_LITE.instructions
+    assert REMOVED not in text and REMOVED not in DEBATE_LITE.instructions
+    assert "Mixed secondary indicators or oversold/overbought RSI" in DEBATE_LITE.instructions
     for part in ("disagreement alone is not a reason to refuse", "Stale or missing essential data is still a reason to refuse",
                  "raw signals before any filter", "positive expected value", "only in the setup's own direction, else HOLD",
                  "probability that it reaches its target before its stop"):

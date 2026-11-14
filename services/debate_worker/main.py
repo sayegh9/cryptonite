@@ -94,6 +94,10 @@ _UNAVAILABLE_WORDS = re.compile(r"\b(?:unavailable|not available|no data|missing
                                 re.IGNORECASE)
 _DERIVATIVE_TERMS = {"funding_rate": re.compile(r"\bfunding\b", re.IGNORECASE),
                      "open_interest": re.compile(r"\bopen interest\b|\bOI\b")}
+_SPECIFIC_DERIVATIVE_TERMS = {
+    **_DERIVATIVE_TERMS,
+    "mark_price": re.compile(r"\bmark[\s_-]+price\b", re.IGNORECASE),
+}
 _ANY_DERIVATIVES = re.compile(r"\bderivatives?\b", re.IGNORECASE)
 _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 BAR_FIGURE_TOLERANCE = 0.005  # a cited price within 0.5% of the window's low-high range counts as a bar figure
@@ -259,9 +263,11 @@ def derivatives_reported_unavailable(text: str, derivatives: dict) -> bool:
     for sentence in re.split(r"\.(?!\d)|[\n;]", text):
         if not _UNAVAILABLE_WORDS.search(sentence) or re.search(r"\d", sentence):
             continue
-        if _ANY_DERIVATIVES.search(sentence):
+        specific = {f for f, term in _SPECIFIC_DERIVATIVE_TERMS.items() if term.search(sentence)}
+        if specific:
+            flagged |= specific & available
+        elif _ANY_DERIVATIVES.search(sentence):
             flagged |= available
-        flagged |= {f for f, term in _DERIVATIVE_TERMS.items() if term.search(sentence)}
     return available <= flagged
 
 

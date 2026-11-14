@@ -27,7 +27,7 @@ def derive_levels(
     min_atr_mult = float(getattr(risk_config, "min_atr_mult", 0.5))
     max_atr_mult = float(getattr(risk_config, "max_atr_mult", 4.0))
     fallback_stop_atr_mult = float(getattr(risk_config, "fallback_stop_atr_mult", 2.0))
-    fallback_target_atr_mult = float(getattr(risk_config, "fallback_target_atr_mult", 3.0))
+    fallback_target_atr_mult = float(getattr(risk_config, "fallback_target_atr_mult", 3.3))
     entry_dec = round(Decimal(str(row["close"])), price_precision)
     entry_float = float(entry_dec)
     atr_float = float(raw_atr)

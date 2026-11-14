@@ -526,6 +526,19 @@ XRP_SUMMARY = {"bars": 48, "last_close": 1.0842, "window_low": 1.0817, "window_h
     ("Over the past 48 hours the net change was -12.5%.", True),
     ("The 22:00 bar recorded the window low of 1.20.", True),
     ("1.42% over the last 50 bars, and a net change of -12.5% over the last 48 1h bars.", True),
+    # hyphenated intervals ("1-hour", "48 1-hour bars", "48-period") are not bar prices
+    ("The window high over the 48 1-hour bars was 1.1821.", False),
+    ("The window low on the 1-hour timeframe was 1.0817.", False),
+    ("The window low for the 48-period window was 1.0817.", False),
+    ("The window low over the 48 1-hour bars was 1.20.", True),
+    ("The last close on the 1-hour bar was 1.0842.", False),
+    ("The last close on the 1-hour bar was 1.25.", True),
+    # ISO timestamps/dates after labels must not turn the year ("2026") into a claimed price
+    ("The last close on 2026-11-13T04:00:00+00:00 was 1.0842.", False),
+    ("Measured: last close on 2026-11-13T04:00:00+00:00.", False),
+    ("The window low at 2026-11-13T14:00:00+00:00 was 1.0817.", False),
+    ("Window low at 2026-11-13T14:00:00+00:00 (1.0817).", False),
+    ("Window low at 2026-11-13T14:00:00+00:00 (1.20).", True),
 ])
 def test_figures_are_read_after_their_label_in_the_measured_window(claim, blocks):
     flags = evidence.validate_turn("Bear Researcher", claim, bars_snap(XRP_SUMMARY, quote=1.08425))

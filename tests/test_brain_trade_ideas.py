@@ -69,6 +69,62 @@ def test_downtrend_gives_a_short():
     assert shorts and shorts[0]["target"] < shorts[0]["entry"] < shorts[0]["stop"]
 
 
+@pytest.mark.parametrize("direction", ["LONG", "SHORT"])
+@pytest.mark.parametrize("pullback_kind", ["extreme", "ema20"])
+def test_trend_pullback_can_stage_a_card_with_an_active_profile(direction, pullback_kind):
+    """A retreat from the extreme or return to value supports a structural market entry."""
+    closes = [1000 + i * 0.5 for i in range(60)]
+    closes += [1028, 1027, 1027] if pullback_kind == "extreme" else [1029.5] * 30
+    if direction == "SHORT":
+        closes = [2100 - c for c in closes]
+    frame = payload(closes)
+    if pullback_kind == "ema20":
+        # The recent extreme equals the close: only proximity to EMA20 can qualify this entry.
+        for bar in frame["bars"][-5:]:
+            bar["high"] = bar["low"] = bar["close"]
+    else:
+        # Keep this fixture away from EMA20 so it exercises the independent retreat condition.
+        assert abs(closes[-1] - ti._ema(closes, 20)) > 1.5 * ti._atr(frame["bars"])
+    ideas = ti.ideas_for_frame("BTCUSDT.BINANCE", "1h", frame)
+    market = next(i for i in ideas if i["kind"] == "trend_pullback")
+    assert market["direction"] == direction
+    assert market["entry_type"] == "AT_MARKET" and market["entry"] == closes[-1]
+    assert market["trigger"] == "NONE"
+    assert abs(market["target"] - market["entry"]) == pytest.approx(
+        2 * abs(market["entry"] - market["stop"]), abs=0.02)
+    if direction == "LONG":
+        assert market["stop"] < min(b["low"] for b in frame["bars"][-10:])
+        assert market["stop"] < market["entry"] < market["target"]
+    else:
+        assert market["stop"] > max(b["high"] for b in frame["bars"][-10:])
+        assert market["target"] < market["entry"] < market["stop"]
+    status = ti.executability(market, [active()])
+    assert status["status"] == "POTENTIAL" and status["card_possible"] is True
+    assert any(i["kind"] == "trend_continuation" and i["entry_type"] == "ON_BREAK" for i in ideas)
+
+
+@pytest.mark.parametrize("closes", [UP, DOWN])
+def test_monotonic_trend_only_offers_a_waiting_break_without_a_card(closes):
+    """An extended monotonic move must never become an immediate market order."""
+    ideas = ti.ideas_for_frame("BTCUSDT.BINANCE", "1h", payload(closes))
+    assert len(ideas) == 1
+    assert ideas[0]["kind"] == "trend_continuation" and ideas[0]["entry_type"] == "ON_BREAK"
+    assert ideas[0]["trigger"] == "WAITING"
+    assert ti.executability(ideas[0], [active()])["card_possible"] is False
+
+
+@pytest.mark.parametrize(("last", "direction"), [(103.372, "LONG"), (105.628, "SHORT")])
+def test_range_at_38_percent_from_either_edge_offers_market_reversion(last, direction):
+    """The widened edge includes 38% entries while the middle still waits for a break."""
+    closes = [100 + (i % 10) for i in range(55)] + [104, 105, 104.5, 105, last]
+    ideas = ti.ideas_for_frame("BTCUSDT.BINANCE", "1h", payload(closes))
+    assert len(ideas) == 1
+    assert (ideas[0]["kind"], ideas[0]["entry_type"], ideas[0]["direction"]) == (
+        "range_reversion", "AT_MARKET", direction)
+    mid = closes[:-1] + [104.5]  # 47.8% of the range
+    assert {i["kind"] for i in ti.ideas_for_frame("BTCUSDT.BINANCE", "1h", payload(mid))} == {"range_break"}
+
+
 def test_range_gives_the_side_nearest_its_edge():
     low = ti.ideas_for_frame("BTCUSDT.BINANCE", "1h", payload(RANGE_LOW))
     high = ti.ideas_for_frame("BTCUSDT.BINANCE", "1h", payload(RANGE_HIGH))

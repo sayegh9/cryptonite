@@ -3,9 +3,9 @@
 Asked "what should I trade?", the Brain must always answer with concrete ideas, and it must not let "can this be
 executed right now?" decide "is there an idea worth showing?". This module keeps the two apart:
 
-- ``ideas_for_frame`` is pure price action on closed bars: a trend continuation, a range reversion or a range break,
-  each with an entry, a structural stop, a target and what invalidates it. Every level is computed here from the bars,
-  so the model never supplies one.
+- ``ideas_for_frame`` is pure price action on closed bars: a trend continuation, a trend pullback, a range reversion
+  or a range break, each with an entry, a structural stop, a target and what invalidates it. Every level is computed
+  here from the bars, so the model never supplies one.
 - ``executability`` says, for one idea, whether nothing known blocks an entry (POTENTIAL: the card's dry run still
   has to pass, so it is never called executable), what blocks it (BLOCKED,
   with every reason: a profile paused for stale data is named as temporary, never as "no mandate"), or that the
@@ -46,7 +46,7 @@ TRIGGER_BARS = 5  # a continuation triggers on a break of this many bars' extrem
 STOP_ATR_BUFFER = 0.25  # the stop sits this many ATRs beyond the structure
 TREND_MIN_ATR_GAP = 0.5  # the 20 and 50 bar averages closer than this many ATRs: a range
 TARGET_R = 2.0  # a continuation or break targets 2R, the exit monitor's TP1 distance
-RANGE_EDGE = 0.35  # the lower/upper share of a range where a reversion is offered
+RANGE_EDGE = 0.40  # the lower/upper share of a range where a reversion is offered
 STALE_BAR_MULTIPLE = 2.0  # the newest closed bar older than this many bar lengths: the idea's data is stale
 TF_MINUTES = {"15m": 15, "1h": 60, "4h": 240}
 TF_WEIGHT = {"15m": 0.0, "1h": 3.0, "4h": 5.0}
@@ -146,9 +146,19 @@ def ideas_for_frame(instrument_id: str, timeframe: str, payload: dict[str, Any])
         return _idea(instrument_id, timeframe, payload, trend=trend, **kw)
 
     out: list[dict[str, Any] | None] = []
+    ema20 = _ema([b["close"] for b in bars], 20)
     if trend == "UP":
         entry = max(b["high"] for b in bars[-TRIGGER_BARS:])
         stop = swing_low - buffer
+        pullback = entry - close  # distance below the closed bars' recent break level
+        if abs(close - ema20) <= 1.5 * atr or pullback >= 0.35 * atr:
+            out.append(make(
+                kind="trend_pullback", direction="LONG", entry_type="AT_MARKET", entry=close, stop=stop,
+                target=close + TARGET_R * (close - stop),
+                basis=(f"{timeframe} uptrend on closed bars: close {f(close)} above its 20 and 50 bar averages; "
+                       f"pullback to value near EMA20 {f(ema20)} or below the last {TRIGGER_BARS} bars' high "
+                       f"{f(entry)}; stop under the {SWING_BARS}-bar swing low {f(swing_low)}"),
+                invalidation=f"a {timeframe} close below the swing low {f(swing_low)}, or the stop"))
         out.append(make(
             kind="trend_continuation", direction="LONG", entry_type="ON_BREAK", entry=entry, stop=stop,
             target=entry + TARGET_R * (entry - stop),
@@ -158,6 +168,15 @@ def ideas_for_frame(instrument_id: str, timeframe: str, payload: dict[str, Any])
     elif trend == "DOWN":
         entry = min(b["low"] for b in bars[-TRIGGER_BARS:])
         stop = swing_high + buffer
+        pullback = close - entry  # distance above the closed bars' recent break level
+        if abs(close - ema20) <= 1.5 * atr or pullback >= 0.35 * atr:
+            out.append(make(
+                kind="trend_pullback", direction="SHORT", entry_type="AT_MARKET", entry=close, stop=stop,
+                target=close - TARGET_R * (stop - close),
+                basis=(f"{timeframe} downtrend on closed bars: close {f(close)} below its 20 and 50 bar averages; "
+                       f"pullback to value near EMA20 {f(ema20)} or above the last {TRIGGER_BARS} bars' low "
+                       f"{f(entry)}; stop over the {SWING_BARS}-bar swing high {f(swing_high)}"),
+                invalidation=f"a {timeframe} close above the swing high {f(swing_high)}, or the stop"))
         out.append(make(
             kind="trend_continuation", direction="SHORT", entry_type="ON_BREAK", entry=entry, stop=stop,
             target=entry - TARGET_R * (stop - entry),
@@ -383,8 +402,9 @@ def build_trade_ideas(symbol: str | None = None, max_results: int = DEFAULT_IDEA
 async def get_trade_ideas(symbol: str | None = None, max_results: int = DEFAULT_IDEAS) -> str:
     """Ranked trade ideas from closed-bar price action (15m, 1h and 4h) on every fed coin, or only `symbol`. Call this
     whenever the operator asks what to trade, for trade ideas, suggestions, setups or opportunities; it answers even
-    when no scanner preset fired. Each idea has rank, coin, timeframe, direction, kind (trend_continuation,
-    range_reversion, range_break), entry_type (AT_MARKET, or ON_BREAK: enter only once price trades through entry),
+    when no scanner preset fired. Each idea has rank, coin, timeframe, direction,
+    kind (trend_continuation, trend_pullback, range_reversion, range_break), entry_type (AT_MARKET, or ON_BREAK:
+    enter only once price trades through entry),
     entry, stop, target, rr_ratio, basis, invalidation, bar_close, `trigger` (WAITING for an ON_BREAK idea whose
     entry has not traded, NONE for AT_MARKET), and separately `status`: POTENTIAL (nothing checked here blocks it; a
     card's dry run must still pass, so never call it executable or confirmed), BLOCKED (with every reason in `reasons`, e.g. a profile temporarily paused for stale data,

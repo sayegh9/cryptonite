@@ -75,12 +75,14 @@ def test_analysts_and_reviewer_handle_evidence():
     assert "whether costs are included" in text and "cannot prove" in text and "Bitcoin/Ethereum" not in text
 
 
-def test_shadow_v2_is_frozen_and_the_live_prompt_is_unchanged():
+def test_shadow_v2_is_frozen_and_live_prompt_keeps_calibrated_hold_rule():
     digest = hashlib.sha256(fleet.DEBATE_LITE_SHADOW_V2.instructions.encode()).hexdigest()
     assert digest == "d8a3e826aededf6283ffad0d5bc5fee2f000df41aa7a36b5a0dd2f0b9fd6233c"
     assert se.PROMPT_VERSIONS == ("shadow-v1", "shadow-v2")
     assert [v for v, _ in sd.SHADOW_PROMPTS] == list(se.PROMPT_VERSIONS)
-    assert "Prefer HOLD when the data is mixed, stale or thin." in fleet.DEBATE_LITE.instructions
+    assert "Prefer HOLD when the data is mixed, stale or thin." not in fleet.DEBATE_LITE.instructions
+    assert "Mixed secondary indicators or oversold/overbought RSI" in fleet.DEBATE_LITE.instructions
+    assert "reserve HOLD for missing or stale essential data" in fleet.DEBATE_LITE.instructions
     assert fleet.DEBATE_LITE_SHADOW_V2.output_type is fleet.DEBATE_LITE.output_type
 
 

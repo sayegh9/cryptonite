@@ -1858,6 +1858,7 @@ export function SwingRadarCard({ w }: { w: SwingRadarWidget }) {
 
 const IDEA_KIND: Record<string, string> = {
   trend_continuation: "Trend continuation",
+  trend_pullback: "Trend pullback",
   range_reversion: "Range reversion",
   range_break: "Range break",
 };

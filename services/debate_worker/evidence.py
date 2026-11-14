@@ -510,7 +510,7 @@ _NO_POSITION = re.compile(
     r"|\bnot\s+in\s+a\s+position\b", re.IGNORECASE)
 _QUALIFIED = re.compile(r"\s*(?:in|on)\s+(?:the\s+)?(?:\w+\s+)?(spot|margin|perp|perpetual)\b", re.IGNORECASE)
 _NUM = r"(-?\d[\d,]*(?:\.\d+)?)"
-_BAR_INTERVAL = r"\d+\s*(?:seconds?|minutes?|hours?|days?|weeks?|[smhdw])\b"
+_BAR_INTERVAL = r"\d+[\s-]*(?:seconds?|minutes?|hours?|days?|weeks?|[smhdw])\b"
 # A timeframe can qualify the close. A bare "last closed 1h bar" identifies a bar, and what that bar "showed" is not its
 # close, while "last closed at 1.25", "last close on the 1h bar was 1.25", "last close (1h): 1.25" and "last closed 1h
 # bar was 1.25" all assert prices.
@@ -521,12 +521,16 @@ _QUALIFIED_CLOSE = (rf"(?:\b|d\b(?!\s+{_BAR_INTERVAL}))"
                     rf"(?:\s*\(?\s*(?:(?:on|of|for)\s+(?:the\s+)?)?{_BAR_INTERVAL}\s*\)?)?"
                     rf"[^.\n\d]{{0,25}}(?!{_BAR_INTERVAL})")
 _CLOSE_PRICE = re.compile(rf"\blast close(?:{_NAMED_BAR_CLOSE}|{_QUALIFIED_CLOSE})" + _NUM, re.IGNORECASE)
-# Between a label and its figure the gap may hold a bar count or a timeframe ("the window low over the 48 1h bars was
-# 1.0817", "for the entire 48-bar period (down to 0.3213)"); those are never the figure.
-_GAP_COUNT = rf"(?:\d+(?:[\s-]+{_BAR_INTERVAL})?[\s-]+(?:bars?|candles?)\b|{_BAR_INTERVAL})"
+_TIMESTAMP_PATTERN = (
+    r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:[+-]\d{2}:?\d{2}|Z)?)?|\b\d{1,2}:\d{2}(?::\d{2})?\b"
+)
+_TIMESTAMP_SPAN = re.compile(_TIMESTAMP_PATTERN)
+# Between a label and its figure the gap may hold a bar count, a timeframe, or a timestamp ("the window low over the
+# 48 1h bars was 1.0817", "for the entire 48-bar period (down to 0.3213)"); those are never the figure.
+_GAP_COUNT = rf"(?:\d+(?:[\s-]+{_BAR_INTERVAL})?[\s-]+(?:bars?|candles?|periods?)\b|{_BAR_INTERVAL}|{_TIMESTAMP_PATTERN})"
 _GAP = rf"(?:[^.\n\d)]|{_GAP_COUNT}){{0,30}}?"
-# ... and the figure itself is not one: "48" in "48 bars", "48 1h bars" or "48h"
-_NOT_A_COUNT = rf"(?![\d.,]*[\s-]*(?:{_BAR_INTERVAL}[\s-]+)?(?:bars?|candles?)\b|\s*[smhdw]\b)"
+# ... and the figure itself is not one: "48" in "48 bars", "48 1h bars", "48-period", "1-hour", "48h", or a date/clock
+_NOT_A_COUNT = rf"(?!(?:[\d.,]*[\s-]*(?:(?:{_BAR_INTERVAL}[\s-]+)?(?:bars?|candles?|periods?)|seconds?|minutes?|hours?|days?|weeks?|[smhdw])\b|\d*-\d{{2}}-\d{{2}}(?!\d)|\d*:\d{{2}}(?!\d)))"
 _BAR_CLAIMS = (
     ("net_change_pct", re.compile(r"net change[^.\n%\d-]{0,30}" + _NUM + r"\s*%", re.IGNORECASE), "pct"),
     ("window_high", re.compile(r"window high" + _GAP + _NUM + _NOT_A_COUNT, re.IGNORECASE),
@@ -634,11 +638,15 @@ def validate_turn(role: str, text: str, snap: dict[str, Any]) -> list[dict[str, 
         quote = snap["items"].get("quote") or {}
         if quote.get("status") == OK and isinstance(quote.get("value"), (int, float)):
             measured.append(float(quote["value"]))  # "Window Low:** The current price of 0.33725" is the quote
+        ts_spans = [ts.span() for ts in _TIMESTAMP_SPAN.finditer(text)]
         for key, pattern, kind in _BAR_CLAIMS:
             truth = summary.get(key)
             if truth is None:
                 continue
             for m in pattern.finditer(text):
+                n_start, n_end = m.span(1)
+                if any(n_start < ts_end and ts_start < n_end for ts_start, ts_end in ts_spans):
+                    continue
                 raw = m.group(1)
                 try:
                     x = float(raw.replace(",", ""))

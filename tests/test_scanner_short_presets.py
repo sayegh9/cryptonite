@@ -20,18 +20,17 @@ SHORT_SLUGS = {
     for slug in slugs
 }
 
-# SHA-256 snapshots of the eight pre-P1.1 long preset dictionaries. These lock
-# down names, descriptions, universes, rules, and risk settings without
-# duplicating the verbose serialized specs in the test body.
+# SHA-256 snapshots of the eight pre-P1.1 long preset dictionaries (updated for
+# RiskConfig.fallback_target_atr_mult 3.0 -> 3.3 headroom against debate tick drift).
 LONG_PRESET_SNAPSHOT_SHA256 = {
-    "rsi-oversold-reversal": "985279316e28302147581f1558551c2a39bdc3f6c970462759a95c978d5310f8",
-    "trend-pullback": "aab091495aff64cbb8a1c3e68d398208163b7290676fb5992372b16f8244d648",
-    "bollinger-breakout": "592247b3ca71a50bd035c230a8acb48c064de33c308d5c8fc301907db439a704",
-    "macd-momentum-shift": "e60ee5d29da71eb5bcc1757482031fa165fdb947669812197c3d78785f68ffd7",
-    "scalp-multi-tf": "c0c4cf5e48a27ebebfd580eb6ee19838ffa8a478d80d5b2fc4597a0211eae9a4",
-    "swing-trend-pullback-1h": "20009e67ef5d824c8d46901fca3e3106bcd5034c8621659b173c792008452d83",
-    "swing-sniper-pullback-15m": "747c4f50ed6127c38acc567e040baa851643433d061d0df850b7d9505e989733",
-    "swing-squeeze-breakout-1h": "730d9adaaf71034e6424bba5154f6379ddf5730b255dda970d49fcb0ea9c28e2",
+    "rsi-oversold-reversal": "816e10f7537cacd4be58ea456a0b4949913f239de19add3fc4b2c27309fcb10c",
+    "trend-pullback": "870f72d235ed3b6a88ef233bdf0e8b59a794de403f0ee0803638bbb5becf2662",
+    "bollinger-breakout": "4be751d47555debab28aa1a19afadd88b58d41f7288cf1cf3c0ea7e84eb87d72",
+    "macd-momentum-shift": "cc59b01a0ed929e24b3ad5e87efbe149724558d0bdd4ff61be325992c24846ca",
+    "scalp-multi-tf": "9c22e58470ee10f45d5dc676876044942866ceab66ba927d655d88b4bf49ef4b",
+    "swing-trend-pullback-1h": "dd28ce353b77b35abe6e8608d9e1c16266d76a12810abc170cb3032eb636aa85",
+    "swing-sniper-pullback-15m": "062e79b05d6032694ccd953946a4c63ea53356caa8aaf7dc5699cb5c0524f03e",
+    "swing-squeeze-breakout-1h": "c23a39879094f03336ac39048f1725c92ff68acf1ab35a7fe2f4f09fb6c3ae34",
 }
 
 

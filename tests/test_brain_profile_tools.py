@@ -185,3 +185,24 @@ def test_a_brain_call_renders_a_card_through_the_backends_result_conversion(monk
     assert widget is not None and widget["status"] == "PROPOSED", content
     assert widget["proposal"]["coins"] == ["BTCUSDT", "ETHUSDT"]
     assert (widget["proposal"]["mode"], widget["proposal"]["dry_run"], widget["proposal"]["max_leverage"]) == ("ASK", True, 3)
+
+
+def test_default_budget_passes_local_order_minimum_at_paper_equity(monkeypatch):
+    """Omitting budget leaves enough position capacity for the account's 1% minimum."""
+    monkeypatch.delenv("CRYPTONITE_AGENT_API_TOKEN", raising=False)
+    monkeypatch.setattr(tools, "_fed_symbols", lambda: frozenset({"BTCUSDT"}))
+
+    def rows(sql, params=None, **kwargs):
+        if "agent_safe_account_equity" in sql:
+            return [{"total_equity": Decimal("99500")}]
+        assert "agent_safe_mandate_health" in sql
+        return []
+
+    monkeypatch.setattr(tools, "_readonly_rows", rows)
+    spec = {"name": "BTC swing", "coins": ["BTC"], "markets": ["SPOT"], "direction": "LONG"}
+    for result in (json.loads(tools.propose_profile.func(**spec)), tools._propose(spec)):
+        assert result["proposal"]["capital_budget_usd"] == "25000"
+        assert result["status"] == "PROPOSED", result
+        assert not any("ORDER_MIN_UNREACHABLE" in e for e in result["errors"])
+        feasibility, error = tools._local_order_min_feasibility(result["proposal"])
+        assert error is None and feasibility is not None

@@ -7,7 +7,7 @@ export const EMPTY_DRAFT: ProfileDraft = {
   name: "",
   coins: [],
   markets: ["SPOT"],
-  capital_budget_usd: "1000",
+  capital_budget_usd: "25000",
   style: "SWING",
   direction: "LONG",
   max_risk_per_trade_pct: "1",

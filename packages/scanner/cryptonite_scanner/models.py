@@ -104,7 +104,7 @@ class RiskConfig(BaseModel):
     min_atr_mult: float = 0.5
     max_atr_mult: float = 4.0
     fallback_stop_atr_mult: float = 2.0
-    fallback_target_atr_mult: float = 3.0
+    fallback_target_atr_mult: float = 3.3
     min_risk_reward: float = 1.5
     stop_loss_atr_mult: float = 2.0  # legacy compatibility
     take_profit_atr_mult: float = 4.0  # legacy compatibility

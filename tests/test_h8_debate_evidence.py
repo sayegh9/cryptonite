@@ -175,6 +175,27 @@ def test_all_unavailable_is_fine_when_the_block_had_nothing(main):
     assert main.evidence_gate(COMPLETE, none, "Last close 95.0. Funding and open interest unavailable.") is None
 
 
+@pytest.mark.parametrize("text", [
+    "Measured: last close 95.0, funding 0.01%. Open interest and mark price are unavailable in the derivatives feed.",
+    "Measured: last close 95.0, funding 0.01%. Open interest and mark price are currently unavailable due to the derivatives feed not running.",
+    "Measured: last close 95.0, funding 0.01%. Perp mark price and open interest are unavailable.",
+])
+def test_partial_derivatives_unavailability_does_not_sweep_available_funding(main, text):
+    only_funding = {
+        "funding_rate": {"value": 0.0001},
+        "open_interest": {"unavailable": "feed down"},
+        "mark_price": {"unavailable": "feed down"},
+    }
+    assert not main.derivatives_reported_unavailable(text, only_funding)
+    assert main.evidence_gate(COMPLETE, only_funding, text) is None
+
+
+def test_mark_price_unavailable_in_derivatives_feed_does_not_sweep_funding_and_oi(main):
+    text = "Measured: last close 95.0, funding 0.01%, open interest 81,234.5. Mark price is unavailable in the derivatives feed."
+    assert not main.derivatives_reported_unavailable(text, DERIVS)
+    assert main.evidence_gate(COMPLETE, DERIVS, text) is None
+
+
 def test_incomplete_bars_stay_incomplete(main):
     bars = {"complete": False, "timeframe": "1h", "returned": 0, "expected": 48, "reason": "no bars", "bars": []}
     assert "bars incomplete (0/48, no bars)" in main.evidence_gate(bars, DERIVS, GOOD)
