@@ -120,7 +120,11 @@ Operating mode: read each profile's autonomy level and auto_trade_switch from ge
    the grade and its reasons; do not propose a perp on a NO_TRADE grade. allocation_pct on a perp is the margin, and
    leverage is optional: the system caps it at the lowest ceiling (risk at the stop, the liquidation buffer, the
    mandate's room and maximum, the setup grade, the exchange) and the card's dry run shows the leverage it allows and
-   which ceiling binds. Say that; never claim a leverage the dry run did not allow.
+   which ceiling binds. Say that; never claim a leverage the dry run did not allow. Before proposing a perp or margin
+   MARKET entry from an earlier idea or scan, check get_live_market_data and run grade_setup at that live price: if
+   favorable price drift cut MARKET reward to risk into NO_TRADE while the idea's entry still sits passively above
+   market for a SELL or below market for a BUY, propose a resting LIMIT order at that qualifying entry (or wait/use
+   spot) instead of a MARKET order.
    When propose_profile returns INVALID, list every error it gives (COIN_LOCKED, ORDER_MIN_UNREACHABLE and all others),
    never only the first, and never describe an INVALID proposal as ready. When the operator asks for a timeframe the
    scan does not support (it supports 15m, 1h and 4h), say so and name the nearest supported one the scan used. Claims
@@ -594,17 +598,16 @@ class Brain:
                                         # The reader alone sets the field: a value the model passed in its arguments
                                         # never survives
                                         instrument = str(widget.get("instrument_id", ""))
-                                        perp_entry = "-PERP." in instrument and not widget.get("reduce_pct")
-                                        entry = widget.get("side") == "BUY" or perp_entry
+                                        local_sym = instrument.upper().split(".")[0]
+                                        leveraged_entry = (
+                                            (local_sym.endswith("-PERP") or local_sym.endswith("-MARGIN"))
+                                            and not widget.get("reduce_pct")
+                                        )
+                                        entry = widget.get("side") == "BUY" or leveraged_entry
                                         widget["feed_refusal"] = await self._feed_refusal(instrument) if entry else None
-                                        if widget["feed_refusal"]:
-                                            symbol = instrument.split(".")[0]
-                                            notes.append(f"{symbol} is not in the live data feed, so this card "
-                                                         "cannot be approved yet: onboard it from the card "
-                                                         "or the Watchlist first.")
                                         # The past lessons come from the reader alone, for a BUY or a SELL card
                                         widget["lessons"] = await self._card_lessons(instrument)
-                                        # The setup grade comes from the grader alone, for an entry (a BUY, or a perp
+                                        # The setup grade comes from the grader alone, for an entry (a BUY, or a perp/margin
                                         # order that is not a reduction)
                                         if entry:
                                             if graded := await self._card_grade(widget):
@@ -612,12 +615,28 @@ class Brain:
                                                 widget["grade_reasons"] = list(graded.get("reasons") or [])[:12]
                                                 widget["grade_inputs"] = graded.get("inputs")
                                                 widget["grade_version"] = graded.get("version")
+                                            if leveraged_entry and widget.get("setup_grade") == "NO_TRADE":
+                                                reasons = "; ".join(widget.get("grade_reasons") or []) or "setup grade NO_TRADE"
+                                                eval_entry = (widget.get("grade_inputs") or {}).get("entry")
+                                                at_px = f" at {eval_entry}" if eval_entry is not None else ""
+                                                notes.append(
+                                                    f"Order card for {instrument} {widget.get('side')}{at_px} was not staged: "
+                                                    f"setup grade is NO_TRADE ({reasons}), so the 0x leverage ceiling "
+                                                    f"blocks leveraged approval. Propose a resting LIMIT order at a "
+                                                    f"qualifying entry or a spot entry if eligible."
+                                                )
+                                                continue
                                             # H10: the debate link comes from the verdict reader alone
                                             link, against = await self._card_debate(widget)
                                             widget["debate_link"], widget["against_debate_verdict"] = link, against
                                             if against:
                                                 notes.append(f"This card goes {against}. Approving it needs an "
                                                              "explicit acknowledgement on the card.")
+                                        if widget["feed_refusal"]:
+                                            symbol = instrument.split(".")[0]
+                                            notes.append(f"{symbol} is not in the live data feed, so this card "
+                                                         "cannot be approved yet: onboard it from the card "
+                                                         "or the Watchlist first.")
                                         if self._redis is not None and widget.get("id"):
                                             try:
                                                 await self._redis.set(f"brain:active_card:{widget['id']}", json.dumps(widget), ex=1800)

@@ -974,8 +974,10 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const pending = widget.status === "PENDING_APPROVAL";
   const buy = widget.side === "BUY";
   const perp = isPerpInstrument(widget.instrument_id);
-  // A perp card adds risk either way (a SELL opens or adds to a short) unless it reduces a held position
+  const leveraged = perp || widget.instrument_id.split(".")[0].toUpperCase().endsWith("-MARGIN");
+  // A perp/margin card adds risk either way (a SELL opens or adds to a short) unless it reduces a held position
   const perpEntry = perp && !widget.reduce_pct;
+  const leveragedEntry = leveraged && !widget.reduce_pct;
   const addsRisk = buy || perpEntry;
   // An instrument the live feed does not allow cannot be approved: no mandate form, no TOTP, Approve disabled until it streams
   const [fed, setFed] = useState(false);
@@ -1000,6 +1002,11 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
   const leveragePlan = perpEntry && preflight ? preflight.leverage_plan ?? null : null;
   const leverageRemedy = perpEntry && preflight?.ok ? preflight.leverage_remedy ?? null : null;
   const highLeverage = (leveragePlan?.leverage ?? 0) >= HIGH_LEVERAGE_CONFIRM;
+  const setupNoTradeBlocked =
+    leveragedEntry &&
+    (widget.setup_grade === "NO_TRADE" ||
+      (preflight !== null && !preflight.ok && preflight.code === "SETUP_NO_TRADE") ||
+      leveragePlan?.reject === "SETUP_NO_TRADE");
   // The first mandate that can take the whole order, else the first that can take any of it
   const firstChoice = chooseRemedy ? firstMandateChoice(chooseRemedy.candidates, widget.allocation_pct) : "";
   useEffect(() => setChosenId(firstChoice), [firstChoice]);
@@ -1291,24 +1298,38 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
         </p>
       )}
 
-      {pending && widget.setup_grade === "NO_TRADE" && (
+      {pending && (widget.setup_grade === "NO_TRADE" || setupNoTradeBlocked) && (
         <p role="alert" className="mt-3 text-2xs text-rose-400" data-testid="order-card-no-trade-warning">
-          Setup grade NO_TRADE: the system would not take this trade. Sized at half the cap; approve only if you mean it.
+          {leveragedEntry
+            ? "Setup grade NO_TRADE: leveraged and margin orders are blocked by the 0x grade ceiling and cannot be approved. Reject this card and ask Brain for a qualifying LIMIT or spot entry."
+            : "Setup grade NO_TRADE: the system would not take this trade. Sized at half the cap; approve only if you mean it."}
         </p>
       )}
       {pending && !confirming && (
         <div className="mt-3 flex gap-2">
           <button
             type="button"
-            disabled={feedLocked || staleBuild}
-            title={staleBuild ? STALE_BUILD_TITLE : undefined}
+            disabled={feedLocked || staleBuild || setupNoTradeBlocked}
+            title={
+              staleBuild
+                ? STALE_BUILD_TITLE
+                : setupNoTradeBlocked
+                  ? "Blocked by 0x NO_TRADE setup-grade ceiling"
+                  : undefined
+            }
             onClick={() => {
               setConfirming(true);
               checkPreflight();
             }}
             className="flex-1 rounded border border-amber-600 bg-amber-600/20 px-2 py-1.5 text-2xs font-bold text-amber-200 hover:bg-amber-600/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {refused ? "Approve anyway…" : remedy && !needsMandate ? "Fix and approve…" : "Approve…"}
+            {setupNoTradeBlocked
+              ? "Blocked (NO_TRADE)"
+              : refused
+                ? "Approve anyway…"
+                : remedy && !needsMandate
+                  ? "Fix and approve…"
+                  : "Approve…"}
           </button>
           <button
             type="button"
@@ -1319,7 +1340,7 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
           </button>
         </div>
       )}
-      {pending && confirming && !feedLocked && (
+      {pending && confirming && !feedLocked && !setupNoTradeBlocked && (
         <div className="mt-3 rounded border border-amber-700 bg-zinc-950 p-2" role="group" aria-label="Confirm paper order">
           {needsMandate ? (
             <div data-testid="card-fix-create">

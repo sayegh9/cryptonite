@@ -73,3 +73,55 @@ def test_a_model_supplied_grade_never_survives():
     card = widget_for_tool("propose_order", {**ORDER, "setup_grade": "A", "grade_reasons": ["trust me"],
                                              "grade_inputs": {"x": 1}}, call_id="c1")
     assert card["setup_grade"] is None and card["grade_reasons"] == [] and card["grade_inputs"] is None
+
+
+async def test_no_trade_leveraged_entry_is_not_staged_while_spot_and_grade_c_perp_are():
+    perp_short = {**ORDER, "instrument_id": "XRPUSDT-PERP.BINANCE", "side": "SELL",
+                  "stop_loss": 0.45, "take_profit": 0.40}
+    margin_long = {**ORDER, "instrument_id": "XRPUSDT-MARGIN.BINANCE", "side": "BUY",
+                   "stop_loss": 0.40, "take_profit": 0.45}
+    no_trade = {"grade": "NO_TRADE", "reasons": ["reward 1.07x the risk, below 1.25x"],
+                "inputs": {"side": "SHORT", "entry": 0.4241}, "version": "setup-grade-v2"}
+    grade_c = {"grade": "C", "reasons": ["reward 2.00x the risk"],
+               "inputs": {"side": "SHORT", "entry": 0.4335}, "version": "setup-grade-v2"}
+
+    async def grade_no_trade(card):
+        return no_trade
+
+    async def grade_c_fn(card):
+        return grade_c
+
+    async def no_debate(card):
+        return {"against": True, "run_id": "12345678", "created_at": "2026-11-15T18:00Z", "recommendation": "HOLD"}
+
+    async def bad_feed(inst):
+        return "SYMBOL_NOT_INGESTED"
+
+    # 1. Perp NO_TRADE is suppressed (no card emitted, no orphan debate/feed notes), reply states NO_TRADE and entry
+    b_no_trade = Brain(gw(), MemorySessionStore(), replace(BRAIN, tools=(show_price_chart, propose_order)),
+                       grader=grade_no_trade, debates=no_debate, feed=bad_feed)
+    with override_model(PLANNER, Script([("propose_order", perp_short)], ["Staging short."]).model()):
+        evs = await collect(b_no_trade.turn("op-1", "Short XRP perp"))
+    assert _cards(evs) == []
+    done = [e.data for e in evs if e.type == "done"][-1]
+    assert "was not staged: setup grade is NO_TRADE" in done["content"]
+    assert "at 0.4241" in done["content"]
+    assert "0x leverage ceiling" in done["content"]
+    assert "against the debate verdict" not in done["content"]
+    assert "not in the live data feed" not in done["content"]
+
+    # 2. Margin NO_TRADE is also suppressed
+    with override_model(PLANNER, Script([("propose_order", margin_long)], ["Staging margin."]).model()):
+        evs_margin = await collect(b_no_trade.turn("op-2", "Long XRP margin"))
+    assert _cards(evs_margin) == []
+
+    # 3. Perp Grade C IS still staged
+    b_grade_c = Brain(gw(), MemorySessionStore(), replace(BRAIN, tools=(show_price_chart, propose_order)),
+                      grader=grade_c_fn)
+    with override_model(PLANNER, Script([("propose_order", perp_short)], ["Staging short."]).model()):
+        assert len(_cards(await collect(b_grade_c.turn("op-3", "Short XRP perp")))) == 1
+
+    # 4. Spot NO_TRADE remains staged (half cap contract)
+    with override_model(PLANNER, Script([("propose_order", ORDER)], ["Staging spot."]).model()):
+        [spot_card] = _cards(await collect(b_no_trade.turn("op-4", "Buy BTC spot")))
+    assert spot_card["setup_grade"] == "NO_TRADE"

@@ -292,4 +292,19 @@ test.describe("Brain perp order card", () => {
     await expect(card.getByText("ADDS RISK · PAPER")).toBeVisible();
     expect(reactErrors).toEqual([]);
   });
+
+  test("a NO_TRADE perp card is blocked by the 0x ceiling and cannot be approved", async ({ page }) => {
+    const reactErrors = collectReactErrors(page);
+    const { card } = await openPerpCard(page, { ...PERP_CARD, setup_grade: "NO_TRADE" }, () => ({
+      ok: false, code: "SETUP_NO_TRADE", detail: "SETUP_NO_TRADE: perp sizing (setup grade)",
+      needs_mandate: false, needs_totp: true, remedy: null,
+      leverage_plan: plan(0, { ok: false, reject: "SETUP_NO_TRADE", allowed_max_leverage: 0, binding_ceiling: "setup grade" }),
+    }));
+    await expect(card.getByTestId("order-card-no-trade-warning")).toContainText("blocked by the 0x grade ceiling");
+    await expect(card.getByTestId("order-card-no-trade-warning")).not.toContainText("half the cap");
+    const blocked = card.getByRole("button", { name: "Blocked (NO_TRADE)" });
+    await expect(blocked).toBeDisabled();
+    await expect(card.getByRole("button", { name: "Reject" })).toBeEnabled();
+    expect(reactErrors).toEqual([]);
+  });
 });

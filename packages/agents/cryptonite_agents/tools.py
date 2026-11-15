@@ -1978,18 +1978,36 @@ def grade_setup(symbol: str, side: Literal["BUY", "SELL", "LONG", "SHORT"], entr
 
 def card_setup_grade(card: dict[str, Any]) -> dict[str, Any] | None:
     """The setup grade of an order card (leverage plan 3.3): its stop and take-profit around its limit price, else
-    the latest 15m close. None when the card has no stop or target or the symbol is not valid."""
+    the live perp mark / recent reference price (falling back to the latest 15m close). None when the card has no
+    stop or target or the symbol is not valid."""
     if not card.get("stop_loss") or not card.get("take_profit"):
         return None
-    sym = str(card.get("instrument_id", "")).upper().split(".")[0].removesuffix("-PERP")
+    inst = str(card.get("instrument_id", "")).upper()
+    local = inst.split(".")[0]
+    sym = local.removesuffix("-PERP").removesuffix("-MARGIN")
     if not _SYMBOL_REGEX.fullmatch(sym):
         return None
-    entry = card.get("limit_price")
+    order_type = str(card.get("order_type") or "").upper()
+    entry = card.get("limit_price") if order_type != "MARKET" else None
     if not entry:
-        out, _err = _spot_klines(sym, "15m", 2, max_fetch=500)
-        if not out or not out.get("candles"):
-            return None
-        entry = out["candles"][-1]["close"]
+        if local.endswith("-PERP"):
+            try:
+                raw = _redis_get(PERP_MARK_KEY.format(symbol=sym))
+                if raw:
+                    mark = json.loads(raw).get("mark_price")
+                    if mark and float(mark) > 0:
+                        entry = float(mark)
+            except Exception:
+                pass
+        if not entry:
+            from cryptonite_agents.trade_ideas import reference_price  # noqa: PLC0415
+
+            entry = reference_price(inst or sym)
+        if not entry:
+            out, _err = _spot_klines(sym, "15m", 2, max_fetch=500)
+            if not out or not out.get("candles"):
+                return None
+            entry = out["candles"][-1]["close"]
     from cryptonite_scanner.setup_grade import grade_setup as _grade
 
     return _grade(_grade_inputs(sym, str(card.get("side", "BUY")), float(entry), float(card["stop_loss"]),

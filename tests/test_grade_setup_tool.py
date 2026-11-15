@@ -109,3 +109,39 @@ def test_scan_grade_is_computed_from_the_scan_frames_and_never_above_b():
     item = SwingCandidateItem(instrument_id="SOLUSDT.BINANCE", preset_slug="p", timeframe="1h", score=80, entry=220,
                               stop=214, target=235, rr_ratio=2.5, **out)
     assert item.setup_grade == out["setup_grade"]
+
+
+def test_card_setup_grade_prefers_perp_mark_then_reference_price_then_15m_close(monkeypatch, binance):
+    import cryptonite_agents.trade_ideas as trade_ideas
+
+    # 1. Perp MARKET prefers perp:mark:* over 1m reference_price and 15m close (15m close in fixture is > 100)
+    monkeypatch.setattr(tools, "_redis_get", lambda k: json.dumps({"mark_price": "220.0"}) if k == "perp:mark:SOLUSDT" else None)
+    monkeypatch.setattr(trade_ideas, "reference_price", lambda inst: 190.0)
+    perp_market = {"instrument_id": "SOLUSDT-PERP.BINANCE", "side": "BUY", "order_type": "MARKET",
+                   "stop_loss": 214.0, "take_profit": 235.0}
+    out = tools.card_setup_grade(perp_market)
+    assert out is not None and out["inputs"]["entry"] == pytest.approx(220.0)
+    assert out["rr_ratio"] == pytest.approx(2.5)
+
+    # 2. When perp:mark is absent (or for -MARGIN / spot), falls back to 1m reference_price before 15m close
+    monkeypatch.setattr(tools, "_redis_get", lambda k: None)
+    margin_market = {"instrument_id": "SOLUSDT-MARGIN.BINANCE", "side": "BUY", "order_type": "MARKET",
+                     "stop_loss": 185.0, "take_profit": 205.0}
+    out = tools.card_setup_grade(margin_market)
+    assert out is not None and out["inputs"]["entry"] == pytest.approx(190.0)
+    assert out["rr_ratio"] == pytest.approx(3.0)
+
+    # 3. When neither perp:mark nor reference_price is available, falls back to the latest 15m close
+    monkeypatch.setattr(trade_ideas, "reference_price", lambda inst: None)
+    fallback_close = candles(2)[-1]["close"]
+    out = tools.card_setup_grade({"instrument_id": "SOLUSDT-PERP.BINANCE", "side": "BUY", "order_type": "MARKET",
+                                  "stop_loss": 90.0, "take_profit": 120.0})
+    assert out is not None and out["inputs"]["entry"] == pytest.approx(fallback_close)
+
+    # 4. A LIMIT order always uses its limit_price regardless of live perp mark
+    monkeypatch.setattr(tools, "_redis_get", lambda k: json.dumps({"mark_price": "220.0"}))
+    perp_limit = {"instrument_id": "SOLUSDT-PERP.BINANCE", "side": "SELL", "order_type": "LIMIT",
+                  "limit_price": 222.0, "stop_loss": 226.0, "take_profit": 210.0}
+    out = tools.card_setup_grade(perp_limit)
+    assert out is not None and out["inputs"]["entry"] == pytest.approx(222.0)
+    assert out["rr_ratio"] == pytest.approx(3.0)
