@@ -539,8 +539,31 @@ XRP_SUMMARY = {"bars": 48, "last_close": 1.0842, "window_low": 1.0817, "window_h
     ("The window low at 2026-11-13T14:00:00+00:00 was 1.0817.", False),
     ("Window low at 2026-11-13T14:00:00+00:00 (1.0817).", False),
     ("Window low at 2026-11-13T14:00:00+00:00 (1.20).", True),
+    # percentages, negative changes, and other bar attributes (low/high/open/volume) are not close/window prices
+    ("Reaching Window Low:** While the -7.837% net change over 48 1h bars shows a drop, low was 1.0817.", False),
+    ("The last close is within 2.5% of the window low (1.0817).", False),
+    ("The last close was 2.5% above the low.", False),
+    ("Furthermore, the last closed bar's low was 1.0810, near support.", False),
+    ("Furthermore, the last closed 1h bar's high was 1.1200.", False),
+    ("Furthermore, the last closed bar's low was 1.0810 and the last close was 1.25.", True),
 ])
 def test_figures_are_read_after_their_label_in_the_measured_window(claim, blocks):
     flags = evidence.validate_turn("Bear Researcher", claim, bars_snap(XRP_SUMMARY, quote=1.08425))
     assert bool(flags) is blocks, flags
     assert all((f["code"], f["severity"]) == ("BAR_FIGURE_CONTRADICTION", "BLOCK") for f in flags)
+
+
+def test_2026_11_15_production_false_alarms_no_longer_block():
+    btc_summary = {"bars": 48, "last_close": 63425.31, "window_low": 63320.0, "window_high": 71234.01,
+                   "first_close": 70947.40, "net_change_pct": -10.602, "lower_lows": 26, "higher_highs": 16}
+    btc_text = ("1. **Imminent Bounce Potential After Reaching Window Low:** While the -10.602% net change over "
+                "48 1h bars and the 26 lower lows clearly indicate a downtrend, the price has **already approached its "
+                "63320.0 window low**, with the last closed bar at 63425.31.")
+    assert evidence.validate_turn("Bear Researcher", btc_text, bars_snap(btc_summary, quote=63425.0)) == []
+
+    wld_summary = {"bars": 48, "last_close": 0.2593, "window_low": 0.243, "window_high": 0.3075,
+                   "first_close": 0.2981, "net_change_pct": -13.016, "lower_lows": 26, "higher_highs": 16}
+    wld_text = ("The window low was 0.243 (2026-11-14T22:00:00+00:00). The current quote of 0.25695 USD is notably "
+                "higher than this window low. Furthermore, the last closed bar's low was 0.2579, and the current quote "
+                "of 0.25695 USD is testing or just below that.")
+    assert evidence.validate_turn("Bear Researcher", wld_text, bars_snap(wld_summary, quote=0.25695)) == []
