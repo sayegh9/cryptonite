@@ -1449,13 +1449,16 @@ function OrderCard({ widget }: { widget: OrderCardWidget }) {
             <div data-testid="card-confirm-perp">
               {leveragePlan && leveragePlan.ok ? (
                 <p className="mb-2 text-zinc-300">
-                  Send a PAPER {buy ? "LONG" : "SHORT"} {widget.instrument_id} {widget.order_type} at {leveragePlan.leverage}x ISOLATED:{" "}
+                  Send a PAPER {buy ? "LONG" : "SHORT"} {leveragePlan.instrument_id || widget.instrument_id} {widget.order_type} at {leveragePlan.leverage}x ISOLATED:{" "}
                   {usd(leveragePlan.margin_usd)} margin, {usd(leveragePlan.notional_usd)} notional. If the stop at{" "}
                   {widget.stop_loss != null ? fmtPrice(widget.stop_loss) : "—"} fills you lose about{" "}
                   <strong className="text-rose-300" data-testid="card-confirm-loss-stop">{usd(leveragePlan.loss_at_stop_usd)}</strong>; if the
                   position is liquidated at {leveragePlan.liquidation_price ? fmtPrice(Number(leveragePlan.liquidation_price)) : "—"} you lose{" "}
                   <strong className="text-leverage-liquidation" data-testid="card-confirm-loss-liq">{usd(leveragePlan.loss_if_liquidated_usd)}</strong>, the
-                  whole margin. The stop rests on the mark price; the dispatcher sizes the order again and may lower the leverage, never raise it.
+                  whole margin.{" "}
+                  {leveragePlan.instrument_id?.includes("-MARGIN.")
+                    ? "Routed via isolated spot margin (no perp brackets): the exit monitor closes the position at the structural stop; the dispatcher sizes the order again and may lower the leverage, never raise it."
+                    : "The stop rests on the mark price; the dispatcher sizes the order again and may lower the leverage, never raise it."}
                 </p>
               ) : (
                 <p className="mb-2 text-amber-300">The dry run has no plan for this order yet: approve asks the server, which may refuse it.</p>
@@ -1632,6 +1635,9 @@ function UntradeableSetups({ setups }: { setups: UntradeableSetupItem[] }) {
                   </button>
                 )}
               </div>
+              <p className="mt-1 font-mono text-zinc-400">
+                Entry {fmtPrice(s.entry)} · Stop {fmtPrice(s.stop)} · Target {fmtPrice(s.target)}
+              </p>
               <p className="mt-1 text-zinc-500">{s.reason}</p>
             </li>
           );

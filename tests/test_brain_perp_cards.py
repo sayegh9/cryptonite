@@ -165,3 +165,126 @@ async def test_a_stop_too_close_to_liquidation_is_refused(h, worker):  # noqa: F
     body = await ask(h, uuid.uuid4())
     assert body["ok"] is False and body["code"] in ("RISK_AT_STOP_EXCEEDED", "LIQUIDATION_BUFFER_TOO_THIN")
     assert body["leverage_plan"]["ceilings"]
+
+
+async def _sol_mandate(h, *, markets=("PERP", "SPOT", "SPOT_MARGIN"), instruments=None, max_leverage=3):
+    insts = list(instruments or ("SOLUSDT.BINANCE", "SOLUSDT-MARGIN.BINANCE", "SOLUSDT-PERP.BINANCE"))
+    mid = await h.pool.fetchval(
+        """INSERT INTO ai_mandates (name, capital_budget_usd, instruments, markets, max_position_pct, autonomy_level,
+               status, allow_perps, max_leverage, direction)
+           VALUES ($1, 10000, $2, $3, 25, 1, 'ACTIVE', true, $4, 'BOTH') RETURNING id""",
+        f"sol-{uuid.uuid4().hex[:6]}", insts, list(markets), max_leverage)
+    from cryptonite_execution.mandate_store import load_mandate
+    from cryptonite_orchestrator.mandate_gate import ensure_mandate_instance
+
+    async with h.pool.acquire() as conn:
+        m = await load_mandate(conn, mid)
+        await ensure_mandate_instance(conn, m, "PAPER-ACCOUNT-001")
+    return m
+
+
+async def test_missing_perp_brackets_routes_to_spot_margin_for_preflight_and_approve(h, worker):  # noqa: F811
+    import time
+
+    from ai_api_harness import publish_test_universe
+    from cryptonite_schemas.marks import quote_tick_key
+
+    sol_perp = "SOLUSDT-PERP.BINANCE"
+    sol_spot = "SOLUSDT.BINANCE"
+    sol_margin = "SOLUSDT-MARGIN.BINANCE"
+    await publish_test_universe(h.redis, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+                                timeframes=("1m", "1h"), perps=("BTCUSDT", "ETHUSDT", "SOLUSDT"))
+    await h.redis.set(quote_tick_key(sol_spot), json.dumps({
+        "instrument_id": sol_spot, "bid_price": "71.32", "ask_price": "71.33", "arrival_ns": time.time_ns()}), ex=300)
+    await h.redis.set("perp:mark:SOLUSDT", json.dumps({
+        "type": "perp.mark", "mark_price": "71.38", "funding_rate": "0.0001", "ts_event_ns": 1}), ex=300)
+    try:
+        await _sol_mandate(h)
+        perp_card(worker, instrument_id=sol_perp, side="SELL", allocation_pct=15, stop_loss=73.57,
+                  take_profit=66.57, setup_grade="B", trace_id=str(uuid.uuid4()))
+        sid = uuid.uuid4()
+        body = await ask(h, sid)
+        assert body["ok"] is True and body["needs_totp"] is True, body
+        lp = body["leverage_plan"]
+        assert lp["instrument_id"] == sol_margin
+        assert lp["side"] == "SELL"
+        assert lp["leverage"] == 2 and lp["margin_mode"] == "ISOLATED"
+        assert lp["binding_ceiling"] == "risk at stop"
+        assert lp["funding_8h_usd"] is None
+        assert "SHORT SOLUSDT-MARGIN.BINANCE MARKET 2x ISOLATED" in body["summary"]
+        assert body["tp1"] is not None
+
+        res = await approve(h, sid, totp_code=h.totp.now())
+        assert res.status_code == 200, res.text
+        payload = await h.pool.fetchval("SELECT payload FROM execution_commands WHERE command_id = $1::uuid",
+                                        res.json()["command_id"])
+        payload = json.loads(payload) if isinstance(payload, str) else payload
+        assert payload["instrument_id"] == sol_margin
+        assert payload["leverage"] == 2 and payload["margin_mode"] == "ISOLATED"
+        assert payload["margin_plan"] == payload["leverage_plan"]
+        assert "exit monitor closes the position there" in worker.notes[-1]["content"]
+
+        # Same trace_id and side with a new card id must still be detected as a duplicate across -PERP / -MARGIN
+        worker.card["id"] = "card-2"
+        worker.card["status"] = "PENDING_APPROVAL"
+        async with h.client() as c:
+            dup = (await c.get(PREFLIGHT.format(sid=sid, wid="card-2"))).json()
+        assert dup["ok"] is False and dup["code"] == "DUPLICATE_DECISION"
+
+        # BUY -PERP card with missing brackets also routes via spot margin
+        worker.card["id"] = "card-1"
+        worker.card["status"] = "PENDING_APPROVAL"
+        perp_card(worker, instrument_id=sol_perp, side="BUY", allocation_pct=15, stop_loss=69.0,
+                  take_profit=76.0, setup_grade="B", trace_id=str(uuid.uuid4()))
+        buy_body = await ask(h, uuid.uuid4())
+        assert buy_body["ok"] is True, buy_body
+        assert buy_body["leverage_plan"]["instrument_id"] == sol_margin
+        assert buy_body["leverage_plan"]["side"] == "BUY"
+        assert buy_body["leverage_plan"]["leverage"] == 1
+        assert "LONG SOLUSDT-MARGIN.BINANCE MARKET 1x ISOLATED" in buy_body["summary"]
+    finally:
+        await h.redis.delete(quote_tick_key(sol_spot), "perp:mark:SOLUSDT")
+
+
+async def test_missing_perp_brackets_without_spot_margin_keeps_no_leverage_brackets(h, worker):  # noqa: F811
+    import time
+
+    from ai_api_harness import publish_test_universe
+    from cryptonite_schemas.marks import quote_tick_key
+
+    sol_perp = "SOLUSDT-PERP.BINANCE"
+    sol_spot = "SOLUSDT.BINANCE"
+    await publish_test_universe(h.redis, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+                                timeframes=("1m", "1h"), perps=("BTCUSDT", "ETHUSDT", "SOLUSDT"))
+    await h.redis.set(quote_tick_key(sol_spot), json.dumps({
+        "instrument_id": sol_spot, "bid_price": "71.32", "ask_price": "71.33", "arrival_ns": time.time_ns()}), ex=300)
+    await h.redis.set("perp:mark:SOLUSDT", json.dumps({
+        "type": "perp.mark", "mark_price": "71.38", "funding_rate": "0.0001", "ts_event_ns": 1}), ex=300)
+    try:
+        await _sol_mandate(h, markets=("PERP",), instruments=(sol_perp,))
+        perp_card(worker, instrument_id=sol_perp, side="SELL", allocation_pct=15, stop_loss=73.57,
+                  take_profit=66.57, setup_grade="B")
+        body = await ask(h, uuid.uuid4())
+        assert body["ok"] is False and body["code"] == "NO_LEVERAGE_BRACKETS"
+    finally:
+        await h.redis.delete(quote_tick_key(sol_spot), "perp:mark:SOLUSDT")
+
+
+async def test_missing_spot_quote_on_margin_fallback_reports_no_mark_price(h, worker):  # noqa: F811
+    from ai_api_harness import publish_test_universe
+
+    sol_perp = "SOLUSDT-PERP.BINANCE"
+    await publish_test_universe(h.redis, symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+                                timeframes=("1m", "1h"), perps=("BTCUSDT", "ETHUSDT", "SOLUSDT"))
+    await h.redis.set("perp:mark:SOLUSDT", json.dumps({
+        "type": "perp.mark", "mark_price": "71.38", "funding_rate": "0.0001", "ts_event_ns": 1}), ex=300)
+    try:
+        await _sol_mandate(h)
+        perp_card(worker, instrument_id=sol_perp, side="SELL", allocation_pct=15, stop_loss=73.57,
+                  take_profit=66.57, setup_grade="B")
+        body = await ask(h, uuid.uuid4())
+        assert body["ok"] is False and body["code"] == "NO_MARK_PRICE"
+        assert body["leverage_plan"]["instrument_id"] == "SOLUSDT-MARGIN.BINANCE"
+    finally:
+        await h.redis.delete("perp:mark:SOLUSDT")
+

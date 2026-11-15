@@ -77,3 +77,13 @@ def test_unlisted_pair_is_refused_without_a_breach_code():
     result = plan_spot_margin_order("DOGEUSDT-MARGIN", "BUY", D("0.1"), D("0.09"), D("10"), limits(),
                                     base_asset="DOGE", requested_leverage=2)
     assert result.reject == LeverageReject.MARGIN_PAIR_NOT_SUPPORTED
+
+
+def test_one_x_long_has_no_liquidation_price_and_succeeds():
+    result = plan_spot_margin_order("BTCUSDT-MARGIN.BINANCE", "BUY", D("100"), D("95"), D("10"), limits(),
+                                    base_asset="BTC", requested_leverage=1)
+    assert result.ok
+    assert result.leverage == 1
+    assert result.liquidation_price is None
+    assert result.liquidation_distance_pct is None
+    assert result.buffer_used_pct is None

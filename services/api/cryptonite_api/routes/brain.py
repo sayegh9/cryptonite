@@ -28,7 +28,6 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
-from cryptonite_agents.brain.widgets import INSTRUMENT_ID
 from cryptonite_api.brain_outcomes import (
     card_patch,
     command_outcome,
@@ -43,7 +42,10 @@ from cryptonite_api.leverage_card import (
     HIGH_LEVERAGE_CONFIRM,
     card_entry_price,
     card_leverage_plan,
+    is_leveraged_entry,
+    is_margin_entry,
     is_perp_entry,
+    margin_entry_price,
     perp_mark,
 )
 from cryptonite_api.mandate_choice import (
@@ -56,6 +58,7 @@ from cryptonite_api.routes.ai import _stopped_mandate_on, require_totp
 from cryptonite_api.routes.auth import OPERATOR_WRITE, require_human_operator, require_operator
 from cryptonite_api.universe import require_fed
 from cryptonite_execution.approvals import ApprovalConflict, record_operator_approval
+from cryptonite_execution.brackets import open_entry_market
 from cryptonite_execution.mandate_store import (
     MANDATE_COLUMNS,
     entry_room_pct,
@@ -80,6 +83,7 @@ from cryptonite_schemas.mandate import (
     room_remedy,
 )
 from cryptonite_schemas.marks import read_marks
+from cryptonite_schemas.profile import Market, instrument_for, market_of
 from cryptonite_schemas.reward_risk import MIN_REWARD_TO_RISK, meets_min_rr, reward_to_risk
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -347,11 +351,15 @@ def _js_number(value: Any) -> str:
     return str(int(number)) if number.is_integer() else repr(number)
 
 
+_SHOWN_INSTRUMENT = re.compile(r"^[A-Z0-9]{2,20}(?:-(?:PERP|MARGIN))?\.[A-Z0-9]{2,16}$")
+
+
 def _shown_instrument(card: dict[str, Any]) -> str:
-    """The instrument a server line may echo from a stored card: the card's own when it matches INSTRUMENT_ID, else
-    "an order card" (a card stored before the instrument pattern existed is not echoed as it was stored)."""
+    """The instrument a server line may echo from a stored card: the card's own when it matches INSTRUMENT_ID
+    (including routed -MARGIN instruments), else "an order card" (a card stored before the pattern existed is not
+    echoed as it was stored)."""
     raw = card.get("instrument_id")
-    return raw if isinstance(raw, str) and re.fullmatch(INSTRUMENT_ID, raw) else "an order card"
+    return raw if isinstance(raw, str) and _SHOWN_INSTRUMENT.fullmatch(raw) else "an order card"
 
 
 def _find_card(session: dict[str, Any], widget_id: str) -> dict[str, Any] | None:
@@ -453,8 +461,9 @@ class CardPlan:
     trace_id: uuid.UUID | None
     source_ref: str  # the approval is recorded under this: "<session>:<card>"
     structural_stop: Decimal | None = None  # the entry protection written to the command payload
-    leverage_plan: dict[str, Any] | None = None  # a perp entry's plan (leverage.py), as the dry run shows it
+    leverage_plan: dict[str, Any] | None = None  # a perp or margin entry's plan (leverage.py), as the dry run shows it
     perp_reduce: bool = False  # a perp card with reduce_pct: a reduce-only close of the mandate's position
+    instrument_id: str = ""  # routed instrument id (may fall back from -PERP to -MARGIN when brackets are unavailable)
 
 
 async def slipped_below_rr_floor(redis, card: dict[str, Any], live_entry: Decimal | None = None) -> str | None:
@@ -494,11 +503,13 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
                             "(docker compose --profile monitoring up -d exit_monitor); without it the position has no stop")
     protection = json.loads(raw)
 
-    # An entry needs a live feed; a SELL closes a holding and is never blocked by the feed (a perp SELL is a short:
+    # An entry needs a live feed; a SELL closes a holding and is never blocked by the feed (a perp or margin SELL is a short:
     # an entry)
     perp_entry = is_perp_entry(card)
+    margin_entry = is_margin_entry(card)
+    leveraged_entry = perp_entry or margin_entry
     perp_reduce = is_perp_instrument(card["instrument_id"]) and not perp_entry
-    if card["side"] != "SELL" or perp_entry:
+    if card["side"] != "SELL" or leveraged_entry:
         await require_fed(request, [card["instrument_id"]])
 
     structural_stop = None
@@ -507,7 +518,7 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
     pool = request.app.state.pool
     async with pool.acquire() as conn:
         mandate, why = await resolve_mandate_for(conn, card["instrument_id"], mandate_id)
-    if card["side"] == "SELL" and not perp_entry and not perp_reduce and not mandate_id and (mandate is not None or why == "NO_MANDATE"):
+    if card["side"] == "SELL" and not leveraged_entry and not perp_reduce and not mandate_id and (mandate is not None or why == "NO_MANDATE"):
         # A SELL closes a holding, and REDUCE_RISK is allowed on a PAUSED or HALTED mandate (check_mandate and the
         # orchestrator gate). When the mandate that would be used holds none of the instrument, the stopped mandate
         # that holds it is the one the SELL closes in. An ACTIVE mandate that holds it is used as before
@@ -522,7 +533,7 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
                 if holder is not None:
                     mandate, why = holder, ""
         # Otherwise: no mandate holds it, so NO_MANDATE below, or the ACTIVE mandate's SPOT_SELL_NOT_HELD further down
-    if mandate is None and why == "NO_MANDATE" and (card["side"] == "BUY" or perp_entry):
+    if mandate is None and why == "NO_MANDATE" and (card["side"] == "BUY" or leveraged_entry):
         # A PAUSED or HALTED mandate on the instrument is the real reason: the operator stopped it. Say so, not "no
         # mandate", which would send the operator to create one inline, where the same stop refuses it
         async with pool.acquire() as conn:
@@ -532,7 +543,7 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
             # free text and may hold a ";", so cut at the last one: the tail is the helper's own and is never repeated
             reason = stopped.rsplit(";", 1)[0]
             raise HTTPException(status_code=409, detail=f"{reason}; resume it in Mission Control, then approve this card")
-    if mandate is None and why == "AMBIGUOUS_MANDATE" and (card["side"] == "BUY" or perp_entry) and not mandate_id:
+    if mandate is None and why == "AMBIGUOUS_MANDATE" and (card["side"] == "BUY" or leveraged_entry) and not mandate_id:
         # The card offers the choice (and stopping the overlap) itself: the detail says so, not "go to Mission Control"
         raise HTTPException(status_code=409, detail=f"AMBIGUOUS_MANDATE: more than one ACTIVE mandate allows "
                             f"{card['instrument_id']}; nothing was queued; choose the mandate on this card")
@@ -554,7 +565,7 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
             raise HTTPException(status_code=409, detail=f"PERP_REDUCE_NOT_HELD: mandate {mandate.name} holds no "
                                 f"{card['instrument_id']} position this {card['side']} closes; reject this card")
         held = (Decimal(str(row["quantity"])) * Decimal(int(card.get("reduce_pct") or 100)) / Decimal(100)).normalize()
-    elif card["side"] == "SELL" and not perp_entry:
+    elif card["side"] == "SELL" and not leveraged_entry:
         async with pool.acquire() as conn:
             held = (await instance_spot_holdings(conn, mandate.instance_id)).get(
                 canonical_instrument(card["instrument_id"]), (Decimal("0"), Decimal("0")))[0]
@@ -581,46 +592,54 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
 
     allocation = Decimal(str(card["allocation_pct"]))
     leverage_plan = None
+    routed_card = card
+    redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
     if perp_entry:
         # ADR 0011 D4: perps in a mandate whose markets include PERP, at any execution mode
         if not mandate.allow_perps:
             raise HTTPException(status_code=409, detail=(
                 f"{MandateReject.PERPS_NOT_ALLOWED.value}: mandate {mandate.name} does not trade perps "
                 f"(PERP is not in its markets); nothing was queued"))
+        if await open_entry_market(redis, Market.PERP, card["instrument_id"], mandate.markets) is Market.SPOT_MARGIN:
+            candidate_inst = instrument_for(card["instrument_id"], Market.SPOT_MARGIN)
+            if mandate.allows_instrument(candidate_inst):
+                routed_card = {**card, "instrument_id": candidate_inst}
+                margin_entry = True
+                leveraged_entry = True
     # An entry only gets the room the mandate has left under its position limit. An exit never does: a perp reduce
     # card closing a short is a BUY, but it is not an entry
-    if (card["side"] == "BUY" and not perp_reduce) or perp_entry:
+    if (card["side"] == "BUY" and not perp_reduce) or leveraged_entry:
         # The orchestrator's check_mandate refuses an entry outside the mandate's markets or direction (a short in a
         # LONG-only mandate): the same rule, here, before the card is claimed
-        if (scope := entry_scope_reject(mandate, card["instrument_id"], card["side"])) is not None:
-            side = "long" if card["side"] == "BUY" else "short"
+        if (scope := entry_scope_reject(mandate, routed_card["instrument_id"], routed_card["side"])) is not None:
+            side = "long" if routed_card["side"] == "BUY" else "short"
             raise HTTPException(status_code=409, detail=(
                 f"{scope.value}: mandate {mandate.name} ({mandate.direction}, markets "
                 f"{', '.join(sorted(getattr(m, "value", m) for m in mandate.markets))}) does not allow a {side} on "
-                f"{card['instrument_id']}; nothing was queued"))
+                f"{routed_card['instrument_id']}; nothing was queued"))
         # Another owner holding the instrument refuses the entry in the orchestrator's gate: refused here too, before
         # sizing and before the card is claimed, so the dry run and approve give the same answer
         async with pool.acquire() as conn:
             # ADR 0011 D6: the coin belongs to another profile (the gate refuses it at execution too)
-            conflict = await coin_lock_conflict(conn, mandate, card["instrument_id"], "card")
+            conflict = await coin_lock_conflict(conn, mandate, routed_card["instrument_id"], "card")
             if conflict is None:
-                conflict = await instrument_conflict(conn, mandate, card["instrument_id"],
-                                                     Decimal(str(card.get("quantity") or 0)), "card")
+                conflict = await instrument_conflict(conn, mandate, routed_card["instrument_id"],
+                                                     Decimal(str(routed_card.get("quantity") or 0)), "card")
         if conflict is not None:
             raise HTTPException(status_code=409, detail=conflict)
 
-        stop_pct = card.get("stop_loss_pct")
+        stop_pct = routed_card.get("stop_loss_pct")
         if stop_pct is None:
             stop_pct = protection.get("stop_loss_pct")
         # A mandate min-R:R requires the card to carry its own stop and target. The exit monitor's
         # default stop is still used for structural protection, but it is not a submitted RR input.
-        has_stop_source = card.get("stop_loss") is not None or card.get("stop_loss_pct") is not None
+        has_stop_source = routed_card.get("stop_loss") is not None or routed_card.get("stop_loss_pct") is not None
         if mandate.min_rr is not None and not has_stop_source:
             # Keep the established refusal when this card has no stop to measure. The session and conviction checks
             # run first inside entry_filter_detail, just as they do for other entries.
             async with pool.acquire() as conn:
-                refused = await entry_filter_detail(conn, mandate, "card", conviction=card.get("confidence"),
-                                                    take_profit=card.get("take_profit"), side=card["side"],
+                refused = await entry_filter_detail(conn, mandate, "card", conviction=routed_card.get("confidence"),
+                                                    take_profit=routed_card.get("take_profit"), side=routed_card["side"],
                                                     require_inputs=True)
             if refused is not None:
                 raise HTTPException(status_code=409, detail=refused)
@@ -630,67 +649,72 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
             pre_stop_mandate = mandate.model_copy(update={"min_rr": None})
             async with pool.acquire() as conn:
                 refused = await entry_filter_detail(conn, pre_stop_mandate, "card",
-                                                    conviction=card.get("confidence"), side=card["side"],
+                                                    conviction=routed_card.get("confidence"), side=routed_card["side"],
                                                     require_inputs=True)
             if refused is not None:
                 raise HTTPException(status_code=409, detail=refused)
 
-        redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
-        if perp_entry:
-            mark, _ = await perp_mark(redis, card["instrument_id"])
-            if mark is None or not mark.is_finite() or mark <= 0:
-                no_mark_plan = await card_leverage_plan(pool, redis, mandate, card, requested_leverage=leverage)
-                if not no_mark_plan.ok:
-                    raise _PerpRefusal(f"{no_mark_plan.reject}: the {no_mark_plan.binding_ceiling or 'leverage plan'} "
-                                       "allows no order for this card; nothing was queued", no_mark_plan.as_dict())
+        if leveraged_entry:
+            if margin_entry:
+                margin_px = await margin_entry_price(redis, routed_card["instrument_id"], routed_card["side"])
+                if margin_px is None or not margin_px.is_finite() or margin_px <= 0:
+                    no_mark_plan = await card_leverage_plan(pool, redis, mandate, routed_card, requested_leverage=leverage)
+                    if not no_mark_plan.ok:
+                        raise _PerpRefusal(f"{no_mark_plan.reject}: the {no_mark_plan.binding_ceiling or 'leverage plan'} "
+                                           "allows no order for this card; nothing was queued", no_mark_plan.as_dict())
+            else:
+                mark, _ = await perp_mark(redis, routed_card["instrument_id"])
+                if mark is None or not mark.is_finite() or mark <= 0:
+                    no_mark_plan = await card_leverage_plan(pool, redis, mandate, routed_card, requested_leverage=leverage)
+                    if not no_mark_plan.ok:
+                        raise _PerpRefusal(f"{no_mark_plan.reject}: the {no_mark_plan.binding_ceiling or 'leverage plan'} "
+                                           "allows no order for this card; nothing was queued", no_mark_plan.as_dict())
 
-        if entry_requires_stop(card["instrument_id"], card["side"], reduce_only=perp_reduce):
+        if entry_requires_stop(routed_card["instrument_id"], routed_card["side"], reduce_only=perp_reduce):
             structural_stop = await resolve_entry_stop(
                 pool,
                 redis,
-                card["instrument_id"],
-                card["side"],
-                explicit_stop=card.get("stop_loss"),
+                routed_card["instrument_id"],
+                routed_card["side"],
+                explicit_stop=routed_card.get("stop_loss"),
                 stop_loss_pct=stop_pct,
-                order_reference=(card.get("limit_price") if str(card.get("order_type", "")).upper() == "LIMIT" else None),
+                order_reference=(routed_card.get("limit_price") if str(routed_card.get("order_type", "")).upper() == "LIMIT" else None),
             )
             # The rest of the read-only plan, including R:R checks, must use the exact stop that will be queued.
-            card = {**card, "stop_loss": format(structural_stop, "f")}
+            routed_card = {**routed_card, "stop_loss": format(structural_stop, "f")}
 
         # ADR 0010: the mandate's daily session, its conviction filter and its R:R filter. A card must carry what a
         # filter the mandate sets measures (a confidence; a stop and a target): without it the entry is refused
-        redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
-        take_profit = Decimal(str(card["take_profit"])) if card.get("take_profit") else None
-        stop_loss = Decimal(str(card["stop_loss"])) if card.get("stop_loss") else None
-        entry = await card_entry_price(redis, card) if (mandate.min_rr is not None and stop_loss and take_profit) else None
+        take_profit = Decimal(str(routed_card["take_profit"])) if routed_card.get("take_profit") else None
+        stop_loss = Decimal(str(routed_card["stop_loss"])) if routed_card.get("stop_loss") else None
+        entry = await card_entry_price(redis, routed_card) if (mandate.min_rr is not None and stop_loss and take_profit) else None
         async with pool.acquire() as conn:
-            refused = await entry_filter_detail(conn, mandate, "card", conviction=card.get("confidence"), entry=entry,
-                                                stop_loss=stop_loss, take_profit=take_profit, side=card["side"],
+            refused = await entry_filter_detail(conn, mandate, "card", conviction=routed_card.get("confidence"), entry=entry,
+                                                stop_loss=stop_loss, take_profit=take_profit, side=routed_card["side"],
                                                 require_inputs=True)
         if refused is not None:
             raise HTTPException(status_code=409, detail=refused)
-        if (slipped := await slipped_below_rr_floor(redis, card, entry)) is not None:
+        if (slipped := await slipped_below_rr_floor(redis, routed_card, entry)) is not None:
             raise HTTPException(status_code=409, detail=slipped)
-        marks = await read_marks(getattr(getattr(request.app.state, "stream_hub", None), "redis", None))
+        marks = await read_marks(redis)
         async with pool.acquire() as conn:
-            room = await entry_room_pct(conn, mandate, card["instrument_id"], marks)
+            room = await entry_room_pct(conn, mandate, routed_card["instrument_id"], marks)
         if room < MIN_MANDATE_ENTRY_PCT:
             raise HTTPException(status_code=409, detail=(
                 f"MANDATE_POSITION_LIMIT_REACHED: mandate {mandate.name} already holds its limit of "
-                f"{mandate.max_position_pct}% in {card['instrument_id']}; nothing was queued"))
-        if perp_entry:
-            # Perps are sized by the leverage plan below (the card's allocation within the risk-at-stop budget); the
-            # setup grade caps their leverage
+                f"{mandate.max_position_pct}% in {routed_card['instrument_id']}; nothing was queued"))
+        if leveraged_entry:
+            # Leveraged entries are sized by the leverage plan below (the card's allocation within the risk-at-stop
+            # budget); the setup grade caps their leverage
             allocation = min(allocation, room.quantize(Decimal("0.01")))
         else:
-            # O2: a spot or margin entry is sized by its setup grade as a debate entry is (A or B the profile's full
+            # O2: a spot entry is sized by its setup grade as a debate entry is (A or B the profile's full
             # max position, C, NO_TRADE or unknown half), never the model's allocation; a NO_TRADE card stays
             # approvable (the card warns)
-            allocation = Decimal(str(grade_size_pct(card.get("setup_grade"), mandate.max_position_pct,
+            allocation = Decimal(str(grade_size_pct(routed_card.get("setup_grade"), mandate.max_position_pct,
                                                     room.quantize(Decimal("0.01")))))
-    if perp_entry:
-        redis = getattr(getattr(request.app.state, "stream_hub", None), "redis", None)
-        plan = await card_leverage_plan(pool, redis, mandate, card, requested_leverage=leverage)
+    if leveraged_entry:
+        plan = await card_leverage_plan(pool, redis, mandate, routed_card, requested_leverage=leverage)
         leverage_plan = plan.as_dict()
         if not plan.ok:
             raise _PerpRefusal(f"{plan.reject}: the {plan.binding_ceiling or 'leverage plan'} allows no order "
@@ -698,18 +722,18 @@ async def _plan_card(request: Request, sid: uuid.UUID, card: dict[str, Any], man
         allocation = (plan.margin_usd / mandate.capital_budget_usd * 100).quantize(Decimal("0.01"))
     budget = mandate.capital_budget_usd * allocation / 100
     lev = (leverage_plan or {}).get("leverage")
-    summary = _card_summary(card, card["instrument_id"], mandate, allocation, budget, held, lev)
-    shown = _card_summary(card, _shown_instrument(card), mandate, allocation, budget, held, lev)
+    summary = _card_summary(routed_card, routed_card["instrument_id"], mandate, allocation, budget, held, lev)
+    shown = _card_summary(routed_card, _shown_instrument(routed_card), mandate, allocation, budget, held, lev)
     return CardPlan(mandate=mandate, allocation=allocation, budget=budget, summary=summary, shown=shown, held=held,
                     protection=protection, trace_id=trace_id, source_ref=source_ref, structural_stop=structural_stop,
-                    leverage_plan=leverage_plan, perp_reduce=perp_reduce)
+                    leverage_plan=leverage_plan, perp_reduce=perp_reduce, instrument_id=routed_card["instrument_id"])
 
 
 def _card_summary(card: dict[str, Any], instrument: str, mandate: Mandate, allocation: Decimal, budget: Decimal,
                   held: Decimal, lev: int | None = None) -> str:
     """What an approved card does, in words, for the instrument given (the card's own, or the shown one)."""
-    if is_perp_instrument(card["instrument_id"]):
-        if not is_perp_entry(card):
+    if is_perp_instrument(card["instrument_id"]) or is_margin_entry(card):
+        if is_perp_instrument(card["instrument_id"]) and not is_perp_entry(card):
             return (f"{card['side']} {instrument} reduce-only {held:g} ({card.get('reduce_pct') or 100}% of the position) "
                     f"in mandate {mandate.name}")
         return (f"{'LONG' if card['side'] == 'BUY' else 'SHORT'} {instrument} {card['order_type']} "
@@ -739,8 +763,9 @@ def card_command_payload(card: dict[str, Any], plan: CardPlan, req: Any, *, sour
     """The command payload of an approved order card. ``source`` and ``origin`` say where the card came from;
     ``req`` carries ``acknowledge_against_debate``."""
     mandate, allocation, held, lev_plan = plan.mandate, plan.allocation, plan.held, plan.leverage_plan
+    inst = plan.instrument_id or card["instrument_id"]
     payload: dict[str, Any] = {
-        "instrument_id": card["instrument_id"], "side": card["side"], "order_type": card["order_type"],
+        "instrument_id": inst, "side": card["side"], "order_type": card["order_type"],
         # sized from the allocation the operator approved, as a share of the mandate's budget
         # (the mandate check and the dispatcher's 1-25% clamp still apply)
         "allocation_pct": float(allocation),
@@ -770,11 +795,14 @@ def card_command_payload(card: dict[str, Any], plan: CardPlan, req: Any, *, sour
         payload["price"] = card["limit_price"]
     if lev_plan is not None:
         # The orchestrator sizes it again with the same plan, at most at this leverage; the entry carries its stop,
-        # which becomes a resting stop once it fills (ISOLATED only for mandate perps, D5)
+        # which becomes a resting stop once it fills (ISOLATED only for mandate perps/margin, D5)
+        lev_summary = {k: lev_plan[k] for k in ("leverage", "binding_ceiling", "notional_usd",
+                                                "margin_usd", "liquidation_price",
+                                                "loss_at_stop_usd")}
         payload.update({"leverage": lev_plan["leverage"], "margin_mode": "ISOLATED",
-                        "leverage_plan": {k: lev_plan[k] for k in ("leverage", "binding_ceiling", "notional_usd",
-                                                                   "margin_usd", "liquidation_price",
-                                                                   "loss_at_stop_usd")}})
+                        "leverage_plan": lev_summary})
+        if market_of(inst) is Market.SPOT_MARGIN:
+            payload["margin_plan"] = dict(lev_summary)
     elif plan.perp_reduce:
         payload.update({"quantity": format(held, "f"), "reduce_only": True})
     elif card["side"] == "SELL":
@@ -843,8 +871,14 @@ async def approve_order_card(sid: uuid.UUID, widget_id: str, request: Request, a
                                  "content": f"Order card {widget_id} was approved but could not be queued."})
         raise HTTPException(status_code=502, detail="Could not queue the order")
 
-    guard = protection_text(card, plan.structural_stop, protection, lev_plan is not None)
-    if (tp1 := _tp1_view(card_tp1(card, mandate, plan.structural_stop), card)) is not None:
+    routed_card = {**card, "instrument_id": plan.instrument_id or card["instrument_id"]}
+    guard = protection_text(
+        routed_card,
+        plan.structural_stop,
+        protection,
+        lev_plan is not None and market_of(routed_card["instrument_id"]) is Market.PERP,
+    )
+    if (tp1 := _tp1_view(card_tp1(routed_card, mandate, plan.structural_stop), routed_card)) is not None:
         guard += f" {tp1['text']}."
     await _worker_note(sid, {
         "operator_id": op, "widget_id": widget_id, "status": "APPROVED", "command_id": command_id,
@@ -860,7 +894,7 @@ def card_tp1(card: dict[str, Any], mandate: Any, structural_stop: Decimal | None
     """H11: the TP1 the exit monitor will enforce for an entry card (``exit_rules.enforced_tp1``, the monitor's own
     rule): the mandate's ``exit_tp_r`` x R from the entry and the structural stop, not the card's target. Estimated
     from the card's entry price here; the fill note recomputes it from the fill. None for a sell / reduction."""
-    if card["side"] != "BUY" and not is_perp_entry(card):
+    if card["side"] != "BUY" and not is_leveraged_entry(card):
         return None
     ref = card.get("limit_price") or (card.get("grade_inputs") or {}).get("entry")
     stop = structural_stop if structural_stop is not None else card.get("stop_loss")
@@ -925,7 +959,7 @@ async def _card_remedy(request: Request, card: dict[str, Any], code: str, mandat
     - NO_MANDATE: create a mandate for the instrument, or add it to an ACTIVE mandate with room for it.
     - MANDATE_POSITION_LIMIT_REACHED: the one edit ``room_remedy`` picks (the position limit, else the budget).
     - MANDATE_PAUSED: resume it. A HALTED mandate hit its hard stop; that is looked at in Mission Control, not here."""
-    if card["side"] != "BUY" and not is_perp_entry(card):
+    if card["side"] != "BUY" and not is_leveraged_entry(card):
         return None
     instrument = canonical_instrument(card["instrument_id"])
     pool = request.app.state.pool
@@ -1015,15 +1049,16 @@ async def preflight_refusal(request: Request, card: dict[str, Any], e: HTTPExcep
     code = _refusal_code(detail)
     # approve's NO_MANDATE for a BUY makes the card offer to create a mandate; the remedy says how (and which
     # other refusals a mandate change fixes)
-    needs_mandate = code == "NO_MANDATE" and (card["side"] == "BUY" or is_perp_entry(card))
+    needs_mandate = code == "NO_MANDATE" and (card["side"] == "BUY" or is_leveraged_entry(card))
     remedy = await _card_remedy(request, card, code, mandate_id)
     return {"ok": False, "code": code, "detail": detail, "needs_mandate": needs_mandate, "remedy": remedy,
-            "leverage_plan": getattr(e, "leverage_plan", None), "needs_totp": is_perp_entry(card)}
+            "leverage_plan": getattr(e, "leverage_plan", None), "needs_totp": is_leveraged_entry(card)}
 
 
 def preflight_result(card: dict[str, Any], plan: CardPlan, leverage: int | None) -> dict[str, Any]:
     """The dry run's answer for a card ``_plan_card`` planned: the mandate and size approve would queue."""
     # A spot or margin entry asks its grade size (O2), so the room left cut it from that; a perp asks its own allocation
+    routed_card = {**card, "instrument_id": plan.instrument_id or card["instrument_id"]}
     max_pct = plan.mandate.max_position_pct
     requested = (Decimal(str(card["allocation_pct"])) if plan.leverage_plan is not None
                  else Decimal(str(grade_size_pct(card.get("setup_grade"), max_pct, max_pct))))
@@ -1043,7 +1078,7 @@ def preflight_result(card: dict[str, Any], plan: CardPlan, leverage: int | None)
             "clipped_from_pct": float(requested) if plan.allocation < requested else None,
             "sell_quantity": None, "summary": plan.summary, "leverage_plan": lp, "needs_totp": True,
             "high_leverage_confirm": lp["leverage"] >= HIGH_LEVERAGE_CONFIRM, "leverage_remedy": leverage_remedy,
-            "tp1": _tp1_view(card_tp1(card, plan.mandate, plan.structural_stop), card),
+            "tp1": _tp1_view(card_tp1(routed_card, plan.mandate, plan.structural_stop), routed_card),
         }
     return {
         "ok": True, "mandate": {"id": str(plan.mandate.id), "name": plan.mandate.name,
@@ -1051,7 +1086,7 @@ def preflight_result(card: dict[str, Any], plan: CardPlan, leverage: int | None)
         "side": card["side"], "allocation_pct": float(plan.allocation), "budget_usd": float(plan.budget),
         "clipped_from_pct": float(requested) if card["side"] == "BUY" and plan.allocation < requested else None,
         "sell_quantity": format(plan.held, "f") if card["side"] == "SELL" else None, "summary": plan.summary,
-        "tp1": _tp1_view(card_tp1(card, plan.mandate, plan.structural_stop), card),
+        "tp1": _tp1_view(card_tp1(routed_card, plan.mandate, plan.structural_stop), routed_card),
     }
 
 
@@ -1063,12 +1098,18 @@ class _DuplicateDecision(Exception):
 
 async def _approved_twin(conn, trace_id: uuid.UUID, card: dict[str, Any], source_ref: str) -> Any:
     """Another card of the same Brain decision (trace), instrument and side that was already approved."""
+    inst = canonical_instrument(card["instrument_id"])
+    instruments = [inst]
+    if is_perp_instrument(inst):
+        instruments.append(instrument_for(inst, Market.SPOT_MARGIN))
+    elif market_of(inst) is Market.SPOT_MARGIN:
+        instruments.append(instrument_for(inst, Market.PERP))
     return await conn.fetchrow(
         """SELECT id, command_id, source_ref FROM ai_approvals
            WHERE source = 'brain_card' AND trace_id = $1 AND status = 'APPROVED' AND source_ref <> $4
-             AND payload->>'instrument_id' = $2 AND payload->>'side' = $3
+             AND payload->>'instrument_id' = ANY($2::text[]) AND payload->>'side' = $3
            ORDER BY created_at LIMIT 1""",
-        trace_id, card["instrument_id"], card["side"], source_ref)
+        trace_id, instruments, card["side"], source_ref)
 
 
 def _duplicate_detail(twin: Any) -> str:

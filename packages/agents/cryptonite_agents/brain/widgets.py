@@ -522,8 +522,23 @@ def describe_widget(widget: dict[str, Any]) -> str:
                 + (f", verdict {verdict['recommendation']}" if verdict else "") + "]")
     if kind == "swing_radar":
         watchlist = len(widget.get("conditional") or [])
+        untradeable = widget.get("untradeable_setups") or []
+        untradeable_desc = ""
+        if untradeable:
+            listed = "; ".join(
+                f"{u.get('instrument_id')} {u.get('direction')} {u.get('preset_slug')} {u.get('timeframe')} "
+                f"entry {u.get('entry')} stop {u.get('stop')} target {u.get('target')} "
+                f"({u.get('rr_ratio')}R"
+                + (f", bar {u.get('bar_close')}" if u.get("bar_close") else "")
+                + (f", {u.get('status')}" if u.get("status") else "")
+                + (f", reason: {u.get('reason')}" if u.get("reason") else "")
+                + ")"
+                for u in untradeable
+            )
+            untradeable_desc = f"; untradeable: {listed}"
         return (f"[widget:swing_radar preset={widget.get('preset_slug')} candidates={len(widget.get('candidates') or [])}"
-                + (f" conditional={watchlist}" if watchlist else "") + (" partial" if widget.get("partial") else "") + "]")
+                + (f" conditional={watchlist}" if watchlist else "") + (" partial" if widget.get("partial") else "")
+                + untradeable_desc + "]")
     if kind == "trade_ideas":
         ideas = widget.get("ideas") or []
         listed = "; ".join(f"{i.get('coin')} {i.get('direction')} {i.get('timeframe')} entry {i.get('entry')} stop "

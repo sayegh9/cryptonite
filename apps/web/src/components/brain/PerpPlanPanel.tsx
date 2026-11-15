@@ -153,7 +153,9 @@ export function PerpPlanPanel({
             <div>
               <dt className="text-zinc-500">Funding / 8h</dt>
               <dd className={funding == null ? "text-zinc-500" : funding < 0 ? "text-rose-300" : "text-emerald-300"} data-testid="perp-plan-funding">
-                {funding == null ? "unknown" : `${funding < 0 ? "pays" : "earns"} ${usd(Math.abs(funding), 3)}`}
+                {funding == null
+                  ? (plan.instrument_id?.includes("-MARGIN.") ? "n/a (spot margin)" : "unknown")
+                  : `${funding < 0 ? "pays" : "earns"} ${usd(Math.abs(funding), 3)}`}
               </dd>
             </div>
           </dl>

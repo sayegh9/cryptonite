@@ -744,3 +744,49 @@ async def test_a_clean_miss_has_no_missing_evidence(monkeypatch):
 
     data = json.loads(await scan_swing_setups(symbol="BTCUSDT", timeframe="1h"))
     assert "missing_evidence" not in data and "no routeable setup stored by the scanner" in data["note"]
+
+
+def test_describe_widget_swing_radar_preserves_untradeable_setup_levels():
+    """Later conversation turns must retain entry/stop/target/bar_close/reason of untradeable setups."""
+    from cryptonite_agents.brain.memory import transcript
+
+    payload = {
+        "preset_slug": "all",
+        "timeframe": "15m",
+        "scanned_count": 8,
+        "candidates": [],
+        "untradeable_setups": [
+            {
+                "instrument_id": "WLDUSDT.BINANCE",
+                "preset_slug": "macd-momentum-shift",
+                "timeframe": "15m",
+                "direction": "LONG",
+                "entry": 0.625,
+                "stop": 0.610,
+                "target": 0.63235,
+                "rr_ratio": 0.49,
+                "bar_close": "2026-11-15T16:29:59+00:00",
+                "source": "live_scan",
+                "status": "RESEARCH_ONLY",
+                "reason": "reward 0.49x the risk, below 1.5x",
+            }
+        ],
+    }
+    widget = widget_for_tool(
+        tool="scan_swing_setups",
+        args={"preset_slug": "all", "timeframe": "15m"},
+        call_id="call_radar_untradeable",
+        content=json.dumps(payload),
+    )
+    assert widget is not None
+    desc = describe_widget(widget)
+    assert "untradeable:" in desc
+    assert "WLDUSDT.BINANCE LONG macd-momentum-shift 15m" in desc
+    assert "entry 0.625 stop 0.61 target 0.63235" in desc
+    assert "0.49R" in desc
+    assert "2026-11-15T16:29:59+00:00" in desc
+    assert "reward 0.49x the risk, below 1.5x" in desc
+
+    rendered = transcript([{"role": "assistant", "content": "Found 1 setup below 1.5x.", "widgets": [widget]}])
+    assert "entry 0.625 stop 0.61 target 0.63235" in rendered
+

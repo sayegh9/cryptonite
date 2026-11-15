@@ -408,18 +408,22 @@ def plan_spot_margin_order(
     if borrow_amount > borrow_cap:
         return refused(LeverageReject.MARGIN_BORROW_LIMIT, binding=borrow_field)
 
-    try:
-        liq = spot_margin_liquidation_price(
-            "LONG" if side == "BUY" else "SHORT", base_qty=sizing.base_qty, quote_qty=sizing.quote_qty,
-            borrowed_base=sizing.borrowed_base, borrowed_quote=sizing.borrowed_quote,
-            interest_base=Decimal("0"), interest_quote=Decimal("0"),
-            liquidation_level=config["liquidation_level"], entry_price=entry_price,
-        )
-    except ValueError:
-        return refused(LeverageReject.LIQUIDATION_BUFFER_TOO_THIN)
-    liq_distance = abs(entry_price - liq) / entry_price
-    if stop_gap > LIQUIDATION_BUFFER_FRACTION * liq_distance:
-        return refused(LeverageReject.LIQUIDATION_BUFFER_TOO_THIN)
+    if sizing.borrowed_base == 0 and sizing.borrowed_quote == 0:
+        liq = None
+        liq_distance = None
+    else:
+        try:
+            liq = spot_margin_liquidation_price(
+                "LONG" if side == "BUY" else "SHORT", base_qty=sizing.base_qty, quote_qty=sizing.quote_qty,
+                borrowed_base=sizing.borrowed_base, borrowed_quote=sizing.borrowed_quote,
+                interest_base=Decimal("0"), interest_quote=Decimal("0"),
+                liquidation_level=config["liquidation_level"], entry_price=entry_price,
+            )
+        except ValueError:
+            return refused(LeverageReject.LIQUIDATION_BUFFER_TOO_THIN)
+        liq_distance = abs(entry_price - liq) / entry_price
+        if stop_gap > LIQUIDATION_BUFFER_FRACTION * liq_distance:
+            return refused(LeverageReject.LIQUIDATION_BUFFER_TOO_THIN)
 
     notional = borrow_amount * entry_price if side == "SELL" else sizing.base_qty * entry_price
     if notional > limits.max_notional_usd:
@@ -438,8 +442,8 @@ def plan_spot_margin_order(
         quantity=(sizing.borrowed_base if side == "SELL" else sizing.base_qty)
         .quantize(QUANTITY_STEP, rounding=ROUND_DOWN),
         entry_price=entry_price, stop_price=stop_price, stop_distance_pct=distance * 100,
-        liquidation_price=liq, liquidation_distance_pct=liq_distance * 100,
-        buffer_used_pct=stop_gap / liq_distance * 100,
+        liquidation_price=liq, liquidation_distance_pct=liq_distance * 100 if liq_distance is not None else None,
+        buffer_used_pct=stop_gap / liq_distance * 100 if liq_distance else None,
         loss_at_stop_usd=loss,
         loss_at_stop_pct=loss / budget_usd * 100 if budget_usd else None,
         loss_if_liquidated_usd=margin_usd,
