@@ -261,29 +261,39 @@ def _matched_totp_step(secret: str, code: str) -> int | None:
     return None
 
 
-async def _totp_step_used(request: Request, user_id: Any, step: int) -> bool:
-    async with request.app.state.pool.acquire() as conn:
-        return bool(await conn.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM totp_replay_cache WHERE user_id = $1 AND totp_time_step = $2)", user_id, step))
+_STEP_USED_SQL = "SELECT EXISTS (SELECT 1 FROM totp_replay_cache WHERE user_id = $1 AND totp_time_step = $2)"
+_OPERATOR_SQL = ("SELECT id, totp_secret_ciphertext, totp_secret_nonce, totp_secret_auth_tag FROM v_operator_auth "
+                 "WHERE {} = $1 AND is_active = true")
+
+
+async def _totp_step_used(request: Request, user_id: Any, step: int, conn: Any = None) -> bool:
+    if conn is not None:
+        return bool(await conn.fetchval(_STEP_USED_SQL, user_id, step))
+    async with request.app.state.pool.acquire() as held:
+        return bool(await held.fetchval(_STEP_USED_SQL, user_id, step))
+
+
+async def _operator_row(conn: Any, user_id: Any, username: str | None):
+    if user_id:
+        return await conn.fetchrow(_OPERATOR_SQL.format("id"), uuid.UUID(str(user_id)))
+    return await conn.fetchrow(_OPERATOR_SQL.format("username"), username)
 
 
 async def verify_totp(request: Request, code: str | None, *, user_id: Any = None,
-                      username: str | None = None) -> TotpOutcome:
-    """The operator's current TOTP code (replay-protected; the dev-only 000000 follows the login policy)."""
+                      username: str | None = None, conn: Any = None) -> TotpOutcome:
+    """The operator's current TOTP code (replay-protected; the dev-only 000000 follows the login policy).
+    A caller inside ``pool.acquire()`` passes its ``conn``: every read and the replay-cache insert then use it, so the
+    check takes no second connection (a request holding one while waiting for another can starve the pool)."""
     if not code or not TOTP_RE.match(code):
         return TotpOutcome.WRONG
+    if not user_id and not username:
+        return TotpOutcome.WRONG
     auth_mgr = request.app.state.auth_manager
-    async with request.app.state.pool.acquire() as conn:
-        if user_id:
-            row = await conn.fetchrow(
-                "SELECT id, totp_secret_ciphertext, totp_secret_nonce, totp_secret_auth_tag FROM v_operator_auth "
-                "WHERE id = $1 AND is_active = true", uuid.UUID(str(user_id)))
-        elif username:
-            row = await conn.fetchrow(
-                "SELECT id, totp_secret_ciphertext, totp_secret_nonce, totp_secret_auth_tag FROM v_operator_auth "
-                "WHERE username = $1 AND is_active = true", username)
-        else:
-            return TotpOutcome.WRONG
+    if conn is not None:
+        row = await _operator_row(conn, user_id, username)
+    else:
+        async with request.app.state.pool.acquire() as held:
+            row = await _operator_row(held, user_id, username)
     if row is None:
         return TotpOutcome.WRONG
     if code == "000000":
@@ -300,13 +310,13 @@ async def verify_totp(request: Request, code: str | None, *, user_id: Any = None
         return TotpOutcome.WRONG
     # A correct code whose step is already in the replay cache is reported as reused; auth records no second use of it
     step = _matched_totp_step(secret, code)
-    if step is not None and await _totp_step_used(request, row["id"], step):
+    if step is not None and await _totp_step_used(request, row["id"], step, conn):
         return TotpOutcome.REUSED
-    if await auth_mgr.verify_totp_code(row["id"], secret, code):
+    if await auth_mgr.verify_totp_code(row["id"], secret, code, conn=conn):
         return TotpOutcome.VALID
     # Refused by the insert: a concurrent submit of this same code recorded its step after the check above. That is a
     # reuse, not a wrong code
-    if step is not None and await _totp_step_used(request, row["id"], step):
+    if step is not None and await _totp_step_used(request, row["id"], step, conn):
         return TotpOutcome.REUSED
     return TotpOutcome.WRONG
 
@@ -322,7 +332,8 @@ async def checked_totp(request: Request, code: str | None, throttle_key: str, **
     return await _checked_code(request, code, throttle_key, **who)
 
 
-async def _checked_code(request: Request, code: str | None, throttle_key: str, **who: Any) -> TotpOutcome:
+async def _checked_code(request: Request, code: str | None, throttle_key: str, *, conn: Any = None,
+                        **who: Any) -> TotpOutcome:
     """``verify_totp`` with a lockout: 5 wrong codes in 15 min lock the key out for 15 min (a 6-digit
     code must not be brute-forceable). A correct or reused code is not a failed guess and is not counted.
     Fails closed when Redis is unavailable."""
@@ -342,7 +353,7 @@ async def _checked_code(request: Request, code: str | None, throttle_key: str, *
         return TotpOutcome.WRONG
     if attempts > TOTP_MAX_FAILURES:
         raise HTTPException(status_code=429, detail="TOTP_LOCKED: too many wrong codes; try again in 15 minutes")
-    outcome = await verify_totp(request, code, **who)
+    outcome = await verify_totp(request, code, conn=conn, **who)
     if outcome is not TotpOutcome.WRONG:
         try:
             await r.decr(key)  # a correct code is not a failure
@@ -353,13 +364,15 @@ async def _checked_code(request: Request, code: str | None, throttle_key: str, *
 
 async def require_totp(request: Request, auth: dict, code: str | None, *, conn: Any = None) -> bool:
     """Raises unless the code is valid. False when TOTP is switched off and nothing was checked; True when it was.
-    A caller inside ``pool.acquire()`` passes its ``conn`` so the switch read takes no second connection."""
+    A caller inside ``pool.acquire()`` passes its ``conn`` so neither the switch read nor the code check (operator row,
+    replay cache) takes a second connection. Inside the caller's transaction the code's step counts as used once that
+    transaction commits; a concurrent submit of the same code waits for it and is then reported as reused."""
     if not auth.get("user_id"):
         raise HTTPException(status_code=403, detail="TOTP_REQUIRED: a machine token cannot add risk")
     if not await totp_enabled(request.app.state.pool, conn):
         return False
     # the switch is read once: a code is always checked from here, so True means it really was
-    outcome = await _checked_code(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"])
+    outcome = await _checked_code(request, code, f"user:{auth['user_id']}", user_id=auth["user_id"], conn=conn)
     if outcome is TotpOutcome.REUSED:
         raise HTTPException(status_code=401, detail="TOTP_REUSED: this code was already used (each code works once); "
                             "wait for the next code from your authenticator")

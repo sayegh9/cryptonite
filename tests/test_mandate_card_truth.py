@@ -177,9 +177,9 @@ async def test_a_code_recorded_by_a_concurrent_submit_is_reused_not_wrong(h, mon
     real = ai_routes._totp_step_used
     seen: list[int] = []
 
-    async def check_before_the_other_submit_recorded_it(request, user_id, step):
+    async def check_before_the_other_submit_recorded_it(request, user_id, step, conn=None):
         seen.append(step)
-        return False if len(seen) == 1 else await real(request, user_id, step)
+        return False if len(seen) == 1 else await real(request, user_id, step, conn)
 
     monkeypatch.setattr(ai_routes, "_totp_step_used", check_before_the_other_submit_recorded_it)
     async with h.client() as c:
