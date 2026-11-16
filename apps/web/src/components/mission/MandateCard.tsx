@@ -8,6 +8,7 @@ import type { Mandate, SessionVerdict } from "@/lib/mission/types";
 import { staleMarkText } from "@/lib/mission/marks";
 import { dispatchSwitchWorkspace } from "@/lib/navigation";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
+import { useTotpRequired } from "@/lib/stores/useSessionStore";
 
 const usd = (v: string | number) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
@@ -147,6 +148,7 @@ const STATUS_STYLE: Record<string, string> = {
 /** One mandate (§7.1): budget used, drawdown vs the hard stop, level, halted state with resume. */
 export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onChanged: () => void }) {
   const [totp, setTotp] = useState("");
+  const totpOn = useTotpRequired();
   const [resuming, setResuming] = useState(false);
   const [busy, setBusy] = useState(false);
   // Resuming gives the AI room again (TOTP): never from a tab older than the server; pausing stays open
@@ -281,6 +283,8 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
               void run(() => resumeMandate(m.id, totp), "resumed", `${m.name} resumed at ${m.level_name}`);
             }}
           >
+            {totpOn && (
+            <>
             <label className="text-2xs text-zinc-400" htmlFor={`totp-${m.id}`}>
               TOTP
             </label>
@@ -294,9 +298,11 @@ export function MandateCard({ mandate: m, onChanged }: { mandate: Mandate; onCha
               onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
               className="w-20 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-zinc-100"
             />
+            </>
+            )}
             <button
               type="submit"
-              disabled={staleBuild || busy || totp.length !== 6}
+              disabled={staleBuild || busy || (totpOn && totp.length !== 6)}
               title={staleBuild ? STALE_BUILD_TITLE : undefined}
               className="rounded bg-amber-600 px-2 py-0.5 text-2xs font-bold text-zinc-950 disabled:opacity-50"
             >

@@ -23,6 +23,8 @@ class Bound:
 RUNTIME_BOUNDS: dict[str, Bound] = {
     "alerts.heartbeat_grace_s": Bound(300, 60, 3600),
     "alerts.sentiment_stale_s": Bound(86400, 3600, 604800),
+    # The operator's Telegram switch (0 off, 1 on): the notifier reads it before each send
+    "alerts.telegram_enabled": Bound(1, 0, 1),
     "scanner.max_active_specs": Bound(10, 1, 50),
     "exit.monitor_interval_s": Bound(30, 5, 300),
     # Operator session and login policy (ADR 0007, Phase 2). The ceilings are the current defaults, so a session
@@ -31,6 +33,8 @@ RUNTIME_BOUNDS: dict[str, Bound] = {
     "auth.idle_timeout_s": Bound(1800, 300, 1800),
     "auth.lockout_s": Bound(300, 60, 3600),
     "auth.max_login_attempts": Bound(5, 3, 10),
+    # The global TOTP switch (0 off, 1 on): sign-in and every action that asks for a code. Off is the looser value
+    "auth.totp_enabled": Bound(1, 0, 1),
     # Leverage (ADR 0009, leverage plan §2.1, §2.3): each setup grade's leverage ceiling, at most the 10x account
     # maximum (lower is tighter), and the slippage allowance in % (higher is tighter: the stop is priced further away)
     "leverage.grade_ceiling_a": Bound(10, 1, 10),

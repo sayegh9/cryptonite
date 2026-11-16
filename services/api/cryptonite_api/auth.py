@@ -26,6 +26,8 @@ import redis.asyncio as aioredis
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import HTTPException, status
 
+from cryptonite_api.totp_policy import totp_enabled
+
 logger = logging.getLogger("cryptonite.api.auth")
 
 DEFAULT_SECRET_PATH = "/run/secrets/cryptonite_totp_aes_key"
@@ -301,8 +303,8 @@ class OperatorAuthManager:
                 detail="Invalid credentials",
             )
 
-        # 2 & 3. Decrypt and Verify TOTP code (if required)
-        if row["totp_secret_ciphertext"]:
+        # 2 & 3. Decrypt and Verify TOTP code (if required; the operator can switch TOTP off in Settings -> Security)
+        if row["totp_secret_ciphertext"] and await totp_enabled(self._pool):
             if not totp_code:
                 await self.record_failed_attempt(username)
                 await self.log_audit_event(

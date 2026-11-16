@@ -9,6 +9,8 @@
   Every decision is an HMAC-signed call to the API, which re-checks the chat, the TOTP and the state.
 - Critical alerts (outbox rows, ``send_alert`` via the ``notifier:alerts`` list, and Critical
   ``channel:system_alerts`` messages) go to Telegram **and** ntfy.
+- The operator's switch ``alerts.telegram_enabled`` (Settings -> Alerts) stops every outgoing Telegram message while
+  off; ntfy is unaffected, and replies to the operator's own Telegram messages still go out.
 """
 
 import asyncio
@@ -22,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from cryptonite_schemas import notifier as contract
+from cryptonite_schemas.runtime_settings import RUNTIME_BOUNDS, read_number
 
 from cryptonite_notifier import render
 from cryptonite_notifier.clients import ApiClient, NtfyClient, TelegramClient, TelegramError
@@ -43,6 +46,10 @@ FUNNEL_DAILY_DEDUPE_S = 2 * 86400
 TOTP_WINDOW_S = 90
 MAX_ATTEMPTS = 5
 TOTP_RE = re.compile(r"^\d{6}$")
+TELEGRAM_SWITCH_KEY = "alerts.telegram_enabled"
+TOTP_SWITCH_KEY = "auth.totp_enabled"
+SWITCH_SQL = "SELECT value_text FROM notifier_settings WHERE key = $1"  # migration 069: these two values only
+SWITCH_TTL_S = 15
 
 
 @dataclass
@@ -71,6 +78,37 @@ class Notifier:
     pool: Any
     redis: Any
     pending: dict[str, PendingTotp] = field(default_factory=dict)
+    _switches: dict[str, tuple[float, bool]] = field(default_factory=dict)  # key -> (read at, on)
+
+    async def _switch(self, key: str) -> bool:
+        """An operator on/off setting (default on), read at most every 15 s. An unreadable or invalid value keeps the
+        last value read (on before the first read), so a database hiccup never flips a switch."""
+        now = time.monotonic()
+        cached = self._switches.get(key)
+        if cached is not None and now - cached[0] < SWITCH_TTL_S:
+            return cached[1]
+        last = cached[1] if cached is not None else True
+        try:
+            value, problem = read_number(await self.pool.fetchval(SWITCH_SQL, key), RUNTIME_BOUNDS[key],
+                                         1.0 if last else 0.0)
+            if problem:
+                logger.warning("%s: %s; keeping %s", key, problem, "on" if last else "off")
+            on = value != 0  # only a stored 0 turns a switch off
+        except Exception as e:
+            logger.warning("%s unreadable (%s): keeping %s", key, type(e).__name__, "on" if last else "off")
+            on = last
+        if on != last:
+            logger.info("%s switched %s", key, "on" if on else "off")
+        self._switches[key] = (now, on)
+        return on
+
+    async def telegram_enabled(self) -> bool:
+        """Telegram is configured and the operator's Telegram switch is on."""
+        return self.telegram is not None and await self._switch(TELEGRAM_SWITCH_KEY)
+
+    async def totp_enabled(self) -> bool:
+        """The operator's global TOTP switch: while off, approving new risk from Telegram is one tap."""
+        return await self._switch(TOTP_SWITCH_KEY)
 
     # ------------------------------------------------------------------ Telegram updates
 
@@ -128,7 +166,7 @@ class Notifier:
         if a is None:
             await self.telegram.answer_callback(cb["id"], "Approval not found")
             return "missing"
-        if a["action_class"] == "ADD_RISK":
+        if a["action_class"] == "ADD_RISK" and await self.totp_enabled():
             self.pending[str(chat_id)] = PendingTotp(approval_id, card_id, time.monotonic() + TOTP_WINDOW_S)
             await self.telegram.answer_callback(cb["id"], "TOTP needed")
             await self.telegram.send_message(
@@ -202,7 +240,7 @@ class Notifier:
 
     async def _to_all_chats(self, text: str, buttons=None) -> int | None:
         first = None
-        if self.telegram is None:
+        if not await self.telegram_enabled():
             return None
         for chat in sorted(self.config.allowed_chat_ids):
             msg = await self.telegram.send_message(chat, text, buttons)
@@ -215,7 +253,7 @@ class Notifier:
     async def _send(self, tier: str, title: str, body: str, *, ntfy_priority: int) -> None:
         """Telegram and ntfy, independently. Raises only when no channel delivered it."""
         delivered, errors = 0, []
-        if self.telegram is not None:
+        if await self.telegram_enabled():
             try:
                 await self._to_all_chats(render.plain_text(tier, title, body))
                 delivered += 1
@@ -228,7 +266,9 @@ class Notifier:
             except Exception as e:
                 errors.append(f"ntfy: {e}")
         if not delivered:
-            raise RuntimeError(f"{tier.title()} alert not delivered: " + ("; ".join(errors) or "no channel configured"))
+            off = " (Telegram is switched off)" if self.telegram is not None else ""
+            raise RuntimeError(f"{tier.title()} alert not delivered: "
+                               + ("; ".join(errors) or f"no channel configured{off}"))
         if errors:
             logger.error("Critical alert partly delivered: %s", "; ".join(errors))
 
@@ -257,12 +297,15 @@ class Notifier:
         return sent
 
     async def _deliver(self, row: dict[str, Any], now: datetime.datetime) -> tuple[str, int | None]:
+        if row["tier"] != "CRITICAL" and not await self.telegram_enabled():
+            return "SKIPPED", None  # Telegram-only rows: the switch is off (or no bot); the app shows them
         if row["tier"] == "ACTION" and row["approval_id"]:
             a = await self._approval(row["approval_id"])
             if a is None or a["status"] != "PENDING" or a["expires_at"] <= now:
                 return "SKIPPED", None  # decided or expired before it could be shown
-            text = render.approval_text(row, a, now)
-            return "SENT", await self._to_all_chats(text, render.approval_buttons(self.config.hmac_secret, a))
+            totp = await self.totp_enabled()
+            text = render.approval_text(row, a, now, totp=totp)
+            return "SENT", await self._to_all_chats(text, render.approval_buttons(self.config.hmac_secret, a, totp=totp))
         if row["tier"] == "CRITICAL":
             await self.send_critical(row["title"], row["body"])
             return "SENT", None
@@ -327,7 +370,8 @@ class Notifier:
 
     async def heartbeat(self) -> None:
         await self.redis.set(HEARTBEAT_KEY, json.dumps({
-            "telegram": self.telegram is not None, "ntfy": bool(self.ntfy and self.ntfy.enabled),
+            "telegram": self.telegram is not None, "telegram_enabled": await self.telegram_enabled(),
+            "ntfy": bool(self.ntfy and self.ntfy.enabled),
             "chats": len(self.config.allowed_chat_ids)}), ex=90)
 
     async def _loop(self, name: str, fn, interval: float) -> None:

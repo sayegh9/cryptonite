@@ -21,6 +21,9 @@ export const AlertsRoutingSection: React.FC<AlertsRoutingSectionProps> = ({
   const heartbeatEntry = entries.find((e) => e.key === "alerts.heartbeat_grace_s");
   const sentimentEntry = entries.find((e) => e.key === "alerts.sentiment_stale_s");
   const routingEntry = entries.find((e) => e.key === "alerts.routing");
+  const telegramEntry = entries.find((e) => e.key === "alerts.telegram_enabled");
+  // the stored value, else the default (1 = on); an unknown state reads as on, as the notifier does
+  const telegramOn = (telegramEntry?.effective ?? telegramEntry?.value ?? telegramEntry?.default ?? "1") !== "0";
 
   return (
     <div className="space-y-8">
@@ -77,9 +80,9 @@ export const AlertsRoutingSection: React.FC<AlertsRoutingSectionProps> = ({
           </p>
         </div>
 
-        {routingEntry && (
+        {(telegramEntry || routingEntry) && (
           <SettingList
-            entries={[routingEntry]}
+            entries={[telegramEntry, routingEntry].filter((e): e is RegistryEntry => Boolean(e))}
             allEntries={entries}
             onSaved={() => void onReload()}
             highlightedKey={highlightedKey}
@@ -95,9 +98,15 @@ export const AlertsRoutingSection: React.FC<AlertsRoutingSectionProps> = ({
                 <Send className="w-4 h-4" aria-hidden="true" />
                 Telegram Bot
               </div>
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-rose-900/60 bg-rose-950/40 text-rose-300 font-bold">
-                CRITICAL ONLY
-              </span>
+              {telegramOn ? (
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-rose-900/60 bg-rose-950/40 text-rose-300 font-bold">
+                  CRITICAL ONLY
+                </span>
+              ) : (
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-900 text-zinc-300 font-bold">
+                  SWITCHED OFF
+                </span>
+              )}
             </div>
             <p className="text-xs text-zinc-400 leading-relaxed">
               Dispatches emergency liquidation risk breaches, unexpected container restarts, and circuit-breaker kill switch triggers to the operator channel.

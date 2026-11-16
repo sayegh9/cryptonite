@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { fetchApi } from "@/lib/api";
-import { useSessionStore } from "@/lib/stores/useSessionStore";
+import { useSessionStore, useTotpRequired } from "@/lib/stores/useSessionStore";
 
 /** Open perps are read again this often while the operator is signed in */
 const POLL_MS = 10_000;
@@ -27,6 +27,7 @@ const isOpenPerp = (r: PositionRow) =>
  */
 export function FlattenPerpsButton() {
   const session = useSessionStore((s) => s.status);
+  const totpOn = useTotpRequired();
   const [perps, setPerps] = useState<string[]>([]);
   const [open, setOpen] = useState(false);
   const [totp, setTotp] = useState("");
@@ -106,6 +107,7 @@ export function FlattenPerpsButton() {
             Closes {perps.map((p) => p.split(".")[0]).join(", ")} with reduce-only market orders at the live price. Spot
             holdings are not touched.
           </p>
+          {totpOn && (
           <label className="mb-2 flex items-center gap-2">
             TOTP code
             <input
@@ -119,6 +121,7 @@ export function FlattenPerpsButton() {
               className="w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100"
             />
           </label>
+          )}
           {error && (
             <p role="alert" className="mb-2 text-rose-300">
               {error}
@@ -127,7 +130,7 @@ export function FlattenPerpsButton() {
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={busy || totp.length !== 6}
+              disabled={busy || (totpOn && totp.length !== 6)}
               className="flex-1 rounded bg-rose-600 px-2 py-1 font-bold text-white disabled:opacity-50"
             >
               {busy ? "Sending…" : `Flatten ${perps.length} perp${perps.length === 1 ? "" : "s"}`}

@@ -42,6 +42,8 @@ export interface EnvHealth {
   kill_switch_active: boolean;
   dev_totp_login: boolean;
   dev_totp_approvals: boolean;
+  /** The operator's global TOTP switch (auth.totp_enabled); absent from an older API */
+  totp_enabled?: boolean;
   secure_cookie: boolean;
   shadow_allow_paid: boolean;
   warnings: Warning[];

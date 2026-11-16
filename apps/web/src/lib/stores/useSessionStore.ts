@@ -20,8 +20,13 @@ interface SessionState {
   status: SessionStatus;
   username: string | null;
   checkedAt: number | null;
+  /** The operator's global TOTP switch (Settings → Security). True until the server says otherwise, so a code box
+   * shows rather than vanishes while unknown; the server decides either way. */
+  totpEnabled: boolean;
   /** Verify the cookie session with the server. Concurrent callers share one request. */
   check: () => Promise<void>;
+  /** A check that starts after any one in flight, so it reads what was just saved (e.g. the TOTP switch) */
+  refresh: () => Promise<void>;
   /** A sign-in succeeded, or an operator-only call answered OK */
   markAuthenticated: (username?: string | null) => void;
   /** An operator-only call was refused (401/403): the session ended or never existed */
@@ -40,17 +45,23 @@ export function storeCsrfToken(token: string | null | undefined) {
   }
 }
 
-export const useSessionStore = create<SessionState>()((set) => ({
+export const useSessionStore = create<SessionState>()((set, get) => ({
   status: "checking",
   username: null,
   checkedAt: null,
+  totpEnabled: true,
   check: () => {
     if (inflight) return inflight;
     inflight = fetchApi("/auth/me", { timeoutMs: SESSION_CHECK_TIMEOUT_MS })
       .then((me) => {
         if (me?.authenticated) {
           storeCsrfToken(me.csrf_token);
-          set({ status: "authenticated", username: me.username ?? null, checkedAt: Date.now() });
+          set({
+            status: "authenticated",
+            username: me.username ?? null,
+            checkedAt: Date.now(),
+            totpEnabled: me.totp_enabled !== false,
+          });
         } else {
           set({ status: "anonymous", username: null, checkedAt: Date.now() });
         }
@@ -67,7 +78,14 @@ export const useSessionStore = create<SessionState>()((set) => ({
       });
     return inflight;
   },
+  refresh: async () => {
+    if (inflight) await inflight.catch(() => undefined);
+    return get().check();
+  },
   markAuthenticated: (username = null) =>
     set((s) => ({ status: "authenticated", username: username ?? s.username, checkedAt: Date.now() })),
   markAnonymous: () => set({ status: "anonymous", username: null, checkedAt: Date.now() }),
 }));
+
+/** Whether actions ask for a TOTP code (the operator can switch TOTP off in Settings → Security) */
+export const useTotpRequired = () => useSessionStore((s) => s.totpEnabled);

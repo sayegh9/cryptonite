@@ -12,6 +12,7 @@ import OutcomesByRegime from "./OutcomesByRegime";
 import ReliabilityChart from "./ReliabilityChart";
 import { fmtGateActual } from "@/lib/format";
 import { isStaleBuild, STALE_BUILD_TITLE, useStaleBuild } from "@/lib/stores/useBuildStore";
+import { useTotpRequired } from "@/lib/stores/useSessionStore";
 
 const CHECK_LABEL: Record<string, string> = {
   days_at_level: "Days at this level",
@@ -34,6 +35,7 @@ const intervalText = (iv: GateCheck["interval"]) =>
 export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
   const { mandateId, setMandateId, view, evals, calibrationNote, calibration, byRegime, error, load, setView, showEvents, setShowEvents } = useAutonomyStore();
   const [totp, setTotp] = useState("");
+  const totpOn = useTotpRequired();
   const [busy, setBusy] = useState(false);
   // A promotion gives the AI more authority (TOTP): never from a tab older than the server
   const staleBuild = useStaleBuild();
@@ -186,9 +188,10 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
                 }}
               >
                 <p className="mb-1 text-cyan-200">
-                  The system proposes L{view.proposal.from_level} → L{view.proposal.to_level}. Nothing changes until you confirm with TOTP.
+                  The system proposes L{view.proposal.from_level} → L{view.proposal.to_level}. Nothing changes until you confirm{totpOn ? " with TOTP" : ""}.
                 </p>
                 <div className="flex items-center gap-2">
+                  {totpOn && (
                   <input
                     aria-label="TOTP code"
                     inputMode="numeric"
@@ -198,9 +201,10 @@ export function AutonomyEvals({ mandates }: { mandates: Mandate[] }) {
                     onChange={(e) => setTotp(e.target.value.replace(/\D/g, ""))}
                     className="w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100"
                   />
+                  )}
                   <button
                     type="submit"
-                    disabled={staleBuild || busy || totp.length !== 6}
+                    disabled={staleBuild || busy || (totpOn && totp.length !== 6)}
                     title={staleBuild ? STALE_BUILD_TITLE : undefined}
                     className="rounded bg-cyan-600 px-2 py-1 text-2xs font-bold text-zinc-950 disabled:opacity-50"
                   >
